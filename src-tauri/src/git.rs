@@ -347,7 +347,16 @@ fn finish_removal(
         }
     }
 
-    let mut res = if delete_branch && !branch.is_empty() && branch != "(detached)" {
+    // A protected branch outlives its checkout: the lock is about the branch, and removing
+    // the folder it sat in is not a way around it.
+    let protected = protection(repo_dir, branch);
+    let mut res = if delete_branch && !branch.is_empty() && branch != "(detached)" && !protected.is_empty() {
+        GitActionResult {
+            ok: true,
+            summary: format!("Removed worktree — kept branch {branch} (protected by {protected})"),
+            ..Default::default()
+        }
+    } else if delete_branch && !branch.is_empty() && branch != "(detached)" {
         // Safe-delete only; an unmerged branch is refused and -D handed back.
         let del = git_run(git_cmd(repo_dir, &["branch", "-d", branch]), 15)?;
         if del.status.success() {
@@ -607,6 +616,141 @@ pub(crate) fn switch_branch(
     })
 }
 
+// ---------- protected branches ----------
+// "main is never deleted here" is a project fact, so the lock is committed
+// (`[branches] protect = ["main", "release/*"]` in .episko/episko.toml) rather than kept per
+// machine, and every deleter below re-reads it: the caller's copy is a paint old. GitHub's own
+// protection is a separate read (github.rs) and guards only the remote (docs/worktrees.md).
+
+fn episko_toml(repo_dir: &str) -> std::path::PathBuf {
+    std::path::Path::new(repo_dir).join(".episko").join("episko.toml")
+}
+
+/// `*` matches any run of characters, `/` included; nothing else is special. Small on purpose:
+/// these patterns are hand-written, and `release/*` is what they are for.
+pub(crate) fn glob_match(pat: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pat.split('*').collect();
+    if parts.len() == 1 {
+        return pat == name;
+    }
+    let Some(mut rest) = name.strip_prefix(parts[0]) else { return false };
+    for (i, part) in parts.iter().enumerate().skip(1) {
+        if i == parts.len() - 1 {
+            return rest.len() >= part.len() && rest.ends_with(part);
+        }
+        let Some(j) = rest.find(part) else { return false };
+        rest = &rest[j + part.len()..];
+    }
+    true
+}
+
+/// The patterns, and whether the file could be read at all. A file that exists and does not
+/// parse protects nothing, but it must not read as "nothing is protected here" — the same
+/// rule as `MergedPrs.available`, and the view says so.
+#[derive(serde::Serialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct ProtectList {
+    patterns: Vec<String>,
+    readable: bool,
+}
+
+pub(crate) fn parse_protect(text: &str) -> ProtectList {
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        return ProtectList { patterns: vec![], readable: false };
+    };
+    let patterns = doc
+        .get("branches")
+        .and_then(|b| b.get("protect"))
+        .and_then(|p| p.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    ProtectList { patterns, readable: true }
+}
+
+/// The branches this project refuses to delete. No file is not a broken one: it reads as
+/// readable and empty, which is what an unconfigured repo means.
+#[tauri::command]
+pub(crate) fn list_protected_branches(repo_dir: String) -> ProtectList {
+    match std::fs::read_to_string(episko_toml(&repo_dir)) {
+        Err(_) => ProtectList { patterns: vec![], readable: true },
+        Ok(text) => parse_protect(&text),
+    }
+}
+
+/// Which pattern protects `branch`, or "". The pattern rather than a bool: an exact entry can
+/// be removed by a click and a glob cannot, and the refusal names what to edit.
+pub(crate) fn protected_by(list: &ProtectList, branch: &str) -> String {
+    list.patterns.iter().find(|p| glob_match(p, branch)).cloned().unwrap_or_default()
+}
+
+fn protection(repo_dir: &str, branch: &str) -> String {
+    protected_by(&list_protected_branches(repo_dir.to_string()), branch)
+}
+
+/// Add or remove one exact name. A glob is only ever hand-edited: dropping `release/*` because
+/// one branch under it was unprotected would quietly unprotect its siblings. `create` gates the
+/// first write, as the keep list's does — a new committable file in someone's repo is a real
+/// side effect.
+#[tauri::command]
+pub(crate) fn set_protected_branch(
+    repo_dir: String, branch: String, protect: bool, create: bool,
+) -> Result<(), String> {
+    let name = branch.trim().to_string();
+    if name.is_empty() {
+        return Err("no branch given".into());
+    }
+    let path = episko_toml(&repo_dir);
+    if !path.is_file() {
+        // Unprotecting what no file records is already true, and must not create one to say so.
+        if !protect {
+            return Ok(());
+        }
+        if !create {
+            return Err("no .episko/episko.toml yet".into());
+        }
+    }
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
+    if doc.get("branches").is_none() {
+        doc["branches"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let tbl = doc["branches"].as_table_mut().ok_or("branches is not a table")?;
+    if tbl.get("protect").is_none() {
+        tbl["protect"] = toml_edit::value(toml_edit::Array::new());
+    }
+    let arr = tbl["protect"].as_array_mut().ok_or("branches.protect is not an array")?;
+    // Already as asked: return before writing. This file is committed, and re-protecting a
+    // branch that is already in the list would move it to the end and put that in a diff.
+    if arr.iter().any(|v| v.as_str() == Some(name.as_str())) == protect {
+        return Ok(());
+    }
+    arr.retain(|v| v.as_str() != Some(name.as_str()));
+    if protect {
+        arr.push(name.as_str());
+    }
+    // One entry per line; a readable diff is the point of committing this.
+    for item in arr.iter_mut() {
+        item.decor_mut().set_prefix("\n  ");
+    }
+    arr.set_trailing("\n");
+    if arr.is_empty() {
+        tbl.remove("protect");
+        if tbl.is_empty() {
+            doc.remove("branches");
+        }
+    }
+    let dir = path.parent().ok_or("bad repo dir")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
 /// Delete a local branch. As with `remove_worktree`, `-D` is never run from a click: `git
 /// branch -d` refuses anything not fully merged (including a squash-merged PR, whose commits
 /// never became ancestors) and the exact `-D` command is handed back instead.
@@ -618,6 +762,14 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
     // Say it in our own words and name the fix, rather than surfacing git's refusal.
     if list_worktrees(repo_dir.clone()).iter().any(|w| w.branch == branch) {
         return Err(format!("{branch} is checked out — remove its worktree first"));
+    }
+    let by = protection(&repo_dir, &branch);
+    if !by.is_empty() {
+        return Ok(GitActionResult {
+            ok: false,
+            summary: format!("{branch} is protected by {by} in .episko/episko.toml"),
+            ..Default::default()
+        });
     }
 
     let out = git_run(git_cmd(&repo_dir, &["branch", "-d", &branch]), 15)?;
@@ -744,10 +896,18 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
             .unwrap_or_default()
     };
 
+    let protect = list_protected_branches(repo_dir.clone());
+
     let mut deleted: Vec<DeletedBranch> = Vec::new();
     let mut kept: Vec<KeptBranch> = Vec::new();
     for p in want {
         let b = p.branch;
+        // The lock first: it is the most specific refusal, and the only one no evidence lifts.
+        let by = protected_by(&protect, &b);
+        if !by.is_empty() {
+            kept.push(KeptBranch { branch: b, reason: format!("protected by {by} in .episko/episko.toml"), forceable: false });
+            continue;
+        }
         if p.gone && !gone.contains(b.as_str()) {
             kept.push(KeptBranch { branch: b, reason: "not gone any more — it has a remote branch again".into(), forceable: false });
             continue;
@@ -881,7 +1041,13 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
     let mut deleted: Vec<DeletedBranch> = Vec::new();
     let mut kept: Vec<KeptBranch> = Vec::new();
     let mut go: Vec<(String, String)> = Vec::new();   // (branch, sha as it stands now)
+    let protect = list_protected_branches(repo_dir.clone());
     for p in want {
+        let by = protected_by(&protect, &p.branch);
+        if !by.is_empty() {
+            kept.push(KeptBranch { branch: p.branch, reason: format!("protected by {by} in .episko/episko.toml"), forceable: false });
+            continue;
+        }
         if default.as_deref() == Some(p.branch.as_str()) {
             kept.push(KeptBranch { branch: p.branch, reason: format!("it is {remote}'s default branch"), forceable: false });
             continue;
@@ -3357,6 +3523,105 @@ canonicalizehostname false
         // A base that doesn't resolve is refused before git can emit anything cryptic.
         let e = create_worktree(repo, "from-nowhere".into(), Some("no-such-ref".into())).expect_err("bad base refused");
         assert!(e.contains("no such commit"), "the message should name the problem: {e}");
+
+        let _ = std::fs::remove_dir_all(wt_root(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------- protected branches ----------
+
+    #[test]
+    fn a_glob_anchors_both_ends_and_lets_a_star_cross_a_slash() {
+        assert!(glob_match("main", "main"));
+        assert!(!glob_match("main", "maint"), "a pattern with no star is an exact name");
+        // `release/*` is the whole reason there is a wildcard at all.
+        assert!(glob_match("release/*", "release/1.2"));
+        assert!(glob_match("release/*", "release/next/1.2"), "a star crosses a slash");
+        assert!(!glob_match("release/*", "release"));
+        assert!(glob_match("*", "anything/at/all"));
+        assert!(glob_match("*-wip", "feat-wip"));
+        assert!(!glob_match("*-wip", "feat-wip-2"), "the tail is anchored");
+        assert!(glob_match("feat/*/old", "feat/a/old"));
+        assert!(!glob_match("feat/*/old", "feat/a/new"));
+        // The halves may not overlap: `ab` is not long enough to be both ends of `ab*ab`.
+        assert!(!glob_match("ab*ab", "ab"));
+        assert!(glob_match("ab*ab", "abab"));
+    }
+
+    #[test]
+    fn the_lock_list_is_read_from_the_project_file_and_a_broken_one_says_so() {
+        let list = parse_protect("[branches]\nprotect = [\"main\", \" dev \", \"\", \"release/*\"]\n");
+        assert!(list.readable);
+        assert_eq!(list.patterns, ["main", "dev", "release/*"], "trimmed, and blanks dropped");
+        assert_eq!(protected_by(&list, "release/1.2"), "release/*", "the pattern, not a bool");
+        assert_eq!(protected_by(&list, "feat"), "");
+        // No table at all is a readable file that protects nothing; a broken one is not.
+        assert_eq!(parse_protect("[health]\ncognitive = 20\n"), ProtectList { patterns: vec![], readable: true });
+        assert!(!parse_protect("[branches").readable, "an unparseable file must not read as empty");
+    }
+
+    #[test]
+    fn setting_and_clearing_a_lock_round_trips_and_keeps_hand_written_toml() {
+        let dir = scratch_dir();
+        let repo = dir.to_str().unwrap().to_string();
+        // The create gate: no file, and no consent, means no file.
+        assert!(set_protected_branch(repo.clone(), "main".into(), true, false).is_err());
+        assert!(!episko_toml(&repo).is_file());
+        // …and unprotecting what nothing records must not create one to say so.
+        assert!(set_protected_branch(repo.clone(), "main".into(), false, false).is_ok());
+        assert!(!episko_toml(&repo).is_file());
+
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        std::fs::write(episko_toml(&repo), "# hand-written\n[health]\ncognitive = 20\n").unwrap();
+        set_protected_branch(repo.clone(), "main".into(), true, false).unwrap();
+        set_protected_branch(repo.clone(), "dev".into(), true, false).unwrap();
+        set_protected_branch(repo.clone(), "main".into(), true, false).unwrap();   // twice is once…
+        let text = std::fs::read_to_string(episko_toml(&repo)).unwrap();
+        assert!(text.contains("# hand-written") && text.contains("cognitive = 20"), "toml_edit keeps the rest: {text}");
+        // …and does not reorder the file: this one is committed, and that would be a diff.
+        assert_eq!(list_protected_branches(repo.clone()).patterns, ["main", "dev"], "{text}");
+
+        set_protected_branch(repo.clone(), "main".into(), false, false).unwrap();
+        assert_eq!(list_protected_branches(repo.clone()).patterns, ["dev"]);
+        set_protected_branch(repo.clone(), "dev".into(), false, false).unwrap();
+        let text = std::fs::read_to_string(episko_toml(&repo)).unwrap();
+        assert!(!text.contains("protect"), "an empty list is noise, and the table goes with it: {text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lock has to hold wherever a branch can be deleted, because the frontend's copy of
+    /// the list is always one paint old and the file is hand-editable underneath it.
+    #[test]
+    fn a_protected_branch_survives_every_deleter() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "dev"]);
+        let commit = |msg: &str| git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+        commit("base");
+        git(&dir, &["branch", "keep"]);        // merged into dev, so -d would take it
+        git(&dir, &["branch", "go"]);
+        let repo = dir.to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        std::fs::write(episko_toml(&repo), "[branches]\nprotect = [\"keep\"]\n").unwrap();
+
+        let one = delete_branch(repo.clone(), "keep".into()).expect("the command runs");
+        assert!(!one.ok && one.summary.contains("protected"), "the single delete refuses: {one:?}");
+        assert!(one.suggest.is_none(), "no handoff: there is no command that answers a lock");
+
+        let pick = |n: &str| SweepPick { branch: n.into(), gone: false, force: true };
+        let r = sweep_branches(repo.clone(), vec![pick("keep"), pick("go")]).expect("sweep runs");
+        assert_eq!(r.deleted.iter().map(|d| d.branch.as_str()).collect::<Vec<_>>(), ["go"],
+            "a force does not lift a lock: {r:?}");
+        assert!(r.kept.iter().any(|k| k.branch == "keep" && k.reason.contains("protected by keep")), "{r:?}");
+        assert!(!r.kept[0].forceable, "-D answers nothing here: {r:?}");
+
+        // And a worktree removal keeps the branch it would otherwise take with the folder.
+        let wt = dir.join("wt-keep");
+        git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "keep"]);
+        let res = remove_worktree_impl(&repo, wt.to_str().unwrap(), "keep", true).expect("removal runs");
+        assert!(res.ok && res.summary.contains("protected"), "the folder goes, the branch stays: {res:?}");
+        let live = String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["branch", "--format=%(refname:short)"]).output().unwrap().stdout).to_string();
+        assert!(live.contains("keep"), "the protected branch is still here: {live}");
 
         let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);

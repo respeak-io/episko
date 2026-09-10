@@ -86,8 +86,55 @@ export interface BranchRow {
   wt?: WtInfo;
   pr?: MergedPr;
   why: string; // the evidence in words; "" when there is none
+  lock: Lock;  // null when nothing protects it
   local: Scope & { force: boolean };
   remote: Scope;
+}
+
+// ---------- the lock ----------
+// A branch nobody here deletes. The list is committed (`[branches] protect` in
+// .episko/episko.toml) so the whole team's app refuses it; GitHub's own protection is read
+// beside it and guards the remote ref alone, which is why the two sources stay named apart.
+
+export interface ProtectCtx {
+  patterns: readonly string[];
+  readable: boolean;          // false = the file exists and does not parse, so it protects NOTHING
+  github: readonly string[];  // what GitHub says it protects; [] when gh could not be asked
+}
+export const NO_PROTECT: ProtectCtx = { patterns: [], readable: true, github: [] };
+
+/** `by` is which list, `pattern` the entry that matched, `exact` whether a click can lift it:
+ *  a glob covers siblings, so removing it here would unprotect branches nobody named. */
+export type Lock = { by: "episko" | "github"; pattern: string; exact: boolean } | null;
+
+/** `*` matches any run of characters, `/` included; nothing else is special. The mirror of
+ *  `glob_match` in git.rs, which is what actually refuses the delete. */
+export function globMatch(pat: string, name: string): boolean {
+  const parts = pat.split("*");
+  if (parts.length === 1) return pat === name;
+  if (!name.startsWith(parts[0])) return false;
+  let rest = name.slice(parts[0].length);
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    if (i === parts.length - 1) return rest.length >= part.length && rest.endsWith(part);
+    const j = rest.indexOf(part);
+    if (j < 0) return false;
+    rest = rest.slice(j + part.length);
+  }
+  return true;
+}
+
+export function branchLock(name: string, p: ProtectCtx): Lock {
+  const pat = p.patterns.find((q) => globMatch(q, name));
+  if (pat) return { by: "episko", pattern: pat, exact: pat === name };
+  // GitHub's answer is never editable from here, so it is never `exact`.
+  return p.github.includes(name) ? { by: "github", pattern: name, exact: false } : null;
+}
+
+export function lockText(l: Lock): string {
+  if (!l) return "";
+  if (l.by === "github") return "protected on GitHub";
+  return l.exact ? "protected in .episko/episko.toml" : `protected by ${l.pattern} in .episko/episko.toml`;
 }
 
 export interface CleanCtx {
@@ -96,6 +143,7 @@ export interface CleanCtx {
   prs: MergedPr[];
   liveIn: (path: string) => number;
   externalIn: (path: string) => boolean; // a session Episko can't see is in the checkout
+  protect: ProtectCtx;
 }
 
 const prIndex = (prs: MergedPr[]) => {
@@ -117,6 +165,7 @@ export function branchRows(ctx: CleanCtx): BranchRow[] {
       : "";
     // `gone` names a ref the remote no longer has, so it is not somewhere the branch lives.
     const remoteRef = br.gone ? "" : br.remote_ref;
+    const lock = branchLock(br.name, ctx.protect);
     return {
       br,
       name: br.name,
@@ -126,8 +175,9 @@ export function branchRows(ctx: CleanCtx): BranchRow[] {
       wt,
       pr,
       why,
-      local: localScope(br, wt, pr, why, br.is_default || remoteRef === trunk, ctx),
-      remote: remoteScope(br, remoteRef, pr, trunk),
+      lock,
+      local: localScope(br, wt, pr, why, br.is_default || remoteRef === trunk, lock, ctx),
+      remote: remoteScope(br, remoteRef, pr, trunk, lock),
     };
   });
 }
@@ -136,10 +186,14 @@ export function branchRows(ctx: CleanCtx): BranchRow[] {
 // row rather than hiding it: the reason is how you learn why it isn't offered.
 function localScope(
   br: BranchInfo, wt: WtInfo | undefined, pr: MergedPr | undefined, why: string,
-  isTrunk: boolean, ctx: CleanCtx,
+  isTrunk: boolean, lock: Lock, ctx: CleanCtx,
 ): Scope & { force: boolean } {
   const no = (block: string) => ({ ok: false, block, force: false });
   if (br.remote) return no("");
+  // The lock before every other refusal: it is the one a person set deliberately, and the
+  // only one no evidence lifts. GitHub's guards the remote ref, and a local `-D` would leave
+  // you with no copy of a branch the team decided was worth protecting.
+  if (lock) return no(lockText(lock));
   if (br.current) return no("the branch you are on");
   // Two branches are never on offer whatever the evidence says: the trunk in force, and the
   // remote's own default. The second is the one that bites — the trunk is overridable, so a
@@ -162,9 +216,10 @@ function localScope(
 // Narrower than the local rule, since `git push --delete` changes what everyone sees: only a
 // branch contained in the trunk, or whose PR merged, is ever offered.
 function remoteScope(
-  br: BranchInfo, remoteRef: string, pr: MergedPr | undefined, trunk: string,
+  br: BranchInfo, remoteRef: string, pr: MergedPr | undefined, trunk: string, lock: Lock,
 ): Scope {
   if (!remoteRef) return { ok: false, block: "" };
+  if (lock) return { ok: false, block: lockText(lock) };
   if (br.is_default || remoteRef === trunk) return { ok: false, block: "the repository's default branch" };
   // No base means the comparison could not be made at all; not knowing is a reason to refuse.
   if (!br.base) return { ok: false, block: `no comparison against ${remoteOf(br) || "the remote"}'s default branch` };
@@ -348,6 +403,7 @@ export interface CheckoutCtx {
   worktrees: WtInfo[];
   liveIn: (path: string) => number;
   externalIn: (path: string) => boolean;
+  protect: ProtectCtx;
 }
 
 export function checkoutRows(ctx: CheckoutCtx): CheckoutRow[] {
@@ -363,8 +419,11 @@ export function checkoutRows(ctx: CheckoutCtx): CheckoutRow[] {
       : wt.dirty ? "uncommitted changes"
       : wt.locked ? "locked"
       : "";
+    // The lock is about the branch, so removing the folder it sat in never takes it.
+    const locked = !!branchLock(wt.branch, ctx.protect);
     const note = wt.is_main ? "every other checkout branches from it"
       : gone ? "folder is gone — removing only clears git's record"
+      : locked ? "its branch is protected and stays"
       : wt.merged ? "merged; its branch goes with it"
       : "not merged, so its branch is kept";
     return { wt, label: basename(wt.path), live, gone, ok: !block, block, note };

@@ -23,6 +23,19 @@ Markers: `+` new · `~` changed · `!` fixed
   panel down when it landed. The folder is read on arrival now, with a skeleton in its place.
 ! **A long branch name no longer pushes the ahead/behind count out of the git card.** The
   count is what you came for, so the name is what gives way.
++ **Right-click any branch row** in Branches: start a session on it, open a terminal there,
+  switch that project folder to it (the row names which one — in a repo full of worktrees a
+  "this folder" points at nothing), protect it, copy its name. *New session here* uses the branch's
+  own worktree when it has one and makes one when it does not — a remote-only branch gets a
+  local ref tracking it, as the ⑃ dialog's rows do.
++ **Protect a branch from deletion.** The list lives in `.episko/episko.toml`
+  (`[branches] protect = ["main", "release/*"]`), so it is committed and everybody who pulls
+  the repo gets it. A protected branch is refused by every deleter — the sweep, the single
+  delete, and the branch a worktree removal would take with it — and the refusal is the
+  backend's, not just the row's.
++ **Branches GitHub protects wear the same lock**, read from the repo's own branch list
+  beside the merged pull requests. It guards the remote ref alone, which is why Episko keeps
+  its own list for the local half, and why that lock cannot be lifted from here.
 
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,

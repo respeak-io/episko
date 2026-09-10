@@ -183,7 +183,7 @@ let menuX = 0, menuY = 0;
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = agentKey = ghKey = null; // one #ctxMenu, one target
+  wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -241,7 +241,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -283,7 +283,7 @@ function switchRow(t: WtTarget): CtxRow {
 
 function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
-  ctxKey = null; // one #ctxMenu, one target
+  ctxKey = brTarget = null; // one #ctxMenu, one target
   wtTarget = t;
   // No `menuX`/`menuY` stamp: those exist for the drill-downs that re-open a menu at its
   // own coordinates (agents, groups, gh), and this menu has none.
@@ -335,6 +335,89 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
 });
 
+// ---------- the Branches view's row menu ----------
+// Right-click a branch row, or its ⋯. The verbs arrive as a callback rather than as host
+// entries: the two menus above are the app's, where this one belongs to one view and every
+// row of it means something only the dashboard knows.
+export interface BranchTarget {
+  branch: string;
+  root: string;   // the project's own folder: what a session here is keyed and coloured by
+  dir: string;    // where a session would start; "" when the branch has no checkout yet
+  live: number;   // sessions already running there
+  lock: { by: "episko" | "github"; exact: boolean; text: string } | null;
+  // The switch moves `root` and nothing else, so the row NAMES it: in a repo with five
+  // worktrees "this folder" points at nothing, and the one it would move is the one the
+  // dashboard is open on. `hereBranch` is what that folder is on now.
+  hereBranch: string;
+  switchNote: string;  // "" when that folder can move to the branch, else why it cannot
+}
+let brTarget: BranchTarget | null = null;
+let brRun: (act: string) => void = () => {};
+
+// Four states, because two of them cannot be lifted from here: GitHub's rule is not ours to
+// edit, and a glob covers siblings nobody named on this row.
+function lockRow(t: BranchTarget): CtxRow {
+  if (!t.lock) {
+    return { act: "brprotect", ic: "🔒", label: "Protect branch", sub: "no delete here, for everyone who pulls the repo" };
+  }
+  if (t.lock.by === "github") {
+    return { act: "", ic: "🔒", label: "Protected on GitHub", sub: "a branch protection rule or ruleset guards it", cls: "dis" };
+  }
+  if (!t.lock.exact) {
+    return { act: "", ic: "🔒", label: "Protected by a pattern", sub: `${t.lock.text} — edit the file to change it`, cls: "dis" };
+  }
+  // ⊘ is this menu's "clear the setting", which is what unprotecting is.
+  return { act: "brunprotect", ic: "⊘", label: "Unprotect branch", sub: "removes it from .episko/episko.toml" };
+}
+
+// The folder by name, because it is one of several: `episko/`, not "this folder". What it
+// is on now is the other half of the answer — a switch is a move from somewhere.
+function switchRowFor(t: BranchTarget): CtxRow {
+  const label = `Switch ${basename(t.root)}/ to it`;
+  const here = t.hereBranch ? `the project's own folder, on ${t.hereBranch} now` : "the project's own folder";
+  return t.switchNote
+    ? { act: "", ic: "⇄", label, sub: t.switchNote, cls: "dis" }
+    : { act: "brswitch", ic: "⇄", label, sub: here };
+}
+
+export function openBranchMenu(t: BranchTarget, x: number, y: number, run: (act: string) => void) {
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
+  brTarget = t;
+  brRun = run;
+  const rows: (CtxRow | null)[] = [
+    {
+      act: "brlaunch", ic: "＋", label: "New session here",
+      sub: t.dir
+        ? (t.live ? `${t.live} already running in this checkout` : `start ${effectiveAgent(t.root).label} on this branch`)
+        : "makes a worktree for this branch, then starts",
+    },
+    // A terminal needs a folder to open in, and a branch with no checkout has none.
+    ...(t.dir ? [{ act: "brterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label }] : []),
+    switchRowFor(t),
+    null,
+    lockRow(t),
+    { act: "brcopy", ic: "⧉", label: "Copy branch name" },
+  ];
+  const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(t.branch)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">${esc(t.branch)}</span>`
+    + `<span class="mp-hpath">${esc(t.dir ? tilde(t.dir) : "no checkout yet")}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
+}
+
+$("ctxMenu").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
+  if (!b || !brTarget || b.classList.contains("dis")) return;
+  const act = b.dataset.ctx || "";
+  const run = brRun;
+  closeCtxMenu(); closeColorPop();
+  run(act);
+});
+
 // ---------- which agent this project runs: the picker ----------
 // A drill-down of the one #ctxMenu (a list of rows, so it replaces the menu in place with
 // ‹ Back). It sets a per-project preference and does not launch: nobody switches agent
@@ -369,7 +452,7 @@ function ghSub(key: string): string {
 
 function openGhPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = agentKey = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = agentKey = brTarget = null; // one #ctxMenu, one target
   ghKey = key;
   const cur = ghAccountFor(key);
   const w = ghWho(cur, ghLogins);
@@ -398,7 +481,7 @@ function openGhPicker(key: string, x: number, y: number) {
 
 function openAgentPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = ghKey = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = ghKey = brTarget = null; // one #ctxMenu, one target
   agentKey = key;
   const cur = agentByProject[key];
   const eff = effectiveAgent(key);

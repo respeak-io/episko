@@ -286,7 +286,13 @@ And the things that hold however the files are arranged:
   origin/dev" and would otherwise offer to delete it. The filter chips ARE the quick-selects
   (narrow, then `All`), shift-click takes the range in the order on screen and adds rather than
   toggles, and Checkouts is a **tab** of the same table rather than a fourth place that lists
-  folders. Full rules in `docs/worktrees.md`.
+  folders. **A row's right-click menu** (./projmenu's one `#ctxMenu`, a fourth mode taking a
+  callback rather than host entries) starts a session on the branch — its worktree, the
+  project's folder, or a worktree made for it — switches this folder to it, and sets the lock.
+  **A locked branch is refused before every other rule and by every deleter**, because the
+  frontend's copy of the list is one paint old: `[branches] protect` in `.episko/episko.toml`
+  is committed, so the refusal is the whole team's, and GitHub's own protection is a second,
+  read-only source that guards the remote ref alone. Full rules in `docs/worktrees.md`.
 - **Switching a branch is a dropdown, in four places, over one verb** (`switchCheckout`;
   `switchOptions`/`midFlightText` in ./branches are the rules, so no surface grows its own).
   It switches on the pick: `switch_branch` already refuses a running task and a target checked
