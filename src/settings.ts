@@ -10,7 +10,7 @@ import {
 import { agentCapabilitySummary, type Engine } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
-  allAgents, attnPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
+  allAgents, attnPrefs, autoFetchPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   motionPrefs,
   keyPrefs, missingAgents,
   outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
@@ -22,6 +22,7 @@ import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
 } from "./attn";
+import { AUTOFETCH_EVERY, type AutoFetchPrefs } from "./autofetch";
 import {
   isDefaultRevivePrefs, REVIVE_ATTEMPTS_RANGE, REVIVE_BASE_RANGE, REVIVE_DEFAULTS,
   REVIVE_FACTOR_RANGE, REVIVE_FACTOR_STEP, REVIVE_JITTER_RANGE, REVIVE_JITTER_STEP,
@@ -84,6 +85,7 @@ export interface SettingsHost {
   setSoundPrefs: (p: SoundPrefs) => void;
   setKeyPrefs: (p: KeyPrefs) => void;
   setAttnPrefs: (p: AttnPrefs) => void;
+  setAutoFetchPrefs: (p: AutoFetchPrefs) => void;
   setFootSeg: (id: FootSeg) => void;
   setFx: (id: VisualFx) => void;
   setRevivePrefs: (p: RevivePrefs) => void;
@@ -133,7 +135,7 @@ let host: SettingsHost = {
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
   setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   vitalsDrift: () => null,
 };
@@ -412,6 +414,34 @@ const SET_TABS: SetTab[] = [
         active: () => wtGroup },
       { kind: "peek", label: "Reveal idle checkouts on hover",
         hint: "Checkouts with nothing running in them stay out of the list until you rest on the project, then slide open. Off keeps them listed all the time. Hover the preview to feel the timings." },
+    ],
+  },
+  {
+    id: "git", label: "Git", glyph: "↻",
+    controls: () => [
+      {
+        kind: "note", label: "What this changes",
+        hint: "“2 behind origin/main” is only ever as true as the last fetch, and nothing in Episko used to run one for you — so a session opened on a branch a colleague had moved said it was in sync and meant it. Fetching is read-only: it moves no branch, touches no file and cannot conflict with an agent working in the same checkout.",
+      },
+      {
+        kind: "toggle", set: "fetch:on", label: "Fetch for the session on screen",
+        hint: "The checkout you are looking at is fetched when you open or switch to it, and again on the interval below while it stays on screen. Only that one: a repo nobody is reading is not worth a round trip, and several checkouts of one repo share a single fetch. A remote that cannot be reached is backed off rather than retried, and the card's tooltip says so.",
+        on: () => autoFetchPrefs.enabled,
+      },
+      {
+        kind: "seg", set: "fetch:every", label: "At most every",
+        hint: "How stale a count is allowed to get before arriving at the pane fetches again. This is a floor, not a timer: nothing is fetched while you are elsewhere.",
+        dim: () => !autoFetchPrefs.enabled,
+        active: () => String(autoFetchPrefs.everyMs),
+        segs: () => AUTOFETCH_EVERY.map((ms) => ({
+          value: String(ms),
+          label: `${ms / 60_000} min`,
+          glyph: ms <= 60_000 ? "◕" : ms <= 300_000 ? "◑" : "◔",
+          sub: ms <= 60_000 ? "Freshest; a fetch most times you switch"
+            : ms <= 300_000 ? "Fresh enough for a colleague's push"
+            : ms <= 900_000 ? "Quiet; a handful of fetches an hour" : "Quietest",
+        })),
+      },
     ],
   },
   {
@@ -1167,6 +1197,8 @@ function applySetting(set: string, val: string) {
   else if (set === "outline:on") host.setOutlinePrefs({ ...outlinePrefs, enabled: val === "1" });
   else if (set === "outline:lines") host.setOutlinePrefs({ ...outlinePrefs, lines: +val });
   else if (set === "outline:hover") host.setOutlinePrefs({ ...outlinePrefs, hover: val === "1" });
+  else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
+  else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
   else if (set === "perf:every") host.setVitalsPrefs({ ...vitalsPrefs, everyMs: +val });
   else if (set === "perf:scroll") host.setScrollback(+val);
