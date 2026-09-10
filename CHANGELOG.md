@@ -12,55 +12,54 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+The ahead/behind count is fetched for the pane you are looking at, a branch can be locked
+against deletion, an ask no longer vanishes a second after it arrives, and the macOS prompts
+that name Episko have a tab that explains them.
 
 + **Auto-fetch, so "2 behind" is true when you read it.** The checkout you are looking at is
-  fetched when you open or switch to a session and every five minutes it stays on screen —
-  nothing else, because a behind count nobody is reading is not worth a round trip. Settings ›
-  Git switches it and sets the interval; a remote that can't be reached is backed off rather
-  than retried, and the card says so instead of showing a frozen number.
+  fetched when you arrive and every five minutes it stays on screen — nothing else, because a
+  count nobody is reading is not worth a round trip. Settings › Git switches it and sets the
+  interval; an unreachable remote is backed off, and the card says so rather than showing a
+  frozen number.
++ **Right-click any branch row** in Branches: start a session on it, open a terminal there,
+  switch that project folder to it (the row names which one — in a repo full of worktrees a
+  "this folder" points at nothing), protect it, copy its name. *New session here* uses the
+  branch's own worktree when it has one and makes one when it does not.
++ **Protect a branch from deletion.** The list lives in `.episko/episko.toml`
+  (`[branches] protect = ["main", "release/*"]`), so it is committed and everybody who pulls
+  the repo gets it. Every deleter refuses it in the backend — the sweep, the single delete,
+  and the branch a worktree removal would take with it.
++ **Branches GitHub protects wear the same lock**, read from the repo's own branch list beside
+  the merged pull requests. It guards the remote ref alone, which is why Episko keeps its own
+  list for the local half, and why that lock cannot be lifted from here.
++ **Settings › Privacy**, on macOS. Those *"Episko would like to access data from other apps"*
+  dialogs name Episko because macOS blames whichever app is *responsible* for a process, and
+  every agent, task and shell here is a child of ours — so the tab says what the dialog means,
+  whether Episko holds full disk access, and what granting it would hand to every agent it
+  launches.
++ **A denied prompt can be taken back.** macOS remembers a *Don't Allow* per app that was read
+  and never asks twice, and offers no pane to undo it. *Denied prompts › Reset* clears Episko's
+  answers.
++ **What macOS checked, on demand.** One pass over the system log lists every permission check
+  made in Episko's name in the last day and names the binary that actually reached — an agent,
+  something it ran, or the app itself.
++ **A question card says what is being asked.** `AskUserQuestion` keeps its ask in a list the
+  card did not read, so it named a tool and showed nothing under it.
 ~ **A session's git card appears at once.** It waited for the 5s working-tree poll before
   drawing anything, so a new pane had no branch, no counts and then a card that shoved the
   panel down when it landed. The folder is read on arrival now, with a skeleton in its place.
-! **A long branch name no longer pushes the ahead/behind count out of the git card.** The
-  count is what you came for, so the name is what gives way.
-+ **Right-click any branch row** in Branches: start a session on it, open a terminal there,
-  switch that project folder to it (the row names which one — in a repo full of worktrees a
-  "this folder" points at nothing), protect it, copy its name. *New session here* uses the branch's
-  own worktree when it has one and makes one when it does not — a remote-only branch gets a
-  local ref tracking it, as the ⑃ dialog's rows do.
-+ **Protect a branch from deletion.** The list lives in `.episko/episko.toml`
-  (`[branches] protect = ["main", "release/*"]`), so it is committed and everybody who pulls
-  the repo gets it. A protected branch is refused by every deleter — the sweep, the single
-  delete, and the branch a worktree removal would take with it — and the refusal is the
-  backend's, not just the row's.
-+ **Branches GitHub protects wear the same lock**, read from the repo's own branch list
-  beside the merged pull requests. It guards the remote ref alone, which is why Episko keeps
-  its own list for the local half, and why that lock cannot be lifted from here.
-! **A pending ask survives the next tool call.** Claude runs tools in parallel and a
-  subagent's hooks arrive under its parent's id, so whichever call landed a second later was
-  retiring a question nobody had answered: the ◆ went out about a second after it appeared,
-  the *needs you* badge never counted it, and Allow/Deny left the inspector while the pane
-  sat on the amber working dot. An ask is retired now by the call it gated reporting back, or
-  by the turn ending — never by an unrelated one starting.
-! **A prompt you cancelled no longer leaves the pane pulsing.** Claude fires its submit hook the
-  moment you press Enter, so a prompt then cancelled with Esc — or edited and re-sent — left a
-  finished session showing the amber working dot with nothing that could ever end it (measured at
-  fourteen minutes). Three minutes of a `thinking` pane with no API request completing now reads
-  as *idle*, which is what it is: nothing is asked of you, your text is in the composer.
-+ **A question card says what is being asked.** `AskUserQuestion` keeps its ask in a list the
-  card did not read, so it named a tool and showed nothing under it.
-+ **Settings › Privacy**, on macOS. Those *"Episko would like to access data from other
-  apps"* dialogs name Episko because macOS blames whichever app is *responsible* for a
-  process, and every agent, task and shell here is a child of ours — so the tab says what
-  the dialog means, whether Episko holds full disk access, and what granting it would hand
-  to every agent it launches. Nothing in the app can grant a permission; the buttons open
-  the pane and get out of the way.
-+ **A denied prompt can be taken back.** macOS remembers a *Don't Allow* per app that was
-  read and never asks twice, and offers no pane to undo it. *Denied prompts › Reset* clears
-  Episko's answers.
-+ **What macOS checked, on demand.** One pass over the system log lists every permission
-  check made in Episko's name in the last day and names the binary that actually reached —
-  an agent, something it ran, or the app itself. The dialog never shows you that.
+! **A pending ask survives the next tool call.** Claude runs tools in parallel and a subagent's
+  hooks arrive under its parent's id, so whichever call landed a second later was retiring a
+  question nobody had answered: the ◆ went out about a second after it appeared, the *needs
+  you* badge never counted it, and Allow/Deny left the inspector. An ask is retired now by the
+  call it gated reporting back, or by the turn ending.
+! **A prompt you cancelled no longer leaves the pane pulsing.** Claude fires its submit hook
+  the moment you press Enter, so a prompt then cancelled with Esc — or edited and re-sent —
+  left a finished session on the amber working dot with nothing that could ever end it. Three
+  minutes of a `thinking` pane with no API request completing reads as *idle* now: nothing was
+  asked of you, and your text is sitting in the composer.
+! **A long branch name no longer pushes the ahead/behind count out of the git card.** The count
+  is what you came for, so the name is what gives way.
 
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,
