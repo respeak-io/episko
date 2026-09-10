@@ -4,10 +4,13 @@
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import {
-  basename, cleanTitle, esc, escAttr, tccLabel, tilde, titleExtra, TITLE_EXTRA_MAX,
+  basename, cleanTitle, esc, escAttr, tccLabel, tilde, TITLE_DEFAULTS, titleExtra, TITLE_EXTRA_MAX,
   type TitlePrefs,
 } from "./format";
-import { agentCapabilitySummary, type Engine } from "./types";
+import { agentCapabilitySummary, CLAUDE_CLI, type Engine } from "./types";
+import {
+  highlight, isSearching, matchRow, parseQuery, SEARCH_FILTERS, type SearchHit, type SearchRow,
+} from "./setsearch";
 import { agentLogo } from "./providers/logos";
 import {
   allAgents, attnPrefs, autoFetchPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
@@ -22,7 +25,7 @@ import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
 } from "./attn";
-import { AUTOFETCH_EVERY, type AutoFetchPrefs } from "./autofetch";
+import { AUTOFETCH_DEFAULTS, AUTOFETCH_EVERY, type AutoFetchPrefs } from "./autofetch";
 import {
   isDefaultRevivePrefs, REVIVE_ATTEMPTS_RANGE, REVIVE_BASE_RANGE, REVIVE_DEFAULTS,
   REVIVE_FACTOR_RANGE, REVIVE_FACTOR_STEP, REVIVE_JITTER_RANGE, REVIVE_JITTER_STEP,
@@ -30,13 +33,13 @@ import {
   reviveWindowMs, type ReviveKind, type RevivePrefs,
 } from "./revive";
 import { LIT_COLOR } from "./sidebarview";
-import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
-import { fxOn, VISUAL_FX, type VisualFx } from "./motion";
+import { DEFAULT_FOOT, FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
+import { DEFAULT_MOTION, fxOn, VISUAL_FX, type VisualFx } from "./motion";
 import {
-  driftVerdict, fmtPerHour, fmtSpanShort, leakSuspects, SCROLLBACK_OPTS, VITALS,
-  VITALS_EVERY, type VitalsDrift, type VitalsPrefs,
+  driftVerdict, fmtPerHour, fmtSpanShort, leakSuspects, SCROLLBACK_DEFAULT, SCROLLBACK_OPTS, VITALS,
+  VITALS_DEFAULTS, VITALS_EVERY, type VitalsDrift, type VitalsPrefs,
 } from "./perf";
-import { OUTLINE_LINES, type OutlinePrefs } from "./outline";
+import { OUTLINE_DEFAULTS, OUTLINE_LINES, type OutlinePrefs } from "./outline";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -53,7 +56,7 @@ import {
   peekLeaveAll, peekNextDeadline, peekStaysOpen, peekTick, type PeekPrefs, type PeekState,
 } from "./peek";
 import {
-  ALL_PROVIDERS, clearStopRule, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
+  ALL_PROVIDERS, clearStopRule, DEFAULT_TASK_PREFS, explicitlyTrusted, PROVIDER_LABEL, saveTaskPrefs,
   stopRules, taskPrefs, untrustProject, type Provider, type TaskPrefs,
 } from "./tasks";
 import { isDone, parseTourState, pickerChapters, TOUR_KEY } from "./tour";
@@ -98,24 +101,23 @@ export interface SettingsHost {
   openPrivacyPane: (pane: string) => Promise<void>;
   resetAppDataPrompts: () => Promise<void>;
   privacyAsks: () => Promise<PrivacyAsk[]>;
+  // The rail's doors, and the one fact `@new` needs: whether a version was read in What's new.
+  openUsage: () => void;
+  openWhatsNew: () => void;
+  versionUnread: (version: string) => boolean;
   // Not settings, hence no cc- key: an inspector, a reload and a reading of ./debug's ring.
   openDevtools: () => void;
   reloadUi: () => void;
   vitalsDrift: () => VitalsDrift | null;
 }
-// Computed rather than fixed: with one agent installed, the useful half of the hint is
-// that others exist and where to look for them.
-function agentHint(): string {
+// Computed rather than fixed: with one agent installed, the useful half is that others
+// exist and where to look for them.
+function agentMore(): string {
   const missing = missingAgents().length;
-  return "What a new session runs — ⌘N, the new-session dialog and a worktree launch all "
-    + "follow this. Each row lists the integrations its provider exposes; providers without "
-    + "a control-plane adapter still get a real terminal, worktree and project tools. "
-    + "Per-project overrides live on a project's own menu"
-    + (missing
-      ? `, which also lists the ${missing} agents Episko supports that aren't on your PATH, and the binary it looked for.`
-      : ".");
+  return "⌘N, the new-session dialog and a worktree launch all follow this; a project can pin a different agent from its own menu"
+    + (missing ? `, which also lists the ${missing} agents Episko supports that are not on your PATH` : "")
+    + ". Each row lists what its provider integrates, and one with no adapter still gets a real terminal, worktree and project tools.";
 }
-
 function permissionControl(): SetControl {
   const agent = defaultAgentDef();
   const provider = providerAdapter(agent.id);
@@ -127,10 +129,13 @@ function permissionControl(): SetControl {
     };
   }
   const active = providerPermissionMode(agent.id, permissionModeFor(agent.id)) ?? modes[0];
+  const dflt = providerPermissionMode(agent.id, "default") ?? modes[0];
   return {
-    kind: "seg", set: `permmode:${agent.id}`, label: `Permission mode · ${provider?.label ?? agent.label}`,
-    hint: "The policy a new session starts with. It is stored separately for each integrated agent; changing agents above restores that agent's last choice.",
-    active: () => active.id,
+    kind: "seg", set: `permmode:${agent.id}`, key: "cc-perm-modes", label: `Permission mode · ${provider?.label ?? agent.label}`,
+    hint: "How much a new session may do before it asks.",
+    more: "Stored per agent, so switching agents brings back that agent's last choice. Each value maps to a fixed CLI flag; nothing typed here reaches a command line.",
+    aliases: ["bypass", "plan", "accept edits", "dangerously", "auto", "approvals", "ask"],
+    active: () => active.id, isDefault: () => active.id === dflt.id, reset: () => host.setPermMode(agent.id, dflt.id),
     segs: () => modes.map((mode) => ({ value: mode.id, label: mode.label, sub: mode.sub, glyph: mode.glyph })),
   };
 }
@@ -146,37 +151,48 @@ let host: SettingsHost = {
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
+  openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
 // Every control writes through the same setter the rest of the app uses; there is no
 // separate settings store.
 type SetSeg = { value: string; label: string; sub?: string; glyph?: string; logo?: string };
-type SetControl =
-  // `dim`: a stored value that currently decides nothing. Not `disabled`, so switching back restores it.
-  | { kind: "seg"; set: string; label: string; hint?: string; dim?: () => boolean; active: () => string; segs: () => SetSeg[] }
-  | { kind: "font"; label: string; hint?: string }
-  | { kind: "wtpreview"; label: string; hint?: string; active: () => string }
-  // peek, sound, attn, revive and guide are each one control with a preview under it rather
-  // than a `render` tab: they are one decision, and a `render` tab widens the dialog.
-  | { kind: "peek"; label: string; hint?: string }
-  | { kind: "sound"; label: string; hint?: string }
-  | { kind: "keys"; label: string; hint?: string }
-  | { kind: "attn"; label: string; hint?: string }
-  | { kind: "revive"; label: string; hint?: string }
-  // The OSC-title scrub: switch, extra characters and a live before/after. One control,
-  // like `peek` — a field of bare characters says nothing without what it understood.
-  | { kind: "title"; label: string; hint?: string }
-  | { kind: "toggle"; set: string; label: string; hint?: string; on: () => boolean; preview?: () => string }
+// What every control carries besides its shape: the folded why, the words the search may
+// match, and the three answers a row can give (a summary, whether it is at its default, how
+// to put it back). `id` is the row's address for deep links and the fold state.
+interface SetMeta {
+  id?: string; label: string; hint?: string; more?: string; aliases?: string[];
+  key?: string;                   // the cc- key behind it, for `@key:`
+  since?: string;                 // the release it arrived in, for `@new`
+  summary?: () => string;         // the folded panel's one line
+  isDefault?: () => boolean;      // absent: never marked changed
+  reset?: () => void;
+  lines?: () => { label: string; value: string }[]; // inside a panel, for the search
+  previewLabel?: string;          // the fold button of a toggle's preview
+  dim?: () => boolean;            // a stored value that currently decides nothing; not disabled, so switching back restores it
+}
+type SetShape =
+  | { kind: "seg"; set: string; active: () => string; segs: () => SetSeg[] }
+  | { kind: "font" }
+  | { kind: "wtpreview"; active: () => string }
+  // peek, sound, attn, revive, keys and title are each one control with a panel under it:
+  // they are one decision, and the panel folds behind its summary.
+  | { kind: "peek" } | { kind: "sound" } | { kind: "keys" } | { kind: "attn" } | { kind: "revive" } | { kind: "title" }
+  | { kind: "toggle"; set: string; on: () => boolean; preview?: () => string }
   // Prose with no control under it: a rule governing the group below.
-  | { kind: "note"; label: string; hint: string }
-  | { kind: "guide"; label: string; hint?: string }
-  | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
-  // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm
-  // dialog's red.
-  | { kind: "action"; set: string; label: string; hint?: string; btn: string; danger?: boolean; preview?: () => string };
-// `when`: a tab about an OS the app is not running on is worse than no tab.
-interface SetTab { id: string; label: string; glyph: string; when?: () => boolean; controls: () => SetControl[] }
+  | { kind: "note"; hint: string }
+  | { kind: "guide" }
+  | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
+  // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
+  | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
+type SetControl = SetMeta & SetShape;
+type SetGroupId = "look" | "work" | "app";
+// `when`: a section about an OS the app is not running on is worse than none; `os` tags its rows for `@mac`.
+interface SetTab {
+  id: string; label: string; glyph: string; group: SetGroupId; sub: string;
+  when?: () => boolean; os?: "mac"; controls: () => SetControl[];
+}
 
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
@@ -279,169 +295,171 @@ function footPreview(id: FootSeg): string {
     + `</div>`;
 }
 
+const onOff = (b: boolean) => (b ? "on" : "off");
+const fxDefault = (id: VisualFx) => fxOn(motionPrefs, id) === fxOn(DEFAULT_MOTION, id);
+const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+const SET_GROUPS: { id: SetGroupId; label: string }[] = [
+  { id: "look", label: "Look" }, { id: "work", label: "Work" }, { id: "app", label: "App" },
+];
+// A section is named for the surface or the question, never for the feature that shipped it.
+// `hint` is the one sentence on the page; `more` is the why, folded (docs/settings.md).
 const SET_TABS: SetTab[] = [
   {
-    id: "appearance", label: "Appearance", glyph: "◐",
+    id: "appearance", label: "Appearance", glyph: "◐", group: "look", sub: "Theme, type size, effects",
     controls: () => [
-      { kind: "seg", set: "theme", label: "Theme", hint: "Light or dark surfaces across the whole app.",
+      { kind: "seg", set: "theme", key: "cc-theme", label: "Theme", hint: "Light or dark, across the whole app.",
+        aliases: ["dark mode", "light mode", "colour scheme"],
         active: () => host.effectiveTheme(),
         segs: () => [
           { value: "light", label: "Light", glyph: "☀", sub: "Bright surfaces" },
           { value: "dark",  label: "Dark",  glyph: "☾", sub: "Dim surfaces" },
         ] },
-      { kind: "font", label: "Terminal font size", hint: "Text size in embedded terminals (also ⌘+ / ⌘− / ⌘0)." },
-      {
-        kind: "title", label: "Clean up session names",
-        hint: "Claude Code animates a spinner in front of the terminal title it sets, so a session's name arrives with a frame of animation stuck to it. Episko strips the frames it knows about and keeps the summary. Add a character here when a new one starts turning up in the sidebar.",
-      },
-      // The note carries the reason once; the rows come straight off ./motion's table.
-      {
-        kind: "note", label: "Visual effects",
-        hint: "Episko sits open all day, so anything that animates or blurs is a GPU frame spent whether or not you are looking. These cost the most on a high-refresh Windows display, where the compositor redraws 144 times a second rather than 60. Nothing here changes what the app tells you — only how it draws it.",
-      },
+      { kind: "font", id: "font", key: "cc-term-font", label: "Terminal font size", hint: "Text size in the embedded terminals.",
+        more: "⌘+, ⌘− and ⌘0 do the same from any pane.", aliases: ["zoom", "text size", "bigger", "smaller"],
+        isDefault: () => termFontSize === TERM_FONT_DEFAULT, reset: () => setFontFromSettings("reset") },
       ...VISUAL_FX.map((fx): SetControl => ({
-        kind: "toggle", set: `fx:${fx.id}`, label: fx.label, hint: fx.hint,
-        on: () => fxOn(motionPrefs, fx.id),
+        kind: "toggle", set: `fx:${fx.id}`, key: "cc-motion", label: fx.label, hint: fx.hint, more: fx.more, aliases: fx.aliases,
+        on: () => fxOn(motionPrefs, fx.id), isDefault: () => fxDefault(fx.id), reset: () => host.setFx(fx.id),
       })),
     ],
   },
   {
-    id: "footer", label: "Footer", glyph: "▁",
-    // One switch per ./footprefs segment. What that table omits cannot be switched off,
-    // hence a note rather than disabled rows.
+    id: "sidebar", label: "Sidebar", glyph: "▤", group: "look", sub: "Order, worktrees, hover",
     controls: () => [
-      {
-        kind: "note", label: "What the status bar shows",
-        hint: "The repo link, the version and What's new always stay, so the bar can never end up empty — and an update is not something to hide by accident.",
-      },
+      { kind: "seg", set: "sort", key: "cc-sort", label: "Sort", hint: "What order projects and sessions are listed in.",
+        more: "Manual is drag to arrange. The other two re-sort as things happen.", aliases: ["order", "arrange", "drag", "urgency", "recent"],
+        active: () => sortMode, isDefault: () => sortMode === "manual", reset: () => host.setSort("manual"),
+        segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
+      { kind: "wtpreview", id: "wtgroup", key: "cc-worktree-group", label: "Worktree grouping", hint: "How a repo's other checkouts sit inside its project group.",
+        more: "Four layouts, each previewed on the same demo roster.", aliases: ["checkout", "branch", "worktree", "nested", "layout"],
+        active: () => wtGroup, summary: () => WT_GROUP_SEGS.find((s) => s.value === wtGroup)?.label ?? wtGroup,
+        lines: () => WT_GROUP_SEGS.map((s) => ({ label: s.label, value: s.sub ?? "" })),
+        isDefault: () => wtGroup === "subheader", reset: () => host.setWtGroup("subheader") },
+      { kind: "peek", id: "peek", key: "cc-peek", label: "Reveal idle checkouts on hover", hint: "Idle checkouts stay hidden until you rest on the project.",
+        more: "Off lists them all the time. The preview runs the real timings, so what you set is what you will feel.",
+        aliases: ["hover", "idle", "peek", "slide", "collapse", "delay"],
+        summary: () => `${onOff(peekPrefs.enabled)} · opens ${peekPrefs.openMs} ms · closes ${peekPrefs.closeMs} ms`,
+        lines: () => [
+          { label: "Opens after", value: `${peekPrefs.openMs} ms` }, { label: "Closes after", value: `${peekPrefs.closeMs} ms` },
+          { label: "Keep them listed in projects with a session", value: onOff(peekPrefs.pinLive) },
+        ],
+        isDefault: () => peekPrefs.enabled === PEEK_DEFAULTS.enabled && peekPrefs.pinLive === PEEK_DEFAULTS.pinLive
+          && peekPrefs.openMs === PEEK_DEFAULTS.openMs && peekPrefs.closeMs === PEEK_DEFAULTS.closeMs,
+        reset: () => { host.setPeekPrefs({ ...PEEK_DEFAULTS }); peekDemoReset(); } },
+      { kind: "title", id: "title", key: "cc-title", label: "Clean up session names", hint: "Strips the spinner Claude Code puts in front of a session's title.",
+        more: "When a new spinner character turns up in the sidebar, add it below. Ranges like a-b work, and the field only ever adds to the built-in list.",
+        aliases: ["spinner", "title", "rename", "strip", "braille"],
+        summary: () => { const n = titleExtra(titlePrefs.extra).length; return `${onOff(titlePrefs.scrub)}${n ? ` · ${n} extra` : ""}`; },
+        lines: () => [{ label: "Extra characters to strip", value: titlePrefs.extra || "none" }],
+        isDefault: () => titlePrefs.scrub === TITLE_DEFAULTS.scrub && titlePrefs.extra === TITLE_DEFAULTS.extra,
+        reset: () => host.setTitlePrefs({ ...TITLE_DEFAULTS }) },
+    ],
+  },
+  {
+    id: "inspector", label: "Inspector", glyph: "▯", group: "look", sub: "Your questions",
+    controls: () => [
+      { kind: "toggle", set: "outline:on", key: "cc-outline", label: "List your questions", hint: "Your prompts, newest first; click one to jump back to it.",
+        more: "A prompt that has scrolled out of the buffer stays in the list, greyed. On the fullscreen renderer the pane is asked to page there instead.",
+        aliases: ["prompts", "outline", "questions", "conversation", "jump"],
+        on: () => outlinePrefs.enabled, isDefault: () => outlinePrefs.enabled === OUTLINE_DEFAULTS.enabled,
+        reset: () => host.setOutlinePrefs({ ...outlinePrefs, enabled: OUTLINE_DEFAULTS.enabled }) },
+      { kind: "seg", set: "outline:lines", key: "cc-outline", label: "Lines per question", hint: "How many lines of a long prompt a row shows.",
+        aliases: ["truncate", "clamp"], dim: () => !outlinePrefs.enabled,
+        active: () => String(outlinePrefs.lines), isDefault: () => outlinePrefs.lines === OUTLINE_DEFAULTS.lines,
+        reset: () => host.setOutlinePrefs({ ...outlinePrefs, lines: OUTLINE_DEFAULTS.lines }),
+        segs: () => OUTLINE_LINES.map((n) => ({ value: String(n), label: n === 1 ? "One line" : `${n} lines`, glyph: "≡" })) },
+      { kind: "toggle", set: "outline:hover", key: "cc-outline", label: "Expand a question on hover", hint: "Rest on a row and it unfolds to the whole prompt.",
+        more: "Off, the whole prompt is in the tooltip.", aliases: ["unfold", "tooltip"], dim: () => !outlinePrefs.enabled,
+        on: () => outlinePrefs.hover, isDefault: () => outlinePrefs.hover === OUTLINE_DEFAULTS.hover,
+        reset: () => host.setOutlinePrefs({ ...outlinePrefs, hover: OUTLINE_DEFAULTS.hover }) },
+    ],
+  },
+  {
+    id: "statusbar", label: "Status bar", glyph: "▁", group: "look", sub: "Which segments show",
+    // One switch per ./footprefs segment. What that table omits cannot be switched off, hence the note.
+    controls: () => [
+      { kind: "note", label: "What the status bar shows",
+        hint: "The repo link, the version and What's new always stay, so the bar is never empty and an update can't be hidden by accident." },
       ...FOOT_SEGS.map((seg): SetControl => ({
-        kind: "toggle", set: `foot:${seg.id}`, label: seg.label, hint: seg.hint,
-        on: () => footShown(footPrefs, seg.id),
-        preview: () => footPreview(seg.id),
+        kind: "toggle", set: `foot:${seg.id}`, key: "cc-foot", label: seg.label, hint: seg.hint, more: seg.more,
+        aliases: ["footer", "status bar", ...(seg.aliases ?? [])],
+        on: () => footShown(footPrefs, seg.id), preview: () => footPreview(seg.id),
+        isDefault: () => footShown(footPrefs, seg.id) === footShown(DEFAULT_FOOT, seg.id), reset: () => host.setFootSeg(seg.id),
       })),
     ],
   },
   {
-    id: "sessions", label: "Sessions", glyph: "▤",
+    id: "launching", label: "Launching", glyph: "▷", group: "work", sub: "What runs, where, how it starts",
     controls: () => [
       // Outermost first: what runs, then where its terminal opens, then how it starts.
-      { kind: "seg", set: "agent", label: "Agent",
-        hint: agentHint(),
+      { kind: "seg", set: "agent", key: "cc-agent", label: "Agent", hint: "What a new session runs.", more: agentMore(),
+        aliases: ["provider", "default agent", ...allAgents().map((a) => a.label)],
         // What a launch resolves, not a stale persisted id for an uninstalled agent.
-        active: () => defaultAgentDef().id,
-        segs: () => allAgents().map((a) => ({
-          value: a.id, label: a.label, logo: agentLogo(a.id),
-          sub: agentCapabilitySummary(a),
-        })) },
-      { kind: "seg", set: "engine", label: "Launch engine", hint: "Where a new session's terminal opens. Providers without external-terminal support stay embedded.",
+        active: () => defaultAgentDef().id, isDefault: () => defaultAgentDef().id === CLAUDE_CLI.id, reset: () => host.setDefaultAgent(CLAUDE_CLI.id),
+        segs: () => allAgents().map((a) => ({ value: a.id, label: a.label, logo: agentLogo(a.id), sub: agentCapabilitySummary(a) })) },
+      { kind: "seg", set: "engine", key: "cc-term-engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
+        more: "An agent with no external-terminal support stays embedded whatever is picked. A session in an external tab is mirrored into its pane.",
+        aliases: ["ghostty", "terminal.app", "iterm", "external", "embedded", "mirror", "tab"],
         dim: () => !defaultAgentDef().capabilities.includes("external-terminal"),
-        active: () => termEngine,
+        active: () => termEngine, isDefault: () => termEngine === "embedded", reset: () => host.setEngine("embedded"),
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
       permissionControl(),
-      { kind: "seg", set: "sort", label: "Sidebar sort", hint: "How projects and sessions are ordered in the sidebar.",
-        active: () => sortMode,
-        segs: () => SORT_MODES.map((m) => ({ value: m, label: SORT_SHORT[m], sub: SORT_META[m].label, glyph: SORT_META[m].glyph })) },
-      { kind: "attn", label: "When a session wants you",
-        hint: "A turn finishing, a turn the API killed, a permission, a failed run. The row lights up in the rail for a few seconds, and the ⌂ badge in the header queues them all up. Hover the preview to see the light." },
-      { kind: "toggle", set: "outline:on", label: "List your questions in the inspector",
-        hint: "Every prompt you send is listed newest first, and clicking one scrolls that pane's terminal back to where you asked it. A question whose lines have fallen out of the scrollback is greyed rather than dropped.",
-        on: () => outlinePrefs.enabled },
-      { kind: "seg", set: "outline:lines", label: "Lines per question",
-        hint: "How much of a long prompt a row shows before it is cut off.",
-        dim: () => !outlinePrefs.enabled,
-        active: () => String(outlinePrefs.lines),
-        segs: () => OUTLINE_LINES.map((n) => ({ value: String(n), label: n === 1 ? "One line" : `${n} lines`, glyph: "≡" })) },
-      { kind: "toggle", set: "outline:hover", label: "Expand a question on hover",
-        hint: "Rest on a row and it unfolds to the whole prompt, the way an idle checkout opens in the sidebar. Off leaves the tooltip.",
-        dim: () => !outlinePrefs.enabled,
-        on: () => outlinePrefs.hover },
-      { kind: "revive", label: "Carry on after an API error",
-        hint: "A 529 or a dropped Wi-Fi ends the turn, and the session then waits at its prompt — for eight hours, if it happened at midnight. Switched on, Episko waits and types a carry-on for you. It never types into a session that is asking you something, and it never retries a failure that can't be fixed by waiting (bad credentials, billing, a malformed request)." },
     ],
   },
   {
-    id: "keys", label: "Keys", glyph: "⌨",
+    id: "attention", label: "Attention", glyph: "◆", group: "work", sub: "Highlight, badge, sounds",
     controls: () => [
-      // Names the two glyphs only; the modifier rule is the toast's, at the moment it applies.
-      { kind: "keys", label: "Keyboard shortcuts",
-        hint: "Click a chord and press the one you want. ⊘ turns one off, ⟲ puts it back. The switch turns off the lot." },
+      { kind: "attn", id: "attn", key: "cc-attn", label: "When a session wants you", hint: "How a session tells you it needs you.",
+        more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the ⌂ badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
+        aliases: ["badge", "highlight", "needs you", "notify", "notification", "tray", "your turn"],
+        summary: () => `${attnPrefs.highlight ? "highlight" : "no highlight"} · ${attnOrderLabel().toLowerCase()} · ${attnPrefs.clearOnOpen ? "clears on open" : "stays"}`,
+        lines: () => [
+          { label: "Fades over", value: `${(attnPrefs.highlightMs / 1000).toFixed(1)}s` }, { label: "Queue order", value: attnOrderLabel() },
+          { label: "Clear it when you open the session", value: onOff(attnPrefs.clearOnOpen) },
+        ],
+        isDefault: () => isDefaultAttnPrefs(attnPrefs), reset: () => host.setAttnPrefs(ATTN_DEFAULTS) },
+      { kind: "sound", id: "sound", key: "cc-sound", label: "Sounds", hint: "Which moments are worth hearing.",
+        more: "Every other signal Episko has needs the window in front of you; a sound doesn't. Click a sound's name to change it, and every button here plays what it does. One sound per moment, and the more urgent one wins.",
+        aliases: ["chime", "bell", "mute", "volume", "audio", "alert", "beep", "quiet", "silence", "tone"],
+        summary: () => soundPrefs.enabled
+          ? `${SOUND_EVENTS.filter((d) => soundPrefs.events[d.id].on).length} of ${SOUND_EVENTS.length} events · ${soundPrefs.volume}%` : "off",
+        lines: () => [
+          ...SOUND_EVENTS.map((d) => ({ label: d.label, value: soundPrefs.events[d.id].on ? toneDef(soundPrefs.events[d.id].tone).label : "off" })),
+          { label: "Volume", value: `${soundPrefs.volume}%` }, { label: "Play", value: WHEN_SEGS.find((w) => w.value === soundPrefs.when)?.label ?? "" },
+        ],
+        isDefault: () => isDefaultSoundPrefs(soundPrefs), reset: () => { soundPick = null; host.setSoundPrefs(soundDefaults()); } },
+      { kind: "toggle", set: "taskattn", key: "cc-task-prefs", label: "Raise attention when a run fails", hint: "A failed run gets the same badge and tray notice as a blocked session.",
+        aliases: ["task", "failed run", "badge"],
+        on: () => taskPrefs.attention, isDefault: () => taskPrefs.attention === DEFAULT_TASK_PREFS.attention,
+        reset: () => applySetting("taskattn", DEFAULT_TASK_PREFS.attention ? "1" : "0") },
     ],
   },
   {
-    id: "sounds", label: "Sounds", glyph: "♪",
+    id: "auto", label: "On its own", glyph: "↻", group: "work", sub: "What Episko does without asking",
     controls: () => [
-      { kind: "sound", label: "Sound alerts",
-        hint: "Episko is built for a fleet you are deliberately not watching, and every other signal it has (the glyph, the badge, the tray) needs the window in front of you. Click a row's sound name to change it; every button here plays what it does." },
-    ],
-  },
-  {
-    id: "tasks", label: "Tasks", glyph: "▶",
-    controls: () => [
-      { kind: "multi", set: "prov", label: "Scan for task files",
-        hint: "Which formats Episko looks for when you open the Run picker.",
-        on: () => taskPrefs.providers,
-        segs: () => ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })) },
-      { kind: "toggle", set: "introspect", label: "Let trusted projects introspect themselves",
-        hint: "Listing justfile, Taskfile or mise tasks means running that tool, which evaluates the file and can execute code from the folder. Off means those tasks stay undiscovered.",
-        on: () => taskPrefs.introspect },
-      { kind: "multi", set: "untrust", label: "Trusted projects",
-        hint: "Click to revoke. Your project folders are trusted because you added them; anything else asks once.",
-        on: () => explicitlyTrusted(),
-        segs: () => explicitlyTrusted().map((p) => ({ value: p, label: basename(p), sub: tilde(p) })),
-        empty: "Nothing trusted by hand yet. Your project folders already are." },
-      { kind: "seg", set: "taskcwd", label: "Working directory",
-        hint: "With several worktrees open, “run tests” is otherwise ambiguous. A task that declares its own directory always keeps it.",
-        active: () => taskPrefs.cwd,
-        segs: () => [
-          { value: "session", label: "Active session", glyph: "▤", sub: "The worktree you're looking at" },
-          { value: "root", label: "Repo root", glyph: "⌂", sub: "Always the main checkout" },
-        ] },
-      { kind: "seg", set: "dismiss", label: "Dismiss successful runs",
-        hint: "Failures always stay until you close them.",
-        active: () => String(taskPrefs.dismissMs),
-        segs: () => [
-          { value: "0", label: "Never", glyph: "◉", sub: "Keep every finished run" },
-          { value: "20000", label: "After 20s", glyph: "◔", sub: "Unless you're looking at it" },
-          { value: "1", label: "At once", glyph: "○", sub: "Close as soon as it passes" },
-        ] },
-      { kind: "toggle", set: "taskattn", label: "Raise attention when a run fails",
-        hint: "Uses the same badge and tray notification as a blocked session.",
-        on: () => taskPrefs.attention },
-      // Set from the project's task panel; reviewed and revoked here.
-      { kind: "multi", set: "unstop", label: "Run after a session stops",
-        hint: "When an agent finishes a turn in one of these projects, its task runs unfocused, so it never takes the stage. A failure keeps its pane and offers the output back to that session. Click to remove.",
-        on: () => Object.keys(stopRules),
-        segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
-        empty: "No rules yet. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
-    ],
-  },
-  {
-    id: "worktrees", label: "Worktrees", glyph: "⑃",
-    controls: () => [
-      { kind: "wtpreview", label: "Worktree grouping",
-        hint: "How several checkouts of one repo are shown within its project group. Pick the look that reads best for you.",
-        active: () => wtGroup },
-      { kind: "peek", label: "Reveal idle checkouts on hover",
-        hint: "Checkouts with nothing running in them stay out of the list until you rest on the project, then slide open. Off keeps them listed all the time. Hover the preview to feel the timings." },
-    ],
-  },
-  {
-    id: "git", label: "Git", glyph: "↻",
-    controls: () => [
-      {
-        kind: "note", label: "What this changes",
-        hint: "“2 behind origin/main” is only ever as true as the last fetch, and nothing in Episko used to run one for you — so a session opened on a branch a colleague had moved said it was in sync and meant it. Fetching is read-only: it moves no branch, touches no file and cannot conflict with an agent working in the same checkout.",
-      },
-      {
-        kind: "toggle", set: "fetch:on", label: "Fetch for the session on screen",
-        hint: "The checkout you are looking at is fetched when you open or switch to it, and again on the interval below while it stays on screen. Only that one: a repo nobody is reading is not worth a round trip, and several checkouts of one repo share a single fetch. A remote that cannot be reached is backed off rather than retried, and the card's tooltip says so.",
-        on: () => autoFetchPrefs.enabled,
-      },
-      {
-        kind: "seg", set: "fetch:every", label: "At most every",
-        hint: "How stale a count is allowed to get before arriving at the pane fetches again. This is a floor, not a timer: nothing is fetched while you are elsewhere.",
-        dim: () => !autoFetchPrefs.enabled,
-        active: () => String(autoFetchPrefs.everyMs),
+      { kind: "revive", id: "revive", key: "cc-revive", label: "Carry on after an API error", hint: "When an API error ends a turn, Episko waits and types a carry-on for you.",
+        more: "A 529 at midnight otherwise costs eight hours. It never types into a session that is asking you something, never retries what waiting can't fix (bad credentials, billing, a malformed request), and holds its attempts while the machine has no network. It is off until you switch it on.",
+        aliases: ["retry", "529", "overloaded", "backoff", "resume", "unattended", "overnight", "revive", "network"],
+        summary: () => revivePrefs.enabled ? `on · rides out ~${reviveGap(reviveWindowMs(revivePrefs))}` : "off",
+        lines: () => [
+          { label: "First wait", value: reviveGap(revivePrefs.baseMs) }, { label: "Then ×", value: String(revivePrefs.factor) },
+          { label: "Never longer than", value: reviveGap(revivePrefs.maxMs) }, { label: "Give up after", value: `${revivePrefs.attempts} tries` },
+          { label: "Scatter by", value: `${revivePrefs.jitterPct}%` },
+          { label: "Failures worth retrying", value: REVIVE_KINDS.filter((k) => revivePrefs.kinds.includes(k.id)).map((k) => k.label).join(", ") },
+        ],
+        isDefault: () => revivePrefs.enabled === REVIVE_DEFAULTS.enabled && isDefaultRevivePrefs(revivePrefs),
+        reset: () => host.setRevivePrefs({ ...REVIVE_DEFAULTS }) },
+      { kind: "toggle", set: "fetch:on", key: "cc-autofetch", label: "Fetch for the session on screen", hint: "Fetches the checkout you are looking at, so its ahead/behind count is current.",
+        more: "Only that one; a repo nobody is reading isn't worth a round trip, and the checkouts of one repo share a fetch. An unreachable remote is backed off, and the git card's tooltip says so.",
+        aliases: ["auto-fetch", "behind", "ahead", "remote", "pull", "sync", "git", "origin"], since: "0.28.0",
+        on: () => autoFetchPrefs.enabled, isDefault: () => autoFetchPrefs.enabled === AUTOFETCH_DEFAULTS.enabled,
+        reset: () => host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: AUTOFETCH_DEFAULTS.enabled }) },
+      { kind: "seg", set: "fetch:every", key: "cc-autofetch", label: "At most every", hint: "How old a count may get before arriving at the pane fetches again.",
+        more: "Nothing is fetched while you are elsewhere; arriving is what triggers it.", aliases: ["interval", "git", "fetch"], since: "0.28.0",
+        dim: () => !autoFetchPrefs.enabled, active: () => String(autoFetchPrefs.everyMs),
+        isDefault: () => autoFetchPrefs.everyMs === AUTOFETCH_DEFAULTS.everyMs,
+        reset: () => host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: AUTOFETCH_DEFAULTS.everyMs }),
         segs: () => AUTOFETCH_EVERY.map((ms) => ({
           value: String(ms),
           label: `${ms / 60_000} min`,
@@ -449,111 +467,183 @@ const SET_TABS: SetTab[] = [
           sub: ms <= 60_000 ? "Freshest; a fetch most times you switch"
             : ms <= 300_000 ? "Fresh enough for a colleague's push"
             : ms <= 900_000 ? "Quiet; a handful of fetches an hour" : "Quietest",
-        })),
-      },
+        })) },
+      // Set from the project's task panel; reviewed and revoked here.
+      { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops", hint: "Projects where a task runs each time an agent finishes a turn.",
+        more: "It runs unfocused and never takes the stage; a failure keeps its pane and offers the output back to the session. Set with ⟲ in a project's task panel, removed with a click here.",
+        aliases: ["run on stop", "hook", "after turn", "test on stop", "task"],
+        summary: () => { const n = Object.keys(stopRules).length; return n ? `${n} rule${n === 1 ? "" : "s"}` : "none"; },
+        lines: () => Object.entries(stopRules).map(([path, r]) => ({ label: `${basename(path)} · ${r.label}`, value: tilde(path) })),
+        on: () => Object.keys(stopRules),
+        segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
+        empty: "No rules yet. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
+      { kind: "seg", set: "dismiss", key: "cc-task-prefs", label: "Dismiss successful runs", hint: "When a passed run's pane closes on its own.",
+        more: "A failed run stays until you close it.", aliases: ["auto close", "finished runs", "task", "green"],
+        active: () => String(taskPrefs.dismissMs), isDefault: () => taskPrefs.dismissMs === DEFAULT_TASK_PREFS.dismissMs,
+        reset: () => applySetting("dismiss", String(DEFAULT_TASK_PREFS.dismissMs)),
+        segs: () => [
+          { value: "0", label: "Never", glyph: "◉", sub: "Keep every finished run" },
+          { value: "20000", label: "After 20s", glyph: "◔", sub: "Unless you're looking at it" },
+          { value: "1", label: "At once", glyph: "○", sub: "Close as soon as it passes" },
+        ] },
     ],
   },
   {
-    id: "guide", label: "Guide", glyph: "◇",
+    id: "tasks", label: "Tasks", glyph: "▶", group: "work", sub: "Discovery, trust, where they run",
     controls: () => [
-      { kind: "guide", label: "Guided tour",
-        hint: "Replay any chapter, any time. Nothing here opens by itself after the first run — when a release adds something worth showing, What's new offers it and you can say no." },
+      { kind: "multi", set: "prov", key: "cc-task-prefs", label: "Scan for task files", hint: "Which task files the Run picker looks for.",
+        aliases: ["justfile", "taskfile", "mise", "npm", "package.json", "makefile", "cargo", "tasks.json", "launch.json"],
+        summary: () => `${taskPrefs.providers.length} of ${ALL_PROVIDERS.length}`,
+        lines: () => ALL_PROVIDERS.map((p) => ({ label: PROVIDER_LABEL[p], value: onOff(taskPrefs.providers.includes(p)) })),
+        on: () => taskPrefs.providers, segs: () => ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })),
+        isDefault: () => sameSet(taskPrefs.providers, DEFAULT_TASK_PREFS.providers),
+        reset: () => { taskPrefs.providers = [...DEFAULT_TASK_PREFS.providers]; saveTaskPrefs(); renderSettings(); } },
+      { kind: "toggle", set: "introspect", key: "cc-task-prefs", label: "Let trusted projects introspect themselves", hint: "Lets a trusted project's own tool list its tasks.",
+        more: "Listing justfile, Taskfile or mise tasks means running that tool, and it can execute code from the folder. Off, those tasks stay undiscovered.",
+        aliases: ["trust", "security", "execute", "evaluate", "safe"],
+        on: () => taskPrefs.introspect, isDefault: () => taskPrefs.introspect === DEFAULT_TASK_PREFS.introspect,
+        reset: () => applySetting("introspect", DEFAULT_TASK_PREFS.introspect ? "1" : "0") },
+      { kind: "multi", set: "untrust", key: "cc-trusted", label: "Trusted projects", hint: "Folders you have trusted by hand; click one to revoke.",
+        more: "Your project folders are trusted because you added them. Anything else asks once.", aliases: ["revoke", "trust", "folder"],
+        summary: () => { const n = explicitlyTrusted().length; return n ? `${n} by hand` : "none by hand"; },
+        lines: () => explicitlyTrusted().map((p) => ({ label: basename(p), value: tilde(p) })),
+        on: () => explicitlyTrusted(),
+        segs: () => explicitlyTrusted().map((p) => ({ value: p, label: basename(p), sub: tilde(p) })),
+        empty: "Nothing trusted by hand yet. Your project folders already are." },
+      { kind: "seg", set: "taskcwd", key: "cc-task-prefs", label: "Working directory", hint: "Where a task runs when several worktrees are open.",
+        more: "A task that declares its own directory keeps it.", aliases: ["cwd", "worktree", "repo root", "directory"],
+        active: () => taskPrefs.cwd, isDefault: () => taskPrefs.cwd === DEFAULT_TASK_PREFS.cwd, reset: () => applySetting("taskcwd", DEFAULT_TASK_PREFS.cwd),
+        segs: () => [
+          { value: "session", label: "Active session", glyph: "▤", sub: "The worktree you're looking at" },
+          { value: "root", label: "Repo root", glyph: "⌂", sub: "Always the main checkout" },
+        ] },
     ],
   },
   {
-    // macOS only, and hidden rather than dimmed elsewhere: nothing on this tab has a
-    // meaning on an OS with no TCC. docs/macos-access.md.
-    id: "privacy", label: "Privacy", glyph: "◫", when: () => IS_MAC,
+    id: "keys", label: "Keys", glyph: "⌨", group: "work", sub: "Every chord, rebindable",
     controls: () => [
-      {
-        kind: "note", label: "macOS permissions",
-        hint: "macOS credits a permission request to the app responsible for the process that made it, and every "
-          + "agent, task and shell runs as a child of Episko. So a prompt naming Episko is usually a session "
-          + "reading something outside its project. Episko needs none of these permissions itself and cannot grant "
-          + "any of them; the settings below open the panes macOS keeps them in.",
-      },
-      {
-        kind: "action", set: "priv:fda", label: "Full disk access", btn: "Open System Settings…",
-        hint: "The only one of these that can be granted in advance, and the only way to end the prompts: macOS has "
-          + "no pane for the app-data ones. Episko itself needs nothing here, and every agent it launches inherits "
-          + "the grant. If Episko is not already in that list, add it with + from Applications.",
-        preview: () => fdaPreview(),
-      },
-      {
-        kind: "action", set: "priv:reset", label: "Denied prompts", btn: "Reset",
-        hint: "A Don't Allow is remembered for that app for good, and there is no pane to take it back in. Reset "
-          + "clears Episko's answers, so the next session that reaches raises the dialog again.",
-      },
-      {
-        kind: "action", set: "priv:scan", label: "Recent permission checks", btn: "Scan the last day",
-        hint: "Reads the system log for the checks made in Episko's name and names the binary that actually reached. "
-          + "A prompt you saw is one of these; most are answered from the system's own cache without asking anyone.",
-        preview: () => asksPreview(),
-      },
+      { kind: "keys", id: "keys", key: "cc-keys", label: "Keyboard shortcuts", hint: "Click a chord and press the one you want.",
+        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this and never change.",
+        aliases: ["keybinding", "hotkey", "chord", "⌘", "rebind", "shortcut", "cmd", "keyboard"],
+        summary: () => {
+          if (!keyPrefs.enabled) return "off";
+          const all = KEY_GROUPS.flatMap((g) => g.actions);
+          const touched = all.filter((id) => !isDefaultBind(keyPrefs.binds, id)).length;
+          return `${all.length} bindings${touched ? ` · ${touched} changed` : ""}`;
+        },
+        lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
+        isDefault: () => isDefaultKeyPrefs(keyPrefs), reset: () => applyKeySetting("resetall") },
     ],
   },
   {
-    id: "diag", label: "Diagnostics", glyph: "◔",
+    // macOS only, and hidden rather than dimmed elsewhere: nothing on it has a meaning on an OS with no TCC (docs/macos-access.md).
+    id: "privacy", label: "Privacy", glyph: "◫", group: "app", sub: "macOS permissions", when: () => IS_MAC, os: "mac",
+    controls: () => [
+      { kind: "note", label: "macOS permissions",
+        hint: "macOS blames whichever app is responsible for a process, and every agent, task and shell here is a child of Episko. So a prompt naming Episko is usually a session reading something outside its project. Episko needs none of these permissions itself and can't grant any; the rows below open the panes macOS keeps them in." },
+      { kind: "action", set: "priv:fda", label: "Full disk access", btn: "Open System Settings…", hint: "The one grant that ends the prompts, and every agent inherits it.",
+        more: "macOS has no pane for the app-data prompts, so this is the only grant that can be made in advance. Episko itself needs nothing here. If it isn't in the list yet, add it with + from Applications.",
+        aliases: ["tcc", "permission", "access data from other apps", "library", "would like to access", "grant"], since: "0.28.0",
+        preview: () => fdaPreview() },
+      { kind: "action", set: "priv:reset", label: "Denied prompts", btn: "Reset", hint: "Takes back a Don't Allow, which macOS otherwise keeps for good.",
+        more: "There is no pane for this. Reset clears Episko's answers, and the next session that reaches raises the dialog again.",
+        aliases: ["don't allow", "tccutil", "undo", "permission"], since: "0.28.0" },
+      { kind: "action", set: "priv:scan", label: "Recent permission checks", btn: "Scan the last day", hint: "Lists the last day's permission checks and which binary made each.",
+        more: "Read from the system log, about three seconds. A prompt you saw is one of these; most are answered from the system's cache without asking.",
+        aliases: ["log show", "which agent", "binary", "audit"], since: "0.28.0",
+        preview: () => asksPreview() },
+    ],
+  },
+  {
+    id: "diag", label: "Diagnostics", glyph: "◔", group: "app", sub: "Weight, scrollback, reload",
     // Recording first: it is the only row that has to be switched on before the day it is needed.
     controls: () => [
-      {
-        kind: "note", label: "Why this tab exists",
-        hint: "Left running for a day with a fleet of panes, the interface can slowly get heavier until it feels sluggish — and a reload fixes it, which also destroys the evidence. Recording leaves a trail in the log file so the next time it happens there is something to read.",
-      },
-      {
-        kind: "toggle", set: "perf:vitals", label: "Record performance vitals",
-        hint: "Samples what the interface is holding — DOM nodes, heap, terminal buffers, the per-session structures — and writes one line per sample into Episko's rolling log, where it survives a crash and a reload. Costs a fraction of a millisecond each time.",
-        on: () => vitalsPrefs.enabled,
-        preview: () => vitalsPreview(),
-      },
-      {
-        kind: "seg", set: "perf:every", label: "Sample every",
-        hint: "How often a reading is taken. Below a minute is mostly noise from whatever turn happens to be running; above a quarter of an hour a fifteen-hour slide lands in too few points to see where it started.",
-        dim: () => !vitalsPrefs.enabled,
-        active: () => String(vitalsPrefs.everyMs),
+      { kind: "toggle", set: "perf:vitals", key: "cc-vitals", label: "Record performance vitals", hint: "Logs what the interface is holding, one line every few minutes.",
+        more: "DOM nodes, heap, terminal buffers, the per-session structures, written to the rolling log where they survive a crash and a reload. After a day with a fleet the interface can get heavier until it feels sluggish, and the reload that fixes it destroys the evidence, so this has to be on before the day it is needed.",
+        aliases: ["leak", "memory", "sluggish", "slow", "heap", "log", "dom nodes", "growth"],
+        on: () => vitalsPrefs.enabled, preview: () => vitalsPreview(), previewLabel: "readings",
+        isDefault: () => vitalsPrefs.enabled === VITALS_DEFAULTS.enabled,
+        reset: () => host.setVitalsPrefs({ ...vitalsPrefs, enabled: VITALS_DEFAULTS.enabled }) },
+      { kind: "seg", set: "perf:every", key: "cc-vitals", label: "Sample every", hint: "How often a reading is taken.",
+        more: "Under a minute is noise from whatever turn is running; over a quarter of an hour a slow slide has too few points to show where it began.",
+        aliases: ["interval", "sampling"], dim: () => !vitalsPrefs.enabled, active: () => String(vitalsPrefs.everyMs),
+        isDefault: () => vitalsPrefs.everyMs === VITALS_DEFAULTS.everyMs,
+        reset: () => host.setVitalsPrefs({ ...vitalsPrefs, everyMs: VITALS_DEFAULTS.everyMs }),
         segs: () => VITALS_EVERY.map((ms) => ({
           value: String(ms),
           label: ms < 3_600_000 ? `${ms / 60_000} min` : `${ms / 3_600_000} h`,
           glyph: ms === 60_000 ? "◕" : ms === 300_000 ? "◑" : "◔",
           sub: ms === 60_000 ? "Finest; four hours in memory" : ms === 300_000 ? "A full day in memory" : "Coarsest; lightest log",
         })) },
-      {
-        kind: "note", label: "Two things that change the weight",
-        hint: "Everything above only watches. These two act — the first on what the app holds from now on, the second on what it is holding right now.",
-      },
-      {
-        kind: "seg", set: "perf:scroll", label: "Terminal scrollback",
-        hint: "Lines of history each pane keeps. Across a fleet this is the largest single thing a long-running Episko holds, and a pane only gives it back when its session ends. Lowering it applies to the panes already open and drops their oldest lines at once.",
-        active: () => String(termScrollback),
+      { kind: "seg", set: "perf:scroll", key: "cc-scrollback", label: "Terminal scrollback", hint: "Lines of history each pane keeps.",
+        more: "Across a fleet this is the biggest thing Episko holds, and a pane only gives it back when its session ends. Lowering it applies to open panes at once.",
+        aliases: ["history", "lines", "buffer", "memory", "xterm"],
+        active: () => String(termScrollback), isDefault: () => termScrollback === SCROLLBACK_DEFAULT, reset: () => host.setScrollback(SCROLLBACK_DEFAULT),
         segs: () => SCROLLBACK_OPTS.map((n) => ({
           value: String(n),
           label: `${n.toLocaleString()} lines`,
           glyph: n === 1000 ? "▁" : n === 4000 ? "▄" : "█",
           sub: n === 1000 ? "Lightest; roughly a screen of recent history" : n === 4000 ? "Half the default" : "The default",
         })) },
-      {
-        kind: "action", set: "perf:reload", label: "Reload the interface", btn: "Reload",
-        hint: "Rebuilds the window from scratch and gives back whatever it had accumulated. No session is lost: Episko itself holds the terminals, and every pane is re-adopted with its scrollback. This is the fix when it has already gone sluggish.",
-      },
-      {
-        kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open",
-        hint: "The webview's own developer tools. Memory takes a heap snapshot you can compare against one from just after a reload; Performance records a profile. This is what turns “something is growing” into a name.",
-      },
+      { kind: "action", set: "perf:reload", label: "Reload the interface", btn: "Reload", hint: "Rebuilds the window; no session is lost.",
+        more: "Episko itself holds the terminals, so every pane comes back with its scrollback. This is the fix once it has gone sluggish.",
+        aliases: ["restart", "refresh", "sluggish", "reset ui"] },
+      { kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open", hint: "The webview's own developer tools.",
+        more: "A heap snapshot compared against one from just after a reload is what turns “something is growing” into a name.",
+        aliases: ["devtools", "console", "heap snapshot", "profile", "inspect"] },
+    ],
+  },
+  {
+    id: "guide", label: "Guide", glyph: "◇", group: "app", sub: "The tour, chapter by chapter",
+    controls: () => [
+      { kind: "guide", id: "tour", key: "cc-tour", label: "Guided tour", hint: "Replay any chapter, any time.",
+        more: "Nothing here opens by itself after the first run. When a release adds something worth showing, What's new offers the chapter and you can say no.",
+        aliases: ["onboarding", "help", "walkthrough", "tutorial", "what's new", "intro"],
+        summary: () => { const st = parseTourState(localStorage.getItem(TOUR_KEY)); const ch = pickerChapters(); return `${ch.filter((c) => isDone(st, c)).length} of ${ch.length} walked`; },
+        lines: () => { const st = parseTourState(localStorage.getItem(TOUR_KEY)); return pickerChapters().map((c) => ({ label: c.name, value: isDone(st, c) ? "walked" : "" })); } },
     ],
   },
 ];
+const attnOrderLabel = () => ATTN_ORDERS.find((o) => o.id === attnPrefs.order)?.label ?? attnPrefs.order;
+
+// Reports with a window of their own (0.26.0): not settings, so outside the count, but the
+// search still answers "usage" and the rail still shows the door.
+const ELSEWHERE: { open: "usage" | "whatsnew"; name: string; hint: string; more: string; aliases: string[] }[] = [
+  { open: "usage", name: "Usage & spend", hint: "A report, so it has a window of its own.",
+    more: "Today's spend by project and session, both limit windows with a forecast, every day so far, every model by name.",
+    aliases: ["usage", "spend", "cost", "money", "limits", "tokens", "model", "forecast", "burn rate", "dollars", "budget", "quota", "5-hour", "7-day", "report", "chart"] },
+  { open: "whatsnew", name: "What's new", hint: "The changelog, release by release.",
+    more: "With the chapter a release offers to walk you through, when there is one.",
+    aliases: ["changelog", "release", "version", "update", "notes", "release notes"] },
+];
 
 export let setTab = "appearance";
+let query = "";                         // the search box, mirrored so a repaint can read it
+const openPanels = new Set<string>();  // folded panels opened by hand; a search hit opens one without touching this
+const openWhy = new Set<string>();
+let spyHold = 0;                        // the spy stands down until then: a rail click is scrolling
+
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
-export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings(); }
+export function openSettings() {
+  $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings();
+  $("setQ").focus(); // typing filters at once
+}
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
-// The scroll is reset, unlike a rail click's: this arrives from somewhere else entirely
-// (a footer popover's quick open, the tour), and landing halfway down a tab nobody
-// scrolled reads as a broken link.
-export function openSettingsOn(tab: string) {
+// A row lands lit, the way a session row lights when it wants you: this arrives from
+// somewhere else (a popover's quick open, the ⑃ dialog, the tour), and landing at the top
+// of a section reads as a broken link. A section id names its own row when one shares it
+// (`keys`), so a quick open at a one-row section lights the row.
+export function openSettingsOn(tab: string, row?: string) {
+  setQuery("");
   setTab = tab;
-  $("setBody").scrollTop = 0;
   openSettings();
+  const body = $("setBody");
+  const hit = body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(row ?? tab)}"]`);
+  const target = hit ?? body.querySelector<HTMLElement>(`.set-sec[data-sec="${CSS.escape(tab)}"]`);
+  if (!target) return;
+  scrollBodyTo(target, hit ? 120 : 0);
+  if (hit) { hit.classList.remove("set-lit"); void hit.offsetWidth; hit.classList.add("set-lit"); }
+  markTab(tab);
 }
 export function closeSettings() {
   // Disarm first: the recorder listens on `window` and would go on swallowing every chord.
@@ -561,19 +651,152 @@ export function closeSettings() {
   $("setDlg").classList.remove("show");
   dropScrim();
 }
+function setQuery(v: string) {
+  query = v;
+  const q = $("setQ") as HTMLInputElement;
+  if (q.value !== v) q.value = v;
+}
+
+const tabsShown = () => SET_TABS.filter((t) => t.when?.() ?? true);
+const rowId = (c: SetControl) => c.id ?? ("set" in c ? c.set : c.kind);
+const groupLabel = (id: SetGroupId) => SET_GROUPS.find((g) => g.id === id)?.label ?? id;
+const isChanged = (c: SetControl) => (c.isDefault ? !c.isDefault() : false);
+const isNew = (c: SetControl) => !!c.since && host.versionUnread(c.since);
+const activeLabel = (c: SetControl) => ("active" in c && "segs" in c ? c.segs().find((s) => s.value === c.active())?.label : undefined);
+
+function searchRow(t: SetTab, c: SetControl): SearchRow {
+  return {
+    id: rowId(c), tab: t.id, tabLabel: t.label, group: t.group, groupLabel: groupLabel(t.group),
+    label: c.label, hint: c.hint ?? "", more: c.more, value: c.summary?.() ?? activeLabel(c),
+    options: "segs" in c ? c.segs().map((s) => s.label) : undefined,
+    lines: c.lines?.().map((l) => `${l.label} ${l.value}`),
+    aliases: c.aliases, key: c.key, changed: isChanged(c), isNew: isNew(c), mac: t.os === "mac",
+  };
+}
+const doorRow = (d: (typeof ELSEWHERE)[number]): SearchRow => ({
+  id: d.open, tab: "elsewhere", tabLabel: "Elsewhere", group: "else", groupLabel: "Elsewhere",
+  label: d.name, hint: d.hint, more: d.more, aliases: d.aliases, changed: false, isNew: false, mac: false,
+});
+
+/** Every setting, for ⌘K: the label, where it lives, and how to land on it. */
+export function settingsIndex(): { label: string; tab: string; row: string; sub: string }[] {
+  return tabsShown().flatMap((t) => t.controls().filter((c) => c.kind !== "note")
+    .map((c) => ({ label: c.label, tab: t.id, row: rowId(c), sub: `Setting · ${t.label}` })));
+}
+
+// One page: every section in order, each under a sticky header, and the rail a table of
+// contents. Typing filters the rows in place; the sections that keep none disappear and the
+// rail shows a count per section instead of its dot.
 export function renderSettings() {
   if (!settingsOpen()) return;
-  const tabs = SET_TABS.filter((t) => t.when?.() ?? true);
-  $("setTabs").innerHTML = tabs.map((t) =>
-    `<button class="set-tab ${t.id === setTab ? "on" : ""}" data-settab="${t.id}"><span class="set-tglyph">${t.glyph}</span>${esc(t.label)}</button>`
-  ).join("");
-  const tab = tabs.find((t) => t.id === setTab) || tabs[0];
-  // Preserve scroll across the rebuild; the Worktrees grid scrolls.
+  const q = parseQuery(query);
+  const searching = isSearching(q);
+  const tabs = tabsShown();
+  const controls = new Map(tabs.map((t) => [t.id, t.controls()]));
+  const counts = new Map<string, number>();
+  let shown = 0, secs = 0, fuzzyAny = false, html = "";
+  for (const t of tabs) {
+    const kept: [SetControl, SearchHit | null][] = [];
+    for (const c of controls.get(t.id)!) {
+      if (!searching) { kept.push([c, null]); continue; }
+      if (c.kind === "note") continue;
+      const h = matchRow(searchRow(t, c), q);
+      if (h) { kept.push([c, h]); fuzzyAny ||= h.fuzzy; }
+    }
+    const n = kept.filter(([c]) => c.kind !== "note").length;
+    counts.set(t.id, n);
+    if (searching && !n) continue;
+    shown += n; secs++;
+    html += `<section class="set-sec" data-sec="${t.id}"><div class="set-sech"><h3>${esc(t.label)}</h3>`
+      + `<span class="set-secsub">${esc(t.sub)}</span>${t.os ? `<span class="set-tag">macOS only</span>` : ""}`
+      + `<span class="set-secgrp">${esc(groupLabel(t.group))}</span></div>`
+      + kept.map(([c, h]) => renderSetControl(c, h, q.words)).join("") + `</section>`;
+  }
+  const doors = searching ? ELSEWHERE.filter((d) => matchRow(doorRow(d), q)) : [];
+  if (doors.length) {
+    html += `<section class="set-sec" data-sec="elsewhere"><div class="set-sech"><h3>Elsewhere</h3>`
+      + `<span class="set-secsub">Reports with a window of their own</span></div>` + doors.map((d) => doorHtml(d, q.words)).join("") + `</section>`;
+  }
   const body = $("setBody");
-  const sc = body.scrollTop;
-  body.innerHTML = tab.controls().map(renderSetControl).join("");
+  const sc = body.scrollTop; // preserved across the rebuild; a stepper press must not jump the page
+  body.innerHTML = html || `<div class="set-none">Nothing matches <b>${esc(query.trim())}</b>.<p>Fewer words, or ${
+    SEARCH_FILTERS.map((f) => `<button class="set-chip" data-setq="${f}">${f}</button>`).join(" ")}.</p></div>`;
   body.scrollTop = sc;
+  // The rail: a count per section while searching, a dot where something is changed.
+  const tabHtml = (t: SetTab) => {
+    const n = counts.get(t.id) ?? 0;
+    const chg = !searching && controls.get(t.id)!.some(isChanged);
+    return `<button class="set-tab${t.id === setTab ? " on" : ""}${searching && !n ? " zero" : ""}" data-settab="${t.id}">`
+      + `<span class="set-tglyph">${t.glyph}</span>${esc(t.label)}`
+      + (searching ? `<span class="set-tn">${n}</span>` : chg ? `<span class="set-tdot" title="Something here is changed"></span>` : "") + `</button>`;
+  };
+  $("setTabs").innerHTML = SET_GROUPS.map((g) => `<div class="set-grp">${esc(g.label)}</div>${tabs.filter((t) => t.group === g.id).map(tabHtml).join("")}`).join("")
+    + `<div class="set-grp">Elsewhere</div>` + ELSEWHERE.map((d) =>
+      `<button class="set-tab set-door" data-setgo="${d.open}" title="Opens in its own window"><span class="set-tglyph">↗</span>${esc(d.name)}</button>`).join("");
+  const all = [...controls.values()].flat().filter((c) => c.kind !== "note");
+  const n = { "@changed": all.filter(isChanged).length, "@new": all.filter(isNew).length,
+    "@mac": tabs.filter((t) => t.os === "mac").flatMap((t) => controls.get(t.id)!.filter((c) => c.kind !== "note")).length };
+  $("setChips").innerHTML = SEARCH_FILTERS.filter((f) => f !== "@mac" || IS_MAC).map((f) =>
+    `<button class="set-chip${query.includes(f) ? " on" : ""}" data-setq="${f}">${f} <b>${n[f]}</b></button>`).join("");
+  $("setCount").textContent = searching ? "" : String(all.length);
+  $("setStatus").innerHTML = !searching ? "" : `<b>${shown}</b> setting${shown === 1 ? "" : "s"} in <b>${secs}</b> section${secs === 1 ? "" : "s"}`
+    + (doors.length ? ` · <b>${doors.length}</b> elsewhere` : "")
+    + (fuzzyAny ? ` · <span class="set-fz">no whole-word match; closest by letters</span>` : "")
+    + (q.unknown.length ? ` · <span class="set-fz">unknown ${esc(q.unknown.join(", "))}</span>` : "");
+  $("setDlg").classList.toggle("searching", searching);
+  $("setSearch").classList.toggle("has", query.length > 0);
+  spy();
 }
+function doorHtml(d: (typeof ELSEWHERE)[number], words: string[]): string {
+  return `<div class="set-row" data-setrow="${d.open}"><div class="set-inline"><div class="set-itxt">`
+    + `<div class="set-glabel">${highlight(d.name, words)}<span class="set-tag">own window</span></div>`
+    + `<div class="set-hint">${highlight(d.hint, words)}</div><div class="set-more set-more-on">${highlight(d.more, words)}</div>`
+    + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ↗</button></div></div></div>`;
+}
+// The rail follows the scroll: the last header at or above the top edge, with one header's
+// height of slack, as the diff overlay's index rail does.
+function spy() {
+  if (Date.now() < spyHold) return;
+  const body = $("setBody");
+  const top = body.getBoundingClientRect().top;
+  let cur: string | null = null;
+  for (const sec of body.querySelectorAll<HTMLElement>(".set-sec")) {
+    if (sec.getBoundingClientRect().top - top <= 44) cur = sec.dataset.sec!;
+  }
+  if (cur && cur !== "elsewhere") markTab(cur);
+}
+function markTab(id: string) {
+  setTab = id;
+  for (const b of $("setTabs").querySelectorAll<HTMLElement>("[data-settab]")) b.classList.toggle("on", b.dataset.settab === id);
+}
+function scrollBodyTo(el: HTMLElement, offset: number) {
+  const body = $("setBody");
+  spyHold = Date.now() + 700;
+  body.scrollTo({ top: el.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - offset, behavior: "smooth" });
+}
+function goToTab(id: string) {
+  const sec = $("setBody").querySelector<HTMLElement>(`.set-sec[data-sec="${CSS.escape(id)}"]`);
+  if (sec) scrollBodyTo(sec, 0);
+  markTab(id);
+}
+function openDoor(which: string) {
+  closeSettings();
+  if (which === "usage") host.openUsage(); else host.openWhatsNew();
+}
+function findControl(id: string): SetControl | undefined {
+  for (const t of tabsShown()) for (const c of t.controls()) if (rowId(c) === id) return c;
+  return undefined;
+}
+// ↓/↑ walk the visible rows from the search box; ↵ hands focus to the row's control.
+function moveCursor(dir: 1 | -1) {
+  const rows = [...$("setBody").querySelectorAll<HTMLElement>(".set-row")];
+  if (!rows.length) return;
+  const at = rows.findIndex((r) => r.classList.contains("cur"));
+  const next = rows[at < 0 ? (dir > 0 ? 0 : rows.length - 1) : Math.max(0, Math.min(rows.length - 1, at + dir))];
+  rows.forEach((r) => r.classList.toggle("cur", r === next));
+  next.scrollIntoView({ block: "nearest" });
+}
+
 // Demo roster for the grouping previews: static, and self-contained so the real sidebar
 // renderers stay out of a settings pane.
 const WT_DEMO_HUE: Record<string, string> = { dev: "#818cf8", "agent-1": "#2dd4bf", "agent-2": "#f472b6" };
@@ -1100,95 +1323,93 @@ function titlePreviewHtml(raw: string, out: string): string {
   </div>`;
 }
 
-function renderSetControl(c: SetControl): string {
-  const head = `<div class="set-glabel">${esc(c.label)}</div>${c.hint ? `<div class="set-hint">${esc(c.hint)}</div>` : ""}`;
-  if (c.kind === "note") return `<div class="set-group set-note">${head}</div>`;
-  if (c.kind === "wtpreview") {
-    return `<div class="set-group">${head}${renderWtPreview(c.active())}</div>`;
+// One row shape for every kind: text left (the label, one sentence, the folded why), the
+// control right, and under it whatever the control folds (a panel, a preview, the cards).
+function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[]): string {
+  if (c.kind === "note") {
+    return `<div class="set-note"><div class="set-glabel">${highlight(c.label, words)}</div><div class="set-hint">${highlight(c.hint, words)}</div></div>`;
   }
-  if (c.kind === "peek") {
-    // The governing switch rides the label row and the panel sits under it; attn, revive,
-    // sound and keys share the shape.
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${peekPrefs.enabled ? " on" : ""}" data-setpeek="toggle" role="switch"`
-      + ` aria-checked="${peekPrefs.enabled}"></button></div>${renderPeekControl()}</div>`;
+  const id = rowId(c);
+  const open = openPanels.has(id) || (hit?.lines.length ?? 0) > 0;
+  const fold = (label: string) =>
+    `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">▾</span></button>`;
+  const sw = (on: boolean, attr: string) => `<button class="sw${on ? " on" : ""}" ${attr} role="switch" aria-checked="${on}"></button>`;
+  let ctl = "", panel = "", always = false;
+  switch (c.kind) {
+    case "peek": ctl = sw(peekPrefs.enabled, `data-setpeek="toggle"`) + fold(c.summary!()); panel = renderPeekControl(); break;
+    case "attn": ctl = sw(attnPrefs.highlight, `data-setattn="highlight"`) + fold(c.summary!()); panel = renderAttnControl(); break;
+    case "title": ctl = sw(titlePrefs.scrub, `data-settitle="toggle"`) + fold(c.summary!()); panel = renderTitleControl(); break;
+    case "revive": ctl = sw(revivePrefs.enabled, `data-setrevive="toggle"`) + fold(c.summary!()); panel = renderReviveControl(); break;
+    case "sound": ctl = sw(soundPrefs.enabled, `data-setsound="toggle"`) + fold(c.summary!()); panel = renderSoundControl(); break;
+    case "keys": ctl = sw(keyPrefs.enabled, `data-setkey="toggle"`) + fold(c.summary!()); panel = renderKeysControl(); break;
+    case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
+    case "wtpreview": ctl = fold(c.summary!()); panel = renderWtPreview(c.active()); break;
+    case "font":
+      ctl = `<div class="set-font">
+        <button class="set-fbtn" data-setfont="-0.5" title="Smaller" aria-label="Smaller">−</button>
+        <span class="set-fval mono">${termFontSize}px</span>
+        <button class="set-fbtn" data-setfont="0.5" title="Larger" aria-label="Larger">+</button></div>`;
+      break;
+    case "toggle": {
+      const on = c.on();
+      ctl = (c.preview ? fold(c.previewLabel ?? "preview") : "")
+        + `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button>`;
+      if (c.preview && open) panel = c.preview();
+      break;
+    }
+    case "action":
+      // An action's preview is its answer (the grant held, the checks found): never folded.
+      ctl = `<button class="set-abtn${c.danger ? " danger" : ""}" data-set="${c.set}" data-val="1">${esc(c.btn)}</button>`;
+      if (c.preview) { panel = c.preview(); always = true; }
+      break;
+    case "multi": {
+      const on = c.on();
+      const segs = c.segs();
+      ctl = fold(c.summary?.() ?? String(on.length));
+      panel = segs.length
+        ? `<div class="chips">${segs.map((s) =>
+            `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
+            + `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`
+        : `<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div>`;
+      break;
+    }
+    case "seg": {
+      const active = c.active();
+      const segs = c.segs();
+      // A picker with a logo keeps its cards (the agent); everything else is one row of buttons.
+      if (segs.some((s) => s.logo)) { ctl = fold(segs.find((s) => s.value === active)?.label ?? active); panel = segCards(c.set, segs, active); }
+      else ctl = segInline(c, segs, active);
+      break;
+    }
   }
-  if (c.kind === "attn") {
-    // The switch is the highlight's, not the whole control's: queue order and clearing are choices.
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${attnPrefs.highlight ? " on" : ""}" data-setattn="highlight" role="switch"`
-      + ` aria-checked="${attnPrefs.highlight}"></button></div>${renderAttnControl()}</div>`;
-  }
-  if (c.kind === "title") {
-    // Same shape as `peek` and `sound`: the switch that governs the panel rides the
-    // label row, the panel it governs sits under it, because they are one decision.
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${titlePrefs.scrub ? " on" : ""}" data-settitle="toggle" role="switch"`
-      + ` aria-checked="${titlePrefs.scrub}"></button></div>${renderTitleControl()}</div>`;
-  }
-  if (c.kind === "guide") {
-    return `<div class="set-group">${head}${renderGuideControl()}</div>`;
-  }
-  if (c.kind === "revive") {
-    // Here the switch governs the whole control, so renderReviveControl dims itself and says so.
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${revivePrefs.enabled ? " on" : ""}" data-setrevive="toggle" role="switch"`
-      + ` aria-checked="${revivePrefs.enabled}"></button></div>${renderReviveControl()}</div>`;
-  }
-  if (c.kind === "sound") {
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${soundPrefs.enabled ? " on" : ""}" data-setsound="toggle" role="switch"`
-      + ` aria-checked="${soundPrefs.enabled}"></button></div>${renderSoundControl()}</div>`;
-  }
-  if (c.kind === "keys") {
-    return `<div class="set-group"><div class="set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="sw${keyPrefs.enabled ? " on" : ""}" data-setkey="toggle" role="switch"`
-      + ` aria-checked="${keyPrefs.enabled}"></button></div>${renderKeysControl()}</div>`;
-  }
-  if (c.kind === "font") {
-    return `<div class="set-group">${head}<div class="set-font">
-      <button class="set-fbtn" data-setfont="-0.5" title="Smaller" aria-label="Smaller">−</button>
-      <span class="set-fval mono">${termFontSize}px</span>
-      <button class="set-fbtn" data-setfont="0.5" title="Larger" aria-label="Larger">+</button>
-      <button class="set-freset" data-setfont="reset">Reset</button>
-    </div></div>`;
-  }
-  if (c.kind === "toggle") {
-    const on = c.on();
-    // Label and hint must be one block, or the row lays them out as two flex siblings of the switch.
-    const inner = `<div class="set-itxt">${head}</div>`
-      + `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button>`;
-    // With a preview the row becomes a child and the preview sits under it.
-    return c.preview
-      ? `<div class="set-group"><div class="set-inline">${inner}</div>${c.preview()}</div>`
-      : `<div class="set-group set-inline">${inner}</div>`;
-  }
-  if (c.kind === "action") {
-    // A toggle's row shape with a button where the switch would be, previews included.
-    const inner = `<div class="set-itxt">${head}</div>`
-      + `<button class="set-abtn${c.danger ? " danger" : ""}" data-set="${c.set}" data-val="1">${esc(c.btn)}</button>`;
-    return c.preview
-      ? `<div class="set-group"><div class="set-inline">${inner}</div>${c.preview()}</div>`
-      : `<div class="set-group set-inline">${inner}</div>`;
-  }
-  if (c.kind === "multi") {
-    const on = c.on();
-    const segs = c.segs();
-    if (!segs.length) return `<div class="set-group">${head}<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div></div>`;
-    const opts = segs.map((s) =>
-      `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}" title="${esc(s.sub || s.label)}">` +
-        `${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("");
-    return `<div class="set-group">${head}<div class="chips">${opts}</div></div>`;
-  }
-  const active = c.active();
-  const dim = c.dim?.() ? " set-dim" : "";
-  const opts = c.segs().map((s) =>
-    `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${c.set}" data-val="${esc(s.value)}">` +
-      `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>` +
-      `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`
-  ).join("");
-  return `<div class="set-group${dim}">${head}<div class="seg">${opts}</div></div>`;
+  const chg = isChanged(c);
+  const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">⟲</button>` : "";
+  const why = c.more ? `<button class="set-why" data-setwhy="${id}" aria-expanded="${openWhy.has(id)}">why</button>` : "";
+  const cur = c.kind === "seg" ? c.segs().find((s) => s.value === c.active())?.sub : undefined;
+  const seen = new Set<string>();
+  const matched = hit?.why.filter((w) => { const k = w.word + (w.line ?? w.field); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 3) ?? [];
+  const showPanel = !!panel && (always || open);
+  return `<div class="set-row${chg ? " set-chg" : ""}${c.dim?.() ? " set-dim" : ""}${open ? " set-open" : ""}${openWhy.has(id) ? " set-why-open" : ""}" data-setrow="${id}">
+    <div class="set-inline"><div class="set-itxt">
+      <div class="set-glabel">${highlight(c.label, words)}${isNew(c) ? `<span class="set-tag set-tag-new">new</span>` : ""}</div>
+      ${c.hint ? `<div class="set-hint">${highlight(c.hint, words)}${why}</div>` : ""}
+      ${cur ? `<div class="set-cur">${esc(cur)}</div>` : ""}
+      ${c.more ? `<div class="set-more">${highlight(c.more, words)}</div>` : ""}
+      ${matched.length ? `<div class="set-matched">matched ${matched.map((w) => `“<b>${esc(w.word)}</b>” · ${esc(w.line ?? w.field)}`).join(" · ")}</div>` : ""}
+    </div><div class="set-ctl">${reset}${ctl}</div></div>
+    ${showPanel ? `<div class="set-panel">${panel}</div>` : ""}</div>`;
 }
+function segInline(c: SetControl & { kind: "seg" }, segs: SetSeg[], active: string): string {
+  return `<div class="set-seg" role="radiogroup" aria-label="${escAttr(c.label)}">${segs.map((s) =>
+    `<button class="set-segb${s.value === active ? " on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub ?? s.label)}" aria-pressed="${s.value === active}">${esc(s.label)}</button>`).join("")}</div>`;
+}
+function segCards(set: string, segs: SetSeg[], active: string): string {
+  return `<div class="seg">${segs.map((s) =>
+    `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${set}" data-val="${escAttr(s.value)}">`
+    + `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>`
+    + `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`).join("")}</div>`;
+}
+
 // ---- Settings > Diagnostics: the growth series, drawn ----
 // The verdict is always shown, the table only when it has rows. Each row spells its kind:
 // a `level` reading high is information, a `growth` reading high is a suspect. Only the
@@ -1461,9 +1682,33 @@ function setFontFromSettings(cmd: string) {
 $("setBtn").addEventListener("click", () => settingsOpen() ? closeSettings() : openSettings());
 $("setClose").addEventListener("click", closeSettings);
 $("setTabs").addEventListener("click", (e) => {
-  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-settab]");
-  if (b) { setTab = b.dataset.settab!; renderSettings(); }
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-settab],[data-setgo]");
+  if (!b) return;
+  if (b.dataset.settab) goToTab(b.dataset.settab); else openDoor(b.dataset.setgo!);
 });
+// The chips toggle their @ word in and out of the query; the box keeps focus so typing goes on.
+function toggleFilter(f: string) {
+  const words = query.split(/\s+/).filter(Boolean);
+  setQuery(words.includes(f) ? words.filter((w) => w !== f).join(" ") : [...words, f].join(" "));
+  renderSettings();
+  $("setQ").focus();
+}
+$("setChips").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-setq]");
+  if (b) toggleFilter(b.dataset.setq!);
+});
+$("setQ").addEventListener("input", (e) => { query = (e.target as HTMLInputElement).value; renderSettings(); });
+$("setQ").addEventListener("keydown", (e) => {
+  // Esc clears first and closes on the second press; stopped here, or main.ts closes at once.
+  if (e.key === "Escape" && query) { e.preventDefault(); e.stopPropagation(); setQuery(""); renderSettings(); }
+  else if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); moveCursor(e.key === "ArrowDown" ? 1 : -1); }
+  else if (e.key === "Enter") {
+    const ctl = $("setBody").querySelector<HTMLElement>(".set-row.cur .set-ctl button");
+    if (ctl) { e.preventDefault(); ctl.focus(); }
+  }
+});
+$("setQClear").addEventListener("click", () => { setQuery(""); renderSettings(); $("setQ").focus(); });
+$("setBody").addEventListener("scroll", spy, { passive: true });
 $("setBody").addEventListener("click", (e) => {
   const f = (e.target as HTMLElement).closest<HTMLElement>("[data-setfont]");
   if (f) { setFontFromSettings(f.dataset.setfont!); return; }
@@ -1485,6 +1730,16 @@ $("setBody").addEventListener("click", (e) => {
   if (sd) { applySoundSetting(sd.dataset.setsound!); return; }
   const kb = (e.target as HTMLElement).closest<HTMLElement>("[data-setkey]");
   if (kb) { applyKeySetting(kb.dataset.setkey!); return; }
+  const wy = (e.target as HTMLElement).closest<HTMLElement>("[data-setwhy]");
+  if (wy) { const id = wy.dataset.setwhy!; openWhy.has(id) ? openWhy.delete(id) : openWhy.add(id); renderSettings(); return; }
+  const fo = (e.target as HTMLElement).closest<HTMLElement>("[data-setfold]");
+  if (fo) { const id = fo.dataset.setfold!; openPanels.has(id) ? openPanels.delete(id) : openPanels.add(id); renderSettings(); return; }
+  const rs = (e.target as HTMLElement).closest<HTMLElement>("[data-setreset]");
+  if (rs) { findControl(rs.dataset.setreset!)?.reset?.(); renderSettings(); return; }
+  const go = (e.target as HTMLElement).closest<HTMLElement>("[data-setgo]");
+  if (go) { openDoor(go.dataset.setgo!); return; }
+  const qc = (e.target as HTMLElement).closest<HTMLElement>("[data-setq]");
+  if (qc) { toggleFilter(qc.dataset.setq!); return; }
   const o = (e.target as HTMLElement).closest<HTMLElement>("[data-set]");
   if (o) applySetting(o.dataset.set!, o.dataset.val!);
 });

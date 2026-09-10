@@ -58,6 +58,7 @@ Private artifacts on claude.ai; the URL is the live copy, this list is the index
 | --- | --- |
 | Project start screen (fixed layout) | https://claude.ai/code/artifact/fdc21958-f2b0-41d2-a836-a02a7573663f |
 | Project dashboard (configurable widgets — rejected as too busy) | https://claude.ai/code/artifact/83f10da5-59f2-4a4f-9677-243933582c6d |
+| Settings rework (one page, a search, folded hints; built in 0.28) | https://claude.ai/code/artifact/e7f41275-b768-4b16-915d-e21cf5aa6ae9 |
 | Oversee the fleet (concept page) | https://claude.ai/code/artifact/fca71414-3cce-4d0d-ac6d-3c2c654822fa |
 | Limit forecast | https://claude.ai/code/artifact/d0a6e8ab-e740-447f-b0bb-10f355224df9 |
 | Usage & spend | https://claude.ai/code/artifact/a0c01607-668d-437a-9fc4-25a3f67d4134 |

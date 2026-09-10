@@ -214,7 +214,7 @@ The manifest rules it also enforces, one per way this feature has gone wrong:
 - the permission modes the guide plans around must exist in the provider registry;
   each mode's neutral `asks` fact controls only how long the prompt step waits, while
   the later card/no-card pair follows the observed permission latch;
-- **"Settings › Sounds" has to name a real tab**: the copy is joined to `SET_TABS` in
+- **"Settings › Attention" has to name a real section**: the copy is joined to `SET_TABS` in
   `settings.ts` exactly the way an anchor is joined to `index.html`, and nothing else
   checks it. Card copy that confidently names a window the app does not have is the same
   bug as a dead anchor, and it is the one a reader notices first.

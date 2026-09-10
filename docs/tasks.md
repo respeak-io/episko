@@ -57,7 +57,7 @@ portable-pty hands the program to `CreateProcessW` as `lpApplicationName` (PE ex
 
 ## Run on stop
 
-One rule per project (`cc-task-onstop`, keyed by root), set with `⟲`, reviewed in Settings › Tasks: when an agent finishes a turn in this folder, run this.
+One rule per project (`cc-task-onstop`, keyed by root), set with `⟲`, reviewed in Settings › On its own: when an agent finishes a turn in this folder, run this.
 
 - **Unattended means unattended**: `stopRuleBlocked` refuses a background task (it would pile up one server per turn), one whose `${input:…}` still needs a person (defaults and `optional` answer themselves, since the launch goes through `prefillInputs`), and a blocked one.
 - **The run must not take the stage**: `launchTask` `focus: false` for this path only; an unfocused pane starts at 24×80 until first activated.

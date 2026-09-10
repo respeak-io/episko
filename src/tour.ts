@@ -181,7 +181,7 @@ export const CHAPTERS: Chapter[] = [
         title: "What you are not being asked",
         body: "No permission card appeared for that command: the provider considered it safe or its configured policy "
           + `answered automatically. When an integrated provider does stop, the row goes <b class="g-attn">pink ◆</b>, `
-          + "an urgent sound plays, and <b>Allow</b> / <b>Deny</b> / <b>In terminal</b> appear here. Claude's starting mode is in Settings › Sessions.",
+          + "an urgent sound plays, and <b>Allow</b> / <b>Deny</b> / <b>In terminal</b> appear here. Claude's starting mode is in Settings › Launching.",
       },
       {
         anchor: "#projects", needs: ["rail"],
@@ -219,18 +219,18 @@ export const CHAPTERS: Chapter[] = [
         // Two steps for two gestures: a step that opens a window hands over to one inside it.
         anchor: "#setBtn",
         title: "Everything else is in here",
-        body: "Sounds, permission modes, keys, worktrees, and every day's usage — one window, and it is where the rest "
-          + "of this chapter lives.",
+        body: "Sounds, permission modes, keys, worktrees: one page, searchable, and it is where the rest of this "
+          + "chapter lives.",
         wait: "Open Settings",
         done: (w) => isOpen(w, "settings"),
       },
       {
-        anchor: "[data-settab=\"sounds\"]", dynamic: true,
+        anchor: "[data-settab=\"attention\"]", dynamic: true,
         title: "Tune what you hear",
         body: "Every event has its own tone and its own switch, previewable in place. <b>Four ship switched off</b> — "
           + "anything that fires on routine activity turns a fleet into a fruit machine.",
-        wait: "Open the Sounds tab",
-        done: (w) => w.settingsTab === "sounds",
+        wait: "Open the Attention section",
+        done: (w) => w.settingsTab === "attention",
       },
       {
         anchor: "#setBody",
@@ -407,7 +407,7 @@ export const CHAPTERS: Chapter[] = [
       },
       {
         anchor: "#setBtn",
-        title: "There is a tab about it now",
+        title: "There is a section about it now",
         body: "Settings › Privacy, macOS only. Nothing in Episko can grant these permissions — the system asks the "
           + "human, always — but everything you can do about them is in one place.",
         wait: "Open Settings",
@@ -418,7 +418,7 @@ export const CHAPTERS: Chapter[] = [
         title: "Three things it offers",
         body: "Whether Episko holds <b>full disk access</b>, a button to the System Settings pane that grants it, and "
           + "a way to bring back a prompt you denied by mistake — macOS caches that answer and never asks twice.",
-        wait: "Open the Privacy tab",
+        wait: "Open the Privacy section",
         done: (w) => w.settingsTab === "privacy",
       },
       {

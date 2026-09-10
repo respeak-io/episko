@@ -86,7 +86,7 @@ import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
-import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
+import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
@@ -98,7 +98,7 @@ import {
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
-  closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsOpen,
+  closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsIndex, settingsOpen,
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, renderUsage, usageOpen } from "./usagedlg";
@@ -202,6 +202,7 @@ setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles, openUsage,
+  settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
 });
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
@@ -225,6 +226,8 @@ setSettingsHost({
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
+  // The rail's doors, and whether a release intro has been read (`@new`).
+  openUsage, openWhatsNew: () => openChangelog(), versionUnread,
   // macOS access: a probe, a pane we can only point at, and what the system log kept.
   fullDiskAccess: () => invoke<boolean>("full_disk_access"),
   openPrivacyPane: (pane) => invoke("open_privacy_pane", { pane }),

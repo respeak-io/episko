@@ -49,7 +49,7 @@ Every coding conversation is now `Sess.kind === "agent"`. `provider` is a stable
 
 **Which agent runs is a preference, not a per-launch question.** It is one of three facts about a launch beside `termEngine` (where the terminal opens) and that provider's entry in `permissionModes` (how it starts), and it is stored and read exactly like them:
 
-- **Global**: `defaultAgent` / `cc-agent`, Settings › Sessions, listed *first* of the three because it is the outermost — what runs, then where, then how. Claude Code is the default **value**, no longer a hardcoded choice.
+- **Global**: `defaultAgent` / `cc-agent`, Settings › Launching, listed *first* of the three because it is the outermost — what runs, then where, then how. Claude Code is the default **value**, no longer a hardcoded choice.
 - **Per project**: `agentByProject` / `cc-agent-by-project`, a `Record<colorKey, id>` set from the project's own context menu (`Agent · X`). Keyed by repo root, so every worktree of a repo inherits one answer — which is why the worktree menu names the agent but has no picker of its own; a per-checkout picker would be setting something other than what it appeared to. Personal, in `localStorage`, deliberately **not** `.episko/` — a colleague opening the same repo keeps whichever agent they drive.
 - **`pickAgent`** (./types, tested) resolves the two with a plain cascade: override → default → Claude, skipping any id that is not **installed** — `agentInstalled`, not merely "present in the list", since the list now includes agents this machine hasn't got. That skip is the whole reason it is a function: both prefs are ids in `localStorage` and the probe re-runs every startup, so without it uninstalling an agent breaks ⌘N in every project pinned to it. A dead *override* drops to the default rather than straight to Claude — the plain cascade every settings system has.
 - **`launch()` resolves the provider before it builds anything.** A resume carries `resumeProvider`, so changing the default cannot reopen a Codex thread in Claude (or vice versa). Dashboard issue dispatch follows the same project preference; its claim is released from provider-neutral `pty-exit`, so no provider-specific lifecycle hook is required.
@@ -171,7 +171,7 @@ A resumed pane starts blind: its questions are in the provider's transcript, not
 
 ## Reviving a session the API killed (`revive.ts`, `tickRevive` in `actions.ts`)
 
-Ships **off** (`cc-revive`, Settings › Sessions). Switched on, it types a carry-on into a
+Ships **off** (`cc-revive`, Settings › On its own). Switched on, it types a carry-on into a
 session whose turn ended in `StopFailure` — the overnight case, where the cost of a
 thirty-second outage is eight hours of a session sitting at its prompt. `revive.ts` is
 pure and holds every rule; `tickRevive` is a 10s poll that applies what it returns and

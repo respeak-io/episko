@@ -155,7 +155,7 @@ export function resolvePermission(id: string, behavior: string) {
   renderAll();
 }
 
-// Settings › Sessions owns this now (`data-set="wtgroup"`); the console stopgap that stood
+// Settings › Sidebar owns this now (`data-set="wtgroup"`); the console stopgap that stood
 // in for it before that window shipped is gone.
 export function setWtGroup(m: WtGroup) {
   setWtGroupState(m);
@@ -206,7 +206,7 @@ export function setAttnPrefs(p: AttnPrefs) {
   setAttnPrefsState(p);
   localStorage.setItem("cc-attn", JSON.stringify(attnPrefs));
   renderAll();
-  renderSettings(); // the preview row in Settings › Sessions replays at the new timing
+  renderSettings(); // the preview row in Settings › Attention replays at the new timing
 }
 
 // renderSettings only: nothing outside the Sounds tab shows this; ./chime reads soundPrefs live.

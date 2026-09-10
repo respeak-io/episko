@@ -365,13 +365,22 @@
       </div>
     </div>
 
+    <!-- One page: the rail is a table of contents that follows the scroll and, while the box
+         has text, a match count per section (./settings, docs/settings.md). -->
     <div class="setdlg" id="setDlg" role="dialog" aria-modal="true" aria-label="Settings">
       <nav class="set-rail">
-        <div class="set-title">Settings</div>
+        <div class="set-title">Settings<span class="set-count" id="setCount"></span></div>
+        <div class="set-search" id="setSearch">
+          <span class="set-sic" aria-hidden="true">⌕</span>
+          <input id="setQ" type="search" placeholder="Search settings" autocomplete="off" spellcheck="false" aria-label="Search settings">
+          <button class="set-sclr" id="setQClear" type="button" aria-label="Clear the search">✕</button>
+        </div>
+        <div class="set-chips" id="setChips"></div>
         <div class="set-tabs" id="setTabs"></div>
       </nav>
       <section class="set-pane">
         <button class="set-x" id="setClose" title="Close (Esc)" aria-label="Close settings">✕</button>
+        <div class="set-status" id="setStatus"></div>
         <div class="set-body" id="setBody"></div>
       </section>
     </div>

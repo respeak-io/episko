@@ -26,6 +26,8 @@ export const changelogOpen = () => $("clDlg").classList.contains("show");
 
 // Read fresh, not cached: a stale copy would leave the footer handle lit after opening.
 const seenVersions = () => parseSeen(localStorage.getItem(SEEN), localStorage.getItem(SEEN_LEGACY));
+/** Settings' `@new`: a version What's new has not been opened for yet. */
+export const versionUnread = (v: string) => !seenVersions().includes(v);
 
 function syncHandle() {
   const unread = !!version && !seenVersions().includes(version);

@@ -437,7 +437,7 @@ describe("Quick start under a mode that answers for you", () => {
 describe("the Leave it running predicates", () => {
   const ch = CHAPTERS.find((c) => c.id === "unattended")!;
 
-  it("waits for the Sounds tab by an id settings.ts actually ships", () => {
+  it("waits for the Attention section by an id settings.ts actually ships", () => {
     // Two gestures, two steps: the hole has to move onto the tab, or the user is asked to
     // click something the veil has just darkened.
     const open = ch.steps.find((st) => st.title.startsWith("Everything else is in here"))!;
@@ -445,8 +445,8 @@ describe("the Leave it running predicates", () => {
     expect(open.done!(W0)).toBe(false);
     expect(open.done!({ ...W0, open: ["settings"] })).toBe(true);
     expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "appearance" })).toBe(false);
-    expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "sounds" })).toBe(true);
-    expect(tab.anchor).toBe('[data-settab="sounds"]');
-    expect(SET_TABS.sounds).toBe("Sounds");
+    expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "attention" })).toBe(true);
+    expect(tab.anchor).toBe('[data-settab="attention"]');
+    expect(SET_TABS.attention).toBe("Attention");
   });
 });
