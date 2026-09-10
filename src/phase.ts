@@ -9,7 +9,7 @@ import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
 import { mergeRl, onRlUpdate, rl } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
-import { clearPermissionState, pendingPermissionIds } from "./permissions";
+import { clearPermissionState, pendingPermissionIds, releaseAnswered } from "./permissions";
 
 // Run-on-stop needs task discovery and panes (main.ts), so it arrives as a seam.
 let onTurnEnd: (s: Sess) => void = () => {};
@@ -35,6 +35,11 @@ export function recordPrompt(s: Sess, raw: unknown) {
 // A tool hook this soon after `Stop` is the ended turn's straggler, not the next turn:
 // hooks are unwaited curls, so a turn's last PostToolUse can land after its Stop.
 export const STRAGGLER_MS = 2_000;
+
+// How long a `thinking` pane may show no completed API request before it is not thinking. Long
+// on purpose: a single Opus answer can take minutes to finish, and it is the only thing between
+// this rule and calling a live turn dead.
+export const TURN_STALL_MS = 180_000;
 
 export function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
 export function toolArg(tool: string, input: any): string {
@@ -159,8 +164,10 @@ export function abbr(s: string, n = 160): string {
 }
 export function permCmd(data: any): string {
   const inp = data.tool_input || {};
+  // AskUserQuestion keeps the ask in `questions`; without it the card names a tool and says nothing.
+  const asked = Array.isArray(inp.questions) ? inp.questions[0]?.question : undefined;
   const detail = inp.command ?? inp.file_path ?? inp.path ?? inp.url ?? inp.pattern ??
-    inp.prompt ?? inp.question ?? inp.query ?? inp.description;
+    inp.prompt ?? inp.question ?? asked ?? inp.query ?? inp.description;
   if (typeof detail === "string" && detail.trim()) return abbr(detail);
   if (typeof data.message === "string" && data.message.trim()) return abbr(data.message);
   return "";
@@ -183,6 +190,12 @@ export function clearPending(s: Sess) {
     resolveProviderPermission(s, id, "terminal").catch(() => {});
   }
   clearPermissionState(s);
+}
+// The same release for one finished call's ask, leaving every other queued ask standing.
+function releasePending(s: Sess, tool: string, cmd: string) {
+  for (const id of releaseAnswered(s, tool, cmd)) {
+    resolveProviderPermission(s, id, "terminal").catch(() => {});
+  }
 }
 
 // Decides done vs. error in one place: the idle Notification fires after a 529 too. A clean end
@@ -243,7 +256,9 @@ export function applyHook(s: Sess, data: any) {
       else openActivity(s, tool, arg, String(data.tool_use_id ?? ""), inputText(tool, data.tool_input), descText(tool, data.tool_input));
       // Workflow returns ~2s before Stop, so the record exists before Stop would paint done.
       if (tool === "Workflow") startFanout(s, data.tool_input);
-      if (!bg()) { setPhase(s, "working"); clearPending(s); newTurn(s); s.curTool = tool; s.curArg = arg; }
+      // No clearPending here: tools run in parallel and a subagent's hooks arrive under the
+      // parent's id, so the NEXT call is never proof this one's ask was answered (./permissions).
+      if (!bg()) { setPhase(s, "working"); newTurn(s); s.curTool = tool; s.curArg = arg; }
       break;
     }
     // A failure counts as touched too: a compound command may have run its git half first.
@@ -258,6 +273,8 @@ export function applyHook(s: Sess, data: any) {
       // Fed from Post: the file set needs `tool_response` (create vs. update) and the tally
       // would double-count on Pre. A failed call counts as a call but adds no file.
       bumpTally(s.tally, tool);
+      // The call reporting back is what retires the ask that gated it, however it was answered.
+      releasePending(s, tool, permCmd(data));
       if (ev === "PostToolUse") applyTouch(s.files, tool, data.tool_input, data.tool_response, Date.now());
       // `transcript_path` rides the record: /clear, /compact and /resume mint a new session dir (BgServer).
       if (ev === "PostToolUse") applyBg(s.servers, tool, data.tool_input, data.tool_response, data.transcript_path, Date.now());
@@ -324,6 +341,17 @@ export function applyStatusline(s: Sess, data: any) {
   // Claude's running total, and one conversation can have two live panes (see costDelta).
   if (typeof cost === "number") { addUsage(costDelta(s.resumeId || s.id, cost, true, s.id), s); s.cost = cost; pushHist(s.costHist, cost); }
   const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
+  const api = data.cost?.total_api_duration_ms;
+  if (typeof api === "number" && api !== s.apiMs) { s.apiMs = api; s.apiMsSince = Date.now(); }
+  // Claude fires UserPromptSubmit the moment you press Enter, so a prompt cancelled with Esc —
+  // or edited and re-sent — leaves the pane `thinking` with no hook that will ever correct it
+  // and no idle Notification either (text back in the composer is not an idle REPL). Both clocks
+  // must be stale: the API's is flat through any single in-flight request too, so on its own it
+  // would call a long text-only turn dead (docs/architecture.md).
+  const now = Date.now();
+  if (s.phase === "thinking" && now - s.phaseSince >= TURN_STALL_MS && now - s.apiMsSince >= TURN_STALL_MS) {
+    setPhase(s, "idle");
+  }
   const r5 = data.rate_limits?.five_hour;
   if (r5) {
     const p = rl.h5, pr = rl.h5Reset;

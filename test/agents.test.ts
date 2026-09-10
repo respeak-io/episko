@@ -12,7 +12,7 @@ const sess = (id = "pane-1"): Sess => ({
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
   pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], attnAt: 0, seenAt: 0,
   agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-  model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, tokenUsage: null, rateLimits: [], rateLimitScope: null,
+  model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
   lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],

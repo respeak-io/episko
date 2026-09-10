@@ -36,6 +36,19 @@ Markers: `+` new · `~` changed · `!` fixed
 + **Branches GitHub protects wear the same lock**, read from the repo's own branch list
   beside the merged pull requests. It guards the remote ref alone, which is why Episko keeps
   its own list for the local half, and why that lock cannot be lifted from here.
+! **A pending ask survives the next tool call.** Claude runs tools in parallel and a
+  subagent's hooks arrive under its parent's id, so whichever call landed a second later was
+  retiring a question nobody had answered: the ◆ went out about a second after it appeared,
+  the *needs you* badge never counted it, and Allow/Deny left the inspector while the pane
+  sat on the amber working dot. An ask is retired now by the call it gated reporting back, or
+  by the turn ending — never by an unrelated one starting.
+! **A prompt you cancelled no longer leaves the pane pulsing.** Claude fires its submit hook the
+  moment you press Enter, so a prompt then cancelled with Esc — or edited and re-sent — left a
+  finished session showing the amber working dot with nothing that could ever end it (measured at
+  fourteen minutes). Three minutes of a `thinking` pane with no API request completing now reads
+  as *idle*, which is what it is: nothing is asked of you, your text is in the composer.
++ **A question card says what is being asked.** `AskUserQuestion` keeps its ask in a list the
+  card did not read, so it named a tool and showed nothing under it.
 
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,

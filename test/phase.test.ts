@@ -9,7 +9,7 @@ import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
-  permCmd, pushHist, riskLevel, setOnPrompt, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg,
+  permCmd, pushHist, riskLevel, setOnPrompt, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg, TURN_STALL_MS,
 } from "../src/phase";
 import { DETAIL_CAP } from "../src/toolio";
 
@@ -30,7 +30,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [],
     kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
@@ -162,6 +162,58 @@ describe("applyHook — the lifecycle state machine", () => {
     it("calls the backend only when something is actually held", () => {
       clearPending(sess({ pendingPermId: null }));
       expect(ipc).toHaveLength(0);
+    });
+
+    // Claude runs tools in parallel and a SUBAGENT's hooks arrive under the parent's id, so the
+    // next call says nothing about this one's ask. Clearing on it took the badge out ~1s after
+    // it appeared, and answered the still-held request as "terminal" with it.
+    it("survives another call's PreToolUse, however many arrive", () => {
+      const s = sess({
+        pendingPermId: "perm-1", attention: "permission: AskUserQuestion", pendingCmd: "Who updates?",
+        pendingPermissions: [{ id: "perm-1", tool: "AskUserQuestion", command: "Who updates?", risk: "med" }],
+      });
+      for (const tool of ["Bash", "Read", "Grep"]) {
+        hook(s, "PreToolUse", { tool_name: tool, tool_input: { command: "ls" }, tool_use_id: `t-${tool}` });
+        hook(s, "PostToolUse", { tool_name: tool, tool_input: { command: "ls" }, tool_use_id: `t-${tool}` });
+      }
+      expect(s).toMatchObject({ attention: "permission: AskUserQuestion", pendingCmd: "Who updates?" });
+      expect(ipc).toHaveLength(0);
+    });
+    it("retires an ask when the call it gated reports back, and releases it", () => {
+      const s = sess({
+        pendingPermId: "perm-1", attention: "permission: AskUserQuestion", pendingCmd: "Who updates?",
+        pendingPermissions: [{ id: "perm-1", tool: "AskUserQuestion", command: "Who updates?", risk: "med" }],
+      });
+      hook(s, "PostToolUse", {
+        tool_name: "AskUserQuestion", tool_use_id: "t-1",
+        tool_input: { questions: [{ question: "Who updates?" }] },
+      });
+      expect(s).toMatchObject({ attention: null, pendingCmd: "", pendingPermId: null });
+      expect(ipc).toEqual([{ cmd: "resolve_permission", args: { id: "perm-1", behavior: "terminal" } }]);
+    });
+    it("retires only the ask that call answers, never a sibling still waiting", () => {
+      const s = sess({
+        pendingPermId: "perm-1", attention: "permission: Bash", pendingCmd: "git push",
+        pendingPermissions: [
+          { id: "perm-1", tool: "Bash", command: "git push", risk: "high" },
+          { id: "perm-2", tool: "Edit", command: "app.ts", risk: "med" },
+        ],
+      });
+      hook(s, "PostToolUse", { tool_name: "Bash", tool_input: { command: "git push" }, tool_use_id: "t-1" });
+      expect(s.pendingPermissions).toEqual([{ id: "perm-2", tool: "Edit", command: "app.ts", risk: "med" }]);
+      expect(s).toMatchObject({ attention: "permission: Edit", pendingCmd: "app.ts" });
+      expect(ipc).toEqual([{ cmd: "resolve_permission", args: { id: "perm-1", behavior: "terminal" } }]);
+    });
+    // A denial never runs the tool, so PostToolUseFailure has to retire it too.
+    it("retires it on a failure of the same call", () => {
+      const s = sess({ attention: "permission: Bash", pendingCmd: "git push" });
+      hook(s, "PostToolUseFailure", { tool_name: "Bash", tool_input: { command: "git push" }, error: "denied" });
+      expect(s).toMatchObject({ attention: null, pendingCmd: "" });
+    });
+    it("leaves a scalar-only ask standing when a different call reports back", () => {
+      const s = sess({ attention: "permission: Bash", pendingCmd: "git push" });
+      hook(s, "PostToolUse", { tool_name: "Read", tool_input: { file_path: "/w/a.ts" } });
+      expect(s).toMatchObject({ attention: "permission: Bash", pendingCmd: "git push" });
     });
   });
 
@@ -898,6 +950,44 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
     }
   });
 
+  // Claude fires UserPromptSubmit at Enter, so a prompt cancelled with Esc (or edited and
+  // re-sent) leaves `thinking` with no hook and no idle Notification to correct it — measured at
+  // 14 minutes of a pulsing amber dot on a session that had finished.
+  describe("a turn that never started", () => {
+    const stale = (o: Partial<Sess> = {}) => sess({
+      phase: "thinking", phaseSince: NOW_MS - TURN_STALL_MS, apiMs: 5_000, apiMsSince: NOW_MS - TURN_STALL_MS, ...o,
+    });
+    it("calls a thinking pane idle once neither clock has moved", () => {
+      const s = stale();
+      applyStatusline(s, { cost: { total_api_duration_ms: 5_000 } });
+      expect(s).toMatchObject({ phase: "idle", phaseSince: NOW_MS });
+    });
+    it("says nothing while a request is still completing", () => {
+      // The API clock only moves as a request FINISHES, so one that has been in flight the whole
+      // window looks identical to a dead turn from the statusLine alone — hence the phase clock.
+      const s = stale({ phaseSince: NOW_MS - 20_000 });
+      applyStatusline(s, { cost: { total_api_duration_ms: 5_000 } });
+      expect(s.phase).toBe("thinking");
+    });
+    it("says nothing while the API clock is still moving", () => {
+      const s = stale();
+      applyStatusline(s, { cost: { total_api_duration_ms: 9_000 } });
+      expect(s).toMatchObject({ phase: "thinking", apiMs: 9_000, apiMsSince: NOW_MS });
+    });
+    it("leaves a stalled working pane alone", () => {
+      // A tool call that never reported back is a different failure; guessing at it here would
+      // be the second "is this really running?" test the sound rule warns about.
+      const s = stale({ phase: "working" });
+      applyStatusline(s, { cost: { total_api_duration_ms: 5_000 } });
+      expect(s.phase).toBe("working");
+    });
+    it("needs no API figure at all to eventually give up", () => {
+      const s = stale({ apiMs: null, apiMsSince: NOW_MS - TURN_STALL_MS });
+      applyStatusline(s, {});
+      expect(s.phase).toBe("idle");
+    });
+  });
+
   it("fills model, context and duration when they are present", () => {
     const s = sess();
     applyStatusline(s, {
@@ -1054,6 +1144,8 @@ describe("permCmd — what the pending ask is actually about", () => {
   it("takes the most meaningful input field", () => {
     expect(permCmd({ tool_input: { command: "git push --force" } })).toBe("git push --force");
     expect(permCmd({ tool_input: { question: "Proceed?" } })).toBe("Proceed?");
+    // AskUserQuestion's ask is a list, and it is also the join that retires the request.
+    expect(permCmd({ tool_input: { questions: [{ question: "Who updates?" }] } })).toBe("Who updates?");
   });
   it("falls back to the notification message, then to nothing", () => {
     expect(permCmd({ message: "Claude needs permission" })).toBe("Claude needs permission");
