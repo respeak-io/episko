@@ -251,3 +251,30 @@ export function uDelta(cur: number, prev: number): string {
   const pct = Math.round((cur - prev) / prev * 100);
   return `<span class="u-delta"><span class="u-arw">${pct >= 0 ? "▲" : "▼"}</span><b>${Math.abs(pct)}%</b>&nbsp;vs&nbsp;prev</span>`;
 }
+
+// ---------- macOS permission checks (Settings › Privacy) ----------
+// TCC's own service names, spelled as the dialogs and System Settings spell them. Anything
+// unlisted is un-camelled rather than dropped: a name we don't know is still a name.
+const TCC_LABEL: Record<string, string> = {
+  SystemPolicyAppData: "Data from other apps",
+  SystemPolicyAllFiles: "Full disk access",
+  SystemPolicyDesktopFolder: "Desktop folder",
+  SystemPolicyDocumentsFolder: "Documents folder",
+  SystemPolicyDownloadsFolder: "Downloads folder",
+  SystemPolicyNetworkVolumes: "Network volumes",
+  SystemPolicyRemovableVolumes: "Removable volumes",
+  SystemPolicySysAdminFiles: "Administrative files",
+  AppleEvents: "Controlling other apps",
+  DeveloperTool: "Developer tools",
+  ListenEvent: "Input monitoring",
+  PostEvent: "Sending keystrokes",
+  Accessibility: "Accessibility",
+  ScreenCapture: "Screen recording",
+  Microphone: "Microphone",
+  Camera: "Camera",
+  AddressBook: "Contacts",
+  Calendar: "Calendar",
+  Photos: "Photos",
+};
+export const tccLabel = (service: string) =>
+  TCC_LABEL[service] ?? service.replace(/([a-z])([A-Z])/g, "$1 $2");

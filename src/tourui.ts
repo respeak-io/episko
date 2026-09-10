@@ -10,9 +10,13 @@ import { hasSessionState } from "./types";
 import { providerPermissionMode } from "./providers";
 import {
   type Chapter, CHAPTERS, chapterKey, isDone, parseTourState, pickerChapters, planFor,
-  recordDone, shouldOfferPicker, shouldOfferRelease, stepApplies, stepBlocked, stepSatisfied,
-  TOUR_KEY, type TourActId, type TourNeed, type TourState, type TourStep, type TourWorld,
+  recordDone, setTourPlatform, shouldOfferPicker, shouldOfferRelease, stepApplies, stepBlocked,
+  stepSatisfied, TOUR_KEY, type TourActId, type TourNeed, type TourState, type TourStep,
+  type TourWorld,
 } from "./tour";
+
+// A chapter about an OS dialog is nothing on an OS that raises none; ./tour stays platform-free.
+setTourPlatform(IS_MAC);
 
 /** Things the tour triggers but does not own. Set from main.ts; see setTourHost. */
 export interface TourHost {

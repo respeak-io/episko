@@ -99,6 +99,7 @@ import {
 } from "./taskui";
 import {
   closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsOpen,
+  type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, renderUsage, usageOpen } from "./usagedlg";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
@@ -224,6 +225,11 @@ setSettingsHost({
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
+  // macOS access: a probe, a pane we can only point at, and what the system log kept.
+  fullDiskAccess: () => invoke<boolean>("full_disk_access"),
+  openPrivacyPane: (pane) => invoke("open_privacy_pane", { pane }),
+  resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
+  privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
 });
 setTourHost({
   pasteToActive: (text) => {

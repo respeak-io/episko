@@ -4,7 +4,7 @@
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import {
-  basename, cleanTitle, esc, escAttr, tilde, titleExtra, TITLE_EXTRA_MAX,
+  basename, cleanTitle, esc, escAttr, tccLabel, tilde, titleExtra, TITLE_EXTRA_MAX,
   type TitlePrefs,
 } from "./format";
 import { agentCapabilitySummary, type Engine } from "./types";
@@ -92,6 +92,12 @@ export interface SettingsHost {
   setVitalsPrefs: (p: VitalsPrefs) => void;
   setOutlinePrefs: (p: OutlinePrefs) => void;
   setScrollback: (lines: number) => void;
+  // macOS permission dialogs. This module reaches no IPC, so the probe, the pane and the
+  // log scan all arrive as promises; none of them grants anything (docs/macos-access.md).
+  fullDiskAccess: () => Promise<boolean>;
+  openPrivacyPane: (pane: string) => Promise<void>;
+  resetAppDataPrompts: () => Promise<void>;
+  privacyAsks: () => Promise<PrivacyAsk[]>;
   // Not settings, hence no cc- key: an inspector, a reload and a reading of ./debug's ring.
   openDevtools: () => void;
   reloadUi: () => void;
@@ -137,6 +143,8 @@ let host: SettingsHost = {
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
   setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
+  resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
@@ -166,8 +174,9 @@ type SetControl =
   | { kind: "multi"; set: string; label: string; hint?: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm
   // dialog's red.
-  | { kind: "action"; set: string; label: string; hint?: string; btn: string; danger?: boolean };
-interface SetTab { id: string; label: string; glyph: string; controls: () => SetControl[] }
+  | { kind: "action"; set: string; label: string; hint?: string; btn: string; danger?: boolean; preview?: () => string };
+// `when`: a tab about an OS the app is not running on is worse than no tab.
+interface SetTab { id: string; label: string; glyph: string; when?: () => boolean; controls: () => SetControl[] }
 
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
@@ -452,6 +461,38 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
+    // macOS only, and hidden rather than dimmed elsewhere: nothing on this tab has a
+    // meaning on an OS with no TCC. docs/macos-access.md.
+    id: "privacy", label: "Privacy", glyph: "◫", when: () => IS_MAC,
+    controls: () => [
+      {
+        kind: "note", label: "macOS permissions",
+        hint: "macOS credits a permission request to the app responsible for the process that made it, and every "
+          + "agent, task and shell runs as a child of Episko. So a prompt naming Episko is usually a session "
+          + "reading something outside its project. Episko needs none of these permissions itself and cannot grant "
+          + "any of them; the settings below open the panes macOS keeps them in.",
+      },
+      {
+        kind: "action", set: "priv:fda", label: "Full disk access", btn: "Open System Settings…",
+        hint: "The only one of these that can be granted in advance, and the only way to end the prompts: macOS has "
+          + "no pane for the app-data ones. Episko itself needs nothing here, and every agent it launches inherits "
+          + "the grant. If Episko is not already in that list, add it with + from Applications.",
+        preview: () => fdaPreview(),
+      },
+      {
+        kind: "action", set: "priv:reset", label: "Denied prompts", btn: "Reset",
+        hint: "A Don't Allow is remembered for that app for good, and there is no pane to take it back in. Reset "
+          + "clears Episko's answers, so the next session that reaches raises the dialog again.",
+      },
+      {
+        kind: "action", set: "priv:scan", label: "Recent permission checks", btn: "Scan the last day",
+        hint: "Reads the system log for the checks made in Episko's name and names the binary that actually reached. "
+          + "A prompt you saw is one of these; most are answered from the system's own cache without asking anyone.",
+        preview: () => asksPreview(),
+      },
+    ],
+  },
+  {
     id: "diag", label: "Diagnostics", glyph: "◔",
     // Recording first: it is the only row that has to be switched on before the day it is needed.
     controls: () => [
@@ -504,7 +545,7 @@ const SET_TABS: SetTab[] = [
 
 export let setTab = "appearance";
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
-export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); renderSettings(); }
+export function openSettings() { $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings(); }
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
 // The scroll is reset, unlike a rail click's: this arrives from somewhere else entirely
 // (a footer popover's quick open, the tour), and landing halfway down a tab nobody
@@ -522,10 +563,11 @@ export function closeSettings() {
 }
 export function renderSettings() {
   if (!settingsOpen()) return;
-  $("setTabs").innerHTML = SET_TABS.map((t) =>
+  const tabs = SET_TABS.filter((t) => t.when?.() ?? true);
+  $("setTabs").innerHTML = tabs.map((t) =>
     `<button class="set-tab ${t.id === setTab ? "on" : ""}" data-settab="${t.id}"><span class="set-tglyph">${t.glyph}</span>${esc(t.label)}</button>`
   ).join("");
-  const tab = SET_TABS.find((t) => t.id === setTab) || SET_TABS[0];
+  const tab = tabs.find((t) => t.id === setTab) || tabs[0];
   // Preserve scroll across the rebuild; the Worktrees grid scrolls.
   const body = $("setBody");
   const sc = body.scrollTop;
@@ -1122,9 +1164,12 @@ function renderSetControl(c: SetControl): string {
       : `<div class="set-group set-inline">${inner}</div>`;
   }
   if (c.kind === "action") {
-    // A toggle's row shape with a button where the switch would be.
-    return `<div class="set-group set-inline"><div class="set-itxt">${head}</div>`
-      + `<button class="set-abtn${c.danger ? " danger" : ""}" data-set="${c.set}" data-val="1">${esc(c.btn)}</button></div>`;
+    // A toggle's row shape with a button where the switch would be, previews included.
+    const inner = `<div class="set-itxt">${head}</div>`
+      + `<button class="set-abtn${c.danger ? " danger" : ""}" data-set="${c.set}" data-val="1">${esc(c.btn)}</button>`;
+    return c.preview
+      ? `<div class="set-group"><div class="set-inline">${inner}</div>${c.preview()}</div>`
+      : `<div class="set-group set-inline">${inner}</div>`;
   }
   if (c.kind === "multi") {
     const on = c.on();
@@ -1171,6 +1216,61 @@ function vitalsPreview(): string {
     + `<div class="sv-foot">${d.samples} samples over ${esc(fmtSpanShort(d.spanMs))} · the full series is in episko.log, one line per sample behind <span class="mono">vitals</span></div></div>`;
 }
 
+// ---- Settings > Privacy: what macOS was asked, and by what ----
+// `by` is the binary that actually reached, the one fact the dialog itself never shows.
+export interface PrivacyAsk { at: string; service: string; by: string }
+
+// `null` is "not looked yet", which is not "no". Both readings arrive from the host and
+// repaint; neither is stored, since either can be false by the time you read it again.
+let fdaHeld: boolean | null = null;
+let asks: PrivacyAsk[] | null = null;
+let scanning = false;
+
+/** Re-probe on open: a grant given in System Settings lands while this window is shut. */
+export function refreshAccess() {
+  if (!IS_MAC) return;
+  void host.fullDiskAccess().then((ok) => { fdaHeld = ok; renderSettings(); });
+}
+
+function fdaPreview(): string {
+  const txt = fdaHeld === null
+    ? "Checking\u2026"
+    : fdaHeld
+      ? "Episko holds full disk access, so these dialogs stay quiet \u2014 for it and for everything it launches."
+      : "Episko does not hold full disk access. Nothing is broken: a session denied one of these gets a refusal on a folder it had no business in.";
+  return `<div class="set-vitals"><div class="sv-verdict">${esc(txt)}</div></div>`;
+}
+
+function asksPreview(): string {
+  const head = `<div class="set-vitals"><div class="sv-verdict">`;
+  if (scanning) return `${head}Reading the log\u2026</div></div>`;
+  if (!asks) return `${head}Nothing read yet. The scan covers the last 24 hours and takes a few seconds.</div></div>`;
+  if (!asks.length) return `${head}Nothing asked in Episko's name in the last 24 hours.</div></div>`;
+  const rows = asks.slice(0, 12).map((a) =>
+    `<tr><td class="mono">${esc(a.at.slice(5, 16))}</td><td>${esc(tccLabel(a.service))}</td>`
+    + `<td class="mono" title="${escAttr(a.by)}">${esc(basename(a.by))}</td></tr>`).join("");
+  const more = asks.length > 12 ? ` \u00b7 ${asks.length - 12} older not shown` : "";
+  return `${head}${asks.length} check${asks.length === 1 ? "" : "s"} in the last 24 hours${more}</div>`
+    + `<table class="sv-tbl"><thead><tr><th>When</th><th>Checked</th><th>By</th></tr></thead><tbody>${rows}</tbody></table>`
+    + `<div class="sv-foot">The <b>By</b> column is the binary that actually reached \u2014 an agent, something it ran, or Episko itself.</div></div>`;
+}
+
+function resetPrompts() {
+  host.resetAppDataPrompts()
+    .then(() => toast("macOS will ask again the next time a session reaches"))
+    .catch((e) => toast(String(e)));
+}
+
+function scanAsks() {
+  if (scanning) return;
+  scanning = true;
+  renderSettings();
+  host.privacyAsks()
+    .then((rows) => { asks = rows; })
+    .catch((e) => { asks = []; toast(String(e)); })
+    .finally(() => { scanning = false; renderSettings(); });
+}
+
 function applySetting(set: string, val: string) {
   if (set === "theme") host.setTheme(val as "dark" | "light");
   else if (set === "engine") host.setEngine(val as Engine);
@@ -1202,6 +1302,9 @@ function applySetting(set: string, val: string) {
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
   else if (set === "perf:every") host.setVitalsPrefs({ ...vitalsPrefs, everyMs: +val });
   else if (set === "perf:scroll") host.setScrollback(+val);
+  else if (set === "priv:fda") { void host.openPrivacyPane("fulldisk").catch((e) => toast(String(e))); return; }
+  else if (set === "priv:reset") { resetPrompts(); return; }
+  else if (set === "priv:scan") { scanAsks(); return; }
   else if (set === "perf:reload") { void host.reloadUi(); return; }
   else if (set === "perf:devtools") { host.openDevtools(); return; }
   else if (set === "untrust") untrustProject(val);
