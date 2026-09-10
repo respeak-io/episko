@@ -413,7 +413,7 @@ const SET_TABS: SetTab[] = [
       { kind: "attn", id: "attn", key: "cc-attn", label: "When a session wants you", hint: "How a session tells you it needs you.",
         more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the ⌂ badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
         aliases: ["badge", "highlight", "needs you", "notify", "notification", "tray", "your turn"],
-        summary: () => `${attnPrefs.highlight ? "highlight" : "no highlight"} · ${attnOrderLabel().toLowerCase()} · ${attnPrefs.clearOnOpen ? "clears on open" : "stays"}`,
+        summary: () => `${onOff(attnPrefs.highlight)} · ${attnOrderLabel().toLowerCase()} · ${attnPrefs.clearOnOpen ? "clears on open" : "stays"}`,
         lines: () => [
           { label: "Fades over", value: `${(attnPrefs.highlightMs / 1000).toFixed(1)}s` }, { label: "Queue order", value: attnOrderLabel() },
           { label: "Clear it when you open the session", value: onOff(attnPrefs.clearOnOpen) },

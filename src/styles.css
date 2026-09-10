@@ -1579,7 +1579,8 @@ select.in-ctl { cursor: pointer; }
 .set-tab:hover { background: var(--surface); color: var(--text); }
 .set-tab.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); }
 .set-tglyph { flex: none; width: 16px; text-align: center; font-size: 12px; opacity: .9; }
-.set-pane { position: relative; min-width: 0; min-height: 0; display: flex; }
+/* A column: the status line sits above the body, never beside it. */
+.set-pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .set-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; }
 .set-body::-webkit-scrollbar { width: 10px; }
 .set-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
@@ -1615,19 +1616,20 @@ select.in-ctl { cursor: pointer; }
 .set-chip:hover, .set-chip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 .set-tabs { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
 .set-grp { font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); padding: 10px 8px 4px; }
-.set-tab { width: 100%; padding: 6px 8px; }
+.set-tab { width: 100%; padding: 5px 8px; }
 .set-tab.zero { opacity: .32; }
 .set-tn { margin-left: auto; font: 600 9.5px var(--font-mono); color: var(--muted-2); }
 .set-tab.on .set-tn { color: var(--accent-ink); }
 .set-tdot { margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-ink); }
-.set-status { display: none; padding: 12px 52px 0 20px; font: 11px var(--font-mono); color: var(--muted-2); }
+.set-status { display: none; flex: none; padding: 12px 52px 0 20px; font: 11px var(--font-mono); color: var(--muted-2); }
 .setdlg.searching .set-status { display: block; }
 .set-status b { color: var(--text); font-weight: 600; }
 .set-fz { color: var(--st-working); }
 .set-body { padding: 4px 18px 28px 20px; gap: 0; }
 .set-sec { margin-bottom: 8px; }
-/* Sticky, and clear of the ✕ in the corner; the group label answers "where am I" at any scroll. */
-.set-sech { position: sticky; top: 0; z-index: 2; display: flex; align-items: baseline; gap: 8px; padding: 12px 34px 7px 0; margin-bottom: 4px; border-bottom: 1px solid var(--hair); background: linear-gradient(180deg, color-mix(in srgb, var(--panel) 98%, transparent) 82%, transparent); }
+/* Sticky, and clear of the ✕ in the corner; the group label answers "where am I" at any scroll.
+   Solid: a fade to transparent let the row underneath show through on WebKit. */
+.set-sech { position: sticky; top: 0; z-index: 3; display: flex; align-items: baseline; gap: 8px; padding: 12px 34px 7px 0; margin-bottom: 4px; border-bottom: 1px solid var(--hair); background: var(--panel); }
 .set-sech h3 { margin: 0; font-size: 13px; font-weight: 750; letter-spacing: -.01em; }
 .set-secsub { font-size: 11px; color: var(--muted-2); }
 .set-secgrp { margin-left: auto; font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
