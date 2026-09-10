@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc, fmtClock, fmtDur,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -589,5 +589,18 @@ describe("ageBucket — the sheet's time dividers", () => {
       seen = i;
     }
     expect(seen).toBe(order.length - 1);
+  });
+});
+
+describe("tccLabel", () => {
+  it("spells a service the way macOS spells it", () => {
+    expect(tccLabel("SystemPolicyAppData")).toBe("Data from other apps");
+    expect(tccLabel("DeveloperTool")).toBe("Developer tools");
+  });
+
+  it("still names a service it has never heard of", () => {
+    // The row exists to say what was checked; a blank cell would lose the only fact it has.
+    expect(tccLabel("SomeNewService")).toBe("Some New Service");
+    expect(tccLabel("Photos")).toBe("Photos");
   });
 });

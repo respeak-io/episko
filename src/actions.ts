@@ -12,7 +12,7 @@ import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
-import { renderSettings } from "./settings";
+import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
@@ -446,6 +446,8 @@ export function setWindowFocused(v: boolean) {
   if (v === winFocused) return;
   setWinFocusedState(v);
   applyFx();
+  // Coming back from System Settings is the one way the access probe goes stale.
+  if (v && settingsOpen()) refreshAccess();
 }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector; on the dashboard it collapses to an icon

@@ -13,6 +13,19 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Settings › Privacy**, on macOS. Those *"Episko would like to access data from other
+  apps"* dialogs name Episko because macOS blames whichever app is *responsible* for a
+  process, and every agent, task and shell here is a child of ours — so the tab says what
+  the dialog means, whether Episko holds full disk access, and what granting it would hand
+  to every agent it launches. Nothing in the app can grant a permission; the buttons open
+  the pane and get out of the way.
++ **A denied prompt can be taken back.** macOS remembers a *Don't Allow* per app that was
+  read and never asks twice, and offers no pane to undo it. *Denied prompts › Reset* clears
+  Episko's answers.
++ **What macOS checked, on demand.** One pass over the system log lists every permission
+  check made in Episko's name in the last day and names the binary that actually reached —
+  an agent, something it ran, or the app itself. The dialog never shows you that.
+
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,
 and a project's icon can be an emoji.

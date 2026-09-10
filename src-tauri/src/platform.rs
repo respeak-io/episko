@@ -915,6 +915,163 @@ pub(crate) fn read_legacy_localstorage() -> Result<std::collections::HashMap<Str
     }
 }
 
+// ---------- what macOS asks in Episko's name ----------
+// TCC keys every prompt to the *responsible* process, which for anything a pane spawns is
+// Episko: an agent reading another app's data raises a dialog naming us. Full disk access
+// is the only grant a user can hand over in advance (docs/macos-access.md).
+
+/// Whether Episko holds Full Disk Access. `TCC.db` is the probe: it is gated on exactly
+/// that grant, refused with EPERM rather than a prompt, and — being an attempt — is also
+/// what lists the app in the pane `open_privacy_pane` opens.
+#[tauri::command]
+pub(crate) fn full_disk_access() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let db = std::path::Path::new(&home_dir())
+            .join("Library/Application Support/com.apple.TCC/TCC.db");
+        std::fs::File::open(db).is_ok()
+    }
+    // Nothing to hold, so nothing to report as missing.
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// A whitelist rather than a passthrough: this is a URL scheme, reached from a settings row.
+#[cfg(target_os = "macos")]
+fn privacy_pane_url(pane: &str) -> Option<&'static str> {
+    match pane {
+        "fulldisk" => {
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        }
+        _ => None,
+    }
+}
+
+/// Open System Settings on a privacy pane. macOS grants nothing on request — a button can
+/// only take you to the switch.
+#[tauri::command]
+pub(crate) fn open_privacy_pane(pane: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let url = privacy_pane_url(&pane).ok_or_else(|| format!("unknown pane: {pane}"))?;
+        sys_command("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("open System Settings: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(format!("no privacy panes on this OS: {pane}"))
+    }
+}
+
+/// Bring the prompts back after a *Don't Allow*: macOS caches that answer per accessed app
+/// and never asks again, and there is no pane to undo it in. `tccutil` needs no privileges
+/// for the user's own store.
+#[tauri::command]
+pub(crate) fn reset_app_data_prompts(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let id = app.config().identifier.clone();
+        let out = sys_command("tccutil")
+            .args(["reset", "SystemPolicyAppData", &id])
+            .output()
+            .map_err(|e| format!("run tccutil: {e}"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() { "tccutil refused".into() } else { err });
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("only macOS keeps these prompts".to_string())
+    }
+}
+
+/// One permission check macOS made in Episko's name: when, which service, and the binary
+/// that actually reached — a child of a pane, or the app itself.
+#[derive(serde::Serialize)]
+pub(crate) struct PrivacyAsk {
+    at: String,
+    service: String,
+    by: String,
+}
+
+#[cfg(target_os = "macos")]
+const PRIVACY_HOURS: u32 = 24;
+const PRIVACY_MAX: usize = 200;
+
+/// One `log show` line carries all three facts, so nothing is paired across lines — the
+/// `AttributionChain` above it says the same thing in two more joins. The service keeps its
+/// raw TCC name: naming it for a person is ./format's.
+fn parse_privacy_asks(text: &str, id: &str) -> Vec<PrivacyAsk> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some((_, rest)) = line.split_once("Handling access request to kTCCService") else {
+            continue;
+        };
+        let service: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        // `Resp:` is the responsible half; a line naming us anywhere else is somebody
+        // else's access that merely mentions the id.
+        let Some((_, resp)) = rest.split_once("Resp:{") else { continue };
+        let resp = resp.split_once('}').map_or(resp, |(head, _)| head);
+        if !resp.contains(&format!("identifier={id},")) {
+            continue;
+        }
+        let by = resp
+            .split_once("binary_path=")
+            .map(|(_, b)| b.split([',', '}']).next().unwrap_or("").trim().to_string())
+            .unwrap_or_default();
+        if service.is_empty() || by.is_empty() || line.len() < 19 {
+            continue;
+        }
+        out.push(PrivacyAsk { at: line[..19].to_string(), service, by });
+    }
+    out.reverse(); // `log show` is oldest first; the answer is "what just happened".
+    out.truncate(PRIVACY_MAX);
+    out
+}
+
+/// Every permission check macOS made in Episko's name over the last day, newest first. A
+/// prompt somebody saw is one of these; most are answered from TCC's cache without asking.
+/// Predicated in the archive scan rather than filtered here, which is what keeps it seconds.
+#[tauri::command]
+pub(crate) async fn privacy_asks(app: tauri::AppHandle) -> Result<Vec<PrivacyAsk>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let id = app.config().identifier.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let out = sys_command("/usr/bin/log")
+                .args([
+                    "show",
+                    "--last",
+                    &format!("{PRIVACY_HOURS}h"),
+                    "--info",
+                    "--style",
+                    "compact",
+                    "--predicate",
+                    &format!("subsystem == \"com.apple.TCC\" AND eventMessage CONTAINS \"{id}\""),
+                ])
+                .output()
+                .map_err(|e| format!("read the system log: {e}"))?;
+            Ok(parse_privacy_asks(&String::from_utf8_lossy(&out.stdout), &id))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+    // No TCC to read: an empty log parses to no rows, which is the honest answer.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Ok(parse_privacy_asks("", ""))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1213,5 +1370,44 @@ mod tests {
         let abs = root.join("notes.md").to_string_lossy().to_string();
         let (_, hit) = resolve_link_path(vec![], vec![abs]).expect("an absolute path needs no base");
         assert!(hit.ends_with("notes.md"), "resolved to {hit}");
+    }
+
+    // Real `log show` output: the shape this parser is a join with.
+    const ASK: &str = "2026-09-10 15:20:10.469 I  tccd[595:2449ab] [com.apple.TCC:access] Handling access request to kTCCServiceDeveloperTool, from Sub:{io.respeak.episko}Resp:{TCCDProcess: identifier=io.respeak.episko, pid=8192, auid=501, euid=501, responsible_path=/Applications/Episko.app/Contents/MacOS/episko, binary_path=/usr/sbin/installer}, ReqResult(Auth Right: Unknown (None), promptType: 1,DB Action:None, UpdateVerifierData)";
+    const CHAIN: &str = "2026-09-10 15:20:10.456 I  tccd[595:2449ab] [com.apple.TCC:access] AttributionChain: responsible={TCCDProcess: identifier=io.respeak.episko, pid=8192, binary_path=/usr/sbin/installer}, accessing={TCCDProcess: identifier=com.apple.installer, pid=8192, binary_path=/usr/sbin/installer},";
+
+    /// The whole point of the row: macOS blames the app, and the useful fact is the child.
+    #[test]
+    fn parse_privacy_asks_names_the_service_and_the_binary_that_actually_reached() {
+        let rows = parse_privacy_asks(&format!("{CHAIN}\n{ASK}"), "io.respeak.episko");
+        assert_eq!(rows.len(), 1, "the AttributionChain line says the same thing and is skipped");
+        assert_eq!(rows[0].service, "DeveloperTool");
+        assert_eq!(rows[0].by, "/usr/sbin/installer");
+        assert_eq!(rows[0].at, "2026-09-10 15:20:10");
+    }
+
+    /// The predicate matches the id anywhere in the line, including somebody else's `Sub:`.
+    #[test]
+    fn parse_privacy_asks_ignores_an_access_we_are_not_responsible_for() {
+        let line = "2026-09-10 15:21:00.000 I  tccd[1:1] [com.apple.TCC:access] Handling access request to kTCCServiceCamera, from Sub:{io.respeak.episko}Resp:{TCCDProcess: identifier=com.other.app, pid=9, binary_path=/Applications/Other.app/Contents/MacOS/other}, ReqResult(...)";
+        assert!(parse_privacy_asks(line, "io.respeak.episko").is_empty());
+    }
+
+    #[test]
+    fn parse_privacy_asks_answers_newest_first() {
+        let later = ASK.replace("15:20:10", "16:30:00").replace("DeveloperTool", "SystemPolicyAppData");
+        let rows = parse_privacy_asks(&format!("{ASK}\n{later}"), "io.respeak.episko");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].service, "SystemPolicyAppData");
+    }
+
+    /// A URL scheme reached from a settings row: an unknown name must not become a URL.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn privacy_pane_url_answers_only_the_panes_on_the_list() {
+        assert!(privacy_pane_url("fulldisk").is_some_and(|u| u.contains("Privacy_AllFiles")));
+        for junk in ["", "Privacy_AllFiles", "fulldisk;rm -rf /", "https://example.com"] {
+            assert!(privacy_pane_url(junk).is_none(), "{junk} became a URL");
+        }
     }
 }

@@ -95,6 +95,10 @@ below.
 both. The footer shows the running version; a mismatch there is the first thing a
 user reports.
 
+A tour chapter carrying a `since` (./tour) names the version it belongs to, and *What's
+new* offers it on that string alone. If the release is cut as anything else, the chapter
+is never offered and nothing says so — check the `since` against the version being bumped.
+
 ---
 
 ## The click-through
@@ -468,6 +472,10 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 - [ ] **Quit guard** warns about live sessions.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
+- [ ] **Settings › Privacy** (macOS): the status line matches reality, *Open System
+      Settings…* lands on Full Disk Access, and *Scan the last day* returns rows naming
+      binaries. `tccutil` is the one action that changes system state — run it last, and
+      expect the next session that reaches to raise a dialog again.
 
 ### The title bar, which is the header (no native one behind it)
 

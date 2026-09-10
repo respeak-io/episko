@@ -72,6 +72,7 @@ export interface Chapter {
   mins: string;  // rough length, e.g. "90s"
   required?: boolean;  // cannot be unchecked in the picker; exactly one chapter
   since?: string;  // a release intro: offered from What's new, never on a first run
+  only?: "mac";  // an OS dialog nobody else can see; main.ts sets the platform
   steps: TourStep[];
 }
 
@@ -390,15 +391,59 @@ export const CHAPTERS: Chapter[] = [
       },
     ],
   },
+  {
+    // A release intro rather than a feature tour: what the dialog means matters more than
+    // where the buttons are.
+    id: "access", rev: 1, since: "0.28.0", only: "mac",
+    name: "When macOS asks about other apps",
+    blurb: "Why those dialogs name Episko when it was an agent that reached, and what to do about them.",
+    mins: "60s",
+    steps: [
+      {
+        title: "Why the dialog says Episko",
+        body: "macOS blames whichever app is <b>responsible</b> for a process, and every agent, task and shell here "
+          + "is a child of Episko. So a session that reads another app's data — a search wandering out of the project "
+          + "— raises a dialog with our name on it.",
+      },
+      {
+        anchor: "#setBtn",
+        title: "There is a tab about it now",
+        body: "Settings › Privacy, macOS only. Nothing in Episko can grant these permissions — the system asks the "
+          + "human, always — but everything you can do about them is in one place.",
+        wait: "Open Settings",
+        done: (w) => isOpen(w, "settings"),
+      },
+      {
+        anchor: "[data-settab=\"privacy\"]", dynamic: true,
+        title: "Three things it offers",
+        body: "Whether Episko holds <b>full disk access</b>, a button to the System Settings pane that grants it, and "
+          + "a way to bring back a prompt you denied by mistake — macOS caches that answer and never asks twice.",
+        wait: "Open the Privacy tab",
+        done: (w) => w.settingsTab === "privacy",
+      },
+      {
+        anchor: "#setBody",
+        title: "It is a real trade-off",
+        body: "Full disk access ends the dialogs, and <b>every agent Episko launches inherits it</b>. The tab says so "
+          + "rather than recommending it, and the scan at the bottom names which binary actually reached.",
+      },
+    ],
+  },
 ];
 
 // ---------- lookups ----------
 
 export const chapterKey = (c: Chapter) => `${c.id}@${c.rev}`;
 export const chapterById = (id: string): Chapter | undefined => CHAPTERS.find((c) => c.id === id);
-export const pickerChapters = (): Chapter[] => CHAPTERS.filter((c) => !c.since);
+// main.ts hands the platform over once; macOS-first, like the app, so a test that never
+// sets it sees every chapter.
+let onMac = true;
+export function setTourPlatform(mac: boolean) { onMac = mac; }
+const platformOk = (c: Chapter) => c.only !== "mac" || onMac;
+
+export const pickerChapters = (): Chapter[] => CHAPTERS.filter((c) => !c.since && platformOk(c));
 export const releaseChapter = (version: string): Chapter | null =>
-  CHAPTERS.find((c) => c.since === version) ?? null;
+  CHAPTERS.find((c) => c.since === version && platformOk(c)) ?? null;
 
 // ---------- the store ----------
 // One JSON blob under `cc-tour`: the halves are only ever read together.
