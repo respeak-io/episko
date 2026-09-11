@@ -21,9 +21,11 @@ import { agentCapabilitySummary, isAgent, isExited, midFlight } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
-  engineDef, externals, FAVORITES, ghAccountFor, ghLogins, missingAgents, projGroups, sessions,
-  termEngine,
+  engineDef, envPrefs, externals, FAVORITES, ghAccountFor, ghLogins, missingAgents, projGroups,
+  sessions, termEngine,
 } from "./state";
+import { openEnvRules } from "./envdlg";
+import { envSectionsFor } from "./envui";
 import { ghPickable, ghWho } from "./ghwork";
 
 // What a menu row does that this module does not own; one host object rather than nine
@@ -50,6 +52,16 @@ export function setProjMenuHost(h: typeof host) { host = h; }
 // detached by the innerHTML swap and closes the menu, and the sibling click listeners on
 // #ctxMenu still run, find their target set again by the reopen, and fall through to closeCtxMenu().
 const keepMenuOpen = (e: Event) => e.stopImmediatePropagation();
+
+// What this project's environments are right now, or why there is nothing to say yet. The
+// row is always drawn, so the sub is the only place that can explain an empty answer.
+function envSub(key: string): string {
+  if (!envPrefs.enabled) return "the switcher is off";
+  const secs = envSectionsFor(key);
+  if (!secs.length) return "none found here — say where to look";
+  if (secs.length === 1) return `${secs[0].group.target} · ${secs[0].chip.text}`;
+  return `${secs.length} environments`;
+}
 
 // ---------- the appearance panel ----------
 // 12 perceptually distinct hues around the wheel
@@ -252,6 +264,9 @@ function openCtxMenu(key: string, x: number, y: number) {
       : null,
     null,
     // Dropped below unless the probe says this folder is a repo.
+    // Always listed, and that is the point: a project whose layout Episko has not matched has
+    // no chip to open the picker from, so this is the only door to its rules.
+    { act: "envrules", ic: "⬡", label: "Environments…", sub: envSub(key) },
     { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
     { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
@@ -739,6 +754,7 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "launch": host.requestLaunch(name, key); break;
     case "worktree": openWt(name, key); break;
     case "terminal": openTerminalIn(name, key); break;
+    case "envrules": openEnvRules(key); break;
     case "graph": void openGraph(key, name); break;
     case "folder": host.openProjectFolder(key); break;
     case "copypath": copyPath(key); break;

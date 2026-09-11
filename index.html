@@ -20,6 +20,9 @@
                server gone every reading is stale, so it must out-shout the panes. Servers ("still up")
                sit left of the reactor ("wants you now"). -->
           <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic">⚠</span><span id="telBadgeTxt">telemetry</span></button>
+          <!-- Left of the servers badge: what ground the fleet is standing on outranks what is
+               still up. Never folded into the reactor, which counts sessions waiting on you. -->
+          <button class="env-badge" id="envBadge" aria-label="Pointed at a flagged environment"><span class="env-ic">⬤</span><span id="envBadgeTxt"></span></button>
           <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
@@ -78,7 +81,7 @@
            (the `head` area in styles.css): its verbs act on the stage, the inspector starts underneath. -->
       <div class="stage-head">
         <div class="st-title">
-          <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
+          <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span><span class="chip evchip" id="hEnv" hidden><span class="ev-d"></span><span id="hEnvTxt"></span></span>
           <span class="stitle" id="hTitle"></span>
           <span class="path" id="hPath"></span>
         </div>
@@ -148,6 +151,8 @@
           </button>
         </span>
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
+        <span class="fseg fclick evseg" id="fEnvSeg" hidden><span class="ev-d"></span><b id="fEnvTxt">–</b><span class="fcaret">▴</span></span>
+        <span class="fdiv" data-fdiv="sessions"></span>
         <span class="fseg" id="fSessionsSeg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv" data-fdiv="cost"></span>
         <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
@@ -386,6 +391,13 @@
 
     <!-- Usage & spend. Its own window rather than a Settings tab: nothing in it is a setting,
          and the status bar's money and limits popovers open straight into it (./usagedlg). -->
+    <!-- The environment rules. Its own dialog rather than a Settings section: what it writes
+         belongs to the project, and Settings is this machine (docs/environments.md). -->
+    <div class="envdlg" id="envDlg" role="dialog" aria-modal="true" aria-label="Environment rules">
+      <button class="set-x" id="envDlgClose" title="Close (Esc)" aria-label="Close environment rules">✕</button>
+      <div class="ed-body" id="envDlgBody"></div>
+    </div>
+
     <div class="usagedlg" id="usageDlg" role="dialog" aria-modal="true" aria-label="Usage and spend">
       <button class="set-x" id="usageClose" title="Close (Esc)" aria-label="Close usage">✕</button>
       <div class="u-body" id="usageBody"></div>
@@ -426,6 +438,7 @@
     <div class="menupop sopop" id="soPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop svrpop" id="svrPop"></div>
+    <div class="menupop envpop" id="envPop"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop costpop" id="costPop"></div>
     <div class="menupop iopop" id="ioPop"></div>

@@ -323,7 +323,7 @@ describe("the wiring the app depends on", () => {
     // would be a silent no-op, since `soundFor` returns null for an unknown key.
     const raised: SoundEvent[] = [
       "permission", "question", "done", "error", "toolFail",
-      "ended", "taskDone", "taskFail", "limit", "launched",
+      "ended", "taskDone", "taskFail", "limit", "launched", "envDanger",
     ];
     const known = new Set(SOUND_EVENTS.map((d) => d.id));
     for (const ev of raised) expect(known.has(ev), `${ev} is raised but not in the catalogue`).toBe(true);

@@ -11,6 +11,7 @@ import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
+import { pollEnvs } from "./envui";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
@@ -18,6 +19,7 @@ import { queueRosterSave } from "./mirror";
 import {
   attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
   setAutoFetchPrefs as setAutoFetchPrefsState,
+  envPrefs, setEnvPrefs as setEnvPrefsState,
   peekPrefs, permissionModes,
   projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
@@ -44,6 +46,7 @@ import type { GhAccount } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import type { AutoFetchPrefs } from "./autofetch";
+import type { EnvPrefs } from "./envs";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -223,6 +226,16 @@ export function setRevivePrefs(p: RevivePrefs) {
   localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
   renderAll();
   renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// `repaintPanel` is the DOM, not the data: a rule commits on every keystroke and a repaint
+// mid-word would replace the <input> being typed into. A full commit also forces a rescan,
+// since the patterns decide which files are found at all — the rules only rename them.
+export function setEnvPrefs(p: EnvPrefs, repaintPanel = true) {
+  setEnvPrefsState(p);
+  localStorage.setItem("cc-env", JSON.stringify(envPrefs));
+  if (repaintPanel) { renderSettings(); void pollEnvs(true); }
+  renderAll();
 }
 
 // The tick reads these live, so nothing is rescheduled; the kick is so that switching it

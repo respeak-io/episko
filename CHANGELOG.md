@@ -12,6 +12,37 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+Every checkout says which `.env` it is pointed at, and one click points it somewhere else.
+
++ **Which `.env` you are on, and one click to change it.** Episko finds a checkout's env presets
+  (`.env.prod`, `envs/staging.env`, whatever the patterns name) and shows which one the file is
+  currently a copy of — as a chip in the stage header, a status-bar segment, a card on the
+  project dashboard, or all three. Picking another one swaps the file. Nothing is remembered:
+  the active preset is decided by *reading* `.env`, so the chip stays right when you edit it in
+  another editor, switch worktrees, or an agent rewrites it mid-turn. **Off until you turn it
+  on**, in Settings › Environments.
++ **A monorepo gets one environment per package.** A target pattern's directory segment can hold
+  a `*`, so `apps/*/.env` finds one for each app and its presets are looked for beside it —
+  `apps/web` never offers `apps/api`'s. One level down (`frontend/` beside `backend/`, or
+  `01_frontend/` beside `02_backend/`) and the nested `apps|packages|services/*` both work with
+  no configuration; anything else is one line. The one chip then speaks for the worst of them
+  and counts the rest (`prod +2`), naming every one in its tooltip.
++ **Production is red, and you set what counts.** The rules are regular expressions —
+  `prod|live` is danger, `stag|uat|qa` is care, out of the box — and they mark the chip, the
+  picker, the dashboard card and the sidebar row of every pane in that checkout. A checkout
+  becoming dangerous raises its own badge in the top bar and, if you leave it on, a sound. The
+  badge is deliberately not the *needs you* one: nothing is waiting on you, you are just
+  standing somewhere.
++ **The rules belong to the project.** Open the switcher and click ↗: the environment rules
+  dialog edits the targets, the patterns and the tags for *that project* and saves them into its
+  `.episko/episko.toml` — committed, so everyone who pulls the repo gets the same red PROD. It
+  shows what the rules do as you type them, says which of them the project already owns, and can
+  take its table back out again. Settings › Environments holds only the fallback for projects
+  that never write one.
++ **A `.env` that matches no preset is the one thing it stops for.** That file holds changes
+  nothing else has a copy of, so switching away from it asks first and offers to keep it as
+  `.env.bak` — and the picker will save it as a preset of its own instead. Every other switch is
+  silent, which is the point of the feature.
 
 ## 0.28.0 — 2026-09-11
 

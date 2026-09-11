@@ -15,12 +15,13 @@ import {
   type SyncOp,
 } from "./dash";
 import {
-  branchesOverlay, cardSkeleton, checkoutsCard, closeSheet, dashInspector,
+  branchesOverlay, cardSkeleton, checkoutsCard, closeSheet, dashInspector, envCard,
   dashStrip, dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay,
   pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
   workLogOffer, worksetCard, workOverlay, type CleanReport, type DashSync,
 } from "./dashview";
 import { openBranchPop } from "./bpop";
+import { envSectionsFor, openEnvPop, switchEnv } from "./envui";
 import {
   branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
   NO_PROTECT, orderRows, rangePick, removableCheckouts, remoteFor, remotePicks, selectable,
@@ -502,6 +503,13 @@ function paintOverlay(view: string, html: string): void {
   }
 }
 
+// The project's main checkout, which is the one this pane is about; a worktree's own
+// environment is its pane's chip, since that is where a session on it is looked at.
+function envCardHere(): string {
+  const secs = envSectionsFor(root());
+  return secs.length ? envCard({ dir: root(), sections: secs }) : "";
+}
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
@@ -560,12 +568,15 @@ export function renderDash(): void {
   // ⇄ Switch's tooltip is what still names the refusal. It crosses the `loading` branch
   // for the same reason the repo card does — one local git read, already answered.
   const wset = worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none");
+  // Crosses the `loading` branch like the repo card: ./envui has already read it, or has not,
+  // and either way the transcript scan has nothing to do with the answer.
   // The main checkout is read by this pane and swept into `dirtyByFolder` for the dot, so
   // prefer the pane's own: two reads of one folder must not put two numbers on one screen.
   const statFor = (p: string) => (p === worksetDir() ? mainWork : dirtyByFolder.get(p));
   paint("dashAside", loading
     ? wset + repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
     : wset + repo + ghCards
+      + envCardHere()
       + checkoutsCard(heads, liveIn, statFor)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason
@@ -688,6 +699,11 @@ export function wireDashboard(): void {
     const t = e.target as HTMLElement;
     const range = t.closest<HTMLElement>("[data-dashrange]");
     if (range) { setDashRange(+range.dataset.dashrange!); return; }
+
+    const epick = t.closest<HTMLElement>("[data-envpick]");
+    if (epick) { void switchEnv(root(), epick.dataset.envtarget!, epick.dataset.envpick!); return; }
+    const eopen = t.closest<HTMLElement>("[data-envopen]");
+    if (eopen) { openEnvPop(eopen, eopen.dataset.envopen!); return; }
 
     // The Repository card carries the inspector's `data-dashact` verbs: one vocabulary, two hosts.
     const gact = t.closest<HTMLElement>("[data-dashact]");

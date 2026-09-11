@@ -49,7 +49,7 @@ export function toneMs(t: Tone): number { return t.steps.reduce((n, s) => Math.m
 // ---------- the catalogue ----------
 export type SoundEvent =
   | "permission" | "question" | "done" | "error" | "taskFail"
-  | "limit" | "taskDone" | "toolFail" | "ended" | "launched";
+  | "limit" | "taskDone" | "toolFail" | "ended" | "launched" | "envDanger";
 
 export interface SoundEventDef {
   id: SoundEvent; glyph: string; label: string; hint: string;
@@ -71,6 +71,8 @@ export const SOUND_EVENTS: SoundEventDef[] = [
     hint: "A task exited non-zero. Includes the ones that run by themselves after a turn." },
   { id: "limit", glyph: "▦", label: "Usage limit", priority: 2, tone: "bell", on: true,
     hint: "A rate-limit window crossed 50%, 80% or 95%. Account-wide, so it fires once, not once per session." },
+  { id: "envDanger", glyph: "⬤", label: "Pointed at production", priority: 2, tone: "alert", on: true,
+    hint: "A checkout's .env became one your rules call dangerous — including when you picked it yourself, which is the moment worth hearing." },
   { id: "taskDone", glyph: "▶", label: "Run passed", priority: 1, tone: "arp", on: true,
     hint: "A task exited 0." },
   { id: "toolFail", glyph: "!", label: "Tool call failed", priority: 0, tone: "pop", on: false,

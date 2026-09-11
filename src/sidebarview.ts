@@ -15,6 +15,7 @@ import {
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import { peekStaysOpen } from "./peek";
+import { envViewFor } from "./envui";
 import type { GroupDef } from "./projgroups";
 
 // ---------- the header of a user-defined project group ----------
@@ -83,8 +84,13 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
     ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
     : "";
   const fanHtml = fan ? `<span class="sfan" title="${esc(`${fan.done} of ${fan.total} background agents done`)}">${fan.done}/${fan.total}</span>` : "";
+  // Danger only. A pane pointed at production is worth seeing without putting it on stage;
+  // a mark on every checkout with a `.env` would teach you to stop looking at this column.
+  const env = envViewFor(s.drift?.dir ?? s.workdir)?.chip;
+  const envHtml = env?.tone === "danger"
+    ? `<span class="senv ev-danger" title="${esc(env.title)}">${esc(env.text)}</span>` : "";
   // One cell for every tag: `.srow`'s columns are fixed by CSS (`.o3` adds the fourth).
-  const tags = drift + fanHtml + chipHtml;
+  const tags = envHtml + drift + fanHtml + chipHtml;
   return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyph}</span>
     <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${tags ? `<span class="stags">${tags}</span>` : ""}

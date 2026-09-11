@@ -2,7 +2,7 @@
 // no switch: the bar can never become an empty strip, and the version is how you learn of an update.
 
 // Settings lists them in this order; the bar's own order is fixed in index.html.
-export type FootSeg = "sessions" | "cost" | "limits" | "io" | "engine" | "shortcuts" | "debug";
+export type FootSeg = "env" | "sessions" | "cost" | "limits" | "io" | "engine" | "shortcuts" | "debug";
 
 export interface FootSegDef {
   id: FootSeg;
@@ -14,6 +14,7 @@ export interface FootSegDef {
 }
 
 export const FOOT_SEGS: readonly FootSegDef[] = [
+  { id: "env", el: "fEnvSeg", label: "Environment", hint: "Which .env the checkout on stage is pointed at, with a picker to switch it.", more: "The stage header can carry the same chip; that half is in Settings › Environments.", aliases: ["env", "dotenv", "prod", "production", "preset"] },
   { id: "sessions", el: "fSessionsSeg", label: "Session count", hint: "How many panes are open." },
   { id: "cost", el: "fCostSeg", label: "Today's spend", hint: "What today has cost so far.", more: "Click it for the split by project and session.", aliases: ["money", "cost", "dollars"] },
   { id: "limits", el: "fUsageSeg", label: "Usage limits", hint: "The 5-hour and 7-day windows, each with a forecast and a countdown.", aliases: ["rate limit", "quota", "forecast", "window"] },

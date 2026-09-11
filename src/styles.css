@@ -3072,7 +3072,7 @@ select.in-ctl { cursor: pointer; }
 .scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
 .mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .cfm-scrim:not(.show),
 .cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
-.cl-dlg:not(.show) {
+.cl-dlg:not(.show), .envdlg:not(.show) {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -3113,3 +3113,99 @@ select.in-ctl { cursor: pointer; }
 :root.fx-idle *, :root.fx-idle *::before, :root.fx-idle *::after {
   animation-play-state: paused !important;
 }
+
+
+/* ---------- environments ---------- */
+/* One custom property per tone, set by the class ./envs decides and read by every surface,
+   so the chip, the picker, the card and the sidebar mark cannot drift apart. */
+.ev-none { --ev: var(--muted-2); }
+.ev-safe { --ev: var(--st-done); }
+.ev-warn { --ev: var(--st-working); }
+.ev-danger { --ev: var(--st-error); }
+.ev-d { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ev, var(--muted-2)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ev, var(--muted-2)) 18%, transparent); }
+
+/* the stage header's chip, beside the branch */
+.st-title .evchip { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--ev, var(--muted)); border-color: color-mix(in srgb, var(--ev, var(--hair)) 34%, transparent); background: color-mix(in srgb, var(--ev, var(--surface)) 11%, transparent); }
+.st-title .evchip:hover, .st-title .evchip.open { background: color-mix(in srgb, var(--ev, var(--surface)) 20%, transparent); }
+.st-title .evchip.ev-danger { font-weight: 700; }
+
+/* the status-bar segment */
+.foot .evseg, .fpv-bar .evseg { color: var(--ev, var(--muted)); }
+.foot .evseg b, .fpv-bar .evseg b { color: var(--ev, var(--text)); }
+.foot .evseg.ev-danger b { font-weight: 800; }
+
+/* Left of the servers badge: what ground the fleet is on outranks what is still up. */
+.env-badge { display: none; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); border: 1px solid color-mix(in srgb, var(--st-error) 36%, transparent); }
+.env-badge.show { display: flex; }
+.env-badge:hover { background: color-mix(in srgb, var(--st-error) 22%, transparent); }
+.env-badge .env-ic { font-size: 7px; line-height: 1; }
+
+/* the picker, shared by all four openers */
+.envpop { min-width: 288px; max-width: 420px; max-height: min(70vh, 520px); overflow-y: auto; }
+.envpop .ev-item .mp-ic { display: flex; align-items: center; justify-content: center; }
+.envpop .ev-item.on { background: color-mix(in srgb, var(--ev, var(--accent)) 12%, transparent); border-color: color-mix(in srgb, var(--ev, var(--accent)) 30%, transparent); }
+.envpop .ev-item .mp-check { color: var(--ev, var(--accent-ink)); }
+.envpop .ev-item .mp-s { font-family: var(--font-mono); }
+.envpop .ev-none-msg, .envpop .ev-none, .envpop .ev-broken { padding: 7px 9px; font: 500 11px var(--font-ui); color: var(--muted); line-height: 1.5; }
+.envpop .ev-broken { color: var(--st-working); border-bottom: 1px solid var(--hair); margin-bottom: 3px; }
+.envpop .ev-link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--accent-ink); font: inherit; text-decoration: underline; }
+.envpop .ev-mod { margin-top: 5px; padding: 7px 9px 4px; border-top: 1px solid var(--hair); }
+.envpop .ev-modh { font: 500 11px var(--font-ui); color: var(--muted); line-height: 1.5; }
+.envpop .ev-modr { display: flex; gap: 6px; margin-top: 6px; }
+.envpop .ev-name { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--hair); border-radius: 7px; padding: 5px 8px; color: var(--text); font: 11px var(--font-mono); outline: none; }
+.envpop .ev-name:focus { border-color: var(--accent-line); }
+.envpop .ev-save { flex: none; cursor: pointer; border-radius: 7px; padding: 5px 9px; color: var(--accent-ink); background: var(--accent-wash); border: 1px solid var(--accent-line); font: 650 11px var(--font-ui); }
+
+/* the sidebar mark: danger only, so the column stays worth looking at */
+.senv { flex: none; padding: 1px 5px; border-radius: 5px; font: 700 9px var(--font-mono); text-transform: uppercase; letter-spacing: .04em; color: var(--ev, var(--st-error)); background: color-mix(in srgb, var(--ev, var(--st-error)) 14%, transparent); border: 1px solid color-mix(in srgb, var(--ev, var(--st-error)) 34%, transparent); max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the dashboard card: a list you switch from, so the answer and the verb are one row */
+.ac-b .ev-row { cursor: pointer; }
+.ac-b .ev-row .k { display: flex; align-items: center; justify-content: center; }
+.ac-b .ev-row.on { background: color-mix(in srgb, var(--ev, var(--accent)) 10%, transparent); }
+.ac-b .ev-row.on .ti { color: var(--ev, var(--text)); font-weight: 700; }
+
+/* The environment rules dialog. Backdrop blur is gated on .show like every other dialog:
+   mounted at opacity 0 it would stay a live compositor surface (./motion's rule). */
+.envdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(760px, 94vw); max-height: 90vh; z-index: 42; display: flex; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.envdlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.ed-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+.ed-body::-webkit-scrollbar { width: 10px; }
+.ed-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.ed-h { display: flex; flex-direction: column; gap: 3px; padding-right: 28px; }
+.ed-h b { font-size: 14px; letter-spacing: -.01em; }
+.ed-where, .ed-seed { font: 500 11px var(--font-ui); color: var(--muted); line-height: 1.5; }
+.ed-seed { color: var(--muted-2); }
+.ed-add { display: flex; gap: 8px; }
+.ed-foot { display: flex; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.ed-sp { flex: 1; }
+
+.ed-body .evf { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 4px 10px; align-items: center; }
+.ed-body .evf-l { font: 600 11px var(--font-ui); color: var(--text); }
+.ed-body .evf-h { grid-column: 2; font: 500 10px var(--font-ui); color: var(--muted-2); line-height: 1.45; }
+.ed-body .evrules { display: flex; flex-direction: column; gap: 6px; }
+.ed-body .evr { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 130px) auto; gap: 6px; align-items: center; }
+.ed-body .evr-tones { display: flex; gap: 3px; }
+.ed-body .evr-tones .chip-opt { min-width: 26px; justify-content: center; color: var(--ev, var(--muted)); }
+.ed-body .evr-tones .chip-opt.on { color: var(--ev, var(--accent-ink)); border-color: color-mix(in srgb, var(--ev, var(--accent)) 44%, transparent); background: color-mix(in srgb, var(--ev, var(--accent)) 14%, transparent); }
+.ed-body .evr-x { padding: 4px 8px; }
+.ed-body .evr-err { display: none; grid-column: 1 / -1; font: 500 10px var(--font-ui); color: var(--st-error); }
+.ed-body .evr-bad .evr-err { display: block; }
+.ed-body .evr-bad .evr-p { border-color: color-mix(in srgb, var(--st-error) 50%, transparent); }
+.ed-body .evprev { border-top: 1px solid var(--hair); padding-top: 10px; display: flex; flex-direction: column; gap: 3px; }
+.ed-body .evp-h, .ed-body .evp-g { font: 700 10px var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted-2); padding-bottom: 3px; }
+.ed-body .evp-g { text-transform: none; letter-spacing: 0; padding-top: 7px; color: var(--muted); }
+.ed-body .evp-r { display: grid; grid-template-columns: 9px minmax(0, 110px) minmax(0, 1fr) auto; gap: 8px; align-items: center; font: 500 11px var(--font-ui); }
+.ed-body .evp-n { color: var(--ev, var(--text)); font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-body .evp-p { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-body .evp-w { color: var(--muted-2); font: 500 10px var(--font-mono); }
+.ed-body .evp-src { margin-top: 8px; font: 500 10.5px var(--font-ui); color: var(--muted); line-height: 1.5; }
+
+/* One section per environment in the picker and the card; drawn only when there are several,
+   or two identical lists of "prod / dev" would sit under nothing that tells them apart. */
+.envpop .ev-sech { display: flex; align-items: center; gap: 7px; padding: 7px 6px 4px; }
+.envpop .ev-sech + .ev-sech, .envpop .ev-item + .ev-sech { border-top: 1px solid var(--hair); margin-top: 4px; }
+.envpop .ev-sect { flex: 1; min-width: 0; font: 600 10.5px var(--font-mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.envpop .ev-secs { font: 700 9.5px var(--font-ui); color: var(--ev, var(--muted-2)); text-transform: uppercase; letter-spacing: .04em; }
+.ac-b .ev-sec { cursor: default; }
+.ac-b .ev-sec .ti { font: 600 10px var(--font-mono); color: var(--muted-2); }

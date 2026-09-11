@@ -5,6 +5,7 @@ import { basename, clampTitlePrefs, hslToHex, type TitlePrefs } from "./format";
 import { safeParse } from "./store";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
+import { clampEnvPrefs, type EnvPrefs } from "./envs";
 import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
@@ -90,6 +91,12 @@ export let autoFetchPrefs: AutoFetchPrefs = clampAutoFetchPrefs(safeParse(localS
 export function setAutoFetchPrefs(p: AutoFetchPrefs) { autoFetchPrefs = clampAutoFetchPrefs(p); }
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
+
+// --- environments ----------------------------------------------------------------
+// The app-level defaults; a project's own `[env]` table overrides them field by field, which
+// `env.rs` applies and ./envs reports. The scans themselves are ./envui's, never persisted.
+export let envPrefs: EnvPrefs = clampEnvPrefs(safeParse(localStorage.getItem("cc-env")));
+export function setEnvPrefs(p: EnvPrefs) { envPrefs = clampEnvPrefs(p); }
 
 // --- keyboard shortcuts ----------------------------------------------------------
 // Held resolved (the keydown handler reads it per keystroke) but stored as overrides only, so a

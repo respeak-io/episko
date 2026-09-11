@@ -3,6 +3,7 @@
 //! `claude --session-id`, instrumented per launch via `--settings` (CLAUDE.md).
 
 mod agent;
+mod env;
 mod external;
 mod files;
 mod git;
@@ -481,6 +482,11 @@ pub fn run() {
             github::set_kept,
             notes::list_shared_notes,
             notes::set_shared_note,
+            env::env_scan,
+            env::env_switch,
+            env::env_save_preset,
+            env::env_write_policy,
+            env::env_drop_policy,
             pty::spawn_ghostty,
             pty::spawn_shell,
             pty::spawn_task,

@@ -31,7 +31,7 @@ import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setEnvPrefs, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
@@ -41,6 +41,14 @@ import {
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, liveServers, taskServerUrl } from "./servers";
+import {
+  closeEnvDlg, envDlgOpen, openEnvDefaults, openEnvRules, setEnvDlgEnable, setEnvDlgRepaint,
+  setEnvDlgSave,
+} from "./envdlg";
+import {
+  closeEnvPop, noteEnvTouch, pollEnvs, renderEnvs, setEnvCloseMenus, setEnvOpenRules,
+  setEnvRepaint, setEnvStageDir,
+} from "./envui";
 import {
   closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
@@ -108,7 +116,7 @@ import {
   setPhase,
 } from "./phase";
 import {
-  activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
+  activeId, ALL_ENGINES, availEngines, dashMirror, dormants, envPrefs, externals, extMirrorId,
   FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
   vitalsPrefs, type BgLogHealthEvent,
@@ -182,6 +190,13 @@ setSidebarRenderAll(renderAll);
 setFooterCloseColorPop(closeColorPop);
 setFooterSetActive(setActive);
 setServersCloseMenus(closeFootMenus);
+setEnvCloseMenus(closeFootMenus);
+setEnvRepaint(renderAll);
+setEnvStageDir(activeCwd);
+setEnvOpenRules(openEnvRules);
+setEnvDlgRepaint(renderAll);
+setEnvDlgSave((rules) => setEnvPrefs({ ...envPrefs, ...rules }));
+setEnvDlgEnable(() => setEnvPrefs({ ...envPrefs, enabled: true }));
 setServersSetActive(setActive);
 setServersRepaint(renderAll);
 setServersCloseSession(closeSession);
@@ -216,6 +231,7 @@ setSettingsHost({
   setSort, setEngine, bumpFont, applyFontSize,
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
   setRevivePrefs,
+  setEnvPrefs, openEnvDefaults,
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
@@ -314,7 +330,7 @@ function flushRender() {
 function renderAllNow() {
   telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderEnvs(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (dashMirror()) {
@@ -453,6 +469,7 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   const before = soundSnap(s);
   const rlBefore = { h5: rl.h5, d7: rl.d7 };
   if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
+  if (kind !== "statusline" && data.tool_name) noteEnvTouch(s.drift?.dir ?? s.workdir, data.tool_name, data.tool_input);
   const ev = hookSound(before, soundSnap(s));
   if (ev) playSound(ev);
   // Account-wide, so outside the per-session branch: one crossing, one chime.
@@ -528,6 +545,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
+  if (!t.closest("#envPop, #envBadge, #hEnv, #fEnvSeg, [data-envopen], [data-envpick]")) closeEnvPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
   if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
@@ -647,7 +665,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeEnvDlg(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -681,6 +699,7 @@ window.addEventListener("keydown", (e) => {
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
+  else if (e.key === "Escape" && envDlgOpen()) { e.preventDefault(); closeEnvDlg(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
@@ -842,6 +861,11 @@ setInterval(() => { void refreshDirtyStates(); refreshDashWorkset(); }, 5000);
 // Auto-fetch. A fixed tick asking ./autofetch whether the checkout on stage is due one,
 // never an interval rebuilt when the cadence changes; arriving at a pane asks as well.
 setInterval(() => { void tickAutoFetch(); }, 20_000);
+
+// Which .env each watched checkout is pointed at. Nothing watches the filesystem
+// (docs/explorer.md), so this tick plus the three prods in ./envui are the whole answer.
+setInterval(() => { void pollEnvs(); }, 20_000);
+void pollEnvs(true);
 
 // Git-derived labels. The hook stream pokes the same function on a git command; this
 // interval is the backstop for changes made outside Claude (an editor, your terminal).

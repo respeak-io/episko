@@ -18,6 +18,7 @@ import {
   keyPrefs, missingAgents,
   outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
+  envPrefs,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
@@ -27,6 +28,9 @@ import {
 } from "./attn";
 import { AUTOFETCH_DEFAULTS, AUTOFETCH_EVERY, type AutoFetchPrefs } from "./autofetch";
 import {
+  ENV_DEFAULTS, envRulesOf, isDefaultEnvRules, type EnvPrefs, type EnvRow, type EnvTone,
+} from "./envs";
+import {
   isDefaultRevivePrefs, REVIVE_ATTEMPTS_RANGE, REVIVE_BASE_RANGE, REVIVE_DEFAULTS,
   REVIVE_FACTOR_RANGE, REVIVE_FACTOR_STEP, REVIVE_JITTER_RANGE, REVIVE_JITTER_STEP,
   REVIVE_KINDS, REVIVE_MAX_RANGE, reviveBaseStep, reviveGap, reviveMaxStep, revivePlan,
@@ -34,6 +38,7 @@ import {
 } from "./revive";
 import { LIT_COLOR } from "./sidebarview";
 import { DEFAULT_FOOT, FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
+import { envPopHtml } from "./footerview";
 import { DEFAULT_MOTION, fxOn, VISUAL_FX, type VisualFx } from "./motion";
 import {
   driftVerdict, fmtPerHour, fmtSpanShort, leakSuspects, SCROLLBACK_DEFAULT, SCROLLBACK_OPTS, VITALS,
@@ -87,6 +92,9 @@ export interface SettingsHost {
   setKeyPrefs: (p: KeyPrefs) => void;
   setAttnPrefs: (p: AttnPrefs) => void;
   setAutoFetchPrefs: (p: AutoFetchPrefs) => void;
+  setEnvPrefs: (p: EnvPrefs) => void;
+  /** The rules editor, on Episko's own fallback. A project's are opened from its switcher. */
+  openEnvDefaults: () => void;
   setFootSeg: (id: FootSeg) => void;
   setFx: (id: VisualFx) => void;
   setRevivePrefs: (p: RevivePrefs) => void;
@@ -145,6 +153,7 @@ let host: SettingsHost = {
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
+  setEnvPrefs: () => {}, openEnvDefaults: () => {},
   setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
@@ -205,6 +214,7 @@ const WT_GROUP_SEGS: SetSeg[] = [
 // (index.html, the `.fpv-bar` selectors in styles.css), so it cannot drift; the open half is
 // a sketch. The figures are sample data on purpose: on a fresh install the live ones are blank.
 const FPV_CLOSED: Record<FootSeg, string> = {
+  env: `<span class="fseg fclick evseg ev-danger"><span class="ev-d"></span><b>prod</b><span class="fcaret">▴</span></span>`,
   sessions: `<span class="fseg">3 sessions</span>`,
   cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">▴</span></span>`,
   limits: `<span class="fseg fclick"><span class="flabel">limits</span><b class="s-ok">12%</b><span class="fsub">5h</span>`
@@ -228,7 +238,28 @@ const fpvFc = (used: number, proj: number, secLeft: number): Forecast => ({
 // The open half, per segment: the popover's own renderer and classes, so neither can drift.
 // `sessions` has no open half (clicking it does nothing); `debug` opens a panel, not a
 // popover, so it is the one hand-drawn entry.
+const fpvEnvRow = (name: string, vars: number, hrs: number, tone: EnvTone, rule: string, active = false): EnvRow => ({
+  preset: { path: `.env.${name}`, name, vars, mtimeMs: Date.now() - hrs * 3_600_000, active },
+  mark: { tone, label: name, rule },
+});
+const FPV_ENV_ROWS = [
+  fpvEnvRow("dev", 12, 9, "safe", "dev|local|test"),
+  fpvEnvRow("prod", 18, 52, "danger", "prod|live", true),
+  fpvEnvRow("staging", 17, 6, "warn", "stag|uat|qa"),
+];
+
 const FPV_OPEN: Partial<Record<FootSeg, { cls: string; body: string }>> = {
+  env: {
+    cls: "envpop",
+    body: envPopHtml({
+      where: "episko", broken: false, targets: ENV_DEFAULTS.targets,
+      sections: [{
+        group: { dir: "", target: ".env", state: "preset", presets: FPV_ENV_ROWS.map((r) => r.preset) },
+        chip: { text: "prod", tone: "danger", title: "" },
+        rows: FPV_ENV_ROWS,
+      }],
+    }),
+  },
   cost: {
     cls: "costpop",
     body: costPopHtml({
@@ -508,6 +539,34 @@ const SET_TABS: SetTab[] = [
           { value: "session", label: "Active session", glyph: "▤", sub: "The worktree you're looking at" },
           { value: "root", label: "Repo root", glyph: "⌂", sub: "Always the main checkout" },
         ] },
+    ],
+  },
+  {
+    id: "environments", label: "Environments", glyph: "⬡", group: "work", sub: "Which .env, and what production looks like",
+    controls: () => [
+      { kind: "toggle", set: "env:on", key: "cc-env", since: "0.29.0", label: "Environment switcher",
+        hint: "Find this checkout's .env presets and show which one it is pointed at.",
+        more: "Nothing is written until you pick one. Presets are found by reading the directories the patterns name, never by walking the project — which is why there is no node_modules to exclude.",
+        aliases: ["env", "dotenv", "environment", "prod", "production", "staging", "preset", "switcher", "vercel"],
+        on: () => envPrefs.enabled,
+        isDefault: () => envPrefs.enabled === ENV_DEFAULTS.enabled,
+        reset: () => host.setEnvPrefs({ ...envPrefs, enabled: ENV_DEFAULTS.enabled }) },
+      { kind: "toggle", set: "env:header", key: "cc-env", since: "0.29.0", label: "Show it in the stage header",
+        hint: "A chip beside the branch, on the row above the terminal.",
+        more: "The status-bar half is its own switch, in Settings › Status bar, so you can have either, both or neither.",
+        aliases: ["chip", "header", "status bar", "footer", "where"],
+        on: () => envPrefs.header,
+        isDefault: () => envPrefs.header === ENV_DEFAULTS.header,
+        reset: () => host.setEnvPrefs({ ...envPrefs, header: ENV_DEFAULTS.header }) },
+      { kind: "action", set: "env:rules", id: "envrules", key: "cc-env", since: "0.29.0",
+        btn: "Edit rules…", label: "Default rules",
+        hint: "What Episko calls production when a project has not said.",
+        more: "A project's own rules live in its .episko/episko.toml, committed, and override these. Open the switcher in a project and click ↗ to write them there — these are only the fallback.",
+        aliases: ["regex", "pattern", "rule", "colour", "color", "red", "danger", "target", "glob", "tag", "default"],
+        lines: () => envPrefs.tags.map((t) => ({ label: t.match, value: t.tone ?? "warn" })),
+        summary: () => `${envPrefs.tags.length} rules · ${envPrefs.targets.length} targets`,
+        isDefault: () => isDefaultEnvRules(envRulesOf(envPrefs)),
+        reset: () => host.setEnvPrefs({ ...envPrefs, ...envRulesOf(ENV_DEFAULTS) }) },
     ],
   },
   {
@@ -1314,6 +1373,7 @@ function titlePreviewHtml(raw: string, out: string): string {
   </div>`;
 }
 
+
 // One row shape for every kind: text left (the label, one sentence, the folded why), the
 // control right, and under it whatever the control folds (a panel, a preview, the cards).
 function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[]): string {
@@ -1508,6 +1568,9 @@ function applySetting(set: string, val: string) {
   else if (set === "outline:on") host.setOutlinePrefs({ ...outlinePrefs, enabled: val === "1" });
   else if (set === "outline:lines") host.setOutlinePrefs({ ...outlinePrefs, lines: +val });
   else if (set === "outline:hover") host.setOutlinePrefs({ ...outlinePrefs, hover: val === "1" });
+  else if (set === "env:rules") { host.openEnvDefaults(); return; }
+  else if (set === "env:on") host.setEnvPrefs({ ...envPrefs, enabled: val === "1" });
+  else if (set === "env:header") host.setEnvPrefs({ ...envPrefs, header: val === "1" });
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
@@ -1547,6 +1610,7 @@ function applyTitleExtra(el: HTMLInputElement) {
   const clear = box?.querySelector<HTMLButtonElement>("[data-settitle='reset']");
   if (clear) clear.disabled = !titlePrefs.extra;
 }
+
 
 // Everything routes through the host's clamping setter; the buttons disable at the bounds.
 function applyPeekSetting(cmd: string) {

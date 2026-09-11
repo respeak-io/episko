@@ -16,7 +16,8 @@ import { needsYouSessions, reactorLabel, reactorState } from "./grouping";
 import { GCLASS, GLYPH } from "./sidebarview";
 import { keyActionDef, shortcutRows } from "./keys";
 import { enginePopHtml, popGoHtml, shortPopHtml, type ShortcutRow } from "./footerview";
-import { FOOT_SEGS, footShown } from "./footprefs";
+import { FOOT_SEGS, footShown, type FootSeg } from "./footprefs";
+import { closeEnvPop, envFooterShown } from "./envui";
 import {
   activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, telemetryUp, termEngine,
 } from "./state";
@@ -101,12 +102,13 @@ function paintFootIo() {
 // Guarded on the switch state: this runs every renderAll pass and only Settings changes it.
 let footPrefsKey = "";
 function applyFootPrefs() {
-  const key = FOOT_SEGS.map((s) => (footShown(footPrefs, s.id) ? "1" : "0")).join("");
+  const live = (id: FootSeg) => footShown(footPrefs, id) && (id !== "env" || envFooterShown());
+  const key = FOOT_SEGS.map((s) => (live(s.id) ? "1" : "0")).join("");
   if (key === footPrefsKey) return;
   footPrefsKey = key;
   let leading = true;
   for (const seg of FOOT_SEGS) {
-    const on = footShown(footPrefs, seg.id);
+    const on = live(seg.id);
     const el = document.getElementById(seg.el);
     if (el) (el as HTMLElement).hidden = !on;
     const div = document.querySelector<HTMLElement>(`[data-fdiv="${seg.id}"]`);
@@ -201,7 +203,7 @@ export function closeFootMenus(keep?: string) {
   const menus: [string, () => void][] = [
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
-    ["costPop", closeCostPop], ["ioPop", closeIoPop], ["svrPop", closeServersPop],
+    ["costPop", closeCostPop], ["ioPop", closeIoPop], ["svrPop", closeServersPop], ["envPop", closeEnvPop],
     ["soPop", closeSignoffPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();

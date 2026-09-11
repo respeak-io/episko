@@ -4,6 +4,7 @@
 import { basename, esc, escAttr, relTime, sparkline, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
 import { syncState, type Pulse, type ProjectFacts, type ProjectTier, type SyncOp } from "./dash";
+import type { EnvRow, EnvSection } from "./envs";
 import type { Note, SharedNote } from "./notes";
 import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
@@ -211,6 +212,44 @@ export function checkoutsCard(
   if (heads.length < 2) return ""; // one checkout is not a list worth a card
   const rows = heads.map((w) => checkoutRow(w, liveFor(w.path), statFor(w.path), w.is_main)).join("");
   return card("checkouts", "Checkouts", String(heads.length), rows);
+}
+
+
+// ---------- the Environment card ----------
+// A list you can switch from, so the answer and the verb are the same row. Everything about
+// what a row means is ./envs'; the picker it shares with the chip is ./envui's.
+
+export interface EnvCardView {
+  dir: string;
+  sections: EnvSection[];
+}
+
+function envCardRow(r: EnvRow, target: string): string {
+  const { preset: p, mark: m } = r;
+  const why = m.rule ? ` · matched by /${m.rule}/i` : "";
+  return `<div class="cr ev-row ev-${m.tone}${p.active ? " on" : ""}" data-envpick="${escAttr(p.path)}"`
+    + ` data-envtarget="${escAttr(target)}" title="${escAttr(`Point ${target} at ${p.path}${why}`)}">`
+    + `<span class="k ev-d"></span><span class="ti">${esc(m.label)}</span>`
+    + `<span class="rt"><span class="tag">${p.vars} vars</span>`
+    + `${p.active ? `<span class="tag acc">${esc(target)}</span>` : ""}</span></div>`;
+}
+
+// A checkout has one; a monorepo has one per package, and then each says which file it is.
+function envCardSection(s: EnvSection, only: boolean, dir: string): string {
+  const g = s.group;
+  const head = only ? "" : `<div class="cr ev-sec mono"><span class="ti">${esc(g.target)}</span></div>`;
+  const foot = g.state === "preset" ? "" :
+    `<div class="cr ev-row ev-${s.chip.tone}" data-envopen="${escAttr(dir)}"><span class="k ev-d"></span>`
+    + `<span class="ti">${esc(g.state === "modified" ? `${g.target} matches no preset` : `no ${g.target} yet — pick one`)}</span>`
+    + `<span class="rt">${g.state === "modified" ? `<span class="tag warn">unsaved</span>` : ""}</span></div>`;
+  return head + s.rows.map((r) => envCardRow(r, g.target)).join("") + foot;
+}
+
+export function envCard(v: EnvCardView | null): string {
+  if (!v?.sections.length) return "";
+  const n = v.sections.length;
+  const body = v.sections.map((s) => envCardSection(s, n === 1, v.dir)).join("");
+  return card("env", n === 1 ? "Environment" : "Environments", String(n), body, false);
 }
 
 // ---------- the Repository card ----------
