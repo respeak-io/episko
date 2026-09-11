@@ -70,6 +70,10 @@ that name Episko have a tab that explains them.
   asked of you, and your text is sitting in the composer.
 ! **A long branch name no longer pushes the ahead/behind count out of the git card.** The count
   is what you came for, so the name is what gives way.
+! **An emoji icon is no longer clipped by its own box.** A colour emoji's ink fills its em box,
+  so drawn at nine tenths of the icon it reached all four edges and the rounded 15px frame ate
+  the corners — a calendar lost its last column. It is inset now, and still the same size on
+  every surface that paints one.
 
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,
