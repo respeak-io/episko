@@ -12,9 +12,12 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-The ahead/behind count is fetched for the pane you are looking at, a branch can be locked
-against deletion, an ask no longer vanishes a second after it arrives, and the macOS prompts
-that name Episko have a tab that explains them.
+
+## 0.28.0 — 2026-09-11
+
+Settings is one page with a search, every emoji is a project icon, the checkout you are
+looking at fetches itself so *2 behind* is true when you read it, a branch can be locked
+against deletion, an ask no longer vanishes a second after it arrives, and there is one theme.
 
 + **Auto-fetch, so "2 behind" is true when you read it.** The checkout you are looking at is
   fetched when you arrive and every five minutes it stays on screen — nothing else, because a
