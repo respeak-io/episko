@@ -849,6 +849,18 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       hook(s, "Stop");                                              // one turn answers them
       expect(s.phase).toBe("done");
     });
+    it("does not queue a turn Claude submitted for you: a background task's notice mid-turn", () => {
+      // The hook fires for the notice as if you had typed it, but the running turn answers it
+      // in place and gets one Stop; queued, that Stop was spent and the row stayed ● after the answer.
+      const s = sess();
+      hook(s, "UserPromptSubmit", { prompt: "run the gates" });
+      hook(s, "PreToolUse", { tool_name: "Bash" });
+      hook(s, "UserPromptSubmit", { prompt: "<task-notification>\n<task-id>b7zdlx39i</task-id>\n<status>completed</status>\n</task-notification>" });
+      expect(s.queuedPrompt).toBe(false);
+      hook(s, "PreToolUse", { tool_name: "Bash" });
+      hook(s, "Stop");
+      expect(s.phase).toBe("done");
+    });
     it("ignores a prompt typed at a REPL that is not mid-tool-call", () => {
       // Two prompts back to back at an idle REPL are not a queue behind a running turn.
       const s = sess({ phase: "done" });

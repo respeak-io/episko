@@ -406,7 +406,10 @@ And the things that hold however the files are arranged:
   tool guard in `applyHook` is bounded by `STRAGGLER_MS` rather than by `s.phase ===
   "done"`: unbounded, one `Stop` silenced every later `PreToolUse`/`PostToolUse` and the
   row claimed your turn for the whole of the next turn. Both shipped; see
-  `docs/architecture.md`.
+  `docs/architecture.md`. And **an envelope never queues**: the notice that a background
+  task finished fires the same hook mid-turn, but the running turn answers it in place and
+  gets one `Stop`, so queuing it spent that `Stop` and the pane sat ● after its answer
+  (`isEnvelope`, the list the outline drops). That shipped too.
 - **A prompt that was never dispatched leaves `thinking` with nothing that can end it.**
   `UserPromptSubmit` fires at Enter, so a prompt cancelled with Esc (or edited and re-sent)
   from a *finished* pane starts no turn, gets no `Stop`, and gets no idle `Notification`

@@ -17,6 +17,10 @@ Markers: `+` new · `~` changed · `!` fixed
   dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History
   came up empty, the dormant row vanished at boot and no past session could be read. Paths are
   now spelled one way on both sides, and stored ones are repaired on read.
+! **A pane stayed ● after answering when a background task had finished mid-turn.** Claude
+  fires the prompt hook for the task's notice as if you had typed it, so the turn's own Stop
+  was taken for the end of an earlier turn with a message queued behind it. A notice queues
+  nothing now.
 
 ## 0.28.0 — 2026-09-11
 

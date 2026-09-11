@@ -89,7 +89,12 @@ prompt behind them at all, just a turn the model carried on by itself:
   turn, so a counter would have been left holding a phantom prompt and would have
   withheld the badge until the 60s idle nudge — trading a lie for a silence. That nudge
   clears it either way, which is the repair for the one case that strands it (a queued
-  prompt cancelled with Esc fires no `Stop`).
+  prompt cancelled with Esc fires no `Stop`). **An envelope never sets it**: the notice
+  that a background task finished is enqueued by Claude as a `queued_command` and fires
+  `UserPromptSubmit` mid-turn like a typed message, but the running turn answers it in
+  place and gets one `Stop`; queuing it spent that `Stop`, and the pane sat ● for the
+  minutes after its answer until the 3-minute stall rule called it `idle` (`isEnvelope`,
+  the same list the outline drops).
 - **`STRAGGLER_MS`** (2s) bounds the guard the flag cannot cover. The hooks are
   fire-and-forget `curl`s spawned concurrently, so a turn's last `PostToolUse` genuinely
   can land after its `Stop` and must not repaint the pane `working` a moment after the
