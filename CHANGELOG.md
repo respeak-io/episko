@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A project with an umlaut in its path was missing from its own History.** The macOS folder
+  dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History
+  came up empty, the dormant row vanished at boot and no past session could be read. Paths are
+  now spelled one way on both sides, and stored ones are repaired on read.
+
 ## 0.28.0 — 2026-09-11
 
 Settings is one page with a search, every emoji is a project icon, the checkout you are

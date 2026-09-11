@@ -18,9 +18,11 @@ pub(crate) fn home_dir() -> String {
 }
 
 /// Canonical spelling for a path the frontend compares by exact string equality: on
-/// Windows git, the folder dialog and VS Code each spell one folder differently, so
-/// every path handed to the frontend goes through here. Identity elsewhere.
+/// Windows git, the folder dialog and VS Code each spell one folder differently, and on
+/// macOS the folder dialog hands back a decomposed umlaut (`o` + U+0308) where Claude and
+/// git write the precomposed `ö`. Every path handed to the frontend goes through here.
 pub(crate) fn norm_path(p: &str) -> String {
+    let p = nfc(p);
     #[cfg(windows)]
     {
         let mut s = p.replace('/', "\\");
@@ -31,8 +33,15 @@ pub(crate) fn norm_path(p: &str) -> String {
     }
     #[cfg(not(windows))]
     {
-        p.to_string()
+        p
     }
+}
+
+/// The precomposed (NFC) spelling; a no-op on ASCII. Split from `norm_path` for the
+/// transcript-folder slug, which must not take the Windows drive-letter rewrite.
+pub(crate) fn nfc(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfc().collect()
 }
 
 /// Windows `canonicalize` returns the verbatim form (`\\?\C:\Work`), which is not the
@@ -1167,6 +1176,7 @@ mod tests {
         assert_eq!(norm_path(r"E:\already\native"), r"E:\already\native");
         assert_eq!(norm_path(r"\\server\share\x"), r"\\server\share\x");
         assert_eq!(norm_path(""), "");
+        assert_eq!(norm_path("e:/Fo\u{308}rderung"), "E:\\F\u{f6}rderung");
     }
 
     #[cfg(not(windows))]
@@ -1207,9 +1217,12 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn norm_path_is_identity_off_windows() {
+    fn norm_path_only_precomposes_off_windows() {
         assert_eq!(norm_path("/Users/tim/dev/episko"), "/Users/tim/dev/episko");
         assert_eq!(norm_path("a\\b"), "a\\b"); // a backslash is a legal filename char here
+        // The macOS folder dialog's decomposed umlaut, spelled the way Claude and git do.
+        assert_eq!(norm_path("/x/53_Games Fo\u{308}rderung"), "/x/53_Games F\u{f6}rderung");
+        assert_eq!(nfc("Fo\u{308}"), "F\u{f6}");
     }
 
     /// Pure string work, so it runs on every OS rather than only on the leg that can

@@ -1,6 +1,7 @@
 // Project groups: a named, collapsible heading over several projects in the sidebar.
 // Not an ordering (./grouping places a group by its members). Pure over an explicit store
 // (./state imports this); a mutator returns a new store, or the same one on a no-op.
+import { nfcPath } from "./format";
 
 // `id` is opaque and stable: what `of` and the sidebar's `data-fold` point at.
 export interface GroupDef { id: string; name: string; collapsed: boolean }
@@ -33,7 +34,7 @@ export function clampGroups(raw: unknown): GroupStore {
   const rawOf = src?.of;
   if (rawOf && typeof rawOf === "object") {
     for (const [path, gid] of Object.entries(rawOf)) {
-      if (path && typeof gid === "string" && ids.has(gid)) of[path] = gid;
+      if (path && typeof gid === "string" && ids.has(gid)) of[nfcPath(path)] = gid;
     }
   }
   return { groups, of };

@@ -161,3 +161,10 @@ describe("the readers", () => {
     expect(groupPaths(st, "ghost")).toEqual([]);
   });
 });
+
+describe("clampGroups spells a member's path the way ./state stores it", () => {
+  it("precomposes a decomposed umlaut, so the group keeps the project it was made for", () => {
+    const st = clampGroups({ groups: [{ id: "g1", name: "G", collapsed: false }], of: { "/w/Fo\u0308": "g1" } });
+    expect(st.of).toEqual({ "/w/F\u00f6": "g1" });
+  });
+});

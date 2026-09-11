@@ -7,7 +7,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, toast } from "./dom";
 import { ask } from "./confirm";
-import { basename } from "./format";
+import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
@@ -109,7 +109,8 @@ export async function addProject() {
   if (!dir || typeof dir !== "string") return;
   addProjectPath(dir);
 }
-export function addProjectPath(dir: string) {
+export function addProjectPath(picked: string) {
+  const dir = nfcPath(picked); // the folder dialog's spelling is not Claude's (./format)
   if (FAVORITES.some((f) => f.path === dir)) { toast("Already a project"); return; }
   FAVORITES.push({ name: basename(dir), path: dir });
   saveFavorites();

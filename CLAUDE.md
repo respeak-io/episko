@@ -450,6 +450,13 @@ And the things that hold however the files are arranged:
   **`store.ts`** (`readObj` / `readList` / `safeParse`) or a narrowing local (`strMap` /
   `strList` / `favList` / a `clamp*`), never a bare `JSON.parse`, and discard a bad value on
   its own rather than letting it take the session (`test/store.test.ts`, `test/state.test.ts`).
+- **A path is compared by exact string, so it has ONE spelling: precomposed (NFC).** The macOS
+  folder dialog hands back `o` + U+0308 for an `ö` that Claude, git and the backend's
+  `norm_path` all write as one code point, and a project picked that way lost its scoped
+  History, its dormant row and every past-session read, since Claude files the transcript
+  under the precomposed slug. ./format's `nfcPath` takes every path that enters from the OS,
+  the `cc-` readers repair what they stored before (`favList`, `pathMap`, `clampGroups`, the
+  icon and roster reads), and `project_transcript_dir` encodes from the precomposed spelling.
 - **Debug console** (🐞, bottom-right): in-app event log + live state via `dlog()`/`dbgSnapshot()`; flags unrouted telemetry and JS errors; mirrors a snapshot to `$TMPDIR/cc-launcher/episko-debug.json` for external tools. The snapshot is state-of-now and does not survive a crash. The durable timeline is the rolling `episko.log` (+ `panic.log`) in the OS app-log dir, which every `dlog()` tees into via `log_frontend` (`docs/architecture.md`).
 - **A leak that takes fifteen hours cannot be diagnosed from a snapshot.** `dbgSnapshot`
   is state-of-now, so the *growth* half is **Settings › Diagnostics** (./perf decides,

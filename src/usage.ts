@@ -4,7 +4,7 @@
 
 import { hasAgentCapability, type AgentTokenBreakdown, type AgentTokenUsage, type InstallFile, type Sess } from "./types";
 import { readList, readObj } from "./store";
-import { basename } from "./format";
+import { basename, nfcKeys } from "./format";
 
 // ---------- the daily rollup (telemetry-fed) ----------
 
@@ -60,6 +60,8 @@ export interface DayDetail {
 }
 export const usage: Record<string, number> = readObj<number>("cc-usage");
 export const usageDetail: Record<string, DayDetail> = readObj<DayDetail>("cc-usage-detail");
+// Keyed by project NAME, the basename of a path that is spelled precomposed since 0.29.
+for (const d of Object.values(usageDetail)) if (d?.projects && typeof d.projects === "object") d.projects = nfcKeys(d.projects);
 export function todayKey() { return dayKeyOf(Date.now()); }
 // Local wall-clock day, never UTC, like every key in both stores. One formatter, two
 // spellings: `uDkey` takes a Date, `dayKeyOf` the milliseconds.

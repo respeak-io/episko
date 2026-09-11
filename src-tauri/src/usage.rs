@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::git::repo_root_of;
-use crate::platform::{home_dir, norm_path, physical_cwd};
+use crate::platform::{home_dir, nfc, norm_path, physical_cwd};
 
 /// None when there is no home directory; every caller reports that rather than hiding it.
 fn claude_dir() -> Option<PathBuf> {
@@ -26,13 +26,19 @@ pub(crate) struct TranscriptMsg {
 }
 
 /// Claude's `<base>/projects/<enc>/`, where `<enc>` is the physical cwd with every
-/// non-ASCII-alphanumeric char replaced by `-`.
+/// non-ASCII-alphanumeric char replaced by `-`. Claude spells that cwd precomposed whatever
+/// the volume reports (a Google Drive folder measured decomposed), so `ö` is ONE dash; a
+/// folder some build filed under the raw spelling is found only while the precomposed is absent.
 fn project_transcript_dir(base: &Path, cwd: &str) -> PathBuf {
-    let enc: String = physical_cwd(cwd)
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    base.join("projects").join(enc)
+    let phys = physical_cwd(cwd);
+    let projects = base.join("projects");
+    let primary = projects.join(transcript_slug(&nfc(&phys)));
+    let raw = projects.join(transcript_slug(&phys));
+    if raw != primary && !primary.is_dir() && raw.is_dir() { raw } else { primary }
+}
+
+fn transcript_slug(path: &str) -> String {
+    path.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// A session on disk, restorable via `claude --resume <id>`.
@@ -1361,6 +1367,25 @@ mod tests {
         // sides wrong in the same way.
         let name = via_link.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.ends_with("-real"), "encoded the link's own name: {name}");
+    }
+
+    /// The macOS folder dialog spells an umlaut decomposed (`o` + U+0308); Claude records the
+    /// precomposed one and files the transcript under it, so `ö` must encode to ONE dash.
+    #[test]
+    fn a_decomposed_umlaut_finds_the_precomposed_project_dir() {
+        let base = scratch_dir();
+        let decomposed = "/nowhere/53_Games Fo\u{308}rderung";
+        let precomposed = "/nowhere/53_Games F\u{f6}rderung";
+        let want = base.join("projects").join("-nowhere-53-Games-F-rderung");
+        assert_eq!(project_transcript_dir(&base, decomposed), want);
+        assert_eq!(project_transcript_dir(&base, precomposed), want);
+        // A folder filed under the raw spelling is found only while the precomposed one is
+        // absent: a transcript moved in goes to the precomposed one.
+        let raw = base.join("projects").join("-nowhere-53-Games-Fo-rderung");
+        std::fs::create_dir_all(&raw).unwrap();
+        assert_eq!(project_transcript_dir(&base, decomposed), raw);
+        std::fs::create_dir_all(&want).unwrap();
+        assert_eq!(project_transcript_dir(&base, decomposed), want);
     }
 
     #[test]

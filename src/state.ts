@@ -1,7 +1,7 @@
 // The app's mutable state: the session map, the stage pointer, every persisted preference.
 // Reads are the live ESM binding (`activeId`, never `state.activeId`); a `setX` assigns and
 // nothing else. Preferences are read at module scope, so a test imports ./localstorage first.
-import { basename, clampTitlePrefs, hslToHex, type TitlePrefs } from "./format";
+import { basename, clampTitlePrefs, hslToHex, nfcKeys, nfcPath, type TitlePrefs } from "./format";
 import { safeParse } from "./store";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
@@ -26,7 +26,7 @@ export let FAVORITES: Favorite[] = favList(localStorage.getItem("cc-favorites"))
   .map((f: Favorite) => ({ ...f, name: basename(f.path) }));
 export function setFavorites(f: Favorite[]) { FAVORITES = f; }
 export function saveFavorites() { localStorage.setItem("cc-favorites", JSON.stringify(FAVORITES)); }
-export let projOrder: string[] = strList(localStorage.getItem("cc-proj-order"));
+export let projOrder: string[] = strList(localStorage.getItem("cc-proj-order")).map(nfcPath);
 export function setProjOrder(o: string[]) { projOrder = o; }
 export function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.stringify(projOrder)); }
 // Membership only, never an ordering: `projOrder` stays the one answer to sidebar order.
@@ -106,13 +106,21 @@ function strList(raw: string | null): string[] {
   const v = safeParse<string[]>(raw);
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
+// A store keyed by project path: the same narrowing, the key spelled as ./format's `nfcPath`.
+function pathMap(raw: string | null): Record<string, string> { return nfcKeys(strMap(raw)); }
 function favList(raw: string | null): Favorite[] {
   const v = safeParse<Favorite[]>(raw);
   if (!Array.isArray(v)) return DEFAULT_FAVORITES;
-  return v.filter((f): f is Favorite => !!f && typeof f === "object" && typeof f.path === "string");
+  const out: Favorite[] = [];
+  for (const f of v) {
+    if (!f || typeof f !== "object" || typeof f.path !== "string") continue;
+    const path = nfcPath(f.path); // both spellings of one folder fold into one project
+    if (!out.some((o) => o.path === path)) out.push({ ...f, path });
+  }
+  return out;
 }
 
-export const colorOverrides: Record<string, string> = strMap(localStorage.getItem("cc-colors"));
+export const colorOverrides: Record<string, string> = pathMap(localStorage.getItem("cc-colors"));
 // Not in format.ts: it reads `colorOverrides`, and format.ts must not depend on state.
 export function accentFor(key: string): string {
   if (colorOverrides[key]) return colorOverrides[key];
@@ -201,7 +209,7 @@ export function missingAgents(): AgentCli[] { return availAgents.filter((a) => !
 export let defaultAgent: string = localStorage.getItem("cc-agent") || CLAUDE_CLI.id;
 export function setDefaultAgent(id: string) { defaultAgent = id; }
 // Keyed by `colorKey` so every worktree of a repo inherits it; personal, never committed.
-export const agentByProject: Record<string, string> = strMap(localStorage.getItem("cc-agent-by-project"));
+export const agentByProject: Record<string, string> = pathMap(localStorage.getItem("cc-agent-by-project"));
 export function setProjectAgent(colorKey: string, id: string | null) {
   if (id) agentByProject[colorKey] = id; else delete agentByProject[colorKey];
 }
@@ -211,7 +219,7 @@ export function effectiveAgent(colorKey: string): AgentCli {
 }
 // --- which GitHub account a project reads as ---------------------------------
 // `gh` switches accounts globally, so a two-identity machine needs a per-project pin; never committed.
-export const ghAccountByProject: Record<string, string> = strMap(localStorage.getItem("cc-gh-account"));
+export const ghAccountByProject: Record<string, string> = pathMap(localStorage.getItem("cc-gh-account"));
 export function setProjectGhAccount(colorKey: string, login: string | null) {
   if (login) ghAccountByProject[colorKey] = login; else delete ghAccountByProject[colorKey];
 }

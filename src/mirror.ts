@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { dlog } from "./debug";
-import { basename, esc, relTime, tilde } from "./format";
+import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
 import { askedHtml, wpeekHtml } from "./inspectorview";
@@ -260,6 +260,8 @@ export async function loadDormants() {
       if (live.has(r.id)) continue;
       if (!r.resumeId) r.resumeId = r.id;
       if (!r.provider) r.provider = "claude"; // roster written before provider support
+      r.workdir = nfcPath(r.workdir); // roster written before paths were normalised (./format)
+      if (typeof r.colorKey === "string") r.colorKey = nfcPath(r.colorKey);
       candidates.push(r);
     }
     const found = await reconcileProviderRestorables(candidates);

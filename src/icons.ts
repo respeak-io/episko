@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { toast } from "./dom";
 import { readObj } from "./store";
-import { basename, emojiDataUri, esc, normEmoji } from "./format";
+import { basename, emojiDataUri, esc, nfcKeys, normEmoji } from "./format";
 
 // Wired by main.ts at startup; until then (and in a test) an icon change paints nothing.
 let renderSidebar: () => void = () => {};
@@ -15,7 +15,7 @@ let renderMini: () => void = () => {};
 export function setIconRenderMini(fn: typeof renderMini) { renderMini = fn; }
 
 // path → data URI; "" means probed and none found, and a present key is never re-probed.
-const icons: Record<string, string> = readObj<string>("cc-icons");
+const icons: Record<string, string> = nfcKeys(readObj<string>("cc-icons"));
 function saveIcons() { localStorage.setItem("cc-icons", JSON.stringify(icons)); }
 // Bump when discovery improves: cached "no icon" entries are re-probed, found data URIs are kept.
 const ICON_CACHE_VERSION = "3";
@@ -27,7 +27,7 @@ if (localStorage.getItem("cc-icons-v") !== ICON_CACHE_VERSION) {
 // Consulted before `icons`, so neither a re-probe nor a version bump can overwrite it. A value
 // is either a `data:` URI (a picked file) or the emoji itself: one store, so the later pick wins
 // and one Restore clears whichever it was.
-export const customIcons: Record<string, string> = readObj<string>("cc-custom-icons");
+export const customIcons: Record<string, string> = nfcKeys(readObj<string>("cc-custom-icons"));
 function saveCustomIcons() { localStorage.setItem("cc-custom-icons", JSON.stringify(customIcons)); }
 export function emojiFor(key: string): string | null {
   const v = customIcons[key];
