@@ -148,10 +148,15 @@ export function normEmoji(raw: string): string | null {
 
 // An emoji as an image, the trick a page uses for an emoji favicon. Every surface that paints
 // a project icon takes a URL, so going through one keeps them all on a single code path.
+// The baseline scales WITH the size about the box centre (50 + 31/90 * size), or the glyph
+// slides off it: an emoji's ink fills its em box, so at 90 it reached the viewBox edge and a
+// 15px rounded icon clipped it. EM_SIZE inset it; the two must move together.
+const EM_SIZE = 76;
 export function emojiDataUri(em: string): string {
   const font = "Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif";
+  const base = +(50 + (31 / 90) * EM_SIZE).toFixed(2);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">`
-    + `<text x="50" y=".9em" font-size="90" text-anchor="middle" font-family="${font}">${esc(em)}</text></svg>`;
+    + `<text x="50" y="${base}" font-size="${EM_SIZE}" text-anchor="middle" font-family="${font}">${esc(em)}</text></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
