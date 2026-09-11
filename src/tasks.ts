@@ -254,7 +254,7 @@ export interface TaskPrefs {
   dismissMs: number;          // 0 = never auto-dismiss a green run
   attention: boolean;         // does a failed run raise the badge?
 }
-const DEFAULT_TASK_PREFS: TaskPrefs = {
+export const DEFAULT_TASK_PREFS: TaskPrefs = {
   providers: [...ALL_PROVIDERS], known: [...ALL_PROVIDERS], introspect: true, cwd: "session", dismissMs: 20000, attention: true,
 };
 export const taskPrefs: TaskPrefs = { ...DEFAULT_TASK_PREFS, ...readObj<unknown>("cc-task-prefs") as Partial<TaskPrefs> };

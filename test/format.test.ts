@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc, fmtClock, fmtDur,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -470,6 +470,20 @@ describe("emojiDataUri — an emoji as an image, so every icon surface takes a U
   it("escapes XML, so a stray angle bracket cannot reshape the SVG", () => {
     expect(decodeURIComponent(emojiDataUri("<&").slice(19))).toContain(">&lt;&amp;</text>");
   });
+  // A colour emoji's ink fills its em box (measured on Segoe UI Emoji: -0.844em to +0.144em
+  // off the baseline, 0.98em wide), so size and baseline have to stay in step or the glyph
+  // leaves the viewBox and the icon is clipped. Changing one alone fails here.
+  it("keeps the glyph centred in the viewBox and inset from it", () => {
+    const svg = decodeURIComponent(emojiDataUri("🎙️").slice("data:image/svg+xml,".length));
+    const num = (a: string) => Number(new RegExp(` ${a}="([0-9.]+)"`).exec(svg)?.[1]);
+    const size = num("font-size"), base = num("y");
+    const box = { top: base - 0.844 * size, bottom: base + 0.144 * size, w: 0.98 * size };
+    expect(num("x")).toBe(50);
+    expect((box.top + box.bottom) / 2).toBeCloseTo(50, 0);
+    expect(box.top).toBeGreaterThan(8);
+    expect(box.bottom).toBeLessThan(92);
+    expect(50 - box.w / 2).toBeGreaterThan(8);
+  });
 });
 
 describe("hslToHex", () => {
@@ -589,5 +603,18 @@ describe("ageBucket — the sheet's time dividers", () => {
       seen = i;
     }
     expect(seen).toBe(order.length - 1);
+  });
+});
+
+describe("tccLabel", () => {
+  it("spells a service the way macOS spells it", () => {
+    expect(tccLabel("SystemPolicyAppData")).toBe("Data from other apps");
+    expect(tccLabel("DeveloperTool")).toBe("Developer tools");
+  });
+
+  it("still names a service it has never heard of", () => {
+    // The row exists to say what was checked; a blank cell would lose the only fact it has.
+    expect(tccLabel("SomeNewService")).toBe("Some New Service");
+    expect(tccLabel("Photos")).toBe("Photos");
   });
 });

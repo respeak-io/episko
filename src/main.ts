@@ -28,16 +28,16 @@ import {
 } from "./callsheet";
 import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
 import {
-  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
+  addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setDefaultAgent, setKeyPrefs,
+  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
-  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
+  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
-  toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
+  toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, liveServers, taskServerUrl } from "./servers";
@@ -50,7 +50,7 @@ import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
-  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit,
+  refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
 } from "./panes";
@@ -86,7 +86,7 @@ import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
-import { changelogOpen, closeChangelog, initChangelog } from "./changelogui";
+import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
@@ -98,7 +98,8 @@ import {
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
-  closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsOpen,
+  closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsIndex, settingsOpen,
+  type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, renderUsage, usageOpen } from "./usagedlg";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
@@ -156,12 +157,6 @@ if (!IS_MAC) {
 }
 if (!ALL_ENGINES.some((e) => e.id === termEngine)) setTermEngine("embedded");
 
-// cc-theme: absent follows the OS; applied before first paint so the choice sticks.
-{
-  const savedTheme = localStorage.getItem("cc-theme");
-  if (savedTheme === "dark" || savedTheme === "light") document.documentElement.setAttribute("data-theme", savedTheme);
-}
-
 // ---------- config ----------
 homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // Seam wiring: leaf modules reach this layer through setters that default to a no-op,
@@ -199,8 +194,9 @@ function openProjectFiles() {
 }
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
-  cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
+  cycleSort, toggleInsp, toggleRail, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles, openUsage,
+  settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
 });
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
@@ -217,13 +213,20 @@ setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
-  setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize,
-  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs,
+  setSort, setEngine, bumpFont, applyFontSize,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
+  // The rail's doors, and whether a release intro has been read (`@new`).
+  openUsage, openWhatsNew: () => openChangelog(), versionUnread,
+  // macOS access: a probe, a pane we can only point at, and what the system log kept.
+  fullDiskAccess: () => invoke<boolean>("full_disk_access"),
+  openPrivacyPane: (pane) => invoke("open_privacy_pane", { pane }),
+  resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
+  privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -588,7 +591,6 @@ function openFootTarget(go: string) {
 }
 
 $("kbar").addEventListener("click", openPalette);
-$("themeBtn").addEventListener("click", toggleTheme);
 
 // Window controls (Windows only; macOS's traffic lights are real). Close goes through
 // the OS close request so it lands in the quit-requested confirm below. Maximize is
@@ -836,6 +838,10 @@ window.addEventListener("beforeunload", flushRoster);
 // that pane runs nothing on a schedule of its own.
 refreshDirtyStates(true);
 setInterval(() => { void refreshDirtyStates(); refreshDashWorkset(); }, 5000);
+
+// Auto-fetch. A fixed tick asking ./autofetch whether the checkout on stage is due one,
+// never an interval rebuilt when the cadence changes; arriving at a pane asks as well.
+setInterval(() => { void tickAutoFetch(); }, 20_000);
 
 // Git-derived labels. The hook stream pokes the same function on a git command; this
 // interval is the backstop for changes made outside Claude (an editor, your terminal).

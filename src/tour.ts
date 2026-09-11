@@ -72,6 +72,7 @@ export interface Chapter {
   mins: string;  // rough length, e.g. "90s"
   required?: boolean;  // cannot be unchecked in the picker; exactly one chapter
   since?: string;  // a release intro: offered from What's new, never on a first run
+  only?: "mac";  // an OS dialog nobody else can see; main.ts sets the platform
   steps: TourStep[];
 }
 
@@ -180,7 +181,7 @@ export const CHAPTERS: Chapter[] = [
         title: "What you are not being asked",
         body: "No permission card appeared for that command: the provider considered it safe or its configured policy "
           + `answered automatically. When an integrated provider does stop, the row goes <b class="g-attn">pink ◆</b>, `
-          + "an urgent sound plays, and <b>Allow</b> / <b>Deny</b> / <b>In terminal</b> appear here. Claude's starting mode is in Settings › Sessions.",
+          + "an urgent sound plays, and <b>Allow</b> / <b>Deny</b> / <b>In terminal</b> appear here. Claude's starting mode is in Settings › Launching.",
       },
       {
         anchor: "#projects", needs: ["rail"],
@@ -218,18 +219,18 @@ export const CHAPTERS: Chapter[] = [
         // Two steps for two gestures: a step that opens a window hands over to one inside it.
         anchor: "#setBtn",
         title: "Everything else is in here",
-        body: "Sounds, permission modes, keys, worktrees, and every day's usage — one window, and it is where the rest "
-          + "of this chapter lives.",
+        body: "Sounds, permission modes, keys, worktrees: one page, searchable, and it is where the rest of this "
+          + "chapter lives.",
         wait: "Open Settings",
         done: (w) => isOpen(w, "settings"),
       },
       {
-        anchor: "[data-settab=\"sounds\"]", dynamic: true,
+        anchor: "[data-settab=\"attention\"]", dynamic: true,
         title: "Tune what you hear",
         body: "Every event has its own tone and its own switch, previewable in place. <b>Four ship switched off</b> — "
           + "anything that fires on routine activity turns a fleet into a fruit machine.",
-        wait: "Open the Sounds tab",
-        done: (w) => w.settingsTab === "sounds",
+        wait: "Open the Attention section",
+        done: (w) => w.settingsTab === "attention",
       },
       {
         anchor: "#setBody",
@@ -390,15 +391,59 @@ export const CHAPTERS: Chapter[] = [
       },
     ],
   },
+  {
+    // A release intro rather than a feature tour: what the dialog means matters more than
+    // where the buttons are.
+    id: "access", rev: 1, since: "0.28.0", only: "mac",
+    name: "When macOS asks about other apps",
+    blurb: "Why those dialogs name Episko when it was an agent that reached, and what to do about them.",
+    mins: "60s",
+    steps: [
+      {
+        title: "Why the dialog says Episko",
+        body: "macOS blames whichever app is <b>responsible</b> for a process, and every agent, task and shell here "
+          + "is a child of Episko. So a session that reads another app's data — a search wandering out of the project "
+          + "— raises a dialog with our name on it.",
+      },
+      {
+        anchor: "#setBtn",
+        title: "There is a section about it now",
+        body: "Settings › Privacy, macOS only. Nothing in Episko can grant these permissions — the system asks the "
+          + "human, always — but everything you can do about them is in one place.",
+        wait: "Open Settings",
+        done: (w) => isOpen(w, "settings"),
+      },
+      {
+        anchor: "[data-settab=\"privacy\"]", dynamic: true,
+        title: "Three things it offers",
+        body: "Whether Episko holds <b>full disk access</b>, a button to the System Settings pane that grants it, and "
+          + "a way to bring back a prompt you denied by mistake — macOS caches that answer and never asks twice.",
+        wait: "Open the Privacy section",
+        done: (w) => w.settingsTab === "privacy",
+      },
+      {
+        anchor: "#setBody",
+        title: "It is a real trade-off",
+        body: "Full disk access ends the dialogs, and <b>every agent Episko launches inherits it</b>. The tab says so "
+          + "rather than recommending it, and the scan at the bottom names which binary actually reached.",
+      },
+    ],
+  },
 ];
 
 // ---------- lookups ----------
 
 export const chapterKey = (c: Chapter) => `${c.id}@${c.rev}`;
 export const chapterById = (id: string): Chapter | undefined => CHAPTERS.find((c) => c.id === id);
-export const pickerChapters = (): Chapter[] => CHAPTERS.filter((c) => !c.since);
+// main.ts hands the platform over once; macOS-first, like the app, so a test that never
+// sets it sees every chapter.
+let onMac = true;
+export function setTourPlatform(mac: boolean) { onMac = mac; }
+const platformOk = (c: Chapter) => c.only !== "mac" || onMac;
+
+export const pickerChapters = (): Chapter[] => CHAPTERS.filter((c) => !c.since && platformOk(c));
 export const releaseChapter = (version: string): Chapter | null =>
-  CHAPTERS.find((c) => c.since === version) ?? null;
+  CHAPTERS.find((c) => c.since === version && platformOk(c)) ?? null;
 
 // ---------- the store ----------
 // One JSON blob under `cc-tour`: the halves are only ever read together.

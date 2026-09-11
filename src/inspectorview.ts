@@ -12,10 +12,11 @@ import {
 } from "./types";
 import { isEnvelope, OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
 import type { ProviderMessage } from "./providers";
-import { sessions } from "./state";
+import { fetchedByRepo, sessions } from "./state";
 
 export let gitBusy: string | null = null; // session with a fetch/pull/push in flight; its buttons grey out
-export function setGitBusy(id: string | null) { gitBusy = id; }
+export let gitOp = "";                    // …and which one, so the card says so rather than only dimming
+export function setGitBusy(id: string | null, op = "") { gitBusy = id; gitOp = id ? op : ""; }
 // ---- inspector: shared helpers for the redesigned modules ----
 const TOOL_VERB: Record<string, string> = { Read: "Reading", Edit: "Editing", Write: "Writing", Bash: "Running", Grep: "Searching", Glob: "Searching", WebFetch: "Browsing", WebSearch: "Searching", TodoWrite: "Planning" };
 function toolVerb(tool: string): string {
@@ -187,18 +188,36 @@ export function wsetHtml(s: Sess): string {
   const dirty = g.files || g.untracked;
   // Only draw the diff half when something is uncommitted; the branch row is always needed.
   const diff = dirty ? wpeekHtml(s.workdir, s.project + (s.branch ? " · " + s.branch : ""), g) : "";
-  const sync = g.upstream
-    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${esc(g.upstream)} · as of the last fetch">${
+  // An automatic fetch that cannot reach the remote leaves these numbers frozen, and a
+  // frozen count reads exactly like a true one; ./autofetch backs it off, the tooltip says so.
+  const last = fetchedByRepo.get(s.colorKey || s.workdir);
+  const stale = last && !last.ok ? " · the last automatic fetch couldn't reach the remote" : "";
+  const sync = gitBusy === s.id
+    ? `<span class="sync busy" title="${escAttr(gitOp)} in flight"><span class="u-spin"></span>${esc(gitOp)}…</span>`
+    : g.upstream
+    ? `<span class="sync${g.ahead || g.behind ? "" : " even"}" title="${escAttr(g.upstream + " · as of the last fetch" + stale)}">${
         g.ahead || g.behind ? `${g.ahead ? `<span class="ah">↑${g.ahead}</span>` : ""}${g.behind ? `<span class="bh">↓${g.behind}</span>` : ""}` : "in sync"
       }</span>`
     : `<span class="sync none" title="This branch tracks no upstream">no upstream</span>`;
   // The branch row is about the branch only; file counts belong in wpeekHtml. The name is
   // the control that changes it: this checkout switches on its own, whatever the root is on.
+  // Its own name goes in the title too, since a long branch is ellipsized to keep `sync` in.
   return `<div class="wset">${diff}
     <div class="branch"><button class="bsw" data-brswitch="${esc(s.id)}" aria-haspopup="listbox"
-        title="Switch this checkout to another branch">${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span><span class="c">▾</span></button>${sync}</div>
+        title="${escAttr((s.branch || "—") + " — switch this checkout to another branch")}">${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span><span class="c">▾</span></button>${sync}</div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
+
+// The same card before the first `git_diffstat` answers. A pane's branch is what you look
+// for the moment it opens, and a card that appears half a second later shoves everything
+// under it down the panel; this holds the space and says it is still reading.
+export function wsetSkeleton(): string {
+  const btn = (label: string) => `<button class="gitb" disabled>${label}</button>`;
+  return `<div class="wset sk" aria-busy="true">
+    <div class="branch"><span class="db-sk bsk-name"></span><span class="db-sk bsk-sync"></span></div>
+    <div class="gitrow">${btn("fetch")}${btn("pull")}${btn("push")}</div></div>`;
+}
+
 // Fetch / pull / push. Only grey a button when there is nothing to do, never for the
 // awkward states: diverged or no-upstream keeps it live, since the backend then refuses
 // with a suggestion and hands over a prefilled terminal. "Nothing to do" needs an upstream.

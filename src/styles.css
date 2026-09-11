@@ -43,26 +43,6 @@
   --font-mono: "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", "Berkeley Mono", Menlo, monospace;
   color-scheme: dark;
 }
-:root[data-theme="light"] {
-  --bg:#f4f2f8; --bg-2:#eceaf2; --panel:#ffffff; --surface:#faf9fc; --surface-2:#f1eff7;
-  --hair:rgba(24,18,40,.09); --hair-strong:rgba(24,18,40,.15); --lift:rgba(255,255,255,.8);
-  --text:#1c1726; --muted:#6a6480; --muted-2:#9a94ab; --terminal-bg:#100e17; --terminal-text:#dcd8e6;
-  --accent-ink: color-mix(in srgb, var(--accent) 80%, black 20%);
-  /* darker tool accents so they hold contrast on the light ground */
-  --tool-read:#2a7fd0; --tool-edit:#6a45e0; --tool-bash:#b9791a; --tool-task:#128a63; --tool-web:#c04f97; --tool-mcp:#6a6480;
-  /* usage analytics — re-stepped for the light ground (own steps, not an inversion) */
-  --m-opus:#7c5cf0; --m-sonnet:#b8760f; --m-haiku:#0c8f68; --m-other:#8a8598; --m-unattr:#b8b2c6;
-  --m-fable:#2b6fd0; --m-gpt:#c04270; --m-codex:#0f8fa3;
-  --m-s1:#6e8c1e; --m-s2:#9a45c0; --m-s3:#5a7095; --m-s4:#b34a35; --m-fade:#241d33;
-  --u-g0:#eceaf2; --u-g1:#d8cff2; --u-g2:#b7a4ee; --u-g3:#9575e8; --u-g4:#7c5cf0;
-  --u-t1:#e4def3; --u-t2:#c3b0ee; --u-t3:#9878e6; --u-t4:#7c5cf0;
-  /* lane hues re-stepped: the dark set's pastels vanish on white at 1.6px of stroke */
-  --gl-0:#2563eb; --gl-1:#dc2626; --gl-2:#15803d; --gl-3:#b45309;
-  --gl-4:#7c3aed; --gl-5:#0e7490; --gl-6:#c2410c; --gl-7:#0f766e;
-  /* the dark set's violet washes out on the light ground at glyph weight */
-  --st-bg:#6d4fe0;
-  color-scheme: light;
-}
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -302,9 +282,17 @@ html.win .wctl { display: flex; }
 .sw-hex:focus { border-color: var(--accent-line); }
 .sw-apply { height: 26px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); cursor: pointer; font: 600 11px var(--font-ui); }
 .sw-apply:hover { filter: brightness(1.08); }
-/* Emoji mode: a wider grid than the swatches', and capped so a short window still scrolls it. */
-.colorpop.emo { grid-template-columns: repeat(8, 26px); max-height: min(420px, 80vh); overflow-y: auto; }
-.em-btn { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 16px; line-height: 1; }
+/* Emoji mode: one column of full-width controls around a windowed list, whose own rows carry
+   the 8 cells. Row heights are inline, from ./emoji's EM_ROW_H / EM_HEAD_H, so they cannot drift. */
+/* 281 = 8x26 cells + 7x6 gaps + the 9px scrollbar every scroller here gets + 2x10 padding
+   + 2x1 border. The gutter is reserved, so a short result list does not reflow the grid. */
+.colorpop.emo { grid-template-columns: 1fr; width: 281px; }
+.em-scroll { grid-column: 1 / -1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; margin-top: 1px; }
+.em-row { display: flex; gap: 6px; align-items: center; }
+.em-head { display: flex; align-items: flex-end; padding-bottom: 3px; color: var(--muted-2); font: 700 9px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; }
+.sw-emin { font: 500 12px var(--font-ui); } /* it searches now; the mono is the hex field's */
+.em-none { padding: 14px 4px; color: var(--muted-2); font: 500 11px var(--font-ui); text-align: center; }
+.em-btn { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 16px; line-height: 1; flex: none; }
 .em-btn:hover { background: var(--surface); border-color: var(--hair-strong); transform: scale(1.12); }
 .em-btn.on { border-color: var(--accent-line); background: var(--surface); }
 .sw-back { text-align: left; padding: 0 8px; }
@@ -379,7 +367,7 @@ html.win .wctl { display: flex; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
 /* A run group: one dependsOn launch as a block; the header is NOT a .srow. --surface, not --lift:
-   lift is a white veil that reads as nothing on the light theme's white panel. */
+   lift is a 5% white veil, a highlight rather than a ground. */
 .rgroup { margin: 2px 0; border-radius: 8px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair); overflow: hidden; }
 .rgroup.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
 /* .srow's column rhythm plus the twisty. position: relative is load-bearing: the absolutely
@@ -706,10 +694,18 @@ html.win .wctl { display: flex; }
 .wpeek:hover .wpeek-cue { color: var(--accent-ink); } .wpeek:hover .files { color: var(--text); }
 .wset .branch { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .wset .branch .b { font-family: var(--font-mono); color: var(--accent-ink); }
-/* ahead/behind against the upstream — sits next to the branch name */
-.wset .sync { display: inline-flex; align-items: center; gap: 5px; margin-left: 7px; font: 10px var(--font-mono); }
+/* ahead/behind against the upstream, held at the right edge. The count is the half you came
+   for, so the branch name is what gives way (min-width on .bsw lets it) — a `claude/…` name
+   otherwise took the row and pushed "3 behind" out of the card entirely. */
+.wset .sync { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; flex: none; white-space: nowrap; font: 10px var(--font-mono); }
 .wset .sync .ah { color: var(--st-done); } .wset .sync .bh { color: var(--st-working); }
 .wset .sync.even, .wset .sync.none { color: var(--muted); opacity: .7; }
+.wset .sync.busy { color: var(--muted); }
+.wset .sync.busy .u-spin { margin-right: 0; }
+/* The card before its first git read; the widths are the shapes it will hold (see wsetSkeleton) */
+.wset.sk .branch { height: 19px; }
+.bsk-name { flex: none; width: 42%; max-width: 160px; height: 12px; }
+.bsk-sync { flex: none; width: 46px; height: 10px; margin-left: auto; }
 /* fetch / pull / push, disabled with a title rather than hidden so the row keeps its shape.
    Shared with the dashboard's Repository card; only the row around it is each surface's own. */
 .gitb { height: 24px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); }
@@ -1562,21 +1558,23 @@ select.in-ctl { cursor: pointer; }
 
 /* settings dialog: sidebar-tab layout on the shared #scrim. Fixed footprint, one size for every
    tab, so switching tabs never reflows the window; the busy tab scrolls inside .set-body. */
-.setdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(700px, 94vw); height: min(564px, 90vh); z-index: 42; display: grid; grid-template-columns: 166px minmax(0,1fr); grid-template-rows: minmax(0,1fr); opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s, width .32s cubic-bezier(.32,.72,0,1), height .32s cubic-bezier(.32,.72,0,1); border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.setdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(920px, 94vw); height: min(680px, 90vh); z-index: 42; display: grid; grid-template-columns: 210px minmax(0,1fr); grid-template-rows: minmax(0,1fr); opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s, width .32s cubic-bezier(.32,.72,0,1), height .32s cubic-bezier(.32,.72,0,1); border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .setdlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
-.set-rail { display: flex; flex-direction: column; padding: 16px 10px; background: color-mix(in srgb, var(--bg-2) 55%, transparent); border-right: 1px solid var(--hair); }
+.set-rail { display: flex; flex-direction: column; min-height: 0; padding: 14px 8px 0; background: color-mix(in srgb, var(--bg-2) 55%, transparent); border-right: 1px solid var(--hair); }
 .set-title { font-size: 13px; font-weight: 700; letter-spacing: -.01em; padding: 0 8px 12px; }
 .set-tabs { display: flex; flex-direction: column; gap: 2px; }
 .set-tab { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 8px; cursor: pointer; text-align: left; font: 600 12px var(--font-ui); color: var(--muted); background: transparent; border: 1px solid transparent; }
 .set-tab:hover { background: var(--surface); color: var(--text); }
 .set-tab.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); }
 .set-tglyph { flex: none; width: 16px; text-align: center; font-size: 12px; opacity: .9; }
-.set-pane { position: relative; min-width: 0; min-height: 0; display: flex; }
+/* A column: the status line sits above the body, never beside it. Flat, so the sticky section
+   bands below are the same colour as the surface they sit on. */
+.set-pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
 .set-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; display: flex; flex-direction: column; gap: 22px; }
 .set-body::-webkit-scrollbar { width: 10px; }
 .set-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
 .set-body::-webkit-scrollbar-thumb:hover { background: var(--muted-2); border: 3px solid transparent; background-clip: padding-box; }
-.set-x { position: absolute; top: 12px; right: 12px; z-index: 1; width: 24px; height: 24px; border-radius: 7px; cursor: pointer; display: grid; place-items: center; font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.set-x { position: absolute; top: 12px; right: 12px; z-index: 4; width: 24px; height: 24px; border-radius: 7px; cursor: pointer; display: grid; place-items: center; font-size: 11px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
 .set-x:hover { color: var(--text); border-color: var(--hair-strong); }
 .set-group { display: flex; flex-direction: column; }
 .set-glabel { font-size: 12.5px; font-weight: 650; }
@@ -1587,6 +1585,80 @@ select.in-ctl { cursor: pointer; }
 .set-itxt { flex: 1; min-width: 0; }
 .set-inline .set-hint { margin-bottom: 0; }
 .set-inline > .sw { flex: none; }
+
+/* ---------- one page: the rail's groups and search, sticky section heads, the row's states ---------- */
+.set-title { display: flex; align-items: baseline; gap: 8px; padding: 0 8px 10px; }
+.set-count { margin-left: auto; font: 600 9.5px var(--font-mono); color: var(--muted-2); }
+.set-search { position: relative; margin: 0 2px 8px; }
+.set-search input { width: 100%; height: 30px; padding: 0 26px 0 27px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--bg-2); color: var(--text); font: 12px var(--font-ui); }
+.set-search input::placeholder { color: var(--muted-2); }
+.set-search input:focus { outline: none; border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-wash); }
+/* WebKit draws its own ✕ on a search field; ours is the only one */
+.set-search input::-webkit-search-cancel-button, .set-search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+.set-sic { position: absolute; left: 9px; top: 7px; font-size: 12px; color: var(--muted-2); pointer-events: none; }
+.set-sclr { position: absolute; right: 5px; top: 5px; width: 20px; height: 20px; border-radius: 6px; border: 0; background: transparent; color: var(--muted-2); cursor: pointer; font-size: 11px; display: none; place-items: center; }
+.set-search.has .set-sclr { display: grid; }
+.set-sclr:hover { background: var(--surface-2); color: var(--text); }
+.set-chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 2px 8px; }
+.set-chip { height: 19px; padding: 0 6px; border-radius: 5px; cursor: pointer; font: 600 9.5px var(--font-mono); color: var(--muted-2); background: transparent; border: 1px solid var(--hair); display: inline-flex; align-items: center; gap: 4px; }
+.set-chip b { font-weight: 600; color: var(--muted); }
+.set-chip:hover, .set-chip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.set-tabs { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
+.set-grp { font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); padding: 10px 8px 4px; }
+.set-tab { width: 100%; padding: 5px 8px; }
+.set-tab.zero { opacity: .32; }
+.set-tn { margin-left: auto; font: 600 9.5px var(--font-mono); color: var(--muted-2); }
+.set-tab.on .set-tn { color: var(--accent-ink); }
+.set-tdot { margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-ink); }
+.set-status { display: none; flex: none; padding: 12px 52px 0 20px; font: 11px var(--font-mono); color: var(--muted-2); }
+.setdlg.searching .set-status { display: block; }
+.set-status b { color: var(--text); font-weight: 600; }
+.set-fz { color: var(--st-working); }
+.set-body { padding: 0 18px 28px 20px; gap: 0; }
+.set-sec { margin-bottom: 8px; }
+/* A full-width band, flush with the top of the pane and clear of the ✕; the group label answers
+   "where am I" at any scroll. Solid: a fade to transparent let the row underneath show through. */
+.set-sech { position: sticky; top: 0; z-index: 3; display: flex; align-items: baseline; gap: 8px; margin: 0 -18px 4px -20px; padding: 12px 52px 7px 20px; border-bottom: 1px solid var(--hair); background: var(--panel); }
+.set-sech h3 { margin: 0; font-size: 13px; font-weight: 750; letter-spacing: -.01em; }
+.set-secsub { font-size: 11px; color: var(--muted-2); }
+.set-secgrp { margin-left: auto; font: 700 9px var(--font-ui); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+.set-note { padding: 6px 12px 8px; }
+.set-note .set-hint { margin-bottom: 0; max-width: 62ch; }
+.set-row { position: relative; padding: 9px 10px 9px 12px; border-radius: 8px; }
+.set-row:hover { background: var(--surface); }
+.set-row.set-chg::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px; border-radius: 2px; background: var(--accent); }
+.set-row.cur { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.set-row.set-lit { animation: set-lit 3.2s ease-out; }
+@keyframes set-lit { 0% { background: color-mix(in srgb, var(--accent) 26%, transparent); box-shadow: inset 0 0 0 1px var(--accent-line); } 100% { background: transparent; box-shadow: none; } }
+.set-row .set-hint { margin-bottom: 0; max-width: 58ch; line-height: 1.5; }
+.set-row > .set-inline { gap: 14px; }
+.set-ctl { display: flex; align-items: center; gap: 8px; flex: none; }
+.set-cur { font-size: 10.5px; color: var(--muted-2); margin-top: 2px; }
+.set-why { border: 0; background: none; padding: 0; margin-left: 5px; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--accent-ink); }
+.set-why::after { content: " ▾"; font-size: 9px; }
+.set-why-open .set-why::after { content: " ▴"; }
+.set-more { display: none; font-size: 11px; color: var(--muted); max-width: 58ch; margin-top: 5px; padding-left: 9px; border-left: 1px solid var(--hair-strong); line-height: 1.5; }
+.set-why-open > .set-inline .set-more, .set-more-on { display: block; }
+.set-matched { margin-top: 3px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.set-matched b { font-weight: 600; color: var(--accent-ink); }
+.set-hit { background: color-mix(in srgb, var(--accent) 32%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+.set-tag { font: 600 9px var(--font-mono); padding: 0 5px; line-height: 15px; border-radius: 4px; border: 1px solid var(--hair); color: var(--muted-2); background: var(--bg-2); white-space: nowrap; margin-left: 7px; vertical-align: 1px; }
+.set-tag-new { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.set-seg { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; padding: 2px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--hair); gap: 1px; }
+.set-segb { padding: 2px 8px; border-radius: 5px; border: 0; background: none; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--muted-2); white-space: nowrap; }
+.set-segb:hover { color: var(--text); }
+.set-segb.on { background: var(--accent-wash); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.set-fold { height: 24px; padding: 0 8px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); color: var(--muted); background: var(--bg-2); border: 1px solid var(--hair); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.set-fold:hover, .set-fold.on { color: var(--accent-ink); border-color: var(--accent-line); }
+.set-foldc { font-size: 9px; transition: transform .16s; }
+.set-fold.on .set-foldc { transform: rotate(180deg); }
+.set-reset { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--muted-2); cursor: pointer; font-size: 11px; display: grid; place-items: center; opacity: 0; transition: opacity .12s; }
+.set-row:hover .set-reset, .set-row.cur .set-reset, .set-reset:focus-visible { opacity: 1; }
+.set-reset:hover { color: var(--accent-ink); border-color: var(--accent-line); }
+.set-panel { margin-top: 2px; }
+.set-none { padding: 60px 24px; text-align: center; color: var(--muted); font-size: 13px; }
+.set-none b { color: var(--text); }
+.set-none p { margin: 6px 0 0; font-size: 12px; color: var(--muted-2); }
 .seg { display: flex; flex-direction: column; gap: 5px; }
 .seg-opt { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 11px; border-radius: 9px; cursor: pointer; text-align: left; border: 1px solid var(--hair); background: var(--surface); color: var(--text); }
 .seg-opt:hover { border-color: var(--hair-strong); background: var(--surface-2); }
@@ -1764,7 +1836,6 @@ select.in-ctl { cursor: pointer; }
 .wtcard.on .wtcard-desc { color: var(--muted); }
 /* the mini-sidebar rendered inside each card */
 .p-mini { margin: 0 10px; padding: 9px 8px; border-radius: 8px; background: color-mix(in srgb, var(--bg-2) 70%, var(--panel)); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; min-height: 158px; }
-:root[data-theme="light"] .p-mini { background: var(--bg-2); }
 .p-phead { display: flex; align-items: center; gap: 6px; padding: 2px 4px 3px; }
 .p-phead + .p-phead { margin-top: 5px; }
 .p-pdot { flex: none; width: 8px; height: 8px; border-radius: 3px; background: var(--h, var(--accent)); box-shadow: 0 0 6px -1px var(--h, var(--accent)); }
@@ -2237,7 +2308,7 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user .tvgutter { color: var(--accent); }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
-/* the mirror is always on --terminal-bg (dark in both themes), so text is keyed to --terminal-text */
+/* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
 .tvmsg.assistant .tvtext { color: color-mix(in srgb, var(--terminal-text) 82%, var(--terminal-bg)); }
 .ext-empty { margin: auto; text-align: center; color: var(--muted-2); font-size: 12px; line-height: 1.7; }
@@ -2602,7 +2673,7 @@ select.in-ctl { cursor: pointer; }
 /* Every track is minmax(0, …) so the table shrinks with the pane instead of running off the
    right edge: the overlay only gets the dashboard's middle column, and that width varies. */
 .dbbr, .dbbr-hd { display: grid; gap: 8px; align-items: center;
-  grid-template-columns: 20px minmax(0, 1.15fr) minmax(0, 108px) minmax(0, 1.4fr) minmax(0, 58px) minmax(0, 74px) minmax(0, 68px) 18px; }
+  grid-template-columns: 20px minmax(0, 1.15fr) minmax(0, 108px) minmax(0, 1.4fr) minmax(0, 58px) minmax(0, 74px) minmax(0, 68px) 42px; }
 .dbbr-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbbr-hd .r, .dbbr .r { text-align: right; }
 .dbbr { min-height: 36px; padding: 3px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
@@ -2661,7 +2732,9 @@ select.in-ctl { cursor: pointer; }
 .hf.no { opacity: .45; }
 .hf.go { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent);
   background: color-mix(in srgb, var(--st-error) 12%, transparent); }
-.dbbr .ra { display: flex; justify-content: flex-end; }
+.dbbr .ra { display: flex; justify-content: flex-end; gap: 1px; }
+/* A lock is a decision, not a refusal: it reads in the row's own ink, never in warn orange. */
+.tag.lock { color: var(--muted); border-color: var(--hair-strong); }
 .dbbr .ra .act { width: 20px; padding: 0; justify-content: center; opacity: 0; }
 .dbbr:hover .ra .act { opacity: .75; }
 .dbbr .ra .act:hover { opacity: 1; }
@@ -2689,7 +2762,7 @@ select.in-ctl { cursor: pointer; }
 .gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .gitb.brpick .c, .bsw .c { flex: none; color: var(--muted-2); font-size: 9px; }
 .gitb.brpick .v { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bsw { max-width: 100%; padding: 1px 6px 1px 4px; margin-left: -4px; border-radius: 6px; border: 1px solid transparent;
+.bsw { max-width: 100%; min-width: 0; padding: 1px 6px 1px 4px; margin-left: -4px; border-radius: 6px; border: 1px solid transparent;
   background: transparent; color: inherit; font: inherit; }
 .bsw:hover, .bsw.open { border-color: var(--accent-line); background: var(--accent-wash); }
 .bsw .b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

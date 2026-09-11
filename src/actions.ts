@@ -10,13 +10,14 @@ import { ask } from "./confirm";
 import { basename } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell, shelveSession } from "./panes";
+import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
-import { renderSettings } from "./settings";
+import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  attnPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
   saveFavorites, saveProjGroups, sessions, termEngine,
@@ -42,6 +43,7 @@ import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
+import type { AutoFetchPrefs } from "./autofetch";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -73,10 +75,11 @@ export function openTerminalIn(project: string, dir: string) {
   void launchShell(project, dir, { colorKey: dir });
 }
 // Tauri's clipboard plugin, never navigator.clipboard: that raises an OS permission prompt.
-export async function copyPath(dir: string) {
-  try { await writeText(dir); toast("Path copied"); }
-  catch { toast(dir); } // clipboard denied — at least show what it was
+export async function copyText(text: string, said = "Copied") {
+  try { await writeText(text); toast(said); }
+  catch { toast(text); } // clipboard denied — at least show what it was
 }
+export const copyPath = (dir: string) => copyText(dir, "Path copied");
 
 export async function openProjectFolder(key: string) {
   try { await invoke("open_folder", { dir: key }); }
@@ -152,7 +155,7 @@ export function resolvePermission(id: string, behavior: string) {
   renderAll();
 }
 
-// Settings › Sessions owns this now (`data-set="wtgroup"`); the console stopgap that stood
+// Settings › Sidebar owns this now (`data-set="wtgroup"`); the console stopgap that stood
 // in for it before that window shipped is gone.
 export function setWtGroup(m: WtGroup) {
   setWtGroupState(m);
@@ -203,7 +206,7 @@ export function setAttnPrefs(p: AttnPrefs) {
   setAttnPrefsState(p);
   localStorage.setItem("cc-attn", JSON.stringify(attnPrefs));
   renderAll();
-  renderSettings(); // the preview row in Settings › Sessions replays at the new timing
+  renderSettings(); // the preview row in Settings › Attention replays at the new timing
 }
 
 // renderSettings only: nothing outside the Sounds tab shows this; ./chime reads soundPrefs live.
@@ -220,6 +223,15 @@ export function setRevivePrefs(p: RevivePrefs) {
   localStorage.setItem("cc-revive", JSON.stringify(revivePrefs));
   renderAll();
   renderSettings(); // the ladder preview redraws at the new timings
+}
+
+// The tick reads these live, so nothing is rescheduled; the kick is so that switching it
+// on answers now rather than at the next tick, which is what makes the switch feel real.
+export function setAutoFetchPrefs(p: AutoFetchPrefs) {
+  setAutoFetchPrefsState(p);
+  localStorage.setItem("cc-autofetch", JSON.stringify(autoFetchPrefs));
+  renderSettings();
+  void tickAutoFetch();
 }
 
 // renderSettings only: ./debug reads vitalsPrefs live on its tick, so no interval is rebuilt.
@@ -446,6 +458,8 @@ export function setWindowFocused(v: boolean) {
   if (v === winFocused) return;
   setWinFocusedState(v);
   applyFx();
+  // Coming back from System Settings is the one way the access probe goes stale.
+  if (v && settingsOpen()) refreshAccess();
 }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // ⌘I / ◨. On a session this hides the inspector; on the dashboard it collapses to an icon
@@ -462,17 +476,6 @@ export function toggleInsp() {
   }
   refit();
 }
-export function effectiveTheme(): "dark" | "light" {
-  const a = document.documentElement.getAttribute("data-theme");
-  if (a === "dark" || a === "light") return a;
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-export function setTheme(t: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", t);
-  localStorage.setItem("cc-theme", t);
-  renderSettings(); // keep the settings picker in sync if it's open
-}
-export function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
 
 // ---------- following a session to the checkout its agent moved to ----------
 // Two repairs (docs/worktrees.md). via "cwd": Claude already runs there, so adopt the

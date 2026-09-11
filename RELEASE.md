@@ -95,6 +95,10 @@ below.
 both. The footer shows the running version; a mismatch there is the first thing a
 user reports.
 
+A tour chapter carrying a `since` (./tour) names the version it belongs to, and *What's
+new* offers it on that string alone. If the release is cut as anything else, the chapter
+is never offered and nothing says so — check the `since` against the version being bumped.
+
 ---
 
 ## The click-through
@@ -220,7 +224,7 @@ a broken alert is indistinguishable from a switched-off one.
       is a *blocking* hook — if the UI doesn't answer, Claude hangs, so a failure here
       is a hard blocker.
 - [ ] **Answering in the CLI instead** also clears the badge on the next lifecycle event.
-- [ ] **A non-default permission mode reaches the session.** Settings › Sessions →
+- [ ] **A non-default permission mode reaches the session.** Settings › Launching →
       **Plan**, then `＋ Session`: the new-session dialog shows the Plan chip and the
       pane comes up in plan mode (Claude's own indicator says so, and it refuses to
       edit). Set it back to **Manual** afterwards — every launch, including a restore,
@@ -468,6 +472,16 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 - [ ] **Quit guard** warns about live sessions.
 - [ ] **Caffeinate** asserts and releases (the icon reads armed vs asserting).
 - [ ] **The window survives a resize** — panes refit, no stuck scrollback.
+- [ ] **Settings › Privacy** (macOS): the status line matches reality, *Open System
+      Settings…* lands on Full Disk Access, and *Scan the last day* returns rows naming
+      binaries. `tccutil` is the one action that changes system state — run it last, and
+      expect the next session that reaches to raise a dialog again.
+- [ ] **Settings is one page.** ⌘, opens it with the search focused; typing `ghostty` keeps
+      one section and the rail counts it, `@changed` lists only what differs from its default
+      and ⟲ on such a row puts it back, a click on *Attention* in the rail lights that entry
+      and scrolls to it, and Esc clears the box before it closes the window. The shortcut
+      sheet's quick open lands lit on *Keyboard shortcuts*; *Usage & spend* in the rail opens
+      its own window; ⌘K with a setting's name offers *Setting · …* and lands on the row.
 
 ### The title bar, which is the header (no native one behind it)
 

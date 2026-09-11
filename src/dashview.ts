@@ -12,9 +12,9 @@ import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
 import {
-  anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks,
+  anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
   orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
-  type CheckoutRow, type MergedPrs, type SweepResult,
+  type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
 } from "./branches";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -486,6 +486,8 @@ export interface CleanReport {
 
 export interface BranchesView {
   tab: "branches" | "checkouts";
+  root: string;     // the project's own folder
+  project: string;  // and what the rail calls it; both only so a row can name its menu's target
   rows: BranchRow[];
   checkouts: CheckoutRow[];
   picked: ReadonlySet<string>;
@@ -496,6 +498,7 @@ export interface BranchesView {
   scopes: { local: boolean; remote: boolean };
   trunk: string;
   remoteName: string;
+  protect: ProtectCtx;
   prs: MergedPrs | null;
   prsLoading: boolean;
   busy: boolean;
@@ -538,6 +541,11 @@ function branchesBody(o: BranchesView): string {
       ? `<div class="dbbr-note warn">No pull-request data: ${esc(o.prs.reason || "gh unavailable")}. `
         + `A squash-merged branch is contained in nothing, so without this it can't be identified and isn't offered.</div>`
       : "";
+  // A file that does not parse protects nothing, and silence would read as "nothing is
+  // protected here" — the `prs.available` rule, one list along.
+  const lock = o.protect.readable ? "" : `<div class="dbbr-note warn">`
+    + `<b>.episko/episko.toml</b> could not be parsed, so no branch here is protected. `
+    + `Fix the file and reopen this view.</div>`;
   const counts = filterCounts(o.rows, o.now);
   const chips = `<div class="bvchips">`
     + BRANCH_FILTERS.map((f) => `<button class="bvchip${f.id === o.filter ? " on" : ""}" data-dashbrfilter="${f.id}">`
@@ -549,7 +557,7 @@ function branchesBody(o: BranchesView): string {
   const list = shown.length
     ? BR_HEAD + shown.map((r) => branchRow(r, o)).join("")
     : `<div class="ac-empty">${o.rows.length ? "No branch matches that." : "No branches here yet."}</div>`;
-  return gh + chips + list + actionBar(o);
+  return gh + lock + chips + list + actionBar(o);
 }
 
 // A row is one branch. The Where cell is the whole reason there is one row and not two: each
@@ -564,7 +572,13 @@ function branchRow(r: BranchRow, o: BranchesView): string {
     : "";
   // The refusal is only worth a column when nothing at all can go; otherwise the Where cell
   // carries it per half, where the answer actually differs.
-  const why = off
+  // A lock is something someone decided, so it is a tag rather than the warn-coloured
+  // refusal every other blocked row carries; the evidence tag still rides beside it.
+  const lockTag = r.lock
+    ? `<span class="tag lock" title="${esc(lockText(r.lock))} — right-click the row to change it">🔒 protected</span>`
+    : "";
+  const why = r.lock ? lockTag + tag
+    : off
     ? `<span class="warn">${esc(r.local.block || r.remote.block || "nothing says it has landed")}</span>`
     : tag
       + (r.wt ? `<span class="tag" title="Its checkout at ${esc(r.wt.path)} is removed with it">⑃ ${esc(basename(r.wt.path))}/</span>` : "")
@@ -584,7 +598,8 @@ function branchRow(r: BranchRow, o: BranchesView): string {
     <span class="au mono">${esc(b.author)}</span>
     <span class="ag mono">${esc(b.rel)}</span>
     <span class="ra"><button class="act" data-dashbrsw="${esc(r.name)}"
-      title="Switch this project's folder to ${esc(r.name)}">⇄</button></span>
+      title="Switch ${esc(basename(o.root))}/ — the project's own folder — to ${esc(r.name)}">⇄</button><button class="act"
+      data-dashbrmenu="${escAttr(r.name)}" title="Start a session, protect it, more…">⋯</button></span>
   </div>`;
 }
 
@@ -657,7 +672,12 @@ function checkoutsBody(o: BranchesView): string {
   if (!o.checkouts.length) return `<div class="ac-empty">No checkouts here.</div>`;
   const rows = o.checkouts.map((c) => {
     const on = o.cpicked.has(c.wt.path);
-    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}" data-dashco="${escAttr(c.wt.path)}">
+    // `data-wt` and its four companions are ./projmenu's contract for the ⑃ cluster menu: the
+    // row a checkout has here is the same checkout the rail's header opens a menu on.
+    const menu = `data-wt="${escAttr(c.wt.path)}" data-root="${escAttr(o.root)}" `
+      + `data-proj="${escAttr(o.project)}" data-branch="${escAttr(c.wt.branch)}"`
+      + (c.wt.is_main ? ` data-main="1"` : "");
+    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
       <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
         aria-checked="${on}" aria-disabled="${!c.ok}"
         title="${esc(c.block || "Pick this checkout")}"></span></span>

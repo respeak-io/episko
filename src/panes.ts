@@ -23,6 +23,7 @@ import { seedPrompts } from "./outline";
 import { readProviderAsked } from "./providers";
 import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
+import { fetchDue, noteFetch } from "./autofetch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
   refit, shellKeys, trimScrollback, winClaudePaste, wireLinks,
@@ -41,7 +42,8 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
@@ -144,7 +146,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
@@ -265,7 +267,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
     queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider,
@@ -329,7 +331,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -361,7 +363,7 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -426,7 +428,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null,
+    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -676,6 +678,7 @@ export function setActive(id: string, keepGroup = false) {
   renderAttn(); updateTray();
   void refreshBranch(s).then((changed) => { if (changed) { renderSidebar(); if (activeId === id) renderHeader(s); } });
   void refreshSessionStats(s); // working-set diff + disk I/O
+  void tickAutoFetch();        // arriving at a checkout is the moment its behind count matters
 }
 
 // One reading of the app-wide disk-I/O counters, banked. Kept apart from
@@ -703,7 +706,11 @@ export async function refreshSessionStats(s: Sess) {
   const sig = (g: DiffStat | null) =>
     (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
   const before = sig(s.git);
-  await pollIo();
+  // A folder nothing has read yet would leave a new pane's git card blank until the 5s
+  // dirty poll came round; asked for beside the I/O sample rather than after it, so the
+  // card costs one round trip rather than two.
+  const first = !!s.workdir && !dirtyByFolder.has(s.workdir);
+  await Promise.all([pollIo(), first ? refreshDirtyStates() : null]);
   renderFoot();
   // Read from the dirty poll's map rather than spawning a git status every 4s.
   s.git = dirtyByFolder.get(s.workdir) ?? null;
@@ -911,12 +918,44 @@ export function syncStageButtons() {
       "No project selected. The ◷ button up top opens history for every project");
 }
 
+// Auto-fetch (./autofetch owns the rule, Settings > Git the switch): only the checkout on
+// stage, because a behind count nobody is looking at is not worth a remote. Quiet by
+// design — no toast, no terminal handoff — so the failure lands in the log and in the
+// chip's tooltip. Never concurrent with a button: `gitBusy` is the one lock.
+export async function tickAutoFetch(): Promise<void> {
+  const s = activeId ? sessions.get(activeId) : null;
+  if (!s || gitBusy || !hasSessionState(s) || s.external || !s.workdir) return;
+  // Read once and found not to be a repo; an unread folder still gets its chance.
+  if (dirtyByFolder.has(s.workdir) && !dirtyByFolder.get(s.workdir)) return;
+  const key = s.colorKey || s.workdir;
+  if (!fetchDue(fetchedByRepo.get(key), autoFetchPrefs, Date.now())) return;
+  const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
+  setGitBusy(s.id, "fetch");
+  repaint();
+  let ok = false;
+  try {
+    const r = await invoke<GitActionResult>("git_action", { workdir: s.workdir, op: "fetch" });
+    ok = r.ok;
+    dlog(ok ? "info" : "warn", `auto-fetch · ${s.project} · ${r.summary}`);
+  } catch (e) {
+    dlog("warn", `auto-fetch · ${s.project} · ${e}`);
+  } finally {
+    fetchedByRepo.set(key, noteFetch(fetchedByRepo.get(key), ok, Date.now()));
+    setGitBusy(null);
+    // Every checkout of this repo, not just this one: one fetch moved all their counts.
+    for (const x of sessions.values()) if ((x.colorKey || x.workdir) === key) dirtyStale.add(x.workdir);
+    await refreshDirtyStates();
+    await refreshSessionStats(s);
+    repaint();
+  }
+}
+
 // fetch/pull/push. A refusal is not an error: the backend names the command that would
 // work, and that is handed to a terminal.
 export async function runGit(sessionId: string, op: string) {
   const s = sessions.get(sessionId);
   if (!s || gitBusy) return;
-  setGitBusy(sessionId);
+  setGitBusy(sessionId, op);
   // The palette can fire this at a background session, and a handoff switches the stage mid-run.
   const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
   repaint();

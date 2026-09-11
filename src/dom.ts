@@ -31,4 +31,7 @@ export const IS_TAURI = typeof window !== "undefined" && "isTauri" in window; //
 
 export const MOD = IS_MAC ? "⌘" : "Ctrl";
 export const FILE_MANAGER = IS_WIN ? "Explorer" : IS_MAC ? "Finder" : "file manager";
+// The OS emoji picker, where there is one to name: Linux has no single answer (the chord is
+// the desktop's or the input method's), so the caller drops the sentence rather than guess.
+export const EMOJI_PICKER_KEY = IS_WIN ? "Win + ." : IS_MAC ? "⌃⌘Space" : "";
 export const chord = (k: string) => (IS_MAC ? `⌘${k}` : `Ctrl+${k}`);

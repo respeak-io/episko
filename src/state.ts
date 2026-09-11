@@ -4,6 +4,7 @@
 import { basename, clampTitlePrefs, hslToHex, type TitlePrefs } from "./format";
 import { safeParse } from "./store";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
+import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
@@ -83,6 +84,12 @@ export function setSoundPrefs(p: SoundPrefs) { soundPrefs = clampSoundPrefs(p); 
 // Ships off; `clampRevivePrefs` demands an explicit `true`, since this types into a terminal unattended.
 export let revivePrefs: RevivePrefs = clampRevivePrefs(safeParse(localStorage.getItem("cc-revive")));
 export function setRevivePrefs(p: RevivePrefs) { revivePrefs = clampRevivePrefs(p); }
+
+// --- auto-fetch ------------------------------------------------------------------
+export let autoFetchPrefs: AutoFetchPrefs = clampAutoFetchPrefs(safeParse(localStorage.getItem("cc-autofetch")));
+export function setAutoFetchPrefs(p: AutoFetchPrefs) { autoFetchPrefs = clampAutoFetchPrefs(p); }
+// Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
+export const fetchedByRepo = new Map<string, FetchState>();
 
 // --- keyboard shortcuts ----------------------------------------------------------
 // Held resolved (the keydown handler reads it per keystroke) but stored as overrides only, so a

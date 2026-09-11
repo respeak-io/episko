@@ -32,19 +32,19 @@ let host: {
   cycleSort: () => void;
   toggleInsp: () => void;
   toggleRail: () => void;
-  toggleTheme: () => void;
   requestLaunch: (project: string, path: string) => void;
   revealActiveFolder: () => void;
   openProjectFolder: (key: string) => void;
   openProjectFiles: () => void;
   openUsage: () => void;
+  settingsItems: () => { key: string; label: string; sub: string; run: () => void }[];
 } = {
   setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, shelveSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
-  toggleTheme: () => {}, requestLaunch: () => {},
+  requestLaunch: () => {},
   revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
-  openUsage: () => {},
+  openUsage: () => {}, settingsItems: () => [],
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -101,7 +101,6 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
   { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▦", run: () => host.openUsage() },
-  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
 // The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
 function palShortcut(act?: KeyAction): string[] | undefined {
@@ -156,6 +155,8 @@ function buildPalGroups(raw: string): PalGroup[] {
   const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: palShortcut(c.act), run: c.run }));
   for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`, labelHtml: esc(`New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`), sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
 
+  const setCands: PalItem[] = host.settingsItems().map((s) => ({ kind: "command", key: "setting:" + s.key, label: s.label, labelHtml: esc(s.label), sub: s.sub, glyph: "⚙", run: s.run }));
+
   const score = (arr: PalItem[]) => arr.map((it) => scoreItem(it, searchTerm)).filter(Boolean) as PalItem[];
   const byScore = (a: PalItem, b: PalItem) => (b.score ?? 0) - (a.score ?? 0);
   const byFrec = (a: PalItem, b: PalItem) => frecScore(b.key) - frecScore(a.key);
@@ -178,6 +179,8 @@ function buildPalGroups(raw: string): PalGroup[] {
   if (mode === "all" || mode === "sess") { const l = launch.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (l.length) groups.push({ name: "Launch", items: l }); }
   if (mode === "all" || mode === "sess") { const t = tsk.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (t.length) groups.push({ name: "Tasks", count: t.length, items: t }); }
   if (mode === "all" || mode === "cmd") { const c = cmds.filter((i) => !recentKeys.has(i.key)).sort(emptyTerm ? byFrec : byScore); if (c.length) groups.push({ name: "Commands", items: c }); }
+  // Settings only once there is a term: forty rows would swamp an empty palette.
+  if ((mode === "all" || mode === "cmd") && !emptyTerm) { const st = score(setCands).sort(byScore); if (st.length) groups.push({ name: "Settings", items: st }); }
   if (!groups.length) groups.push({ name: "No matches", items: [{ kind: "fallback", key: "", label: "Add a project folder…", labelHtml: esc("Add a project folder…"), glyph: "＋", run: () => host.addProject() }] });
   return groups;
 }

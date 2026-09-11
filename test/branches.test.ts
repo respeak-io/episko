@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  anyDeletable, branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterCounts,
-  filterRows, localPicks, orderRows, rangePick, removableCheckouts, remoteFor, remoteOf,
-  remotePicks, selectable, switchable, switchOptions, trunkOf, trunkOptions, trunkText,
-  whereText, midFlightText, syncText,
-  type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type WtInfo,
+  anyDeletable, branchRows, checkoutRows, chosenCheckouts, chosenWorktrees,
+  filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows, rangePick,
+  removableCheckouts, remoteFor, remoteOf, remotePicks, selectable, switchable, switchOptions,
+  trunkOf, trunkOptions, trunkText, whereText, midFlightText, syncText,
+  type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type ProtectCtx,
+  type WtInfo,
 } from "../src/branches";
 
 // The module that decides to delete things, so these are the rules with teeth: what is
@@ -30,8 +31,11 @@ const PR = (number: number, branch: string): MergedPr =>
   ({ number, branch, title: "t", url: "u", merged_at: "2026-08-01T00:00:00Z" });
 
 const ctx = (o: Partial<CleanCtx> = {}): CleanCtx => ({
-  branches: [], worktrees: [], prs: [], liveIn: () => 0, externalIn: () => false, ...o,
+  branches: [], worktrees: [], prs: [], liveIn: () => 0, externalIn: () => false,
+  protect: NO_PROTECT, ...o,
 });
+// The two lists a lock can come from, as the dashboard reads them.
+const PROT = (o: Partial<ProtectCtx> = {}): ProtectCtx => ({ ...NO_PROTECT, ...o });
 const rows = (o: Partial<CleanCtx> = {}) => branchRows(ctx(o));
 const row = (rs: ReturnType<typeof rows>, n: string) => rs.find((r) => r.name === n)!;
 
@@ -352,7 +356,7 @@ describe("where a checkout can move to", () => {
 
 describe("the checkouts half", () => {
   const cctx = (o: Partial<CheckoutCtx> = {}): CheckoutCtx => ({
-    worktrees: [], liveIn: () => 0, externalIn: () => false, ...o,
+    worktrees: [], liveIn: () => 0, externalIn: () => false, protect: NO_PROTECT, ...o,
   });
   const list = () => checkoutRows(cctx({
     worktrees: [
@@ -389,5 +393,95 @@ describe("the checkouts half", () => {
     expect([...removableCheckouts(list())].sort()).toEqual(["/wt/clean", "/wt/vanished"]);
     const picked = new Set(["/wt/clean", "/wt/dirty", "/repo"]);
     expect(chosenCheckouts(list(), picked).map((c) => c.wt.branch)).toEqual(["clean"]);
+  });
+});
+
+// The lock: the one refusal no evidence lifts, and the only rule here with two sources.
+// `.episko/episko.toml` is committed, so it refuses the delete for everyone who pulls;
+// GitHub's own protection is read-only evidence about the remote ref.
+describe("a protected branch", () => {
+  // Two merged branches, so nothing but the lock can be what refuses one of them; `keep` is
+  // not the trunk, which is refused for a reason of its own.
+  const two = (protect: Partial<ProtectCtx>) =>
+    rows({ branches: [B("keep", { merged: true }), B("go", { merged: true })], protect: PROT(protect) });
+  const locked = (protect: Partial<ProtectCtx>) => row(two(protect), "keep");
+
+  it("refuses both halves whatever the evidence says", () => {
+    const r = locked({ patterns: ["keep"] });
+    expect(r.local.ok).toBe(false);
+    expect(r.remote.ok).toBe(false);
+    expect(r.local.block).toBe("protected in .episko/episko.toml");
+    expect(anyDeletable(r)).toBe(false);
+    // …and its neighbour is untouched: a lock is about one name, not about the repo.
+    expect(row(two({ patterns: ["keep"] }), "go").local.ok).toBe(true);
+  });
+
+  it("never reaches the commands, however it was ticked", () => {
+    const rs = two({ patterns: ["keep"] });
+    const on = new Set(["keep", "go"]);
+    expect(localPicks(rs, on).map((p) => p.branch)).toEqual(["go"]);
+    expect(remotePicks(rs, on).map((p) => p.branch)).toEqual(["go"]);
+    expect([...selectable(rs)]).toEqual(["go"]);
+  });
+
+  // A glob covers siblings nobody named on this row, so the menu must not offer to lift it.
+  it("says which entry caught it, and whether a click can lift it", () => {
+    const rs = rows({ branches: [B("release/1.2"), B("main")], protect: PROT({ patterns: ["release/*", "main"] }) });
+    expect(row(rs, "release/1.2").lock).toEqual({ by: "episko", pattern: "release/*", exact: false });
+    expect(row(rs, "main").lock).toEqual({ by: "episko", pattern: "main", exact: true });
+    expect(lockText(row(rs, "release/1.2").lock)).toBe("protected by release/* in .episko/episko.toml");
+  });
+
+  it("wears GitHub's protection too, and never claims that one is ours to edit", () => {
+    const r = locked({ github: ["keep"] });
+    expect(r.lock).toEqual({ by: "github", pattern: "keep", exact: false });
+    expect(lockText(r.lock)).toBe("protected on GitHub");
+    expect(r.local.ok).toBe(false);
+  });
+
+  // Our own list first: it is the one a click can change, and the one the backend re-reads.
+  it("prefers the committed list when both say so", () => {
+    expect(locked({ patterns: ["keep"], github: ["keep"] }).lock?.by).toBe("episko");
+  });
+
+  it("protects nothing when the file could not be parsed", () => {
+    // `readable: false` is the view's cue to say so; the rules themselves just see no patterns.
+    expect(locked({ patterns: [], readable: false }).local.ok).toBe(true);
+  });
+
+  it("survives its checkout: removing the folder is not a way around it", () => {
+    const one = (protect: ProtectCtx) => checkoutRows({
+      worktrees: [W("keep", { merged: true })], liveIn: () => 0, externalIn: () => false, protect,
+    })[0];
+    expect(one(NO_PROTECT).note).toBe("merged; its branch goes with it");
+    expect(one(PROT({ patterns: ["keep"] })).note).toBe("its branch is protected and stays");
+  });
+});
+
+describe("globMatch", () => {
+  it("matches a pattern with no star exactly", () => {
+    expect(globMatch("main", "main")).toBe(true);
+    expect(globMatch("main", "maint")).toBe(false);
+    expect(globMatch("main", "origin/main")).toBe(false);
+  });
+
+  it("lets a star cross a slash, which is what release/* is for", () => {
+    expect(globMatch("release/*", "release/1.2")).toBe(true);
+    expect(globMatch("release/*", "release/next/1.2")).toBe(true);
+    expect(globMatch("release/*", "release")).toBe(false);
+    expect(globMatch("*", "anything/at/all")).toBe(true);
+  });
+
+  it("anchors both ends and honours a star in the middle", () => {
+    expect(globMatch("*-wip", "feat-wip")).toBe(true);
+    expect(globMatch("*-wip", "feat-wip-2")).toBe(false);
+    expect(globMatch("feat/*/old", "feat/a/old")).toBe(true);
+    expect(globMatch("feat/*/old", "feat/a/new")).toBe(false);
+  });
+
+  it("never matches a shorter name than the pattern's fixed halves", () => {
+    // `rest.endsWith(part)` on an empty remainder would otherwise let `ab*ab` match `abab`… twice.
+    expect(globMatch("ab*ab", "ab")).toBe(false);
+    expect(globMatch("ab*ab", "abab")).toBe(true);
   });
 });

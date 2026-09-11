@@ -189,13 +189,13 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   agEl.hidden = manage || ag.id === CLAUDE_CLI.id;
   agEl.innerHTML = `<span class="agent-logo" aria-hidden="true">${agentLogo(ag.id)}</span>${esc(ag.label)}`;
   agEl.title = `${ag.label} runs here — ${agentCapabilitySummary(ag)}. Change it on the `
-    + `project's own menu, or in Settings › Sessions.`;
+    + `project's own menu, or in Settings › Launching.`;
   const pm = providerPermissionMode(ag.id, permissionModeFor(ag.id));
   const modeEl = $("wtMode") as HTMLElement;
   // Terminal-only providers manage permissions in their own TUI.
   modeEl.hidden = manage || !ag.capabilities.includes("launch-permissions") || !pm || pm.id === "default";
   modeEl.textContent = pm ? `${pm.glyph} ${pm.label}` : "";
-  modeEl.title = pm ? `${ag.label} starts in ${pm.label} mode: ${pm.sub} (Settings › Sessions)` : "";
+  modeEl.title = pm ? `${ag.label} starts in ${pm.label} mode: ${pm.sub} (Settings › Launching)` : "";
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);

@@ -609,6 +609,58 @@ pub(crate) async fn gh_merged_prs(root: String, force: bool, account: Option<Str
     .unwrap_or_default()
 }
 
+/// Branches GitHub itself protects, and whether we could ask. Same rule as `MergedPrs`:
+/// `available: false` must not read as "nothing is protected".
+#[derive(serde::Serialize, Clone, Debug, Default)]
+pub(crate) struct ProtectedBranches {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub names: Vec<String>,
+}
+
+struct CachedProtected { at: Instant, result: ProtectedBranches }
+static PROTECTED_CACHE: Mutex<Option<HashMap<String, CachedProtected>>> = Mutex::new(None);
+
+/// What GitHub refuses to let anyone delete: a classic branch protection rule or a ruleset
+/// that targets the branch. Read-only evidence — it guards the REMOTE ref and nothing local,
+/// so Episko's own list (`git::list_protected_branches`) is what stops a local delete.
+/// The branch listing carries the flag for every branch in one paginated read; the per-branch
+/// `rules/branches/<name>` endpoint would be one request per row.
+#[tauri::command]
+pub(crate) async fn gh_protected_branches(root: String, force: bool, account: Option<String>) -> ProtectedBranches {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !force {
+            if let Ok(guard) = PROTECTED_CACHE.lock() {
+                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&root)) {
+                    if hit.at.elapsed() < TTL {
+                        return hit.result.clone();
+                    }
+                }
+            }
+        }
+        let acct = account.as_deref();
+        // `--jq` over `--paginate` emits one name per line across every page.
+        let result = match gh(&root, acct, &[
+            "api", "repos/{owner}/{repo}/branches", "--paginate",
+            "--jq", ".[] | select(.protected) | .name",
+        ]) {
+            Err(e) => ProtectedBranches { available: false, reason: Some(classify(&e, who_for(acct).as_deref())), names: vec![] },
+            Ok(out) => ProtectedBranches {
+                available: true,
+                reason: None,
+                names: out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
+            },
+        };
+        if let Ok(mut guard) = PROTECTED_CACHE.lock() {
+            guard.get_or_insert_with(HashMap::new)
+                .insert(root.clone(), CachedProtected { at: Instant::now(), result: result.clone() });
+        }
+        result
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// Close an issue, with a comment saying why. The only destructive GitHub write, so the
 /// UI never does it on one click and the comment is required. The comment goes first:
 /// a failed close then leaves an explanation, where the other order leaves a silent close.

@@ -148,10 +148,15 @@ export function normEmoji(raw: string): string | null {
 
 // An emoji as an image, the trick a page uses for an emoji favicon. Every surface that paints
 // a project icon takes a URL, so going through one keeps them all on a single code path.
+// The baseline scales WITH the size about the box centre (50 + 31/90 * size), or the glyph
+// slides off it: an emoji's ink fills its em box, so at 90 it reached the viewBox edge and a
+// 15px rounded icon clipped it. EM_SIZE inset it; the two must move together.
+const EM_SIZE = 76;
 export function emojiDataUri(em: string): string {
   const font = "Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif";
+  const base = +(50 + (31 / 90) * EM_SIZE).toFixed(2);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">`
-    + `<text x="50" y=".9em" font-size="90" text-anchor="middle" font-family="${font}">${esc(em)}</text></svg>`;
+    + `<text x="50" y="${base}" font-size="${EM_SIZE}" text-anchor="middle" font-family="${font}">${esc(em)}</text></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
@@ -251,3 +256,30 @@ export function uDelta(cur: number, prev: number): string {
   const pct = Math.round((cur - prev) / prev * 100);
   return `<span class="u-delta"><span class="u-arw">${pct >= 0 ? "▲" : "▼"}</span><b>${Math.abs(pct)}%</b>&nbsp;vs&nbsp;prev</span>`;
 }
+
+// ---------- macOS permission checks (Settings › Privacy) ----------
+// TCC's own service names, spelled as the dialogs and System Settings spell them. Anything
+// unlisted is un-camelled rather than dropped: a name we don't know is still a name.
+const TCC_LABEL: Record<string, string> = {
+  SystemPolicyAppData: "Data from other apps",
+  SystemPolicyAllFiles: "Full disk access",
+  SystemPolicyDesktopFolder: "Desktop folder",
+  SystemPolicyDocumentsFolder: "Documents folder",
+  SystemPolicyDownloadsFolder: "Downloads folder",
+  SystemPolicyNetworkVolumes: "Network volumes",
+  SystemPolicyRemovableVolumes: "Removable volumes",
+  SystemPolicySysAdminFiles: "Administrative files",
+  AppleEvents: "Controlling other apps",
+  DeveloperTool: "Developer tools",
+  ListenEvent: "Input monitoring",
+  PostEvent: "Sending keystrokes",
+  Accessibility: "Accessibility",
+  ScreenCapture: "Screen recording",
+  Microphone: "Microphone",
+  Camera: "Camera",
+  AddressBook: "Contacts",
+  Calendar: "Calendar",
+  Photos: "Photos",
+};
+export const tccLabel = (service: string) =>
+  TCC_LABEL[service] ?? service.replace(/([a-z])([A-Z])/g, "$1 $2");

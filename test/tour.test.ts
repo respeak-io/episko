@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ASKING_MODES, CHAPTERS, chapterKey, isDone, parseTourState, permAsks, pickerChapters,
-  planFor, RAIL_LEGEND, recordDone, releaseChapter, shouldOfferPicker, shouldOfferRelease,
+  planFor, RAIL_LEGEND, recordDone, releaseChapter, setTourPlatform, shouldOfferPicker,
+  shouldOfferRelease,
   stepApplies, stepBlocked, stepSatisfied, tourDefaults, type TourWorld,
 } from "../src/tour";
 
@@ -159,6 +160,24 @@ describe("the manifest is well formed", () => {
       }
     }
     expect(bad).toEqual([]);
+  });
+
+  it("keeps a macOS-only chapter off every other platform", () => {
+    // A release intro about a system dialog: offering it on Windows would walk somebody to
+    // a Settings tab that is not there. ./tourui sets this once from IS_MAC.
+    const mac = CHAPTERS.filter((c) => c.only === "mac");
+    expect(mac.length, "the gate has nothing to gate").toBeGreaterThan(0);
+    try {
+      setTourPlatform(false);
+      for (const c of mac) {
+        expect(pickerChapters()).not.toContain(c);
+        if (c.since) expect(releaseChapter(c.since)).toBeNull();
+      }
+      setTourPlatform(true);
+      for (const c of mac) if (c.since) expect(releaseChapter(c.since)).toBe(c);
+    } finally {
+      setTourPlatform(true);
+    }
   });
 
   it("gives every chapter a name, a blurb and a length", () => {
@@ -418,7 +437,7 @@ describe("Quick start under a mode that answers for you", () => {
 describe("the Leave it running predicates", () => {
   const ch = CHAPTERS.find((c) => c.id === "unattended")!;
 
-  it("waits for the Sounds tab by an id settings.ts actually ships", () => {
+  it("waits for the Attention section by an id settings.ts actually ships", () => {
     // Two gestures, two steps: the hole has to move onto the tab, or the user is asked to
     // click something the veil has just darkened.
     const open = ch.steps.find((st) => st.title.startsWith("Everything else is in here"))!;
@@ -426,8 +445,8 @@ describe("the Leave it running predicates", () => {
     expect(open.done!(W0)).toBe(false);
     expect(open.done!({ ...W0, open: ["settings"] })).toBe(true);
     expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "appearance" })).toBe(false);
-    expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "sounds" })).toBe(true);
-    expect(tab.anchor).toBe('[data-settab="sounds"]');
-    expect(SET_TABS.sounds).toBe("Sounds");
+    expect(tab.done!({ ...W0, open: ["settings"], settingsTab: "attention" })).toBe(true);
+    expect(tab.anchor).toBe('[data-settab="attention"]');
+    expect(SET_TABS.attention).toBe("Attention");
   });
 });

@@ -43,3 +43,20 @@ export function pendingPermissionIds(s: Sess): string[] {
   if (s.pendingPermId && !ids.includes(s.pendingPermId)) ids.unshift(s.pendingPermId);
   return ids;
 }
+
+// Which held asks a finished call answers, so the caller can release them. Claude's
+// PermissionRequest payload carries no tool_use_id (only tool_name/tool_input), so the join is
+// the tool plus the command ./phase derives from that input.
+export function releaseAnswered(s: Sess, tool: string, command: string): string[] {
+  const hit = (p: PendingPermission) => p.tool === tool && p.command === command;
+  const ids = s.pendingPermissions.filter(hit).map((pending) => pending.id);
+  if (ids.length) {
+    s.pendingPermissions = s.pendingPermissions.filter((pending) => !hit(pending));
+    projectHead(s);
+    return ids;
+  }
+  // Claude's blocking hook predates the queue and can populate only the scalars; then the tool
+  // and its command are the whole join, and there is no id to hand back.
+  if (!s.pendingPermId && s.attention === `permission: ${tool}` && s.pendingCmd === command) projectHead(s);
+  return ids;
+}

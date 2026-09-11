@@ -12,6 +12,80 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+The ahead/behind count is fetched for the pane you are looking at, a branch can be locked
+against deletion, an ask no longer vanishes a second after it arrives, and the macOS prompts
+that name Episko have a tab that explains them.
+
++ **Auto-fetch, so "2 behind" is true when you read it.** The checkout you are looking at is
+  fetched when you arrive and every five minutes it stays on screen — nothing else, because a
+  count nobody is reading is not worth a round trip. Settings › Git switches it and sets the
+  interval; an unreachable remote is backed off, and the card says so rather than showing a
+  frozen number.
++ **Right-click any branch row** in Branches: start a session on it, open a terminal there,
+  switch that project folder to it (the row names which one — in a repo full of worktrees a
+  "this folder" points at nothing), protect it, copy its name. *New session here* uses the
+  branch's own worktree when it has one and makes one when it does not.
++ **Protect a branch from deletion.** The list lives in `.episko/episko.toml`
+  (`[branches] protect = ["main", "release/*"]`), so it is committed and everybody who pulls
+  the repo gets it. Every deleter refuses it in the backend — the sweep, the single delete,
+  and the branch a worktree removal would take with it.
++ **Branches GitHub protects wear the same lock**, read from the repo's own branch list beside
+  the merged pull requests. It guards the remote ref alone, which is why Episko keeps its own
+  list for the local half, and why that lock cannot be lifted from here.
++ **Settings › Privacy**, on macOS. Those *"Episko would like to access data from other apps"*
+  dialogs name Episko because macOS blames whichever app is *responsible* for a process, and
+  every agent, task and shell here is a child of ours — so the tab says what the dialog means,
+  whether Episko holds full disk access, and what granting it would hand to every agent it
+  launches.
++ **A denied prompt can be taken back.** macOS remembers a *Don't Allow* per app that was read
+  and never asks twice, and offers no pane to undo it. *Denied prompts › Reset* clears Episko's
+  answers.
++ **What macOS checked, on demand.** One pass over the system log lists every permission check
+  made in Episko's name in the last day and names the binary that actually reached — an agent,
+  something it ran, or the app itself.
++ **A question card says what is being asked.** `AskUserQuestion` keeps its ask in a list the
+  card did not read, so it named a tool and showed nothing under it.
++ **Settings is one page, with a search.** Twelve sections under three headings, named for the
+  surface or the question rather than the feature that shipped them; the rail follows the scroll
+  and turns into a match count when you type. `@changed` lists what differs from its default,
+  `@new` what arrived since you last read What's new, and ⌘K finds a setting by name.
++ **Every setting says its value, and a changed one can go back.** A bar marks a row that differs
+  from its default and ⟲ restores it; the big panels fold to one line, and a search hit inside
+  one opens it on the matching line. Usage & spend and What's new have a door in the rail.
++ **Every emoji is a project icon now, not the 64 we picked.** The panel behind a project's
+  colour dot opens on a search field over the whole Unicode set — type `rocket`, `calendar`,
+  `crab` — with the old shortlist still first under *Suggested* and every Unicode group below
+  it. ↵ takes the top hit, a pasted emoji is its own result (so skin tones and ZWJ sequences
+  still work), and only the rows on screen are ever built, which is what keeps a 1,914-glyph
+  list opening instantly. Flags are left out where the font has no glyphs for them.
+~ **Every hint is one sentence, with the reasoning behind *why*.** The same facts, read when you
+  want them; the search reads both halves. A quick open lands on its row, lit for a moment,
+  rather than at the top of a tab.
+~ **A session's git card appears at once.** It waited for the 5s working-tree poll before
+  drawing anything, so a new pane had no branch, no counts and then a card that shoved the
+  panel down when it landed. The folder is read on arrival now, with a skeleton in its place.
+~ **One theme.** The light theme is retired: its phase glyphs were never re-stepped for a
+  white ground (2:1 where the dark ones sit at 8:1), and the terminal, most of the window, is
+  coloured by Claude's own theme either way. The ◐ button and the Theme setting go with it.
+! **A pending ask survives the next tool call.** Claude runs tools in parallel and a subagent's
+  hooks arrive under its parent's id, so whichever call landed a second later was retiring a
+  question nobody had answered: the ◆ went out about a second after it appeared, the *needs
+  you* badge never counted it, and Allow/Deny left the inspector. An ask is retired now by the
+  call it gated reporting back, or by the turn ending.
+! **A prompt you cancelled no longer leaves the pane pulsing.** Claude fires its submit hook
+  the moment you press Enter, so a prompt then cancelled with Esc — or edited and re-sent —
+  left a finished session on the amber working dot with nothing that could ever end it. Three
+  minutes of a `thinking` pane with no API request completing reads as *idle* now: nothing was
+  asked of you, and your text is sitting in the composer.
+! **A long branch name no longer pushes the ahead/behind count out of the git card.** The count
+  is what you came for, so the name is what gives way.
+! **The emoji picker opens again.** *Pick an emoji…* redrew the panel in place, which detached
+  the button you had just clicked — and the app's outside-click closer, seeing a target with no
+  parent, decided the click had landed outside and shut the panel on the same tick.
+! **An emoji icon is no longer clipped by its own box.** A colour emoji's ink fills its em box,
+  so drawn at nine tenths of the icon it reached all four edges and the rounded 15px frame ate
+  the corners — a calendar lost its last column. It is inset now, and still the same size on
+  every surface that paints one.
 
 ## 0.27.0 — 2026-09-09
 Branches are one table now, Usage & spend names every model it used to file under *Other*,

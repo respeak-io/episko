@@ -39,7 +39,7 @@ Everything lands through `refreshGitViews` → `renderAll()`, so the sidebar, br
 - **The projects you are working in can be exempted** via `PeekPrefs.pinLive`, off by default: a project with a session or an external in *any* of its checkouts renders its peek body already-open, because there the sibling worktree is the next thing you start something in and a hover delay per launch is a toll rather than a tidy-up. Idle projects still collapse, so the rail's length still tracks what you are doing rather than how many worktrees exist. `peekStaysOpen` answers both reasons a body renders open (peek off, or this) so the sidebar and the Settings preview cannot drift apart, and an exempted group **takes no part in the reducer**: nothing to reveal means no countdown hairline promising an expansion that already happened, and no `peekEnter` "already inside an expanded rail" shortcut for a rail the pointer never opened. `clampPeekPrefs` reads it as `=== true` (the mirror of `enabled`'s `!== false`), so a `cc-peek` blob written before the setting keeps its behaviour.
 - **Rows need a roster, so idle projects are polled too**: `refreshWorktrees` also reads **favourites**, stale-driven, with never-read ones seeded on the next tick the rest on a 20s sweep (an idle repo changes on human timescales).
 
-Timings live in `cc-peek`, set in Settings › Worktrees over a **live preview built from the real CSS and the real reducer**, because a preview styled separately from what it previews is just a picture. One of its three demo projects has **no sessions on purpose**: with the exemption on it is the only group left that peeks, and a preview where everything was already open would be previewing nothing while you set the two timings directly above it.
+Timings live in `cc-peek`, set in Settings › Sidebar over a **live preview built from the real CSS and the real reducer**, because a preview styled separately from what it previews is just a picture. One of its three demo projects has **no sessions on purpose**: with the exemption on it is the only group left that peeks, and a preview where everything was already open would be previewing nothing while you set the two timings directly above it.
 
 **`openWt` has two modes, and the difference is framing**: `launch` ("where should this session start?", every branch a row) vs `manage` (`{ manage: true, focusDir }` from a cluster menu, where branches wait for a query, the engine chip goes, the count reads `N checkouts`). **⏎ still starts a session in both**, because changing what Enter does between modes is the worse trap. **The main checkout says twice over that it is the repo itself**: `clusterGlyph` gives it `⌂` and `branchHue` seeds from its **path** (it comes out wearing the project's own accent); every chip and header goes through those two helpers so the modes can't disagree.
 
@@ -65,6 +65,18 @@ Timings live in `cc-peek`, set in Settings › Worktrees over a **live preview b
 
 **`path_holders` names the holder; killing one is a different decision.** Two probes: a `sysinfo` cwd scan (any OS) and, on Windows, the Restart Manager (`RmGetList`) for open handles; both degrade to "found nothing" (a diagnostic shown *after* a failure; a handle can release in between). `PathHolder.ours` splits the repair: a process Episko launched is cleared silently; anything else goes in a dialog naming it. `purge_worktree_folder` **re-probes before killing** (pids are reused) and refuses a path without a grandparent.
 
+## Auto-fetch: keeping "2 behind" true
+
+Every ahead/behind figure in the app is `upstream_state`'s, which reads `refs/remotes` and never the network, so it was **only ever as fresh as your last manual fetch** — a session opened on a branch a colleague had moved said *in sync* and meant it. `autofetch.ts` holds the rule, `tickAutoFetch` in `panes.ts` runs it, Settings › Git switches it (`cc-autofetch`, on by default, 5 minutes).
+
+- **Only the checkout on stage.** The active pane's, on arrival (`setActive`) and on a 20s tick that mostly answers "not due". Not favourites, not the dashboard, not the other panes: a behind count nobody is reading is not worth a round trip, and the dashboard's ⇣/⇡ already fetch for themselves. A repo whose pane you have visited is fresh for every other surface anyway, since refs are shared.
+- **Due is keyed by repo, never by checkout** (`fetchedByRepo`, keyed on `colorKey`): every worktree shares one `refs/remotes`, so one fetch answers for all of them and switching between two checkouts of a repo must not fetch twice.
+- **It reuses `git_action(op:"fetch")`** rather than growing a second definition of what a fetch is, but it is the quiet caller: no toast and no terminal handoff, because nobody asked for this one. The failure lands in `episko.log` and in the sync chip's tooltip — a frozen count reads exactly like a true one, so the card has to be able to say the number is old.
+- **A failing remote is backed off, not retried** (`fetchGapMs`, doubling to a cap): `git_run` gives an unreachable host **45 seconds** before it kills the process, and the usual cause — a laptop off the network — announces its return to nothing.
+- **`gitBusy` is the one lock**, shared with the buttons, so an automatic fetch and a clicked one can never run at once; `gitOp` is what lets the card say *fetch…* rather than only dimming.
+
+**The card must be on screen before the fetch matters.** `s.git` comes from the dirty poll's map, so a new pane used to show no git card at all until that poll came round — up to five seconds of the panel silently reflowing when it landed. `refreshSessionStats` now asks for a never-read folder itself, alongside the I/O sample rather than after it, and `wsetSkeleton` holds the space meanwhile. `dirtyByFolder.has(dir)` is what separates *still reading* from *not a repo*: the `null` it stores is an answer, an absent key is not one yet.
+
 ## Branch cleanup: the rules, and the room they need
 
 **`branches.ts` owns the rules** (pure, tested) and **the dashboard's full-screen Branches view runs them**, in two tabs over one table shape. Three evidence bases feed it (`gone`, meaning its remote branch was deleted; `merged`, meaning already in the trunk; and a merged pull request) and `sweep_branches` / `delete_remote_branches` are the only things that delete.
@@ -77,6 +89,44 @@ Timings live in `cc-peek`, set in Settings › Worktrees over a **live preview b
 - **The filter chips ARE the quick-selects.** They narrow; `All` ticks what is left. "Select everything merged" is Merged → All, and needs no second mechanism. Counts are over **every** row, never the shown ones: a chip reading 0 because another chip is on says nothing about the repo.
 - **Shift-click takes the range in the order on screen** (`rangePick` over `orderRows(filterRows(…))`, which is why the view and the handler compute it the same way) and **adds rather than toggles**: a range that flipped each row would undo half of itself.
 - **Deletable first, evidenced-but-blocked second, the rest last** (`orderRows`), each band keeping git's own most-recent-first order. The bands are facts about the branch rather than about the toggles, so arming a scope never makes the table jump under the pointer. Blocked rows stay visible, because "why isn't this branch offered?" is a real question and the row carrying its reason is the answer.
+- **A branch can be locked, and the lock is committed.** `[branches] protect` in
+  `.episko/episko.toml` (`["main", "release/*"]`; `*` matches any run of characters, `/`
+  included, and nothing else is special) is a project fact, so it is written through
+  `toml_edit` behind the keep list's `create` gate and everybody who pulls the repo gets it.
+  It refuses **both halves** of a row before any other rule — a lock is the one refusal no
+  evidence lifts, and a `-D` force does not answer it either. The frontend's copy is one paint
+  old and the file is hand-editable underneath it, so **every deleter re-reads it**:
+  `sweep_branches`, `delete_remote_branches`, `delete_branch`, and `finish_removal`, where a
+  protected branch outlives the worktree that held it. Only an **exact** name is ever written
+  by a click: dropping `release/*` because one branch under it was unprotected would quietly
+  unprotect its siblings, so `Lock.exact` is false there and the menu row says what to edit
+  instead. A re-protect that is already true writes nothing, because this file lands in a diff.
+- **GitHub's own protection is read beside the merged PRs and is a second source, never the
+  same one.** `gh_protected_branches` reads the `protected` flag off the repo's branch listing
+  (one paginated call, read access is enough). Whether that flag covers a **ruleset** as well
+  as a classic protection rule is GitHub's answer rather than ours; if a ruleset-only repo ever
+  reads as unprotected, `rules/branches/<name>` is the endpoint that knows, at one request per
+  row. It guards the **remote ref alone** — a local `git branch -D`
+  never reaches GitHub — which is why the committed list exists for the local half, why the
+  backend enforces only that one, and why a GitHub lock can never be lifted from Episko.
+  An unparseable `.episko/episko.toml` protects **nothing** and the view says so in its own
+  note: silence there would read as "nothing is protected here" (the `prs.available` rule).
+- **Every branch row has a menu, and its verbs are the ⑃ cluster header's.** Right-click, or
+  the row's `⋯`: *New session here* (the branch's own worktree, the project's folder when it is
+  checked out there, and `create_worktree` when it lives nowhere — a remote-only row cutting a
+  tracking ref from `base`, the rule `switch_branch` already shares), *Open terminal here*,
+  *Switch `<folder>/` to it*, the lock, and *Copy branch name*. **That row names the folder
+  rather than saying "this folder"**: the switch moves `root` and nothing else, and in a repo
+  with five worktrees a demonstrative points at nothing. Its "on X now" reads `current` off
+  `git_branch_list` (which ran on `root`), never the roster's `is_main`, which names a
+  different folder whenever the project pinned in the rail is itself a linked worktree. It is ./projmenu's one
+  `#ctxMenu` in a fourth mode, taking a **callback** rather than host entries: the project and
+  worktree menus are the app's, where this one belongs to a single view. **Checkout rows grow
+  no menu of their own** — they carry `data-wt` and its four companions, so ./projmenu's
+  document-level handler opens the *same* menu a ⑃ cluster header does. Two traps: the `⋯`
+  click must `stopPropagation` (main.ts's outside-click closer would otherwise shut the menu
+  it just opened), and the pane's `contextmenu` listener is registered **after** its click one
+  so that `test/dispatch.test.ts` reads the if-chain it means.
 - **The overlay repaints wholesale, so the scroll and the caret have to be carried across it** (`paintOverlay`). `paint` swaps `innerHTML` whenever the string differs, which destroys the element the scroll lives on — and the filter box, which is inside the painted markup, so every keystroke would take the caret with it. Its value is rendered from state; only the focus and the caret are put back.
 - **The gh read is guarded on the project, never on a load counter.** Guarding it on the dialog's `wtGen` dropped the evidence whenever the pane was opened promptly (the throttled background fetch bumps that counter a beat after the dialog opens, which is exactly when the PR answer lands) and since the result then stayed null, nothing ever asked again: every squash-merged branch silently stopped being offered.
 - **A pick is two claims, and only one of them is checkable.** `gone` is about the world, so `sweep_branches` re-derives it from `%(upstream:track)` and skips anything git now disagrees with (the list is up to a minute old). `force` is about *evidence* and nothing local can check it; it exists solely for a **squash**-merged PR, whose commits are ancestors of nothing, so `-d` refuses a branch whose work demonstrably shipped. `gh_merged_prs` is the only thing that knows, and `force` is set per row, never as a mode.

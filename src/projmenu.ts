@@ -3,7 +3,9 @@
 // clears every other mode's target. Nothing here is on renderAll()'s path.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { $, EMOJI_PICKER_KEY, FILE_MANAGER, IS_WIN, toast } from "./dom";
+import { EM_HEAD_H, EM_ROW_H, emojiRows, rowWindow } from "./emoji";
+import type { EmRow } from "./emoji";
 import { basename, esc, tilde } from "./format";
 import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
@@ -43,21 +45,15 @@ let host: {
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
+// A control that re-renders its own menu instead of committing must stop the click dead, and
+// stopPropagation is not enough: main.ts's outside-click closer sees the original target
+// detached by the innerHTML swap and closes the menu, and the sibling click listeners on
+// #ctxMenu still run, find their target set again by the reopen, and fall through to closeCtxMenu().
+const keepMenuOpen = (e: Event) => e.stopImmediatePropagation();
+
 // ---------- the appearance panel ----------
 // 12 perceptually distinct hues around the wheel
 const SWATCHES = ["#f2555a", "#fb923c", "#facc15", "#a3e635", "#34d399", "#2dd4bf", "#22d3ee", "#38bdf8", "#818cf8", "#a78bfa", "#d084f5", "#f472b6"];
-// A starting point, eight to a row, not a catalogue: the field below the grid takes anything
-// the OS picker (⌃⌘Space / Win+.) hands over, which is the actual escape hatch.
-const EMOJI = [
-  "🎙️", "🎧", "🎵", "🎬", "📷", "🎨", "✏️", "📝",
-  "🚀", "⚡", "🔥", "✨", "💡", "🧠", "🤖", "👾",
-  "🐛", "🔧", "🔨", "⚙️", "🧪", "🔬", "🔭", "🧭",
-  "📦", "🗂️", "📚", "📊", "📈", "🧮", "🗄️", "🔐",
-  "🌐", "🛰️", "📡", "☁️", "🖥️", "💾", "🕹️", "🧩",
-  "🌱", "🌳", "🍀", "🌊", "🏔️", "🌙", "⭐", "🌈",
-  "🐙", "🐧", "🐳", "🦀", "🦊", "🐝", "🦉", "🐢",
-  "🎯", "🏁", "🏆", "🔔", "⏱️", "📌", "🧵", "🪄",
-];
 let popKey: string | null = null;
 function normalizeHex(v: string): string | null {
   let x = v.trim().replace(/^#/, "");
@@ -80,14 +76,53 @@ const colorPopHtml = (key: string) => {
     (customIcons[key] ? `<button class="sw-auto" data-c="reseticon">Restore repo logo</button>` : "") +
     (iconFor(key) ? `<button class="sw-auto" data-c="delicon">Use color dot (hide icon)</button>` : "");
 };
+// The full Unicode set is ~1,900 glyphs, so the list is windowed: `emRows` is the whole
+// thing and only `rowWindow`'s slice is ever in the DOM. Flags are left out where the font
+// has no regional-indicator glyphs, or the group is 270 rows of letter pairs.
+const EM_VIEW_H = 252;
+let emQ = "";
+let emRows: EmRow[] = [];
+let emWinKey = "";
+const emFlags = !IS_WIN;
+
 const emojiPopHtml = (key: string) => {
   const cur = emojiFor(key);
   return `<button class="sw-auto sw-back" data-c="back">‹ Color &amp; logo</button>` +
-    EMOJI.map((e) => `<button class="em-btn${e === cur ? " on" : ""}" data-c="em:${e}" title="${e}">${e}</button>`).join("") +
-    `<div class="sw-row"><input class="sw-hex sw-emin" type="text" spellcheck="false" placeholder="paste any emoji" value="${cur || ""}" /><button class="sw-apply sw-emset">Set</button></div>` +
-    `<div class="sw-note">${IS_MAC ? "⌃⌘Space" : "Win + ."} opens the system picker</div>` +
+    `<div class="sw-row"><input class="sw-hex sw-emin" type="text" spellcheck="false" placeholder="Search or paste an emoji" value="" /></div>` +
+    `<div class="em-scroll"><div class="em-win"></div></div>` +
+    `<div class="sw-note">↵ takes the first${EMOJI_PICKER_KEY ? ` · ${EMOJI_PICKER_KEY} opens the system picker` : ""}</div>` +
     (cur ? `<button class="sw-auto" data-c="reseticon">Remove emoji</button>` : "");
 };
+const emRowsHtml = (rows: EmRow[], cur: string | null) => rows.map((r) => r.kind === "head"
+  ? `<div class="em-head" style="height:${EM_HEAD_H}px">${esc(r.label)}</div>`
+  : `<div class="em-row" style="height:${EM_ROW_H}px">` + r.cells.map((c) =>
+    `<button class="em-btn${c.ch === cur ? " on" : ""}" data-c="em:${c.ch}" title="${esc(c.name)}">${c.ch}</button>`).join("") + `</div>`).join("");
+
+// Paints the rows in view. Guarded like every other innerHTML surface: a scroll that moves
+// inside the same window must not rebuild the button under the pointer.
+function renderEmojiList(force = false) {
+  const pop = $("colorPop");
+  const sc = pop.querySelector<HTMLElement>(".em-scroll"), win = pop.querySelector<HTMLElement>(".em-win");
+  if (!sc || !win || !popKey) return;
+  // Measured against the full height, never the current one: a short result list shrinks the
+  // scroller, and reading that back would then decide the window from what it had just set.
+  const w = rowWindow(emRows, sc.scrollTop, EM_VIEW_H);
+  const key = `${emQ}|${w.start}|${w.end}`;
+  if (!force && key === emWinKey) return;
+  emWinKey = key;
+  sc.style.maxHeight = `${EM_VIEW_H}px`;
+  win.style.padding = `${w.padTop}px 0 ${w.padBottom}px`;
+  win.innerHTML = emRows.length
+    ? emRowsHtml(emRows.slice(w.start, w.end), emojiFor(popKey))
+    : `<div class="em-none">No emoji named “${esc(emQ)}”</div>`;
+}
+function setEmojiQuery(q: string) {
+  emQ = q;
+  emRows = emojiRows(q, { flags: emFlags });
+  const sc = $("colorPop").querySelector<HTMLElement>(".em-scroll");
+  if (sc) sc.scrollTop = 0;
+  renderEmojiList(true);
+}
 // Where the panel was opened, so the emoji mode lands on the same pixels the colours did.
 let popAt = { x: 0, y: 0, flip: undefined as DOMRect | undefined };
 function renderPop(mode: "color" | "emoji") {
@@ -96,6 +131,12 @@ function renderPop(mode: "color" | "emoji") {
   pop.classList.toggle("emo", mode === "emoji");
   pop.innerHTML = mode === "emoji" ? emojiPopHtml(popKey) : colorPopHtml(popKey);
   pop.classList.add("show"); // shown before measuring, or offsetWidth reads 0
+  if (mode === "emoji") {
+    emWinKey = "";
+    setEmojiQuery("");
+    pop.querySelector<HTMLElement>(".em-scroll")?.addEventListener("scroll", () => renderEmojiList());
+    setTimeout(() => pop.querySelector<HTMLInputElement>(".sw-emin")?.focus(), 0);
+  }
   let x = popAt.x;
   if (popAt.flip && x + pop.offsetWidth > window.innerWidth - 8) x = popAt.flip.left - pop.offsetWidth - 6;
   placePop(pop, x, popAt.y);
@@ -130,21 +171,22 @@ function commitHex(v: string) {
   if (!h) { toast("Enter a valid hex, e.g. #7c5cff"); return; }
   setColor(popKey, h);
 }
-function commitEmoji(v: string) {
-  // A refused value leaves the panel up to retype in, so this must ask whether it took
-  // rather than read the store back: the project may already have had an emoji.
-  if (popKey && setEmojiIcon(popKey, v)) { closeCtxMenu(); closeColorPop(); }
+// ↵ takes the first result, which for a pasted emoji is that emoji. A refused value leaves
+// the panel up to retype in, so this asks whether it took rather than reading the store back.
+function commitEmoji() {
+  const first = emRows.find((r) => r.kind === "grid");
+  if (!first || first.kind !== "grid") return;
+  if (popKey && setEmojiIcon(popKey, first.cells[0].ch)) { closeCtxMenu(); closeColorPop(); }
 }
 $("colorPop").addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
-  if (t.classList.contains("sw-emset")) { const inp = $("colorPop").querySelector<HTMLInputElement>(".sw-emin"); if (inp) commitEmoji(inp.value); return; }
   if (t.classList.contains("sw-apply")) { const inp = $("colorPop").querySelector<HTMLInputElement>(".sw-hex"); if (inp) commitHex(inp.value); return; }
   const b = t.closest<HTMLElement>("[data-c]");
   if (!b || !popKey) return;
-  // The two mode switches redraw in place; everything else commits, so the whole stack
-  // (submenu + menu) closes with it.
-  if (b.dataset.c === "emoji") { renderPop("emoji"); return; }
-  if (b.dataset.c === "back") { renderPop("color"); return; }
+  // The two mode switches redraw in place, so they take keepMenuOpen; everything else
+  // commits, and the whole stack (submenu + menu) closes with it.
+  if (b.dataset.c === "emoji") { keepMenuOpen(e); renderPop("emoji"); return; }
+  if (b.dataset.c === "back") { keepMenuOpen(e); renderPop("color"); return; }
   const key = popKey;
   const em = b.dataset.c?.startsWith("em:") ? b.dataset.c.slice(3) : null;
   closeCtxMenu();
@@ -154,11 +196,15 @@ $("colorPop").addEventListener("click", (e) => {
   if (b.dataset.c === "reseticon") { resetCustomIcon(key); closeColorPop(); return; }
   setColor(key, b.dataset.c === "auto" ? null : b.dataset.c!);
 });
+$("colorPop").addEventListener("input", (e) => {
+  const t = e.target as HTMLElement;
+  if (t.classList.contains("sw-emin")) setEmojiQuery((t as HTMLInputElement).value);
+});
 $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
   const t = e.target as HTMLElement;
   if (e.key !== "Enter") return;
   // The emoji field carries `sw-hex` for its skin, so it must be asked about first.
-  if (t.classList.contains("sw-emin")) { e.preventDefault(); commitEmoji((t as HTMLInputElement).value); return; }
+  if (t.classList.contains("sw-emin")) { e.preventDefault(); commitEmoji(); return; }
   if (t.classList.contains("sw-hex")) { e.preventDefault(); commitHex((t as HTMLInputElement).value); }
 });
 // ---------- project context menu ----------
@@ -183,7 +229,7 @@ let menuX = 0, menuY = 0;
 
 function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = agentKey = ghKey = null; // one #ctxMenu, one target
+  wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -241,7 +287,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -283,7 +329,7 @@ function switchRow(t: WtTarget): CtxRow {
 
 function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
-  ctxKey = null; // one #ctxMenu, one target
+  ctxKey = brTarget = null; // one #ctxMenu, one target
   wtTarget = t;
   // No `menuX`/`menuY` stamp: those exist for the drill-downs that re-open a menu at its
   // own coordinates (agents, groups, gh), and this menu has none.
@@ -335,6 +381,89 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
 });
 
+// ---------- the Branches view's row menu ----------
+// Right-click a branch row, or its ⋯. The verbs arrive as a callback rather than as host
+// entries: the two menus above are the app's, where this one belongs to one view and every
+// row of it means something only the dashboard knows.
+export interface BranchTarget {
+  branch: string;
+  root: string;   // the project's own folder: what a session here is keyed and coloured by
+  dir: string;    // where a session would start; "" when the branch has no checkout yet
+  live: number;   // sessions already running there
+  lock: { by: "episko" | "github"; exact: boolean; text: string } | null;
+  // The switch moves `root` and nothing else, so the row NAMES it: in a repo with five
+  // worktrees "this folder" points at nothing, and the one it would move is the one the
+  // dashboard is open on. `hereBranch` is what that folder is on now.
+  hereBranch: string;
+  switchNote: string;  // "" when that folder can move to the branch, else why it cannot
+}
+let brTarget: BranchTarget | null = null;
+let brRun: (act: string) => void = () => {};
+
+// Four states, because two of them cannot be lifted from here: GitHub's rule is not ours to
+// edit, and a glob covers siblings nobody named on this row.
+function lockRow(t: BranchTarget): CtxRow {
+  if (!t.lock) {
+    return { act: "brprotect", ic: "🔒", label: "Protect branch", sub: "no delete here, for everyone who pulls the repo" };
+  }
+  if (t.lock.by === "github") {
+    return { act: "", ic: "🔒", label: "Protected on GitHub", sub: "a branch protection rule or ruleset guards it", cls: "dis" };
+  }
+  if (!t.lock.exact) {
+    return { act: "", ic: "🔒", label: "Protected by a pattern", sub: `${t.lock.text} — edit the file to change it`, cls: "dis" };
+  }
+  // ⊘ is this menu's "clear the setting", which is what unprotecting is.
+  return { act: "brunprotect", ic: "⊘", label: "Unprotect branch", sub: "removes it from .episko/episko.toml" };
+}
+
+// The folder by name, because it is one of several: `episko/`, not "this folder". What it
+// is on now is the other half of the answer — a switch is a move from somewhere.
+function switchRowFor(t: BranchTarget): CtxRow {
+  const label = `Switch ${basename(t.root)}/ to it`;
+  const here = t.hereBranch ? `the project's own folder, on ${t.hereBranch} now` : "the project's own folder";
+  return t.switchNote
+    ? { act: "", ic: "⇄", label, sub: t.switchNote, cls: "dis" }
+    : { act: "brswitch", ic: "⇄", label, sub: here };
+}
+
+export function openBranchMenu(t: BranchTarget, x: number, y: number, run: (act: string) => void) {
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
+  brTarget = t;
+  brRun = run;
+  const rows: (CtxRow | null)[] = [
+    {
+      act: "brlaunch", ic: "＋", label: "New session here",
+      sub: t.dir
+        ? (t.live ? `${t.live} already running in this checkout` : `start ${effectiveAgent(t.root).label} on this branch`)
+        : "makes a worktree for this branch, then starts",
+    },
+    // A terminal needs a folder to open in, and a branch with no checkout has none.
+    ...(t.dir ? [{ act: "brterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label }] : []),
+    switchRowFor(t),
+    null,
+    lockRow(t),
+    { act: "brcopy", ic: "⧉", label: "Copy branch name" },
+  ];
+  const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(t.branch)}"></span>`
+    + `<span class="mp-hmain"><span class="mp-hname">${esc(t.branch)}</span>`
+    + `<span class="mp-hpath">${esc(t.dir ? tilde(t.dir) : "no checkout yet")}</span></span></div>`
+    + ctxRowsHtml(rows);
+  placePop(menu, x, y);
+}
+
+$("ctxMenu").addEventListener("click", (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
+  if (!b || !brTarget || b.classList.contains("dis")) return;
+  const act = b.dataset.ctx || "";
+  const run = brRun;
+  closeCtxMenu(); closeColorPop();
+  run(act);
+});
+
 // ---------- which agent this project runs: the picker ----------
 // A drill-down of the one #ctxMenu (a list of rows, so it replaces the menu in place with
 // ‹ Back). It sets a per-project preference and does not launch: nobody switches agent
@@ -369,7 +498,7 @@ function ghSub(key: string): string {
 
 function openGhPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = agentKey = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = agentKey = brTarget = null; // one #ctxMenu, one target
   ghKey = key;
   const cur = ghAccountFor(key);
   const w = ghWho(cur, ghLogins);
@@ -398,7 +527,7 @@ function openGhPicker(key: string, x: number, y: number) {
 
 function openAgentPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = ghKey = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = ghKey = brTarget = null; // one #ctxMenu, one target
   agentKey = key;
   const cur = agentByProject[key];
   const eff = effectiveAgent(key);
@@ -415,7 +544,7 @@ function openAgentPicker(key: string, x: number, y: number) {
         : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
         : tilde(a.path ?? ""),
     })),
-    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Sessions · ${defaultAgentDef().label}` } : null,
+    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Launching · ${defaultAgentDef().label}` } : null,
     // Below the fold, what Episko supports but this machine lacks: folded so they don't
     // bury the pickable rows, present so a missing row isn't read as "not supported".
     ...(missing.length ? [null, {
@@ -523,12 +652,6 @@ function openRenameGroup(gid: string) {
   focusField();
   setTimeout(() => menu.querySelector<HTMLInputElement>(".mp-in")?.select(), 40);
 }
-
-// A row that re-renders this menu instead of committing must stop the click dead, and
-// stopPropagation is not enough: main.ts's outside-click closer sees the original target
-// detached by the innerHTML swap and closes the menu, and the sibling click listeners on
-// #ctxMenu still run, find their target set again by the reopen, and fall through to closeCtxMenu().
-const keepMenuOpen = (e: Event) => e.stopImmediatePropagation();
 
 // One listener for all the drill-downs, each guarded on its own target.
 $("ctxMenu").addEventListener("click", (e) => {

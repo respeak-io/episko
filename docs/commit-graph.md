@@ -29,4 +29,4 @@ Split: **`graph.ts` pure and tested** (lanes, naming, chips, geometry, `rowSvg`)
 
 **A narrow panel gives up in order** (container queries on the *dialog*, not viewport): the date shortens (`2 days ago` → `2d`, both rendered, CSS picks), then the sha column, then author and header path. **The subject never yields.** It did, because an `fr` track gives up before fixed ones; it is now `minmax(0, var(--gleft-w))` with a floor, and the measured cap is also bounded by a share of panel width (`sizeLeftColumn`, re-run on resize, the one rung of the ladder in JS).
 
-Lane colours are `--gl-0…7`, re-stepped for the light theme. Scope (`all refs` / `this branch`) resets on each open, deliberately not persisted, since all-refs is the answer the panel exists to give.
+Lane colours are `--gl-0…7`. Scope (`all refs` / `this branch`) resets on each open, deliberately not persisted, since all-refs is the answer the panel exists to give.
