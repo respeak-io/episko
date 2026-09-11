@@ -302,9 +302,17 @@ html.win .wctl { display: flex; }
 .sw-hex:focus { border-color: var(--accent-line); }
 .sw-apply { height: 26px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); cursor: pointer; font: 600 11px var(--font-ui); }
 .sw-apply:hover { filter: brightness(1.08); }
-/* Emoji mode: a wider grid than the swatches', and capped so a short window still scrolls it. */
-.colorpop.emo { grid-template-columns: repeat(8, 26px); max-height: min(420px, 80vh); overflow-y: auto; }
-.em-btn { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 16px; line-height: 1; }
+/* Emoji mode: one column of full-width controls around a windowed list, whose own rows carry
+   the 8 cells. Row heights are inline, from ./emoji's EM_ROW_H / EM_HEAD_H, so they cannot drift. */
+/* 281 = 8x26 cells + 7x6 gaps + the 9px scrollbar every scroller here gets + 2x10 padding
+   + 2x1 border. The gutter is reserved, so a short result list does not reflow the grid. */
+.colorpop.emo { grid-template-columns: 1fr; width: 281px; }
+.em-scroll { grid-column: 1 / -1; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; margin-top: 1px; }
+.em-row { display: flex; gap: 6px; align-items: center; }
+.em-head { display: flex; align-items: flex-end; padding-bottom: 3px; color: var(--muted-2); font: 700 9px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; }
+.sw-emin { font: 500 12px var(--font-ui); } /* it searches now; the mono is the hex field's */
+.em-none { padding: 14px 4px; color: var(--muted-2); font: 500 11px var(--font-ui); text-align: center; }
+.em-btn { width: 26px; height: 26px; padding: 0; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 16px; line-height: 1; flex: none; }
 .em-btn:hover { background: var(--surface); border-color: var(--hair-strong); transform: scale(1.12); }
 .em-btn.on { border-color: var(--accent-line); background: var(--surface); }
 .sw-back { text-align: left; padding: 0 8px; }

@@ -52,6 +52,12 @@ that name Episko have a tab that explains them.
 + **Every setting says its value, and a changed one can go back.** A bar marks a row that differs
   from its default and ⟲ restores it; the big panels fold to one line, and a search hit inside
   one opens it on the matching line. Usage & spend and What's new have a door in the rail.
++ **Every emoji is a project icon now, not the 64 we picked.** The panel behind a project's
+  colour dot opens on a search field over the whole Unicode set — type `rocket`, `calendar`,
+  `crab` — with the old shortlist still first under *Suggested* and every Unicode group below
+  it. ↵ takes the top hit, a pasted emoji is its own result (so skin tones and ZWJ sequences
+  still work), and only the rows on screen are ever built, which is what keeps a 1,914-glyph
+  list opening instantly. Flags are left out where the font has no glyphs for them.
 ~ **Every hint is one sentence, with the reasoning behind *why*.** The same facts, read when you
   want them; the search reads both halves. A quick open lands on its row, lit for a moment,
   rather than at the top of a tab.
@@ -70,6 +76,9 @@ that name Episko have a tab that explains them.
   asked of you, and your text is sitting in the composer.
 ! **A long branch name no longer pushes the ahead/behind count out of the git card.** The count
   is what you came for, so the name is what gives way.
+! **The emoji picker opens again.** *Pick an emoji…* redrew the panel in place, which detached
+  the button you had just clicked — and the app's outside-click closer, seeing a target with no
+  parent, decided the click had landed outside and shut the panel on the same tick.
 ! **An emoji icon is no longer clipped by its own box.** A colour emoji's ink fills its em box,
   so drawn at nine tenths of the icon it reached all four edges and the rounded 15px frame ate
   the corners — a calendar lost its last column. It is inset now, and still the same size on
