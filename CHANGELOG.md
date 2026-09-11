@@ -13,6 +13,20 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **The Settings rail follows what you are reading**, not whatever header happens to sit at
+  the top edge — it lights the section under a reading line a third of the way down the pane,
+  so the last screenful of a long section no longer lights the next one along. The line slides
+  to the top edge and to the foot where the scroll runs out, so every section can take the
+  rail, down to one-row sections like Keys and Guide.
+~ **A switch and the interval it governs are one row.** *Fetch for the session on screen* now
+  carries its own *at most every*, and Diagnostics' vitals recorder its sample rate — split
+  across two rows, the interval's label and hint had no subject and read as a riddle.
+~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
+  stops* and *Trusted projects* are both filled elsewhere; empty, they said "none" behind a
+  fold that opened on a single sentence. The sentence is on the row and the fold is gone.
+~ **Trust is explained where the word is used.** *Let trusted projects introspect themselves*
+  is now *Run a project's own tool to list its tasks*, and both rows say what running a
+  justfile, Taskfile or mise file means and how a folder comes to be trusted.
 ! **A project with an umlaut in its path was missing from its own History.** The macOS folder
   dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History
   came up empty, the dormant row vanished at boot and no past session could be read. Paths are
