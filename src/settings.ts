@@ -156,6 +156,9 @@ export function setSettingsHost(h: SettingsHost) { host = h; }
 // Every control writes through the same setter the rest of the app uses; there is no
 // separate settings store.
 type SetSeg = { value: string; label: string; sub?: string; glyph?: string; logo?: string };
+// A switch and the one number it governs, on one row: fetching and how often to fetch are
+// a single decision, and split into two rows neither half reads as a sentence.
+type SetCadence = { set: string; label: string; active: () => string; segs: () => SetSeg[] };
 // What every control carries besides its shape: the folded why, the words the search may
 // match, and the three answers a row can give (a summary, whether it is at its default, how
 // to put it back). `id` is the row's address for deep links and the fold state.
@@ -177,7 +180,7 @@ type SetShape =
   // peek, sound, attn, revive, keys and title are each one control with a panel under it:
   // they are one decision, and the panel folds behind its summary.
   | { kind: "peek" } | { kind: "sound" } | { kind: "keys" } | { kind: "attn" } | { kind: "revive" } | { kind: "title" }
-  | { kind: "toggle"; set: string; on: () => boolean; preview?: () => string }
+  | { kind: "toggle"; set: string; on: () => boolean; preview?: () => string; cadence?: SetCadence }
   // Prose with no control under it: a rule governing the group below.
   | { kind: "note"; hint: string }
   | { kind: "guide" }
@@ -441,33 +444,35 @@ const SET_TABS: SetTab[] = [
         ],
         isDefault: () => revivePrefs.enabled === REVIVE_DEFAULTS.enabled && isDefaultRevivePrefs(revivePrefs),
         reset: () => host.setRevivePrefs({ ...REVIVE_DEFAULTS }) },
-      { kind: "toggle", set: "fetch:on", key: "cc-autofetch", label: "Fetch for the session on screen", hint: "Fetches the checkout you are looking at, so its ahead/behind count is current.",
-        more: "Only that one; a repo nobody is reading isn't worth a round trip, and the checkouts of one repo share a fetch. An unreachable remote is backed off, and the git card's tooltip says so.",
-        aliases: ["auto-fetch", "behind", "ahead", "remote", "pull", "sync", "git", "origin"], since: "0.28.0",
-        on: () => autoFetchPrefs.enabled, isDefault: () => autoFetchPrefs.enabled === AUTOFETCH_DEFAULTS.enabled,
-        reset: () => host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: AUTOFETCH_DEFAULTS.enabled }) },
-      { kind: "seg", set: "fetch:every", key: "cc-autofetch", label: "At most every", hint: "How old a count may get before arriving at the pane fetches again.",
-        more: "Nothing is fetched while you are elsewhere; arriving is what triggers it.", aliases: ["interval", "git", "fetch"], since: "0.28.0",
-        dim: () => !autoFetchPrefs.enabled, active: () => String(autoFetchPrefs.everyMs),
-        isDefault: () => autoFetchPrefs.everyMs === AUTOFETCH_DEFAULTS.everyMs,
-        reset: () => host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: AUTOFETCH_DEFAULTS.everyMs }),
-        segs: () => AUTOFETCH_EVERY.map((ms) => ({
-          value: String(ms),
-          label: `${ms / 60_000} min`,
-          glyph: ms <= 60_000 ? "◕" : ms <= 300_000 ? "◑" : "◔",
-          sub: ms <= 60_000 ? "Freshest; a fetch most times you switch"
-            : ms <= 300_000 ? "Fresh enough for a colleague's push"
-            : ms <= 900_000 ? "Quiet; a handful of fetches an hour" : "Quietest",
-        })) },
+      { kind: "toggle", set: "fetch:on", key: "cc-autofetch", label: "Fetch for the session on screen",
+        hint: "An ahead/behind count is only as fresh as your last fetch, so Episko fetches the checkout you are looking at.",
+        more: "That one only: a repo nobody is reading isn't worth a round trip, and the checkouts of one repo share a fetch. The cadence is a ceiling rather than a timer — nothing is fetched while you are elsewhere, and arriving at a pane whose count is older than that is what triggers one. An unreachable remote is backed off, and the git card's tooltip says so.",
+        aliases: ["auto-fetch", "behind", "ahead", "remote", "pull", "sync", "git", "origin", "interval", "how often"], since: "0.28.0",
+        on: () => autoFetchPrefs.enabled,
+        isDefault: () => autoFetchPrefs.enabled === AUTOFETCH_DEFAULTS.enabled && autoFetchPrefs.everyMs === AUTOFETCH_DEFAULTS.everyMs,
+        reset: () => host.setAutoFetchPrefs({ ...AUTOFETCH_DEFAULTS }),
+        cadence: {
+          set: "fetch:every", label: "At most every", active: () => String(autoFetchPrefs.everyMs),
+          segs: () => AUTOFETCH_EVERY.map((ms) => ({
+            value: String(ms),
+            label: `${ms / 60_000} min`,
+            glyph: ms <= 60_000 ? "◕" : ms <= 300_000 ? "◑" : "◔",
+            sub: ms <= 60_000 ? "A fetch most times you switch pane"
+              : ms <= 300_000 ? "A colleague's push shows up within five minutes"
+              : ms <= 900_000 ? "Quiet: a handful of fetches an hour"
+              : "Quietest: a count may be half an hour old",
+          })),
+        } },
       // Set from the project's task panel; reviewed and revoked here.
-      { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops", hint: "Projects where a task runs each time an agent finishes a turn.",
-        more: "It runs unfocused and never takes the stage; a failure keeps its pane and offers the output back to the session. Set with ⟲ in a project's task panel, removed with a click here.",
+      { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
+        hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
+        more: "It runs unfocused and never takes the stage; a failure keeps its pane and offers the output back to the session.",
         aliases: ["run on stop", "hook", "after turn", "test on stop", "task"],
         summary: () => { const n = Object.keys(stopRules).length; return n ? `${n} rule${n === 1 ? "" : "s"}` : "none"; },
         lines: () => Object.entries(stopRules).map(([path, r]) => ({ label: `${basename(path)} · ${r.label}`, value: tilde(path) })),
         on: () => Object.keys(stopRules),
         segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
-        empty: "No rules yet. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
+        empty: "No project has one. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
       { kind: "seg", set: "dismiss", key: "cc-task-prefs", label: "Dismiss successful runs", hint: "When a passed run's pane closes on its own.",
         more: "A failed run stays until you close it.", aliases: ["auto close", "finished runs", "task", "green"],
         active: () => String(taskPrefs.dismissMs), isDefault: () => taskPrefs.dismissMs === DEFAULT_TASK_PREFS.dismissMs,
@@ -489,18 +494,21 @@ const SET_TABS: SetTab[] = [
         on: () => taskPrefs.providers, segs: () => ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })),
         isDefault: () => sameSet(taskPrefs.providers, DEFAULT_TASK_PREFS.providers),
         reset: () => { taskPrefs.providers = [...DEFAULT_TASK_PREFS.providers]; saveTaskPrefs(); renderSettings(); } },
-      { kind: "toggle", set: "introspect", key: "cc-task-prefs", label: "Let trusted projects introspect themselves", hint: "Lets a trusted project's own tool list its tasks.",
-        more: "Listing justfile, Taskfile or mise tasks means running that tool, and it can execute code from the folder. Off, those tasks stay undiscovered.",
-        aliases: ["trust", "security", "execute", "evaluate", "safe"],
+      { kind: "toggle", set: "introspect", key: "cc-task-prefs", label: "Run a project's own tool to list its tasks",
+        hint: "A justfile, Taskfile or mise file only names its tasks when the tool is run, and running it executes code from the folder — so Episko does it in trusted folders only.",
+        more: "A folder is trusted by being one of your projects, or by your saying yes the one time Episko asks. Off, the tool is never run and those tasks stay undiscovered; the file-based ones (package.json, tasks.json, Makefile) are read either way.",
+        aliases: ["trust", "security", "execute", "evaluate", "safe", "introspect", "just", "mise"],
         on: () => taskPrefs.introspect, isDefault: () => taskPrefs.introspect === DEFAULT_TASK_PREFS.introspect,
         reset: () => applySetting("introspect", DEFAULT_TASK_PREFS.introspect ? "1" : "0") },
-      { kind: "multi", set: "untrust", key: "cc-trusted", label: "Trusted projects", hint: "Folders you have trusted by hand; click one to revoke.",
-        more: "Your project folders are trusted because you added them. Anything else asks once.", aliases: ["revoke", "trust", "folder"],
+      { kind: "multi", set: "untrust", key: "cc-trusted", label: "Trusted projects",
+        hint: "Folders you said yes to when Episko asked to run their own task tool. Click one to take that back.",
+        more: "A folder you added as a project is trusted by being one and is not listed here; anything else asks once, the first time listing its tasks would mean running its tool. Revoking sends those tasks back to undiscovered until you say yes again.",
+        aliases: ["revoke", "trust", "folder", "permission"],
         summary: () => { const n = explicitlyTrusted().length; return n ? `${n} by hand` : "none by hand"; },
         lines: () => explicitlyTrusted().map((p) => ({ label: basename(p), value: tilde(p) })),
         on: () => explicitlyTrusted(),
         segs: () => explicitlyTrusted().map((p) => ({ value: p, label: basename(p), sub: tilde(p) })),
-        empty: "Nothing trusted by hand yet. Your project folders already are." },
+        empty: "Nothing trusted by hand yet — your own project folders already are, and nothing else has asked." },
       { kind: "seg", set: "taskcwd", key: "cc-task-prefs", label: "Working directory", hint: "Where a task runs when several worktrees are open.",
         more: "A task that declares its own directory keeps it.", aliases: ["cwd", "worktree", "repo root", "directory"],
         active: () => taskPrefs.cwd, isDefault: () => taskPrefs.cwd === DEFAULT_TASK_PREFS.cwd, reset: () => applySetting("taskcwd", DEFAULT_TASK_PREFS.cwd),
@@ -550,22 +558,22 @@ const SET_TABS: SetTab[] = [
     // Recording first: it is the only row that has to be switched on before the day it is needed.
     controls: () => [
       { kind: "toggle", set: "perf:vitals", key: "cc-vitals", label: "Record performance vitals", hint: "Logs what the interface is holding, one line every few minutes.",
-        more: "DOM nodes, heap, terminal buffers, the per-session structures, written to the rolling log where they survive a crash and a reload. After a day with a fleet the interface can get heavier until it feels sluggish, and the reload that fixes it destroys the evidence, so this has to be on before the day it is needed.",
-        aliases: ["leak", "memory", "sluggish", "slow", "heap", "log", "dom nodes", "growth"],
+        more: "DOM nodes, heap, terminal buffers, the per-session structures, written to the rolling log where they survive a crash and a reload. After a day with a fleet the interface can get heavier until it feels sluggish, and the reload that fixes it destroys the evidence, so this has to be on before the day it is needed. Readings under a minute apart are mostly noise from whatever turn is running; over a quarter of an hour, a slow slide has too few points to show where it began.",
+        aliases: ["leak", "memory", "sluggish", "slow", "heap", "log", "dom nodes", "growth", "interval", "sampling"],
         on: () => vitalsPrefs.enabled, preview: () => vitalsPreview(), previewLabel: "readings",
-        isDefault: () => vitalsPrefs.enabled === VITALS_DEFAULTS.enabled,
-        reset: () => host.setVitalsPrefs({ ...vitalsPrefs, enabled: VITALS_DEFAULTS.enabled }) },
-      { kind: "seg", set: "perf:every", key: "cc-vitals", label: "Sample every", hint: "How often a reading is taken.",
-        more: "Under a minute is noise from whatever turn is running; over a quarter of an hour a slow slide has too few points to show where it began.",
-        aliases: ["interval", "sampling"], dim: () => !vitalsPrefs.enabled, active: () => String(vitalsPrefs.everyMs),
-        isDefault: () => vitalsPrefs.everyMs === VITALS_DEFAULTS.everyMs,
-        reset: () => host.setVitalsPrefs({ ...vitalsPrefs, everyMs: VITALS_DEFAULTS.everyMs }),
-        segs: () => VITALS_EVERY.map((ms) => ({
-          value: String(ms),
-          label: ms < 3_600_000 ? `${ms / 60_000} min` : `${ms / 3_600_000} h`,
-          glyph: ms === 60_000 ? "◕" : ms === 300_000 ? "◑" : "◔",
-          sub: ms === 60_000 ? "Finest; four hours in memory" : ms === 300_000 ? "A full day in memory" : "Coarsest; lightest log",
-        })) },
+        isDefault: () => vitalsPrefs.enabled === VITALS_DEFAULTS.enabled && vitalsPrefs.everyMs === VITALS_DEFAULTS.everyMs,
+        reset: () => host.setVitalsPrefs({ ...vitalsPrefs, enabled: VITALS_DEFAULTS.enabled, everyMs: VITALS_DEFAULTS.everyMs }),
+        cadence: {
+          set: "perf:every", label: "One reading every", active: () => String(vitalsPrefs.everyMs),
+          segs: () => VITALS_EVERY.map((ms) => ({
+            value: String(ms),
+            label: ms < 3_600_000 ? `${ms / 60_000} min` : `${ms / 3_600_000} h`,
+            glyph: ms === 60_000 ? "◕" : ms === 300_000 ? "◑" : "◔",
+            sub: ms === 60_000 ? "Finest; four hours of readings in memory"
+              : ms === 300_000 ? "A full day of readings in memory"
+              : "Coarsest; lightest log, and a slow slide has few points to show where it began",
+          })),
+        } },
       { kind: "seg", set: "perf:scroll", key: "cc-scrollback", label: "Terminal scrollback", hint: "Lines of history each pane keeps.",
         more: "Across a fleet this is the biggest thing Episko holds, and a pane only gives it back when its session ends. Lowering it applies to open panes at once.",
         aliases: ["history", "lines", "buffer", "memory", "xterm"],
@@ -653,13 +661,15 @@ const rowId = (c: SetControl) => c.id ?? ("set" in c ? c.set : c.kind);
 const groupLabel = (id: SetGroupId) => SET_GROUPS.find((g) => g.id === id)?.label ?? id;
 const isChanged = (c: SetControl) => (c.isDefault ? !c.isDefault() : false);
 const isNew = (c: SetControl) => !!c.since && host.versionUnread(c.since);
-const activeLabel = (c: SetControl) => ("active" in c && "segs" in c ? c.segs().find((s) => s.value === c.active())?.label : undefined);
+/** The one picker a row carries, wherever it sits: a seg row is one, a toggle may govern one. */
+const rowPicker = (c: SetControl) => (c.kind === "seg" ? c : c.kind === "toggle" ? c.cadence : undefined);
+const activeLabel = (c: SetControl) => { const p = rowPicker(c); return p?.segs().find((s) => s.value === p.active())?.label; };
 
 function searchRow(t: SetTab, c: SetControl): SearchRow {
   return {
     id: rowId(c), tab: t.id, tabLabel: t.label, group: t.group, groupLabel: groupLabel(t.group),
     label: c.label, hint: c.hint ?? "", more: c.more, value: c.summary?.() ?? activeLabel(c),
-    options: "segs" in c ? c.segs().map((s) => s.label) : undefined,
+    options: ("segs" in c ? c.segs() : rowPicker(c)?.segs())?.map((s) => s.label),
     lines: c.lines?.().map((l) => `${l.label} ${l.value}`),
     aliases: c.aliases, key: c.key, changed: isChanged(c), isNew: isNew(c), mac: t.os === "mac",
   };
@@ -744,17 +754,25 @@ function doorHtml(d: (typeof ELSEWHERE)[number], words: string[]): string {
     + `<div class="set-hint">${highlight(d.hint, words)}</div><div class="set-more set-more-on">${highlight(d.more, words)}</div>`
     + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ↗</button></div></div></div>`;
 }
-// The rail follows the scroll: the last header at or above the top edge, with one header's
-// height of slack, as the diff overlay's index rail does.
+// The rail lights the section under the READING LINE, a third of the way down the pane — not
+// whichever header has crept past the top edge, which lit a long section's neighbour for the
+// whole of its last screenful. A line rather than a count of visible pixels, because every
+// section then owns the rail for its own height of scrolling: on pixels a slim section (Keys
+// is one row) can never outweigh a tall neighbour, so it never lit at all.
 function spy() {
   if (Date.now() < spyHold) return;
   const body = $("setBody");
-  const top = body.getBoundingClientRect().top;
-  let cur: string | null = null;
+  const view = body.getBoundingClientRect();
+  // A third down, but only as far as the scroll can put it: at the very top the line is the
+  // top edge, and over the last screenful it slides to the foot of the pane. Without that,
+  // the sections at either end never reach it — nothing can scroll them any further.
+  const left = body.scrollHeight - body.clientHeight - body.scrollTop;
+  const line = view.top + Math.min(body.scrollTop, Math.max(view.height / 3, view.height - left));
+  let cur = "";
   for (const sec of body.querySelectorAll<HTMLElement>(".set-sec")) {
-    if (sec.getBoundingClientRect().top - top <= 44) cur = sec.dataset.sec!;
+    if (sec.dataset.sec !== "elsewhere" && sec.getBoundingClientRect().top <= line) cur = sec.dataset.sec!;
   }
-  if (cur && cur !== "elsewhere") markTab(cur);
+  if (cur) markTab(cur);
 }
 function markTab(id: string) {
   setTab = id;
@@ -1325,7 +1343,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
   const fold = (label: string) =>
     `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">▾</span></button>`;
   const sw = (on: boolean, attr: string) => `<button class="sw${on ? " on" : ""}" ${attr} role="switch" aria-checked="${on}"></button>`;
-  let ctl = "", panel = "", always = false;
+  let ctl = "", panel = "", note = "", always = false;
   switch (c.kind) {
     case "peek": ctl = sw(peekPrefs.enabled, `data-setpeek="toggle"`) + fold(c.summary!()); panel = renderPeekControl(); break;
     case "attn": ctl = sw(attnPrefs.highlight, `data-setattn="highlight"`) + fold(c.summary!()); panel = renderAttnControl(); break;
@@ -1343,8 +1361,12 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       break;
     case "toggle": {
       const on = c.on();
+      const cad = c.cadence;
       ctl = (c.preview ? fold(c.previewLabel ?? "preview") : "")
-        + `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button>`;
+        + `<button class="sw${on ? " on" : ""}" data-set="${c.set}" data-val="${on ? "0" : "1"}" role="switch" aria-checked="${on}"></button>`
+        // Dimmed rather than disabled while the switch is off: the stored choice is still there.
+        + (cad ? `<span class="set-cad${on ? "" : " off"}"><span class="set-cadl">${esc(cad.label)}</span>`
+          + `${segInline({ set: cad.set, label: `${c.label} · ${cad.label}` }, cad.segs(), cad.active())}</span>` : "");
       if (c.preview && open) panel = c.preview();
       break;
     }
@@ -1356,12 +1378,13 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "multi": {
       const on = c.on();
       const segs = c.segs();
+      // An empty list is not a picker: a fold opening on one sentence reads as a control that
+      // does nothing, so the sentence goes on the row and the button that opened it goes.
+      if (!segs.length) { ctl = `<span class="set-nil">${esc(c.summary?.() ?? "none")}</span>`; note = c.empty || "Nothing here yet."; break; }
       ctl = fold(c.summary?.() ?? String(on.length));
-      panel = segs.length
-        ? `<div class="chips">${segs.map((s) =>
-            `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
-            + `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`
-        : `<div class="set-empty">${esc(c.empty || "Nothing here yet.")}</div>`;
+      panel = `<div class="chips">${segs.map((s) =>
+        `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
+        + `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
       break;
     }
     case "seg": {
@@ -1376,7 +1399,10 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
   const chg = isChanged(c);
   const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">⟲</button>` : "";
   const why = c.more ? `<button class="set-why" data-setwhy="${id}" aria-expanded="${openWhy.has(id)}">why</button>` : "";
-  const cur = c.kind === "seg" ? c.segs().find((s) => s.value === c.active())?.sub : undefined;
+  const pick = rowPicker(c);
+  const cur = pick?.segs().find((s) => s.value === pick.active())?.sub;
+  // A cadence's line describes what the switch above it is not doing: dimmed with the picker.
+  const curOff = c.kind === "toggle" && !c.on();
   const seen = new Set<string>();
   const matched = hit?.why.filter((w) => { const k = w.word + (w.line ?? w.field); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 3) ?? [];
   const showPanel = !!panel && (always || open);
@@ -1384,13 +1410,14 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     <div class="set-inline"><div class="set-itxt">
       <div class="set-glabel">${highlight(c.label, words)}${isNew(c) ? `<span class="set-tag set-tag-new">new</span>` : ""}</div>
       ${c.hint ? `<div class="set-hint">${highlight(c.hint, words)}${why}</div>` : ""}
-      ${cur ? `<div class="set-cur">${esc(cur)}</div>` : ""}
+      ${cur ? `<div class="set-cur${curOff ? " off" : ""}">${esc(cur)}</div>` : ""}
+      ${note ? `<div class="set-empty">${esc(note)}</div>` : ""}
       ${c.more ? `<div class="set-more">${highlight(c.more, words)}</div>` : ""}
       ${matched.length ? `<div class="set-matched">matched ${matched.map((w) => `“<b>${esc(w.word)}</b>” · ${esc(w.line ?? w.field)}`).join(" · ")}</div>` : ""}
     </div><div class="set-ctl">${reset}${ctl}</div></div>
     ${showPanel ? `<div class="set-panel">${panel}</div>` : ""}</div>`;
 }
-function segInline(c: SetControl & { kind: "seg" }, segs: SetSeg[], active: string): string {
+function segInline(c: { set: string; label: string }, segs: SetSeg[], active: string): string {
   return `<div class="set-seg" role="radiogroup" aria-label="${escAttr(c.label)}">${segs.map((s) =>
     `<button class="set-segb${s.value === active ? " on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub ?? s.label)}" aria-pressed="${s.value === active}">${esc(s.label)}</button>`).join("")}</div>`;
 }
