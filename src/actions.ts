@@ -476,17 +476,6 @@ export function toggleInsp() {
   }
   refit();
 }
-export function effectiveTheme(): "dark" | "light" {
-  const a = document.documentElement.getAttribute("data-theme");
-  if (a === "dark" || a === "light") return a;
-  return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-export function setTheme(t: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", t);
-  localStorage.setItem("cc-theme", t);
-  renderSettings(); // keep the settings picker in sync if it's open
-}
-export function toggleTheme() { setTheme(effectiveTheme() === "dark" ? "light" : "dark"); }
 
 // ---------- following a session to the checkout its agent moved to ----------
 // Two repairs (docs/worktrees.md). via "cwd": Claude already runs there, so adopt the

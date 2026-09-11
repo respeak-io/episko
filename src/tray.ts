@@ -26,13 +26,9 @@ const SHAPE: Record<string, string> = {
   background: "half",   // ◐ — the turn is over, its agents are not
 };
 
-// styles.css owns the status hues (`g-ended` differs per theme), so read the colour off the
-// class rather than restate it. Cached per theme.
-let palTheme: string | null = null;
+// styles.css owns the status hues, so read the colour off the class rather than restate it.
 const palCache = new Map<string, [number, number, number]>();
 function classRgb(cls: string): [number, number, number] {
-  const theme = document.documentElement.dataset.theme ?? "";
-  if (theme !== palTheme) { palTheme = theme; palCache.clear(); }
   const hit = palCache.get(cls);
   if (hit) return hit;
   const el = document.createElement("span");

@@ -32,7 +32,6 @@ let host: {
   cycleSort: () => void;
   toggleInsp: () => void;
   toggleRail: () => void;
-  toggleTheme: () => void;
   requestLaunch: (project: string, path: string) => void;
   revealActiveFolder: () => void;
   openProjectFolder: (key: string) => void;
@@ -43,7 +42,7 @@ let host: {
   setActive: () => {}, resolvePermission: () => {},
   openPlainTerminal: () => {}, closeSession: () => {}, shelveSession: () => {}, addProject: () => {},
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
-  toggleTheme: () => {}, requestLaunch: () => {},
+  requestLaunch: () => {},
   revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
   openUsage: () => {}, settingsItems: () => [],
 };
@@ -102,7 +101,6 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
   { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▦", run: () => host.openUsage() },
-  { key: "cmd:theme", label: "Toggle the theme", glyph: "◐", run: () => host.toggleTheme() },
 ];
 // The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
 function palShortcut(act?: KeyAction): string[] | undefined {

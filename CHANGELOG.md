@@ -58,6 +58,9 @@ that name Episko have a tab that explains them.
 ~ **A session's git card appears at once.** It waited for the 5s working-tree poll before
   drawing anything, so a new pane had no branch, no counts and then a card that shoved the
   panel down when it landed. The folder is read on arrival now, with a skeleton in its place.
+~ **One theme.** The light theme is retired: its phase glyphs were never re-stepped for a
+  white ground (2:1 where the dark ones sit at 8:1), and the terminal, most of the window, is
+  coloured by Claude's own theme either way. The ◐ button and the Theme setting go with it.
 ! **A pending ask survives the next tool call.** Claude runs tools in parallel and a subagent's
   hooks arrive under its parent's id, so whichever call landed a second later was retiring a
   question nobody had answered: the ◆ went out about a second after it appeared, the *needs

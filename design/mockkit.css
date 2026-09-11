@@ -8,9 +8,8 @@
  * So: paste this file into a <style> block at the top of the mock and write only
  * the page-specific CSS below it. See design/README.md.
  *
- * DARK ONLY, ON PURPOSE. The app ships a light theme too, but a mock is judged
- * against one ground. Copy the `:root[data-theme="light"]` block out of
- * src/styles.css if a particular mock needs to show both.
+ * DARK ONLY. The app has one theme since 0.28, so a mock shows that ground and
+ * nothing else; the tokens below ignore the viewer's `data-theme` on purpose.
  *
  * SYNC RULE. Tokens below are copied from src/styles.css. When you change a
  * token there, change it here in the same commit — a kit that has drifted is

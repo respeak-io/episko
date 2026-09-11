@@ -234,7 +234,7 @@ export const LANE_X0 = 11;
 export const laneX = (lane: number) => LANE_X0 + lane * LANE_W;
 export const graphWidth = (lanes: number) => LANE_X0 * 2 + Math.max(0, lanes - 1) * LANE_W;
 
-// CSS variables, re-stepped per theme in styles.css: eight hues must stay apart on both grounds.
+// CSS variables from styles.css: eight hues that must stay apart from each other and off the accent.
 // A colour follows a line, not a lane index, so it survives a neighbouring lane's reuse.
 export const GRAPH_COLORS = [
   "var(--gl-0)", "var(--gl-1)", "var(--gl-2)", "var(--gl-3)",

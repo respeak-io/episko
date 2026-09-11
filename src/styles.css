@@ -43,26 +43,6 @@
   --font-mono: "JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", "Berkeley Mono", Menlo, monospace;
   color-scheme: dark;
 }
-:root[data-theme="light"] {
-  --bg:#f4f2f8; --bg-2:#eceaf2; --panel:#ffffff; --surface:#faf9fc; --surface-2:#f1eff7;
-  --hair:rgba(24,18,40,.09); --hair-strong:rgba(24,18,40,.15); --lift:rgba(255,255,255,.8);
-  --text:#1c1726; --muted:#6a6480; --muted-2:#9a94ab; --terminal-bg:#100e17; --terminal-text:#dcd8e6;
-  --accent-ink: color-mix(in srgb, var(--accent) 80%, black 20%);
-  /* darker tool accents so they hold contrast on the light ground */
-  --tool-read:#2a7fd0; --tool-edit:#6a45e0; --tool-bash:#b9791a; --tool-task:#128a63; --tool-web:#c04f97; --tool-mcp:#6a6480;
-  /* usage analytics — re-stepped for the light ground (own steps, not an inversion) */
-  --m-opus:#7c5cf0; --m-sonnet:#b8760f; --m-haiku:#0c8f68; --m-other:#8a8598; --m-unattr:#b8b2c6;
-  --m-fable:#2b6fd0; --m-gpt:#c04270; --m-codex:#0f8fa3;
-  --m-s1:#6e8c1e; --m-s2:#9a45c0; --m-s3:#5a7095; --m-s4:#b34a35; --m-fade:#241d33;
-  --u-g0:#eceaf2; --u-g1:#d8cff2; --u-g2:#b7a4ee; --u-g3:#9575e8; --u-g4:#7c5cf0;
-  --u-t1:#e4def3; --u-t2:#c3b0ee; --u-t3:#9878e6; --u-t4:#7c5cf0;
-  /* lane hues re-stepped: the dark set's pastels vanish on white at 1.6px of stroke */
-  --gl-0:#2563eb; --gl-1:#dc2626; --gl-2:#15803d; --gl-3:#b45309;
-  --gl-4:#7c3aed; --gl-5:#0e7490; --gl-6:#c2410c; --gl-7:#0f766e;
-  /* the dark set's violet washes out on the light ground at glyph weight */
-  --st-bg:#6d4fe0;
-  color-scheme: light;
-}
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -379,7 +359,7 @@ html.win .wctl { display: flex; }
 .wtadd:hover { color: var(--text); background: var(--surface-2); }
 .wtsessions { padding-left: 8px; margin-left: 6px; border-left: 1px solid color-mix(in srgb, var(--wtc, var(--hair)) 45%, transparent); display: flex; flex-direction: column; gap: 1px; }
 /* A run group: one dependsOn launch as a block; the header is NOT a .srow. --surface, not --lift:
-   lift is a white veil that reads as nothing on the light theme's white panel. */
+   lift is a 5% white veil, a highlight rather than a ground. */
 .rgroup { margin: 2px 0; border-radius: 8px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--hair); overflow: hidden; }
 .rgroup.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
 /* .srow's column rhythm plus the twisty. position: relative is load-bearing: the absolutely
@@ -1848,7 +1828,6 @@ select.in-ctl { cursor: pointer; }
 .wtcard.on .wtcard-desc { color: var(--muted); }
 /* the mini-sidebar rendered inside each card */
 .p-mini { margin: 0 10px; padding: 9px 8px; border-radius: 8px; background: color-mix(in srgb, var(--bg-2) 70%, var(--panel)); border: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; min-height: 158px; }
-:root[data-theme="light"] .p-mini { background: var(--bg-2); }
 .p-phead { display: flex; align-items: center; gap: 6px; padding: 2px 4px 3px; }
 .p-phead + .p-phead { margin-top: 5px; }
 .p-pdot { flex: none; width: 8px; height: 8px; border-radius: 3px; background: var(--h, var(--accent)); box-shadow: 0 0 6px -1px var(--h, var(--accent)); }
@@ -2321,7 +2300,7 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user .tvgutter { color: var(--accent); }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
-/* the mirror is always on --terminal-bg (dark in both themes), so text is keyed to --terminal-text */
+/* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
 .tvmsg.assistant .tvtext { color: color-mix(in srgb, var(--terminal-text) 82%, var(--terminal-bg)); }
 .ext-empty { margin: auto; text-align: center; color: var(--muted-2); font-size: 12px; line-height: 1.7; }

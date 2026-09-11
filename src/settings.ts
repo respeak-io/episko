@@ -69,8 +69,6 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 export interface SettingsHost {
   /** Replay a tour chapter; ./tourui owns the walking. */
   startTour: (chapterId: string) => void;
-  setTheme: (t: "dark" | "light") => void;
-  effectiveTheme: () => "dark" | "light";
   setSort: (m: SortMode, announce?: boolean) => void;
   setEngine: (id: Engine) => void;
   bumpFont: (d: number) => void;
@@ -142,7 +140,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setTheme: () => {}, effectiveTheme: () => "dark", setSort: () => {}, setEngine: () => {},
+  setSort: () => {}, setEngine: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -306,15 +304,8 @@ const SET_GROUPS: { id: SetGroupId; label: string }[] = [
 // `hint` is the one sentence on the page; `more` is the why, folded (docs/settings.md).
 const SET_TABS: SetTab[] = [
   {
-    id: "appearance", label: "Appearance", glyph: "◐", group: "look", sub: "Theme, type size, effects",
+    id: "appearance", label: "Appearance", glyph: "◐", group: "look", sub: "Type size, effects",
     controls: () => [
-      { kind: "seg", set: "theme", key: "cc-theme", label: "Theme", hint: "Light or dark, across the whole app.",
-        aliases: ["dark mode", "light mode", "colour scheme"],
-        active: () => host.effectiveTheme(),
-        segs: () => [
-          { value: "light", label: "Light", glyph: "☀", sub: "Bright surfaces" },
-          { value: "dark",  label: "Dark",  glyph: "☾", sub: "Dim surfaces" },
-        ] },
       { kind: "font", id: "font", key: "cc-term-font", label: "Terminal font size", hint: "Text size in the embedded terminals.",
         more: "⌘+, ⌘− and ⌘0 do the same from any pane.", aliases: ["zoom", "text size", "bigger", "smaller"],
         isDefault: () => termFontSize === TERM_FONT_DEFAULT, reset: () => setFontFromSettings("reset") },
@@ -1493,8 +1484,7 @@ function scanAsks() {
 }
 
 function applySetting(set: string, val: string) {
-  if (set === "theme") host.setTheme(val as "dark" | "light");
-  else if (set === "engine") host.setEngine(val as Engine);
+  if (set === "engine") host.setEngine(val as Engine);
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);

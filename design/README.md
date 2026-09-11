@@ -45,10 +45,10 @@ against the shell, so `framed` keeps them inside the window.
 - **Sync tokens in the same commit.** `mockkit.css` copies its `:root` block from
   `src/styles.css`. A kit that has drifted is worse than no kit, because the mock
   still looks plausible while showing colours the app doesn't have.
-- **Dark only, on purpose.** The app ships a light theme; a mock is judged against
-  one ground. If a mock genuinely needs both, copy the `:root[data-theme="light"]`
-  block out of `src/styles.css` — the artifact runtime stamps `data-theme` on the
-  root element to match the viewer.
+- **Dark only.** The app has had one theme since 0.28 (the light one was never
+  re-stepped for a white ground and was retired; the proposal below is the record), so
+  a mock shows that ground and nothing else. The artifact runtime stamps `data-theme`
+  on the root element to match the viewer; the kit's tokens ignore it on purpose.
 
 ## Published mocks
 
@@ -58,6 +58,7 @@ Private artifacts on claude.ai; the URL is the live copy, this list is the index
 | --- | --- |
 | Project start screen (fixed layout) | https://claude.ai/code/artifact/fdc21958-f2b0-41d2-a836-a02a7573663f |
 | Project dashboard (configurable widgets — rejected as too busy) | https://claude.ai/code/artifact/83f10da5-59f2-4a4f-9677-243933582c6d |
+| Light theme (audit + redesign; retired instead in 0.28) | https://claude.ai/code/artifact/0aeb0332-72de-4c9c-9e0e-6959809d816c |
 | Settings rework (one page, a search, folded hints; built in 0.28) | https://claude.ai/code/artifact/e7f41275-b768-4b16-915d-e21cf5aa6ae9 |
 | Oversee the fleet (concept page) | https://claude.ai/code/artifact/fca71414-3cce-4d0d-ac6d-3c2c654822fa |
 | Limit forecast | https://claude.ai/code/artifact/d0a6e8ab-e740-447f-b0bb-10f355224df9 |

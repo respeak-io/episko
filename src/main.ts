@@ -28,16 +28,16 @@ import {
 } from "./callsheet";
 import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
 import {
-  addProject, addProjectPath, cycleSort, effectiveTheme, openProjectFolder,
+  addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
-  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setTheme, setWtGroup,
+  setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
-  toggleInsp, toggleProjGroup, toggleRail, toggleTheme,
+  toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, liveServers, taskServerUrl } from "./servers";
@@ -157,12 +157,6 @@ if (!IS_MAC) {
 }
 if (!ALL_ENGINES.some((e) => e.id === termEngine)) setTermEngine("embedded");
 
-// cc-theme: absent follows the OS; applied before first paint so the choice sticks.
-{
-  const savedTheme = localStorage.getItem("cc-theme");
-  if (savedTheme === "dark" || savedTheme === "light") document.documentElement.setAttribute("data-theme", savedTheme);
-}
-
 // ---------- config ----------
 homeDir().then((h) => { setHome(h.replace(/[/\\]+$/, "")); }).catch(() => {});
 // Seam wiring: leaf modules reach this layer through setters that default to a no-op,
@@ -200,7 +194,7 @@ function openProjectFiles() {
 }
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
-  cycleSort, toggleInsp, toggleRail, toggleTheme, requestLaunch,
+  cycleSort, toggleInsp, toggleRail, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles, openUsage,
   settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
 });
@@ -219,7 +213,7 @@ setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
-  setTheme, effectiveTheme, setSort, setEngine, bumpFont, applyFontSize,
+  setSort, setEngine, bumpFont, applyFontSize,
   setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
   setRevivePrefs,
   startTour: startChapter,
@@ -597,7 +591,6 @@ function openFootTarget(go: string) {
 }
 
 $("kbar").addEventListener("click", openPalette);
-$("themeBtn").addEventListener("click", toggleTheme);
 
 // Window controls (Windows only; macOS's traffic lights are real). Close goes through
 // the OS close request so it lands in the quit-requested confirm below. Maximize is

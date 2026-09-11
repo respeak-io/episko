@@ -57,7 +57,7 @@ The OS owns the font, row height, highlight and radius; Episko controls each row
 
 - **Menu item text is always drawn in the menu's own colour**: glyphs in labels (`◆` waiting, `✕` died) arrived Quit-grey. Icons are images and are **not** tinted, which is the whole reason they exist.
 - **Therefore the icon must not be a template image**, the exact opposite of the tray icon in `run()`, which *is* one. Swap the two and every dot comes out menu-grey.
-- **The frontend picks shape and colour, Rust only rasterises**: `GCLASS` maps status → class, `styles.css` gives the hue, `tray.ts` reads it back (`classRgb`); a palette copied into Rust would part from the sidebar at the first re-step (`g-ended` already differs between themes).
+- **The frontend picks shape and colour, Rust only rasterises**: `GCLASS` maps status → class, `styles.css` gives the hue, `tray.ts` reads it back (`classRgb`); a palette copied into Rust would part from the sidebar at the first re-step.
 - **32px source**: muda scales to an 18pt row on macOS and blits into a hard-coded 16×16 on Windows, and 32 halves exactly for one and still out-resolves the other on retina.
 - **A project header is a *disabled* item, and disabled is load-bearing**: the menu handler treats every unrecognised id as a session to select (the `sid` catch-all); disabled items fire no `MenuEvent`. Anything new needs a matched id or `enabled(false)`.
 - **The signature guard covers the icons**: shape and colour are in the signature alongside the label, because a shell going live→ended changes no wording but must repaint.
