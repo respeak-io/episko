@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
+  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, paneDir, pickAgent, resumeAgent, type Agent,
   type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
@@ -13,7 +13,7 @@ import {
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
   adoptIdentity,
-  allProjects, attnPending, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
+  allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
   foldRunGroups,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
@@ -1075,6 +1075,19 @@ function taskSess(id: string, o: Partial<Sess> = {}, run: Partial<NonNullable<Se
     },
   });
 }
+
+describe("paneDir — the folder a pane belongs to", () => {
+  it("takes a task's discovery root over the cwd its command ran in", () => {
+    const t = taskSess("build", { workdir: "/w/epi/02_backend" }, { root: "/w/epi" });
+    expect(paneDir(t)).toBe("/w/epi");
+    expect(checkoutOf(t, "/fallback")).toBe("/w/epi");
+  });
+  it("is the workdir for everything else, and for a task with no root", () => {
+    expect(paneDir(sess({ workdir: "/w/epi/wt-a" }))).toBe("/w/epi/wt-a");
+    expect(paneDir(sess({ kind: "shell", workdir: "/w/epi/02_backend" }))).toBe("/w/epi/02_backend");
+    expect(paneDir(taskSess("build", { workdir: "/w/epi/02_backend" }, { root: "" }))).toBe("/w/epi/02_backend");
+  });
+});
 
 describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
   it("collapses the members of one launch and leaves everything else alone", () => {

@@ -7,7 +7,7 @@ import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
-import type { Runnable } from "./types";
+import { paneDir, type Runnable } from "./types";
 import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
 import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, forgetFrec, frecScore } from "./palette";
@@ -247,9 +247,11 @@ let runSel = 0;
 let runSource: string | null = null;   // jump-bar filter; null = every source
 
 export function runTargetCtx() {
-  const wd = host.activeCwd();
-  if (!wd) return null;
   const s = activeId ? sessions.get(activeId) : null;
+  // `paneDir`, not the pane's cwd: ▶ Run from a task pane must discover where that task was
+  // found, since its cwd is the command's and routinely a subfolder with no tasks in it.
+  const wd = (s ? paneDir(s) : null) || host.activeCwd();
+  if (!wd) return null;
   const e = extMirrorId() ? externals.find((x) => x.session_id === extMirrorId()) : undefined;
   // The dashboard names its own project; the sidebar's label is what the pane should carry.
   const dm = dashMirror();
