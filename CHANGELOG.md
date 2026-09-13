@@ -12,6 +12,11 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! **▶ Run from a task's own pane finds the project's tasks.** A run's working directory is
+  its command's — routinely a subfolder a task declared and nobody chose — so opening the
+  picker from a finished run searched that folder and reported *No tasks found in this
+  project*. Every run surface now asks the folder discovery actually ran in, and a re-run
+  keeps it.
 
 ! **A project with an umlaut in its path was missing from its own History.** The macOS folder
   dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History

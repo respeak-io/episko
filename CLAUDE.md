@@ -116,7 +116,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 | Module | What |
 | --- | --- |
-| `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isClaude`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`) |
+| `types.ts` | the shared data model: `Sess`, `Phase`, `Fanout`, and the one-line discriminants that read them (`isClaude`, `statusKey`, `PILL_TEXT`, `bgWaiting`, `fanoutTally`, `runElapsed`, `taskStateText`, `paneDir`) |
 | `agents.ts` | provider-neutral agent events and the shared reducer that mutates `Sess`; adapters feed this rather than writing a second cockpit |
 | `providers/index.ts` | provider registry: normalized event adapters plus history/read/restore contracts used by shared UI |
 | `providers/control.ts` | provider-specific approval routing, kept out of shared actions and reducers |

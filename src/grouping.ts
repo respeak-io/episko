@@ -4,7 +4,7 @@
 import { basename } from "./format";
 import { checkoutDir, sameDir } from "./gitwatch";
 import {
-  bgWaiting, hasSessionState, isAgent, providerSessionKey,
+  bgWaiting, hasSessionState, isAgent, paneDir, providerSessionKey,
   type ExtSession, type LiveSess, type Phase, type Restorable, type Sess, type WtHead,
 } from "./types";
 import { attnCleared, attnOrder } from "./attn";
@@ -20,10 +20,10 @@ import { taskPrefs } from "./tasks";
 export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string; repoRoot?: string }
 // One project's sessions sharing a checkout dir, in first-appearance order of the sorted list.
 export interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
-// The checkout a pane belongs to. A task's `workdir` is often a subfolder and a shell inherits the stage's
-// cwd, so any dir inside a known checkout resolves to it; an unplaceable folder stays its own key.
+// The checkout a pane belongs to. A shell inherits the stage's cwd, so any dir inside a known
+// checkout resolves to it; an unplaceable folder stays its own key.
 export function checkoutOf(s: Sess, fallback: string): string {
-  const dir = (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  const dir = paneDir(s) || fallback;
   return checkoutDir(dir, worktreesByRepo.get(s.colorKey) ?? []);
 }
 
