@@ -3,6 +3,7 @@
 //! `claude --session-id`, instrumented per launch via `--settings` (CLAUDE.md).
 
 mod agent;
+mod deps;
 mod external;
 mod files;
 mod git;
@@ -467,6 +468,11 @@ pub fn run() {
             git::git_commit_info,
             git::git_log_days,
             git::project_facts,
+            deps::dep_report,
+            deps::dep_invalidate,
+            deps::dep_manifests,
+            deps::dep_tools,
+            deps::dep_outdated,
             github::gh_threads,
             github::gh_accounts,
             github::gh_invalidate,

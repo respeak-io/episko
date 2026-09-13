@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 // main.ts routes every `[data-*]` click through one `closest()` selector and an if-chain
 // over `el.dataset.*`. A branch whose attribute is not in the selector is unreachable, and
@@ -94,7 +94,11 @@ describe("the footer popovers' quick opens", () => {
 // `dashboard.ts`'s `dashAction` is an if-chain over the string; only the spelling joins them.
 
 const DASHVIEW = readFileSync(new URL("../src/dashview.ts", import.meta.url), "utf8");
+const DEPSVIEW = readFileSync(new URL("../src/depsview.ts", import.meta.url), "utf8");
 const DASHBOARD = readFileSync(new URL("../src/dashboard.ts", import.meta.url), "utf8");
+// The pane's markup outgrew one file; the attribute contract has to follow it rather than
+// quietly stop covering whatever moved out. `EMITTERS` is held against the directory below.
+const EMITTERS = ["dashview.ts", "depsview.ts"];
 
 function body(src: string, decl: string): string {
   const start = src.indexOf(decl);
@@ -169,7 +173,7 @@ describe("the project dashboard's own dispatcher", () => {
   // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
   // are deliberately not verbs. Adding one here should be a decision, not an oversight.
   const KEYS = new Set(["day", "note", "sha"]);
-  const emitted = [...new Set([...DASHVIEW.matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
   // The ordering rules below are about ONE if-chain, so they read only the click listener:
@@ -182,6 +186,15 @@ describe("the project dashboard's own dispatcher", () => {
     // A regex that has stopped matching would pass every assertion below vacuously.
     expect(emitted.length).toBeGreaterThan(20);
     expect(probed.length).toBeGreaterThan(15);
+  });
+
+  it("reads EVERY view file that emits a data-dash attribute", () => {
+    // A third view file would otherwise emit rows nothing here compares, which is the same
+    // silence this whole join exists to end, one file further out.
+    const missed = readdirSync(new URL("../src/", import.meta.url))
+      .filter((f) => f.endsWith("view.ts") && !EMITTERS.includes(f))
+      .filter((f) => /data-dash/.test(readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8")));
+    expect(missed, `emits data-dash* but is outside the contract: ${missed.join(", ")}`).toEqual([]);
   });
 
   it("emits no attribute it never probes for — that is a row that does nothing", () => {
@@ -202,6 +215,14 @@ describe("the project dashboard's own dispatcher", () => {
       expect(clickProbed.indexOf(inner), `data-dash${inner} must be probed before data-dashbr`)
         .toBeLessThan(clickProbed.indexOf("br"));
     }
+  });
+
+  it("probes an advisory's link BEFORE the row that contains it", () => {
+    // The row is the tick target and the link sits inside it, so a row-level probe placed
+    // first would select the advisory instead of opening it on GitHub.
+    expect(clickProbed).toContain("dep");
+    expect(clickProbed.indexOf("depopen"), "data-dashdepopen must be probed before data-dashdep")
+      .toBeLessThan(clickProbed.indexOf("dep"));
   });
 
   it("probes a checkout's two buttons BEFORE the row that contains them", () => {

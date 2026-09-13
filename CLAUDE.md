@@ -67,9 +67,9 @@ Three hard constraints shape this code:
 - **`PermissionRequest` is a *blocking* `type:"http"` hook**, unlike the other events (`"async": true`, fire-and-forget). The telemetry server holds that request open in `AppState.pending`, emits a `permission` event to the UI, and only responds when `resolve_permission` is called with allow/deny/terminal. Do not make it async or respond early, or Claude will hang or lose the decision.
 - **The server must be supervised, and it must come back on the SAME port.** `tiny_http`'s accept thread `break`s out of its loop on *any* `accept()` error, and `IncomingRequests::next()` is `self.server.recv().ok()` — so one `Err` becomes a `None` that ends the `for` loop, drops the `Server` and closes the socket. One `ECONNABORTED` did exactly that after six days of uptime and it stayed dead for fourteen hours: `AppState.port` still held the number, so every session launched afterwards got an instrument file pointing at a closed socket and sat at `idle` with no model, context, files or tools. Nothing anywhere said so — the hooks are `async` and everything uses `curl -s`. So `run_telemetry_server` is wrapped in **`serve_telemetry`**, which re-binds and re-binds *that port*: an instrument file is written at launch and never revisited, so reclaiming the number revives every running pane on its next statusLine, while a fresh port would only help future launches (it takes one only after the ladder has run out — `REBIND_GIVE_UP = 8` attempts, so ~two minutes of failures — and then updates the now-**`AtomicU16`** `AppState.port`). Re-binding **must sleep first** — `tiny_http`'s `Drop` pokes its accept thread but never joins it, so the old listener is briefly still bound and `SO_REUSEADDR` does not help against a *listening* socket. Both transitions emit `telemetry-health`, which raises the top bar's red badge; a fleet nobody can hear must never look like a quiet one.
 
-## Backend (`src-tauri/src/`): sixteen modules
+## Backend (`src-tauri/src/`): seventeen modules
 
-`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the fifteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
+`main.rs` only calls `episko_lib::run()`. `lib.rs` is the **bootstrap**; the backend logic is the sixteen modules under it. Dependencies point downward, `platform.rs` at the bottom. Rust tests are in-file `#[cfg(test)] mod tests`, next to their subject.
 
 | Module | What |
 | --- | --- |
@@ -82,7 +82,8 @@ Three hard constraints shape this code:
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server` + the `serve_telemetry` supervisor that re-binds it, `resolve_permission` |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
 | `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus, `session_ports` (which TCP ports a pane's process tree is listening on) |
-| `github.rs` | `gh`: issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force |
+| `github.rs` | `gh`: issues/PRs, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force; `gh()`/`classify()` are `pub(crate)` so `deps.rs` shares one account-and-token path rather than a second copy |
+| `deps.rs` | Dependabot alerts, the update bots' PRs with their check rollup, what the manifests declare (read, never run), and the one command this app runs in your project: `<pm> outdated` (docs/dependencies.md) |
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
 | `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
 | `icons.rs` | project favicon/logo probing, including what a page's `<link rel="icon">` declares (which may be the whole icon, inline) + the tray menu's status glyphs (`glyph_rgba`) |
@@ -106,13 +107,13 @@ The disk-I/O accounting behind `io_samples`/`io_retired` (run vs. day vs. all-ti
 - **Telemetry server** (`run_telemetry_server`) forwards `/hook` and `/statusline` POSTs as one `telemetry` event each; `/permission` is the blocking path described above.
 - Commands are registered in the `invoke_handler![...]` list at the bottom of `run()`; add new `#[tauri::command]` fns there.
 
-## Frontend (`src/`, `index.html`, `src/styles.css`): 88 modules
+## Frontend (`src/`, `index.html`, `src/styles.css`): 91 modules
 
-**No framework, and no longer one file.** 88 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
+**No framework, and no longer one file.** 91 modules; `main.ts` is **bootstrap only**. State lives in a `sessions: Map<session_id, Sess>` (owned by `state.ts`) plus module-level variables; **every mutation ends by calling `renderAll()`**, which re-renders the sidebar, mini-rail, inspector, header, footer, attention badge, and tray from scratch. There is no diffing, so follow this render-everything pattern rather than mutating DOM directly. **`renderAll()` is coalesced**: a call only marks the pass due, and one flush per animation frame paints whatever state every event in that frame left behind, so a telemetry burst from N sessions costs a single paint. The rAF is paired with a 250ms `setTimeout` fallback, and that is not belt-and-braces: rAF never fires while the window is hidden, and the tray this pass repaints is exactly the surface being read then. The 🐞 console counts paints beside received events (`paints` in the stats line), so the batching is checkable while the app runs.
 
 What `main.ts` still holds, deliberately: the imports and the whole of the `setXHost`/`setX` wiring (the seam map, which belongs in the file that owns the graph), the one-time startup blocks, `renderAll()`, every `listen()` handler, the delegated `[data-*]` click dispatcher and the global keydown, the ResizeObserver, the quit guard, the debug-console button wiring, the window controls (see docs/native-ui.md), and the `setInterval`s.
 
-**Tested logic modules** (forty-four, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
+**Tested logic modules** (forty-six, with no DOM, no Tauri and no render imports; these are what the vitest suites cover, one `test/*.test.ts` per module bar `types.ts`, whose discriminants are exercised through the four suites that import it, plus `dispatch.test.ts` and `ipc.test.ts` which read source instead of importing it):
 
 | Module | What |
 | --- | --- |
@@ -145,10 +146,12 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
 | `trail.ts` | a day of work assembled from transcripts, git and the usage rollup; `dayFacts` (yours) and `projectDayFacts`/`sharedDay` (the team's) |
 | `notes.ts` | the one thing on the dashboard you type; capture, filing, removal |
-| `branches.ts` | branches as ONE row each wherever their refs live: what is worth deleting, which half of it may go, what blocks each, the filter chips that double as quick-selects, and where a checkout can switch to (see docs/worktrees.md) |
+| `branches.ts` | branches as ONE row each wherever their refs live: what is worth deleting, which half of it may go, what blocks each, the filter chips that narrow before a select-all, and where a checkout can switch to (see docs/worktrees.md) |
+| `pick.ts` | the ONE selection rule every tick-box table obeys: toggle, shift-extends-**and-adds** from the anchor each table keeps for itself, an off row never ticked, and the header tick's three states over the rows on screen |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost` |
 | `explore.ts` | the explorer's rules: browse vs. find over one index, the scope filters, the touch join, what ↵ does (see docs/explorer.md) |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
+| `deps.ts` | dependency work: a narrow semver that answers `null` rather than guessing, the verdict a fix earns (lockfile bump / widen the range / major / via a parent), one row per advisory however many packages it hit, which bot PR already covers it, and the brief an agent is sent (see docs/dependencies.md) |
 | `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
 | `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
@@ -163,13 +166,13 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Shared**: `bpop.ts` (the branch chooser `#bPop`, opened from the ⑃ dialog, the dashboard's Repository chip, a Branches row's ⇄ and a session's git card), `state.ts` (the session map, the stage pointer, every persisted preference), `store.ts` (the one home for reading a `cc-` key: `safeParse`/`readObj`/`readList`, a leaf that imports nothing) and `dom.ts` (`$`, `toast`, the shared scrim, `IS_MAC`/`MOD`/`chord`).
 
-**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was; it also owns the one status-letter table and the one dirty-file row every host that *lists* a working set draws, since two hand-kept copies of that table each carried a comment claiming to be shared with the other), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
+**Markup-only views**, untested by design: `usageview`, `inspectorview`, `sidebarview`, `depsview` (the Dependencies card, its three-tab overlay and its dispatch sheet — split out of `dashview` rather than grown inside it, which is why `dispatch.test.ts` now reads BOTH for `data-dash*` and fails if a third view file starts emitting them), `patchview` (the diff viewer's files, hunks and index — split out of `diffview` when it grew two line layouts, and where `hunkHtml` moved from `inspectorview`, whose only caller it never was; it also owns the one status-letter table and the one dirty-file row every host that *lists* a working set draws, since two hand-kept copies of that table each carried a comment claiming to be shared with the other), `footerview` (the engine picker, the shortcut sheet and `popGoHtml`, the quick-open icon every status-bar popover carries — extracted from `footer.ts`, which owns those elements, so Settings' previews of the popovers can paint them with the real renderer).
 
 **DOM-owning / render**, untested by design: `sidebar`, `footer`, `tray`, `inspector`, `confirm` (every yes/no question in the app), `callsheet` (the tool-call window: the dialog, its list/detail split and the two independent `innerHTML` guards that let you select text in it), `debug`, `worktree` (the new-session dialog and the worktree removal flows, the biggest single module), `settings`, `usagedlg` (the Usage & spend window: a report rather than a setting, so its own dialog, and the target of the money and limits popovers' quick opens), `taskui`, `palui`, `projmenu`, `caffeinate`, `signoff` (the top bar's sign-off sheet: shelve the whole fleet at once, docs/sessions.md), `diffview` (the working-set review overlay: the dialog, its index rail, the scroll spy and which line layout is current), `graphview` (the paged commit-graph panel), `mirror`, `historyui`, `update`, `serversui` (the header's running-server pill, its popover and the poll behind it), `explorer` (⌘P, the project explorer), `tourui` (the veil, the card and the chapter picker), `chime` (the only file that touches Web Audio, a live browser resource, so a test would only assert against its own mock).
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 88 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 91 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.
@@ -285,10 +288,16 @@ And the things that hold however the files are arranged:
   exactly when it mattered. Two branches are refused whatever the evidence says — the trunk in
   force, and **the remote's own `is_default`**, which is the one that bites: the trunk is
   overridable, so a repo comparing against `origin/dev` finds `main` genuinely "merged into
-  origin/dev" and would otherwise offer to delete it. The filter chips ARE the quick-selects
-  (narrow, then `All`), shift-click takes the range in the order on screen and adds rather than
-  toggles, and Checkouts is a **tab** of the same table rather than a fourth place that lists
-  folders. **A row's right-click menu** (./projmenu's one `#ctxMenu`, a fourth mode taking a
+  origin/dev" and would otherwise offer to delete it. The filter chips **narrow** and the
+  select-all takes what is left ("everything merged" is Merged → All), shift-click takes the
+  range in the order on screen and adds rather than toggles, and Checkouts is a **tab** of the
+  same table rather than a fourth place that lists folders. **All four tick-box tables share
+  one rule and one pair of controls** (./pick, `pickHead`/`pickButtons`): the tri-state tick in
+  the header's own tick column and `All`/`None` in the action bar, emitting `data-dashpickall`
+  / `data-dashpicknone` whichever table they are in. They were three answers in two places with
+  shift in exactly one table, and a **row must set `user-select: none`** or a shift-click paints
+  a text selection over the table instead of ticking a range — which is what "shift-click is
+  broken" actually was. **A row's right-click menu** (./projmenu's one `#ctxMenu`, a fourth mode taking a
   callback rather than host entries) starts a session on the branch — its worktree, the
   project's folder, or a worktree made for it — switches this folder to it, and sets the lock.
   **A locked branch is refused before every other rule and by every deleter**, because the
@@ -647,6 +656,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/testing.md`**: the gates in full, the cfg-flip trick and its limits, coverage caveats, the fixture-path trap.
 - **`docs/tasks.md`**: runnables (`tasks.rs`, `▶ Run`, ⌘⇧B, run groups, run-on-stop, overrides). Discovery never executes the project; `dependsOn` is memoised (one chord once launched 27 panes for 11 tasks); a login shell does **not** give a task the user's PATH; Windows `CreateProcessW` cannot run a script; what can't run says so rather than disappearing.
 - **`docs/releases.md`**: `CHANGELOG.md` has three consumers that must never disagree; the gate is on the PR rather than the tag; don't reintroduce the fresh-install guard.
+- **`docs/dependencies.md`**: the Dependencies card. Every verb starts an agent — nothing is merged, dismissed or commented for you; one advisory is ONE row however many packages GitHub filed it against; `satisfies` answers `null` for a range shape it does not model rather than guessing either way, and a bare version means opposite things in Cargo and npm; the alert API needs a `security_events` scope gh does not have by default, and saying so IS the fix; the package-manager scan is the one command this app runs in your project, so it is never on a load path.
 - **`docs/dashboard.md`**: the project dashboard and its GitHub half. Three tiers (GitHub / git / neither); per-project cost comes from `cc-usage-detail`, never `cc-usage`; a claim is only ever a hint; a day's two generated sentences must never be mixed, and only the project half is committable (`.episko/digest.md`).
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers.

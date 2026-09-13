@@ -13,6 +13,34 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A Dependencies card on the project dashboard, and an agent that does the reading.**
+  Dependabot's advisories, Dependabot's and Renovate's own pull requests with their CI
+  rollup and what is blocking each, and — when you ask for it — what your package manager
+  says is simply out of date. One advisory is **one row** however many packages GitHub filed
+  it against, and each says what the fix will actually cost: *lockfile bump* when the patched
+  version already sits inside what your manifest declares, *widen the range*, *major
+  upgrade*, or *via a parent* for something nothing declares directly. Pick any number of
+  them and ▶ starts an agent with the whole brief — the advisory, the declared range beside
+  the patched version, and this project's own test and check commands to verify with — shown
+  in full and editable before it is sent. Nothing is merged, dismissed or commented on your
+  behalf; Renovate's dashboard issue is linked rather than reimplemented.
+! **Shift-click in the Branches table flashed a selection on and then off again.** The rule
+  was right all along and nothing ever unticked a row: the rows never refused a *browser text
+  selection*, so shift-dragging painted a blue blob across every row in the range, and the
+  next repaint wiped it. What was left was the real tick state — often only the two rows in
+  that span that are actually deletable, which is why it read as "it didn't work". The rows
+  refuse a text selection now, and a range that could not tick everything it covered **says
+  so** instead of leaving you to guess. Shift-click also works in **every** table that has
+  tick boxes — Branches, Checkouts, Advisories and Out of date — three more than before.
+~ **One select-all, in the same two places in every table.** A tri-state tick in the header's
+  own tick column, and `All` / `None` in the action bar beside the count and the verb. The
+  Branches table kept its pair at the end of a wrapping row of filter chips, where people
+  could not find them, and Checkouts put the same pair somewhere else entirely.
++ **Ask your package manager what is out of date**, from the *Out of date* tab: `pnpm`,
+  `npm`, `yarn`, `cargo outdated`, `go list -u` or `pip`, chosen by the lockfile that is
+  actually there. It is the one thing on the dashboard that runs a command in your project,
+  so it never runs on its own — and a tool that applies but cannot run says why instead of
+  quietly not appearing.
 ! **A project with an umlaut in its path was missing from its own History.** The macOS folder
   dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History
   came up empty, the dormant row vanished at boot and no past session could be read. Paths are
