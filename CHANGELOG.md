@@ -17,7 +17,6 @@ Markers: `+` new · `~` changed · `!` fixed
   picker from a finished run searched that folder and reported *No tasks found in this
   project*. Every run surface now asks the folder discovery actually ran in, and a re-run
   keeps it.
-
 ~ **The Settings rail follows what you are reading**, not whatever header happens to sit at
   the top edge — it lights the section under a reading line a third of the way down the pane,
   so the last screenful of a long section no longer lights the next one along. The line slides
