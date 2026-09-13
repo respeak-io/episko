@@ -1634,6 +1634,7 @@ select.in-ctl { cursor: pointer; }
 .set-row > .set-inline { gap: 14px; }
 .set-ctl { display: flex; align-items: center; gap: 8px; flex: none; }
 .set-cur { font-size: 10.5px; color: var(--muted-2); margin-top: 2px; }
+.set-cur.off { opacity: .45; }
 .set-why { border: 0; background: none; padding: 0; margin-left: 5px; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--accent-ink); }
 .set-why::after { content: " ▾"; font-size: 9px; }
 .set-why-open .set-why::after { content: " ▴"; }
@@ -1648,6 +1649,14 @@ select.in-ctl { cursor: pointer; }
 .set-segb { padding: 2px 8px; border-radius: 5px; border: 0; background: none; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--muted-2); white-space: nowrap; }
 .set-segb:hover { color: var(--text); }
 .set-segb.on { background: var(--accent-wash); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-line); }
+/* A switch and the interval it governs, one row: the label ties the two together, and the
+   whole cluster dims (never disables) while the switch is off. */
+.set-cad { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 7px; }
+.set-cad.off { opacity: .45; }
+.set-cadl { font: 11px var(--font-ui); color: var(--muted-2); }
+/* A list with nothing in it: its state, not a control — there is nothing here to open. */
+.set-nil { font: 600 10.5px var(--font-mono); color: var(--muted-2); padding: 0 3px; }
+.set-row .set-empty { margin-top: 3px; }
 .set-fold { height: 24px; padding: 0 8px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); color: var(--muted); background: var(--bg-2); border: 1px solid var(--hair); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .set-fold:hover, .set-fold.on { color: var(--accent-ink); border-color: var(--accent-line); }
 .set-foldc { font-size: 9px; transition: transform .16s; }
