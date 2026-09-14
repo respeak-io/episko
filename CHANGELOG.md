@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! **Answering a permission hands the keyboard back to the pane.** The card you clicked is
+  destroyed by the repaint that removes it, so focus fell to the page and the terminal went
+  deaf until you clicked it — Esc included. *In terminal* was the worst of the three: it puts
+  the question in Claude's own prompt, which you then could not type at.
 ! **▶ Run from a task's own pane finds the project's tasks.** A run's working directory is
   its command's — routinely a subfolder a task declared and nobody chose — so opening the
   picker from a finished run searched that folder and reported *No tasks found in this
