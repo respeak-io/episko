@@ -20,19 +20,16 @@ Markers: `+` new · `~` changed · `!` fixed
   yarn, cargo, go or pip, by the lockfile that is actually there. It never runs on its own.
 + **The path in the stage header copies itself.** Click it for the full path, wherever the
   stage is: a session, a checkout its work drifted to, an external terminal, a dashboard.
-+ **⌘T opens the shell beside the session**: the agent left, your shell right, a second one under
-  the first, and the shells nested under the session's row. Settings › Launching turns it off; ⌘⌥T is the other layout.
-! **A chord with ⌥ in it never fired on a Mac.** ⌥ changes the character a key reports (⌥T is †),
-  so the physical key is read under it now, in the recorder and the matcher alike.
++ **⌘T opens the shell beside the session**: the agent left, your shells stacked right and
+  nested under its row. Settings › Launching turns it off; ⌘⌥T takes the other layout.
 ~ **One select-all, in the same two places in every table**: a tri-state tick in the header's
   own column, and `All` / `None` beside the count. Branches and Checkouts each hid its pair.
 ~ **The Settings rail follows what you are reading**, lighting the section under a line a
   third of the way down the pane rather than whatever header sits at the top edge.
 ~ **A switch and the interval it governs are one row.** Split over two, the interval's label
   and hint had no subject and read as a riddle.
-~ **A path or an address in a pane opens on ⌘-click** (Ctrl elsewhere), as it does in every
-  other terminal. A plain click activated it, so focusing a pane, dragging along a path to
-  copy it or double-clicking a word opened it — and a path that names a folder is a window.
+~ **A path or an address in a pane opens on ⌘-click** (Ctrl elsewhere), as in every other
+  terminal. A plain click opened it, so focusing a pane or dragging along a path did too.
 ~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
   stops* and *Trusted projects* say their one sentence on the row instead.
 ~ **Trust is explained where the word is used**: *Let trusted projects introspect themselves*
@@ -53,9 +50,9 @@ Markers: `+` new · `~` changed · `!` fixed
 ! **A pane stayed ● after answering when a background task finished mid-turn.** That notice
   fires the prompt hook like a typed message; it queues nothing now.
 ! **A Windows path is a link for its whole length.** `\n`, `\r` and `\t` read as printed
-  escapes wherever they fell, so `C:\repo\tests\x.ts` was cut at `\tests` and the link landed
-  on the home folder — or, for `D:\rust\…`, on the whole drive. A backslash the escape table
-  cannot explain is a separator; `\\server\share` is proposed at all, and a drive root never is.
+  escapes, so `C:\repo\tests\x.ts` was cut at `\tests` and landed on the home folder instead.
+! **A chord with ⌥ in it never fired on a Mac.** ⌥ changes the character a key reports
+  (⌥T is †), so the recorder and the matcher both read the physical key under it now.
 
 ## 0.28.0 — 2026-09-11
 
