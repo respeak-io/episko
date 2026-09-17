@@ -390,6 +390,9 @@ html.win .wctl { display: flex; }
 .rgtally { flex: none; font: 600 9px var(--font-mono); color: var(--muted-2); border: 1px solid var(--hair); border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
 .rgtally.bad { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
 .rgsteps { padding: 3px 5px 4px 7px; margin-left: 15px; border-left: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; }
+/* The split's header is an ordinary session row, so the block keeps that row's radius inside its own. */
+.rgroup.split > .srow { border-radius: 8px 8px 0 0; }
+.rgroup.split .rgsteps { border-top: 1px solid var(--hair); margin-left: 0; padding-left: 20px; border-left: 0; }
 .rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
 .rgsteps .sbranch { font-size: 11px; color: var(--muted); }
 .rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
@@ -474,7 +477,10 @@ html.win .wctl { display: flex; }
 .st-title { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .st-title .proj { flex: 0 1 auto; min-width: 0; max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; font-weight: 800; color: var(--accent-ink); letter-spacing: -.02em; }
 .chip { flex: none; white-space: nowrap; font-size: 9.5px; color: var(--muted); padding: 2px 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--hair); font-family: var(--font-mono); }
-.st-title .path { flex: 1 1 auto; min-width: 0; font-size: 10px; color: var(--muted-2); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-title .path { flex: 0 1 auto; min-width: 0; font-size: 10px; color: var(--muted-2); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; margin: 0 -5px; border-radius: 5px; }
+/* data-abs is set only when there is a path to copy, so an empty header offers nothing. */
+.st-title .path[data-abs] { cursor: pointer; }
+.st-title .path[data-abs]:hover { color: var(--muted); background: var(--lift); }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
@@ -513,6 +519,11 @@ html.win .wctl { display: flex; }
 /* the pane activeId names, so the one the inspector and keystrokes are talking about */
 #terminals.tiled .term-pane.focused { box-shadow: inset 0 0 0 1px var(--accent-line); }
 #terminals.tiled .term-pane.focused .pane-cap { color: var(--accent-ink); }
+/* A session with shells split beside it (⌘T): the session (.anchor) takes the left column at full
+   height, the shells stack on the right in launch order. Rows are explicit (--split-rows, set by
+   paintStage), or `1 / -1` has no end line to reach. */
+#terminals.tiled.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: repeat(var(--split-rows, 1), minmax(0, 1fr)); }
+#terminals.tiled.split .term-pane.anchor { grid-column: 1; grid-row: 1 / -1; }
 .xterm .xterm-viewport { background: transparent !important; }
 /* Highlight the console while files are dragged over it (see initFileDrop). */
 #terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }
@@ -1634,6 +1645,7 @@ select.in-ctl { cursor: pointer; }
 .set-row > .set-inline { gap: 14px; }
 .set-ctl { display: flex; align-items: center; gap: 8px; flex: none; }
 .set-cur { font-size: 10.5px; color: var(--muted-2); margin-top: 2px; }
+.set-cur.off { opacity: .45; }
 .set-why { border: 0; background: none; padding: 0; margin-left: 5px; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--accent-ink); }
 .set-why::after { content: " ▾"; font-size: 9px; }
 .set-why-open .set-why::after { content: " ▴"; }
@@ -1648,6 +1660,14 @@ select.in-ctl { cursor: pointer; }
 .set-segb { padding: 2px 8px; border-radius: 5px; border: 0; background: none; cursor: pointer; font: 600 10.5px var(--font-ui); color: var(--muted-2); white-space: nowrap; }
 .set-segb:hover { color: var(--text); }
 .set-segb.on { background: var(--accent-wash); color: var(--accent-ink); box-shadow: inset 0 0 0 1px var(--accent-line); }
+/* A switch and the interval it governs, one row: the label ties the two together, and the
+   whole cluster dims (never disables) while the switch is off. */
+.set-cad { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px 7px; }
+.set-cad.off { opacity: .45; }
+.set-cadl { font: 11px var(--font-ui); color: var(--muted-2); }
+/* A list with nothing in it: its state, not a control — there is nothing here to open. */
+.set-nil { font: 600 10.5px var(--font-mono); color: var(--muted-2); padding: 0 3px; }
+.set-row .set-empty { margin-top: 3px; }
 .set-fold { height: 24px; padding: 0 8px; border-radius: 6px; cursor: pointer; font: 600 10.5px var(--font-mono); color: var(--muted); background: var(--bg-2); border: 1px solid var(--hair); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 .set-fold:hover, .set-fold.on { color: var(--accent-ink); border-color: var(--accent-line); }
 .set-foldc { font-size: 9px; transition: transform .16s; }
@@ -2000,7 +2020,7 @@ select.in-ctl { cursor: pointer; }
 /* The note the ⌘ Shortcuts popover shows in place of its rows when they are all off. */
 .shortpop .sc-off { padding: 5px 8px 7px; font-size: 10.5px; line-height: 1.5; color: var(--muted-2); max-width: 34ch; }
 
-.toast { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
+.toast { position: fixed; bottom: 40px; left: 50%; max-width: min(620px, 88vw); text-align: center; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* The app's own confirmation dialog (./confirm): z-index 90/91, above everything, with its OWN
@@ -2694,6 +2714,16 @@ select.in-ctl { cursor: pointer; }
 .dbbr .rr .ok { color: var(--st-done); }
 .dbbr .rr .warn { color: var(--st-working); }
 .dbbr.sk .db-sk { display: block; }
+/* Shift-click drags a TEXT selection across a table of rows unless the rows refuse one, which
+   is what made the range look broken: a blue blob over half the table, not a ticked range. */
+.dbbr, .dbwt, .dbr, .dbbr-hd, .dbwt-hd, .lst-hd.dep-hd { user-select: none; }
+/* The header's tri-state tick — the select-all, in the column it controls. `some` is a dash:
+   "there is a selection and it is not everything" is a third state, not a dimmer second one. */
+.brck.pk { cursor: pointer; font: 700 10px/1 var(--font-ui); color: var(--muted-2); }
+.brck.pk:hover { border-color: var(--accent-line); }
+.brck.pk.some, .brck.pk.all { border-color: var(--accent-line); color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent-ink) 22%, transparent); }
+.brck.pk::after { content: none; }
 .brck { width: 15px; height: 15px; border-radius: 4px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface-2); display: grid; place-items: center; padding: 0; line-height: 1; }
 .brck.on { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
 .brck.on::after { content: "✓"; font: 700 10px/1 var(--font-ui); color: var(--st-error); }
@@ -2766,6 +2796,85 @@ select.in-ctl { cursor: pointer; }
   background: transparent; color: inherit; font: inherit; }
 .bsw:hover, .bsw.open { border-color: var(--accent-line); background: var(--accent-wash); }
 .bsw .b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Dependencies: advisories, the bots' PRs, and what is merely out of date ----
+   One geometry per tab, fixed like the two views above; `auto` would stagger the columns. */
+.dbr, .lst-hd.dep-hd { display: grid; gap: 8px; align-items: center;
+  grid-template-columns: 42px minmax(0, 1.6fr) minmax(0, 1.05fr) 104px 40px 32px; }
+.dbr.prs, .lst-hd.dep-hd.prs { grid-template-columns: 34px minmax(0, 1.7fr) 78px minmax(0, 0.95fr) 40px 92px; }
+.dbr.stale, .lst-hd.dep-hd.stale { grid-template-columns: 26px minmax(0, 1fr) 78px 84px 78px 78px; }
+.dbr { min-height: 38px; padding: 4px 9px; border-radius: 8px; border-bottom: 1px solid var(--hair); cursor: pointer; }
+.dbr:hover { background: var(--surface); }
+.dbr.on { background: var(--accent-wash); }
+.dbr .r { text-align: right; }
+.dbr .ck { display: flex; align-items: center; gap: 5px; }
+/* A tick here arms WORK, not a delete, so it never wears the Branches view's red. */
+.dbr .brck.on { border-color: var(--accent-line); background: color-mix(in srgb, var(--accent-ink) 26%, transparent); }
+.dbr .brck.on::after { content: "✓"; font: 700 10px/1 var(--font-ui); color: var(--accent-ink); }
+.dbr .mid { min-width: 0; }
+.dbr .ti { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.dbr:hover .ti { color: var(--text); }
+.dbr .sub { display: flex; align-items: center; gap: 5px; margin-top: 3px; flex-wrap: nowrap; overflow: hidden; }
+.dbr .sub > * { flex: none; }
+.dbr .mono, .dbr .num { font: 9.5px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.dbr .age { font: 9.5px var(--font-mono); color: var(--muted-2); text-align: right; }
+.dbr .go { width: 100%; height: 23px; border-radius: 6px; cursor: pointer; font: 600 9.5px var(--font-mono);
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap;
+  border: 1px solid var(--hair); background: var(--bg-2); color: var(--muted-2); }
+.dbr:hover .go { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.gx { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px;
+  width: 20px; height: 20px; border-radius: 6px; display: inline-grid; place-items: center; }
+.gx:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+
+/* Severity is a colour and a word wherever it appears; four values, one table. */
+.sv { font-size: 9px; line-height: 1; flex: none; }
+.sv-crit { color: var(--st-error); } .sv-high { color: var(--st-working); }
+.sv-med  { color: #d6c76a; }         .sv-low  { color: var(--st-idle); }
+
+/* The verdict. `unknown` and `none` are deliberately not green: both need a person. */
+.dfix { font: 9px var(--font-mono); padding: 1px 6px; border-radius: 5px; white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--fc) 32%, transparent); color: var(--fc);
+  background: color-mix(in srgb, var(--fc) 11%, transparent); }
+.fx-easy { --fc: var(--st-done); } .fx-mid { --fc: var(--st-working); }
+.fx-hard { --fc: var(--st-error); } .fx-unk { --fc: var(--st-idle); }
+
+.dpkgs { display: flex; flex-wrap: wrap; gap: 3px; overflow: hidden; max-height: 34px; }
+.dpkg { font: 9.5px var(--font-mono); padding: 1px 5px; border-radius: 5px; white-space: nowrap;
+  border: 1px solid var(--hair); background: var(--bg-2); color: var(--muted); }
+.dpkg i { font-style: normal; margin-left: 4px; color: var(--muted-2); font-size: 8.5px; }
+.depss { font: 9px var(--font-mono); color: var(--st-working); }
+.dship { font: 8.5px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--st-attention); }
+.ddep { font: 8.5px var(--font-mono); text-transform: uppercase; color: var(--st-error); }
+.dpr { font: 9px var(--font-mono); padding: 1px 5px; border-radius: 5px; white-space: nowrap; flex: none;
+  border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); }
+.dstand { font: 10px var(--font-ui); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dstand .ok { color: var(--st-done); }
+.dck { font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.dck.passing { color: var(--st-done); } .dck.failing { color: var(--st-error); }
+.dck.pending { color: var(--st-working); }
+
+/* The card's own row: the aside column is 296px, so everything here stays on one line. */
+.dep { display: grid; grid-template-columns: 11px minmax(0, 1fr) auto auto; gap: 7px; align-items: center;
+  padding: 6px 6px; border-radius: 7px; cursor: pointer; }
+.dep:hover { background: var(--surface-2); }
+.dep .mid { min-width: 0; }
+.dep .ti { display: block; font-size: 11.5px; line-height: 1.3; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--muted); }
+.dep:hover .ti { color: var(--text); }
+.dep .sub { display: flex; gap: 5px; margin-top: 2px; font: 9px var(--font-mono); color: var(--muted-2);
+  white-space: nowrap; overflow: hidden; }
+.dep .dim { color: var(--st-idle); overflow: hidden; text-overflow: ellipsis; }
+
+.dep-note { padding: 9px 11px; margin-bottom: 12px; border-radius: var(--radius); border: 1px dashed var(--hair-strong);
+  background: color-mix(in srgb, var(--bg-2) 70%, transparent); font-size: 11px; line-height: 1.55; color: var(--muted-2);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dep-note b { color: var(--text); }
+.dep-scan { display: flex; flex-direction: column; gap: 6px; padding: 0 0 12px; }
+.dep-scan .lb { font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
+.dep-scan .row { display: flex; flex-wrap: wrap; gap: 5px; }
+.dep-scan .sb { font: 10.5px var(--font-ui); color: var(--muted-2); display: flex; align-items: center; gap: 6px; }
+.dep-scan .dim { color: var(--st-idle); }
 
 .bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }

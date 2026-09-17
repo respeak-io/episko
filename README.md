@@ -25,6 +25,7 @@
 - **Survives a restart.** Episko remembers each provider and resume id, then asks Claude to resume its transcript or Codex to resume its thread. Even a webview reload rebuilds every live agent pane and re-adopts its still-running process, scrollback included.
 - **Run the project's own tasks**: VS Code tasks, a `justfile`, package scripts, a Makefile and more, in the same panes, with a run's exit code as its status. [See below](#run-your-projects-tasks-too).
 - **Other agents, in the same panes.** Which agent a session runs is a setting, not a question you answer every time: pick it in Settings › Launching, override it per project, and `⌘N` obeys. Episko discovers Codex, OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity, Devin, Cline, Pi and more. The capability label beside each one says whether its inspector is connected or terminal-only; adding another first-class provider is an adapter, not another session model.
+- **A terminal beside the agent.** `⌘T` splits the stage: the session on the left, a plain shell on the right for the command it just told you to run; a second one stacks under the first. `⌘⌥T` opens one in its own pane instead, and Settings › Launching swaps the default.
 - **Command palette** (`⌘K`), a **settings window** (`⌘,`), per-project accent colours and icons, favourites and drag ordering, a daily cost rollup you can open by project and session, a *What's new* screen after updates, and a `caffeinate` toggle so long runs don't sleep.
 
 ## Every project has a homepage

@@ -12,6 +12,47 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
+  bots' pull requests, one row per advisory however many packages it hit, each saying what
+  the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole
+  brief, editable before it is sent; nothing is merged, dismissed or commented for you.
++ **Ask your package manager what is out of date**, from the *Out of date* tab: pnpm, npm,
+  yarn, cargo, go or pip, by the lockfile that is actually there. It never runs on its own.
++ **The path in the stage header copies itself.** Click it for the full path, wherever the
+  stage is: a session, a checkout its work drifted to, an external terminal, a dashboard.
++ **⌘T opens the shell beside the session**: the agent left, your shells stacked right and
+  nested under its row. Settings › Launching turns it off; ⌘⌥T takes the other layout.
+~ **One select-all, in the same two places in every table**: a tri-state tick in the header's
+  own column, and `All` / `None` beside the count. Branches and Checkouts each hid its pair.
+~ **The Settings rail follows what you are reading**, lighting the section under a line a
+  third of the way down the pane rather than whatever header sits at the top edge.
+~ **A switch and the interval it governs are one row.** Split over two, the interval's label
+  and hint had no subject and read as a riddle.
+~ **A path or an address in a pane opens on ⌘-click** (Ctrl elsewhere), as in every other
+  terminal. A plain click opened it, so focusing a pane or dragging along a path did too.
+~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
+  stops* and *Trusted projects* say their one sentence on the row instead.
+~ **Trust is explained where the word is used**: *Let trusted projects introspect themselves*
+  is now *Run a project's own tool to list its tasks*.
+! **Every project claimed it "isn't a git repository".** A Finder launch strips the PATH, so
+  most git calls ran Apple's `/usr/bin/git` shim, which refuses everything until Xcode's
+  licence is accepted. Every git call now runs with a PATH that finds the real one.
+! **A git that cannot run now says so**, in git's own words and in the log. A failed call
+  used to read as "this folder is not a repository", which is what hid the above.
+! **Answering a permission hands the keyboard back to the pane.** The repaint that removes
+  the card took focus with it, and the terminal stayed deaf until you clicked it.
+! **Shift-click in the Branches table flashed a selection on and then off again.** The rows
+  never refused a browser text selection. Every table with tick boxes takes a range now.
+! **▶ Run from a task's own pane finds the project's tasks.** Every run surface asks the
+  folder discovery actually ran in, not the subfolder a command happened to use.
+! **A project with an umlaut in its path was missing from its own History.** Paths are spelled
+  precomposed on both sides now, and stored ones are repaired on read.
+! **A pane stayed ● after answering when a background task finished mid-turn.** That notice
+  fires the prompt hook like a typed message; it queues nothing now.
+! **A Windows path is a link for its whole length.** `\n`, `\r` and `\t` read as printed
+  escapes, so `C:\repo\tests\x.ts` was cut at `\tests` and landed on the home folder instead.
+! **A chord with ⌥ in it never fired on a Mac.** ⌥ changes the character a key reports
+  (⌥T is †), so the recorder and the matcher both read the physical key under it now.
 
 ## 0.28.0 — 2026-09-11
 

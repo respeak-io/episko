@@ -6,14 +6,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, takeStage, toast } from "./dom";
+import { $, setHeadPath, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
-import { basename, cleanTitle, esc, tilde } from "./format";
+import { basename, cleanTitle, esc } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
-  providerCapabilities, providerSessionKey, resumeAgent,
+  phaseText, providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -26,7 +26,7 @@ import { driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
   attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
-  refit, shellKeys, trimScrollback, winClaudePaste, wireLinks,
+  shellKeys, trimScrollback, winClaudePaste, wireLinks,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -36,7 +36,7 @@ import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
 import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates, rosterEntry } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
-import { adoptIdentity, nextAfterClose, nextInGroup, orphanAdoptions } from "./grouping";
+import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
@@ -47,7 +47,7 @@ import {
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
-  termFontSize, termScrollback, titlePrefs, worktreesByRepo, wtSig,
+  termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 
@@ -59,6 +59,20 @@ function launchPermission(agent: AgentCli) {
   if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
   const def = providerPermissionMode(agent.id, permissionModeFor(agent.id));
   return { mode: def && def.id !== "default" ? def.id : null, def };
+}
+
+// One pane per session, with the caption the tiled stage shows (CSS-hidden otherwise). Made
+// before term.open, which appends, so the caption sits above the terminal; data-close → closeSession.
+function newPane(id: string): HTMLElement {
+  const pane = document.createElement("div");
+  pane.className = "term-pane";
+  const cap = document.createElement("div");
+  cap.className = "pane-cap";
+  cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
+    + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
+  pane.appendChild(cap);
+  $("terminals").appendChild(pane);
+  return pane;
 }
 
 // Shared by a fresh launch and reload adoption, so key wiring cannot drift between them.
@@ -130,9 +144,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   probeIcon(colorKey);
   const external = termEngine !== "embedded";
   const eng = engineDef(termEngine);
-  const pane = document.createElement("div");
-  pane.className = "term-pane";
-  $("terminals").appendChild(pane);
+  const pane = newPane(id);
 
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
@@ -256,9 +268,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   const heads = m ? [] : await invoke<WtHead[]>("worktree_heads", { dir: o.workdir }).catch(() => [] as WtHead[]);
   const { project, colorKey, worktree, branch } = adoptIdentity(o.workdir, m, heads);
   probeIcon(colorKey);
-  const pane = document.createElement("div");
-  pane.className = "term-pane";
-  $("terminals").appendChild(pane);
+  const pane = newPane(o.id);
   const { term, fit } = provider === "claude" ? newClaudeTerm(o.id, pane) : newAgentTerm(o.id, pane);
   const s: Sess = {
     id: o.id, project, accent: accentFor(colorKey), workdir: o.workdir, colorKey,
@@ -307,14 +317,14 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
   queueRosterSave();
 }
 
-// A plain login shell; returns the id so a caller can write into it (handToTerminal).
-export async function launchShell(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}): Promise<string> {
+// A plain login shell; returns the id so a caller can write into it (handToTerminal). `beside`
+// splits it onto that session's stage (splitBeside decides; this only obeys).
+export async function launchShell(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; beside?: string | null } = {}): Promise<string> {
   const id = crypto.randomUUID();
+  const anchor = opts.beside ? sessions.get(opts.beside) : undefined;
   // Key on the repo root so a shell opened in a worktree nests under its repo.
   const colorKey = opts.colorKey ?? workdir;
-  const pane = document.createElement("div");
-  pane.className = "term-pane";
-  $("terminals").appendChild(pane);
+  const pane = newPane(id);
   const term = new Terminal({
     fontFamily: MONO, fontSize: termFontSize, cursorBlink: true, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
@@ -335,11 +345,12 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
-    kind: "shell", provider: null, capabilities: [], external: false, term, fit, pane,
+    kind: "shell", provider: null, capabilities: [], external: false, term, fit, pane, splitOf: anchor?.id,
   };
   sessions.set(id, s);
-  setActive(id);
-  dlog("info", `shell ${project} · ${id.slice(0, 8)}`);
+  // The anchor stays the stage's owner; the new tile gets the ring and the keyboard.
+  if (anchor) { setActive(anchor.id); focusTile(s); } else setActive(id);
+  dlog("info", `shell ${project} · ${id.slice(0, 8)}${anchor ? ` · beside ${anchor.id.slice(0, 8)}` : ""}`);
   try {
     await invoke("spawn_shell", { sessionId: id, workdir, rows: term.rows || 24, cols: term.cols || 80 });
   } catch (e) {
@@ -355,9 +366,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
 export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
-  const pane = document.createElement("div");
-  pane.className = "term-pane";
-  $("terminals").appendChild(pane);
+  const pane = newPane(id);
   const { term, fit } = newAgentTerm(id, pane);
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
@@ -399,17 +408,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   // folder. A task that declared its own cwd (tasks.toml, VS Code options.cwd) keeps it.
   const declaredOwnCwd = !!opts.discoveredIn && r.cwd !== opts.discoveredIn;
   const cwd = taskPrefs.cwd === "root" && !declaredOwnCwd ? colorKey : r.cwd;
-  const pane = document.createElement("div");
-  pane.className = "term-pane";
-  $("terminals").appendChild(pane);
-  // The caption a tiled run group shows (CSS-hidden otherwise). Created before
-  // term.open(pane), which appends, so it ends up above the terminal.
-  const cap = document.createElement("div");
-  cap.className = "pane-cap";
-  // data-close is routed to closeSession by main.ts's dispatcher.
-  cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
-    + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
-  pane.appendChild(cap);
+  const pane = newPane(id);
   const term = new Terminal({
     fontFamily: MONO, fontSize: termFontSize, cursorBlink: false, scrollback: termScrollback,
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
@@ -488,12 +487,16 @@ export function closeSession(id: string) {
   try { s.term?.dispose(); } catch { /* */ }
   s.pane.remove();
   sessions.delete(id);
+  // Its shells outlive it as plain rows: a command running in one is not this close's to kill.
+  for (const x of splitShells(id)) x.splitOf = undefined;
   flushRoster(); // an explicit close means done — it should not come back on restart
   // Drop an emptied group's pointer BEFORE the successor is activated, so setActive
-  // paints a single-pane stage rather than a grid of empty cells.
-  if (stageGroup && ![...sessions.values()].some((x) => x.run?.groupId === stageGroup)) {
-    setStageGroup(null);
-    $("terminals").classList.remove("tiled");
+  // paints a single-pane stage rather than a grid of empty cells. A split is empty
+  // once its anchor stands alone.
+  const sg = stageGroup;
+  if (sg) {
+    const left = [...sessions.values()].filter((x) => inStageGroup(x, sg));
+    if (left.length <= (sessions.has(sg) ? 1 : 0)) { setStageGroup(null); $("terminals").classList.remove("tiled", "split"); }
   }
   if (wasActive) {
     setActiveId(null);
@@ -501,12 +504,15 @@ export function closeSession(id: string) {
     if (groupNext) { setActive(groupNext.id, true); return; }
     if (next) { setActive(next.id); return; }
     setStageGroup(null);
-    $("terminals").classList.remove("tiled");
+    $("terminals").classList.remove("tiled", "split");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
     takeStage("none");
+    renderAll();
+    return;
   }
-  // The grid reflowed but #terminals did not resize, so the ResizeObserver never fires.
-  if (stageGroup) refit();
+  // A closed tile: the grid reflowed (a split's row count with it) but #terminals did not
+  // resize, so the ResizeObserver never fires. paintStage refits every pane it shows.
+  if (activeId && (s.splitOf || stageGroup)) paintStage(activeId, stageGroup);
   renderAll();
 }
 
@@ -592,7 +598,7 @@ function groupMembers(gid: string): Sess[] {
 // Called from renderAll: panes sit outside the render-everything sweep, and a caption shows live state.
 export function refreshPaneCaps() {
   if (!stageGroup) return;
-  for (const s of sessions.values()) if (s.run?.groupId === stageGroup) paintPaneCap(s);
+  for (const s of sessions.values()) if (inStageGroup(s, stageGroup)) paintPaneCap(s);
 }
 
 // Only visible in the tiled view, so cheap enough to keep current unconditionally.
@@ -601,12 +607,12 @@ function paintPaneCap(s: Sess) {
   if (!cap) return;
   const name = cap.querySelector<HTMLElement>(".pc-name");
   const state = cap.querySelector<HTMLElement>(".pc-state");
-  if (name) name.textContent = s.run?.label ?? s.title ?? "pane";
+  if (name) name.textContent = s.run?.label ?? (s.title || (s.kind === "shell" ? "shell" : s.provider ?? "pane"));
   // A finished run's ✕ stays on screen (dismissing it is what comes next); a running one's is hover-only.
   cap.classList.toggle("done", s.run?.exitCode != null);
   if (state) {
-    state.textContent = s.kind === "task" ? taskStateText(s) : "";
-    state.className = "pc-state " + (GCLASS[statusKey(s)] || "");
+    state.textContent = s.kind === "task" ? taskStateText(s) : hasSessionState(s) ? phaseText(s) : "";
+    state.className = "pc-state " + (s.kind === "shell" ? "" : GCLASS[statusKey(s)] || "");
   }
 }
 
@@ -623,10 +629,19 @@ export function openRunGroup(gid: string) {
   setActive(focus.id, true);
 }
 
+// The ring and the keyboard move to one tile; activeId stays where it is.
+function focusTile(s: Sess) {
+  for (const x of sessions.values()) x.pane.classList.toggle("focused", x.id === s.id);
+  s.term?.focus();
+}
+
 // Clicking a tile: keeps the mosaic (stageGroup) and moves activeId, where setActive would untile.
+// A split's shells are attachments of the session on stage, so there only the ring moves.
 export function focusInGroup(id: string) {
   const s = sessions.get(id);
-  if (!s || !stageGroup || s.run?.groupId !== stageGroup || id === activeId) return;
+  if (!s || !stageGroup || !inStageGroup(s, stageGroup)) return;
+  if (sessions.has(stageGroup)) { focusTile(s); return; }
+  if (id === activeId) return;
   setActiveId(id);
   s.seenAt = Date.now();   // reading a tile counts as looking at it, same as setActive
   for (const x of sessions.values()) x.pane.classList.toggle("focused", x.id === id);
@@ -634,25 +649,19 @@ export function focusInGroup(id: string) {
   renderAll();
 }
 
-// Put one pane on the stage. keepGroup is for openRunGroup alone.
-export function setActive(id: string, keepGroup = false) {
-  const s = sessions.get(id);
-  if (!s) return;
-  // closeExternalView drops the stage to the empty card; takeStage below replaces it with the pane.
-  closeExternalView();
-  setActiveId(id);
-  // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
-  // Stamped for every kind of pane so the field never needs a kind test.
-  s.seenAt = Date.now();
-  // A sidebar row always shows one pane; the group header tiles them, and a tile click is focusInGroup.
-  if (stageGroup && !keepGroup) setStageGroup(null);
-  const gid = stageGroup;
-  takeStage("session");
-  $("terminals").classList.toggle("tiled", !!gid);
+// The stage's layout: one pane, a run group's mosaic, or a session with its shells split beside
+// it (`gid` is then that session's id). Every pane shown is fitted; a hidden one keeps 24×80.
+function paintStage(id: string, gid: string | null) {
+  const split = !!gid && sessions.has(gid);
+  const host = $("terminals");
+  host.classList.toggle("tiled", !!gid);
+  host.classList.toggle("split", split);
+  if (split) host.style.setProperty("--split-rows", String(splitShells(gid).length));
   for (const x of sessions.values()) {
-    const on = gid ? x.run?.groupId === gid : x.id === id;
+    const on = gid ? inStageGroup(x, gid) : x.id === id;
     x.pane.classList.toggle("active", on);
     x.pane.classList.toggle("focused", !!gid && x.id === id);
+    x.pane.classList.toggle("anchor", split && x.id === gid);
     // Attach after the class flip (the addon needs a measurable pane). A live pane leaving
     // the stage keeps its context (the LRU pool bounds them; docs/architecture.md); an
     // exited one frees it now, and an ended claude pane gives up its scrollback too.
@@ -662,15 +671,30 @@ export function setActive(id: string, keepGroup = false) {
       if (hasSessionState(x) && x.phase === "ended") trimScrollback(x);
     }
   }
+  // Every tile needs a real size, not just the focused one.
+  for (const x of sessions.values()) if (x.pane.classList.contains("active")) fitSession(x);
+}
+
+// Put one pane on the stage. keepGroup is for openRunGroup alone.
+export function setActive(id: string, keepGroup = false) {
+  const s = sessions.get(id);
+  if (!s) return;
+  // A split shell is never the stage's owner: its anchor is, with the shell's tile focused.
+  const anchor = s.splitOf ? sessions.get(s.splitOf) : undefined;
+  if (anchor) { setActive(anchor.id); focusTile(s); return; }
+  // closeExternalView drops the stage to the empty card; takeStage below replaces it with the pane.
+  closeExternalView();
+  setActiveId(id);
+  // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
+  // Stamped for every kind of pane so the field never needs a kind test.
+  s.seenAt = Date.now();
+  // A sidebar row shows one pane, unless shells are split beside it; a run group tiles from its
+  // header alone (keepGroup), and a tile click is focusInGroup.
+  setStageGroup(keepGroup ? stageGroup : splitShells(id).length ? id : null);
+  takeStage("session");
+  paintStage(id, stageGroup);
   document.documentElement.style.setProperty("--accent", accentFor(s.colorKey));
-  if (gid) {
-    // Every tile needs a real size, not just the focused one.
-    for (const x of sessions.values()) if (x.pane.classList.contains("active")) fitSession(x);
-    s.term?.focus();
-  } else if (s.term && s.fit) {
-    fitSession(s);
-    s.term.focus();
-  }
+  s.term?.focus();
   // ⌘1–9, nextAfterClose and the tray can land inside a collapsed project group; unfold it.
   revealProjGroup(s.colorKey);
   // renderAttn and updateTray too: the seenAt stamp above moved the needs-you set (./attn).
@@ -834,7 +858,7 @@ export function renderHeader(s: Sess | null) {
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
-  if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
+  if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; setHeadPath(""); return; }
   $("hProj").textContent = s.project;
   if (!hasSessionState(s)) {
     hb.textContent = s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : (s.title || s.provider || "agent");
@@ -848,7 +872,7 @@ export function renderHeader(s: Sess | null) {
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
-  $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
+  setHeadPath(s.drift?.dir ?? s.workdir);
 }
 
 // The active project: a session, an external, or the project a dashboard is about, so
@@ -872,8 +896,14 @@ export function activeCwd(): string | null {
   const s = activeId ? sessions.get(activeId) : null;
   return s ? s.workdir : null;
 }
+// Where a shell asked for from `s` goes: beside it when Settings says so, its own pane otherwise,
+// and `other` is the chord that takes whichever ⌘T is not set to. Only this decides; launchShell obeys.
+function splitBeside(s: Sess | null | undefined, other = false): string | null {
+  return termSplit !== other ? splitAnchorFor(s) : null;
+}
+
 // A plain terminal at the active cwd: an in-app shell pane when embedded, else the external app.
-export function openPlainTerminal() {
+export function openPlainTerminal(opts: { other?: boolean } = {}) {
   const wd = activeCwd();
   if (!wd) { toast("No active session"); return; }
   if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: wd, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
@@ -885,13 +915,15 @@ export function openPlainTerminal() {
   const colorKey = s ? s.colorKey : e ? (e.repo_root || e.cwd) : d ? d.colorKey : wd;
   const worktree = s ? s.worktree : e ? (e.repo_root && e.cwd !== e.repo_root ? (e.branch || basename(e.cwd)) : null) : d ? d.worktree : null;
   const branch = s ? s.branch : (e?.branch || d?.branch || "");
-  launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch });
+  launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch, beside: splitBeside(s, opts.other) });
 }
 
 // Prefill a command into a shell pane, or open the external terminal with it on the clipboard.
-export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string } = {}) {
+// `from` is the session the command was refused for; the shell opens beside it when ⌘T would.
+export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; from?: string } = {}) {
   if (termEngine === "embedded") {
-    const id = await launchShell(project, workdir, opts);
+    const { from, ...rest } = opts;
+    const id = await launchShell(project, workdir, { ...rest, beside: splitBeside(from ? sessions.get(from) : null) });
     // The login shell needs a moment before its prompt will accept input.
     setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
     toast("Prefilled in a shell. Press Enter to run");
@@ -966,7 +998,7 @@ export async function runGit(sessionId: string, op: string) {
       toast(`${op}: ${r.summary}`);
     } else if (r.suggest) {
       toast(`${op}: ${r.summary} → opening a terminal`);
-      await handToTerminal(s.project, s.workdir, r.suggest, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch });
+      await handToTerminal(s.project, s.workdir, r.suggest, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, from: s.id });
     } else {
       toast(`${op}: ${r.summary}`);
     }

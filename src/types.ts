@@ -222,6 +222,8 @@ export const hasSessionState = (s: Sess) => hasAgentCapability(s, "session-state
 // thread ids are provider-owned; a bare UUID is no global key
 export const providerSessionKey = (provider: string | null | undefined, id: string) =>
   `${(provider || "").toLowerCase()}:${id.toLowerCase()}`;
+// The folder a pane belongs to: a task's `workdir` is its command's cwd, so discovery's root decides.
+export const paneDir = (s: Sess) => (s.kind === "task" ? s.run?.root || s.workdir : s.workdir);
 // Nothing behind an exited pane can change (pollers skip it, the quit guard ignores it); a task's
 // exit sets done/error, so its exit code decides.
 export const isExited = (s: Sess) => (s.kind === "task" ? s.run?.exitCode != null : s.phase === "ended");
@@ -407,6 +409,7 @@ export interface Sess {
   // is written, and a chunk at or below its seq is dropped on flush (adoptSession in ./panes).
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
   provider: string | null; // AgentCli.id for an agent pane, null for shells/tasks
+  splitOf?: string; // shells only: the session it was opened beside (⌘T); shares its stage and is never `activeId`
   // copied at launch so the session stays self-describing if the catalogue changes
   capabilities: AgentCapability[];
   run?: { // task panes only

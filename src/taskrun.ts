@@ -58,7 +58,7 @@ export async function maybeRunOnStop(s: Sess) {
     dlog("info", `run-on-stop ${rule.id} · ${s.project} · ${s.id.slice(0, 8)} finished a turn`);
     await launchWithDeps(ready, s.project, {
       colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
-      discoveredIn: spec.cwd, forSession: s.id, focus: false,
+      discoveredIn: s.workdir, forSession: s.id, focus: false,
     });
   } finally {
     stopInFlight.delete(s.colorKey);
@@ -66,8 +66,8 @@ export async function maybeRunOnStop(s: Sess) {
 }
 
 // A fresh pane replaces the old one, so the sidebar doesn't grow a row per attempt. It keeps
-// the group: re-running one step is no reason for the fold to lose it (the whole stack is the
-// header's ⟳). Only this step runs — its dependencies are not repeated.
+// the group and `root` (a pane that forgot where it was discovered answers ▶ Run with an empty
+// picker). Only this step runs — its dependencies are not repeated.
 export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
   const spec = lastRunnableById.get(r.id);
@@ -75,10 +75,10 @@ export async function rerunTask(s: Sess, withParams = false) {
   const grp = { groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot };
   // Reuses the last values silently; ⋯ Parameters is how you change them.
   const ready = resolveRunInputs(spec, s.project, withParams);
-  if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: spec.cwd, ...grp }); return; }
+  if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: r.root, ...grp }); return; }
   const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
   closeSession(s.id);
-  const id = await launchTask(ready, project, { colorKey, worktree, branch, ...grp });
+  const id = await launchTask(ready, project, { colorKey, worktree, branch, discoveredIn: r.root, ...grp });
   // launchTask stages a group member only while that mosaic is already up; a re-run you
   // clicked is one you want to watch, so the fresh pane still takes the stage otherwise.
   if (id && grp.groupId && stageGroup !== grp.groupId) setActive(id);

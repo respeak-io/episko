@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, pickAgent, resumeAgent, type Agent,
+  canShelve, CLAUDE_CLI, isExited, midFlight, midWork, ORPHAN_DEAD_MS, paneDir, pickAgent, resumeAgent, type Agent,
   type AgentCli, type ExtSession, type Restorable, type Sess, type WtHead,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
@@ -13,8 +13,8 @@ import {
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
   adoptIdentity,
-  allProjects, attnPending, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
-  foldRunGroups,
+  allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
+  foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
   reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
@@ -1076,6 +1076,19 @@ function taskSess(id: string, o: Partial<Sess> = {}, run: Partial<NonNullable<Se
   });
 }
 
+describe("paneDir — the folder a pane belongs to", () => {
+  it("takes a task's discovery root over the cwd its command ran in", () => {
+    const t = taskSess("build", { workdir: "/w/epi/02_backend" }, { root: "/w/epi" });
+    expect(paneDir(t)).toBe("/w/epi");
+    expect(checkoutOf(t, "/fallback")).toBe("/w/epi");
+  });
+  it("is the workdir for everything else, and for a task with no root", () => {
+    expect(paneDir(sess({ workdir: "/w/epi/wt-a" }))).toBe("/w/epi/wt-a");
+    expect(paneDir(sess({ kind: "shell", workdir: "/w/epi/02_backend" }))).toBe("/w/epi/02_backend");
+    expect(paneDir(taskSess("build", { workdir: "/w/epi/02_backend" }, { root: "" }))).toBe("/w/epi/02_backend");
+  });
+});
+
 describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
   it("collapses the members of one launch and leaves everything else alone", () => {
     const items = foldRunGroups([
@@ -1125,6 +1138,65 @@ describe("foldRunGroups — a dependsOn chain as one sidebar row", () => {
       sess({ id: "sh", kind: "shell", run: { groupId: "g1" } as never }),
     ]);
     expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+});
+
+describe("foldRunGroups — a session's split shells nest under it", () => {
+  const shell = (id: string, splitOf?: string) => sess({ id, kind: "shell", provider: null, capabilities: [], splitOf });
+
+  it("moves a split shell under its anchor wherever the sort had put it", () => {
+    // The sort is by activity, so a shell you just typed in floats above the session it belongs to.
+    const items = foldRunGroups([shell("sh1", "c"), sess({ id: "other" }), sess({ id: "c" }), shell("sh2", "c")]);
+    expect(items.map((i) => (i.kind === "split" ? `split:${i.s.id}` : i.kind === "one" ? i.s.id : "group")))
+      .toEqual(["other", "split:c"]);
+    const sp = items[1];
+    if (sp.kind === "split") expect(ids(sp.shells)).toEqual(["sh1", "sh2"]);
+  });
+
+  it("leaves a shell whose anchor is not in this list as a plain row", () => {
+    // Clusters fold per checkout; a shell can only nest under a row that is actually drawn here.
+    const items = foldRunGroups([shell("sh", "elsewhere"), sess({ id: "c" })]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+
+  it("keeps a plain shell and a session without shells as plain rows", () => {
+    const items = foldRunGroups([sess({ id: "c" }), shell("sh")]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+});
+
+describe("the stage's groups — a run chain or a session with shells beside it", () => {
+  const shell = (id: string, splitOf?: string) => sess({ id, kind: "shell", provider: null, capabilities: [], splitOf });
+
+  it("keys a member by its chain, else by the session it was split beside", () => {
+    expect(stageKeyOf(taskSess("t", {}, { groupId: "g1" }))).toBe("g1");
+    expect(stageKeyOf(shell("sh", "c"))).toBe("c");
+    expect(stageKeyOf(sess({ id: "c" }))).toBeUndefined();
+    // The anchor is a member of its own split by id; a chain's id is never a session's.
+    expect(inStageGroup(sess({ id: "c" }), "c")).toBe(true);
+    expect(inStageGroup(shell("sh", "c"), "c")).toBe(true);
+    expect(inStageGroup(shell("sh"), "c")).toBe(false);
+  });
+
+  it("lists a session's shells in launch order, off the state map by default", () => {
+    open(shell("late", "c"), sess({ id: "c" }), shell("early", "c"), shell("other", "d"));
+    expect(ids(splitShells("c"))).toEqual(["late", "early"]);
+    expect(ids(splitShells("c", [shell("x", "c")]))).toEqual(["x"]);
+    expect(splitShells("nobody")).toEqual([]);
+  });
+
+  it("anchors ⌘T on the pane on stage, or on the session that pane is split from", () => {
+    expect(splitAnchorFor(sess({ id: "c" }))).toBe("c");
+    expect(splitAnchorFor(shell("sh", "c"))).toBe("c");
+    expect(splitAnchorFor(shell("sh"))).toBe("sh");
+    expect(splitAnchorFor(taskSess("solo"))).toBe("solo");
+  });
+
+  it("never anchors on a chain step, an external pane, or nothing", () => {
+    // The mosaic is the chain's; an external session has no pane to sit beside.
+    expect(splitAnchorFor(taskSess("t", {}, { groupId: "g1" }))).toBeNull();
+    expect(splitAnchorFor(sess({ id: "x", external: true }))).toBeNull();
+    expect(splitAnchorFor(null)).toBeNull();
   });
 });
 

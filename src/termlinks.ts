@@ -16,6 +16,12 @@ const TRAIL = /[.,;:!?)\]}>"'`*»]+$/;
 const LINE_SUFFIX = /:\d+(:\d+)?$/;
 // A printed `\n` (printf, JSON, a stack trace) sits inside one token; the path is the part before it.
 const ESCAPE = /\\[nrt]/;
+// ...but on Windows `\` is the separator, so `\tests` is a directory and splitting there leaves a
+// prefix that always exists (`C:\Users\me`, `D:`) and a link on the wrong folder.
+const WIN_ROOTED = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]|\.{0,2}\\)/;
+const SEP_SLASH = /\\(?![nrt])/; // a backslash the escape table cannot explain
+const winPath = (t: string) => WIN_ROOTED.test(t) || SEP_SLASH.test(t);
+const DRIVE_ROOT = /^[A-Za-z]:[\\/]?$/; // opening one is opening the whole disk
 // Never extended across spaces: a spaced filename with no directory reads as two words.
 const BARE_FILE = /^[\w][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
 const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -35,7 +41,8 @@ export function trimUrl(u: string): string {
 function pathish(t: string): boolean {
   if (t.length < 2 || t.startsWith("-") || SCHEME.test(t)) return false;
   if (/^(~|\.{1,2})?\//.test(t)) return true;        // /abs, ~/, ./, ../
-  if (/^[A-Za-z]:[\\/]/.test(t)) return true;        // C:\ or C:/
+  if (/^[A-Za-z]:[\\/]./.test(t)) return true;       // C:\x or C:/x, never the bare root
+  if (/^\\\\[^\\/]+[\\/][^\\/]/.test(t)) return true; // \\server\share
   if (/^[^\s/\\]+[/\\][^\s]/.test(t)) return true;   // a/b — a relative path
   return BARE_FILE.test(t);
 }
@@ -59,7 +66,7 @@ function candidates(line: string, start: number, tok: string): PathCand[] {
   const out: PathCand[] = [];
   const seen = new Set<string>();
   const add = (text: string, end: number) => {
-    if (!text || seen.has(text) || !/[A-Za-z0-9]/.test(text)) return;
+    if (!text || seen.has(text) || !/[A-Za-z0-9]/.test(text) || DRIVE_ROOT.test(text)) return;
     seen.add(text);
     out.push({ text, end });
   };
@@ -68,8 +75,10 @@ function candidates(line: string, start: number, tok: string): PathCand[] {
     const seq = [t];
     const push = (v: string) => { if (v !== seq[seq.length - 1]) seq.push(v); };
     push(t.replace(TRAIL, ""));
-    push(seq[seq.length - 1].split(ESCAPE)[0]);
-    push(seq[seq.length - 1].replace(TRAIL, ""));   // the escape may expose new punctuation
+    if (!winPath(t)) {
+      push(seq[seq.length - 1].split(ESCAPE)[0]);
+      push(seq[seq.length - 1].replace(TRAIL, ""));  // the escape may expose new punctuation
+    }
     push(seq[seq.length - 1].replace(LINE_SUFFIX, ""));
     return seq;
   };

@@ -144,6 +144,41 @@ describe("findLinks · escapes an agent printed rather than typed", () => {
   });
 });
 
+describe("findLinks · a Windows path, where `\\` is the separator", () => {
+  // `\tests`, `\node_modules` and `\release` are directories, not tabs and newlines. Splitting
+  // one leaves a prefix that always exists, so the link landed on the drive or on the home dir.
+  it("keeps a drive path whole, whatever component it starts with", () => {
+    expect(cands("C:\\Users\\fab\\repo\\tests\\thing.ts")).toEqual(["C:\\Users\\fab\\repo\\tests\\thing.ts"]);
+    expect(cands("D:\\rust\\target\\release\\app.exe")).toEqual(["D:\\rust\\target\\release\\app.exe"]);
+  });
+
+  it("keeps a relative one whole too, and one the shell rooted at `.`", () => {
+    expect(cands("Modified src\\main.rs")).toContain("src\\main.rs");
+    expect(cands(".\\scripts\\build.ps1")).toEqual([".\\scripts\\build.ps1"]);
+  });
+
+  it("still offers the file under an editor's line reference", () => {
+    expect(cands("at C:\\proj\\src\\app.ts:42:7")).toEqual(
+      expect.arrayContaining(["C:\\proj\\src\\app.ts:42:7", "C:\\proj\\src\\app.ts"]),
+    );
+  });
+
+  it("proposes a UNC share, which no rule reached before", () => {
+    expect(cands("\\\\server\\share\\report.docx")).toEqual(["\\\\server\\share\\report.docx"]);
+  });
+
+  // `open`/`explorer` on one of these shows the whole disk, and it is never what was printed.
+  it("never proposes a bare drive root", () => {
+    expect(paths("wrote to C:\\ today")).toEqual([]);
+    expect(cands("D: is full")).toEqual([]);
+  });
+
+  it("reads a printed escape as an escape when nothing says separator", () => {
+    expect(cands("plain src/main.ts\\nline ref x")).toContain("src/main.ts");
+    expect(cands("backticked `CHANGELOG.md`\\nin parens")).toContain("CHANGELOG.md");
+  });
+});
+
 describe("findLinks · one proposal per path-shaped token", () => {
   it("still proposes a second path the first one's longest candidate swallowed", () => {
     // `src/a.ts and docs/b.md` is a real candidate for the first start; stopping the scan at

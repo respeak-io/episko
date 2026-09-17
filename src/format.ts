@@ -32,6 +32,14 @@ export function dialogBody(text: string): string {
 }
 // Both separators, so a Windows path collapses to its leaf too.
 export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }
+// One spelling for a path compared by exact string: the macOS folder dialog hands back a
+// decomposed umlaut (`o` + U+0308) where Claude, git and the backend's `norm_path` write the
+// precomposed `ö`. Every path that enters from the OS or comes back off a `cc-` key takes it.
+export const nfcPath = (p: string) => p.normalize("NFC");
+// The same for a store keyed by path; two spellings of one key fold into the later one.
+export function nfcKeys<T>(o: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [nfcPath(k), v])) as Record<string, T>;
+}
 
 // ---------- a pane's title, off the terminal's OSC ----------
 

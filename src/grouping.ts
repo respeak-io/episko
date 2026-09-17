@@ -4,7 +4,7 @@
 import { basename } from "./format";
 import { checkoutDir, sameDir } from "./gitwatch";
 import {
-  bgWaiting, hasSessionState, isAgent, providerSessionKey,
+  bgWaiting, hasSessionState, isAgent, paneDir, providerSessionKey,
   type ExtSession, type LiveSess, type Phase, type Restorable, type Sess, type WtHead,
 } from "./types";
 import { attnCleared, attnOrder } from "./attn";
@@ -20,10 +20,10 @@ import { taskPrefs } from "./tasks";
 export interface ProjGroup { name: string; path: string; accent: string; sessions: Sess[]; externals: ExtSession[]; dormants: Restorable[]; wtBranch?: string; repoRoot?: string }
 // One project's sessions sharing a checkout dir, in first-appearance order of the sorted list.
 export interface WtCluster { key: string; branch: string; isMain: boolean; sessions: Sess[]; externals: ExtSession[] }
-// The checkout a pane belongs to. A task's `workdir` is often a subfolder and a shell inherits the stage's
-// cwd, so any dir inside a known checkout resolves to it; an unplaceable folder stays its own key.
+// The checkout a pane belongs to. A shell inherits the stage's cwd, so any dir inside a known
+// checkout resolves to it; an unplaceable folder stays its own key.
 export function checkoutOf(s: Sess, fallback: string): string {
-  const dir = (s.kind === "task" ? s.run?.root || s.workdir : s.workdir) || fallback;
+  const dir = paneDir(s) || fallback;
   return checkoutDir(dir, worktreesByRepo.get(s.colorKey) ?? []);
 }
 
@@ -223,18 +223,48 @@ export function groupSummary(projects: ProjGroup[]): GroupSummary {
   }
   return { count, dirty, urgent };
 }
-// ---------- run groups ----------
-// A `dependsOn` chain is one pane per step; folding them is presentational only.
+// ---------- the stage's groups: run chains and split shells ----------
+// A `dependsOn` chain is one pane per step; folding them is presentational only. A session's
+// split shells (⌘T, `Sess.splitOf`) share its stage the same way, keyed by the session's own id.
+
+// The group a pane is a member of, if any: its chain, or the session it was split beside.
+export const stageKeyOf = (s: Sess): string | undefined => s.run?.groupId ?? s.splitOf;
+export const inStageGroup = (s: Sess, gid: string): boolean => s.id === gid || stageKeyOf(s) === gid;
+// In insertion order, which is launch order and the order the tiles stack in.
+export function splitShells(anchorId: string, all: Iterable<Sess> = sessions.values()): Sess[] {
+  const out: Sess[] = [];
+  for (const s of all) if (s.splitOf === anchorId) out.push(s);
+  return out;
+}
+// Where ⌘T from `s` opens: beside it, or beside the session `s` itself is split from. A chain
+// step is never an anchor (the mosaic is the chain's), nor is an external pane (there is no pane).
+export function splitAnchorFor(s: Sess | null | undefined): string | null {
+  if (!s || s.external || s.run?.groupId) return null;
+  return s.splitOf ?? s.id;
+}
 
 export type RunItem =
   | { kind: "one"; s: Sess }
-  | { kind: "group"; id: string; label: string; members: Sess[]; phase: Phase };
+  | { kind: "group"; id: string; label: string; members: Sess[]; phase: Phase }
+  | { kind: "split"; s: Sess; shells: Sess[] };
 
-// In place: a group takes its first member's position, so `projectList`'s sort still decides.
+// In place: a group takes its first member's position, so `projectList`'s sort still decides;
+// a split shell moves under its anchor. One whose anchor is not in this list stays a plain row.
 export function foldRunGroups(list: Sess[]): RunItem[] {
+  const here = new Set(list.map((s) => s.id));
+  const shellsOf = new Map<string, Sess[]>();
+  for (const s of list) {
+    if (!s.splitOf || !here.has(s.splitOf)) continue;
+    const l = shellsOf.get(s.splitOf) ?? [];
+    l.push(s);
+    shellsOf.set(s.splitOf, l);
+  }
   const out: RunItem[] = [];
   const at = new Map<string, number>();   // groupId → index in `out`
   for (const s of list) {
+    if (s.splitOf && here.has(s.splitOf)) continue;
+    const shells = shellsOf.get(s.id);
+    if (shells) { out.push({ kind: "split", s, shells }); continue; }
     const gid = s.kind === "task" ? s.run?.groupId : undefined;
     if (!gid) { out.push({ kind: "one", s }); continue; }
     const i = at.get(gid);

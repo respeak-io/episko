@@ -62,6 +62,23 @@ describe("state.ts boots whatever localStorage holds", () => {
     expect(s.FAVORITES).toEqual([{ path: "/w/a", name: "a" }]);
   });
 
+  // The macOS folder dialog spelled an umlaut decomposed; Claude and git spell it precomposed,
+  // and every project surface compares by exact string. Stored paths heal on read.
+  it("spells every stored project path precomposed, however the folder dialog wrote it", async () => {
+    const nfd = "/w/Fo\u0308rderung", nfc = "/w/F\u00f6rderung";
+    store.set("cc-favorites", JSON.stringify([{ path: nfd, name: "x" }, { path: nfc, name: "y" }, { path: "/w/a", name: "a" }]));
+    store.set("cc-proj-order", JSON.stringify([nfd, "/w/a"]));
+    store.set("cc-colors", JSON.stringify({ [nfd]: "#123456" }));
+    store.set("cc-agent-by-project", JSON.stringify({ [nfd]: "codex" }));
+    store.set("cc-gh-account", JSON.stringify({ [nfd]: "work" }));
+    const s = await boot();
+    expect(s.FAVORITES).toEqual([{ path: nfc, name: "F\u00f6rderung" }, { path: "/w/a", name: "a" }]);
+    expect(s.projOrder).toEqual([nfc, "/w/a"]);
+    expect(s.colorOverrides).toEqual({ [nfc]: "#123456" });
+    expect(s.agentByProject).toEqual({ [nfc]: "codex" });
+    expect(s.ghAccountByProject).toEqual({ [nfc]: "work" });
+  });
+
   it("refuses a GitHub account pin of the wrong shape", async () => {
     // The pin is passed to gh as an identity; a non-string reaching the backend is a rejected invoke.
     store.set("cc-gh-account", JSON.stringify({ "/w/a": "octo-work", "/w/b": 7 }));

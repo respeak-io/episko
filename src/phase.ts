@@ -3,7 +3,7 @@
 
 import { liveCount, liveFanout, ORPHAN_DEAD_MS, type Agent, type Fanout, type Phase, type Prompt, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
-import { clearsOutline, notePrompt } from "./outline";
+import { cleanPrompt, clearsOutline, isEnvelope, notePrompt } from "./outline";
 import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
@@ -244,8 +244,10 @@ export function applyHook(s: Sess, data: any) {
       if (clearsOutline(data.source)) s.prompts = [];
       break;
     // A prompt typed mid-turn is queued, so the next Stop is the old turn's; read before setPhase.
+    // Not one Claude submits for you (a background task's notice): the running turn answers it
+    // and gets ONE Stop, so queuing it spent that Stop and left the pane ● after the answer.
     case "UserPromptSubmit":
-      if (s.phase === "working") s.queuedPrompt = true;
+      if (s.phase === "working" && !isEnvelope(cleanPrompt(data.prompt))) s.queuedPrompt = true;
       recordPrompt(s, data.prompt);
       setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     case "PreToolUse": {

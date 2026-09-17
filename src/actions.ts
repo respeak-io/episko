@@ -7,7 +7,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, toast } from "./dom";
 import { ask } from "./confirm";
-import { basename } from "./format";
+import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
@@ -16,7 +16,7 @@ import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
@@ -31,6 +31,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
+  setTermSplit as setTermSplitState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -109,7 +110,8 @@ export async function addProject() {
   if (!dir || typeof dir !== "string") return;
   addProjectPath(dir);
 }
-export function addProjectPath(dir: string) {
+export function addProjectPath(picked: string) {
+  const dir = nfcPath(picked); // the folder dialog's spelling is not Claude's (./format)
   if (FAVORITES.some((f) => f.path === dir)) { toast("Already a project"); return; }
   FAVORITES.push({ name: basename(dir), path: dir });
   saveFavorites();
@@ -152,6 +154,10 @@ export function resolvePermission(id: string, behavior: string) {
     invoke("resolve_permission", { id, behavior }).catch((e) => dlog("warn", `resolve_permission: ${e}`));
   }
   if (owner) removePermission(owner, id);
+  // The repaint destroys the button you just clicked, so focus falls to <body> and the pane
+  // goes deaf — Esc included, with `terminal` handing the question to a TUI nobody can type at.
+  // Before the flush, so the button is not the focused node when it goes.
+  if (owner && owner.id === activeId) owner.term?.focus();
   renderAll();
 }
 
@@ -232,6 +238,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
   localStorage.setItem("cc-autofetch", JSON.stringify(autoFetchPrefs));
   renderSettings();
   void tickAutoFetch();
+}
+
+// Read at the next ⌘T; nothing on stage moves.
+export function setTermSplit(on: boolean) {
+  setTermSplitState(on);
+  localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
 }
 
 // renderSettings only: ./debug reads vitalsPrefs live on its tick, so no interval is rebuilt.
@@ -387,11 +400,13 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 
 // Which account this project's `gh` calls run as; `null` follows gh's active account. It
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
-// and the merged-PR evidence are cached per repo, hence `gh_invalidate`.
+// and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
+// dependency reads are a cache of their own, which the same switch has to drop too.
 export function setProjectGhAccount(colorKey: string, login: string | null) {
   setProjectGhAccountState(colorKey, login);
   localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));
   void invoke("gh_invalidate", { root: colorKey }).catch(() => {});
+  void invoke("dep_invalidate", { root: colorKey }).catch(() => {});
   toast(login
     ? `${basename(colorKey)} reads GitHub as ${login}`
     : `${basename(colorKey)} follows gh's active account`);

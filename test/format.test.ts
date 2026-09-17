@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc, fmtClock, fmtDur,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -616,5 +616,16 @@ describe("tccLabel", () => {
     // The row exists to say what was checked; a blank cell would lose the only fact it has.
     expect(tccLabel("SomeNewService")).toBe("Some New Service");
     expect(tccLabel("Photos")).toBe("Photos");
+  });
+});
+
+describe("nfcPath", () => {
+  it("spells the macOS folder dialog's decomposed umlaut the way Claude and git do", () => {
+    expect(nfcPath("/x/53_Games Fo\u0308rderung")).toBe("/x/53_Games F\u00f6rderung");
+    expect(nfcPath("/x/plain")).toBe("/x/plain");
+  });
+  it("re-keys a path-keyed store, folding two spellings of one path into the later one", () => {
+    expect(nfcKeys({ "/x/Fo\u0308": "a", "/x/F\u00f6": "b", "/y": "c" })).toEqual({ "/x/F\u00f6": "b", "/y": "c" });
+    expect(nfcKeys({})).toEqual({});
   });
 });
