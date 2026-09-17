@@ -6,7 +6,7 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Terminal } from "@xterm/xterm";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { IS_WIN, toast } from "./dom";
+import { IS_MAC, IS_WIN, MOD, toast } from "./dom";
 import { dlog } from "./debug";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
@@ -427,7 +427,7 @@ interface JoinedRow { text: string; cells: { x: number; y: number }[] }
 interface TermLink {
   range: { start: { x: number; y: number }; end: { x: number; y: number } };
   text: string;
-  activate: () => void;
+  activate: (e: MouseEvent) => void;
 }
 type Buf = Terminal["buffer"]["active"];
 
@@ -524,6 +524,16 @@ async function resolvePath(s: Sess | undefined, cands: PathCand[]): Promise<{ ab
   return cand ? { abs: hit[1], end: cand.end } : null;
 }
 
+// A link opens on MOD+click and never on a plain one: xterm activates on any mouseup whose
+// mousedown shared the link, so focusing a pane, dragging along a path and a double-click (which
+// fires twice) all opened it, and `open` on a directory is a Finder window.
+let hintedAt = 0;
+function modClick(e: MouseEvent | undefined): boolean {
+  if (!e || (IS_MAC ? e.metaKey : e.ctrlKey)) return true;
+  if (Date.now() - hintedAt > 15000) { hintedAt = Date.now(); toast(`${MOD}-click to open`); }
+  return false;
+}
+
 async function openHref(url: string) {
   // OSC 8 payloads are program-chosen; http(s)-only here as well as via `allowNonHttpProtocols`.
   if (!/^https?:\/\//i.test(url)) { dlog("warn", `link ignored · not http(s) · ${url.slice(0, 80)}`); return; }
@@ -533,6 +543,7 @@ async function openHref(url: string) {
 
 // A copy of ./actions' `openTouchedFile`, since ./actions imports this module; the error is surfaced.
 async function openFilePath(path: string) {
+  dlog("info", `link: opening ${path}`); // the one trace an accidental open used to leave
   try { await invoke("open_file", { path }); }
   catch (e) { toast(String(e)); }
 }
@@ -554,20 +565,20 @@ async function provide(id: string, term: Terminal, y: number, cb: (links: TermLi
   for (const h of hits) {
     if (h.kind === "url") {
       const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
-      if (range) out.push({ range, text: h.text, activate: () => { void openHref(h.text); } });
+      if (range) out.push({ range, text: h.text, activate: (e) => { if (modClick(e)) void openHref(h.text); } });
       continue;
     }
     const won = await resolvePath(s, h.cands);
     if (!won || !claim(h.start, won.end)) continue;
     const range = mkRange(row, h.start, won.end);
-    if (range) out.push({ range, text: won.abs, activate: () => { void openFilePath(won.abs); } });
+    if (range) out.push({ range, text: won.abs, activate: (e) => { if (modClick(e)) void openFilePath(won.abs); } });
   }
   cb(out.length ? out : undefined);
 }
 
 // Called by every spawner after `term.open`; xterm keeps every link provider, so this composes.
 export function wireLinks(id: string, term: Terminal) {
-  term.options.linkHandler = { activate: (_e, text) => { void openHref(text); } };
+  term.options.linkHandler = { activate: (e, text) => { if (modClick(e)) void openHref(text); } };
   term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
 }
 

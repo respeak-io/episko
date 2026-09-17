@@ -212,7 +212,12 @@ And the things that hold however the files are arranged:
   tried against the pane's **live cwd first** (`session_cwd` — a shell that has `cd`ed
   reports its directory to nobody), then its drift dir, then its workdir, then the
   ancestors of everything in its Context card, which is what resolves a path an agent
-  shortened against a root it never ran in. `wireLinks` runs on **every** pane (claude,
+  shortened against a root it never ran in. It opens on **MOD+click only** (`modClick` in
+  ./terminal): xterm activates on any mouseup whose mousedown shared the link, so a focus
+  click, a drag along a path and a double-click (which fires twice) each opened one, and
+  `open` on a directory is a Finder window. And a backslash is a **separator, not an
+  escape**, wherever the escape table cannot explain it: `\t` cut `C:\repo\tests\x.ts`
+  down to a prefix that always exists. `wireLinks` runs on **every** pane (claude,
   agent, shell, task): a path in Codex's output is the same path, and a shell pane has no
   Context card behind it at all. The OSC 8 half stays http(s)-only, because a program
   chooses that URI, not us.

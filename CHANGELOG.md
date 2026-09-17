@@ -26,6 +26,9 @@ Markers: `+` new · `~` changed · `!` fixed
   third of the way down the pane rather than whatever header sits at the top edge.
 ~ **A switch and the interval it governs are one row.** Split over two, the interval's label
   and hint had no subject and read as a riddle.
+~ **A path or an address in a pane opens on ⌘-click** (Ctrl elsewhere), as it does in every
+  other terminal. A plain click activated it, so focusing a pane, dragging along a path to
+  copy it or double-clicking a word opened it — and a path that names a folder is a window.
 ~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
   stops* and *Trusted projects* say their one sentence on the row instead.
 ~ **Trust is explained where the word is used**: *Let trusted projects introspect themselves*
@@ -45,6 +48,10 @@ Markers: `+` new · `~` changed · `!` fixed
   precomposed on both sides now, and stored ones are repaired on read.
 ! **A pane stayed ● after answering when a background task finished mid-turn.** That notice
   fires the prompt hook like a typed message; it queues nothing now.
+! **A Windows path is a link for its whole length.** `\n`, `\r` and `\t` read as printed
+  escapes wherever they fell, so `C:\repo\tests\x.ts` was cut at `\tests` and the link landed
+  on the home folder — or, for `D:\rust\…`, on the whole drive. A backslash the escape table
+  cannot explain is a separator; `\\server\share` is proposed at all, and a drive root never is.
 
 ## 0.28.0 — 2026-09-11
 
