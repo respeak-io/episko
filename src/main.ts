@@ -36,7 +36,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -218,7 +218,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -631,7 +631,7 @@ $("btnNew").addEventListener("click", () => {
   const c = activeProjectCtx();
   if (c) requestLaunch(c.project, c.path, dashLaunchHint()); else openPalette();
 });
-$("btnTerm").addEventListener("click", openPlainTerminal);
+$("btnTerm").addEventListener("click", () => openPlainTerminal());
 // The header path copies in full: the label is `~`-shortened, so the absolute one rides
 // on the element (./dom's setHeadPath) rather than being read back off the text.
 $("hPath").addEventListener("click", (e) => {
@@ -659,7 +659,8 @@ $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDif
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   palette: () => { $("palette").classList.contains("show") ? closePalette() : openPalette(); },
   sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
-  terminal: openPlainTerminal,
+  terminal: () => openPlainTerminal(),
+  terminalOther: () => openPlainTerminal({ other: true }),
   history: () => { histOpen() ? closeHistory() : void openHistory(true); },
   files: () => { explorerOpen ? closeExplorer() : openProjectFiles(); },
   reveal: revealActiveFolder,

@@ -390,6 +390,9 @@ html.win .wctl { display: flex; }
 .rgtally { flex: none; font: 600 9px var(--font-mono); color: var(--muted-2); border: 1px solid var(--hair); border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
 .rgtally.bad { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 42%, transparent); }
 .rgsteps { padding: 3px 5px 4px 7px; margin-left: 15px; border-left: 1px solid var(--hair); display: flex; flex-direction: column; gap: 1px; }
+/* The split's header is an ordinary session row, so the block keeps that row's radius inside its own. */
+.rgroup.split > .srow { border-radius: 8px 8px 0 0; }
+.rgroup.split .rgsteps { border-top: 1px solid var(--hair); margin-left: 0; padding-left: 20px; border-left: 0; }
 .rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
 .rgsteps .sbranch { font-size: 11px; color: var(--muted); }
 .rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
@@ -516,6 +519,11 @@ html.win .wctl { display: flex; }
 /* the pane activeId names, so the one the inspector and keystrokes are talking about */
 #terminals.tiled .term-pane.focused { box-shadow: inset 0 0 0 1px var(--accent-line); }
 #terminals.tiled .term-pane.focused .pane-cap { color: var(--accent-ink); }
+/* A session with shells split beside it (⌘T): the session (.anchor) takes the left column at full
+   height, the shells stack on the right in launch order. Rows are explicit (--split-rows, set by
+   paintStage), or `1 / -1` has no end line to reach. */
+#terminals.tiled.split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: repeat(var(--split-rows, 1), minmax(0, 1fr)); }
+#terminals.tiled.split .term-pane.anchor { grid-column: 1; grid-row: 1 / -1; }
 .xterm .xterm-viewport { background: transparent !important; }
 /* Highlight the console while files are dragged over it (see initFileDrop). */
 #terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }

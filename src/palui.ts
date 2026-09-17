@@ -25,7 +25,7 @@ import { activeBind, comboKeys, type KeyAction } from "./keys";
 let host: {
   setActive: (id: string) => void;
   resolvePermission: (id: string, behavior: string) => void;
-  openPlainTerminal: () => void;
+  openPlainTerminal: (opts?: { other?: boolean }) => void;
   closeSession: (id: string) => void;
   shelveSession: (id: string) => void;
   addProject: () => void;
@@ -91,6 +91,7 @@ function sessionActions(s: Sess): PalItem[] {
 const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; act?: KeyAction }[] = [
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: () => host.addProject() },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: () => host.openPlainTerminal(), act: "terminal" },
+  { key: "cmd:termother", label: "Open a terminal the other way round (own pane / beside the session)", glyph: "❯", run: () => host.openPlainTerminal({ other: true }), act: "terminalOther" },
   { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: () => host.revealActiveFolder(), act: "reveal" },
   { key: "cmd:files", label: "Find a file in this project…", glyph: "⌕", run: () => host.openProjectFiles(), act: "files" },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, act: "runTask" },

@@ -12,6 +12,7 @@ import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { inStageGroup } from "./grouping";
 
 // The bundled Nerd Font first (@font-face in styles.css) so icon glyphs draw on every OS.
 export const MONO = '"JetBrainsMono Nerd Font", ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace';
@@ -596,7 +597,7 @@ export function fitSession(s: Sess) {
 // Everything the stage shows: a tiled run group is several panes, and a window resize reflows them all.
 export function refit() {
   if (stageGroup) {
-    for (const s of sessions.values()) if (s.run?.groupId === stageGroup) fitSession(s);
+    for (const s of sessions.values()) if (inStageGroup(s, stageGroup)) fitSession(s);
     return;
   }
   if (!activeId) return;

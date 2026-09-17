@@ -55,6 +55,14 @@ describe("the table itself", () => {
   // The one binding this release moved. It is here rather than in a comment because
   // plain ⌘⏎ is the run picker's pin, and the reveal listener standing on it again
   // would take that back without anything failing.
+  it("puts the other terminal layout on the alt of the terminal chord", () => {
+    expect(keyActionDef("terminal").combo).toBe("mod+t");
+    expect(keyActionDef("terminalOther").combo).toBe("mod+alt+t");
+    const binds = defaultKeyBinds();
+    expect(matchAction(on(binds), cmd("t"))).toBe("terminal");
+    expect(matchAction(on(binds), cmd("†", { altKey: true, code: "KeyT" }))).toBe("terminalOther");
+  });
+
   it("reveals the folder on the shifted Enter, leaving plain mod+Enter free", () => {
     expect(keyActionDef("reveal").combo).toBe("mod+shift+enter");
     const binds = defaultKeyBinds();
@@ -128,6 +136,21 @@ describe("comboOf", () => {
       expect(comboOf(cmd(k)), k).toBeNull();
     }
     expect(comboOf(cmd("Enter"))).toEqual(combo("mod+enter"));
+  });
+
+  // A Mac reports the option-layer character with ⌥ held: ⌘⌥T arrives as key "†" and ⌘⌥E as
+  // "Dead". Both recorded and matched nothing until the physical key was read instead.
+  it("reads the physical key under alt, where the reported character is the option layer's", () => {
+    expect(comboOf(cmd("†", { altKey: true, code: "KeyT" }))).toEqual(combo("mod+alt+t"));
+    expect(comboOf(cmd("Dead", { altKey: true, code: "KeyE" }))).toEqual(combo("mod+alt+e"));
+    expect(comboOf(cmd("#", { altKey: true, code: "Digit3" }))).toEqual(combo("mod+alt+3"));
+    expect(comboOf(cmd("Ø", { altKey: true, shiftKey: true, code: "KeyO" }))).toEqual(combo("mod+alt+shift+o"));
+  });
+
+  it("ignores the physical key without alt, so ⌘B stays the B key on every layout", () => {
+    // A QWERTZ Z sits on the KeyY position; `key` is the letter the layout means.
+    expect(comboOf(cmd("z", { code: "KeyY" }))).toEqual(combo("mod+z"));
+    expect(comboOf(press("Alt", { altKey: true, code: "AltLeft" }))).toBeNull();
   });
 
   it("only collapses a digit to the pseudo-key when asked", () => {

@@ -118,10 +118,16 @@ function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster):
 // Every wtGroup mode goes through here, so a run group looks the same in all four.
 function rows(list: Sess[], chipFor?: (s: Sess) => WtCluster | undefined): string {
   return foldRunGroups(list)
-    .map((it) => it.kind === "group"
-      ? runGroupRow(it, chipFor?.(it.members[0]))
-      : sessionRow(it.s, chipFor?.(it.s)))
+    .map((it) => it.kind === "group" ? runGroupRow(it, chipFor?.(it.members[0]))
+      : it.kind === "split" ? splitRows(it, chipFor?.(it.s))
+        : sessionRow(it.s, chipFor?.(it.s)))
     .join("");
+}
+// A session with shells split beside it: its own row, the shells nested under it like a chain's
+// steps. No header and no fold: the row is the header, and a shell's row is a tile to focus.
+function splitRows(it: Extract<RunItem, { kind: "split" }>, chip?: WtCluster): string {
+  return `<div class="rgroup split${it.s.id === activeId ? " on" : ""}">${sessionRow(it.s, chip)}`
+    + `<div class="rgsteps">${it.shells.map((m) => sessionRow(m, undefined, true)).join("")}</div></div>`;
 }
 
 // subheader → ⑃ cluster headers, chip → flat rows with a branch chip, off/toplevel → flat; a
