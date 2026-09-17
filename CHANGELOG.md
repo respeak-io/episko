@@ -20,6 +20,10 @@ Markers: `+` new · `~` changed · `!` fixed
   yarn, cargo, go or pip, by the lockfile that is actually there. It never runs on its own.
 + **The path in the stage header copies itself.** Click it for the full path, wherever the
   stage is: a session, a checkout its work drifted to, an external terminal, a dashboard.
++ **⌘T opens the shell beside the session**: the agent left, your shell right, a second one under
+  the first, and the shells nested under the session's row. Settings › Launching turns it off; ⌘⌥T is the other layout.
+! **A chord with ⌥ in it never fired on a Mac.** ⌥ changes the character a key reports (⌥T is †),
+  so the physical key is read under it now, in the recorder and the matcher alike.
 ~ **One select-all, in the same two places in every table**: a tri-state tick in the header's
   own column, and `All` / `None` beside the count. Branches and Checkouts each hid its pair.
 ~ **The Settings rail follows what you are reading**, lighting the section under a line a

@@ -3,7 +3,7 @@
 // Matching is exact (every modifier must agree), so the table's order is never load-bearing.
 
 export type KeyAction =
-  | "palette" | "sessionSwitch" | "terminal" | "history" | "reveal" | "files"
+  | "palette" | "sessionSwitch" | "terminal" | "terminalOther" | "history" | "reveal" | "files"
   | "buildTask" | "testTask" | "runTask"
   | "sidebar" | "inspector" | "settings"
   | "fontUp" | "fontDown" | "fontReset";
@@ -38,7 +38,8 @@ export interface KeyActionDef {
 export const KEY_ACTIONS: KeyActionDef[] = [
   { id: "palette",       label: "Command palette",           combo: "mod+k" },
   { id: "sessionSwitch", label: "Switch to session 1–9",     combo: "mod+digit",   hint: "One binding over nine digits. A digit bound elsewhere is carved out; the rest keep working." },
-  { id: "terminal",      label: "Open a terminal here",      combo: "mod+t",       hint: "A plain shell, no Claude." },
+  { id: "terminal",      label: "Open a terminal here",      combo: "mod+t",       hint: "A plain shell, beside the session or in its own pane: Settings › Launching decides." },
+  { id: "terminalOther", label: "Open a terminal, the other way", combo: "mod+alt+t", hint: "Its own pane when new terminals split; a split when they don't." },
   { id: "history",       label: "Session history",           combo: "mod+shift+h" },
   { id: "files",         label: "Find a file in this project", combo: "mod+p",      hint: "Empty, it browses the folder; typing finds across the project." },
   { id: "reveal",        label: "Reveal this folder",        combo: "mod+shift+enter" },
@@ -60,7 +61,7 @@ export function keyActionDef(id: KeyAction): KeyActionDef {
 
 // The Settings picker's sections; the test suite checks they cover KEY_ACTIONS exactly once.
 export const KEY_GROUPS: { label: string; actions: KeyAction[] }[] = [
-  { label: "Sessions", actions: ["palette", "sessionSwitch", "terminal", "history", "reveal", "files"] },
+  { label: "Sessions", actions: ["palette", "sessionSwitch", "terminal", "terminalOther", "history", "reveal", "files"] },
   { label: "Tasks", actions: ["buildTask", "testTask", "runTask"] },
   { label: "The window", actions: ["sidebar", "inspector", "settings", "fontUp", "fontDown", "fontReset"] },
 ];
@@ -106,15 +107,25 @@ export function parseCombo(s: unknown): Combo | null {
 }
 
 /** What a KeyboardEvent gives us. A duck type, so tests need no DOM. */
-export interface KeyLike { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean }
+export interface KeyLike { key: string; code?: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean }
+
+// With ⌥ held a Mac reports the option-layer character (⌥T is †, ⌥E a dead key), so an alt chord
+// reads the physical key instead. Letters and digits only; `code` names positions, not characters.
+function physicalKey(code: string | undefined): string | null {
+  const m = code ? /^(?:Key([A-Z])|Digit([0-9]))$/.exec(code) : null;
+  return m ? (m[1] ?? m[2]).toLowerCase() : null;
+}
 
 // Recording and matching both normalise here. Named keys (Escape, Tab, arrows, F-keys) are refused.
 export function comboOf(ev: KeyLike, opts: { digits?: boolean } = {}): Combo | null {
   const raw = ev.key;
-  if (!raw || MODIFIER_KEYS.has(raw)) return null;
+  if (!raw) return null;
+  const phys = ev.altKey ? physicalKey(ev.code) : null;
   let key: string;
   let shift = !!ev.shiftKey;
-  if (raw === "Enter") key = "enter";
+  if (phys) key = phys;
+  else if (MODIFIER_KEYS.has(raw)) return null;
+  else if (raw === "Enter") key = "enter";
   else if (raw.length === 1) {
     const alias = SHIFT_ALIAS[raw];
     if (alias) { key = alias; shift = false; } else key = raw.toLowerCase();

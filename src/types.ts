@@ -409,6 +409,7 @@ export interface Sess {
   // is written, and a chunk at or below its seq is dropped on flush (adoptSession in ./panes).
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
   provider: string | null; // AgentCli.id for an agent pane, null for shells/tasks
+  splitOf?: string; // shells only: the session it was opened beside (⌘T); shares its stage and is never `activeId`
   // copied at launch so the session stays self-describing if the catalogue changes
   capabilities: AgentCapability[];
   run?: { // task panes only
