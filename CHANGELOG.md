@@ -12,6 +12,13 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.29.0 — 2026-09-17
+
+The project dashboard reads your dependencies, ⌘T opens a shell beside the session rather
+than over it, a link in a pane waits for ⌘, and a Finder launch no longer makes every project
+claim it isn't a git repository.
+
 + **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
   bots' pull requests, one row per advisory however many packages it hit, each saying what
   the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole
@@ -55,7 +62,6 @@ Markers: `+` new · `~` changed · `!` fixed
   (⌥T is †), so the recorder and the matcher both read the physical key under it now.
 
 ## 0.28.0 — 2026-09-11
-
 Settings is one page with a search, every emoji is a project icon, the checkout you are
 looking at fetches itself so *2 behind* is true when you read it, a branch can be locked
 against deletion, an ask no longer vanishes a second after it arrives, and there is one theme.
