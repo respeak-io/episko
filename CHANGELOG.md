@@ -12,6 +12,11 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! **Every project claimed it "isn't a git repository".** A Finder launch strips the PATH, so
+  most git calls ran Apple's `/usr/bin/git` shim, which refuses everything until Xcode's
+  licence is accepted. Every git call now runs with a PATH that finds the real one.
+! **A git that cannot run now says so**, in git's own words and in the log. A failed call
+  used to read as "this folder is not a repository", which is what hid the above.
 ! **Answering a permission hands the keyboard back to the pane.** The card you clicked is
   destroyed by the repaint that removes it, so focus fell to the page and the terminal went
   deaf until you clicked it — Esc included. *In terminal* was the worst of the three: it puts
