@@ -18,18 +18,11 @@ use crate::AppState;
 /// `.cc-worktrees/<repo>/<branch>` folder. Returns the absolute worktree path.
 #[tauri::command(async)]
 pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<String>) -> Result<String, String> {
-    let git = |args: &[&str]| {
-        sys_command("git")
-            .env("LC_ALL", "C")
-            .args(args)
-            .output()
-    };
+    let git = |dir: &str, args: &[&str]| git_cmd(dir, args).output();
 
-    let root_out = git(&["-C", &repo_dir, "rev-parse", "--show-toplevel"])
-        .map_err(|e| e.to_string())?;
-    if !root_out.status.success() {
+    let Some(root_out) = git_checked("rev-parse", &repo_dir, &["rev-parse", "--show-toplevel"])? else {
         return Err("not a git repository".into());
-    }
+    };
     let root = norm_path(String::from_utf8_lossy(&root_out.stdout).trim());
     let safe: String = branch.trim().chars()
         .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '/' | '.') { c } else { '-' })
@@ -47,7 +40,7 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
     }
     let wt_str = wt_path.to_string_lossy().to_string();
 
-    let branch_exists = git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/heads/{safe}")])
+    let branch_exists = git(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{safe}")])
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -56,7 +49,7 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
     let base = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     if let Some(b) = base.as_deref() {
         if !branch_exists {
-            let ok = git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
+            let ok = git(&root, &["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
                 .map(|o| o.status.success())
                 .unwrap_or(false);
             if !ok {
@@ -69,22 +62,22 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
     // is a default a user can turn off, and an untracked branch has no ahead/behind.
     let track = !branch_exists
         && base.as_deref().is_some_and(|b| {
-            git(&["-C", &root, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{b}")])
+            git(&root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{b}")])
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         });
 
     let add = if branch_exists {
-        git(&["-C", &root, "worktree", "add", &wt_str, &safe])
+        git(&root, &["worktree", "add", &wt_str, &safe])
     } else if let Some(b) = base.as_deref() {
-        let mut args = vec!["-C", &root, "worktree", "add"];
+        let mut args = vec!["worktree", "add"];
         if track {
             args.push("--track");
         }
         args.extend_from_slice(&["-b", &safe, &wt_str, b]);
-        git(&args)
+        git(&root, &args)
     } else {
-        git(&["-C", &root, "worktree", "add", "-b", &safe, &wt_str])
+        git(&root, &["worktree", "add", "-b", &safe, &wt_str])
     }.map_err(|e| e.to_string())?;
     if add.status.success() {
         return Ok(wt_str);
@@ -92,7 +85,7 @@ pub(crate) fn create_worktree(repo_dir: String, branch: String, base: Option<Str
 
     // The dir may already exist from an earlier run on this branch; hand it back.
     if wt_path.is_dir() {
-        if let Ok(o) = git(&["-C", &wt_str, "rev-parse", "--abbrev-ref", "HEAD"]) {
+        if let Ok(o) = git(&wt_str, &["rev-parse", "--abbrev-ref", "HEAD"]) {
             if o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == safe {
                 return Ok(wt_str);
             }
@@ -177,15 +170,12 @@ pub(crate) struct Worktree {
 }
 
 /// Worktrees from `git worktree list --porcelain`, main first, linked ones enriched
-/// with `dirty`/`merged` so the picker can tell which are safe to clean up.
+/// with `dirty`/`merged` so the picker can tell which are safe to clean up. `Err` is git
+/// failing; the empty list is a folder that is not a repo, and the two were once one answer.
 #[tauri::command(async)]
-pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
-    let out = sys_command("git")
-        .arg("-C").arg(&repo_dir).args(["worktree", "list", "--porcelain"])
-        .output();
-    let out = match out {
-        Ok(o) if o.status.success() => o,
-        _ => return vec![],
+pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> {
+    let Some(out) = git_checked("worktree list", &repo_dir, &["worktree", "list", "--porcelain"])? else {
+        return Ok(Vec::new());
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let mut res: Vec<Worktree> = Vec::new();
@@ -226,20 +216,14 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
         if w.is_main {
             continue;
         }
-        w.dirty = sys_command("git")
-            .env("LC_ALL", "C")
-            .arg("-C").arg(&w.path)
-            .args(["--no-optional-locks", "status", "--porcelain"])
+        w.dirty = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
             .output()
             .map(|o| o.status.success() && !o.stdout.is_empty())
             .unwrap_or(false);
         if let Some(mb) = &main_branch {
             if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
                 // `--is-ancestor A B` exits 0 when A is an ancestor of B.
-                w.merged = sys_command("git")
-                    .env("LC_ALL", "C")
-                    .arg("-C").arg(&repo_dir)
-                    .args(["merge-base", "--is-ancestor",
+                w.merged = git_cmd(&repo_dir, &["merge-base", "--is-ancestor",
                         &format!("refs/heads/{}", w.branch),
                         &format!("refs/heads/{mb}")])
                     .output()
@@ -248,7 +232,7 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Vec<Worktree> {
             }
         }
     }
-    res
+    Ok(res)
 }
 
 /// Same location, tolerant of symlinks and trailing slashes; falls back to comparing
@@ -287,7 +271,7 @@ fn remove_worktree_impl(
 ) -> Result<GitActionResult, String> {
     let label = if branch.is_empty() { "worktree".to_string() } else { branch.to_string() };
 
-    let listed = list_worktrees(repo_dir.to_string());
+    let listed = list_worktrees(repo_dir.to_string())?;
     if listed.iter().any(|w| w.is_main && same_path(&w.path, path)) {
         return Err("that's the repo's main worktree — it can't be removed".into());
     }
@@ -490,10 +474,7 @@ pub(crate) struct CommitInfo {
 #[tauri::command(async)]
 pub(crate) fn git_commit_info(dir: String, rev: String) -> Option<CommitInfo> {
     let rev = if rev.trim().is_empty() { "HEAD".to_string() } else { rev };
-    let out = sys_command("git")
-        .env("LC_ALL", "C")
-        .arg("-C").arg(&dir)
-        .args(["--no-optional-locks", "log", "-1", "--format=%h%x00%s%x00%an%x00%cr", &rev])
+    let out = git_cmd(&dir, &["--no-optional-locks", "log", "-1", "--format=%h%x00%s%x00%an%x00%cr", &rev])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -560,7 +541,7 @@ pub(crate) fn switch_branch(
             if blocked == 1 { " is" } else { "s are" }
         ));
     }
-    if list_worktrees(repo_dir.clone()).iter()
+    if list_worktrees(repo_dir.clone())?.iter()
         .any(|w| !same_path(&w.path, &repo_dir) && w.branch == branch)
     {
         return Err(format!("{branch} is already checked out in another worktree"));
@@ -760,7 +741,7 @@ pub(crate) fn delete_branch(repo_dir: String, branch: String) -> Result<GitActio
         return Err("no branch given".into());
     }
     // Say it in our own words and name the fix, rather than surfacing git's refusal.
-    if list_worktrees(repo_dir.clone()).iter().any(|w| w.branch == branch) {
+    if list_worktrees(repo_dir.clone())?.iter().any(|w| w.branch == branch) {
         return Err(format!("{branch} is checked out — remove its worktree first"));
     }
     let by = protection(&repo_dir, &branch);
@@ -1131,10 +1112,10 @@ fn finish_remote_sweep(deleted: Vec<DeletedBranch>, kept: Vec<KeptBranch>, remot
 /// remote-only rows, capped separately, so a colleague's branch is a destination too.
 #[tauri::command(async)]
 pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<BranchInfo> {
-    // LC_ALL=C also pins `%(upstream:track)` to English "ahead"/"behind".
-    let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
+    // `git_cmd`'s LC_ALL=C also pins `%(upstream:track)` to English "ahead"/"behind".
+    let git = |args: &[&str]| git_cmd(&repo_dir, args).output();
 
-    let remotes: Vec<String> = match git(&["-C", &repo_dir, "remote"]) {
+    let remotes: Vec<String> = match git(&["remote"]) {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect(),
         _ => Vec::new(),
@@ -1158,13 +1139,13 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     let asked = base.map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
     let trunk = asked
         .filter(|b| {
-            git(&["-C", &repo_dir, "rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
+            git(&["rev-parse", "--verify", "--quiet", &format!("{b}^{{commit}}")])
                 .is_ok_and(|o| o.status.success())
         })
         .or_else(|| default_ref.clone());
 
     let taken: std::collections::HashSet<String> =
-        match git(&["-C", &repo_dir, "worktree", "list", "--porcelain"]) {
+        match git(&["worktree", "list", "--porcelain"]) {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .filter_map(|l| l.strip_prefix("branch "))
@@ -1174,7 +1155,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         };
 
     // The branch HEAD points at (None when detached — then there is no "current").
-    let current = git(&["-C", &repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD"])
+    let current = git(&["symbolic-ref", "--quiet", "--short", "HEAD"])
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -1184,7 +1165,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     // checked-out branch with no trunk, and to nothing when HEAD is detached too.
     let merged_base = trunk.clone().or_else(|| current.clone());
     let merged: std::collections::HashSet<String> = match &merged_base {
-        Some(c) => match git(&["-C", &repo_dir, "branch", "--format=%(refname:short)", "--merged", c]) {
+        Some(c) => match git(&["branch", "--format=%(refname:short)", "--merged", c]) {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .map(str::trim)
@@ -1205,7 +1186,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         None => LFMT.to_string(),
     };
     let heads = |fmt: &str| {
-        git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", fmt, "refs/heads"])
+        git(&["for-each-ref", "--sort=-committerdate", fmt, "refs/heads"])
             .ok()
             .filter(|o| o.status.success())
     };
@@ -1293,14 +1274,14 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
     };
     // `%(ahead-behind:)` is git 2.41+, and an older git fails the WHOLE listing on it, so
     // the retry without it is what keeps remote rows on a Debian-stable git.
-    let mut rout = match git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", &rfmt(base.as_deref()), "refs/remotes"]) {
+    let mut rout = match git(&["for-each-ref", "--sort=-committerdate", &rfmt(base.as_deref()), "refs/remotes"]) {
         Ok(o) if o.status.success() => Some(o),
         _ => None,
     };
     let mut have_ab = base.is_some();
     if rout.is_none() {
         have_ab = false;
-        rout = match git(&["-C", &repo_dir, "for-each-ref", "--sort=-committerdate", &rfmt(None), "refs/remotes"]) {
+        rout = match git(&["for-each-ref", "--sort=-committerdate", &rfmt(None), "refs/remotes"]) {
             Ok(o) if o.status.success() => Some(o),
             _ => None,
         };
@@ -1409,8 +1390,8 @@ fn primary_remote(remotes: &[String]) -> &str {
 /// only exists after a clone or `remote set-head`, so main/master are probed as fallbacks;
 /// never guesses further, since a wrong default makes every branch look (un)merged.
 fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
-    let git = |args: &[&str]| sys_command("git").env("LC_ALL", "C").args(args).output();
-    if let Ok(o) = git(&["-C", repo_dir, "symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
+    let git = |args: &[&str]| git_cmd(repo_dir, args).output();
+    if let Ok(o) = git(&["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
         if o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
             if !s.is_empty() {
@@ -1420,7 +1401,7 @@ fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
     }
     ["main", "master"].into_iter().find_map(|c| {
         let short = format!("{remote}/{c}");
-        git(&["-C", repo_dir, "rev-parse", "--verify", "--quiet", &format!("refs/remotes/{short}")])
+        git(&["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{short}")])
             .ok()
             .filter(|o| o.status.success())
             .map(|_| short)
@@ -1430,10 +1411,7 @@ fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
 /// Current git branch for a working directory (None if not a repo / detached).
 #[tauri::command(async)]
 pub(crate) fn git_branch(workdir: String) -> Option<String> {
-    let out = sys_command("git")
-        .arg("-C")
-        .arg(&workdir)
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+    let out = git_cmd(&workdir, &["rev-parse", "--abbrev-ref", "HEAD"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -1583,11 +1561,12 @@ pub(crate) fn git_repo_info(cwd: &str) -> (Option<String>, Option<String>) {
 }
 
 /// A `git` command hardened for a GUI app: `LC_ALL=C` (never parse localized output), an
-/// augmented PATH (Finder strips it), and every credential prompt disabled, since there is
-/// no tty to ask on and a prompt would block the invoke thread forever. Credential helpers
-/// and ssh-agent keys still work; anything else fails fast, and the user gets a terminal.
-fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
-    let mut c = sys_command("git");
+/// augmented PATH (Finder strips it, leaving Apple's `/usr/bin/git` shim), and every
+/// credential prompt disabled, since there is no tty to ask on and a prompt would block the
+/// invoke thread forever. Credential helpers and ssh-agent keys still work; anything else
+/// fails fast. EVERY git spawn goes through here (docs/worktrees.md).
+pub(crate) fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
+    let mut c = sys_command("git"); // the one git spawn; a test holds the rest to it
     c.env("LC_ALL", "C")
         .env("PATH", augmented_path())
         .env("GIT_TERMINAL_PROMPT", "0") // a failed askpass falls back to the terminal prompt
@@ -1605,6 +1584,31 @@ fn git_cmd(workdir: &str, args: &[&str]) -> std::process::Command {
     }
     c.arg("-C").arg(workdir).args(args);
     c
+}
+
+/// A git call whose failure the user must hear about. `Ok(None)` is the ONE failure that is a
+/// state — the folder is not a repo; anything else is an outage in git or its environment, so it
+/// is logged and handed back in git's own words rather than read as an empty answer.
+fn git_checked(what: &str, dir: &str, args: &[&str]) -> Result<Option<std::process::Output>, String> {
+    let fault = |e: String| {
+        log::warn!("git {what} · {dir} · {e}");
+        e
+    };
+    let out = git_cmd(dir, args)
+        .output()
+        .map_err(|e| fault(format!("git could not be run: {e}")))?;
+    if out.status.success() {
+        return Ok(Some(out));
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if err.contains("not a git repository") {
+        return Ok(None);
+    }
+    Err(fault(if err.is_empty() {
+        format!("git {what} failed silently (exit {})", out.status.code().unwrap_or(-1))
+    } else {
+        err
+    }))
 }
 
 /// Run git with a hard timeout: `Child::wait` has none, so a scratch thread waits and the
@@ -1765,14 +1769,11 @@ fn new_file_lines(path: &std::path::Path) -> Option<u32> {
 /// `cap` is how many dirty entries to name: 0 for the polled counts (`git_diffstat`), else
 /// the most the caller shows. One scan serves both, so the two surfaces cannot disagree.
 fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)> {
+    // `core.quotePath=false`: without it git octal-escapes any non-ASCII path and quotes it.
     let git = |args: &[&str]| {
-        sys_command("git")
-            .env("LC_ALL", "C")
-            .arg("-C").arg(workdir)
-            // Without this git octal-escapes any non-ASCII path and quotes it.
-            .args(["-c", "core.quotePath=false"])
-            .args(args)
-            .output()
+        let mut all = vec!["-c", "core.quotePath=false"];
+        all.extend_from_slice(args);
+        git_cmd(workdir, &all).output()
     };
     // ONE spawn for everything but the line counts: `--porcelain=v2 --branch` reports the
     // dirty entries and the upstream/ahead/behind in one walk. This is polled per folder.
@@ -1899,14 +1900,10 @@ pub(crate) struct ChangedPath {
 /// repo is an empty list, not an error; the explorer works there from a walk.
 #[tauri::command(async)]
 pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
-    let out = sys_command("git")
-        .env("LC_ALL", "C")
-        .arg("-C").arg(&workdir)
-        .args(["-c", "core.quotePath=false"])
-        // `-uall`: the default collapses a new folder into `? sub/`, so every file inside it
-        // would reach the explorer unmarked. `working_set` keeps `-unormal` (it is polled).
-        .args(["--no-optional-locks", "status", "--porcelain=v2", "-uall"])
-        .output();
+    // `-uall`: the default collapses a new folder into `? sub/`, so every file inside it
+    // would reach the explorer unmarked. `working_set` keeps `-unormal` (it is polled).
+    let out = git_cmd(&workdir, &["-c", "core.quotePath=false",
+        "--no-optional-locks", "status", "--porcelain=v2", "-uall"]).output();
     let Ok(out) = out else { return Vec::new() };
     if !out.status.success() {
         return Vec::new();
@@ -2237,10 +2234,7 @@ pub(crate) struct DayCommit {
 /// one common dir, and that is what stops the Trail counting one repo's commits N times.
 /// `--path-format=absolute` matters, or a main worktree answers a relative `.git`.
 fn repo_identity(dir: &str) -> Option<String> {
-    let out = sys_command("git")
-        .env("LC_ALL", "C")
-        .arg("-C").arg(dir)
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    let out = git_cmd(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -2277,11 +2271,7 @@ pub(crate) fn git_log_days(roots: Vec<String>, days: u64) -> Vec<DayCommit> {
         // NUL between fields; %s is the subject line, so records stay newline-separated.
         args.push("--format=%H%x00%an%x00%at%x00%s");
 
-        let res = sys_command("git")
-            .env("LC_ALL", "C")
-            .arg("-C").arg(root)
-            .args(&args)
-            .output();
+        let res = git_cmd(root, &args).output();
         let Ok(res) = res else { continue };
         if !res.status.success() {
             continue;
@@ -2424,10 +2414,7 @@ pub(crate) fn project_facts(dir: String) -> ProjectFacts {
         return ProjectFacts::default();
     };
     // `remote get-url` rather than reading .git/config: worktrees, submodules and includeIf.
-    let origin = sys_command("git")
-        .env("LC_ALL", "C")
-        .arg("-C").arg(&root)
-        .args(["remote", "get-url", "origin"])
+    let origin = git_cmd(&root, &["remote", "get-url", "origin"])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -2870,6 +2857,33 @@ canonicalizehostname false
     /// Identity and signing via `-c`: the developer's global gitconfig is neither needed nor touched.
     fn commit(dir: &Path, msg: &str) {
         git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", msg]);
+    }
+
+    /// Every git spawn goes through `git_cmd`, or it inherits a GUI app's stripped PATH and
+    /// runs whatever `/usr/bin/git` is — on macOS an Xcode shim that refuses until its licence
+    /// is accepted, which then reads as "not a git repository" everywhere (docs/worktrees.md).
+    #[test]
+    fn every_git_spawn_goes_through_git_cmd() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap() {
+            let p = e.unwrap().path();
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            // testutil.rs is cfg(test) only: a test drives the real git with the runner's PATH.
+            if p.extension().is_none_or(|x| x != "rs") || name == "testutil.rs" {
+                continue;
+            }
+            for (i, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
+                if line.starts_with("#[cfg(test)]") {
+                    break; // the tests below may spawn git any way they like
+                }
+                let spawns = line.contains(r#"sys_command("git")"#) || line.contains(r#"Command::new("git")"#);
+                if spawns && !line.contains("the one git spawn") {
+                    bad.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "spawn git through git_cmd (PATH, LC_ALL, no prompts): {bad:?}");
     }
 
     /// The sidebar's polling path must agree with `list_worktrees` while spawning no git: the
@@ -4033,11 +4047,21 @@ canonicalizehostname false
         let dirty = create_worktree(repo.clone(), "dirty-wt".into(), None).expect("dirty worktree");
         std::fs::write(Path::new(&dirty).join("scratch.txt"), "wip\n").unwrap();
 
-        let wts = list_worktrees(repo.clone());
+        let wts = list_worktrees(repo.clone()).unwrap();
         let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
         assert!(by("merged-wt").merged && !by("merged-wt").dirty, "merged-wt should be merged+clean: {wts:?}");
         assert!(!by("ahead-wt").merged && !by("ahead-wt").dirty, "ahead-wt should be unmerged+clean: {wts:?}");
         assert!(by("dirty-wt").dirty, "dirty-wt should be dirty: {wts:?}");
+
+        // A plain folder is Ok(empty) and every other failure is Err: the dialog words the first
+        // itself ("isn't a git repository") and quotes the second, so these must not collapse.
+        // Both exit 128; only git's own stderr tells them apart, which is why the split reads it.
+        let plain = scratch_dir();
+        assert!(matches!(list_worktrees(plain.to_str().unwrap().to_string()), Ok(v) if v.is_empty()));
+        std::fs::remove_dir_all(&plain).unwrap();
+        let err = list_worktrees(plain.to_str().unwrap().to_string())
+            .expect_err("a folder git cannot even enter is git failing, not an empty answer");
+        assert!(!err.is_empty(), "the Err carries git's own words");
         let main_path = wts.iter().find(|w| w.is_main).expect("a main worktree").path.clone();
 
         // The main worktree can never be removed.
@@ -4080,7 +4104,7 @@ canonicalizehostname false
         git(&dir, &["worktree", "lock", &locked]);
         std::fs::remove_dir_all(&gone).expect("hand-delete the checkout");
 
-        let wts = list_worktrees(repo.clone());
+        let wts = list_worktrees(repo.clone()).unwrap();
         let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
         assert!(by("locked-wt").locked, "locked-wt should report locked: {wts:?}");
         assert!(by("locked-wt").exists, "locked-wt is still on disk: {wts:?}");
@@ -4100,7 +4124,7 @@ canonicalizehostname false
         let r = remove_worktree_impl(&repo, &gone, "gone-wt", false).expect("call returns");
         assert!(r.ok, "a vanished worktree should remove cleanly: {r:?}");
         assert!(r.stranded.is_none(), "nothing is on disk to strand: {r:?}");
-        assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "gone-wt"),
+        assert!(!list_worktrees(repo.clone()).unwrap().iter().any(|w| w.branch == "gone-wt"),
             "gone-wt should be out of the listing");
 
         git(&dir, &["worktree", "unlock", &locked]);
@@ -4142,7 +4166,7 @@ canonicalizehostname false
         let s = r.stranded.as_ref().expect("the folder is still on disk, and must be reported");
         assert!(!s.reason.is_empty(), "the OS's own reason travels with it: {s:?}");
         assert!(Path::new(&wt).exists(), "the folder really is still there");
-        assert!(!list_worktrees(repo.clone()).iter().any(|w| w.branch == "held-wt"),
+        assert!(!list_worktrees(repo.clone()).unwrap().iter().any(|w| w.branch == "held-wt"),
             "git has already unregistered it — that is what makes --force fail");
 
         // Released, the repair goes through with nothing to kill.

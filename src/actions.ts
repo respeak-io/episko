@@ -16,7 +16,7 @@ import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
@@ -153,6 +153,10 @@ export function resolvePermission(id: string, behavior: string) {
     invoke("resolve_permission", { id, behavior }).catch((e) => dlog("warn", `resolve_permission: ${e}`));
   }
   if (owner) removePermission(owner, id);
+  // The repaint destroys the button you just clicked, so focus falls to <body> and the pane
+  // goes deaf — Esc included, with `terminal` handing the question to a TUI nobody can type at.
+  // Before the flush, so the button is not the focused node when it goes.
+  if (owner && owner.id === activeId) owner.term?.focus();
   renderAll();
 }
 
