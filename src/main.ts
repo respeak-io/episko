@@ -632,6 +632,12 @@ $("btnNew").addEventListener("click", () => {
   if (c) requestLaunch(c.project, c.path, dashLaunchHint()); else openPalette();
 });
 $("btnTerm").addEventListener("click", openPlainTerminal);
+// The header path copies in full: the label is `~`-shortened, so the absolute one rides
+// on the element (./dom's setHeadPath) rather than being read back off the text.
+$("hPath").addEventListener("click", (e) => {
+  const abs = (e.currentTarget as HTMLElement).dataset.abs;
+  if (abs) void copyPath(abs);
+});
 // btnHist scopes History to the project on screen; histBtn opens every project.
 $("btnHist").addEventListener("click", () => { void openHistory(true); });
 $("histBtn").addEventListener("click", () => { void openHistory(false); });

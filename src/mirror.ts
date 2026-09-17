@@ -3,7 +3,7 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, takeStage, toast } from "./dom";
+import { $, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
@@ -199,7 +199,7 @@ export function renderPastHeader(d: Restorable) {
   $("hProj").textContent = d.project;
   const hb = $("hBranch"); hb.textContent = "shelved"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = d.title || "";
-  $("hPath").textContent = tilde(d.workdir);
+  setHeadPath(d.workdir);
 }
 export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
@@ -325,7 +325,7 @@ export function renderExtHeader(e: ExtSession) {
   $("hProj").textContent = basename(e.cwd);
   const hb = $("hBranch"); hb.textContent = "external"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = e.name || "";
-  $("hPath").textContent = tilde(e.cwd);
+  setHeadPath(e.cwd);
 }
 // The working-set peek minus the fetch/pull/push row: we do not drive this checkout.
 function extPeekHtml(e: ExtSession, g: DiffStat): string {
