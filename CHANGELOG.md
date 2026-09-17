@@ -12,6 +12,39 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! **Every project claimed it "isn't a git repository".** A Finder launch strips the PATH, so
+  most git calls ran Apple's `/usr/bin/git` shim, which refuses everything until Xcode's
+  licence is accepted. Every git call now runs with a PATH that finds the real one.
+! **A git that cannot run now says so**, in git's own words and in the log. A failed call
+  used to read as "this folder is not a repository", which is what hid the above.
+! **Answering a permission hands the keyboard back to the pane.** The card you clicked is
+  destroyed by the repaint that removes it, so focus fell to the page and the terminal went
+  deaf until you clicked it — Esc included. *In terminal* was the worst of the three: it puts
+  the question in Claude's own prompt, which you then could not type at.
++ **The path in the stage header copies itself.** Click it and the full path is on your
+  clipboard. The header shows it `~`-shortened, and it is the one location always on screen
+  for whatever has the stage: a session, the checkout its work has drifted to, an external
+  terminal's directory, a shelved session, or a project dashboard — whose path is now
+  `~`-shortened like the rest.
+! **▶ Run from a task's own pane finds the project's tasks.** A run's working directory is
+  its command's — routinely a subfolder a task declared and nobody chose — so opening the
+  picker from a finished run searched that folder and reported *No tasks found in this
+  project*. Every run surface now asks the folder discovery actually ran in, and a re-run
+  keeps it.
+~ **The Settings rail follows what you are reading**, not whatever header happens to sit at
+  the top edge — it lights the section under a reading line a third of the way down the pane,
+  so the last screenful of a long section no longer lights the next one along. The line slides
+  to the top edge and to the foot where the scroll runs out, so every section can take the
+  rail, down to one-row sections like Keys and Guide.
+~ **A switch and the interval it governs are one row.** *Fetch for the session on screen* now
+  carries its own *at most every*, and Diagnostics' vitals recorder its sample rate — split
+  across two rows, the interval's label and hint had no subject and read as a riddle.
+~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
+  stops* and *Trusted projects* are both filled elsewhere; empty, they said "none" behind a
+  fold that opened on a single sentence. The sentence is on the row and the fold is gone.
+~ **Trust is explained where the word is used.** *Let trusted projects introspect themselves*
+  is now *Run a project's own tool to list its tasks*, and both rows say what running a
+  justfile, Taskfile or mise file means and how a folder comes to be trusted.
 
 + **A Dependencies card on the project dashboard, and an agent that does the reading.**
   Dependabot's advisories, Dependabot's and Renovate's own pull requests with their CI

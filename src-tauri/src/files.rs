@@ -1,7 +1,7 @@
 //! The explorer's project index: `git ls-files` for a repo (git honours `.gitignore`, so no parser
 //! of ours), a bounded walk for anything else. Nothing here watches anything (docs/explorer.md).
 
-use crate::platform::sys_command;
+use crate::git::git_cmd;
 
 const MAX_FILES: usize = 20_000; // so a mis-aimed open (a home directory, `/`) cannot hang the overlay
 const MAX_DEPTH: usize = 8;      // deep enough for a monorepo, shallow enough to bound the walk
@@ -34,10 +34,7 @@ pub(crate) fn index_of(root: &str) -> (Vec<String>, bool, bool) {
 /// None when this is not a repo or git is unavailable (the walk answers). Truncation is decided
 /// before dedup: a mid-merge `--cached` lists a conflicted path once per stage.
 fn git_index(root: &str) -> Option<(Vec<String>, bool)> {
-    let out = sys_command("git")
-        .env("LC_ALL", "C")
-        .arg("-C").arg(root)
-        .args(["--no-optional-locks", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
+    let out = git_cmd(root, &["--no-optional-locks", "ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         .output()
         .ok()?;
     if !out.status.success() {

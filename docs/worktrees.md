@@ -2,6 +2,12 @@
 
 > Rules and their reasons, compressed. The full narratives live in git history (CLAUDE.md before the split). Trust the code over the docs when they disagree, and fix the doc in the same commit.
 
+## Asking git anything
+
+**Every git spawn goes through `git_cmd`** (git.rs), which pins `LC_ALL=C`, disables every credential prompt, and — the one that bit — sets an **augmented PATH**. A Finder-launched app gets `/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin` and nothing else, so a bare `git` resolves to Apple's `/usr/bin/git` shim, which exits 69 with *"You have not agreed to the Xcode license agreements"* until somebody accepts them in a terminal. Fourteen call sites spawned git directly, and all fourteen went dark the day Xcode updated: no branch, no dirty state, no worktrees, and the new-session dialog calling a repo *not a git repository*. `every_git_spawn_goes_through_git_cmd` reads the source and fails on a new one, because the helper existed the whole time and was documented as the rule; a comment is exactly as strong as whoever reads it.
+
+**A failed git call is not an empty answer.** `list_worktrees` returns a `Result`: `Ok([])` is a folder that is not a repo, which the dialog words itself, and `Err` is git or its environment failing — logged, and quoted to the user verbatim, since the words are git's own and the person at the keyboard is the one who can act on them. The split is git's `not a git repository` on stderr, which `LC_ALL=C` keeps in English, and a miss shows the real stderr, so it fails in the honest direction.
+
 ## Project groups: the user's headings over the rail
 
 Named collapsible folds over projects (`projgroups.ts`, pure and tested, owns the store; `grouping.ts`'s `groupedProjects` derives what the rail draws; `sidebarview.foldHead` is the markup; `sidebar.ts` owns the element and the drag). Made from right-click → *Add to group…* or by dragging a project onto one.

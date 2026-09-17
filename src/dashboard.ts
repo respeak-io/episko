@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { $, takeStage, toast } from "./dom";
+import { $, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { basename } from "./format";
 import { ask } from "./confirm";
@@ -725,7 +725,7 @@ export function renderDashHeader(): void {
   const hb = $("hBranch");
   hb.hidden = true;
   $("hTitle").textContent = "";
-  $("hPath").textContent = root();
+  setHeadPath(root());
 }
 
 export function renderDashInspector(): void {
