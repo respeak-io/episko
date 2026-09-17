@@ -12,76 +12,39 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
+  bots' pull requests, one row per advisory however many packages it hit, each saying what
+  the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole
+  brief, editable before it is sent; nothing is merged, dismissed or commented for you.
++ **Ask your package manager what is out of date**, from the *Out of date* tab: pnpm, npm,
+  yarn, cargo, go or pip, by the lockfile that is actually there. It never runs on its own.
++ **The path in the stage header copies itself.** Click it for the full path, wherever the
+  stage is: a session, a checkout its work drifted to, an external terminal, a dashboard.
+~ **One select-all, in the same two places in every table**: a tri-state tick in the header's
+  own column, and `All` / `None` beside the count. Branches and Checkouts each hid its pair.
+~ **The Settings rail follows what you are reading**, lighting the section under a line a
+  third of the way down the pane rather than whatever header sits at the top edge.
+~ **A switch and the interval it governs are one row.** Split over two, the interval's label
+  and hint had no subject and read as a riddle.
+~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
+  stops* and *Trusted projects* say their one sentence on the row instead.
+~ **Trust is explained where the word is used**: *Let trusted projects introspect themselves*
+  is now *Run a project's own tool to list its tasks*.
 ! **Every project claimed it "isn't a git repository".** A Finder launch strips the PATH, so
   most git calls ran Apple's `/usr/bin/git` shim, which refuses everything until Xcode's
   licence is accepted. Every git call now runs with a PATH that finds the real one.
 ! **A git that cannot run now says so**, in git's own words and in the log. A failed call
   used to read as "this folder is not a repository", which is what hid the above.
-! **Answering a permission hands the keyboard back to the pane.** The card you clicked is
-  destroyed by the repaint that removes it, so focus fell to the page and the terminal went
-  deaf until you clicked it — Esc included. *In terminal* was the worst of the three: it puts
-  the question in Claude's own prompt, which you then could not type at.
-+ **The path in the stage header copies itself.** Click it and the full path is on your
-  clipboard. The header shows it `~`-shortened, and it is the one location always on screen
-  for whatever has the stage: a session, the checkout its work has drifted to, an external
-  terminal's directory, a shelved session, or a project dashboard — whose path is now
-  `~`-shortened like the rest.
-! **▶ Run from a task's own pane finds the project's tasks.** A run's working directory is
-  its command's — routinely a subfolder a task declared and nobody chose — so opening the
-  picker from a finished run searched that folder and reported *No tasks found in this
-  project*. Every run surface now asks the folder discovery actually ran in, and a re-run
-  keeps it.
-~ **The Settings rail follows what you are reading**, not whatever header happens to sit at
-  the top edge — it lights the section under a reading line a third of the way down the pane,
-  so the last screenful of a long section no longer lights the next one along. The line slides
-  to the top edge and to the foot where the scroll runs out, so every section can take the
-  rail, down to one-row sections like Keys and Guide.
-~ **A switch and the interval it governs are one row.** *Fetch for the session on screen* now
-  carries its own *at most every*, and Diagnostics' vitals recorder its sample rate — split
-  across two rows, the interval's label and hint had no subject and read as a riddle.
-~ **A list with nothing in it no longer pretends to be a dropdown.** *Run after a session
-  stops* and *Trusted projects* are both filled elsewhere; empty, they said "none" behind a
-  fold that opened on a single sentence. The sentence is on the row and the fold is gone.
-~ **Trust is explained where the word is used.** *Let trusted projects introspect themselves*
-  is now *Run a project's own tool to list its tasks*, and both rows say what running a
-  justfile, Taskfile or mise file means and how a folder comes to be trusted.
-
-+ **A Dependencies card on the project dashboard, and an agent that does the reading.**
-  Dependabot's advisories, Dependabot's and Renovate's own pull requests with their CI
-  rollup and what is blocking each, and — when you ask for it — what your package manager
-  says is simply out of date. One advisory is **one row** however many packages GitHub filed
-  it against, and each says what the fix will actually cost: *lockfile bump* when the patched
-  version already sits inside what your manifest declares, *widen the range*, *major
-  upgrade*, or *via a parent* for something nothing declares directly. Pick any number of
-  them and ▶ starts an agent with the whole brief — the advisory, the declared range beside
-  the patched version, and this project's own test and check commands to verify with — shown
-  in full and editable before it is sent. Nothing is merged, dismissed or commented on your
-  behalf; Renovate's dashboard issue is linked rather than reimplemented.
-! **Shift-click in the Branches table flashed a selection on and then off again.** The rule
-  was right all along and nothing ever unticked a row: the rows never refused a *browser text
-  selection*, so shift-dragging painted a blue blob across every row in the range, and the
-  next repaint wiped it. What was left was the real tick state — often only the two rows in
-  that span that are actually deletable, which is why it read as "it didn't work". The rows
-  refuse a text selection now, and a range that could not tick everything it covered **says
-  so** instead of leaving you to guess. Shift-click also works in **every** table that has
-  tick boxes — Branches, Checkouts, Advisories and Out of date — three more than before.
-~ **One select-all, in the same two places in every table.** A tri-state tick in the header's
-  own tick column, and `All` / `None` in the action bar beside the count and the verb. The
-  Branches table kept its pair at the end of a wrapping row of filter chips, where people
-  could not find them, and Checkouts put the same pair somewhere else entirely.
-+ **Ask your package manager what is out of date**, from the *Out of date* tab: `pnpm`,
-  `npm`, `yarn`, `cargo outdated`, `go list -u` or `pip`, chosen by the lockfile that is
-  actually there. It is the one thing on the dashboard that runs a command in your project,
-  so it never runs on its own — and a tool that applies but cannot run says why instead of
-  quietly not appearing.
-! **A project with an umlaut in its path was missing from its own History.** The macOS folder
-  dialog spells `ö` decomposed where Claude and git write it precomposed, so a scoped History
-  came up empty, the dormant row vanished at boot and no past session could be read. Paths are
-  now spelled one way on both sides, and stored ones are repaired on read.
-! **A pane stayed ● after answering when a background task had finished mid-turn.** Claude
-  fires the prompt hook for the task's notice as if you had typed it, so the turn's own Stop
-  was taken for the end of an earlier turn with a message queued behind it. A notice queues
-  nothing now.
+! **Answering a permission hands the keyboard back to the pane.** The repaint that removes
+  the card took focus with it, and the terminal stayed deaf until you clicked it.
+! **Shift-click in the Branches table flashed a selection on and then off again.** The rows
+  never refused a browser text selection. Every table with tick boxes takes a range now.
+! **▶ Run from a task's own pane finds the project's tasks.** Every run surface asks the
+  folder discovery actually ran in, not the subfolder a command happened to use.
+! **A project with an umlaut in its path was missing from its own History.** Paths are spelled
+  precomposed on both sides now, and stored ones are repaired on read.
+! **A pane stayed ● after answering when a background task finished mid-turn.** That notice
+  fires the prompt hook like a typed message; it queues nothing now.
 
 ## 0.28.0 — 2026-09-11
 
