@@ -254,8 +254,9 @@ async function wtReadLocal(quiet = false) {
   // Re-derive the lazily fetched facts: a quiet refresh usually follows something that moved them.
   wtCommits.clear(); wtDirty.clear();
   if (!quiet) { wtLoading = true; wtRender(); }
+  let gitFault = "";
   const [wts, branches, head] = await Promise.all([
-    invoke<WtInfo[]>("list_worktrees", { repoDir }).catch(() => [] as WtInfo[]),
+    invoke<WtInfo[]>("list_worktrees", { repoDir }).catch((e) => { gitFault = String(e); return [] as WtInfo[]; }),
     invoke<BranchInfo[]>("git_branch_list", { repoDir, base: cmpBase[repoDir] ?? null }).catch(() => [] as BranchInfo[]),
     invoke<string | null>("git_branch", { workdir: repoDir }).catch(() => null),
   ]);
@@ -265,7 +266,11 @@ async function wtReadLocal(quiet = false) {
   wtRemotes = branches.filter((b) => b.remote);
   wtLoading = false;
   wtLoadedAt = Date.now();
-  if (!wts.length && !quiet) toast(`${basename(repoDir)} isn't a git repository`);
+  // git's own words when git itself failed: an unrunnable git reads exactly like a plain folder.
+  if (!wts.length && !quiet) {
+    if (gitFault) dlog("error", `worktree list failed (${repoDir}): ${gitFault}`);
+    toast(gitFault ? "git: " + gitFault : `${basename(repoDir)} isn't a git repository`);
+  }
   wtRender();
 }
 
