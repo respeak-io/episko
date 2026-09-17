@@ -12,6 +12,11 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ **The path in the stage header copies itself.** Click it and the full path is on your
+  clipboard. The header shows it `~`-shortened, and it is the one location always on screen
+  for whatever has the stage: a session, the checkout its work has drifted to, an external
+  terminal's directory, a shelved session, or a project dashboard — whose path is now
+  `~`-shortened like the rest.
 ! **▶ Run from a task's own pane finds the project's tasks.** A run's working directory is
   its command's — routinely a subfolder a task declared and nobody chose — so opening the
   picker from a finished run searched that folder and reported *No tasks found in this

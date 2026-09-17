@@ -1,3 +1,5 @@
+import { tilde } from "./format";
+
 // Static ids from index.html only: a miss is a typo and should throw here.
 export const $ = (id: string) => document.getElementById(id)!;
 
@@ -20,6 +22,16 @@ export function takeStage(show: Stage) {
   ($("dashPane") as HTMLElement).hidden = show !== "dash";
   ($("empty") as HTMLElement).style.display = show === "none" ? "grid" : "none";
   if (show !== "dash") $("app").classList.remove("insp-mini"); // dashboard-only mode
+}
+
+// The stage header's path: shown `~`-shortened and copied in full, so every stage taker
+// hands over the absolute one and the click never re-derives it from the label. The
+// attribute is the affordance too — styles.css hangs the cursor and hover off it.
+export function setHeadPath(abs: string) {
+  const el = $("hPath");
+  el.textContent = tilde(abs);
+  el.title = abs ? `${abs}\nClick to copy` : "";
+  if (abs) el.dataset.abs = abs; else delete el.dataset.abs;
 }
 
 // MOD and chord are display only; handlers accept both modifiers.

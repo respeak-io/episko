@@ -474,7 +474,10 @@ html.win .wctl { display: flex; }
 .st-title { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
 .st-title .proj { flex: 0 1 auto; min-width: 0; max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; font-weight: 800; color: var(--accent-ink); letter-spacing: -.02em; }
 .chip { flex: none; white-space: nowrap; font-size: 9.5px; color: var(--muted); padding: 2px 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--hair); font-family: var(--font-mono); }
-.st-title .path { flex: 1 1 auto; min-width: 0; font-size: 10px; color: var(--muted-2); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-title .path { flex: 0 1 auto; min-width: 0; font-size: 10px; color: var(--muted-2); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 2px 5px; margin: 0 -5px; border-radius: 5px; }
+/* data-abs is set only when there is a path to copy, so an empty header offers nothing. */
+.st-title .path[data-abs] { cursor: pointer; }
+.st-title .path[data-abs]:hover { color: var(--muted); background: var(--lift); }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }

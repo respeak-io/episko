@@ -6,11 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, takeStage, toast } from "./dom";
+import { $, setHeadPath, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
-import { basename, cleanTitle, esc, tilde } from "./format";
+import { basename, cleanTitle, esc } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   providerCapabilities, providerSessionKey, resumeAgent,
@@ -834,7 +834,7 @@ export function renderHeader(s: Sess | null) {
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
   const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
-  if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; $("hPath").textContent = ""; return; }
+  if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; setHeadPath(""); return; }
   $("hProj").textContent = s.project;
   if (!hasSessionState(s)) {
     hb.textContent = s.kind === "shell" ? "shell" : s.kind === "task" ? "task" : (s.title || s.provider || "agent");
@@ -848,7 +848,7 @@ export function renderHeader(s: Sess | null) {
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
-  $("hPath").textContent = tilde(s.drift?.dir ?? s.workdir);
+  setHeadPath(s.drift?.dir ?? s.workdir);
 }
 
 // The active project: a session, an external, or the project a dashboard is about, so
