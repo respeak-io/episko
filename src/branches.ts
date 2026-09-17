@@ -298,14 +298,6 @@ export function chosenWorktrees(rows: BranchRow[], on: ReadonlySet<string>): WtI
   return picked(rows, on).filter((r) => r.local.ok).flatMap((r) => (r.wt ? [r.wt] : []));
 }
 
-// Shift-click: everything between the last tick and this one, in the order on screen.
-export function rangePick(order: readonly string[], from: string, to: string): string[] {
-  const a = order.indexOf(from), b = order.indexOf(to);
-  if (b < 0) return [];
-  if (a < 0) return [to];
-  return order.slice(Math.min(a, b), Math.max(a, b) + 1);
-}
-
 // Offered first, then evidenced-but-blocked (their reason answers "why isn't this offered?"),
 // then everything else, each band keeping git's most-recent-first order. The bands are facts
 // about the branch rather than about the toggles, so arming a scope never makes the table jump.
@@ -314,9 +306,10 @@ export function orderRows(rows: BranchRow[]): BranchRow[] {
   return [...rows].sort((a, b) => band(a) - band(b));
 }
 
-// ---------- the filter chips, which are also the quick-selects ----------
-// They narrow the table, and `All` ticks what is left, so "select everything merged" is two
-// clicks and needs no second mechanism.
+// ---------- the filter chips ----------
+// They narrow the table and the select-all takes what is left, so "select everything merged"
+// is two clicks and needs no second mechanism. The controls are ./pick's, shared with three
+// other tables; these chips only decide which rows are on screen.
 
 export type BranchFilter = "all" | "merged" | "gone" | "stale" | "localonly" | "checkout";
 export const BRANCH_FILTERS: { id: BranchFilter; label: string }[] = [

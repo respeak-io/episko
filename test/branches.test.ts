@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   anyDeletable, branchRows, checkoutRows, chosenCheckouts, chosenWorktrees,
-  filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows, rangePick,
+  filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows,
   removableCheckouts, remoteFor, remoteOf, remotePicks, selectable, switchable, switchOptions,
   trunkOf, trunkOptions, trunkText, whereText, midFlightText, syncText,
   type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type ProtectCtx,
@@ -221,18 +221,6 @@ describe("selecting", () => {
   it("offers every row either half can act on", () => {
     expect([...selectable(rs())].sort()).toEqual(["a", "b", "c", "d"]);
     expect(anyDeletable(row(rs(), "busy"))).toBe(false);
-  });
-
-  it("takes the inclusive range between two rows, in the order on screen", () => {
-    const order = ["a", "b", "busy", "c", "d"];
-    expect(rangePick(order, "b", "c")).toEqual(["b", "busy", "c"]);
-    expect(rangePick(order, "c", "b")).toEqual(["b", "busy", "c"]);
-    expect(rangePick(order, "b", "b")).toEqual(["b"]);
-  });
-
-  it("falls back to the row clicked when the anchor has scrolled out of the filter", () => {
-    expect(rangePick(["a", "b"], "gone-from-view", "b")).toEqual(["b"]);
-    expect(rangePick(["a", "b"], "a", "not-here")).toEqual([]);
   });
 
   it("puts what can go first and what can't at the back, keeping git's order in each", () => {

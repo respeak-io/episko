@@ -16,6 +16,7 @@ import {
   orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
   type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
 } from "./branches";
+import type { PickKind, PickState } from "./pick";
 
 const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -471,6 +472,27 @@ export function overlayHtml(title: string, sub: string, body: string, foot: stri
     ${foot ? `<div class="ovl-f">${foot}</div>` : ""}`;
 }
 
+// ---------- the selection controls every tick-box table shares ----------
+// Four tables tick rows (Branches, Checkouts, Advisories, Out of date). They had three
+// different answers to "select everything" in two different places, and shift-click in
+// exactly one of them. ./pick owns the rule; these two draw it, and `kind` is what routes
+// a click back to the right table.
+
+const PICK_MARK: Record<PickState, string> = { none: "", some: "–", all: "✓" };
+
+/** The tri-state tick in a table header's own tick column: the select-all, where the ticks are. */
+export function pickHead(kind: PickKind, st: PickState): string {
+  const title = st === "all" ? "Clear every row shown" : "Tick every row shown";
+  return `<span class="ck"><span class="brck pk ${st}" role="checkbox" aria-checked="${st === "all"}"
+    data-dashpickall="${escAttr(kind)}" title="${escAttr(title)}">${PICK_MARK[st]}</span></span>`;
+}
+
+/** The same verbs spelled out, in the action bar where the count and the verb already are. */
+export function pickButtons(kind: PickKind): string {
+  return `<button class="act" data-dashpickall="${escAttr(kind)}" title="Tick every row shown">All</button>`
+    + `<button class="act" data-dashpicknone="${escAttr(kind)}">None</button>`;
+}
+
 // ---------- Branches & checkouts ----------
 // One overlay, two tabs, one row per thing. The rules are ./branches; this only draws them.
 // A branch lives in one row wherever its refs are, and the scope toggles in the action bar
@@ -504,9 +526,12 @@ export interface BranchesView {
   busy: boolean;
   loading: boolean;
   result: CleanReport | null;
+  // What the header tick shows for each tab; ./pick decides, this only draws it.
+  headState: PickState;
+  coHeadState: PickState;
 }
 
-const BR_HEAD = `<div class="dbbr-hd"><span></span><span>Branch</span><span>Where</span>`
+const brHead = (st: PickState) => `<div class="dbbr-hd">${pickHead("branches", st)}<span>Branch</span><span>Where</span>`
   + `<span>Why it's here</span><span>Vs the trunk</span><span>Author</span>`
   + `<span>Last commit</span><span></span></div>`;
 
@@ -535,7 +560,7 @@ const tab = (id: string, label: string, n: string, on: string) =>
   + (n ? `<span class="n">${esc(n)}</span>` : "") + `</button>`;
 
 function branchesBody(o: BranchesView): string {
-  if (o.loading) return BR_HEAD + skeletonRows();
+  if (o.loading) return brHead("none") + skeletonRows();
   const gh = o.prsLoading ? `<div class="dbbr-note">Reading merged pull requests…</div>`
     : o.prs && !o.prs.available
       ? `<div class="dbbr-note warn">No pull-request data: ${esc(o.prs.reason || "gh unavailable")}. `
@@ -550,12 +575,10 @@ function branchesBody(o: BranchesView): string {
   const chips = `<div class="bvchips">`
     + BRANCH_FILTERS.map((f) => `<button class="bvchip${f.id === o.filter ? " on" : ""}" data-dashbrfilter="${f.id}">`
       + `${esc(f.label)}<span class="n">${counts[f.id]}</span></button>`).join("")
-    + `<span class="sp"></span>`
-    + `<button class="act" data-dashbrall title="Tick everything the filter is showing">All</button>`
-    + `<button class="act" data-dashbrnone>None</button></div>`;
+    + `</div>`;
   const shown = orderRows(filterRows(o.rows, o.filter, o.query, o.now));
   const list = shown.length
-    ? BR_HEAD + shown.map((r) => branchRow(r, o)).join("")
+    ? brHead(o.headState) + shown.map((r) => branchRow(r, o)).join("")
     : `<div class="ac-empty">${o.rows.length ? "No branch matches that." : "No branches here yet."}</div>`;
   return gh + lock + chips + list + actionBar(o);
 }
@@ -649,6 +672,7 @@ function actionBar(o: BranchesView): string {
       ${scopeSw("remote", `on ${o.remoteName}`, o.scopes.remote)}
     </span>${hint}<span class="sp"></span>
     <span class="what">${what}</span>
+    ${pickButtons("branches")}
     <button class="brgo" data-dashbrrun${going && !o.busy ? "" : " disabled"}>
       ${o.busy ? "Working…" : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
     ${warn}
@@ -663,12 +687,12 @@ const scopeSw = (id: string, label: string, on: boolean) =>
 // and the whole thing truncated from the left says only which drive it is on.
 const twoDeep = (p: string) => p.split(/[/\\]/).filter(Boolean).slice(-2).join("/") + "/";
 
-const CO_HEAD = `<div class="dbwt-hd"><span></span><span>Branch</span><span>Folder</span>`
+const coHead = (st: PickState) => `<div class="dbwt-hd">${pickHead("checkouts", st)}<span>Branch</span><span>Folder</span>`
   + `<span>State</span><span>Sessions</span><span></span></div>`;
 
 // The checkouts half: the same table keyed by folder, for the rows a branch cannot carry.
 function checkoutsBody(o: BranchesView): string {
-  if (o.loading) return CO_HEAD + skeletonRows();
+  if (o.loading) return coHead("none") + skeletonRows();
   if (!o.checkouts.length) return `<div class="ac-empty">No checkouts here.</div>`;
   const rows = o.checkouts.map((c) => {
     const on = o.cpicked.has(c.wt.path);
@@ -694,10 +718,10 @@ function checkoutsBody(o: BranchesView): string {
     + `merged, the branch with it. A folder git records but disk has lost is only unregistered — nothing is lost.</div>`
     + `<div class="bvbar${n ? " on" : ""}"><span class="sel">${n} selected</span>
       <span class="sp"></span>
-      <button class="act" data-dashcoall>All</button><button class="act" data-dashconone>None</button>
+      ${pickButtons("checkouts")}
       <button class="brgo" data-dashcorun${n && !o.busy ? "" : " disabled"}>
         ${o.busy ? "Working…" : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
-  return CO_HEAD + rows + bar;
+  return coHead(o.coHeadState) + rows + bar;
 }
 
 const skeletonRows = () => [72, 54, 63, 48].map((w) =>
@@ -776,7 +800,7 @@ function workRow(t: GhThread, h: Holder | null): string {
     <span class="rt"><span class="age">${esc(shortAge(t.updated_at))}</span>${act}</span></div>`;
 }
 
-function shortAge(iso: string): string {
+export function shortAge(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "—";
   const m = Math.max(0, Date.now() - t) / 60_000;

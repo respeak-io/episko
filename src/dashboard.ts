@@ -20,10 +20,21 @@ import {
   pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
   workLogOffer, worksetCard, workOverlay, type CleanReport, type DashSync,
 } from "./dashview";
+import {
+  advisoryBrief, cardAdvisories, depSilent, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
+  renovateDashboard, verifyCommands,
+  type Advisory, type DepManifest, type DepPr, type DepReport, type DepTool, type OutdatedRun, type OutRow,
+} from "./deps";
+import { depSheet, depsCard, depsOverlay, type DepTab } from "./depsview";
+import { discoverTasks, execCmd } from "./tasks";
+import {
+  applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
+  type Pick, type PickCtx, type PickKind,
+} from "./pick";
 import { openBranchPop } from "./bpop";
 import {
   branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
-  NO_PROTECT, orderRows, rangePick, removableCheckouts, remoteFor, remotePicks, selectable,
+  NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable,
   switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo,
   type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
   type WtInfo,
@@ -149,7 +160,12 @@ let kept: KeptIssue[] = [];
 let allow: ClaimAllow = ALLOW_ALL;
 let shared: SharedNote[] = [];       // the project's committed notes
 // The confirm sheet up, if any: both writes are public, so nothing is written unseen.
-let sheet: { kind: "close" | "dispatch"; t: GhThread } | null = null;
+// The dependency sheet carries its whole brief rather than a row id: the text is what is
+// sent, it is editable in the sheet, and re-deriving it on submit would discard the edit.
+type Sheet =
+  | { kind: "close" | "dispatch"; t: GhThread }
+  | { kind: "deps"; title: string; brief: string };
+let sheet: Sheet | null = null;
 /// What this dispatch would write, editable in the sheet before it is sent.
 let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: running" };
 // Generated summaries, keyed by day and kept apart from `days` so a reload keeps what was
@@ -158,7 +174,25 @@ let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: run
 const summaries = new Map<string, string>();
 const teamSummaries = new Map<string, string>();
 const openDays = new Set<string>();   // keyed by day, so it survives the timeline repaint
-let openView: "notes" | "work" | "triage" | "branches" | null = null;
+let openView: "notes" | "work" | "triage" | "branches" | "deps" | null = null;
+
+/// ---- the Dependencies view ----------------------------------------------------------
+// The GitHub half rides `loadGh`'s timing (fired early, awaited by nothing); the manifests
+// and the tool probe are local and cheap. `null` is "not read", which is not "none".
+let depReport: DepReport | null = null;
+let depLoading = false;
+let depManifests: DepManifest[] = [];
+let depTools: DepTool[] = [];
+let depVerify: string[] = [];      // this project's own checks, for the brief
+let depTab: DepTab = "vulns";
+let depSel: Pick = emptyPick();
+let depOutSel: Pick = emptyPick();
+// The one thing on this pane that RUNS something, so it is never on a load path and its
+// answer is kept apart from the reads: `depScanned` is the tool whose rows are on screen.
+let depRun: OutdatedRun | null = null;
+let depScanning = "";
+let depScanned = "";
+let depScanError = "";
 
 /// ---- the Branches view ----------------------------------------------------------
 // Read when the view opens, not with the dashboard: three git calls and a network one
@@ -171,14 +205,13 @@ let branchPrs: MergedPrs | null = null;
 let branchPrsLoading = false;
 // Two sets, not one: the halves run different commands, so a tick on one side must not arm the other.
 // One selection for one table; the scopes decide where a delete lands, never what may be
-// ticked. `branchLast` anchors a shift-click against the order actually on screen.
-let branchPick = new Set<string>();
+// ticked. Each table's anchor rides inside its own `Pick` (./pick), so no two share one.
+let branchSel: Pick = emptyPick();
 let branchScopes = { local: true, remote: false };
 let branchTab: "branches" | "checkouts" = "branches";
 let branchFilter: BranchFilter = "all";
 let branchQuery = "";
-let branchLast = "";
-let coPick = new Set<string>();
+let coSel: Pick = emptyPick();
 let branchBusy = false;
 let branchResult: CleanReport | null = null;
 // The one day out at the model right now; a value, not a set, because `runSummaryQueue` is sequential.
@@ -218,11 +251,15 @@ async function loadDash(): Promise<void> {
     // later would only queue the network behind the transcript scan.
     if (tier === "github") {
       ghLoading = true;
+      depLoading = true;
       void loadGh(r);
+      void loadDepsGh(r);
     } else {
       gh = { available: false, reason: null, threads: [], viewer: null };
       kept = [];
+      depReport = null;
     }
+    void loadDepsLocal(r);   // manifests, tools and the project's own checks: no network, any tier
     host.renderAll();   // the tier is painted by renderAll; say so before the slow reads below
     const wantGit = tier !== "none";
     const [hist, commits, wt, digest, sn] = await Promise.all([
@@ -263,8 +300,12 @@ async function loadDash(): Promise<void> {
 export function reloadDashGh(r: string): void {
   if (!dashMirror() || r !== root()) return;
   ghLoading = true;
+  depLoading = true;
   renderDash();
   void loadGh(r, true);
+  // The advisories and the bots' PRs were answered by the identity you have just stopped
+  // using, so they are re-read with the board rather than left beside it a version behind.
+  void loadDepsGh(r, true);
 }
 
 // Issues, PRs, the keep list and the claim ceiling. Separate from `loadDash` so a slow
@@ -282,6 +323,32 @@ async function loadGh(r: string, force = false): Promise<void> {
   if (root() !== r) return;   // the user moved on while this was in flight
   ghLoading = false;   // inside the guard: a stale call must not take another project's skeleton down
   gh = res; kept = k; allow = a;
+  renderDash();
+}
+
+// Advisories and the bots' pull requests. Fired beside `loadGh` and awaited by nothing,
+// for the same reason: it is the network, and the timeline must not wait on it.
+async function loadDepsGh(r: string, force = false): Promise<void> {
+  const res = await invoke<DepReport>("dep_report", { root: r, force, account: ghAccountFor(r) })
+    .catch((e) => ({ available: false, reason: String(e), alerts: [], prs: [], enabled: false } as DepReport));
+  if (root() !== r) return;
+  depLoading = false;
+  depReport = res;
+  renderDash();
+}
+
+// What the manifests declare, which package managers could be asked, and the checks a brief
+// should tell an agent to verify with. All local; the tool probe never runs the project.
+async function loadDepsLocal(r: string): Promise<void> {
+  const [m, t, tasks] = await Promise.all([
+    invoke<DepManifest[]>("dep_manifests", { root: r }).catch(() => [] as DepManifest[]),
+    invoke<DepTool[]>("dep_tools", { root: r }).catch(() => [] as DepTool[]),
+    discoverTasks(r).catch(() => []),
+  ]);
+  if (root() !== r) return;
+  depManifests = m;
+  depTools = t;
+  depVerify = verifyCommands(tasks.map((x) => ({ cmd: execCmd(x), group: x.group, blocked: x.blocked })));
   renderDash();
 }
 
@@ -502,6 +569,16 @@ function paintOverlay(view: string, html: string): void {
   }
 }
 
+// One derivation for the card and the overlay: grouping and the verdict are the same work,
+// and two call sites computing it separately is how two surfaces start disagreeing.
+function depsNow(): { adv: Advisory[]; prs: DepPr[]; out: OutRow[] } {
+  return {
+    adv: groupAdvisories(depReport?.alerts ?? [], depManifests),
+    prs: depReport?.prs ?? [],
+    out: outRows(depRun, depManifests),
+  };
+}
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
@@ -553,6 +630,14 @@ export function renderDash(): void {
       ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder)
         + triageCard(stale, gh.threads.filter((t) => t.kind === "issue").length)
       : "";
+  const dn = depsNow();
+  const dtally = depTally(dn.adv, dn.prs, dn.out);
+  // Absent when it has nothing to say AND nothing it could be asked: a clean board with a
+  // package.json still earns a card, because the scan is something it can offer.
+  const depCard = depLoading
+    ? cardSkeleton(2)
+    : depSilent(dtally, depTools) ? ""
+      : depsCard(cardAdvisories(dn.adv), dtally, dn.prs, depManifests, !!depScanned);
   // Notes and the Repository card cross the wait too: notes are localStorage and already
   // correct; the repo card answers from `factsKnown` and the heads probe, and goes first.
   const repo = repoCard(syncNow(), factsKnown);
@@ -564,8 +649,8 @@ export function renderDash(): void {
   // prefer the pane's own: two reads of one folder must not put two numbers on one screen.
   const statFor = (p: string) => (p === worksetDir() ? mainWork : dirtyByFolder.get(p));
   paint("dashAside", loading
-    ? wset + repo + ghCards + cardSkeleton() + notesCard(noteList(root()))
-    : wset + repo + ghCards
+    ? wset + repo + ghCards + depCard + cardSkeleton() + notesCard(noteList(root()))
+    : wset + repo + ghCards + depCard
       + checkoutsCard(heads, liveIn, statFor)
       + notesCard(noteList(root()))
       + (tier === "github" && !gh.available && gh.reason
@@ -582,12 +667,31 @@ export function renderDash(): void {
   }
   else if (openView === "work") paintOverlay(openView, workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
+  else if (openView === "deps") {
+    paintOverlay(openView, depsOverlay({
+      tab: depTab, adv: dn.adv, prs: dn.prs, out: dn.out,
+      manifests: depManifests, tools: depTools, tally: dtally,
+      picked: depSel.picked, outPicked: depOutSel.picked,
+      headState: pickState(pickCtx("advisories"), depSel.picked),
+      outHeadState: pickState(pickCtx("stale"), depOutSel.picked),
+      slug: facts?.slug ?? name(), loading: depLoading,
+      scanning: depScanning, scanned: depScanned, scanError: depScanError,
+      // A reason only when it cost us something: an unavailable half with rows anyway
+      // (the PR list answered, the alert scope did not) still says why the alerts are absent.
+      reason: tier !== "github"
+        ? "Advisories and bot pull requests need a GitHub remote. The manifests and the scan below do not."
+        : depReport && !depReport.enabled ? depReport.reason ?? "" : "",
+      dashboard: renovateDashboard(gh.threads),
+    }));
+  }
   else if (openView === "branches") {
     const rows = branchRowsNow();
     paintOverlay(openView, branchesOverlay({
       tab: branchTab, rows, checkouts: checkoutRowsNow(),
       root: root(), project: name(),
-      picked: branchPick, cpicked: coPick,
+      picked: branchSel.picked, cpicked: coSel.picked,
+      headState: pickState(pickCtx("branches"), branchSel.picked),
+      coHeadState: pickState(pickCtx("checkouts"), coSel.picked),
       filter: branchFilter, query: branchQuery, now,
       scopes: branchScopes,
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
@@ -604,6 +708,11 @@ export function renderDash(): void {
     const agent = effectiveAgent(root());
     const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
     paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
+  } else if (sheet?.kind === "deps") {
+    const agent = effectiveAgent(root());
+    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+    paint("dashSheet", depSheet(sheet.title, sheet.brief,
+      `${agent.label} · ${mode?.label ?? "terminal config"}`, sheet.brief.split("\n").length));
   }
 }
 
@@ -654,8 +763,13 @@ export function openDashboard(project: string, path: string): void {
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
     // Branch state never carries across projects: another repo's merges must not vouch for this one.
     branchData = null; branchPrs = null; branchPrsLoading = false; branchProtect = NO_PROTECT;
-    branchPick = new Set(); coPick = new Set(); branchResult = null; branchBusy = false;
-    branchTab = "branches"; branchFilter = "all"; branchQuery = ""; branchLast = "";
+    branchSel = emptyPick(); coSel = emptyPick(); branchResult = null; branchBusy = false;
+    branchTab = "branches"; branchFilter = "all"; branchQuery = "";
+    // Another project's advisories must never be read under this one's name; the scan is
+    // dropped with them, since it was an answer about that folder's lockfile.
+    depReport = null; depManifests = []; depTools = []; depVerify = []; depLoading = false;
+    depSel = emptyPick(); depOutSel = emptyPick(); depTab = "vulns";
+    depRun = null; depScanned = ""; depScanError = ""; depScanning = "";
     // `syncing` is not reset: it names a folder a real git process is still running in.
     mainWork = undefined;
   }
@@ -689,6 +803,13 @@ export function wireDashboard(): void {
     const range = t.closest<HTMLElement>("[data-dashrange]");
     if (range) { setDashRange(+range.dataset.dashrange!); return; }
 
+    // Select-all, for every tick-box table on this pane: the header tick and the bar's
+    // buttons write the same attribute, so one branch answers four tables.
+    const pall = t.closest<HTMLElement>("[data-dashpickall]");
+    if (pall) { setSel(pall.dataset.dashpickall as PickKind, (cur, ctx) => togglePickAll(cur, ctx)); return; }
+    const pnone = t.closest<HTMLElement>("[data-dashpicknone]");
+    if (pnone) { setSel(pnone.dataset.dashpicknone as PickKind, () => pickNone()); return; }
+
     // The Repository card carries the inspector's `data-dashact` verbs: one vocabulary, two hosts.
     const gact = t.closest<HTMLElement>("[data-dashact]");
     if (gact) { dashAction(gact.dataset.dashact!); return; }
@@ -709,6 +830,9 @@ export function wireDashboard(): void {
       const branchy = v === "branches" || v === "checkouts";
       if (branchy) branchTab = v === "checkouts" ? "checkouts" : "branches";
       openView = branchy ? "branches" : (v as typeof openView);
+      // Advisories is the wrong first tab where there can never be one; the scan is the
+      // only half of this view a non-GitHub project has.
+      if (openView === "deps" && tier !== "github") depTab = "stale";
       renderDash();
       if (branchy) void loadBranches();
       return;
@@ -724,13 +848,6 @@ export function wireDashboard(): void {
     const brfilter = t.closest<HTMLElement>("[data-dashbrfilter]");
     if (brfilter) { branchFilter = brfilter.dataset.dashbrfilter as BranchFilter; renderDash(); return; }
 
-    // `All` ticks what the filter is showing, which is what makes the chips quick-selects.
-    if (t.closest("[data-dashbrall]")) {
-      for (const n of selectable(shownRows())) branchPick.add(n);
-      renderDash();
-      return;
-    }
-    if (t.closest("[data-dashbrnone]")) { branchPick = new Set(); branchLast = ""; renderDash(); return; }
 
     const brscope = t.closest<HTMLElement>("[data-dashbrscope]");
     if (brscope) {
@@ -772,8 +889,6 @@ export function wireDashboard(): void {
     }); return; }
 
     // ---- the Checkouts tab ----
-    if (t.closest("[data-dashcoall]")) { coPick = removableCheckouts(checkoutRowsNow()); renderDash(); return; }
-    if (t.closest("[data-dashconone]")) { coPick = new Set(); renderDash(); return; }
     if (t.closest("[data-dashcorun]")) { void runCheckoutClean(); return; }
 
     const drop = t.closest<HTMLElement>("[data-dashdrop]");
@@ -796,10 +911,28 @@ export function wireDashboard(): void {
     }
     // The Checkouts tab's row, after the ＋/❯ nested in it, like the card's row above.
     const co = t.closest<HTMLElement>("[data-dashco]");
-    if (co) { toggleCheckout(co.dataset.dashco!); return; }
+    if (co) { pickRow("checkouts", co.dataset.dashco!, e.shiftKey); return; }
     // The Branches tab's row, last of its family: ⇄ and the box both sit inside it.
     const br = t.closest<HTMLElement>("[data-dashbr]");
-    if (br) { toggleBranch(br.dataset.dashbr!, e.shiftKey); return; }
+    if (br) { pickRow("branches", br.dataset.dashbr!, e.shiftKey); return; }
+
+    // ---- Dependencies ----
+    // `dashdepopen` is a button INSIDE an advisory row and a whole row on the card, so it
+    // is probed before `dashdep`; `return` ends a branch, not the propagation.
+    const dopen = t.closest<HTMLElement>("[data-dashdepopen]");
+    if (dopen?.dataset.dashdepopen) { void openUrl(dopen.dataset.dashdepopen).catch(() => {}); return; }
+    const dtab = t.closest<HTMLElement>("[data-dashdeptab]");
+    if (dtab) { depTab = dtab.dataset.dashdeptab as DepTab; renderDash(); return; }
+    const dtool = t.closest<HTMLElement>("[data-dashdeptool]");
+    if (dtool) { void runOutdated(dtool.dataset.dashdeptool!); return; }
+    const drun = t.closest<HTMLElement>("[data-dashdeprun]");
+    if (drun) { openDepSheet(drun.dataset.dashdeprun!); return; }
+    const dpr = t.closest<HTMLElement>("[data-dashdeppr]");
+    if (dpr) { openPrSheet(+dpr.dataset.dashdeppr!); return; }
+    const dout = t.closest<HTMLElement>("[data-dashdepout]");
+    if (dout) { pickRow("stale", dout.dataset.dashdepout!, e.shiftKey); return; }
+    const dep = t.closest<HTMLElement>("[data-dashdep]");
+    if (dep) { pickRow("advisories", dep.dataset.dashdep!, e.shiftKey); return; }
 
     // ---- the GitHub half ----
     const work = t.closest<HTMLElement>("[data-dashwork]");
@@ -845,6 +978,7 @@ export function wireDashboard(): void {
     if (act === "cancel") { sheet = null; renderDash(); return; }
     if (act === "close") { void doClose(); return; }
     if (act === "dispatch") { void doDispatch(); return; }
+    if (act === "deps") { void doDepDispatch(); return; }
   });
   // A branch row's menu. Checkout rows carry `data-wt` instead and are answered by ./projmenu's
   // document-level handler, which is the same menu a ⑃ cluster header opens.
@@ -895,6 +1029,85 @@ function dashAction(act: string): void {
   else if (act.startsWith("ghacct:")) host.setGhAccount(r, act.slice(7));
 }
 
+// ---------- Dependencies ----------
+// The rules are ./deps (pure, tested); this reads, runs the one command it is allowed to
+// run, and hands a brief to an agent. Nothing here writes to GitHub.
+
+const depCtx = () => ({
+  project: name(), slug: facts?.slug ?? name(), manifests: depManifests, verify: depVerify,
+});
+
+// The one verb on this pane that runs a command in the project. Explicit, one at a time,
+// and its answer is kept rather than folded into the reads: a scan is a different fact
+// from an advisory, and a stale one must never read as a fresh one.
+async function runOutdated(tool: string): Promise<void> {
+  const r = root();
+  if (!r || depScanning) return;
+  depScanning = tool;
+  depScanError = "";
+  renderDash();
+  const res = await invoke<OutdatedRun>("dep_outdated", { root: r, tool })
+    .catch((e) => ({ tool, ok: false, reason: String(e), rows: [] } as OutdatedRun));
+  depScanning = "";
+  if (root() !== r) return;   // the scan outlived the stage; its answer is another folder's
+  if (res.ok) {
+    depRun = res;
+    depScanned = tool;
+    depOutSel = emptyPick();   // a stale tick may name a package this run no longer lists
+  } else {
+    depScanError = `${tool}: ${res.reason ?? "no answer"}`;
+    dlog("warn", `deps · ${depScanError}`);
+  }
+  renderDash();
+}
+
+// Nothing is sent from a click: the brief is long, it is what the agent will act on, and
+// the sheet is where you read and trim it (the dispatch rule, docs/dashboard.md).
+function openDepSheet(which: string): void {
+  const d = depsNow();
+  if (which === "stale") {
+    const picked = d.out.filter((r) => depOutSel.picked.has(r.pkg));
+    if (!picked.length) return;
+    sheet = { kind: "deps", title: `Update ${picked.length} package${picked.length === 1 ? "" : "s"}`,
+      brief: outdatedBrief(picked, depCtx()) };
+  } else {
+    const picked = d.adv.filter((a) => depSel.picked.has(a.ghsa));
+    if (!picked.length) return;
+    sheet = { kind: "deps", title: `Work through ${picked.length} advisor${picked.length === 1 ? "y" : "ies"}`,
+      brief: advisoryBrief(picked, depCtx()) };
+  }
+  renderDash();
+}
+
+function openPrSheet(number: number): void {
+  const p = (depReport?.prs ?? []).find((x) => x.number === number);
+  if (!p) return;
+  sheet = { kind: "deps", title: `Review ${p.bot} PR #${p.number}`, brief: prBrief(p, depCtx()) };
+  renderDash();
+}
+
+// Sent, not prefilled, like the issue dispatch beside it — and for the same reason: the
+// sheet was the reading. Newlines go as a CR inside ONE chunk (a paste-newline, never a
+// submit) and the submitting one is a write of its own, a beat behind (./taskrun's contract).
+async function doDepDispatch(): Promise<void> {
+  if (sheet?.kind !== "deps") return;
+  const brief = ($("dashDepText") as HTMLTextAreaElement | null)?.value ?? sheet.brief;
+  const title = sheet.title;
+  sheet = null;
+  renderDash();
+  const sid = await host.launch(name(), root(), { colorKey: root() });
+  if (typeof sid !== "string") return;   // the launch already toasted; no second complaint
+  setTimeout(() => {
+    void invoke("write_pty", { sessionId: sid, data: brief.replace(/\n/g, "\r") })
+      .then(() => new Promise((go) => setTimeout(go, SUBMIT_MS)))
+      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
+      .catch(() => {});
+  }, 1400);
+  depSel = emptyPick();
+  depOutSel = emptyPick();
+  toast(title);
+}
+
 // ---------- the Branches view ----------
 // The reading, the running and the reporting; the rules are ./branches (pure, tested).
 
@@ -910,9 +1123,8 @@ async function loadBranches(force = false): Promise<void> {
   branchData = { branches, worktrees };
   branchProtect = protect;
   // Nothing is ticked on arrival: deleting is opt-in, and a stale tick may name a branch that is gone.
-  branchPick = new Set();
-  coPick = new Set();
-  branchLast = "";
+  branchSel = emptyPick();
+  coSel = emptyPick();
   renderDash();
   if (branchPrs || branchPrsLoading) return;
   branchPrsLoading = true;
@@ -948,36 +1160,14 @@ const checkoutRowsNow = (): CheckoutRow[] => branchData ? checkoutRows({
 // What the table is showing right now, which is what `All` and a shift-click range mean.
 const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, branchQuery, Date.now()));
 
-function toggleBranch(name: string, range: boolean): void {
-  const shown = shownRows();
-  const pickable = selectable(shown);
-  if (!pickable.has(name)) return;   // an off row is shown for its reason, never ticked
-  // Shift takes everything between the last tick and this one, in the order on screen, and
-  // adds rather than toggles: a range that flipped each row would undo half of itself.
-  if (range && branchLast && branchLast !== name) {
-    for (const n of rangePick(shown.map((r) => r.name), branchLast, name)) {
-      if (pickable.has(n)) branchPick.add(n);
-    }
-  } else if (branchPick.has(name)) branchPick.delete(name);
-  else branchPick.add(name);
-  branchLast = name;
-  renderDash();
-}
-
-function toggleCheckout(path: string): void {
-  if (!removableCheckouts(checkoutRowsNow()).has(path)) return;
-  if (coPick.has(path)) coPick.delete(path); else coPick.add(path);
-  renderDash();
-}
-
 // Delete the ticked branches wherever the scopes point. Checkouts first (git refuses to
 // delete a branch a worktree holds), then the local refs, then the remote ones: a remote
 // delete that ran first would leave the evidence for the local half gone.
 async function runClean(): Promise<void> {
   const r = root();
   const rows = branchRowsNow();
-  const picks = branchScopes.local ? localPicks(rows, branchPick) : [];
-  const rpicks = branchScopes.remote ? remotePicks(rows, branchPick) : [];
+  const picks = branchScopes.local ? localPicks(rows, branchSel.picked) : [];
+  const rpicks = branchScopes.remote ? remotePicks(rows, branchSel.picked) : [];
   if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
   const remote = remoteFor(rows);
   branchBusy = true;
@@ -985,7 +1175,7 @@ async function runClean(): Promise<void> {
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
   try {
     if (picks.length) {
-      for (const w of chosenWorktrees(rows, branchPick)) report.wts.push(await removeOne(r, w));
+      for (const w of chosenWorktrees(rows, branchSel.picked)) report.wts.push(await removeOne(r, w));
       report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
       dlog("info", `branches · ${report.local.summary}`);
     }
@@ -1007,7 +1197,7 @@ async function runClean(): Promise<void> {
     if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
-    branchPick = new Set();
+    branchSel = emptyPick();
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
       await host.refreshGit();
@@ -1020,7 +1210,7 @@ async function runClean(): Promise<void> {
 // branch goes with it only where git's safe delete accepts it (`deleteBranch`).
 async function runCheckoutClean(): Promise<void> {
   const r = root();
-  const rows = chosenCheckouts(checkoutRowsNow(), coPick);
+  const rows = chosenCheckouts(checkoutRowsNow(), coSel.picked);
   if (!r || branchBusy || !rows.length) return;
   branchBusy = true;
   renderDash();
@@ -1029,7 +1219,7 @@ async function runCheckoutClean(): Promise<void> {
   const ok = report.wts.filter((w) => w.ok).length;
   report.summary = `${ok} of ${rows.length} checkout${rows.length === 1 ? "" : "s"} removed`;
   branchBusy = false;
-  coPick = new Set();
+  coSel = emptyPick();
   if (root() === r) {
     toast(report.summary);
     branchResult = report;
@@ -1081,6 +1271,53 @@ async function switchTo(branch: string): Promise<void> {
   branchData = null;
   renderDash();
   void loadBranches(true);
+}
+
+// ---------- selecting rows, in all four tables ----------
+// ./pick owns the rule (toggle, shift-extends-and-adds, an off row is never ticked); this
+// only says what each table's rows ARE and where its selection is kept. Four tables had
+// three answers to "select everything" and shift in exactly one of them.
+
+function pickCtx(kind: PickKind): PickCtx {
+  if (kind === "branches") {
+    const shown = shownRows();
+    return { order: shown.map((r) => r.name), pickable: selectable(shown) };
+  }
+  if (kind === "checkouts") {
+    const rows = checkoutRowsNow();
+    return { order: rows.map((c) => c.wt.path), pickable: removableCheckouts(rows) };
+  }
+  const d = depsNow();
+  // Nothing on either dependency table is ever refused: a row you can see is a row an
+  // agent can be pointed at, even when the verdict is `unknown`.
+  const keys = kind === "stale" ? d.out.map((r) => r.pkg) : d.adv.map((a) => a.ghsa);
+  return { order: keys, pickable: new Set(keys) };
+}
+
+const selOf = (kind: PickKind): Pick =>
+  kind === "branches" ? branchSel : kind === "checkouts" ? coSel : kind === "stale" ? depOutSel : depSel;
+
+function setSel(kind: PickKind, next: (cur: Pick, ctx: PickCtx) => Pick): void {
+  const cur = selOf(kind);
+  const v = next(cur, pickCtx(kind));
+  if (kind === "branches") branchSel = v;
+  else if (kind === "checkouts") coSel = v;
+  else if (kind === "stale") depOutSel = v;
+  else depSel = v;
+  renderDash();
+}
+
+function pickRow(kind: PickKind, key: string, shift: boolean): void {
+  // The rows refuse a text selection in CSS; this clears one anchored outside the table,
+  // which is the other half of why a shift-click used to paint a blue blob over it.
+  if (shift) window.getSelection()?.removeAllRanges();
+  const before = selOf(kind), ctx = pickCtx(kind);
+  setSel(kind, (cur, c) => applyPick(cur, key, { ...c, range: shift }));
+  // Most branches are not deletable, so a range over ten rows ticks two and the other eight
+  // stay as they were. Unsaid, that is indistinguishable from the range not having worked.
+  if (!shift || !before.anchor || before.anchor === key) return;
+  const { took, refused } = rangeOutcome(ctx, before.anchor, key);
+  if (refused) toast(`${took} ticked · ${refused} not offered — see why on the row`);
 }
 
 // ---------- the lock, and the row menu that sets it ----------

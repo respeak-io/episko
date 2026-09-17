@@ -71,7 +71,7 @@ fn viewer_login(root: &str, account: Option<&str>) -> Option<String> {
 /// One `gh` call, run as `account` when the project names one. `GH_TOKEN` is the only
 /// per-call account selector gh has (`gh auth switch` is global), so the pinned account's
 /// own token is handed to this one child and nothing else changes.
-fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+pub(crate) fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
     let mut cmd = sys_command("gh");
     cmd.env("PATH", augmented_path())
         .current_dir(root) // gh has no -C; it infers the repo from cwd
@@ -116,7 +116,7 @@ fn account_token(login: &str) -> Result<String, String> {
 /// read, and only to classify (data paths parse `--json`). `who` is the account the call
 /// ran as. GitHub answers an invisible repo exactly like a nonexistent one, so naming
 /// the account is what turns that message into a fix.
-fn classify(err: &str, who: Option<&str>) -> String {
+pub(crate) fn classify(err: &str, who: Option<&str>) -> String {
     let e = err.to_lowercase();
     if e.contains("could not resolve to a repository") {
         return match who {
@@ -139,7 +139,7 @@ fn classify(err: &str, who: Option<&str>) -> String {
 
 /// The login to name in a failure: the pin, else the active account's last answer. Never
 /// a fresh probe; this runs on a path that already failed, and a second call can hang.
-fn who_for(account: Option<&str>) -> Option<String> {
+pub(crate) fn who_for(account: Option<&str>) -> Option<String> {
     account
         .map(str::to_string)
         .or_else(|| VIEWER.lock().ok().and_then(|g| g.clone().flatten()))

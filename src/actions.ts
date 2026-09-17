@@ -392,11 +392,13 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 
 // Which account this project's `gh` calls run as; `null` follows gh's active account. It
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
-// and the merged-PR evidence are cached per repo, hence `gh_invalidate`.
+// and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
+// dependency reads are a cache of their own, which the same switch has to drop too.
 export function setProjectGhAccount(colorKey: string, login: string | null) {
   setProjectGhAccountState(colorKey, login);
   localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));
   void invoke("gh_invalidate", { root: colorKey }).catch(() => {});
+  void invoke("dep_invalidate", { root: colorKey }).catch(() => {});
   toast(login
     ? `${basename(colorKey)} reads GitHub as ${login}`
     : `${basename(colorKey)} follows gh's active account`);
