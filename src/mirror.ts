@@ -3,7 +3,7 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
@@ -15,13 +15,13 @@ import { extWorking } from "./sidebarview";
 import {
   providerAdapter, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
 } from "./providers";
-import { dormantBusy, orderedSessions } from "./grouping";
+import { allProjects, dormantBusy, orderedSessions } from "./grouping";
 import {
   hasAgentCapability, isAgent, providerSessionKey,
   type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
   setExternals, setMirror, worktreesByRepo,
 } from "./state";
@@ -118,6 +118,11 @@ export async function refreshDirtyStates(force = false) {
   // prune below drops them again as soon as it closes.
   const dash = dashMirror();
   if (dash) for (const w of worktreesByRepo.get(dash.root) ?? []) if (w.exists) folders.add(w.path);
+  // The fleet's Projects card asks the same question about every project at once, so it pays a
+  // git_diffstat per project per sweep — but only while the pane is open, and the prune below
+  // drops them the moment it closes. Without this the column has a reader and no writer and
+  // every row says "not read" for ever, which is worse than not asking.
+  if (fleetMirror()) for (const p of allProjects()) folders.add(p.path);
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f);
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
   if (sweep) dirtySweptAt = Date.now();
@@ -135,6 +140,7 @@ export async function refreshDirtyStates(force = false) {
   }));
   if (!changed) return;
   renderSidebar();
+  if (fleetMirror()) renderAll(); // the fleet's figures are only repainted from renderAll's pass
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) renderExtInspector(e); }
 }
 export function openExternal(sid: string) {
@@ -193,6 +199,7 @@ export function jumpPastMessage(index: string) {
   row?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 export function renderPastHeader(d: Restorable) {
+  clearStageBadges();
   ($("btnClose") as HTMLButtonElement).hidden = true;
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · shelved, not running · ⟲ Resume to carry on";
@@ -319,6 +326,7 @@ function renderTranscript(msgs: { role: string; text: string }[], initial: boole
   if (initial || nearBottom) body.scrollTop = body.scrollHeight;
 }
 export function renderExtHeader(e: ExtSession) {
+  clearStageBadges();
   ($("btnClose") as HTMLButtonElement).hidden = true;
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · this session runs in another terminal";

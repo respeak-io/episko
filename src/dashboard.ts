@@ -6,26 +6,33 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
-import { basename } from "./format";
+import { basename, esc, escAttr, fmtDayLong } from "./format";
+import { iconFor } from "./icons";
+import { extWorking } from "./sidebarview";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
-  canShare, clampRange, DASH_RANGE_DEFAULT, dashDays, dashPulse, densePerDay,
-  mainCheckout, projectCost, projectTier, type ProjectFacts, type ProjectTier,
-  type SyncOp,
+  bandFacts, canShare, DASH_RANGE_DEFAULT, dashDays, dayCard, densePerDay, mainCheckout, projectCost,
+  projectTier, readSeen, saveSeen, seenAt, SINCE_LINES, stampSeen,
+  type ProjectFacts, type ProjectTier, type SyncOp,
 } from "./dash";
 import {
-  branchesOverlay, cardSkeleton, checkoutsCard, closeSheet, dashInspector,
-  dashStrip, dayHtml, dispatchSheet, ghUnavailable, missingCard, notesCard, notesOverlay,
-  pulseHtml, pulseSkeleton, repoCard, spineSkeleton, triageCard, triageOverlay, workCard,
-  workLogOffer, worksetCard, workOverlay, type CleanReport, type DashSync,
+  bandSkeleton, branchesOverlay, cardSkeleton, checkoutCard, closeSheet, dispatchSheet,
+  ghUnavailable, liveHereCard, type LiveRow, missingCard, notesOverlay, projectFoot, queueCard, sinceBand,
+  triageOverlay, verbTiles, worksetCard, workOverlay,
+  type BandLine, type CleanReport, type DashSync,
 } from "./dashview";
+import { landedCard } from "./landedview";
+import { issueOverlay } from "./issueview";
+import type { GhIssueRead } from "./issue";
+import { filterQueue, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
+import { foldBots, layoutGraph, parseRefs, ROW_H, type GraphCommit, type GraphMark, type LiteRow } from "./graph";
 import {
-  advisoryBrief, cardAdvisories, depSilent, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
+  advisoryBrief, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
   renovateDashboard, verifyCommands,
   type Advisory, type DepManifest, type DepPr, type DepReport, type DepTool, type OutdatedRun, type OutRow,
 } from "./deps";
-import { depSheet, depsCard, depsOverlay, type DepTab } from "./depsview";
+import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import { discoverTasks, execCmd } from "./tasks";
 import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
@@ -39,20 +46,21 @@ import {
   type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
   type WtInfo,
 } from "./branches";
+import { openMenu } from "./menu";
 import { openBranchMenu } from "./projmenu";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
   resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
 } from "./claim";
 import {
-  bucketed, cardRows, claimComment, closeComment, ghWho, holderOf, isoDay, quietFor,
+  bucketed, claimComment, closeComment, ghPickable, ghWho, holderOf, isoDay, quietFor,
   releaseComment, staleCandidates, type GhResult, type GhThread, type KeptIssue,
 } from "./ghwork";
 import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, type SharedNote } from "./notes";
 import { GLYPH, GCLASS } from "./sidebarview";
 import {
-  deterministicHeadline, dayFacts, dayIsClosed, humanAuthors, projectDayFacts, sharedDay,
+  dayFacts, dayIsClosed, isBotAuthor, projectDayFacts, sharedDay,
   type TrailCommit, type TrailDay,
 } from "./trail";
 import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
@@ -79,12 +87,19 @@ export interface DashHost {
   // The switch itself; every guard lives behind it (./worktree's `switchCheckout`).
   switchBranch: (project: string, dir: string, branch: string, base: string | null) => Promise<boolean>;
   openRun: (root: string) => void;
-  openGraph: (root: string) => void;
+  /** `mark` lights a span in the panel and pages down to it; the verb tiles pass none. */
+  openGraph: (root: string, mark?: GraphMark) => void;
   // The working-set overlay, on a folder. `focus` unfolds one file, as the explorer's ↵ does.
   openDiff: (workdir: string, title: string, focus?: string) => void;
   openHistory: (root: string) => void;
   openFolder: (dir: string) => void;
   copyPath: (dir: string) => void;
+  /** Clipboard + toast for anything that is not a path (a commit sha, so far). */
+  copyText: (text: string, said: string) => void;
+  // The two narrow pickers behind the Set up for chips — not the whole project menu, which
+  // also offers Appearance, Group and Remove and answers none of what those chips say.
+  openAgentPicker: (root: string) => void;
+  openGhPicker: (root: string) => void;
   setActive: (id: string) => void;
   renderAll: () => void;
   // ---- what the Branches view needs and this module doesn't own ----
@@ -98,7 +113,8 @@ let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
   switchBranch: async () => false,
   openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
-  copyPath: () => {}, setActive: () => {}, renderAll: () => {},
+  copyPath: () => {}, copyText: () => {},
+  openAgentPicker: () => {}, openGhPicker: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
 };
@@ -109,12 +125,9 @@ export function setDashHost(h: DashHost) { host = h; }
 const SUBMIT_MS = 250;
 
 // ---------- preferences ----------
-export let dashRange = clampRange(+(localStorage.getItem("cc-dash-range") || DASH_RANGE_DEFAULT));
-export function setDashRange(n: number) {
-  dashRange = clampRange(n);
-  localStorage.setItem("cc-dash-range", String(dashRange));
-  if (dashMirror()) void loadDash();
-}
+// One window, not a preference: the band measures from your last visit and the ribbon is the
+// month behind it, so a picker only ever changed how much history was read for the same answer.
+export const dashRange = DASH_RANGE_DEFAULT;
 // Generated day summaries cost money, hence the switch.
 export let dashSummaries = (localStorage.getItem("cc-dash-summaries") ?? "1") === "1";
 export function setDashSummaries(on: boolean) {
@@ -173,8 +186,25 @@ let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: run
 // `teamSummaries` is the project's (commits and PRs; the half `.episko/digest.md` holds).
 const summaries = new Map<string, string>();
 const teamSummaries = new Map<string, string>();
-const openDays = new Set<string>();   // keyed by day, so it survives the timeline repaint
-let openView: "notes" | "work" | "triage" | "branches" | "deps" | null = null;
+let openView: "notes" | "work" | "triage" | "branches" | "deps" | "issue" | null = null;
+// When you last opened each project, machine-wide and capped; the band measures from it.
+let seen = readSeen();
+// This project's stamp as it was BEFORE this visit wrote a new one (see `openDashboard`).
+let sinceAt = 0;
+let queueFilter: QueueFilter = "all";
+// The search narrows the pool the chips then count over; it lives here rather than in the
+// markup, because the queue is repainted by every answer that lands while you are typing.
+let queueQuery = "";
+/// ---- the thread reader ----
+// Which thread the ⤢ opened, kept apart from `openView` so a failed read still knows what it
+// was reading, and `null` data means "not answered yet" rather than "nothing there".
+let issueAt: { number: number; kind: string } | null = null;
+let issueData: GhIssueRead | null = null;
+let issueLoading = false;
+let botFold = true;                  // runs of bot commits folded in the Landed card
+// One page of `git_graph`, kept in module state: a render never fetches.
+let landed: GraphPage | null = null;
+let landedLoading = false;
 
 /// ---- the Dependencies view ----------------------------------------------------------
 // The GitHub half rides `loadGh`'s timing (fired early, awaited by nothing); the manifests
@@ -280,7 +310,8 @@ async function loadDash(): Promise<void> {
     if (root() !== r) return;
     shared = sn;
     heads = wt.filter((w) => w.exists);
-    if (wantGit) void loadSync(r); else mainWork = null;   // fired, not awaited: nothing else waits on it
+    // Fired, not awaited: nothing else waits on either of them.
+    if (wantGit) { void loadSync(r); void loadLanded(r); } else { mainWork = null; landed = null; }
     // The digest is the project's line, never yours: it seeds `teamSummaries` only.
     for (const [k, v] of Object.entries(digest)) if (v) teamSummaries.set(k, v);
     const anyDigest = Object.keys(digest).length > 0
@@ -366,6 +397,27 @@ async function loadSync(r: string): Promise<void> {
   renderDash();   // the Repository and Working set cards are where this lands
 }
 
+// One page of the history for the Landed card, re-read with the pane and after a pull: never
+// on a timer, and never from a render. `scope: "all"` rather than "head" — git calls a bare
+// log fatal on an unborn HEAD, where "all" answers with an empty page the card draws as absent.
+type GraphPage = { commits: GraphCommit[]; more: boolean };
+const LANDED_PAGE = 40;
+// What the section shows, out of that page: what fits under the working set, never the history
+// — which is what the ⤢ panel is for. The page stays long because folding a run needs the run.
+// Eight until the column has been measured once (`fitLanded`), and never fewer than MIN.
+const LANDED_ROWS = 8;
+const LANDED_MIN = 3;
+async function loadLanded(r: string): Promise<void> {
+  landedLoading = true;
+  renderDash();
+  const page = await invoke<GraphPage>("git_graph",
+    { workdir: mainCheckout(heads, r), skip: 0, limit: LANDED_PAGE, scope: "all" }).catch(() => null);
+  if (root() !== r) return;   // the user moved on while git was working
+  landedLoading = false;      // inside the guard: a stale answer must not take the next project's skeleton down
+  landed = page;
+  renderDash();
+}
+
 // The working set goes stale under a running agent, and this pane runs nothing else on a
 // schedule; main.ts drives it beside the sidebar dot's sweep. One local `git status` per
 // sweep, only while a dashboard is up, and never across a git op that is mid-flight.
@@ -436,6 +488,8 @@ async function syncMain(op: SyncOp): Promise<void> {
     // A pull can bring a colleague's digest and notes, so it re-reads the whole pane; a
     // push changes nothing the timeline reads, and the finally re-reads the counts.
     if (op === "pull" && root() === r) { reloading = true; void loadDash(); }
+    // A push moved the remote refs the Landed card's chips and lane names are read from.
+    else if (root() === r) void loadLanded(r);
   } catch (e) {
     dlog("error", `dash ${op} failed: ${e}`);
     toast(`git ${op}: ${e}`);
@@ -475,19 +529,32 @@ async function runSummaryQueue(): Promise<void> {
   }
 }
 
-// One pass, two stages: your line for every day (the headline), then the project's. Within
-// each, closed days first: they answer from disk, while today is forced and costs a model
-// call. `now` is pinned so the partition and each day's `force` agree across midnight.
+// Which days a pass may buy a sentence for. Your line has exactly one consumer — the band,
+// which prints SINCE_LINES of `bandFacts`' keys — so a day past that is a `claude -p` nothing
+// can ever show. The project's line has a second one, the committed digest, and that wants the
+// whole window wherever it is being written (docs/dashboard.md).
+function summaryDays(now: number, scope: "me" | "project"): TrailDay[] {
+  if (scope === "project" && canShare(tier) && (hasDigest || digestOk().includes(root()))) return days;
+  const keys = new Set(bandFacts(days, sinceAt, now, isBotAuthor).keys.slice(0, SINCE_LINES));
+  return days.filter((d) => keys.has(d.key));
+}
+
+// One pass, two stages: your line for each day the band can print (the headline), then the
+// project's. Within each, closed days first: they answer from disk, while today is forced and
+// costs a model call. `now` is pinned so the partition and each day's `force` agree across midnight.
 async function summaryPass(): Promise<void> {
   const r = root();
   const now = Date.now();
-  const ordered = [...days.filter((d) => dayIsClosed(d, now)), ...days.filter((d) => !dayIsClosed(d, now))];
+  const closedFirst = (ds: TrailDay[]) =>
+    [...ds.filter((d) => dayIsClosed(d, now)), ...ds.filter((d) => !dayIsClosed(d, now))];
   try {
     stage = "me";
-    for (const d of ordered) if (!await summariseDay(d, r, now, "me")) return;
+    for (const d of closedFirst(summaryDays(now, "me"))) if (!await summariseDay(d, r, now, "me")) return;
     stage = "project";
     renderDash();   // draw the shared boxes stage 2 fills before the first call goes out
-    for (const d of ordered) if (!await summariseDay(d, r, now, "project")) return;
+    for (const d of closedFirst(summaryDays(now, "project"))) {
+      if (!await summariseDay(d, r, now, "project")) return;
+    }
   } finally {
     stage = null;
   }
@@ -523,7 +590,7 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
       void invoke("write_digest", { root: r, key: d.key, line, create: allowed }).catch(() => {});
     }
   } catch (e) {
-    // No summary is a fine state: the deterministic headline stands.
+    // No summary is a fine state: the band prints one line fewer and nothing else reads it.
     dlog("warn", `dash: ${scope} summary for ${d.key} failed: ${e}`);
   } finally {
     writing = null;   // safe unconditionally: the queue is sequential
@@ -536,14 +603,32 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
 // Assign only when the markup changed: `renderDash` is on `renderAll`'s path, and an
 // `innerHTML` assignment destroys the node under the pointer (docs/architecture.md).
 const painted = new Map<string, string>();
-function paint(id: string, html: string): void {
-  if (painted.get(id) === html) return;
+function paint(id: string, html: string): boolean {
+  if (painted.get(id) === html) return false;
   painted.set(id, html);
   $(id).innerHTML = html;
+  return true;
 }
 // The cache is what this module last wrote, and `#inspector` is written by ./inspector
 // and ./mirror too, so it is only valid while the dashboard has held the stage.
 function invalidatePaintCache(): void { painted.clear(); }
+
+// A search box that lives inside painted markup is replaced by its own repaint — and by
+// every GitHub answer that lands while you are typing. The value is rendered from state, so
+// only the focus and the caret have to come back. Both boxes on this pane go through here.
+function keepCaret(box: HTMLElement, sel: string, repaint: () => void): void {
+  const cur = box.querySelector<HTMLInputElement>(sel);
+  const caret = cur && document.activeElement === cur ? cur.selectionStart : null;
+  repaint();
+  if (caret === null) return;
+  const back = box.querySelector<HTMLInputElement>(sel);
+  if (back) { back.focus(); back.setSelectionRange(caret, caret); }
+}
+
+// Column C: the queue, GitHub's excuse if it has one, and the missing-card notice.
+function paintNext(html: string): void {
+  keepCaret($("dashNext"), ".qq", () => { paint("dashNext", html); });
+}
 
 // The overlay, keeping its scroll position: `paint` rebuilds the subtree, and ticking a
 // checkbox halfway down the Branches table changes counts and labels too, so there is no
@@ -552,21 +637,34 @@ function paintOverlay(view: string, html: string): void {
   const ovl = $("dashOverlay");
   const same = ovl.dataset.view === view;
   const keep = same ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : 0;
-  // The filter box lives inside the painted markup, so every keystroke would otherwise
-  // replace the element under the caret. Its value is rendered from state, so only the
-  // focus and the caret have to come back.
-  const q = ovl.querySelector<HTMLInputElement>(".bvq");
-  const caret = same && q && document.activeElement === q ? q.selectionStart : null;
   ovl.dataset.view = view;
-  paint("dashOverlay", html);
+  keepCaret(ovl, ".bvq", () => { paint("dashOverlay", html); });
   if (keep) {
     const b = ovl.querySelector<HTMLElement>(".ovl-b");
     if (b) b.scrollTop = keep;
   }
-  if (caret !== null) {
-    const n = ovl.querySelector<HTMLInputElement>(".bvq");
-    if (n) { n.focus(); n.setSelectionRange(caret, caret); }
+}
+
+// ---------- the thread reader ----------
+// The queue's ⤢ reads one thread in full. `gh_issue` caches on the same TTL as the board it
+// was opened from, so closing a thread and opening it again is free. Guarded on the project
+// AND the thread: a second ⤢ while the first is in flight must not paint the wrong body.
+async function loadIssue(number: number, kind: string): Promise<void> {
+  const r = root();
+  issueAt = { number, kind };
+  issueData = null;
+  issueLoading = true;
+  renderDash();
+  let res: GhIssueRead | null = null;
+  try {
+    res = await invoke<GhIssueRead>("gh_issue", { root: r, number, kind, force: false, account: ghAccountFor(r) });
+  } catch (e) {
+    dlog("warn", `dash: reading #${number} failed: ${e}`);
   }
+  if (root() !== r || issueAt?.number !== number) return;
+  issueLoading = false;
+  issueData = res;
+  renderDash();
 }
 
 // One derivation for the card and the overlay: grouping and the verdict are the same work,
@@ -579,94 +677,157 @@ function depsNow(): { adv: Advisory[]; prs: DepPr[]; out: OutRow[] } {
   };
 }
 
+// ---------- how many rows Landed draws ----------
+// The one measured number on this page, and the measurement is RELATIVE: `free` is the slack
+// the last paint left over, never the list's own top. Why that, and why it leaves a column
+// that hugs its content alone, is docs/dashboard.md.
+let landedFit = LANDED_ROWS;
+let landedDrawn = 0;    // rows the last paint actually had; a short page cannot fill the space
+let fitting = false;    // the one extra pass a new fit costs must not ask for another
+function fitLanded(): boolean {
+  const col = $("dashMoved");
+  const last = col.lastElementChild as HTMLElement | null;
+  if (!last || !col.querySelector(".lgrows")) return false;   // no list drawn: nothing to fit
+  const pad = parseFloat(getComputedStyle(col).paddingBottom) || 0;
+  const used = last.getBoundingClientRect().bottom
+    - col.getBoundingClientRect().top - col.clientTop + col.scrollTop + pad;
+  const free = Math.floor((col.clientHeight - used) / ROW_H);
+  // Banking room a page of this length cannot use would spend it in one overflowing paint on
+  // the next project, which is longer.
+  if (free > 0 && landedDrawn < landedFit) return false;
+  const n = Math.max(LANDED_MIN, Math.min(LANDED_PAGE, landedFit + free));
+  if (n === landedFit) return false;
+  landedFit = n;
+  return true;
+}
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
 export function renderDash(): void {
   if (!dashMirror()) return;
   // The bars are `<i>`s of colour, so aria-busy is what says the pane is working.
-  $("dashPane").setAttribute("aria-busy", loading || ghLoading || queueRunning ? "true" : "false");
-  const p = dashPulse(days);
-  const dense = densePerDay(days, dashRange, Date.now());
-  // A row of zeros is a wrong answer, not an empty one: `dashPulse([])` reads as "nothing happened here".
-  paint("dashPulse", loading ? pulseSkeleton(dashRange) : pulseHtml(p, tier, dashRange, dense));
-
-  let spine: string;
-  if (loading) {
-    spine = spineSkeleton();
-  } else if (!days.length) {
-    spine = `<div class="db-empty">Nothing in the last ${dashRange} days.
-      Sessions, commits and spend appear here on their own. There is nothing to fill in.</div>`;
-  } else {
-    // The offer counts closed days with commits, not sentences in hand: a solo day's
-    // project line is not bought until somebody wants a digest.
-    const unshared = canShare(tier) && !hasDigest && !digestOk().includes(root())
-      ? days.filter((d) => dayIsClosed(d) && d.commits.length > 0).length
-      : 0;
-    spine = days.map((d) =>
-      dayHtml(d, summaries.get(d.key) ?? null, deterministicHeadline(d), openDays.has(d.key),
-        // shown only where it says something your own line doesn't (see `sharedDay`)
-        sharedDay(d) ? teamSummaries.get(d.key) ?? null : null, humanAuthors(d),
-        {
-          mine: writing?.scope === "me" && writing.key === d.key,
-          // the whole of stage 2: every shared day without a line is queued for one
-          team: dashSummaries && sharedDay(d) && !teamSummaries.has(d.key)
-            && (stage === "project" || writing?.scope === "project"),
-        })).join("")
-      + workLogOffer(unshared);
-  }
-  paint("dashSpine", spine);
-
+  $("dashPane").setAttribute("aria-busy",
+    loading || ghLoading || landedLoading || queueRunning ? "true" : "false");
   const now = Date.now();
-  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
-  const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
-  const prs = gh.threads.filter((t) => t.kind === "pr").length;
 
-  // The GitHub cards cross the `loading` branch with a skeleton of their own: an answer
-  // that arrives early must be shown early, not hidden behind the transcript scan.
-  const ghCards = ghLoading
-    ? cardSkeleton()
-    : gh.available
-      ? workCard(cardRows(gh.threads), gh.threads.length, prs, holder)
-        + triageCard(stale, gh.threads.filter((t) => t.kind === "issue").length)
-      : "";
-  const dn = depsNow();
-  const dtally = depTally(dn.adv, dn.prs, dn.out);
-  // Absent when it has nothing to say AND nothing it could be asked: a clean board with a
-  // package.json still earns a card, because the scan is something it can offer.
-  const depCard = depLoading
-    ? cardSkeleton(2)
-    : depSilent(dtally, depTools) ? ""
-      : depsCard(cardAdvisories(dn.adv), dtally, dn.prs, depManifests, !!depScanned);
-  // Notes and the Repository card cross the wait too: notes are localStorage and already
-  // correct; the repo card answers from `factsKnown` and the heads probe, and goes first.
-  const repo = repoCard(syncNow(), factsKnown);
-  // Above the Repository card: the numbers sit directly over the buttons they gate, and
-  // ⇄ Switch's tooltip is what still names the refusal. It crosses the `loading` branch
-  // for the same reason the repo card does — one local git read, already answered.
-  const wset = worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none");
+  // ---- column A: what is running here, this project's verbs, the repo and its checkouts ----
+  // Externals count as running here: they are somebody else's terminal in this project, they
+  // already have a row in the sidebar, and a section that ignored them said "nothing running"
+  // over four live sessions.
+  const live: LiveRow[] = [
+    ...liveHere().map((s) => ({
+      id: s.id,
+      label: s.title || s.branch || "session",
+      glyph: GLYPH[statusKey(s)] ?? "○",
+      cls: GCLASS[statusKey(s)] ?? "g-idle",
+      ctx: s.ctxPct != null ? `${Math.round(s.ctxPct)}%` : "",
+      branch: s.branch ?? "",
+    })),
+    ...externals.filter((e) => (e.repo_root || e.cwd) === root()).map((e) => ({
+      id: e.session_id,
+      label: e.name || basename(e.cwd) || "terminal",
+      glyph: "»",
+      cls: extWorking(e) ? "g-work" : "g-idle",
+      ctx: "",
+      branch: e.branch ?? "",
+      ext: true,
+    })),
+  ];
   // The main checkout is read by this pane and swept into `dirtyByFolder` for the dot, so
   // prefer the pane's own: two reads of one folder must not put two numbers on one screen.
   const statFor = (p: string) => (p === worksetDir() ? mainWork : dirtyByFolder.get(p));
-  paint("dashAside", loading
-    ? wset + repo + ghCards + depCard + cardSkeleton() + notesCard(noteList(root()))
-    : wset + repo + ghCards + depCard
-      + checkoutsCard(heads, liveIn, statFor)
-      + notesCard(noteList(root()))
-      + (tier === "github" && !gh.available && gh.reason
-        ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
-      + missingCard(tier, facts));
+  // The Repository card crosses the `loading` branch: it answers from `factsKnown` and the
+  // heads probe, both already in hand, and waiting on the transcript scan would hide it.
+  paint("dashHere", liveHereCard(live)
+    + verbTiles()
+    + (loading ? cardSkeleton(2) : checkoutCard(syncNow(), factsKnown, heads, liveIn, statFor))
+    + projectFoot(effectiveAgent(root()).label,
+      tier === "github" ? ghWho(ghAccountFor(root()), ghLogins).login ?? "" : "", claimsOn(),
+      ghPickable(ghLogins)));
+
+  // ---- column B: what moved since you were last here, the working set, what landed ----
+  const f = bandFacts(days, sinceAt, now, isBotAuthor);
+  // The offer counts closed days with commits, not sentences in hand: a solo day's
+  // project line is not bought until somebody wants a digest.
+  const unshared = canShare(tier) && !hasDigest && !digestOk().includes(root())
+    ? days.filter((d) => dayIsClosed(d) && d.commits.length > 0).length
+    : 0;
+  // A day stage 2 is going to ask for gets its box before the sentence exists; `stage` says
+  // the pass is that far along and `summaryDays` that this day is one it will reach, so a box
+  // is never promised for a day the pass is no longer paying for.
+  const byKey = new Map(days.map((d) => [d.key, d]));
+  const willBuy = new Set(summaryDays(now, "project").map((d) => d.key));
+  const pending = (k: string): boolean => {
+    const d = byKey.get(k);
+    return !!d && dashSummaries && stage === "project" && sharedDay(d)
+      && !teamSummaries.has(k) && willBuy.has(k);
+  };
+  // Which already-paid-for sentence each day has is decided here, never in the view: your
+  // own line first, the project's where you have none.
+  const lines: BandLine[] = f.keys.map((k) => ({
+    key: k,
+    text: summaries.get(k) ?? teamSummaries.get(k) ?? "",
+    team: !summaries.has(k) && teamSummaries.has(k),
+    writing: writing?.key === k || pending(k),
+  })).filter((l) => l.text || l.writing).slice(0, SINCE_LINES);
+  const layout = layoutGraph(landed?.commits ?? []);
+  const rows: LiteRow[] = (botFold
+    ? foldBots(layout.rows, isBotAuthor)
+    : layout.rows.map((row) => ({ kind: "commit", row } as const))).slice(0, landedFit);
+  // Both figures are of the rows SHOWN: the chip would otherwise count commits nothing on the
+  // page stands for, and the graph cell would keep a track no visible row reaches.
+  const hidden = rows.reduce((n, r) => n + (r.kind === "fold" ? r.fold.commits.length : 0), 0);
+  const span = rows.reduce((n, r) => Math.max(n, (r.kind === "commit" ? r.row : r.fold.row).span), 1);
+  // The page is its own cheapest source for HEAD, and no HEAD on it means no ring: a page of
+  // every ref cannot name the checkout, and row 0 is whichever branch happens to be newest.
+  const head = layout.rows.find((r) => parseRefs(r.c.refs).some((c) => c.kind === "head"))?.c.sha ?? "";
+  landedDrawn = rows.length;
+  const movedChanged = paint("dashMoved", (loading
+      ? bandSkeleton(tier)
+      : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared))
+    + worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none")
+    + landedCard({
+      rows, span, head, hidden,
+      loading: landedLoading, known: factsKnown && tier !== "none",
+    }));
+
+  // ---- column C: one ranked queue over what were four cards ----
+  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
+  const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
+  const dn = depsNow();
+  const dtally = depTally(dn.adv, dn.prs, dn.out);
+  // A note of yours that is also committed is one row, not two; the shared copy is theirs.
+  const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
+  const items = rankQueue({
+    threads: gh.threads, stale, adv: dn.adv, prs: dn.prs, out: dn.out,
+    notes: noteList(root()), shared: theirs, holder, now,
+  });
+  // The search is the pool and the chips narrow it: the tally is of everything the search
+  // left, never of what the filter left, so a chip still says what it would reveal.
+  const found = searchQueue(items, queueQuery);
+  paintNext(queueCard(filterQueue(found, queueFilter), queueTally(found), queueFilter, queueQuery,
+      gh.available || !ghLoading, !depLoading)
+    + (tier === "github" && !gh.available && gh.reason
+      ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
+    + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
   if (openView === null) ovl.dataset.view = "";
   else if (openView === "notes") {
     const mineShared = new Set(shared.map((n) => n.id));
-    const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
     paintOverlay(openView, notesOverlay(noteList(root()), theirs, mineShared, canShare(tier)));
   }
   else if (openView === "work") paintOverlay(openView, workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
+  else if (openView === "issue" && issueAt) {
+    const t = gh.threads.find((x) => x.number === issueAt!.number);
+    paintOverlay(openView, issueOverlay({
+      number: issueAt.number, kind: issueAt.kind, slug: facts?.slug ?? name(),
+      data: issueData, loading: issueLoading, held: t ? holder(t) : null, now,
+    }));
+  }
   else if (openView === "deps") {
     paintOverlay(openView, depsOverlay({
       tab: depTab, adv: dn.adv, prs: dn.prs, out: dn.out,
@@ -714,35 +875,43 @@ export function renderDash(): void {
     paint("dashSheet", depSheet(sheet.title, sheet.brief,
       `${agent.label} · ${mode?.label ?? "terminal config"}`, sheet.brief.split("\n").length));
   }
+
+  // The fit is an INPUT to the markup, so it is measured once the markup is down and only after
+  // a pass that wrote: an unchanged paint moved nothing, and a layout read on every renderAll
+  // frame would force the reflow the guards exist to avoid.
+  if (movedChanged && !landedLoading && !fitting) {
+    fitting = true;
+    try { if (fitLanded()) renderDash(); } finally { fitting = false; }
+  }
 }
 
 // Name and location only: a project has no branch chip or session title, and the
 // project verbs live in the inspector.
 export function renderDashHeader(): void {
-  ($("btnClose") as HTMLButtonElement).hidden = false;
+  // No ✕ here: this pane is a place you look, not a session you own, and Escape leaves it.
+  // Every stage taker sets both, or the last one's state is inherited.
+  ($("btnClose") as HTMLButtonElement).hidden = true;
   ($("btnShelve") as HTMLButtonElement).hidden = true;   // ⇩ is a session verb; every stage taker sets both
   $("hProj").textContent = name();
   const hb = $("hBranch");
   hb.hidden = true;
   $("hTitle").textContent = "";
   setHeadPath(root());
-}
-
-export function renderDashInspector(): void {
-  const pill = $("iPill");
-  const n = liveHere().length;
-  pill.className = n ? "pill working" : "pill idle";
-  $("iPillTxt").textContent = n ? `${n} live` : "project";
-  const live = liveHere().map((s) => ({
-    id: s.id,
-    label: s.title || s.branch || "session",
-    glyph: GLYPH[statusKey(s)] ?? "○",
-    cls: GCLASS[statusKey(s)] ?? "g-idle",
-    ctx: s.ctxPct != null ? `${Math.round(s.ctxPct)}%` : "",
-  }));
-  paint("inspector", dashInspector(root(), tier, facts, live, hasDigest, factsKnown));
-  paint("dashStrip", dashStrip(accentFor(root()), (name()[0] || "?").toUpperCase(), tier,
-    live.map((s) => ({ id: s.id, glyph: s.glyph, cls: s.cls, label: s.label })), factsKnown));
+  // The project wears its own icon and colour here, as it does in the sidebar: one glyph store.
+  const av = $("hAvatar");
+  const ic = iconFor(root());
+  av.style.background = ic ? "transparent" : accentFor(root());
+  av.innerHTML = ic
+    ? `<img class="picon" src="${escAttr(ic)}" alt="" />`
+    : esc((name()[0] || "?").toUpperCase());
+  // What the folder IS, on its own line: the remote it answers to and whether its work log is
+  // committed. Both are facts about the project, not about the session you happen to be in.
+  $("hChips").innerHTML = [
+    facts?.slug ? `<span class="chip">${esc(facts.slug)}</span>` : "",
+    facts?.host && !facts.slug ? `<span class="chip">${esc(facts.host)}</span>` : "",
+    !factsKnown ? "" : tier === "none" ? `<span class="chip warn">not a repo</span>` : "",
+    hasDigest ? `<span class="chip acc" title="This project has a committed .episko/digest.md">.episko/ shared</span>` : "",
+  ].filter(Boolean).join("");
 }
 
 // ---------- open / close ----------
@@ -757,7 +926,14 @@ export function openDashboard(project: string, path: string): void {
   // A new project inherits nothing: everything below is an answer about a folder, and
   // `renderAll` paints before `loadDash` reaches its first await.
   if (changed) {
-    days = []; heads = []; facts = null; openDays.clear(); openView = null;
+    // Read this project's stamp BEFORE writing today's over it: the other order leaves the
+    // band measuring from now, so it says nothing has moved for ever and no test sees it.
+    sinceAt = seenAt(seen, path);
+    seen = stampSeen(seen, path, Date.now());
+    saveSeen(seen);
+    days = []; heads = []; facts = null; openView = null;
+    queueFilter = "all"; queueQuery = ""; botFold = true; landed = null; landedLoading = false;
+    issueAt = null; issueData = null; issueLoading = false;
     tier = "none"; factsKnown = false; loading = true; ghLoading = false;
     gh = { available: false, reason: null, threads: [], viewer: null };
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
@@ -795,13 +971,38 @@ export function dashEscape(): boolean {
   return true;
 }
 
+// The ribbon's day popover. Everything in it is already in `days`, so a click on the chart
+// never reaches disk; `densePerDay` is re-run only to name the day a quiet bar stands for,
+// from the same inputs the paint used. ./dash decides what is in the card, ./menu draws it.
+function openDayMenu(at: HTMLElement): void {
+  const key = at.dataset.dashday!, r = root();
+  const when = densePerDay(days, dashRange, Date.now()).find((x) => x.key === key)?.when ?? 0;
+  const card = dayCard(days.find((x) => x.key === key));
+  openMenu(at, {
+    title: fmtDayLong(when),
+    sub: card.tally,
+    accent: accentFor(r),
+    groups: card.groups,
+    onPick: (id) => {
+      if (id === "graph") host.openGraph(r, { from: when, to: when + 86_400_000, label: fmtDayLong(when) });
+      else if (id.startsWith("sha:")) {
+        const sha = id.slice(4);
+        host.copyText(sha, `${sha.slice(0, 7)} copied`);
+      }
+    },
+  });
+}
+
 // ---------- events ----------
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.
 export function wireDashboard(): void {
+  // The box Landed is fitted to changes on a window resize, on ⌘I and when the rail collapses,
+  // and none of the three reaches this module as an event. Observing the column is safe: its
+  // own box is the grid's, so painting into it cannot call this back.
+  new ResizeObserver(() => { if (dashMirror() && fitLanded()) renderDash(); }).observe($("dashMoved"));
+
   $("dashPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
-    const range = t.closest<HTMLElement>("[data-dashrange]");
-    if (range) { setDashRange(+range.dataset.dashrange!); return; }
 
     // Select-all, for every tick-box table on this pane: the header tick and the bar's
     // buttons write the same attribute, so one branch answers four tables.
@@ -810,17 +1011,43 @@ export function wireDashboard(): void {
     const pnone = t.closest<HTMLElement>("[data-dashpicknone]");
     if (pnone) { setSel(pnone.dataset.dashpicknone as PickKind, () => pickNone()); return; }
 
+    // A day of the band's ribbon. The click must stop here: main.ts's outside-click closer
+    // would otherwise shut the popover this very click just opened.
+    const bar = t.closest<HTMLElement>("[data-dashday]");
+    if (bar) { e.stopPropagation(); openDayMenu(bar); return; }
+
     // The Repository card carries the inspector's `data-dashact` verbs: one vocabulary, two hosts.
     const gact = t.closest<HTMLElement>("[data-dashact]");
     if (gact) { dashAction(gact.dataset.dashact!); return; }
 
-    const more = t.closest<HTMLElement>("[data-dashopen]");
-    if (more) {
-      const k = more.dataset.dashopen!;
-      if (openDays.has(k)) openDays.delete(k); else openDays.add(k);
+    // The queue's chips narrow one list; the ⤢ beside them is what opens a view. An empty
+    // chip is `aria-disabled` rather than `disabled` — a disabled control swallows the pointer
+    // events ./dom's tooltip listens for, and that tip is what says why the chip is empty —
+    // so the inert half is refused here instead.
+    const qf = t.closest<HTMLElement>("[data-dashqfilter]");
+    if (qf) {
+      if (qf.classList.contains("off")) return;
+      queueFilter = qf.dataset.dashqfilter as QueueFilter;
       renderDash();
       return;
     }
+    // The search's ✕ empties the box and puts the caret back in it: clearing a search is
+    // usually the start of the next one.
+    if (t.closest("[data-dashqclear]")) {
+      queueQuery = "";
+      renderDash();
+      $("dashNext").querySelector<HTMLInputElement>(".qq")?.focus();
+      return;
+    }
+    // One probe for the Landed card's chip and every folded row: both mean the same thing.
+    const fold = t.closest<HTMLElement>("[data-dashfold]");
+    if (fold) { botFold = !botFold; renderDash(); return; }
+
+    // Mark read moves the band's floor to now for this visit only. The stored stamp was already
+    // written when the pane opened, so there is nothing to save and nothing to undo on the next one.
+    const seenBtn = t.closest<HTMLElement>("[data-dashseen]");
+    if (seenBtn) { sinceAt = Date.now(); renderDash(); return; }
+
     if (t.closest("[data-dashworklog]")) { void enableDigest(); return; }
 
     const view = t.closest<HTMLElement>("[data-dashopen-view]");
@@ -930,7 +1157,10 @@ export function wireDashboard(): void {
     const dpr = t.closest<HTMLElement>("[data-dashdeppr]");
     if (dpr) { openPrSheet(+dpr.dataset.dashdeppr!); return; }
     const dout = t.closest<HTMLElement>("[data-dashdepout]");
-    if (dout) { pickRow("stale", dout.dataset.dashdepout!, e.shiftKey); return; }
+    // No range from the queue's copy of the row: `pickCtx("stale")` is the overlay's order and
+    // the queue ranks the same packages differently, so a span there would tick rows between
+    // neither of them. A plain toggle means the same thing in both.
+    if (dout) { pickRow("stale", dout.dataset.dashdepout!, e.shiftKey && !dout.closest(".qcard")); return; }
     const dep = t.closest<HTMLElement>("[data-dashdep]");
     if (dep) { pickRow("advisories", dep.dataset.dashdep!, e.shiftKey); return; }
 
@@ -940,6 +1170,16 @@ export function wireDashboard(): void {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
       // Never straight to a dispatch: it sends a prompt AND writes to a public repo.
       if (th) { sheet = { kind: "dispatch", t: th }; renderDash(); }
+      return;
+    }
+    // Before `data-dashurl`, which is the whole row: ⤢ reads the thread here rather than
+    // handing it to a browser.
+    const iss = t.closest<HTMLElement>("[data-dashissue]");
+    if (iss) {
+      const n = +iss.dataset.dashissue!;
+      const th = gh.threads.find((x) => x.number === n);
+      openView = "issue";
+      void loadIssue(n, th?.kind === "pr" ? "pr" : "issue");
       return;
     }
     const close = t.closest<HTMLElement>("[data-dashclose]");
@@ -962,12 +1202,14 @@ export function wireDashboard(): void {
     if (url?.dataset.dashurl) { void openUrl(url.dataset.dashurl).catch(() => {}); return; }
   });
 
-  // The Branches view's filter box; everything else in this pane is a click.
+  // The two filter boxes; everything else in this pane is a click. A `type="search"` field
+  // clears itself with its own ✕, which arrives here as an input event like any other.
   $("dashPane").addEventListener("input", (e) => {
-    const q = (e.target as HTMLElement).closest<HTMLInputElement>(".bvq");
-    if (!q) return;
-    branchQuery = q.value;
-    renderDash();
+    const el = e.target as HTMLElement;
+    const q = el.closest<HTMLInputElement>(".bvq");
+    if (q) { branchQuery = q.value; renderDash(); return; }
+    const s = el.closest<HTMLInputElement>(".qq");
+    if (s) { queueQuery = s.value; renderDash(); }
   });
 
   // The sheets sit over the whole stage, outside #dashPane, so they get their own handler.
@@ -992,27 +1234,31 @@ export function wireDashboard(): void {
 
   $("dashScrim").addEventListener("click", () => { sheet = null; renderDash(); });
 
-  ($("dashJotHost") as HTMLElement).addEventListener("submit", (e) => {
-    const form = (e.target as HTMLElement).closest("#dashJot");
-    if (!form) return;
-    e.preventDefault();
-    const input = $("dashNote") as HTMLInputElement;
-    if (addNote(input.value, root())) { input.value = ""; renderDash(); }
+  // The form is static markup, outside everything this module paints.
+  const jot = () => {
+    const box = $("dashNote") as HTMLTextAreaElement;
+    if (addNote(box.value, root())) { box.value = ""; renderDash(); }
+  };
+  ($("dashJot") as HTMLElement).addEventListener("submit", (e) => { e.preventDefault(); jot(); });
+  // A textarea swallows Enter, and a note is one line far more often than several: Enter
+  // files it, ⇧Enter is how you get the second line, which is what the hint says.
+  ($("dashNote") as HTMLElement).addEventListener("keydown", (e) => {
+    const k = e as KeyboardEvent;
+    if (k.key !== "Enter" || k.shiftKey || k.altKey || k.metaKey || k.ctrlKey) return;
+    k.preventDefault();
+    jot();
   });
+}
 
-  // The inspector and its strip both emit data-dashact; one handler, bound on the persistent hosts.
-  for (const id of ["inspector", "dashStrip"]) {
-    $(id).addEventListener("click", (e) => {
-      const a = (e.target as HTMLElement).closest<HTMLElement>("[data-dashact]");
-      if (!a || !dashMirror()) return;
-      dashAction(a.dataset.dashact!);
-    });
-  }
+// A claim is "on" when anything at all would be written: the project's own `[claim]` table can
+// veto the preference, so the answer is `resolveClaim`'s, never the stored switch alone.
+function claimsOn(): boolean {
+  const r = resolveClaim(policy, allow);
+  return r.assign.value || r.comment.value || !!r.label.value;
 }
 
 function dashAction(act: string): void {
   const r = root(), n = name();
-  // One ＋, the same call the header's ＋ Session makes: dialog on a repo, plain launch on a folder.
   if (act === "launch") host.requestLaunch(n, r, dashLaunchHint());
   else if (act === "terminal") host.openTerminal(r);
   else if (act === "run") host.openRun(r);
@@ -1023,7 +1269,8 @@ function dashAction(act: string): void {
   else if (act === "history") host.openHistory(r);
   else if (act === "folder") host.openFolder(r);
   else if (act === "copypath") host.copyPath(r);
-  else if (act === "worklog") void enableDigest();
+  else if (act === "agent") host.openAgentPicker(r);
+  else if (act === "ghpick") host.openGhPicker(r);
   // `ghacctclear` is its own verb, so a truncated `ghacct:` can never read as "clear the pin".
   else if (act === "ghacctclear") host.setGhAccount(r, null);
   else if (act.startsWith("ghacct:")) host.setGhAccount(r, act.slice(7));
@@ -1048,8 +1295,8 @@ async function runOutdated(tool: string): Promise<void> {
   renderDash();
   const res = await invoke<OutdatedRun>("dep_outdated", { root: r, tool })
     .catch((e) => ({ tool, ok: false, reason: String(e), rows: [] } as OutdatedRun));
-  depScanning = "";
   if (root() !== r) return;   // the scan outlived the stage; its answer is another folder's
+  depScanning = "";           // inside the guard: a stale answer must not unlock the next folder's scan
   if (res.ok) {
     depRun = res;
     depScanned = tool;
@@ -1201,6 +1448,7 @@ async function runClean(): Promise<void> {
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
       await host.refreshGit();
+      void loadLanded(r);              // the sweep moved the refs the Landed chips and lane names read
     }
     renderDash();
   }
@@ -1225,6 +1473,7 @@ async function runCheckoutClean(): Promise<void> {
     branchResult = report;
     await loadBranches(true);
     await host.refreshGit();
+    void loadLanded(r);   // `removeOne` deletes the branch too, so the Landed refs moved with it
   }
   renderDash();
 }

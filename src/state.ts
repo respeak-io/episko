@@ -140,12 +140,14 @@ export let mirror:
   | { kind: "ext"; id: string; pid: number }
   | { kind: "past"; id: string }
   | { kind: "dash"; root: string; name: string }
+  | { kind: "fleet" }
   | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
 export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirror.pid : null);
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
+export const fleetMirror = () => (mirror?.kind === "fleet" ? mirror : null);
 // A run group tiled beside the focused pane; `activeId` still names that pane. Exclusive with `mirror`.
 export let stageGroup: string | null = null;
 export function setStageGroup(g: string | null) { stageGroup = g; }

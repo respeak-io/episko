@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -238,7 +238,7 @@ export async function adoptOrphans(): Promise<number> {
     dlog("warn", `adopted ${orphans.length} orphaned pane${orphans.length === 1 ? "" : "s"} after a webview reload`);
     toast(`Reattached ${orphans.length} running session${orphans.length === 1 ? "" : "s"} after a reload`);
     // Give the stage to the freshest orphan, unless the user has already picked something.
-    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror()) {
+    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror() && !fleetMirror()) {
       const front = [...sessions.values()].sort((a, b) => b.lastActivity - a.lastActivity)[0];
       if (front) setActive(front.id);
     }
@@ -829,6 +829,7 @@ export function scheduleDismiss(s: Sess) {
 }
 
 export function renderHeader(s: Sess | null) {
+  clearStageBadges();
   ($("btnClose") as HTMLButtonElement).hidden = !s;
   // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
@@ -916,6 +917,19 @@ export function syncStageButtons() {
   // ◷ History's disabled reason differs: the whole-machine view is one click away up top.
   set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
       "No project selected. The ◷ button up top opens history for every project");
+  // The project pane offers Terminal / Run / History as tiles in its own first column, so the
+  // header's copies are hidden there rather than sitting a hand's width from the originals.
+  // The fleet has no one project for them to act on at all.
+  const bare = !!dashMirror() || !!fleetMirror();
+  for (const id of ["btnRun", "btnTerm", "btnHist"]) ($(id) as HTMLButtonElement).hidden = bare;
+  // ⌘I has nothing to fold on the fleet — CSS hides that column outright — so the button says so
+  // instead of staying lit from the stage before. Here rather than in the fleet's own header
+  // writer, because this runs on every pass and so is also what turns it back on.
+  const ib = $("inspBtn") as HTMLButtonElement;
+  ib.hidden = bare;
+  ib.disabled = !!fleetMirror();
+  if (ib.disabled) ib.classList.remove("on");
+  ib.title = ib.disabled ? "Nothing to fold on this screen" : "Toggle inspector (⌘I)";
 }
 
 // Auto-fetch (./autofetch owns the rule, Settings > Git the switch): only the checkout on

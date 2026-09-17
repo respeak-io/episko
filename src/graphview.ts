@@ -7,8 +7,8 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, tilde } from "./format";
 import {
-  laneColor, layoutGraph, lineTip, refChips, refChipsHtml, rowSvg, shortRel,
-  type GraphCommit, type GraphLayout,
+  inSpan, laneColor, layoutGraph, lineTip, refChips, refChipsHtml, rowSvg, shortRel, spanNeedsMore,
+  type GraphCommit, type GraphLayout, type GraphMark,
 } from "./graph";
 
 const PAGE = 60; // commits per page; enough to fill a window at 26px a row, one git call
@@ -17,6 +17,10 @@ const PREFETCH_PX = 240; // distance from the bottom at which the next page is f
 // LEFT_COL_SHARE bounds it by the panel's width too (the one collapse step measured in JS).
 const LEFT_COL_MAX = 380;
 const LEFT_COL_SHARE = 0.42;
+// Paging to a marked span: how far past it to keep reading, and the ceiling that keeps the
+// promise never to read a whole history. ./graph's `spanNeedsMore` applies both.
+const MARK_SLACK_MS = 2 * 86_400_000;
+const MARK_CAP = 8 * PAGE;
 
 type Scope = "all" | "head";
 type Page = { commits: GraphCommit[]; more: boolean };
@@ -37,13 +41,18 @@ let open1: string | null = null; // full-message overlay, by sha; closing it lea
 // and cached so ↑/↓ doesn't re-ask git.
 const msgs = new Map<string, string>();
 let seq = 0; // bumped on open, rescope, refresh and close; a page from an older seq is dropped
+// A span to light up, carried in from the dashboard's ribbon. It survives a rescope and a
+// refresh — it is why the panel was opened — and only an open or a clear replaces it.
+let mark: GraphMark | null = null;
+let marked = false; // the span has been paged to and shown once; ↻ and a rescope hunt again
 
 export let graphOpen = false;
 
 // ---------- opening & loading ----------
 
-export async function openGraph(dir: string, name: string) {
+export async function openGraph(dir: string, name: string, span: GraphMark | null = null) {
   root = dir;
+  mark = span;
   label = name || basename(dir);
   scope = "all";
   graphOpen = true;
@@ -59,6 +68,7 @@ export async function openGraph(dir: string, name: string) {
 
 export function closeGraph() {
   graphOpen = false;
+  mark = null;
   open1 = null;
   renderCommit();
   seq++;
@@ -79,6 +89,7 @@ function reset() {
   settled = false;
   err = null;
   sel = null;
+  marked = false;   // `mark` itself is deliberately kept: a rescope re-hunts the same span
   $("graphBody").scrollTop = 0;
 }
 
@@ -102,9 +113,16 @@ async function loadMore() {
       loading = false;
       settled = true;
       render();
-      // A tall window can hold more than one page with no scroll to trigger the next; top up.
-      const body = $("graphBody");
-      if (more && !loading && body.scrollHeight <= body.clientHeight) void loadMore();
+      // A marked span is usually below the first page, so page down to it rather than leave
+      // the panel sitting on HEAD with nothing lit. ./graph owns both stop conditions.
+      if (mark && !marked && more && spanNeedsMore(commits, mark, MARK_SLACK_MS, MARK_CAP)) {
+        void loadMore();
+      } else {
+        if (mark && !marked) { marked = true; revealMark(); }
+        // A tall window can hold more than one page with no scroll to trigger the next; top up.
+        const body = $("graphBody");
+        if (more && !loading && body.scrollHeight <= body.clientHeight) void loadMore();
+      }
     }
   }
 }
@@ -131,7 +149,8 @@ function render() {
   $("graphSub").innerHTML = err
     ? `<span class="g-err">${esc(err)}</span>`
     : `${commits.length}${more ? "+" : ""} commit${commits.length === 1 ? "" : "s"}`
-      + ` · <span class="g-dim">${scope === "all" ? "all refs" : "this branch"}</span>`;
+      + ` · <span class="g-dim">${scope === "all" ? "all refs" : "this branch"}</span>`
+      + markChip();
   $("graphScope").innerHTML = (["all", "head"] as Scope[])
     .map((s) => `<button class="gseg-b ${s === scope ? "on" : ""}" data-gscope="${s}">${s === "all" ? "All branches" : "This branch"}</button>`)
     .join("");
@@ -142,7 +161,8 @@ function render() {
     // Eight lane colours only, so the node's title is the one place a line (and a merge) is named.
     const tip = esc(lineTip(r));
     // Graph and chips share one cell, so the chips sit against the graph's actual silhouette.
-    return `<div class="grow${r.c.sha === sel ? " on" : ""}" data-gsha="${r.c.sha}" role="option" aria-selected="${r.c.sha === sel}">`
+    const hit = mark && inSpan(r.c, mark) ? " hit" : "";
+    return `<div class="grow${r.c.sha === sel ? " on" : ""}${hit}" data-gsha="${r.c.sha}" role="option" aria-selected="${r.c.sha === sel}">`
       + `<span class="gleft">`
       + `<span class="gcol" title="${tip}">${rowSvg(r, { head })}</span>`
       + `<span class="grefs">${refChipsHtml(chips)}</span></span>`
@@ -159,6 +179,28 @@ function render() {
   $("graphDetail").innerHTML = detailHtml();
   sizeLeftColumn();
   if (open1) renderCommit(); // a page landing under the overlay may fill in its parents
+}
+
+// The span, its count and the way out of it. The count is of what is LOADED, so it is honest
+// while the hunt is still paging; it can also outrun the ribbon's bar, because this panel is
+// all refs and `git_log_days` counts `--branches`. The scope toggle beside it says so.
+function markChip(): string {
+  if (!mark) return "";
+  const n = commits.filter((c) => inSpan(c, mark!)).length;
+  const hunting = !marked && more;
+  return ` · <span class="g-mk"><span class="g-mk-l">${esc(mark.label)}</span>`
+    + `<b>${hunting ? "…" : n}</b>`
+    + `<button class="g-mk-x" data-gmark="clear" title="Stop highlighting ${esc(mark.label)}">✕</button></span>`;
+}
+
+// Bring the newest commit of the span to the top of the scroller. `block: "start"` and not
+// "nearest": the span is a run of rows, and the point is to see the run, not its first row.
+function revealMark(): void {
+  if (!mark) return;
+  const first = commits.find((c) => inSpan(c, mark!));
+  if (!first) { toast(`Nothing on ${mark.label} in this graph`); return; }
+  $("graphBody").querySelector<HTMLElement>(`.grow[data-gsha="${first.sha}"]`)
+    ?.scrollIntoView({ block: "start" });
 }
 
 // Pin every row's graph+chips block to the widest one's width, capped. Each row is its own
@@ -308,6 +350,13 @@ $("graphRefresh").addEventListener("click", () => { void refresh(); });
 $("graphScope").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-gscope]");
   if (b) void rescope(b.dataset.gscope as Scope);
+});
+// Its own listener: the subtitle is not in the list/strip/overlay loop below, so a branch
+// added there for this chip would never fire.
+$("graphSub").addEventListener("click", (e) => {
+  if (!(e.target as HTMLElement).closest("[data-gmark]")) return;
+  mark = null; marked = false;
+  render();
 });
 // One delegated handler for list, strip and overlay: a parent chip carries the same data-gsha a row does.
 for (const id of ["graphBody", "graphDetail", "graphCommit"]) {

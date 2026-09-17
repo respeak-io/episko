@@ -3,6 +3,7 @@
 // on its own z-index tier, never joins SCRIM_DLGS, and never takes Escape (docs/tour.md).
 
 import { $, IS_MAC } from "./dom";
+import { toggleInsp } from "./actions";
 import { dlog } from "./debug";
 import { needsYouSessions } from "./grouping";
 import { activeId, FAVORITES, permissionModeFor, sessions } from "./state";
@@ -76,9 +77,10 @@ function world(): TourWorld {
   if ($("costPop").classList.contains("show")) open.push("cost");
   if ($("usagePop").classList.contains("show")) open.push("usage");
 
-  const stage = !($("dashPane") as HTMLElement).hidden ? "dash"
-    : !($("extPane") as HTMLElement).hidden ? "ext"
-      : activeId ? "session" : "none";
+  const stage = !($("fleetPane") as HTMLElement).hidden ? "fleet"
+    : !($("dashPane") as HTMLElement).hidden ? "dash"
+      : !($("extPane") as HTMLElement).hidden ? "ext"
+        : activeId ? "session" : "none";
   const provider = stage === "session" && act?.kind === "agent" ? act.provider ?? "" : "";
   const permission = provider
     ? providerPermissionMode(provider, permissionModeFor(provider))
@@ -197,7 +199,12 @@ function enter() {
   // that tick may never come.
   armed = stepBlocked(s, world());
   // A collapsed panel is not a missing anchor; open it before anything is measured.
-  for (const n of s.needs ?? []) host.ensure(n);
+  // "next" is the dashboard's own fold, so it goes through ⌘I's verb — the one place that
+  // flips it and keeps ◨ in step — and is guarded, so opening it twice is a no-op.
+  for (const n of s.needs ?? []) {
+    if (n === "next") { if ($("dashPane").classList.contains("fold-next")) toggleInsp(); }
+    else host.ensure(n);
+  }
   // A missing or boxless anchor is skipped, deferred a frame because arriving may be what
   // creates the element. Never for a waiting step: its anchor is routinely absent when it
   // opens (the permission step lights buttons Claude has not raised yet); paint() dims

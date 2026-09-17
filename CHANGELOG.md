@@ -12,6 +12,47 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ **The project page is three columns now, and it reads left to right**: where you are, what moved,
+  what's next. The sessions running here, the branch and its checkouts sit on the left; the middle
+  says what changed and shows the uncommitted work; everything you might start next is one ranked
+  list on the right.
++ **Since you were last here.** The day-by-day timeline is gone. In its place: what has moved since
+  you last opened this project — commits, sessions, spend, who else has been in, and the two or
+  three sentences already written for those days, over a month of commits drawn a bar a day —
+  hover one to name it, click one to see that day's commits and sessions — and from there open
+  the commit graph already scrolled to that day, with everything committed on it lit up.
+  Measured from the moment you left, not from midnight, so *Mark read* clears it — and when there
+  is nothing new the card says so and shows the last 30 days instead of going blank.
++ **Landed: a small commit graph over every branch**, not a list of the one you are standing on. You
+  can see what the branch you are not on has been doing: as many commits as the column has room
+  for, each branch chip in its own lane's colour, and who committed as a two-letter face. A run of dependency bumps folds
+  into a single row — folded, not hidden, so the lane still joins the commits either side of it.
+  ⤢ opens the full graph.
+~ **Open work, Still needed?, Dependencies and Notes are one ranked list.** They were four cards
+  asking four versions of "what should I start next here?". An issue that is also a stale suggestion
+  is now one row carrying both, instead of two rows in two cards.
++ **Read an issue without leaving Episko.** ⤢ on a row in *What's next* opens the whole thread —
+  the description and every comment — beside the project it belongs to. ▶ from there starts an
+  agent through the same sheet as before; nothing is written to GitHub from the panel, and a
+  link in a body opens in your browser rather than in the app.
++ **Search what's next.** A box at the top of the column narrows the list to whatever you type —
+  a number, a package, a word in a title — and the chips count what is left.
+~ **A row in *What's next* keeps its second verbs out of the way** until you point at it (or Tab
+  to it) — closing a quiet issue, opening it on GitHub, reading it here. ▶ is always there.
+~ **The whole list fits the column now**, scrolling under the search and the chips instead of
+  stopping at eight rows and saying "…and 14 more".
+~ **The note box sits at the foot of the column and stays there** while the list scrolls past it.
+  It opens into a proper multi-line field when you start typing: Enter files the note, Shift+Enter
+  starts a line, and it says where a note gets shared with the repo.
+~ **The twelve-row "Do something here" menu is five tiles.** Four of its rows were already buttons in
+  the header above it, where they have always worked on the project you are looking at.
+~ **⌘I on a project page folds the right-hand column** instead of collapsing the inspector to a strip
+  of glyphs. The strip existed because the page's verbs lived only in the inspector; they no longer
+  do.
++ **A dashboard for every project at once** (▦ beside the sidebar's ＋). What needs you across the
+  whole fleet, what is running, one card per project with its branch, its uncommitted work and what
+  it has cost, and the week's spend, model mix and rate-limit forecast beside them. A checkout
+  nobody has read yet says so rather than claiming to be clean.
 + **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
   bots' pull requests, one row per advisory however many packages it hit, each saying what
   the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole

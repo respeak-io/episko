@@ -37,6 +37,7 @@ let host: {
   openProjectFolder: (key: string) => void;
   openProjectFiles: () => void;
   openUsage: () => void;
+  openFleet: () => void;
   settingsItems: () => { key: string; label: string; sub: string; run: () => void }[];
 } = {
   setActive: () => {}, resolvePermission: () => {},
@@ -44,7 +45,7 @@ let host: {
   cycleSort: () => {}, toggleInsp: () => {}, toggleRail: () => {},
   requestLaunch: () => {},
   revealActiveFolder: () => {}, openProjectFolder: () => {}, openProjectFiles: () => {},
-  openUsage: () => {}, settingsItems: () => [],
+  openUsage: () => {}, openFleet: () => {}, settingsItems: () => [],
 };
 export function setPaletteHost(h: typeof host) { host = h; }
 
@@ -101,6 +102,7 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
   { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▦", run: () => host.openUsage() },
+  { key: "cmd:fleet", label: "All projects · the fleet dashboard", glyph: "▦", run: () => host.openFleet() },
 ];
 // The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
 function palShortcut(act?: KeyAction): string[] | undefined {

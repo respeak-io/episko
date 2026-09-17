@@ -68,7 +68,7 @@
 
       <aside class="rail">
         <div class="rail-scroll">
-          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="rail-sort" id="railSort" title="Sort order">≡</button><button class="rail-add" data-add="1" title="Add a project folder">+</button><button class="rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)">«</button></div></div>
+          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="rail-fleet" id="fleetBtn" data-fleet="1" title="All projects · the fleet dashboard">▦</button><button class="rail-sort" id="railSort" title="Sort order">≡</button><button class="rail-add" data-add="1" title="Add a project folder">+</button><button class="rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)">«</button></div></div>
           <div id="projects"></div>
         </div>
         <div class="railmini" id="railmini"></div>
@@ -78,9 +78,17 @@
            (the `head` area in styles.css): its verbs act on the stage, the inspector starts underneath. -->
       <div class="stage-head">
         <div class="st-title">
-          <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
-          <span class="stitle" id="hTitle"></span>
-          <span class="path" id="hPath"></span>
+          <!-- The avatar and the chip line are the dashboard's; a session leaves both empty and
+               the header collapses back to its one line. -->
+          <span class="st-av" id="hAvatar"></span>
+          <div class="st-lines">
+            <div class="st-l1">
+              <span class="proj" id="hProj">no session</span><span class="chip" id="hBranch" hidden></span>
+              <span class="stitle" id="hTitle"></span>
+              <span class="path" id="hPath"></span>
+            </div>
+            <div class="st-l2" id="hChips"></div>
+          </div>
         </div>
         <div class="st-actions">
           <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)"><span class="gl">◷</span>History</button>
@@ -107,13 +115,25 @@
             <div class="ext-view-bar"><span class="ext-view-dot"></span><span id="extViewTxt">Read-only mirror</span></div>
             <div class="ext-body" id="extBody"></div>
           </div>
-          <!-- The project dashboard; empty and hidden until ./dashboard fills it on open. -->
+          <!-- The project dashboard: three columns, empty and hidden until ./dashboard fills them. -->
           <div class="dash-view" id="dashPane" hidden>
-            <div class="dash" id="dashJotHost">
-              <div id="dashPulse"></div>
-              <div class="db-body">
-                <div class="db-spine" id="dashSpine"></div>
-                <div class="db-aside" id="dashAside"></div>
+            <div class="dash db-cols">
+              <div class="db-col db-col-a" id="dashHere"></div>
+              <div class="db-col db-col-b" id="dashMoved"></div>
+              <!-- The composer is a STATIC sibling of the painted queue: a draft note must survive
+                   the GitHub answer landing two columns over. It is pinned to the foot of the
+                   column and opens on focus, which is what the hint line is the room for. -->
+              <div class="db-col db-col-c" id="dashCol3">
+                <div class="db-next" id="dashNext"></div>
+                <form class="nt-form" id="dashJot">
+                  <div class="nt-row">
+                    <textarea id="dashNote" rows="1" placeholder="What's next here?" autocomplete="off"></textarea>
+                    <button type="submit" data-tip="Add this note to the project">＋</button>
+                  </div>
+                  <p class="nt-hint">Enter adds it · Shift+Enter starts a line
+                    <button type="button" class="aslink" data-dashopen-view="notes"
+                      data-tip="Open Notes, where a note of yours can be shared into the repo's .episko/notes.toml">Notes ⤢</button></p>
+                </form>
               </div>
             </div>
             <div class="ovl" id="dashOverlay"></div>
@@ -122,13 +142,14 @@
             <div class="dsh-scrim" id="dashScrim"></div>
             <div class="dsh" id="dashSheet"></div>
           </div>
+          <div class="fleet-view" id="fleetPane" hidden>
+            <div class="fl-head" id="fleetHead"></div>
+            <div class="fl-body" id="fleetBody"></div>
+          </div>
         </div>
       </main>
 
       <aside class="insp">
-        <!-- The 44px rail ⌘I collapses to on the dashboard, where the inspector holds the
-             only copy of History / Terminal / Run. Empty and display:none on every other view. -->
-        <div class="insp-strip" id="dashStrip"></div>
         <div class="insp-head"><span class="label">Session</span><span class="pill idle" id="iPill"><span class="pd"></span><span id="iPillTxt">–</span></span></div>
         <div class="insp-scroll" id="inspector"></div>
       </aside>
@@ -420,6 +441,9 @@
 
     <div class="toast" id="toast"></div>
     <div class="menupop ctxmenu" id="ctxMenu"></div>
+    <!-- The popover menu (./menu): a title and groups of items, anchored to the control it
+         belongs to. Separate from #ctxMenu, which is a right-click menu with its own modes. -->
+    <div class="menu" id="menuPop" role="menu" hidden></div>
     <div class="colorpop" id="colorPop"></div>
     <div class="menupop" id="enginePop"></div>
     <div class="menupop cafpop" id="cafPop"></div>

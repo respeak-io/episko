@@ -13,16 +13,22 @@ export function dropScrim() {
   if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
 }
 
-export type Stage = "session" | "ext" | "dash" | "none"; // ext: the read-only mirror, external or dormant
+export type Stage = "session" | "ext" | "dash" | "fleet" | "none"; // ext: the read-only mirror, external or dormant
 export let stageGen = 0; // bumped per handover; an #inspector paint cache is valid within one tenancy
-// The only code that may touch #extPane/#dashPane/#empty/insp-mini (the stage has one owner).
+// The only code that may touch #extPane/#dashPane/#fleetPane/#empty (the stage has one owner).
 export function takeStage(show: Stage) {
   stageGen++;
   ($("extPane") as HTMLElement).hidden = show !== "ext";
   ($("dashPane") as HTMLElement).hidden = show !== "dash";
+  ($("fleetPane") as HTMLElement).hidden = show !== "fleet";
   ($("empty") as HTMLElement).style.display = show === "none" ? "grid" : "none";
-  if (show !== "dash") $("app").classList.remove("insp-mini"); // dashboard-only mode
+  // Both stages own the whole width: the inspector column collapses to 0 rather than to a rail.
+  $("app").classList.toggle("stage-dash", show === "dash");
+  $("app").classList.toggle("stage-fleet", show === "fleet");
 }
+
+// ⌘I on the dashboard folds the third column instead of an inspector it does not have.
+export function foldDashNext(): boolean { return $("dashPane").classList.toggle("fold-next"); }
 
 // The stage header's path: shown `~`-shortened and copied in full, so every stage taker
 // hands over the absolute one and the click never re-derives it from the label. The
@@ -32,6 +38,62 @@ export function setHeadPath(abs: string) {
   el.textContent = tilde(abs);
   el.title = abs ? `${abs}\nClick to copy` : "";
   if (abs) el.dataset.abs = abs; else delete el.dataset.abs;
+}
+
+// One tooltip for the whole app, anchored to the control rather than the cursor: a button's
+// tip should sit still while you read it. ./usagedlg keeps its own cursor-following one, which
+// is a different job — it labels a point on a heatmap, not a control.
+const TIP_MS = 320;
+let tipEl: HTMLElement | null = null;
+let tipTimer: ReturnType<typeof setTimeout> | null = null;
+
+function hideTip() {
+  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+  if (tipEl) tipEl.hidden = true;
+}
+
+function showTip(host: HTMLElement) {
+  if (!tipEl) {
+    tipEl = Object.assign(document.createElement("div"), { className: "tip", hidden: true });
+    document.body.appendChild(tipEl);
+  }
+  const text = host.dataset.tip ?? "";
+  if (!text) return;
+  tipEl.textContent = text;
+  tipEl.hidden = false;
+  const r = host.getBoundingClientRect();
+  const t = tipEl.getBoundingClientRect();
+  // Above by default, below when there is no room; clamped so a tip on a first-column button
+  // cannot run off the left edge.
+  const above = r.top - t.height - 8 >= 4;
+  tipEl.style.top = `${above ? r.top - t.height - 8 : r.bottom + 8}px`;
+  tipEl.style.left = `${Math.max(6, Math.min(window.innerWidth - t.width - 6, r.left + r.width / 2 - t.width / 2))}px`;
+}
+
+// Wired from main.ts, never at module scope: vitest runs in the node environment and any module
+// a test can reach must not touch `document` on import (CLAUDE.md's rule; dom.ts is reached by
+// nearly everything).
+export function wireTips() {
+  document.addEventListener("pointerover", (e) => {
+    const host = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
+    if (!host) return;
+    hideTip();
+    tipTimer = setTimeout(() => showTip(host), TIP_MS);
+  });
+  document.addEventListener("pointerout", (e) => {
+    if ((e.target as HTMLElement).closest("[data-tip]")) hideTip();
+  });
+  // Any of these moves the control out from under the tip, so it must not outlive them.
+  for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, hideTip, true);
+}
+
+// The avatar and the chip line belong to the project dashboard; every other stage taker clears
+// them, or the header keeps the last project's face over somebody else's session.
+export function clearStageBadges() {
+  const av = $("hAvatar");
+  av.innerHTML = "";
+  av.style.background = "";
+  $("hChips").innerHTML = "";
 }
 
 // MOD and chord are display only; handlers accept both modifiers.

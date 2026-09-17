@@ -9,7 +9,8 @@ import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
-import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast, wireTips } from "./dom";
+import { wireMenu } from "./menu";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
 import {
@@ -20,7 +21,7 @@ import {
 } from "./footer";
 import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
-  closeColorPop, closeCtxMenu, ctxMenuOpen, openColorPopover, setProjMenuHost,
+  closeColorPop, closeCtxMenu, ctxMenuOpen, openAgentPicker, openColorPopover, openGhPicker, setProjMenuHost,
 } from "./projmenu";
 import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, toggleOutlineAll, wireOutlineHover } from "./inspector";
 import {
@@ -31,7 +32,7 @@ import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
-  copyPath, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
+  copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
@@ -91,8 +92,11 @@ import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
   refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
-  renderDashInspector, setDashHost, wireDashboard,
+  setDashHost, wireDashboard,
 } from "./dashboard";
+import {
+  closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
+} from "./fleetui";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -109,7 +113,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
@@ -195,7 +199,7 @@ function openProjectFiles() {
 setPaletteHost({
   setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, requestLaunch,
-  revealActiveFolder, openProjectFolder, openProjectFiles, openUsage,
+  revealActiveFolder, openProjectFolder, openProjectFiles, openUsage, openFleet,
   settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
 });
 setProjMenuHost({
@@ -241,11 +245,16 @@ setTourHost({
   ensure: (need) => {
     const app = $("app");
     if (need === "rail" && app.classList.contains("rail-mini")) toggleRail();
-    if (need === "inspector" && (app.classList.contains("insp-off") || app.classList.contains("insp-mini"))) toggleInsp();
+    if (need === "inspector" && app.classList.contains("insp-off")) toggleInsp();
   },
   renderAll,
 });
+wireTips();
+wireMenu();
 setSoundLogger(dlog);
+// ./menu dismisses on pointerdown, which has already passed by the time a click reaches here,
+// so unlike #ctxMenu these need no deferral.
+const chipAt = (sel: string) => document.querySelector<HTMLElement>(sel) ?? $("dashHere");
 setDashHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   requestLaunch: (project, path, known) => { requestLaunch(project, path, known); },
@@ -256,7 +265,7 @@ setDashHost({
     void handToTerminal(project, dir, cmd, { colorKey: dashMirror()?.root ?? dir });
   },
   openRun: () => { void openRunPicker(); },
-  openGraph: (root) => { void openGraphFor(root, dashMirror()?.name ?? basename(root)); },
+  openGraph: (root, mark) => { void openGraphFor(root, dashMirror()?.name ?? basename(root), mark ?? null); },
   openDiff: (workdir, title, focus) => { void openDiff(workdir, title, focus); },
   refreshGit: () => refreshGitViews(),
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
@@ -264,10 +273,18 @@ setDashHost({
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
+  copyText: (text, said) => { void copyText(text, said); },
+  // Anchored to the ＋ tile's corner: the menu is the sidebar's, so it takes a point, and the
+  // dashboard has no row to hang it off.
+  openAgentPicker: (root) => openAgentPicker(chipAt('#dashHere [data-dashact="agent"]'), root),
+  openGhPicker: (root) => openGhPicker(chipAt('#dashHere [data-dashact="ghpick"]'), root),
   setActive,
   renderAll,
 });
 wireDashboard();
+// The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
+setFleetHost({ setActive, closeSession, openDashboard, renderAll });
+wireFleet();
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
@@ -317,8 +334,10 @@ function renderAllNow() {
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
-  if (dashMirror()) {
-    renderDashHeader(); renderDashInspector(); renderDash();
+  if (fleetMirror()) {
+    renderFleetHeader(); renderFleet();
+  } else if (dashMirror()) {
+    renderDashHeader(); renderDash();
   } else if (pastMirrorId()) {
     const d = dormants.find((x) => x.id === pastMirrorId());
     if (d) { renderPastHeader(d); renderPastInspector(d); }
@@ -535,7 +554,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -559,6 +578,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);
   else if (el.dataset.dash) { openDashboard(el.dataset.proj || basename(el.dataset.dash), el.dataset.dash); closeAttnPop(); }
+  else if (el.dataset.fleet) { openFleet(); closeAttnPop(); }
   // colorKey stays the repo root (data-root), so the new session joins its project.
   // closePeek first: the row clicked is about to reappear as a session row above it.
   else if (el.dataset.wtadd) { closePeek(); launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || ""); }
@@ -649,6 +669,7 @@ $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https
 // ✕ closes what is on the stage (a dashboard, not its project); ⇩ shelves the session.
 $("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessionAsked(activeId); });
 $("btnClose").addEventListener("click", () => {
+  if (fleetMirror()) { closeFleet(); renderAll(); return; }
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
   if (activeId) closeSession(activeId);
 });
@@ -689,6 +710,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
+  else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
