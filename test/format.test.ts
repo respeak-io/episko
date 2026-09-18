@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import {
-  ageBucket, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc, fmtClock, fmtDur,
+  ageBucket, barRow, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc,
+  fmtClock, fmtDay, fmtDayLong, fmtDur, fmtSince,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, initials, nameHue, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -486,6 +487,41 @@ describe("emojiDataUri — an emoji as an image, so every icon surface takes a U
   });
 });
 
+describe("initials", () => {
+  it("takes the first letter of the first two words", () => {
+    expect(initials("Frederic Abraham")).toBe("FA");
+    expect(initials("ada lovelace byron")).toBe("AL");
+  });
+  it("takes two letters from a single word", () => {
+    expect(initials("Tim")).toBe("TI");
+    expect(initials("x")).toBe("X");
+  });
+  it("splits a git author that carries no space", () => {
+    expect(initials("ada.lovelace")).toBe("AL");
+    expect(initials("dependabot[bot]")).toBe("DB");
+    expect(initials("github-actions[bot]")).toBe("GA");
+  });
+  it("keeps a non-ASCII name whole", () => {
+    expect(initials("Örjan Ström")).toBe("ÖS");
+    // A surrogate pair is one letter: [0] would cut it in half and render a lone half.
+    expect(initials("\u{1D49C}da")).toBe("\u{1D49C}D");
+  });
+  it("has nothing to say about a name that is only punctuation", () => {
+    expect(initials("")).toBe("");
+    expect(initials("  ---  ")).toBe("");
+  });
+});
+
+describe("nameHue", () => {
+  it("is stable and in range", () => {
+    expect(nameHue("Frederic")).toBe(nameHue("Frederic"));
+    expect(nameHue("Frederic")).toMatch(/^hsl\(\d{1,3} 62% 68%\)$/);
+  });
+  it("tells two names apart", () => {
+    expect(nameHue("Frederic")).not.toBe(nameHue("Tim"));
+  });
+});
+
 describe("hslToHex", () => {
   it("converts the primaries", () => {
     expect(hslToHex(0, 1, 0.5)).toBe("#ff0000");
@@ -528,6 +564,58 @@ describe("sparkline", () => {
   it("scales an unpinned domain to the data's own min/max", () => {
     // Same shape as the pinned 0–100 case, derived from the values alone.
     expect(sparkline([10, 20])).toContain('d="M0.0,21.0 L105.0,3.0"');
+  });
+});
+
+describe("barRow — the band's ribbon", () => {
+  const h = (ns: number[], lit = 0) => barRow(ns, lit).map((b) => b.h);
+  const c = (ns: number[], lit = 0) => barRow(ns, lit).map((b) => b.cls);
+
+  it("scales to the busiest day and floors every other bar at a visible stub", () => {
+    expect(h([0, 6, 12])).toEqual([3, 14, 24]); // 3 is the stub, 3 + 21 the ceiling
+  });
+  it("marks a quiet day rather than dropping it — a gap would read as 'nothing recorded'", () => {
+    expect(c([0, 6])).toEqual(["nil", ""]);
+  });
+  it("lights the newest `lit` bars and no others", () => {
+    expect(c([1, 1, 1, 1], 2)).toEqual(["", "", "lit", "lit"]);
+  });
+  it("never lights a day nothing happened on — a stub is not an achievement", () => {
+    expect(c([1, 0], 2)).toEqual(["lit", "nil"]);
+  });
+  it("survives a window with no commits in it at all, rather than dividing by zero", () => {
+    expect(h([0, 0, 0])).toEqual([3, 3, 3]);
+  });
+  it("answers one bar per day whatever it is handed, so the view can zip it to its days", () => {
+    expect(barRow([]).length).toBe(0);
+    expect(barRow([4]).length).toBe(1);
+  });
+  it("scales to `cap`, so a taller chart is the same formula rather than a second one", () => {
+    expect(barRow([0, 6, 12], 0, 62).map((b) => b.h)).toEqual([3, 33, 62]);
+    expect(barRow([0, 6, 12], 0).map((b) => b.h)).toEqual(barRow([0, 6, 12], 0, 24).map((b) => b.h));
+  });
+});
+
+describe("fmtSince / fmtDay — the band's floor", () => {
+  const NOW_MS = Date.parse("2026-09-17T15:00:00");
+
+  it("says a weekday and a clock time while the visit is still this week", () => {
+    // Locale decides the spelling; the branch is what this holds.
+    expect(fmtSince(NOW_MS - 3 * 3_600_000, NOW_MS)).toMatch(/^\w{2,4}\.? \d{1,2}:\d{2}/);
+  });
+  it("drops to a date once the visit is older than the week", () => {
+    const old = fmtSince(NOW_MS - 20 * 86_400_000, NOW_MS);
+    expect(old).not.toMatch(/\d{1,2}:\d{2}/);
+    expect(old).toBe(fmtDay(NOW_MS - 20 * 86_400_000));
+  });
+  it("names a day without a year — the ribbon never spans one", () => {
+    expect(fmtDay(Date.parse("2026-08-19T12:00:00"))).toMatch(/19/);
+    expect(fmtDay(Date.parse("2026-08-19T12:00:00"))).not.toMatch(/2026/);
+  });
+  it("adds the weekday for a heading, which is half of 'which day was that'", () => {
+    const d = Date.parse("2026-08-19T12:00:00"); // a Wednesday
+    expect(fmtDayLong(d)).toContain(fmtDay(d).split(" ").find((w) => /\d/.test(w))!);
+    expect(fmtDayLong(d).length).toBeGreaterThan(fmtDay(d).length);
   });
 });
 

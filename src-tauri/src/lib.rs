@@ -474,6 +474,7 @@ pub fn run() {
             deps::dep_tools,
             deps::dep_outdated,
             github::gh_threads,
+            github::gh_issue,
             github::gh_accounts,
             github::gh_invalidate,
             github::gh_claim,

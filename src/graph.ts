@@ -243,8 +243,10 @@ export const GRAPH_COLORS = [
 export const laneColor = (line: number) => GRAPH_COLORS[((line % GRAPH_COLORS.length) + GRAPH_COLORS.length) % GRAPH_COLORS.length];
 
 // Edges are S-curves: at 26px a straight diagonal looks like a line that missed its column.
-export function rowSvg(row: GraphRow, opts: { head?: boolean } = {}): string {
-  const w = graphWidth(row.span), h = ROW_H, mid = h / 2;
+// `span` is a floor and never a crop: a caller drawing every row at one fixed width must still
+// not clip a row whose own lanes reach further than it asked for.
+export function rowSvgAt(row: GraphRow, span: number, opts: { head?: boolean } = {}): string {
+  const w = graphWidth(Math.max(span, row.span)), h = ROW_H, mid = h / 2;
   const x = laneX(row.lane);
   const seg = (d: string, line: number) => `<path class="gline" d="${d}" stroke="${laneColor(line)}"></path>`;
   const parts: string[] = [];
@@ -263,6 +265,8 @@ export function rowSvg(row: GraphRow, opts: { head?: boolean } = {}): string {
     : `<circle class="gnode" cx="${x}" cy="${mid}" r="3.4" fill="${c}"></circle>`;
   return `<svg class="gsvg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${parts.join("")}${node}</svg>`;
 }
+
+export const rowSvg = (row: GraphRow, opts: { head?: boolean } = {}) => rowSvgAt(row, row.span, opts);
 
 // What a row shows: a local branch absorbs its remote twins (`also`), a remote with no local
 // keeps its `origin/` prefix, `origin/HEAD` is dropped as a duplicate symref, order is HEAD,
@@ -323,4 +327,76 @@ export function refChipsHtml(chips: RefChip[]): string {
     const name = `<span class="gn">${r.kind === "tag" ? "⚑ " : ""}${esc(r.label)}</span>`;
     return `<span class="gchip gc-${r.kind}"${title}>${name}${mark}</span>`;
   }).join("");
+}
+
+// ---------- the lite graph: bot runs folded ----------
+
+/** One collapsed run; `commits` is it newest-first, so `.length` is the count the row hides. */
+export interface GraphFold { row: GraphRow; commits: GraphCommit[]; authors: string[] }
+
+/** What the lite graph draws, in page order. */
+export type LiteRow = { kind: "commit"; row: GraphRow } | { kind: "fold"; fold: GraphFold };
+
+// The lanes crossing a row, as a signature: one opening or closing mid-run is a branch the
+// fold would hide, so it ends the run instead.
+const throughKey = (r: GraphRow) => r.through.map((t) => `${t.lane}|${t.line}`).join(",");
+
+// A ref on a folded commit would vanish silently, and row 0 keeps its HEAD ring.
+const foldable = (r: GraphRow, i: number, isBot: (author: string) => boolean) =>
+  i > 0 && isBot(r.c.author) && r.c.parents.length === 1 && r.above.length <= 1
+  && r.below.length === 1 && r.below[0].line === r.line && r.c.refs.trim() === "";
+
+function foldOf(run: GraphRow[]): GraphFold {
+  const first = run[0], last = run[run.length - 1];
+  const tally = new Map<string, number>();
+  for (const r of run) tally.set(r.c.author, (tally.get(r.c.author) ?? 0) + 1);
+  return {
+    // The run's own geometry: it is entered where the first row was and left where the last was.
+    row: {
+      c: first.c, lane: first.lane, line: first.line,
+      above: first.above, below: last.below, through: first.through,
+      label: first.label, merged: [], span: Math.max(...run.map((r) => r.span)),
+    },
+    commits: run.map((r) => r.c),
+    // Busiest first, localeCompare on a tie, so a repaint of unchanged state never reorders.
+    authors: [...tally].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([a]) => a),
+  };
+}
+
+// Never applied before layoutGraph: dropping the commits first leaves their lanes open and the
+// tail re-opens as a new line in a new colour. A run under `minRun` stays as it was, since
+// folding one commit into "1 bot commit" says less than the commit did.
+export function foldBots(rows: GraphRow[], isBot: (author: string) => boolean, minRun = 2): LiteRow[] {
+  const out: LiteRow[] = [];
+  for (let i = 0; i < rows.length;) {
+    if (!foldable(rows[i], i, isBot)) { out.push({ kind: "commit", row: rows[i++] }); continue; }
+    const head = rows[i], key = throughKey(head);
+    let j = i + 1;
+    while (j < rows.length && foldable(rows[j], j, isBot) && rows[j].lane === head.lane
+      && rows[j].line === head.line && throughKey(rows[j]) === key) j++;
+    const run = rows.slice(i, j);
+    if (run.length < minRun) for (const r of run) out.push({ kind: "commit", row: r });
+    else out.push({ kind: "fold", fold: foldOf(run) });
+    i = j;
+  }
+  return out;
+}
+
+// ---------- a marked span (the dashboard's ribbon, opened here) ----------
+
+/** A half-open span of wall-clock ms to light up, and what to call it on the chip. */
+export interface GraphMark { from: number; to: number; label: string }
+
+/** `unix` is the AUTHOR date, which is exactly what `git_log_days` counts the ribbon's bars from. */
+export const inSpan = (c: GraphCommit, m: GraphMark): boolean =>
+  c.unix * 1000 >= m.from && c.unix * 1000 < m.to;
+
+// Whether another page is needed before the span can be called fully loaded. `--date-order`
+// sorts by COMMIT date, so a rebased or cherry-picked commit's author date dips below its
+// neighbours' — `slack` is what stops one of those ending the hunt a page early. `cap` keeps
+// the promise that this panel never reads a whole history.
+export function spanNeedsMore(commits: GraphCommit[], m: GraphMark, slack: number, cap: number): boolean {
+  if (commits.length >= cap) return false;
+  const oldest = commits[commits.length - 1];
+  return !oldest || oldest.unix * 1000 >= m.from - slack;
 }

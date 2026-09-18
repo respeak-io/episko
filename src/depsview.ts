@@ -6,7 +6,7 @@ import { esc, escAttr } from "./format";
 import { shortAge, overlayHtml, pickButtons, pickHead } from "./dashview";
 import type { PickKind, PickState } from "./pick";
 import {
-  checkState, FIX_TEXT, declaredIn, prBlockers, prFor, prReady,
+  checkState, FIX_TEXT, declaredIn, prBlockers, prFor,
   type Advisory, type DepManifest, type DepPr, type DepTally, type DepTool, type OutRow,
 } from "./deps";
 import type { GhThread } from "./ghwork";
@@ -33,48 +33,6 @@ const CHECK_GLYPH: Record<string, string> = { passing: "✓", failing: "✕", pe
 function epssText(p: number): string {
   if (!(p > 0.001)) return "";
   return `<span class="depss" title="EPSS: the chance of exploitation in the wild this year">${(p * 100).toFixed(p < 0.1 ? 1 : 0)}%</span>`;
-}
-
-// ---------- the card ----------
-
-export function depsCard(
-  adv: Advisory[], t: DepTally, prs: DepPr[], manifests: DepManifest[], scanned: boolean,
-): string {
-  const head = t.critical || t.high
-    ? `${t.critical ? `${t.critical} critical` : ""}${t.critical && t.high ? " · " : ""}${t.high ? `${t.high} high` : ""}`
-    : t.vulns ? `${t.vulns} advisor${t.vulns === 1 ? "y" : "ies"}`
-    : t.prs ? `${t.prs} bot PR${t.prs === 1 ? "" : "s"}`
-    : scanned ? `${t.outdated} out of date` : "nothing open";
-  const rows = adv.length
-    ? adv.map((a) => advRow(a, prs, manifests)).join("")
-    : prs.length ? prs.slice(0, 4).map(prCardRow).join("")
-    : `<div class="ac-empty">No advisory and no bot pull request. ⤢ to check what is merely out of date.</div>`;
-  return `<div class="ac"><div class="ac-h"><span class="t">Dependencies</span>
-      <span class="n">${esc(head)}</span>
-      <button class="xb" data-dashopen-view="deps" title="Every advisory, bot PR and out-of-date package">⤢</button></div>
-    <div class="ac-b">${rows}</div></div>`;
-}
-
-function advRow(a: Advisory, prs: DepPr[], manifests: DepManifest[]): string {
-  const names = a.alerts.map((x) => x.pkg);
-  const pr = prFor(a, prs);
-  const d = declaredIn(manifests, a.alerts[0]?.pkg ?? "");
-  return `<div class="dep" data-dashdepopen="${escAttr(a.url)}" title="${escAttr(a.summary)}">
-    ${sevDot(a.severity)}
-    <span class="mid"><span class="ti">${esc(names.slice(0, 2).join(", "))}${names.length > 2 ? ` +${names.length - 2}` : ""}</span>
-      <span class="sub">${a.alerts[0]?.patched ? `→ ${esc(a.alerts[0].patched)}` : "no fix yet"}
-        ${d ? `<span class="dim">${esc(d.range)}</span>` : ""}</span></span>
-    ${pr ? `<span class="dpr" title="${escAttr(`${pr.bot} #${pr.number} is already open for this`)}">#${pr.number}</span>` : ""}
-    ${fixChip(a.worst)}</div>`;
-}
-
-function prCardRow(p: DepPr): string {
-  const st = checkState(p);
-  return `<div class="dep" data-dashdepopen="${escAttr(p.url)}">
-    <span class="dck ${st}">${CHECK_GLYPH[st]}</span>
-    <span class="mid"><span class="ti">${esc(p.title)}</span>
-      <span class="sub">${esc(p.bot)} · #${p.number} · ${esc(shortAge(p.updatedAt))}</span></span>
-    ${prReady(p) ? `<span class="dfix fx-easy">ready</span>` : ""}</div>`;
 }
 
 // ---------- the overlay ----------

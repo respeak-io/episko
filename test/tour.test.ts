@@ -138,10 +138,13 @@ describe("the manifest is well formed", () => {
   it("declares the panel every anchor lives in", () => {
     // ⌘I removes the inspector and ⌘B collapses the rail, so a step anchored inside either
     // must list it in `needs`, or it lights nothing for anyone who works with it collapsed.
-    const PANEL: Record<string, "rail" | "inspector"> = {
+    const PANEL: Record<string, "rail" | "inspector" | "next"> = {
       "[data-add]": "rail", ".padd": "rail", ".phead": "rail", "#projects": "rail",
       "#inspector": "inspector", ".attn-btns": "inspector", ".wset": "inspector",
       '[data-fmode="tools"]': "inspector",
+      // The dashboard's Next column is foldable by ⌘I, so a step lighting it must ask for it
+      // the way an inspector step does — a folded column measures 0x0 and reads as absent.
+      "#dashNext": "next",
     };
     const missing = allSteps()
       .filter(({ s }) => s.anchor && PANEL[s.anchor] && !s.needs?.includes(PANEL[s.anchor]))

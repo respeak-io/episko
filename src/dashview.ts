@@ -1,24 +1,25 @@
 // The project dashboard's markup: data in, string out, like every other *view module.
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
-import { basename, esc, escAttr, relTime, sparkline, tilde, uUsd2 } from "./format";
+import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
-import { syncState, type Pulse, type ProjectFacts, type ProjectTier, type SyncOp } from "./dash";
+import {
+  syncState,
+  type ProjectFacts, type ProjectTier, type RibbonDay, type SinceFacts, type SyncOp,
+} from "./dash";
 import type { Note, SharedNote } from "./notes";
-import type { TrailCommit, TrailDay, TrailSession } from "./trail";
 import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
 import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
+import { type QueueFilter, type QueueItem } from "./queue";
 import {
   anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
   orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
   type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
 } from "./branches";
 import type { PickKind, PickState } from "./pick";
-
-const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 // The provenance mark on anything a model wrote. Just the word, no glyph: it has to be
 // findable, not loud. The caller passes the whole label, since the inline mark needs a `·`
@@ -27,66 +28,12 @@ const aiMark = (text: string, cls = "") =>
   `<span class="ai${cls ? " " + cls : ""}">${text}</span>`;
 const AI_MARK = aiMark("ai", "ai-cnr"); // cornered, not inline: inline it read as part of the sentence
 
-// ---------- the pulse strip ----------
-// Which tiles exist depends on the tier: a permanent zero would read as "nothing happened".
-
-function tile(k: string, v: string, d = ""): string {
-  return `<div class="db-tile"><span class="k">${esc(k)}</span><span class="v">${v}</span>`
-    + (d ? `<span class="d">${d}</span>` : "") + `</div>`;
-}
-
-// A preference, not data, so the skeleton below shows it too.
-const rangeTile = (range: number) => `<div class="db-tile win"><span class="db-seg">
-      ${[7, 14, 30].map((r) => `<button${r === range ? ` class="on"` : ""} data-dashrange="${r}">${r}d</button>`).join("")}
-    </span></div>`;
-
-export function pulseHtml(p: Pulse, tier: ProjectTier, range: number, dense: number[]): string {
-  const tiles: string[] = [];
-  if (tier !== "none") {
-    // `sparkline` returns an inline SVG, not text — escaping it printed the markup.
-    tiles.push(`<div class="db-tile"><span class="k">Commits</span><span class="v">${p.commits}</span>`
-      + `<span class="db-spark" aria-hidden="true">${sparkline(dense)}</span></div>`);
-  }
-  tiles.push(tile("Sessions", String(p.sessions), `${range} days`));
-  // A dash rather than $0.00: per-project spend only exists from the day the detail
-  // rollup started, and "not kept" is not the same fact as "free".
-  tiles.push(tile("Agent spend", p.spend > 0 ? esc(uUsd2(p.spend)) : `<span class="dim">—</span>`));
-  if (tier !== "none") {
-    const who = p.authors.length
-      ? esc(p.authors.slice(0, 2).map((a) => a.split(/\s+/)[0]).join(", ")) + (p.authors.length > 2 ? ` +${p.authors.length - 2}` : "")
-      : `<span class="dim">—</span>`;
-    tiles.push(tile("Contributors", String(p.authors.length), who));
-  }
-  return `<div class="db-pulse">${tiles.join("")}${rangeTile(range)}</div>`;
-}
-
 // ---------- skeletons ----------
 // Each is drawn in the geometry of what replaces it, so the answer arriving is a
 // substitution rather than a jump. The bars carry no text; ./dashboard marks the pane
 // aria-busy. The shimmer (.db-sk) and spinner (.u-spin) are the usage screen's own.
 
 const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
-
-/** The strip before it knows anything. Labels are bars too: which tiles exist depends on the tier. */
-export function pulseSkeleton(range: number): string {
-  const tiles = [["52px", "44px"], ["48px", "62px"], ["62px", "38px"], ["58px", "54px"]]
-    .map(([k, v]) => `<div class="db-tile"><span class="k">${sk(k, 7)}</span>`
-      + `<span class="v">${sk(v, 15)}</span><span class="d">${sk("40px", 7)}</span></div>`).join("");
-  return `<div class="db-pulse">${tiles}${rangeTile(range)}</div>`;
-}
-
-// Three rows in the real .db-day geometry, and only three: the window is a preference
-// this doesn't read, so a skeleton that runs to the fold promises a length it can't know.
-export function spineSkeleton(): string {
-  const row = (w: string) => `<div class="db-day">
-      <div class="db-gut">${sk("30px", 8)}</div>
-      <div class="db-dbody">
-        <p class="db-sum">${sk(w, 11)}</p>
-        <div class="db-facts">${sk("54px", 8)}${sk("60px", 8)}</div>
-      </div></div>`;
-  return ["88%", "72%", "80%"].map(row).join("")
-    + `<p class="db-skhint"><span class="u-spin"></span>Reading this project's history…</p>`;
-}
 
 // For the local reads and for the GitHub half, which fires after the rest and needs one
 // most: an absent Open work card reads as gh being broken rather than slow.
@@ -98,121 +45,202 @@ export function cardSkeleton(rows = 3): string {
     <div class="ac-b">${body}</div></div>`;
 }
 
-// ---------- the timeline ----------
+// ---------- what is running here ----------
 
-// A generated sentence is always marked: the mark is the only difference between a log
-// and a claim. `summary` is your day; `team` is the project's, in a box of its own, and
-// arrives already gated by `sharedDay`: the caller decides whether to show it, this only how.
-export interface DayPending {
-  mine?: boolean; // your own line, dayFacts → summarize_day
-  team?: boolean; // the project's line, the shared box
+// `data-sel` is deliberately not dash-prefixed: it belongs to main.ts's document dispatcher,
+// so the click falls through this pane's own chain and lands on the session rail's handler.
+export interface LiveRow {
+  id: string; label: string; glyph: string; cls: string; ctx: string; branch: string;
+  ext?: boolean;   // somebody else's terminal: Episko can show it and jump to it, not drive it
 }
 
-export function dayHtml(
-  d: TrailDay, summary: string | null, headline: string, open: boolean,
-  team: string | null = null, authors: string[] = [], pend: DayPending = {},
+// `data-sel` is deliberately not dash-prefixed: it belongs to main.ts's document dispatcher,
+// so the click falls through this pane's own chain and lands on the session rail's handler.
+export function liveHereCard(live: LiveRow[]): string {
+  // The one verb this section offers, and only when it has nothing else to say. Through a
+  // helper named `act`, like every other surface, so test/dispatch.test.ts can see it.
+  const act = (a: string, label: string, tip: string) =>
+    `<button class="lh-new" data-dashact="${a}" data-tip="${escAttr(tip)}">${label}</button>`;
+  if (!live.length) {
+    return `<div class="asec"><div class="asec-h"><span class="label">Running here</span></div>
+      <div class="lh-none"><span>Nothing running in this project.</span>
+        ${act("launch", "＋ Start a session", "Pick the repo, a worktree, or a branch")}</div></div>`;
+  }
+  const rows = live.map((s) =>
+    `<button class="srow${s.ext ? " ext" : ""}" data-sel="${escAttr(s.id)}"`
+    + ` data-tip="${escAttr(s.ext ? `${s.label} · outside Episko${s.branch ? ` · ${s.branch}` : ""}` : s.branch ? `${s.label} · ${s.branch}` : s.label)}">`
+    + `<span class="sglyph ${escAttr(s.cls)}">${esc(s.glyph)}</span>`
+    + `<span class="sbranch">${esc(s.label)}</span>`
+    + `<span class="sctx">${s.ext ? `<span class="tag">ext</span>` : esc(s.ctx)}</span></button>`).join("");
+  return `<div class="asec"><div class="asec-h"><span class="label">Running here</span>
+      <span class="tag warn">${live.length} live</span></div>
+    <div class="ip-live">${rows}</div></div>`;
+}
+
+// ---------- the project's verbs ----------
+
+export function verbTiles(): string {
+  // One helper writes every data-dashact on this surface: test/dispatch.test.ts reads the verbs
+  // off these calls, so an attribute spelled inline here would be invisible to it.
+  const act = (a: string, ic: string, lb: string, tip: string) =>
+    `<button class="vt" data-dashact="${a}" data-tip="${escAttr(tip)}">`
+    + `<span class="vt-ic">${ic}</span><span class="vt-lb">${esc(lb)}</span></button>`;
+  // `known`: whether `project_facts` has answered. Until it has, `tier` reads `none` and must
+  // not be read alone, or a repo is offered the folder-only wording for its first frame.
+  // No ＋ here: the stage header's ＋ Session already acts on this project, and two of the same
+  // verb a hand's width apart is how the old twelve-row menu grew in the first place.
+  return `<div class="vt-grid">
+      ${act("terminal", "❯", "Terminal", "Open a terminal here, with no Claude in it")}
+      ${act("run", "▶", "Run", "Run one of the scripts this project already ships")}
+      ${act("history", "◷", "History", "Reopen a session you closed here")}
+      ${act("folder", "⌂", "Reveal", `Reveal the project folder in ${FILE_MANAGER}`)}
+      ${act("copypath", "⧉", "Copy", "Copy the full path to the clipboard")}
+    </div>`;
+}
+
+/** The column's foot: what this project is set up to run as. Each chip IS its own control. */
+export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean): string {
+  const act = (a: string, inner: string, tip: string) =>
+    `<button class="pfc pfc-b" data-dashact="${a}" data-tip="${escAttr(tip)}">${inner}</button>`;
+  // Claims are the one fact here with no picker of its own: the preference is Settings', and the
+  // project's `[claim]` table can veto it, so the chip explains rather than pretends to toggle.
+  const claimTip = claims
+    ? "Dispatching from here marks the issue as taken. Set in Settings; a project's [claim] table can veto it"
+    : "Dispatching from here writes nothing to GitHub. Set in Settings; a project's [claim] table can veto it";
+  return `<div class="pfoot"><span class="label">Set up for</span>
+    <div class="pfc-row">
+      ${act("agent", esc(agent), `Runs ${agent} here · pick another for this project`)}
+      ${gh && ghPick ? act("ghpick", `gh: ${esc(gh)}`, `Reads GitHub as ${gh} · pin another account to this project`)
+        : gh ? `<span class="pfc mono" data-tip="${escAttr(`Reads GitHub as ${gh}`)}">gh: ${esc(gh)}</span>` : ""}
+      <span class="pfc" data-tip="${escAttr(claimTip)}">${claims ? "claims on" : "claims off"}</span>
+    </div></div>`;
+}
+
+// ---------- since you were last here ----------
+
+// A preference, not data, so the skeleton below draws the real picker rather than a bar.
+// Value then label, on one baseline: "12 commits" reads as a sentence where a stacked caps
+// label reads as a dashboard tile, and four of them fit a column this narrow.
+// `v` and `d` are raw so a figure can carry markup — the em dash, a mark. Never user text.
+const fig = (v: string, k: string, d = "") =>
+  `<span class="sb-fig"><span class="v">${v}</span><span class="k">${esc(k)}</span>`
+  + (d ? `<span class="d">${d}</span>` : "") + `</span>`;
+
+const whoText = (authors: string[]): string => authors.length
+  ? esc(authors.slice(0, 2).map((a) => a.split(/\s+/)[0]).join(", "))
+    + (authors.length > 2 ? ` +${authors.length - 2}` : "")
+  : `<span class="dim">—</span>`;
+
+/** One day's already-generated sentence. The caller picks which; this only says how. */
+export interface BandLine { key: string; text: string; team: boolean; writing: boolean }
+
+// A generated sentence is always marked: the mark is the only difference between a log and a
+// claim. The shared line says whose day it is, since it is the project's and not yours.
+function bandLine(l: BandLine): string {
+  const cnr = l.team && !l.writing ? AI_MARK : ""; // floats right, so it leads the source order
+  const inline = l.writing ? aiMark("· writing", "wr") : l.team ? "" : aiMark("· ai");
+  return `<p class="sb-line" title="${escAttr(l.key)}">${cnr}`
+    + (l.team ? `<span class="dim">shared · </span>` : "") + `${esc(l.text)}${inline}</p>`;
+}
+
+// The band's one door out, in both states. `history` is a verb `verbTiles` already offers, so
+// the if-chain needs nothing new — but test/dispatch.test.ts reads this surface too.
+const TRAIL = `<button class="sb-trail" data-dashact="history"`
+  + ` title="Every session and commit this project has had">Full trail ⤢</button>`;
+
+// Thirty days of commits, one bar a day: a line between two counts invents the days in
+// between (./format's `barRow` is the geometry). The ribbon is a repo's fact, so a plain
+// folder gets none rather than a flat row of zeroes.
+// The hoverable, clickable day is the full-height `.sb-b` column, never the bar inside it:
+// a quiet day's bar is a 3px sliver and the quiet days are what the strip exists to show.
+function ribbonHtml(ribbon: RibbonDay[], range: number, repo: boolean): string {
+  if (!repo || ribbon.length < 2) return "";
+  const bars = barRow(ribbon.map((d) => d.n), Math.min(7, ribbon.length));
+  const cols = ribbon.map((d, i) => {
+    const tip = `${fmtDay(d.when)} · ${d.n} commit${d.n === 1 ? "" : "s"}`;
+    return `<button class="sb-b" data-dashday="${escAttr(d.key)}" data-tip="${escAttr(tip)}"`
+      + ` aria-label="${escAttr(tip)}">`
+      + `<i class="sb-bar ${bars[i].cls}" style="height:${bars[i].h}px"></i></button>`;
+  }).join("");
+  return `<div class="sb-rib"><div class="sb-bars">${cols}</div>
+    <div class="sb-foot"><span class="sb-rl">${range} days · from ${esc(fmtDay(ribbon[0].when))}</span>
+    ${TRAIL}</div></div>`;
+}
+
+// The window's number comes from `range`, never from `f.days`: `days` is the true age of the
+// stamp and outruns the window whenever you were last here longer ago than the ribbon reaches.
+export function sinceBand(
+  f: SinceFacts, lines: BandLine[], ribbon: RibbonDay[], range: number,
+  tier: ProjectTier, known: boolean, offer: number,
 ): string {
-  const dt = new Date(d.when);
-  const rows = dayRows(d);
-  const hidden = rows.length;
-  // Your pending line is a mark beside the headline, which already reads fine; the shared
-  // box has no stand-in, so only its sentence is a bar. The paragraph is not clamped and
-  // must not be: `prompt_for` caps it at 22 words, so a fold could never fire honestly.
-  const teamBox = (body: string, cls = "", mark = "") => `<div class="db-team${cls}">
-        <span class="tl"><span class="sh">shared</span>The project${
-          authors.length ? `<span class="au">${esc(authors.join(" · "))}</span>` : ""}</span>
-        <p>${body}</p>${mark}
-      </div>`;
-  return `<div class="db-day${open ? " open" : ""}" data-dashday="${esc(d.key)}">
-    <div class="db-gut">
-      <span class="dd">${WEEKDAY[dt.getDay()]} ${dt.getDate()}</span>
-      ${d.cost > 0 ? `<span class="cc">${esc(uUsd2(d.cost))}</span>` : ""}
-    </div>
-    <div class="db-dbody">
-      ${team ? teamBox(esc(team), "", AI_MARK)
-        : pend.team ? teamBox(sk("84%", 10), " sk") : ""}
-      <p class="db-sum">${esc(summary || headline)}${
-        summary ? aiMark("· ai")
-        : pend.mine ? aiMark("· writing", "wr") : ""}</p>
-      <div class="db-facts">
-        ${d.commits.length ? `<span>${d.commits.length} commit${d.commits.length === 1 ? "" : "s"}</span>` : ""}
-        ${d.commits.length && d.sessions.length ? `<span class="dot">·</span>` : ""}
-        ${d.sessions.length ? `<span>${d.sessions.length} session${d.sessions.length === 1 ? "" : "s"}</span>` : ""}
-        ${authorsOf(d)}
-        ${hidden ? `<button class="db-more" data-dashopen="${esc(d.key)}">${hidden} more <span class="cv">⌄</span></button>` : ""}
-      </div>
-      ${hidden ? `<div class="db-detail"><div><div class="db-rows">${rows.join("")}</div></div></div>` : ""}
-    </div>
-  </div>`;
+  const repo = known && tier !== "none";
+  // Four wordings, never interchangeable: no stamp at all, a stamp older than anything read,
+  // a visit nothing has happened since, and a gap with something in it. The first three all
+  // count the window (`f.window`), so none of them may be told as "since you were last here".
+  const head = f.first ? "First look here"
+    : f.window ? `In the last ${range} days`
+    : "Since you were last here";
+  // Never a repeat of the head: with the window named above, this slot carries the visit,
+  // which is the fact that explains why the figures are the window's and not yours.
+  const ago = f.first ? `${range} days`
+    : f.capped ? `last here ${fmtSince(f.since)}`
+    : f.quiet ? `nothing new since ${fmtSince(f.since)}`
+    : `${fmtSince(f.since)} → now` + (f.days >= 1 ? ` · ${f.days} day${f.days === 1 ? "" : "s"}` : "");
+  const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`);
+  const figs = (repo ? fig(String(f.commits), plural(f.commits, "commit")) : "")
+    + fig(String(f.sessions), plural(f.sessions, "session"))
+    + fig(f.spend > 0 ? esc(uUsd2(f.spend)) : `<span class="dim">—</span>`, "spend")
+    + (repo ? fig(String(f.authors.length), plural(f.authors.length, "contributor"), whoText(f.authors)) : "");
+  // Only when there is a gap with something in it: with no stamp, a stamp older than the
+  // window, or nothing since the last visit, there is nothing left to catch up on.
+  const read = f.window
+    ? "" : `<button class="sb-read" data-dashseen title="Treat everything above as read">Mark read</button>`;
+  return `<div class="sinceb">
+    <div class="sb-h"><span class="t">${esc(head)}</span><span class="sb-ago">${esc(ago)}</span>${read}</div>
+    <div class="sb-figs">${figs}</div>
+    ${lines.map(bandLine).join("")}
+    ${ribbonHtml(ribbon, range, repo)}
+    ${workLogOffer(offer)}</div>`;
 }
 
-function authorsOf(d: TrailDay): string {
-  const who = [...new Set(d.commits.map((c) => c.author.split(/\s+/)[0]))];
-  if (!who.length) return "";
-  return `<span class="dot">·</span><span class="who">${esc(who.slice(0, 3).join(", "))}</span>`;
-}
-
-// Sessions and commits in one time order, not sessions then commits: a session and the
-// commit it produced are cause and effect (the rule ./trail's `dayItems` follows).
-function dayRows(d: TrailDay): string[] {
-  const items: { when: number; html: string }[] = [
-    ...d.sessions.map((s) => ({ when: s.when, html: sessionRow(s) })),
-    ...d.commits.map((c) => ({ when: c.when * 1000, html: commitRow(c) })),
-  ];
-  return items.sort((a, b) => b.when - a.when).map((i) => i.html);
-}
-
-const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-function sessionRow(s: TrailSession): string {
-  return `<div class="db-item"><span class="db-kind sess">session</span>`
-    + `<span class="db-t" title="${esc(s.title)}">${esc(s.title)}</span>`
-    + `<span class="db-r">${clock(s.when)}</span></div>`;
-}
-function commitRow(c: TrailCommit): string {
-  return `<div class="db-item" data-dashsha="${esc(c.sha)}" title="${esc(`${c.subject} · ${c.author}`)}">`
-    + `<span class="db-kind">commit</span>`
-    + `<span class="db-t">${esc(c.subject)}</span>`
-    + `<span class="db-r">${clock(c.when * 1000)}</span></div>`;
+// Substitution rather than a jump, so the figure count is the tier's, exactly as the band
+// derives it. `tier` is optional only because the very first read has not answered yet.
+export function bandSkeleton(tier: ProjectTier = "github"): string {
+  const bars = (tier === "none"
+    ? [["48px", "62px"], ["62px", "38px"]]
+    : [["52px", "44px"], ["48px", "62px"], ["62px", "38px"], ["58px", "54px"]])
+    .map(([k, v]) => `<div class="sb-fig"><span class="k">${sk(k, 7)}</span>`
+      + `<span class="v">${sk(v, 15)}</span><span class="d">${sk("40px", 7)}</span></div>`).join("");
+  return `<div class="sinceb">
+    <div class="sb-h"><span class="t">${sk("124px", 8)}</span></div>
+    <div class="sb-figs">${bars}</div>
+    <div class="sb-rib">${sk("100%", 26)}</div>
+    <p class="db-skhint"><span class="u-spin"></span>Reading this project's history…</p></div>`;
 }
 
 // ---------- the aside ----------
 // A card appears when it has something to say and is absent otherwise: an empty panel
 // reads as breakage, not as an honest blank.
 
-function card(id: string, title: string, count: string, body: string, enlarge = true): string {
-  return `<div class="ac"><div class="ac-h"><span class="t">${esc(title)}</span>`
-    + `<span class="n">${esc(count)}</span>`
-    + (enlarge ? `<button class="xb" data-dashopen-view="${id}" title="See all">⤢</button>` : "")
-    + `</div><div class="ac-b">${body}</div></div>`;
-}
 
 // `undefined` is a folder nothing has measured yet, and it must never read as clean: the
 // map is only filled for folders in play. Live and dirty are both shown — they answer
 // different questions, and a checkout can be either without the other.
 function checkoutTag(g: DiffStat | null | undefined): string {
-  if (g === undefined) return `<span class="tag" title="Not read yet">—</span>`;
+  if (g === undefined) return `<span class="tag" data-tip="Nobody has read this folder yet — not the same as clean">—</span>`;
   if (!g || !g.dirty) return `<span class="tag ok">clean</span>`;
   return `<span class="tag warn">${g.dirty} uncommitted</span>`;
 }
 // A row is a door only when there is something behind it; `.cr[data-dashwt]` is the cursor.
 function checkoutRow(w: WtHead, live: number, g: DiffStat | null | undefined, main: boolean): string {
   const open = !!g && g.dirty > 0 ? ` data-dashwt="${esc(w.path)}"` : "";
-  return `<div class="cr"${open} title="${esc(tilde(w.path))}">`
+  const tip = open ? `${tilde(w.path)} · click to review its uncommitted work` : tilde(w.path);
+  return `<div class="cr"${open} data-tip="${escAttr(tip)}">`
     + `<span class="k">${main ? "⌂" : "⑃"}</span>`
     + `<span class="ti mono">${esc(w.branch || basename(w.path))}</span>`
     + `<span class="rt">${live ? `<span class="tag acc">${live} live</span>` : ""}${checkoutTag(g)}</span></div>`;
 }
 
-export function checkoutsCard(
-  heads: WtHead[],
-  liveFor: (path: string) => number,
-  statFor: (path: string) => DiffStat | null | undefined,
-): string {
-  if (heads.length < 2) return ""; // one checkout is not a list worth a card
-  const rows = heads.map((w) => checkoutRow(w, liveFor(w.path), statFor(w.path), w.is_main)).join("");
-  return card("checkouts", "Checkouts", String(heads.length), rows);
-}
 
 // ---------- the Repository card ----------
 // The main checkout's git state and the verbs that act on it. It carries state because
@@ -315,56 +343,189 @@ export function worksetCard(
     ` data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difffocus="${escAttr(f.path)}"`;
   const body = `<div class="wsb">${wpeekHtml(dir, title, g)}`
     + `${fileSetHtml(g.entries, DASH_FILES_SHOWN, g.dirty, door)}</div>`;
-  return card("workset", "Working set", "", body, false);
+  const n = g.dirty === 1 ? "1 file" : `${g.dirty} files`;
+  // The review button is the card's enlargement, so it says what it opens rather than wearing
+  // the bare ⤢ every other card uses — this is the one people came here to click.
+  return `<div class="ac"><div class="ac-h"><span class="t">Working set</span>`
+    + `<span class="n" title="${escAttr(tilde(dir))}">${esc(title)} · uncommitted</span>`
+    + `<button class="aslink" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}"`
+    + ` title="Review every uncommitted change">Review ${esc(n)} ⤢</button></div>`
+    + `<div class="ac-b">${body}</div></div>`;
 }
 
 // `known` is `factsKnown`. Three states, never merged: unknown gets a skeleton, a folder
 // that is no repo gets nothing (`missingCard` says why), a repo gets the card.
-export function repoCard(sync: DashSync | null, known = true): string {
+export function checkoutCard(
+  sync: DashSync | null, known: boolean,
+  heads: WtHead[], liveFor: (path: string) => number, statFor: (path: string) => DiffStat | null | undefined,
+): string {
   if (!known) return cardSkeleton(2);
   if (!sync) return "";
   const busy = !!sync.busy;
-  const gb = (a: string, label: string, title: string, wide = false, off = false) =>
-    `<button class="gitb${wide ? " wide" : ""}" data-dashact="${a}"${off ? " disabled" : ""}`
-    + ` title="${esc(title)}">${label}</button>`;
+  const gb = (a: string, label: string, tip: string, cls = "gitb", off = false) =>
+    `<button class="${cls}" data-dashact="${a}"${off ? " disabled" : ""}`
+    + ` data-tip="${escAttr(tip)}">${label}</button>`;
   // A dropdown, not a door into another dialog: every guard is behind the pick itself.
-  const pick = `<button class="gitb wide brpick" data-dashswitch aria-haspopup="listbox"`
-    + ` title="${esc(switchSub(sync))}"><span class="v">⌂ ${esc(sync.branch || "—")}</span><span class="c">▾</span></button>`;
-  const body = `<div class="gsub">${syncLine(sync)}</div>
+  const pick = `<button class="brpick" data-dashswitch aria-haspopup="listbox"`
+    + ` data-tip="${escAttr(`Switch this checkout to another branch · ${switchSub(sync)}`)}"><span class="g">⑃</span>`
+    + `<span class="v mono">${esc(sync.branch || "—")}</span><span class="c">▾</span></button>`;
+  // One checkout is not a list; the enlarge only earns its place once there are folders to compare.
+  const many = heads.length > 1;
+  const rows = many
+    ? heads.map((w) => checkoutRow(w, liveFor(w.path), statFor(w.path), w.is_main)).join("")
+    : "";
+  return `<div class="asec"><div class="asec-h"><span class="label">Checkout</span>
+      ${many ? `<span class="tag">${heads.length}</span>
+        <button class="xb" data-dashopen-view="checkouts" aria-label="Every checkout" data-tip="Every checkout and every branch, in one table">⤢</button>` : ""}</div>
+    ${pick}
+    <p class="gsub">${syncLine(sync)}</p>
     <div class="gbts">
-      ${gb("pull", sync.busy === "pull" ? "⇣ Pulling…" : "⇣ Pull", pullSub(sync), false, busy)}
-      ${gb("push", sync.busy === "push" ? "⇡ Pushing…" : "⇡ Push", pushSub(sync), false, busy)}
-      ${gb("graph", "⑂ Commit graph…", "history, branches, merges")}
-      ${gb("cleanup", "⌥ Branches…", "clean up merged and orphaned ones")}
-    </div>`;
-  // The branch names itself on the control that changes it: a label beside a button that
-  // opened a dialog to do the same thing was the long way round.
-  return card("repo", "Repository", "", pick + body, false);
+      ${gb("pull", sync.busy === "pull" ? "⇣ Pulling…" : "⇣ Pull", pullSub(sync), "gitb", busy)}
+      ${gb("push", sync.busy === "push" ? "⇡ Pushing…" : "⇡ Push", pushSub(sync), "gitb", busy)}
+    </div>
+    ${rows ? `<div class="cos">${rows}</div>` : ""}
+    ${gb("cleanup", "⌥ Branches &amp; cleanup…", "merged, orphaned and remote-only branches", "aslink")}</div>`;
 }
 
-function noteRow(n: Note): string {
-  return `<div class="nt" data-dashnote="${esc(n.id)}">
-    <span class="ntx"><span class="tx">${esc(n.text)}</span>
-      <span class="mt"><span>${esc(relTime(n.created))}</span></span></span>
-    <span class="nt-b">
-      <button class="nb" data-dashdispatch="${esc(n.id)}" title="Start an agent on this">▶</button>
-      <button class="nb" data-dashdrop="${esc(n.id)}" title="Delete">✕</button>
-    </span></div>`;
+// ---------- the queue: one ranked list where four cards used to be ----------
+// ./queue ranks; this only draws. Every row keeps the attributes the card it came from
+// already had, so no probe here is new and the overlays still answer the same clicks.
+
+const QFILTERS: { id: QueueFilter; label: string; tip: string }[] = [
+  { id: "all", label: "All", tip: "Everything waiting on this project" },
+  { id: "iss", label: "Issues", tip: "Open issues only" },
+  { id: "pr", label: "PRs", tip: "Open pull requests only" },
+  { id: "deps", label: "Deps", tip: "Advisories, bot pull requests and out-of-date packages" },
+  { id: "note", label: "Notes", tip: "Your notes and the ones committed to this repo" },
+  { id: "quiet", label: "Quiet", tip: "Issues nothing has happened to in a while — a facet, so these are counted as issues too" },
+];
+
+// Which enlargement the ⤢ opens. "triage" has no chip of its own — a suggestion is open work
+// carrying a reason — so its own ⤢ rides the rows that have one. "All" is not here: it has no
+// board, so `enlarge` below picks one that can hold rows.
+const QVIEW: Record<QueueFilter, string> = {
+  all: "work", iss: "work", pr: "work", deps: "deps", note: "notes", quiet: "triage",
+};
+
+function qrow(cls: string, attrs: string, lead: string, i: QueueItem, right: string, tip = ""): string {
+  return `<div class="qrow ${cls}"${attrs} data-tip="${escAttr(tip || i.title)}">${lead}
+    <span class="mid"><span class="ti">${esc(i.title)}</span>`
+    + (i.sub ? `<span class="sub">${esc(i.sub)}</span>` : "") + `</span>
+    <span class="rt">${right}</span></div>`;
 }
 
-export function notesCard(notes: Note[]): string {
-  const body = notes.length
-    ? notes.slice(0, 3).map(noteRow).join("")
-    : `<div class="ac-empty">Nothing queued. Jot the next thing above.</div>`;
-  return `<div class="ac"><div class="ac-h"><span class="t">Notes</span>
-      <span class="n">${notes.length}</span>
-      <button class="xb" data-dashopen-view="notes" title="Open the notes board">⤢</button></div>
-    <form class="nt-form" id="dashJot">
-      <input id="dashNote" placeholder="What's next here?" autocomplete="off" />
-      <button type="submit" title="Add">＋</button>
-    </form>
-    <div class="ac-b">${body}</div></div>`;
+// The row's SECOND verbs, collapsed until the row is under the pointer. ▶ is never in here:
+// it is what the row is for, and a list whose one verb appears only on hover is a list you
+// have to hunt across to see what you can do with.
+const qacts = (html: string): string => (html ? `<span class="qacts">${html}</span>` : "");
+
+// A claimed row turns its ▶ into a ◍ in the same slot; a name in the row made the column
+// ragged. The enlarged view says who and for how long.
+function qWorkRow(i: QueueItem): string {
+  const t = i.thread!;
+  const h = i.held ?? null;
+  const go = h
+    ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
+        data-tip="${escAttr(`${h.who}${h.mine ? " (you)" : ""} ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
+    : `<button class="go" data-dashwork="${t.number}" data-tip="Start an agent on this">▶</button>`;
+  // The row's own ⤢ reads the thread HERE rather than opening a list of its neighbours; the
+  // header's enlarge link is what still opens Still needed? (the Quiet chip picks it).
+  const read = `<button class="tb" data-dashissue="${t.number}" data-tip="Read the whole thread here">⤢</button>`;
+  const triage = i.triage
+    ? `<button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
+      + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button>`
+    : "";
+  return qrow(`q-work${h ? " claimed" : ""}`, ` data-dashurl="${escAttr(t.url)}"`,
+    `<span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>`, i,
+    qacts(`${triage}${read}`) + go);
 }
+
+// An advisory's whole row opens GitHub, as the Dependencies card's did. A bot PR cannot: its
+// ▶ is nested, and `data-dashdepopen` is probed above everything, so the row would eat it.
+function qDepsRow(i: QueueItem): string {
+  if (i.advisory) {
+    return qrow("q-deps", ` data-dashdepopen="${escAttr(i.advisory.url)}"`,
+      `<span class="k adv">adv</span>`, i, `<span class="age">${esc(i.advisory.ghsa)}</span>`,
+      `${i.advisory.summary || i.advisory.ghsa} — open it on GitHub`);
+  }
+  if (i.pr) {
+    return qrow("q-deps", "", `<span class="k pr">pr</span>`, i,
+      `<span class="age">${esc(shortAge(i.pr.updatedAt))}</span>`
+      + qacts(`<button class="tb" data-dashdepopen="${escAttr(i.pr.url)}" data-tip="Open this pull request on GitHub">↗</button>`)
+      + `<button class="go" data-dashdeppr="${i.pr.number}" data-tip="Read it, then start an agent on it">▶</button>`);
+  }
+  // The row opens the table rather than ticking it: the overlay's tick attribute mutates a pick
+  // set this card draws no tick for, so the state was invisible and a second click silently undid
+  // the first. (Spelling that attribute here would also put it in dispatch.test's emitted set.)
+  return qrow("q-deps", ` data-dashopen-view="deps"`, `<span class="k">pkg</span>`, i,
+    "", `Open the Dependencies view, where this upgrade is briefed and dispatched`);
+}
+
+// A colleague's note is dispatchable but not editable here: this is a read of their file.
+function qNoteRow(i: QueueItem): string {
+  if (i.shared) {
+    return qrow("q-note", "", `<span class="k">note</span>`, i,
+      `<button class="nb" data-dashdispatchtext="${escAttr(i.shared.text)}" data-tip="Start an agent on this note">▶</button>`);
+  }
+  const n = i.note!;
+  return qrow("q-note", ` data-dashnote="${escAttr(n.id)}"`, `<span class="k">note</span>`, i,
+    `<span class="age">${esc(relTime(n.created))}</span>`
+    + qacts(`<button class="nb" data-dashdrop="${escAttr(n.id)}" data-tip="Delete this note">✕</button>`)
+    + `<button class="nb" data-dashdispatch="${escAttr(n.id)}" data-tip="Start an agent on this note">▶</button>`);
+}
+
+const qRow = (i: QueueItem): string =>
+  i.kind === "work" ? qWorkRow(i) : i.kind === "deps" ? qDepsRow(i) : qNoteRow(i);
+
+export function queueCard(
+  items: QueueItem[], tally: Record<QueueFilter, number>, filter: QueueFilter, query: string,
+  ghKnown: boolean, depKnown: boolean,
+): string {
+  // A count of nought is not a filter worth arming: the chip stays, greyed, so the list's
+  // shape is still readable — "no PRs open" is an answer.
+  const chips = QFILTERS.map((c) => {
+    const off = c.id !== "all" && !tally[c.id];
+    return `<button class="qchip${c.id === filter ? " on" : ""}${c.id === "quiet" ? " facet" : ""}`
+      + `${off ? " off" : ""}"${off ? ` aria-disabled="true"` : ""} data-dashqfilter="${c.id}"`
+      + ` data-tip="${escAttr(off ? `Nothing here: ${c.tip.toLowerCase()}` : c.tip)}">`
+      + `${esc(c.label)} ${tally[c.id]}</button>`;
+  }).join("");
+  // "All" spans every kind, so its ⤢ opens one that can hold a row: a project with no GitHub
+  // has an Open work board that can never fill. A half still in flight keeps its place.
+  const enlarge = filter !== "all" ? QVIEW[filter]
+    : tally.iss + tally.pr || !ghKnown ? "work"
+    : tally.deps || !depKnown ? "deps"
+    : "notes";
+  // The notes are local and never wait for GitHub, so the half that has answered is drawn
+  // and only the half still in flight is a skeleton.
+  const waiting = (!ghKnown && filter !== "deps" && filter !== "note")
+    || (!depKnown && filter !== "iss" && filter !== "note");
+  // Every row, because the column is a scroller with a sticky head and a pinned foot: a cap
+  // plus "…and 14 more" made a list that ended in an apology where there was room to read.
+  const rows = items.map(qRow).join("") + (waiting ? cardSkeleton(2) : "");
+  // A search that matches nothing says so against the words you typed; the empty queue
+  // says the other thing, and the two must not be one sentence.
+  const body = rows
+    || (query
+      ? `<div class="ac-empty">Nothing here matches <b>${esc(query)}</b>.</div>`
+      : `<div class="ac-empty">Nothing open, nothing out of date, nothing jotted.</div>`);
+  // The head stays on screen while the list scrolls under it: the search and the chips are
+  // how you get back out of a narrowed list.
+  return `<div class="qsec"><div class="qhead"><div class="asec-h"><span class="label">What&#39;s next</span>
+      <button class="aslink" data-dashopen-view="${enlarge}"
+        data-tip="${escAttr(`Open ${QLABEL[enlarge] ?? "all of it"} in full`)}">${esc(QLABEL[enlarge] ?? "All")} ⤢</button></div>
+    <div class="qfind"><input class="qq" id="dashQ" type="search" spellcheck="false" autocomplete="off"
+      placeholder="Search what&#39;s next…" aria-label="Search what's next"
+      data-tip="Narrow the list: a number, a package, a word in a title" value="${escAttr(query)}" />`
+    + (query ? `<button class="qqx" data-dashqclear data-tip="Clear the search">✕</button>` : "")
+    + `</div>
+    <div class="qchips">${chips}</div></div>
+    <div class="qlist">${body}</div></div>`;
+}
+
+const QLABEL: Record<string, string> = {
+  work: "Open work", deps: "Dependencies", notes: "Notes", triage: "Triage",
+};
 
 // The one-time offer to start a shared work log, under the sentences it talks about.
 // Absent once the project has a digest: from then on every closed day is contributed
@@ -396,78 +557,13 @@ export function missingCard(tier: ProjectTier, f: ProjectFacts | null): string {
     <p>Notes stay on this machine: there is nothing to commit <code>.episko/</code> into.</p></div>`;
 }
 
-// ---------- the inspector: the project's context menu, standing open ----------
-
-// `known`: whether `project_facts` has answered for this project; until it has, `tier`
-// reads `none` and must not be read alone. Not "is anything loading": a range change
-// reloads the timeline without putting the tier in doubt.
-export function dashInspector(
-  root: string, tier: ProjectTier, f: ProjectFacts | null,
-  live: { id: string; label: string; glyph: string; cls: string; ctx: string }[],
-  shared: boolean, known = true,
-): string {
-  const act = (a: string, ic: string, lb: string, sb = "", cls = "", off = false) =>
-    `<button class="ia ${cls}" data-dashact="${a}"${off ? " disabled" : ""}><span class="ic">${ic}</span>`
-    + `<span><span class="lb">${esc(lb)}</span>${sb ? `<span class="sb">${esc(sb)}</span>` : ""}</span></button>`;
-  const repo = known && tier !== "none";
-  const chips = [
-    f?.slug ? `<span class="chip">${esc(f.slug)}</span>` : "",
-    f?.host && !f.slug ? `<span class="chip">${esc(f.host)}</span>` : "",
-    !known ? `<span class="chip sk">${sk("62px", 8)}</span>`
-      : tier === "none" ? `<span class="chip warn">not a repo</span>` : "",
-    shared ? `<span class="chip acc" title="This project has a committed .episko/digest.md">.episko/ shared</span>` : "",
-  ].filter(Boolean).join("");
-  return `
-    ${live.length ? `<div><span class="label">Running here</span><div class="ip-live">${live.map((s) =>
-      `<div class="srow" data-sel="${esc(s.id)}"><span class="sglyph ${s.cls}">${s.glyph}</span>`
-      + `<span class="sbranch">${esc(s.label)}</span><span class="sctx">${esc(s.ctx)}</span></div>`).join("")}</div></div>` : ""}
-    <div><span class="label">Do something here</span><div class="ip-acts">
-      ${act("launch", "＋", repo ? "New session…" : "New session",
-        live.length ? `${live.length} already running here`
-          : repo ? "here, or on a branch of its own" : "start Claude Code in this folder")}
-      ${act("terminal", "❯", "Open terminal here", "a plain shell, no Claude")}
-      ${act("run", "▶", "Run a task…", "the scripts this project already ships")}
-      <div class="ip-sep"></div>
-      ${act("history", "◷", "History…", "reopen a session you closed")}
-      ${act("folder", "⌂", "Open project folder", `reveal it in ${FILE_MANAGER}`)}
-      ${act("copypath", "⧉", "Copy path", "the full path, to the clipboard")}
-      ${repo && !shared
-        ? act("worklog", "↑", "Share the work log…", "commit each day's summary to .episko/") : ""}
-    </div></div>
-    ${chips ? `<div><span class="label">Repository</span><div class="db-chips">${chips}</div></div>` : ""}
-    <p class="ihint">${esc(tilde(root))}</p>`;
-}
-
-// The 44px rail ⌘I collapses to. The inspector holds the only copy of History /
-// Terminal / Run here, so collapsing to nothing would hide real verbs.
-export function dashStrip(
-  accent: string, initial: string, tier: ProjectTier,
-  live: { id: string; glyph: string; cls: string; label: string }[], known = true,
-): string {
-  const b = (a: string, ic: string, t: string, cls = "", off = false) =>
-    `<button class="isb ${cls}" data-dashact="${a}" title="${esc(t)}"${off ? " disabled" : ""}>${ic}</button>`;
-  // Same `known` gate as the inspector: the two surfaces must offer the same verbs.
-  const repo = known && tier !== "none";
-  return `<span class="sglyphs">
-      <span class="pglyph" style="background:${esc(accent)}">${esc(initial)}</span>
-      ${live.map((s) => `<button class="isb live ${s.cls}" data-sel="${esc(s.id)}" title="${esc(s.label)}">${s.glyph}</button>`).join("")}
-    </span>
-    ${b("launch", "＋", repo ? "New session…" : "New session")}
-    ${b("terminal", "❯", "Open terminal here")}
-    ${b("run", "▶", "Run a task…")}
-    <span class="isep"></span>
-    ${b("history", "◷", "History…")}
-    ${b("folder", "⌂", "Open project folder")}
-    ${b("copypath", "⧉", "Copy path")}`;
-}
-
 // ---------- the enlarge overlay ----------
 // One component, N contents. It covers the dashboard rather than replacing it; Esc steps
 // out one layer, as in the commit graph's message overlay.
 
 export function overlayHtml(title: string, sub: string, body: string, foot: string): string {
   return `<div class="ovl-h"><span class="t">${esc(title)}</span><span class="s">${esc(sub)}</span>
-      <span class="rt"><button class="act" data-dashclose-view>✕<span class="txt"> Close</span></button></span></div>
+      <span class="rt"><button class="act" data-dashclose-view data-tip="Close this view (Esc)">✕<span class="txt"> Close</span></button></span></div>
     <div class="ovl-b">${body}</div>
     ${foot ? `<div class="ovl-f">${foot}</div>` : ""}`;
 }
@@ -787,19 +883,6 @@ export function notesOverlay(
 
 const KIND = (t: GhThread) => (t.kind === "pr" ? "pr" : "iss");
 
-// A claimed row turns its ▶ into a ◍ in the same slot; a name in the row made the column
-// ragged. The enlarged view says who and for how long.
-function workRow(t: GhThread, h: Holder | null): string {
-  const act = h
-    ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
-        title="${esc(`${h.who}${h.mine ? " (you)" : ""} ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
-    : `<button class="go" data-dashwork="${t.number}" title="Start an agent on this">▶</button>`;
-  return `<div class="cr${h ? " claimed" : ""}" data-dashurl="${esc(t.url)}" title="${esc(t.title)}">
-    <span class="k ${KIND(t)}">${KIND(t)}</span>
-    <span class="ti">${esc(t.title)}</span>
-    <span class="rt"><span class="age">${esc(shortAge(t.updated_at))}</span>${act}</span></div>`;
-}
-
 export function shortAge(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "—";
@@ -808,14 +891,6 @@ export function shortAge(iso: string): string {
   if (m < 1440) return `${Math.round(m / 60)}h`;
   const d = Math.round(m / 1440);
   return d < 14 ? `${d}d` : `${Math.round(d / 7)}w`;
-}
-
-export function workCard(rows: GhThread[], total: number, prs: number, holder: (t: GhThread) => Holder | null): string {
-  if (!rows.length) return "";
-  return `<div class="ac"><div class="ac-h"><span class="t">Open work</span>
-      <span class="n">${total - prs} · ${prs} PR</span>
-      <button class="xb" data-dashopen-view="work" title="See all issues and pull requests">⤢</button></div>
-    <div class="ac-b">${rows.map((t) => workRow(t, holder(t))).join("")}</div></div>`;
 }
 
 // gh missing, logged out, or signed in as the wrong account: one quiet row, never an
@@ -854,7 +929,7 @@ const BUCKET_LABEL: Record<string, string> = { today: "Today", week: "This week"
 
 function workBigRow(t: GhThread, h: Holder | null): string {
   const labels = t.labels.slice(0, 3).map((l) =>
-    `<span class="lbl" style="--lc:${labelHue(l)}">${esc(l)}</span>`).join("");
+    `<span class="lbl" style="--lc:${nameHue(l)}">${esc(l)}</span>`).join("");
   const claim = h
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
   const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
@@ -868,17 +943,12 @@ function workBigRow(t: GhThread, h: Holder | null): string {
   </div>`;
 }
 
-// A stable hue per label name; GitHub's own colour would cost a wider query for decoration.
-function labelHue(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360} 62% 68%)`;
-}
-
 export function workOverlay(
   groups: { bucket: string; rows: GhThread[] }[], slug: string, total: number,
   holder: (t: GhThread) => Holder | null,
 ): string {
+  if (!total) return overlayHtml("Open work", `${esc(slug)} · nothing open`,
+    `<div class="ac-empty">Nothing is open here.</div>`, "");
   const body = `<div class="lst-hd"><span>Kind</span><span class="r">#</span><span>Title</span>
       <span class="r">Age</span><span class="r">Action</span></div>`
     + groups.map((g) => `<div class="bk">
@@ -889,21 +959,6 @@ export function workOverlay(
 }
 
 // ---------- triage ----------
-
-export function triageCard(rows: { t: GhThread; why: string }[], total: number): string {
-  if (!rows.length) return "";
-  const body = rows.map(({ t, why }) => `<div class="tr" data-dashurl="${esc(t.url)}">
-    <span class="mid"><span class="ti">${esc(t.title)}</span>
-      <span class="sub">#${t.number} · ${esc(why)}</span></span>
-    <span class="tr-b">
-      <button class="tb yes" data-dashclose="${t.number}" title="Close it on GitHub, with a comment">✓</button>
-      <button class="tb no" data-dashkeep="${t.number}" title="Keep it, so nobody on the team is asked again">✕</button>
-    </span></div>`).join("");
-  return `<div class="ac"><div class="ac-h"><span class="t">Still needed?</span>
-      <span class="n">${rows.length} of ${total}</span>
-      <button class="xb" data-dashopen-view="triage" title="Review every quiet issue">⤢</button></div>
-    <div class="ac-b">${body}</div></div>`;
-}
 
 export function triageOverlay(
   rows: { t: GhThread; why: string }[], kept: KeptIssue[], canWrite: boolean,

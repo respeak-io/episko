@@ -12,11 +12,44 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-
++ **A dashboard for every project at once** (the Episko logo, top left). Five figures for the fleet,
+  then a card a project — sessions, commits a bar a day, branch, uncommitted work (or "not read yet",
+  never a false clean) and cost — beside the week's spend and limits. 7/14/30 days; cards or rows.
++ **Since you were last here** replaces the day-by-day timeline: commits, sessions, spend and who else
+  has been in since the moment you left — not since midnight, so *Mark read* clears it. Click a bar for
+  that day's commits and sessions, or open the commit graph already scrolled to that day.
++ **Landed: a small commit graph over every branch**, so you can see what the branch you are not on
+  has been doing. Each chip wears its lane's colour, and a run of bot bumps folds into one row —
+  folded, not hidden, so the lane still joins the commits either side. ⤢ opens the full graph.
++ **Read an issue without leaving Episko.** ⤢ on a *What's next* row opens the whole thread — the
+  body and every comment — beside the project it belongs to. ▶ starts an agent through the same
+  sheet the row does, and nothing is written to GitHub from the panel.
++ **Search what's next.** A box at the top of the column narrows the list to whatever you type —
+  a number, a package, a word in a title — and the chips count what is left.
 + **Fable's own weekly limit, in the meters.** A premium model spends a weekly allowance
   separate from the account's, and no telemetry carries it, so the limits popover and
   *Usage & spend* ask the CLI when they open. Levels rather than forecasts: one reading
   has no pace behind it.
+~ **The app opens on the all-projects dashboard, not a "No sessions running" card.** Closing the last
+  session, leaving a project page or a mirror, and a boot with nothing restored all land there. The
+  Episko logo is the way back from anywhere and lights up when you are there; the ▦ button is gone.
+~ **The project page is three columns and reads left to right**: where you are (the sessions running
+  here, the branch, its checkouts), what moved (the band, the working set, Landed), what's next.
+~ **Open work, Still needed?, Dependencies and Notes are one ranked list.** They were four cards asking
+  four versions of the same question; an issue that is also a stale suggestion is now one row, not two.
+~ **✕ leaves a project dashboard or a read-only mirror**, which had no close button at all, and
+  Esc leaves a mirror too. On the fleet screen ✕ goes back to a session, so it is there only
+  when there is one to go back to.
+~ **A row in *What's next* keeps its second verbs out of the way** until you point at it or Tab
+  to it — close a quiet issue, open it on GitHub, read it here. ▶ is always there.
+~ **The whole list fits the column now**, scrolling under the search and the chips instead of stopping
+  at eight rows and saying "…and 14 more".
+~ **The note box sits at the foot of the column and stays there** while the list scrolls past it. It
+  opens into a multi-line field as you type: Enter files the note, Shift+Enter starts a line.
+~ **The twelve-row "Do something here" menu is five tiles.** Four of its rows were already buttons in
+  the header above it, working on the very project you are looking at.
+~ **⌘I on a project page folds the right-hand column** instead of collapsing the inspector to a strip
+  of glyphs. The strip existed because the page's verbs lived only there; they no longer do.
 ! **Claude Code installed through npm now launches on Windows.** `npm i -g` leaves an
   extensionless sh shim beside `claude.cmd`, and Episko was starting the one Windows refuses.
 

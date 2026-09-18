@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  chipText, GRAPH_COLORS, graphWidth, laneColor, laneX, layoutGraph, lineRef, lineTip,
-  mergeBranchName, parseRefs, refChips, refChipsHtml, rowSvg, shortRef, shortRel,
-  type GraphCommit,
+  chipText, foldBots, GRAPH_COLORS, graphWidth, inSpan, laneColor, laneX, layoutGraph,
+  lineRef, lineTip, mergeBranchName, parseRefs, refChips, refChipsHtml, rowSvg, rowSvgAt,
+  shortRef, shortRel, spanNeedsMore, type GraphCommit, type GraphMark, type LiteRow,
 } from "../src/graph";
 
 // A commit as git_graph hands it over. Only sha/parents shape the graph, so the rest
@@ -389,5 +389,225 @@ describe("rowSvg / refChipsHtml", () => {
     const html = refChipsHtml(refChips("refs/heads/a-very-long-branch-name-indeed, refs/remotes/origin/a-very-long-branch-name-indeed"));
     expect(html).toContain('<span class="gn">a-very-long-branch-name-indeed</span>');
     expect(html.indexOf('class="gr"')).toBeGreaterThan(html.indexOf('class="gn"'));
+  });
+});
+
+describe("rowSvgAt", () => {
+  // A page whose widest row is 2 lanes and whose last row is 1, so the two widths differ.
+  const page = () => layoutGraph([
+    c("m", ["a1", "b1"]), c("a1", ["base"]), c("b1", ["base"]), c("base"), c("older"),
+  ]);
+  const ds = (svg: string) => svg.match(/ d="[^"]*"/g) || [];
+
+  it("draws a narrow row out to the width the caller asked for", () => {
+    const l = page();
+    expect(l.rows[4].span).toBe(1);
+    expect(rowSvgAt(l.rows[4], l.lanes)).toContain(`width="${graphWidth(2)}"`);
+    expect(rowSvgAt(l.rows[4], l.lanes)).toContain(`viewBox="0 0 ${graphWidth(2)} 26"`);
+    // rowSvg is that same call at the row's own span, and still sizes to it alone.
+    expect(rowSvg(l.rows[4])).toContain(`width="${graphWidth(1)}"`);
+  });
+
+  it("clamps a span below the row's own up, rather than clipping a lane", () => {
+    const l = page();
+    expect(l.rows[0].span).toBe(2);
+    expect(rowSvgAt(l.rows[0], 0)).toContain(`width="${graphWidth(2)}"`);
+    expect(rowSvgAt(l.rows[0], 1)).toBe(rowSvg(l.rows[0]));
+  });
+
+  it("leaves the path geometry alone whatever width it is drawn at — laneX is absolute", () => {
+    const l = page();
+    expect(ds(rowSvgAt(l.rows[1], 5))).toEqual(ds(rowSvg(l.rows[1])));
+    expect(ds(rowSvgAt(l.rows[1], 5))).toHaveLength(3);
+  });
+
+  it("marks the HEAD commit's node differently, as rowSvg does", () => {
+    const l = page();
+    expect(rowSvgAt(l.rows[0], 4, { head: true })).toContain('class="gnode ghead"');
+    expect(rowSvgAt(l.rows[0], 4, { head: true })).toContain('r="4.2"');
+    expect(rowSvgAt(l.rows[0], 4)).toContain('r="3.4"');
+    expect(rowSvgAt(l.rows[0], 4)).not.toContain("ghead");
+  });
+});
+
+/** The fixture above fixes one author; folding is entirely about who wrote the commit. */
+const by = (author: string, sha: string, parents: string[] = [], refs = ""): GraphCommit =>
+  ({ ...c(sha, parents, refs), author });
+const bot = (author: string) => author.endsWith("[bot]");
+const folds = (rows: LiteRow[]) => rows.flatMap((r) => (r.kind === "fold" ? [r.fold] : []));
+const shas = (rows: LiteRow[]) =>
+  rows.flatMap((r) => (r.kind === "fold" ? r.fold.commits.map((x) => x.sha) : [r.row.c.sha]));
+
+describe("foldBots", () => {
+  // A run of bots on lane 0 with a side line crossing it, so the fold has a through lane.
+  const crossed = () => layoutGraph([
+    by("Ada", "m", ["b1", "s1"]),
+    by("dependabot[bot]", "b1", ["b2"]),
+    by("dependabot[bot]", "b2", ["b3"]),
+    by("dependabot[bot]", "b3", ["base"]),
+    by("Ada", "s1", ["base"]),
+    by("Ada", "base"),
+  ]);
+
+  it("folds a run of bot commits into one row and leaves its neighbours' lines alone", () => {
+    const l = layoutGraph([
+      by("Ada", "h", ["b1"]),
+      by("dependabot[bot]", "b1", ["b2"]),
+      by("dependabot[bot]", "b2", ["b3"]),
+      by("dependabot[bot]", "b3", ["b4"]),
+      by("dependabot[bot]", "b4", ["t"]),
+      by("Ada", "t", ["gone"]),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite.map((r) => r.kind)).toEqual(["commit", "fold", "commit"]);
+    const [f] = folds(lite);
+    expect(f.commits.map((x) => x.sha)).toEqual(["b1", "b2", "b3", "b4"]);
+    // The rows either side keep their lane, line and so their colour: folding happens after
+    // layoutGraph precisely so the tail does not re-open as a new line.
+    expect([lite[0], lite[2]].map((r) => r.kind === "commit" && r.row.lane)).toEqual([0, 0]);
+    expect(l.rows[5].line).toBe(l.rows[0].line);
+    expect(laneColor(l.rows[5].line)).toBe(laneColor(l.rows[0].line));
+  });
+
+  it("carries the run's drawn geometry on the synthetic row", () => {
+    const l = crossed();
+    const [f] = folds(foldBots(l.rows, bot));
+    expect(shape(f.row)).toEqual({ lane: 0, above: [0], below: [0], through: [1] });
+    expect(f.row.above).toEqual(l.rows[1].above);   // where the run is entered
+    expect(f.row.below).toEqual(l.rows[3].below);   // and where it is left
+    expect(f.row.span).toBe(2);
+    expect(f.row.merged).toEqual([]);
+    // A real commit, so rowSvgAt and any tooltip have something to read.
+    expect(f.row.c.sha).toBe("b1");
+    expect(f.commits.map((x) => x.sha)).toEqual(["b1", "b2", "b3"]);
+  });
+
+  it("names the authors busiest first, ties by name", () => {
+    const l = layoutGraph([
+      by("Ada", "h", ["b1"]),
+      by("renovate[bot]", "b1", ["b2"]),
+      by("renovate[bot]", "b2", ["b3"]),
+      by("dependabot[bot]", "b3", ["b4"]),
+      by("zbot[bot]", "b4", ["b5"]),
+      by("abot[bot]", "b5", ["gone"]),
+    ]);
+    const [f] = folds(foldBots(l.rows, bot));
+    expect(f.authors).toEqual(["renovate[bot]", "abot[bot]", "dependabot[bot]", "zbot[bot]"]);
+  });
+
+  it("leaves a run of one alone — '1 bot commit' says less than the commit did", () => {
+    const l = layoutGraph([
+      by("Ada", "h", ["b1"]), by("dependabot[bot]", "b1", ["t"]), by("Ada", "t", ["gone"]),
+    ]);
+    expect(foldBots(l.rows, bot).every((r) => r.kind === "commit")).toBe(true);
+    expect(folds(foldBots(l.rows, bot, 1))).toHaveLength(1);
+  });
+
+  it("splits the run at a merge, which has a second parent to draw", () => {
+    const l = layoutGraph([
+      by("Ada", "h", ["b1"]),
+      by("dependabot[bot]", "b1", ["b2"]),
+      by("dependabot[bot]", "b2", ["mrg"]),
+      by("dependabot[bot]", "mrg", ["b3", "s1"]),
+      by("dependabot[bot]", "b3", ["b4"]),
+      by("dependabot[bot]", "b4", ["base"]),
+      by("Ada", "s1", ["base"]),
+      by("Ada", "base"),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite.map((r) => r.kind)).toEqual(["commit", "fold", "commit", "fold", "commit", "commit"]);
+    expect(folds(lite).map((f) => f.commits.map((x) => x.sha))).toEqual([["b1", "b2"], ["b3", "b4"]]);
+  });
+
+  it("never folds a commit carrying a ref, which would vanish with it", () => {
+    const l = layoutGraph([
+      by("Ada", "h", ["b1"]),
+      by("dependabot[bot]", "b1", ["b2"]),
+      by("dependabot[bot]", "b2", ["v1"]),
+      by("dependabot[bot]", "v1", ["b3"], "refs/tags/v1"),
+      by("dependabot[bot]", "b3", ["b4"]),
+      by("dependabot[bot]", "b4", ["gone"]),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite.map((r) => r.kind)).toEqual(["commit", "fold", "commit", "fold"]);
+    expect(lite[2].kind === "commit" && lite[2].row.c.sha).toBe("v1");
+  });
+
+  it("splits the run where a lane beside it closes, rather than hiding that branch", () => {
+    const l = layoutGraph([
+      by("Ada", "m", ["b1", "s1"]),
+      by("dependabot[bot]", "b1", ["b2"]),
+      by("dependabot[bot]", "b2", ["b3"]),
+      by("Ada", "s1"),                          // a root: lane 1 closes here
+      by("dependabot[bot]", "b3", ["b4"]),
+      by("dependabot[bot]", "b4", ["gone"]),
+    ]);
+    // The signature the fold keys on differs either side, which is what ends the run.
+    expect(l.rows[2].through.map((t) => t.lane)).toEqual([1]);
+    expect(l.rows[4].through).toEqual([]);
+    expect(folds(foldBots(l.rows, bot)).map((f) => f.commits.map((x) => x.sha)))
+      .toEqual([["b1", "b2"], ["b3", "b4"]]);
+  });
+
+  it("keeps the head row whole even on an all-bot page", () => {
+    const l = layoutGraph([
+      by("dependabot[bot]", "b0", ["b1"]),
+      by("dependabot[bot]", "b1", ["b2"]),
+      by("dependabot[bot]", "b2", ["b3"]),
+      by("dependabot[bot]", "b3", ["gone"]),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite[0]).toEqual({ kind: "commit", row: l.rows[0] });
+    expect(lite).toHaveLength(2);
+  });
+
+  it("loses no commit, whatever it folds", () => {
+    const l = crossed();
+    expect(shas(foldBots(l.rows, bot))).toEqual(l.rows.map((r) => r.c.sha));
+    expect(shas(foldBots(l.rows, () => false))).toEqual(l.rows.map((r) => r.c.sha));
+    expect(foldBots([], bot)).toEqual([]);
+  });
+});
+
+describe("a marked span — the ribbon's day, opened in the graph", () => {
+  const DAY = 86_400_000;
+  const at = (ms: number): GraphCommit => ({ ...c("x"), unix: ms / 1000 });
+  const m = (from: number): GraphMark => ({ from, to: from + DAY, label: "8 Sep" });
+
+  describe("inSpan", () => {
+    const span = m(1_000 * DAY);
+    it("takes the day's own midnight and leaves the next one to the next day", () => {
+      // Half-open, or every commit at midnight would be lit by two days at once.
+      expect(inSpan(at(span.from), span)).toBe(true);
+      expect(inSpan(at(span.to - 1), span)).toBe(true);
+      expect(inSpan(at(span.to), span)).toBe(false);
+      expect(inSpan(at(span.from - 1), span)).toBe(false);
+    });
+    it("reads `unix` as seconds, the same clock git_log_days counts the bars from", () => {
+      // The join is only exact because both are %at; a ms/seconds slip lights nothing.
+      expect(at(span.from).unix).toBe(span.from / 1000);
+      expect(inSpan(at(span.from + 60_000), span)).toBe(true);
+    });
+  });
+
+  describe("spanNeedsMore", () => {
+    const span = m(1_000 * DAY);
+    const CAP = 100, SLACK = 2 * DAY;
+    it("asks for a page when nothing is loaded at all", () => {
+      expect(spanNeedsMore([], span, SLACK, CAP)).toBe(true);
+    });
+    it("keeps paging while the oldest loaded commit is still newer than the span", () => {
+      expect(spanNeedsMore([at(span.to + 5 * DAY)], span, SLACK, CAP)).toBe(true);
+    });
+    it("reads past the span by `slack`, because --date-order is not author order", () => {
+      // A rebase or a cherry-pick dips one author date below its neighbours'; stopping on
+      // the first commit older than `from` would leave that one unlit.
+      expect(spanNeedsMore([at(span.from - DAY)], span, SLACK, CAP)).toBe(true);
+      expect(spanNeedsMore([at(span.from - 3 * DAY)], span, SLACK, CAP)).toBe(false);
+    });
+    it("stops at the cap whatever the dates say — this panel never reads a whole history", () => {
+      const many = Array.from({ length: CAP }, () => at(span.to + 99 * DAY));
+      expect(spanNeedsMore(many, span, SLACK, CAP)).toBe(false);
+    });
   });
 });

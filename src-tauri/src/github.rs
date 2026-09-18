@@ -307,7 +307,7 @@ pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String
     .unwrap_or_else(|e| GhResult::unavailable(format!("gh task failed: {e}")))
 }
 
-/// Drop a repo's cached reads so the next call goes to the network. All three caches:
+/// Drop a repo's cached reads so the next call goes to the network. Every cache:
 /// a refresh is one question, and switching the account a project reads as must not
 /// leave a board of the new identity beside a triage list of the old one.
 #[tauri::command]
@@ -325,6 +325,20 @@ pub(crate) fn gh_invalidate(root: String) {
     if let Ok(mut guard) = MERGED_CACHE.lock() {
         if let Some(m) = guard.as_mut() {
             m.remove(&root);
+        }
+    }
+    // Read with the account like every other one here, so it goes with them: a token that
+    // cannot see a ruleset would otherwise leave the old identity's answer on the new one.
+    if let Ok(mut guard) = PROTECTED_CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
+    // The reader's cache is keyed by root AND thread, so this one drops by prefix.
+    if let Ok(mut guard) = ISSUE_CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            let prefix = format!("{root}\u{0}");
+            m.retain(|k, _| !k.starts_with(&prefix));
         }
     }
 }
@@ -688,6 +702,177 @@ pub(crate) async fn gh_close_issue(
     .map_err(|e| format!("gh task failed: {e}"))?
 }
 
+// ---------- one thread, read in full ----------
+// The queue's ⤢ pulls an issue or a pull request INTO the app instead of handing it to a
+// browser: the body, the labels and every comment, so deciding what to start next costs no
+// context switch. Read-only — every write this pane makes still goes through its own sheet.
+
+/// One comment, flattened to what the reader draws.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhComment {
+    pub who: String,
+    pub at: String, // ISO-8601 as gh gives it; the frontend parses
+    pub body: String,
+}
+
+/// An issue or PR with everything a reader needs. `available: false` carries the reason the
+/// way `GhResult` does: a thread that cannot be read is one quiet panel, never a dialog.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct GhIssueRead {
+    pub available: bool,
+    pub reason: Option<String>,
+    pub number: i64,
+    pub kind: String, // "issue" | "pr", as the caller asked for it
+    pub title: String,
+    pub url: String,
+    pub state: String,
+    pub author: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub body: String,
+    pub comments: Vec<GhComment>,
+}
+
+impl GhIssueRead {
+    /// The number and kind survive a failure: the panel is open on a thread the queue named,
+    /// and a reader that forgets which one it is asking about cannot say so.
+    fn unavailable(number: i64, kind: &str, reason: impl Into<String>) -> Self {
+        Self {
+            available: false,
+            reason: Some(reason.into()),
+            number,
+            kind: kind.to_string(),
+            title: String::new(),
+            url: String::new(),
+            state: String::new(),
+            author: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            labels: vec![],
+            assignees: vec![],
+            body: String::new(),
+            comments: vec![],
+        }
+    }
+}
+
+struct CachedIssue { at: Instant, result: GhIssueRead }
+static ISSUE_CACHE: Mutex<Option<HashMap<String, CachedIssue>>> = Mutex::new(None);
+/// Every other cache here is keyed by repo root and so is bounded by the projects you open;
+/// this one is keyed by THREAD, and a body plus its comments is the largest entry any of them
+/// holds. Capped rather than left to the TTL, which never runs when nothing asks again.
+const ISSUE_CACHE_MAX: usize = 64;
+
+/// The key to drop once the cache is over its cap, or `None` while it is under. `at` is when an
+/// entry was fetched, so the oldest is also the nearest to its TTL: the one with the least left
+/// to give goes first. A free function so the rule is testable without a `gh` on PATH.
+fn issue_cache_evict(m: &HashMap<String, CachedIssue>) -> Option<String> {
+    if m.len() <= ISSUE_CACHE_MAX {
+        return None;
+    }
+    m.iter().min_by_key(|(_, v)| v.at).map(|(k, _)| k.clone())
+}
+
+/// `gh issue view --json …` / `gh pr view --json …`, which answer one object rather than a
+/// list. A field gh did not send is empty, never an error: the panel is worth drawing on a
+/// title alone.
+pub(crate) fn parse_issue_read(json: &str, number: i64, kind: &str) -> Option<GhIssueRead> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let o = v.as_object()?;
+    let str_at = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let logins = |k: &str| {
+        o.get(k)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|u| u.get("login").and_then(|l| l.as_str()).map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    Some(GhIssueRead {
+        available: true,
+        reason: None,
+        number: o.get("number").and_then(serde_json::Value::as_i64).unwrap_or(number),
+        kind: kind.to_string(),
+        title: str_at("title"),
+        url: str_at("url"),
+        state: str_at("state"),
+        author: o.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).map(String::from),
+        created_at: str_at("createdAt"),
+        updated_at: str_at("updatedAt"),
+        labels: o
+            .get("labels")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
+            .unwrap_or_default(),
+        assignees: logins("assignees"),
+        body: str_at("body"),
+        comments: o
+            .get("comments")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|c| GhComment {
+                        who: c.get("author").and_then(|x| x.get("login")).and_then(|l| l.as_str()).unwrap_or("").to_string(),
+                        at: c.get("createdAt").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                        body: c.get("body").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// One issue or pull request in full. Cached on the same TTL as the board it was opened
+/// from, so re-opening a thread you just closed is free and a `force` still reaches GitHub.
+#[tauri::command]
+pub(crate) async fn gh_issue(
+    root: String,
+    number: i64,
+    kind: String,
+    force: bool,
+    account: Option<String>,
+) -> GhIssueRead {
+    tauri::async_runtime::spawn_blocking(move || {
+        let key = format!("{root}\u{0}{kind}\u{0}{number}");
+        if !force {
+            if let Ok(guard) = ISSUE_CACHE.lock() {
+                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&key)) {
+                    if hit.at.elapsed() < TTL {
+                        return hit.result.clone();
+                    }
+                }
+            }
+        }
+        let acct = account.as_deref();
+        // `issue view` and `pr view` take the same field list and answer the same shape; the
+        // subcommand is the only difference, and a kind we do not know is read as an issue.
+        let sub = if kind == "pr" { "pr" } else { "issue" };
+        let n = number.to_string();
+        let out = gh(&root, acct, &[
+            sub, "view", &n,
+            "--json", "number,title,url,state,body,author,assignees,labels,comments,createdAt,updatedAt",
+        ]);
+        let result = match out {
+            Err(e) => GhIssueRead::unavailable(number, &kind, classify(&e, who_for(acct).as_deref())),
+            Ok(json) => parse_issue_read(&json, number, &kind)
+                .unwrap_or_else(|| GhIssueRead::unavailable(number, &kind, "gh answered something this cannot read")),
+        };
+        if result.available {
+            if let Ok(mut guard) = ISSUE_CACHE.lock() {
+                let m = guard.get_or_insert_with(HashMap::new);
+                m.insert(key, CachedIssue { at: Instant::now(), result: result.clone() });
+                let evict = issue_cache_evict(m);
+                if let Some(k) = evict {
+                    m.remove(&k);
+                }
+            }
+        }
+        result
+    })
+    .await
+    .unwrap_or_else(|e| GhIssueRead::unavailable(0, "issue", format!("gh task failed: {e}")))
+}
+
 // ---------- the project's own policy ----------
 
 /// ```toml
@@ -917,6 +1102,70 @@ mod tests {
         assert_eq!(t[0].labels, vec!["performance", "prio: high"]);
         assert!(t[0].assignees.is_empty());
         assert_eq!(t[1].assignees, vec!["FAbrahamDev"]);
+    }
+
+    // Captured from `gh issue view 33 --json …`, trimmed to the fields the reader draws.
+    const ONE: &str = r#"{
+      "number":33,"title":"renderAll() runs per telemetry event","state":"OPEN",
+      "url":"https://github.com/respeak-io/episko/issues/33",
+      "body":"Every statusline repaints the whole app.\n\n- [ ] coalesce",
+      "author":{"login":"FAbrahamDev"},"assignees":[{"login":"tim"}],
+      "labels":[{"name":"performance"}],
+      "createdAt":"2026-07-20T09:00:00Z","updatedAt":"2026-07-30T07:48:37Z",
+      "comments":[{"author":{"login":"tim"},"createdAt":"2026-07-21T10:00:00Z","body":"One rAF per frame?"}]
+    }"#;
+
+    #[test]
+    fn reads_one_thread_with_its_body_and_comments() {
+        let i = parse_issue_read(ONE, 33, "issue").unwrap();
+        assert!(i.available);
+        assert_eq!(i.number, 33);
+        assert_eq!(i.state, "OPEN");
+        assert_eq!(i.labels, vec!["performance"]);
+        assert_eq!(i.assignees, vec!["tim"]);
+        assert!(i.body.contains("coalesce"));
+        assert_eq!(i.comments.len(), 1);
+        assert_eq!(i.comments[0].who, "tim");
+        assert_eq!(i.comments[0].at, "2026-07-21T10:00:00Z");
+    }
+
+    #[test]
+    fn a_thread_missing_every_optional_field_is_still_worth_drawing() {
+        // A `--json` set gh answered in part must not read as a failure: the panel is open
+        // on a thread the queue named, and a title alone is worth the panel.
+        let i = parse_issue_read(r#"{"number":7,"title":"just a title"}"#, 7, "pr").unwrap();
+        assert!(i.available);
+        assert_eq!(i.kind, "pr", "the caller's kind survives, whatever gh sent");
+        assert!(i.body.is_empty() && i.comments.is_empty() && i.author.is_none());
+    }
+
+    #[test]
+    fn a_list_where_an_object_was_expected_is_no_read_at_all() {
+        assert!(parse_issue_read(ISSUES, 33, "issue").is_none());
+        assert!(parse_issue_read("not json", 33, "issue").is_none());
+    }
+
+    #[test]
+    fn the_thread_cache_drops_its_oldest_rather_than_growing_without_end() {
+        // Every other cache here is keyed by repo root and so is bounded by the projects you
+        // open; this one is keyed by THREAD, and a body with its comments is the biggest entry
+        // any of them holds, so a long session of ⤢ would grow it for ever.
+        let mut m: HashMap<String, CachedIssue> = HashMap::new();
+        assert_eq!(issue_cache_evict(&m), None, "an empty cache evicts nothing");
+        let base = Instant::now();
+        let key = |i: usize| format!("/r\u{0}issue\u{0}{i}");
+        for i in 0..ISSUE_CACHE_MAX {
+            m.insert(key(i), CachedIssue {
+                at: base + Duration::from_millis(i as u64), // 0 is the oldest read
+                result: GhIssueRead::unavailable(i as i64, "issue", "x"),
+            });
+        }
+        assert_eq!(issue_cache_evict(&m), None, "at the cap it holds; one over is what evicts");
+        m.insert(key(ISSUE_CACHE_MAX), CachedIssue {
+            at: base + Duration::from_millis(ISSUE_CACHE_MAX as u64),
+            result: GhIssueRead::unavailable(99, "issue", "x"),
+        });
+        assert_eq!(issue_cache_evict(&m).as_deref(), Some(key(0).as_str()), "the oldest goes");
     }
 
     #[test]

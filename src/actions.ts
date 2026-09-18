@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, toast } from "./dom";
+import { $, foldDashNext, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
@@ -16,7 +16,8 @@ import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import {
-  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, footPrefs, keyPrefs, markWorkdirStale,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, footPrefs, keyPrefs,
+  markWorkdirStale,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
@@ -477,15 +478,17 @@ export function setWindowFocused(v: boolean) {
   if (v && settingsOpen()) refreshAccess();
 }
 export function toggleRail() { $("app").classList.toggle("rail-mini"); }
-// ⌘I / ◨. On a session this hides the inspector; on the dashboard it collapses to an icon
-// rail instead, since the worktree dialog, the graph and the folder are reachable only there.
+// ⌘I / ◨. On a session this hides the inspector; on the dashboard there is no inspector
+// to hide, so it folds the Next column away and leaves the two that carry the project.
+// The fleet has neither: CSS already hides that column, so flipping `insp-off` there
+// changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
+  if (fleetMirror()) return;
   const app = $("app");
   if (dashMirror()) {
-    const mini = app.classList.toggle("insp-mini");
-    $("inspBtn").classList.toggle("on", !mini);
+    const folded = foldDashNext();
+    $("inspBtn").classList.toggle("on", !folded);
   } else {
-    app.classList.remove("insp-mini");
     app.classList.toggle("insp-off");
     $("inspBtn").classList.toggle("on", !app.classList.contains("insp-off"));
   }
