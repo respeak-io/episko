@@ -32,6 +32,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
+  setTermSplit as setTermSplitState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
@@ -238,6 +239,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
   localStorage.setItem("cc-autofetch", JSON.stringify(autoFetchPrefs));
   renderSettings();
   void tickAutoFetch();
+}
+
+// Read at the next ⌘T; nothing on stage moves.
+export function setTermSplit(on: boolean) {
+  setTermSplitState(on);
+  localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
 }
 
 // renderSettings only: ./debug reads vitalsPrefs live on its tick, so no interval is rebuilt.

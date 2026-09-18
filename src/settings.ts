@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
   type SortMode, type WtGroup,
 } from "./state";
 import {
@@ -71,6 +71,7 @@ export interface SettingsHost {
   startTour: (chapterId: string) => void;
   setSort: (m: SortMode, announce?: boolean) => void;
   setEngine: (id: Engine) => void;
+  setTermSplit: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -140,7 +141,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -398,6 +399,11 @@ const SET_TABS: SetTab[] = [
         dim: () => !defaultAgentDef().capabilities.includes("external-terminal"),
         active: () => termEngine, isDefault: () => termEngine === "embedded", reset: () => host.setEngine("embedded"),
         segs: () => availEngines.map((id) => { const d = engineDef(id); return { value: id, label: d.label, sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉" }; }) },
+      { kind: "toggle", set: "termsplit", key: "cc-term-split", label: "Open a terminal beside the session", hint: "The shell splits the stage with the session it was opened from, so the command you are copying stays in view.",
+        more: "Off, a terminal is its own pane and its own row. The other layout is one chord away either way; Keys lists both. A shell opened from a task chain or an external session is always its own pane.",
+        aliases: ["split", "side by side", "tile", "shell", "beside"], since: "0.29.0",
+        dim: () => termEngine !== "embedded",
+        on: () => termSplit, isDefault: () => termSplit, reset: () => host.setTermSplit(true) },
       permissionControl(),
     ],
   },
@@ -1512,6 +1518,7 @@ function scanAsks() {
 
 function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
+  else if (set === "termsplit") host.setTermSplit(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);

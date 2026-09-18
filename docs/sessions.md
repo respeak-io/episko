@@ -41,6 +41,38 @@ Claude validates its mode spellings and exits on an unknown one;
 auth) checks the real binary per `RELEASE.md`. Rust unit tests pin every Codex mapping,
 including hostile/unknown input and flag ordering before `resume`.
 
+## A terminal beside the session (⌘T)
+
+Most shells are opened to run a command the agent just printed, so ⌘T puts the shell **beside**
+the session on stage rather than in a pane of its own: the session keeps the left column at full
+height, the shells stack on the right in launch order, and the shells nest under the session's
+sidebar row. Settings › Launching (`cc-term-split`, on by default) turns it off; `terminalOther`
+(⌘⌥T) takes whichever layout ⌘T is not set to. With an external launch engine ⌘T still opens the
+external app and the switch dims.
+
+- **One mechanism with run groups.** `stageGroup` holds a run's `groupId` *or* an anchor session's
+  own id; `inStageGroup`/`stageKeyOf` (./grouping) answer membership for both, `paintStage`
+  (./panes) lays either out, and `#terminals.tiled.split` is the grid variant. `groupMembers`, the
+  sidebar header and the run-only verbs stay run-only. A chain step never anchors (the mosaic is
+  the chain's), nor does an external pane (`splitAnchorFor`).
+- **A split shell is never `activeId`.** `setActive(shell)` redirects to its anchor and focuses the
+  tile; a tile click is `focusTile`, which moves the ring and the keyboard and nothing else. So the
+  header, inspector, auto-fetch, the outline and the ✕ stay on the session being read, and
+  `activeCwd()` (what the next ⌘T anchors on) is the session's, not the shell's. The nested row
+  never lights as active for the same reason.
+- **`splitBeside` decides, `launchShell` obeys.** The setting, the `other` flag and the anchor rule
+  are read in one function; `handToTerminal` passes `from` (the session a git verb was refused for)
+  so a prefilled command lands beside that session too. A second "is split on?" test at a call site
+  would be the half-off switch the sound rule warns about.
+- **Closing the anchor un-splits its shells** (`splitOf` cleared) rather than closing them: a
+  command running in one is not the close's to kill. Closing a shell repaints the stage through
+  `paintStage` (the grid reflowed, the row count with it, and no ResizeObserver fires); the last
+  shell gone untiles the anchor. Nothing here is persisted: a shell has no roster row, so a split
+  does not survive a quit, exactly as a shell never did.
+- **The alt chord had to be made to work first.** With ⌥ held a Mac reports the option-layer
+  character (⌥T is †, ⌥E is `Dead`), so `comboOf` reads the physical key (`code`) under alt and
+  only under alt; `key` stays the layout's letter everywhere else (`test/keys.test.ts`).
+
 ## Coding-agent providers (`kind:"agent"`)
 
 Every coding conversation is now `Sess.kind === "agent"`. `provider` is a stable catalogue id and `capabilities` says what its adapter can actually supply: session state, activity, context, usage, runtime permissions, launch-permission choices, resume, history and external-terminal support. Shells and tasks remain their own kinds. `isClaude` is reserved for Claude-specific launch/protocol decisions; shared surfaces gate on `hasAgentCapability` / `hasSessionState`.
