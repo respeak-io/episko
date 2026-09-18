@@ -327,6 +327,13 @@ pub(crate) fn gh_invalidate(root: String) {
             m.remove(&root);
         }
     }
+    // Read with the account like every other one here, so it goes with them: a token that
+    // cannot see a ruleset would otherwise leave the old identity's answer on the new one.
+    if let Ok(mut guard) = PROTECTED_CACHE.lock() {
+        if let Some(m) = guard.as_mut() {
+            m.remove(&root);
+        }
+    }
     // The reader's cache is keyed by root AND thread, so this one drops by prefix.
     if let Ok(mut guard) = ISSUE_CACHE.lock() {
         if let Some(m) = guard.as_mut() {
@@ -753,6 +760,20 @@ impl GhIssueRead {
 
 struct CachedIssue { at: Instant, result: GhIssueRead }
 static ISSUE_CACHE: Mutex<Option<HashMap<String, CachedIssue>>> = Mutex::new(None);
+/// Every other cache here is keyed by repo root and so is bounded by the projects you open;
+/// this one is keyed by THREAD, and a body plus its comments is the largest entry any of them
+/// holds. Capped rather than left to the TTL, which never runs when nothing asks again.
+const ISSUE_CACHE_MAX: usize = 64;
+
+/// The key to drop once the cache is over its cap, or `None` while it is under. `at` is when an
+/// entry was fetched, so the oldest is also the nearest to its TTL: the one with the least left
+/// to give goes first. A free function so the rule is testable without a `gh` on PATH.
+fn issue_cache_evict(m: &HashMap<String, CachedIssue>) -> Option<String> {
+    if m.len() <= ISSUE_CACHE_MAX {
+        return None;
+    }
+    m.iter().min_by_key(|(_, v)| v.at).map(|(k, _)| k.clone())
+}
 
 /// `gh issue view --json …` / `gh pr view --json …`, which answer one object rather than a
 /// list. A field gh did not send is empty, never an error: the panel is worth drawing on a
@@ -838,7 +859,12 @@ pub(crate) async fn gh_issue(
         };
         if result.available {
             if let Ok(mut guard) = ISSUE_CACHE.lock() {
-                guard.get_or_insert_with(HashMap::new).insert(key, CachedIssue { at: Instant::now(), result: result.clone() });
+                let m = guard.get_or_insert_with(HashMap::new);
+                m.insert(key, CachedIssue { at: Instant::now(), result: result.clone() });
+                let evict = issue_cache_evict(m);
+                if let Some(k) = evict {
+                    m.remove(&k);
+                }
             }
         }
         result
@@ -1117,6 +1143,29 @@ mod tests {
     fn a_list_where_an_object_was_expected_is_no_read_at_all() {
         assert!(parse_issue_read(ISSUES, 33, "issue").is_none());
         assert!(parse_issue_read("not json", 33, "issue").is_none());
+    }
+
+    #[test]
+    fn the_thread_cache_drops_its_oldest_rather_than_growing_without_end() {
+        // Every other cache here is keyed by repo root and so is bounded by the projects you
+        // open; this one is keyed by THREAD, and a body with its comments is the biggest entry
+        // any of them holds, so a long session of ⤢ would grow it for ever.
+        let mut m: HashMap<String, CachedIssue> = HashMap::new();
+        assert_eq!(issue_cache_evict(&m), None, "an empty cache evicts nothing");
+        let base = Instant::now();
+        let key = |i: usize| format!("/r\u{0}issue\u{0}{i}");
+        for i in 0..ISSUE_CACHE_MAX {
+            m.insert(key(i), CachedIssue {
+                at: base + Duration::from_millis(i as u64), // 0 is the oldest read
+                result: GhIssueRead::unavailable(i as i64, "issue", "x"),
+            });
+        }
+        assert_eq!(issue_cache_evict(&m), None, "at the cap it holds; one over is what evicts");
+        m.insert(key(ISSUE_CACHE_MAX), CachedIssue {
+            at: base + Duration::from_millis(ISSUE_CACHE_MAX as u64),
+            result: GhIssueRead::unavailable(99, "issue", "x"),
+        });
+        assert_eq!(issue_cache_evict(&m).as_deref(), Some(key(0).as_str()), "the oldest goes");
     }
 
     #[test]

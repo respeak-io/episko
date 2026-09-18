@@ -609,9 +609,13 @@ function paint(id: string, html: string): boolean {
   $(id).innerHTML = html;
   return true;
 }
-// The cache is what this module last wrote, and `#inspector` is written by ./inspector
-// and ./mirror too, so it is only valid while the dashboard has held the stage.
+// Every id in the cache is this module's alone, so nothing else can put the DOM out of step
+// with it; the clear is for the project switch, where the markup of the folder you left must
+// never count as a hit for the one you opened.
 function invalidatePaintCache(): void { painted.clear(); }
+
+/** Whether the next `paint` of `id` would write. Asked BEFORE a layout read, never after. */
+const wouldPaint = (id: string, html: string): boolean => painted.get(id) !== html;
 
 // A search box that lives inside painted markup is replaced by its own repaint — and by
 // every GitHub answer that lands while you are typing. The value is rendered from state, so
@@ -625,16 +629,26 @@ function keepCaret(box: HTMLElement, sel: string, repaint: () => void): void {
   if (back) { back.focus(); back.setSelectionRange(caret, caret); }
 }
 
-// Column C: the queue, GitHub's excuse if it has one, and the missing-card notice.
+// Column C: the queue, GitHub's excuse if it has one, and the missing-card notice. `#dashNext`
+// IS the scroller and the assignment rebuilding it resets scrollTop, so a GitHub answer landing
+// while you read throws you back to the top of a list that no longer has an 8-row cap. The guard
+// is asked first: `scrollTop` is a layout read, and on `renderAll`'s path a read on an unchanged
+// pass forces the reflow the cache exists to avoid.
 function paintNext(html: string): void {
-  keepCaret($("dashNext"), ".qq", () => { paint("dashNext", html); });
+  if (!wouldPaint("dashNext", html)) return;
+  const box = $("dashNext");
+  const keep = box.scrollTop;
+  keepCaret(box, ".qq", () => { paint("dashNext", html); });
+  box.scrollTop = keep;   // after keepCaret: focus() scrolls the box to reveal the field
 }
 
 // The overlay, keeping its scroll position: `paint` rebuilds the subtree, and ticking a
 // checkbox halfway down the Branches table changes counts and labels too, so there is no
-// smaller repaint. Restored only when the same view is still up.
+// smaller repaint. Restored only when the same view is still up — and, as above, nothing is
+// measured on a pass that is not going to write.
 function paintOverlay(view: string, html: string): void {
   const ovl = $("dashOverlay");
+  if (!wouldPaint("dashOverlay", html)) { ovl.dataset.view = view; return; }
   const same = ovl.dataset.view === view;
   const keep = same ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : 0;
   ovl.dataset.view = view;

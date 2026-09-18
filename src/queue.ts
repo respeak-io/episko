@@ -57,7 +57,7 @@ const heldText = (h: Holder | null): string =>
   !h ? "nobody on it" : h.mine ? (h.stale ? "yours, probably stale" : "yours") : `${h.who} is on it`;
 
 // "opened 3d", not "3d": the row carries no age column of its own, so the word has to say
-// which clock it is. Anything older than a day loses the "opened".
+// which clock it is. Past a week the span alone is unambiguous and the word is dropped.
 export function agedAt(iso: string, now: number): string {
   const t = at(iso);
   if (!t) return "";

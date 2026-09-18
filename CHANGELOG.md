@@ -12,57 +12,20 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-~ **The app opens on that dashboard instead of a "No sessions running" card.** Closing the last
-  session, stepping out of a project dashboard or a read-only mirror, and starting Episko with
-  nothing restored all land on every project rather than on a splash. The Episko logo is the way
-  back to it from anywhere — it lights up when you are there, and the ▦ button it replaces is gone.
-  ✕ on that screen is a way back to a session, so it is only there when there is one.
-~ **✕ leaves a project dashboard or a read-only mirror**, which had no close button at all; Esc now
-  leaves a mirror too, and both land on the all-projects screen.
-~ **The project page is three columns now, and it reads left to right**: where you are, what moved,
-  what's next. The sessions running here, the branch and its checkouts sit on the left; the middle
-  says what changed and shows the uncommitted work; everything you might start next is one ranked
-  list on the right.
-+ **Since you were last here.** The day-by-day timeline is gone. In its place: what has moved since
-  you last opened this project — commits, sessions, spend, who else has been in, and the two or
-  three sentences already written for those days, over a month of commits drawn a bar a day —
-  hover one to name it, click one to see that day's commits and sessions — and from there open
-  the commit graph already scrolled to that day, with everything committed on it lit up.
-  Measured from the moment you left, not from midnight, so *Mark read* clears it — and when there
-  is nothing new the card says so and shows the last 30 days instead of going blank.
-+ **Landed: a small commit graph over every branch**, not a list of the one you are standing on. You
-  can see what the branch you are not on has been doing: as many commits as the column has room
-  for, each branch chip in its own lane's colour, and who committed as a two-letter face. A run of dependency bumps folds
-  into a single row — folded, not hidden, so the lane still joins the commits either side of it.
-  ⤢ opens the full graph.
-~ **Open work, Still needed?, Dependencies and Notes are one ranked list.** They were four cards
-  asking four versions of "what should I start next here?". An issue that is also a stale suggestion
-  is now one row carrying both, instead of two rows in two cards.
-+ **Read an issue without leaving Episko.** ⤢ on a row in *What's next* opens the whole thread —
-  the description and every comment — beside the project it belongs to. ▶ from there starts an
-  agent through the same sheet as before; nothing is written to GitHub from the panel, and a
-  link in a body opens in your browser rather than in the app.
++ **A dashboard for every project at once** (the Episko logo, top left). Five figures for the fleet,
+  then a card a project — sessions, commits a bar a day, branch, uncommitted work (or "not read yet",
+  never a false clean) and cost — beside the week's spend and limits. 7/14/30 days; cards or rows.
++ **Since you were last here** replaces the day-by-day timeline: commits, sessions, spend and who else
+  has been in since the moment you left — not since midnight, so *Mark read* clears it. Click a bar for
+  that day's commits and sessions, or open the commit graph already scrolled to that day.
++ **Landed: a small commit graph over every branch**, so you can see what the branch you are not on
+  has been doing. Each chip wears its lane's colour, and a run of bot bumps folds into one row —
+  folded, not hidden, so the lane still joins the commits either side. ⤢ opens the full graph.
++ **Read an issue without leaving Episko.** ⤢ on a *What's next* row opens the whole thread — the
+  body and every comment — beside the project it belongs to. ▶ starts an agent through the same
+  sheet the row does, and nothing is written to GitHub from the panel.
 + **Search what's next.** A box at the top of the column narrows the list to whatever you type —
   a number, a package, a word in a title — and the chips count what is left.
-~ **A row in *What's next* keeps its second verbs out of the way** until you point at it (or Tab
-  to it) — closing a quiet issue, opening it on GitHub, reading it here. ▶ is always there.
-~ **The whole list fits the column now**, scrolling under the search and the chips instead of
-  stopping at eight rows and saying "…and 14 more".
-~ **The note box sits at the foot of the column and stays there** while the list scrolls past it.
-  It opens into a proper multi-line field when you start typing: Enter files the note, Shift+Enter
-  starts a line, and it says where a note gets shared with the repo.
-~ **The twelve-row "Do something here" menu is five tiles.** Four of its rows were already buttons in
-  the header above it, where they have always worked on the project you are looking at.
-~ **⌘I on a project page folds the right-hand column** instead of collapsing the inspector to a strip
-  of glyphs. The strip existed because the page's verbs lived only in the inspector; they no longer
-  do.
-+ **A dashboard for every project at once** (the Episko logo, top left). Five figures for the whole
-  fleet, then what needs you and what is running, one card per project — its live sessions, its
-  commits a bar a day, its branch, its uncommitted work and what it has cost — and the week's spend,
-  model mix and rate-limit forecast beside them. 7, 14 or 30 days; ▦ cards or ☰ rows; sessions
-  running outside Episko counted and listed with the rest; and a checkout nobody has read yet says
-  so rather than claiming to be clean. Opening it reads this machine's token history, which until
-  now only the Usage & spend window did.
 + **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
   bots' pull requests, one row per advisory however many packages it hit, each saying what
   the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole
@@ -71,6 +34,26 @@ Markers: `+` new · `~` changed · `!` fixed
   yarn, cargo, go or pip, by the lockfile that is actually there. It never runs on its own.
 + **The path in the stage header copies itself.** Click it for the full path, wherever the
   stage is: a session, a checkout its work drifted to, an external terminal, a dashboard.
+~ **The app opens on the all-projects dashboard, not a "No sessions running" card.** Closing the last
+  session, leaving a project page or a mirror, and a boot with nothing restored all land there. The
+  Episko logo is the way back from anywhere and lights up when you are there; the ▦ button is gone.
+~ **The project page is three columns and reads left to right**: where you are (the sessions running
+  here, the branch, its checkouts), what moved (the band, the working set, Landed), what's next.
+~ **Open work, Still needed?, Dependencies and Notes are one ranked list.** They were four cards asking
+  four versions of the same question; an issue that is also a stale suggestion is now one row, not two.
+~ **✕ leaves a project dashboard or a read-only mirror**, which had no close button at all, and
+  Esc leaves a mirror too. On the fleet screen ✕ goes back to a session, so it is there only
+  when there is one to go back to.
+~ **A row in *What's next* keeps its second verbs out of the way** until you point at it or Tab
+  to it — close a quiet issue, open it on GitHub, read it here. ▶ is always there.
+~ **The whole list fits the column now**, scrolling under the search and the chips instead of stopping
+  at eight rows and saying "…and 14 more".
+~ **The note box sits at the foot of the column and stays there** while the list scrolls past it. It
+  opens into a multi-line field as you type: Enter files the note, Shift+Enter starts a line.
+~ **The twelve-row "Do something here" menu is five tiles.** Four of its rows were already buttons in
+  the header above it, working on the very project you are looking at.
+~ **⌘I on a project page folds the right-hand column** instead of collapsing the inspector to a strip
+  of glyphs. The strip existed because the page's verbs lived only there; they no longer do.
 ~ **One select-all, in the same two places in every table**: a tri-state tick in the header's
   own column, and `All` / `None` beside the count. Branches and Checkouts each hid its pair.
 ~ **The Settings rail follows what you are reading**, lighting the section under a line a
@@ -103,7 +86,6 @@ Markers: `+` new · `~` changed · `!` fixed
   escapes wherever they fell, so `C:\repo\tests\x.ts` was cut at `\tests` and the link landed
   on the home folder — or, for `D:\rust\…`, on the whole drive. A backslash the escape table
   cannot explain is a separator; `\\server\share` is proposed at all, and a drive root never is.
-
 ## 0.28.0 — 2026-09-11
 
 Settings is one page with a search, every emoji is a project icon, the checkout you are

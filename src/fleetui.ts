@@ -86,8 +86,13 @@ let hist: HistEntry[] = [];
 let heads = new Map<string, WtHead[]>();
 let fetchedAt = 0;
 let loading = false;
+// Which load owns `loading`. A range change starts a second one over the first, and only the
+// newest may clear the flag: an abandoned load that cleared it would take the spinner off a
+// screen that is still reading (./dashboard guards the same way, on the root it asked about).
+let loadSeq = 0;
 
 async function loadFleet(): Promise<void> {
+  const seq = ++loadSeq;
   const roots = [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
   const days = fleetRange;
   loading = true;
@@ -106,14 +111,21 @@ async function loadFleet(): Promise<void> {
     Promise.all(roots.map(async (r) =>
       [r, await invoke<WtHead[]>("worktree_heads", { dir: r }).catch(() => [] as WtHead[])] as const)),
   ]);
+  // A newer load has taken the flag (the range changed mid-flight): it will clear it and paint
+  // its own answer, so this one drops its result and leaves `loading` alone.
+  if (seq !== loadSeq) return;
+  // Cleared BEFORE the stage guard below, or leaving the screen mid-load strands the flag and
+  // the fleet says "reading every project…" for the whole of `FLEET_FRESH_MS` on the next open,
+  // which short-circuits the reload that would have fixed it.
+  loading = false;
   // The stage is the guard, as `root() !== r` is on the dashboard: an answer that outlived
-  // the screen must not repaint it, and the next open reloads anyway.
-  if (!fleetMirror() || days !== fleetRange) return;
+  // the screen must not repaint it, and the next open reloads anyway — `fetchedAt` is left
+  // unset here, which is what makes that reload happen rather than read as fresh.
+  if (!fleetMirror()) return;
   commits = c;
   hist = h;
   heads = new Map(hd);
   fetchedAt = Date.now();
-  loading = false;
   renderFleet();
 }
 

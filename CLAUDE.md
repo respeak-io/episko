@@ -175,7 +175,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 
 **Behaviour**, IPC and DOM all the way down, so untested too, and therefore the thinnest ice in the app: `panes` (the four spawners + a pane's lifecycle), `terminal` (the xterm plumbing), `taskrun` (run on stop), `actions` (the app-level verbs), `icons` (the per-project glyph store).
 
-Four rules keep that graph honest. **There are no import cycles across the 91 modules; re-run a cycle check after any change that adds an import.**
+Four rules keep that graph honest. **There are no import cycles across the 99 modules; re-run a cycle check after any change that adds an import.**
 
 - **Dependency direction is state ← render ← wiring.** A logic module must not import render code or `main.ts`.
 - **When an extracted function needs something that lives further up**, resolve it in this order: (1) **move the callee down too** if it is itself leaf-shaped, which is why `icons.ts` sits below `sidebar.ts` and `usage.ts` below `phase.ts`; (2) **a settable hook defaulting to a no-op** (`setRlLogger`, `setPanesRenderAll`) when the callee genuinely belongs to the render layer; (3) **an extra parameter** only as a last resort, since it changes a signature the move was supposed to leave alone. A control panel touching many things it doesn't own may take **one host object** instead of N setters (`settings`, `palui`, `projmenu`); prefer per-callee setters below ~4.

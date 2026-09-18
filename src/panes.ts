@@ -929,14 +929,20 @@ export function syncStageButtons() {
   // The fleet has no one project for them to act on at all.
   const bare = !!dashMirror() || !!fleetMirror();
   for (const id of ["btnRun", "btnTerm", "btnHist"]) ($(id) as HTMLButtonElement).hidden = bare;
-  // ⌘I has nothing to fold on the fleet — CSS hides that column outright — so the button says so
-  // instead of staying lit from the stage before. Here rather than in the fleet's own header
-  // writer, because this runs on every pass and so is also what turns it back on.
+  // ◨ stays on every stage: on the dashboard it folds the Next column, a verb this pane has
+  // and no other surface offers, so hiding it there would leave ⌘I with nothing to find. Only
+  // the fleet disables it — CSS hides that column outright — and a disabled button must stay
+  // VISIBLE or the reason it gives is a tooltip nobody can reach. Here rather than in each
+  // header writer, because this runs on every pass and so is also what turns it back on.
   const ib = $("inspBtn") as HTMLButtonElement;
-  ib.hidden = bare;
   ib.disabled = !!fleetMirror();
-  if (ib.disabled) ib.classList.remove("on");
   ib.title = ib.disabled ? "Nothing to fold on this screen" : "Toggle inspector (⌘I)";
+  // Lit from the truth for whichever stage is up, never left over from the last one: the
+  // dashboard's fold and the inspector's own switch are different classes on different
+  // elements, and ./actions paints the same answer on the click that cannot wait for a pass.
+  ib.classList.toggle("on", !ib.disabled && (dashMirror()
+    ? !$("dashPane").classList.contains("fold-next")
+    : !$("app").classList.contains("insp-off")));
 }
 
 // Auto-fetch (./autofetch owns the rule, Settings > Git the switch): only the checkout on

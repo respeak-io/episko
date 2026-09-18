@@ -87,6 +87,13 @@ Easy to get wrong:
   under a sticky head they made a list that ended in an apology where there was room to read. The
   enlarge link still opens the full board, and `rankQueue`'s order is what decides the top of the
   list — which is why a triage suggestion still LEADS its rank rather than relying on any cap.
+  **A scroller that is repainted must be put back where it was**: `#dashNext` is itself the
+  scrolling box, so the assignment that rebuilds it resets `scrollTop`, and the GitHub answer and
+  the dependency scan both land seconds after the pane opens. `paintNext` keeps the position as
+  `paintOverlay` keeps the overlay's — and both ask `wouldPaint` FIRST, because `scrollTop` is a
+  layout read and this runs on `renderAll`'s path, where a read on an unchanged pass forces the
+  reflow the paint cache exists to avoid. The cache itself is now this module's alone (nothing
+  else writes these four ids), so `invalidatePaintCache` is only about the project switch.
 - **The composer is pinned to the foot of the column and opens on focus.** It is still static markup
   outside everything this module paints — a draft note must survive the GitHub answer landing two
   columns over — and what changed is that `#dashNext` scrolls while the form does not, so the one
@@ -112,7 +119,9 @@ Easy to get wrong:
   drawn as a link and never fetched**, because rendering one reaches the network for whatever a
   stranger put in an issue; and the panel **writes nothing** — its ▶ opens the same dispatch sheet
   the row's does, so a claim is still shown before it is posted. The read is cached on the board's
-  own TTL (and dropped with it by `gh_invalidate`) and is guarded on the project **and** the thread:
+  own TTL (dropped with it by `gh_invalidate`, by key prefix since it is keyed by root AND thread —
+  which is also why it is the one cache here with a size cap: every other is bounded by the projects
+  you open, this one grows with every ⤢) and is guarded on the project **and** the thread:
   a second ⤢ while the first is in flight must not paint the wrong body under the title. Past twenty
   comments the panel says where the rest is rather than growing without end.
 - **A bot run in *Landed* is folded, never filtered.** The section is one page of `git_graph` at
@@ -159,7 +168,11 @@ Easy to get wrong:
   verbs that were genuinely only there are now `verbTiles` in column A, the inspector column is
   hidden outright on this stage (`.app.stage-dash`), and `⌘I` toggles `#dashPane.fold-next`. A verb
   reachable only while collapsed was a verb nobody found; deleting the surface is what fixed it,
-  not keeping the two in step. **Every `data-dashact` surface is still dispatched by one if-chain
+  not keeping the two in step. **◨ itself stays on every stage**, including this one: the fold is a
+  verb the pane has and nothing else offers, so hiding the button would leave the chord as the only
+  way to find it. Only the fleet disables it, and a disabled button has to stay *visible* or the
+  reason it gives is a tooltip nobody can reach. `syncStageButtons` lights it from the truth for
+  whichever stage is up — `fold-next` here, `insp-off` elsewhere — so the two cannot drift. **Every `data-dashact` surface is still dispatched by one if-chain
   through `#dashPane`'s single listener**, and `dispatch.test.ts` still holds both halves in both
   directions across four surfaces (`verbTiles`, `repoCard`, `ghPicker`, `landedCard`): a row whose
   verb has no branch is a button that does nothing, a branch nobody emits is code that cannot run,
@@ -226,7 +239,7 @@ Every project at once, and the one screen that is *not* about a project. `fleet.
 - **A band of five figures, then three columns**: live sessions, needs you, spend, tokens, week used — a tile each, because the band is read before anything under it and a row of inline figures reads as a caption to the title. Under it: who wants something, the projects, what it cost.
 - **The left column is labels and rows, never cards.** Three boxed headings over three rows each is a form; a section says its count beside its label and its own sentence when it has nothing, since a box that empties itself is indistinguishable from one that failed.
 - **The projects are cards, and the toggle is a layout rather than a filter** (`cc-fleet-layout`). ▦ is one card per project — the live glyphs, the window's commits a bar a day, the branch, the uncommitted count, the spend and the age; ☰ is the same facts on one line, for a fleet too long to scan. Nothing is dropped between the two.
-- **One window for the whole screen** (`cc-fleet-range`, 7/14/30 days). The commit scan is the range's, so a change re-reads rather than re-slices, and the guard on the answer is the range as well as the stage — a 30-day scan landing after a switch to 7 must not repaint it.
+- **One window for the whole screen** (`cc-fleet-range`, 7/14/30 days). The commit scan is the range's, so a change re-reads rather than re-slices, and the guard on the answer is the range as well as the stage — a 30-day scan landing after a switch to 7 must not repaint it. **Which load owns `loading` is `loadSeq`, and the flag is cleared before the stage guard**: only the newest load may clear it, or an abandoned one takes the spinner off a screen that is still reading — and a load abandoned because you *left* has to clear it on the way out, since `FLEET_FRESH_MS` then short-circuits the reload that would otherwise have fixed it and the screen says "reading every project…" with nothing reading. `fetchedAt` is deliberately left unset on that path, which is what makes the next open re-read rather than treat the stale answer as fresh.
 - **A branch chip costs no git process.** `worktree_heads` reads `.git/` (docs/worktrees.md), so the screen buys one file read per project for the branch and the checkout count. Nothing read plus a `git_diffstat` of `null` is *not a repo*; an unswept folder is `—` and must never render as clean — ./fleet keeps the three states the dashboard's Checkouts card keeps.
 - **Money is by project NAME**, as `cc-usage-detail` records it, so two repos sharing a basename sum into one figure that cannot be un-merged afterwards; the card's tip says which it is rather than pretending. Per-model **tokens** come from the token days and per-model **cost** from `cc-usage-detail`, joined on the display name ./usage already puts on both.
 - **The needs-you figure and the rows under it are one set** (`attnPending` injected, never raw `needsYou`), or one screen carries two numbers for one question. The tile's sub-line is `needsSplit`, and asking leads it: it is the only one of the three with a process held open behind it.
