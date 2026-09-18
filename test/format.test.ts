@@ -590,6 +590,10 @@ describe("barRow — the band's ribbon", () => {
     expect(barRow([]).length).toBe(0);
     expect(barRow([4]).length).toBe(1);
   });
+  it("scales to `cap`, so a taller chart is the same formula rather than a second one", () => {
+    expect(barRow([0, 6, 12], 0, 62).map((b) => b.h)).toEqual([3, 33, 62]);
+    expect(barRow([0, 6, 12], 0).map((b) => b.h)).toEqual(barRow([0, 6, 12], 0, 24).map((b) => b.h));
+  });
 });
 
 describe("fmtSince / fmtDay — the band's floor", () => {

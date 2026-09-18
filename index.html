@@ -13,7 +13,7 @@
            strip draggable except its clickable children; the ⌘K bar is a <div> and opts out explicitly,
            since a drag would eat the mouseup its click needs. -->
       <header class="top" data-tauri-drag-region="deep">
-        <div class="brand"><div class="logo"></div><b>Episko</b></div>
+        <button class="brand" id="brand" data-fleet="1" title="All projects · home"><span class="logo"></span><b>Episko</b></button>
         <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
         <div class="top-right">
           <!-- Hidden unless they have something to say. Telemetry down sits leftmost: with the hook
@@ -68,7 +68,7 @@
 
       <aside class="rail">
         <div class="rail-scroll">
-          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="rail-fleet" id="fleetBtn" data-fleet="1" title="All projects · the fleet dashboard">▦</button><button class="rail-sort" id="railSort" title="Sort order">≡</button><button class="rail-add" data-add="1" title="Add a project folder">+</button><button class="rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)">«</button></div></div>
+          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="rail-sort" id="railSort" title="Sort order">≡</button><button class="rail-add" data-add="1" title="Add a project folder">+</button><button class="rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)">«</button></div></div>
           <div id="projects"></div>
         </div>
         <div class="railmini" id="railmini"></div>
@@ -103,13 +103,6 @@
 
       <main class="stage">
         <div id="terminals">
-          <div class="empty" id="empty">
-            <div class="empty-card">
-              <div class="empty-logo"></div>
-              <h2>No sessions running</h2>
-              <p>Launch Claude Code in a project from the sidebar, or press <kbd>⌘</kbd><kbd>K</kbd>.</p>
-            </div>
-          </div>
           <div class="ext-view" id="extPane" hidden>
             <!-- One bar, two mirrors (external and shelved); written per opener in ./mirror. -->
             <div class="ext-view-bar"><span class="ext-view-dot"></span><span id="extViewTxt">Read-only mirror</span></div>

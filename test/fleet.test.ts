@@ -3,13 +3,13 @@ import { readFileSync } from "node:fs";
 import "./localstorage"; // must precede the subject imports (state.ts reads it at load)
 import { sessions, setDormants, setFavorites } from "../src/state";
 import {
-  fleetCards, fleetSorted, fleetTally,
+  fleetCards, fleetSorted, fleetTally, needsSplit,
   type FleetCard, type FleetInput,
 } from "../src/fleet";
 import type { ProjGroup } from "../src/grouping";
 import type { HistEntry } from "../src/history";
 import type { TrailCommit } from "../src/trail";
-import type { DiffStat, Sess } from "../src/types";
+import type { DiffStat, Sess, WtHead } from "../src/types";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime(); // 31 Jul 2026, local
 const secs = (msBack: number) => (NOW - msBack) / 1000;
@@ -26,13 +26,16 @@ const hist = (o: Partial<HistEntry> = {}): HistEntry => ({
   provider: "claude", session_id: "h1", cwd: "/w/epi", project: "epi", branch: "main",
   title: "", last_prompt: "", last_active: secs(0), bytes: 10, exists: true, repo_root: "/w/epi", ...o,
 });
+const head = (o: Partial<WtHead> = {}): WtHead =>
+  ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
 const input = (o: Partial<FleetInput> = {}): FleetInput => ({
-  projects: [], commits: [], hist: [], dirty: new Map(), costFor: () => 0,
-  attnPending: () => false, urgency: () => 6, now: NOW, ...o,
+  projects: [], commits: [], hist: [], heads: new Map(), dirty: new Map(), costFor: () => 0,
+  attnPending: () => false, urgency: () => 6, days: 7, now: NOW, ...o,
 });
 const card = (o: Partial<FleetCard> = {}): FleetCard => ({
   path: "/w/epi", name: "epi", accent: "#fff", live: 0, needs: 0, urgency: 99,
-  dirty: null, lastCommit: 0, lastSession: 0, commits: 0, spend: 0, ...o,
+  dirty: null, branch: "", checkouts: 0, lastCommit: 0, lastSession: 0,
+  commits: 0, sessions: 0, spend: 0, ...o,
 });
 const paths = (l: FleetCard[]) => l.map((c) => c.path);
 
@@ -46,7 +49,8 @@ describe("fleetCards — one card per project, from data the frontend already ho
     const [c] = fleetCards(input({ projects: [grp()] }));
     expect(c).toMatchObject({
       path: "/w/epi", name: "epi", accent: "#fff",
-      live: 0, needs: 0, urgency: 99, lastCommit: 0, lastSession: 0, commits: 0, spend: 0,
+      live: 0, needs: 0, urgency: 99, branch: "", checkouts: 0,
+      lastCommit: 0, lastSession: 0, commits: 0, sessions: 0, spend: 0,
     });
   });
   it("counts the live sessions, the ones that need you, and takes the most urgent rank", () => {
@@ -79,6 +83,55 @@ describe("fleetCards — one card per project, from data the frontend already ho
       costFor: (n) => (n === "epi" ? 4.5 : 0),
     }));
     expect(cards.map((c) => c.spend)).toEqual([4.5, 0]);
+  });
+});
+
+describe("the branch and the checkouts come from worktree_heads, by repo root", () => {
+  it("takes the MAIN checkout's branch: every other figure on the card is that folder's", () => {
+    const c = fleetCards(input({
+      projects: [grp()],
+      heads: new Map([["/w/epi", [head({ branch: "wip", is_main: false, path: "/w/epi-wt" }), head({ branch: "dev" })]]]),
+    }))[0];
+    expect(c).toMatchObject({ branch: "dev", checkouts: 2 });
+  });
+  it("leaves a folder nothing could read blank rather than inventing a branch", () => {
+    const c = fleetCards(input({ projects: [grp()], heads: new Map([["/w/other", [head()]]]) }))[0];
+    expect(c).toMatchObject({ branch: "", checkouts: 0 });
+  });
+  it("keys the lookup on the repo root, as the commits are", () => {
+    const c = fleetCards(input({
+      projects: [grp({ path: "/w/epi-wt", repoRoot: "/w/epi" })],
+      heads: new Map([["/w/epi", [head({ branch: "dev" })]]]),
+    }))[0];
+    expect(c.branch).toBe("dev");
+  });
+});
+
+describe("sessions — the ones inside the window, never the whole scan", () => {
+  it("counts a project's past sessions in range and drops the older ones", () => {
+    const c = fleetCards(input({
+      projects: [grp()], days: 7,
+      hist: [
+        hist({ last_active: secs(0) }),
+        hist({ session_id: "h2", last_active: secs(3 * 86_400_000) }),
+        hist({ session_id: "h3", last_active: secs(30 * 86_400_000) }),
+      ],
+    }))[0];
+    // The 30-day-old one is still the newest-session join's business, just not the count's.
+    expect(c).toMatchObject({ sessions: 2, lastSession: NOW });
+  });
+});
+
+describe("needsSplit — the Needs you tile's sub-line", () => {
+  it("leads with asking, the only one of the three holding a process open", () => {
+    expect(needsSplit(["done", "error", "attention"])).toBe("1 asking, 1 done, 1 failed");
+  });
+  it("plurals each count and drops the kinds with nothing in them", () => {
+    expect(needsSplit(["done", "done"])).toBe("2 done");
+    expect(needsSplit(["attention", "error", "error"])).toBe("1 asking, 2 failed");
+  });
+  it("says so in words when nothing is waiting: a blank sub-line reads as broken", () => {
+    expect(needsSplit([])).toBe("nothing waiting");
   });
 });
 
@@ -150,10 +203,12 @@ describe("fleetTally", () => {
       card({ path: "/w/b", live: 1, dirty: undefined }),
       card({ path: "/w/c", live: 0, needs: 2, dirty: stat() }),
     ];
-    expect(fleetTally(cards)).toEqual({ projects: 3, live: 3, needs: 3, dirty: 1, unread: 1 });
+    expect(fleetTally(cards))
+      .toEqual({ projects: 3, checkouts: 3, live: 3, liveProjects: 2, needs: 3, dirty: 1, unread: 1 });
   });
   it("zeroes everything for an empty fleet rather than fabricating a row", () => {
-    expect(fleetTally([])).toEqual({ projects: 0, live: 0, needs: 0, dirty: 0, unread: 0 });
+    expect(fleetTally([]))
+      .toEqual({ projects: 0, checkouts: 0, live: 0, liveProjects: 0, needs: 0, dirty: 0, unread: 0 });
   });
 });
 

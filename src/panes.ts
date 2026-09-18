@@ -503,7 +503,7 @@ export function closeSession(id: string) {
     setStageGroup(null);
     $("terminals").classList.remove("tiled");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
-    takeStage("none");
+    takeStage("home");
   }
   // The grid reflowed but #terminals did not resize, so the ResizeObserver never fires.
   if (stageGroup) refit();
@@ -638,7 +638,7 @@ export function focusInGroup(id: string) {
 export function setActive(id: string, keepGroup = false) {
   const s = sessions.get(id);
   if (!s) return;
-  // closeExternalView drops the stage to the empty card; takeStage below replaces it with the pane.
+  // Drops the mirror pointer only; the takeStage below is what gives the stage to this pane.
   closeExternalView();
   setActiveId(id);
   // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
@@ -830,7 +830,11 @@ export function scheduleDismiss(s: Sess) {
 
 export function renderHeader(s: Sess | null) {
   clearStageBadges();
-  ($("btnClose") as HTMLButtonElement).hidden = !s;
+  // ✕ is on every stage now, and it does something different on each: every taker sets the
+  // wording as well as the flag, or it inherits the last stage's and lies about what it does.
+  const xb = $("btnClose") as HTMLButtonElement;
+  xb.hidden = !s;
+  xb.title = "Close session";
   // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
@@ -906,6 +910,9 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
 
 // Greyed with no active project: a live button whose only answer is an error toast reads as a failed click.
 export function syncStageButtons() {
+  // The logo is the way home, so it says when you are already there — the one "you are here"
+  // mark in the top bar, and the reason the fleet needs no button beside the sidebar's ＋.
+  $("brand").classList.toggle("on", !!fleetMirror());
   const wd = activeCwd();
   const set = (id: string, enabled: string, disabled = "Start a session first; this runs in the active project") => {
     const b = $(id) as HTMLButtonElement;

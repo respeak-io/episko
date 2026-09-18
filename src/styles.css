@@ -76,14 +76,19 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 
 /* top bar */
 .top { grid-area: top; display: flex; align-items: center; gap: 11px; padding: 0 12px; background: linear-gradient(180deg, var(--lift), transparent 60%), var(--panel); border-bottom: 1px solid var(--hair); }
-.brand { display: flex; align-items: center; gap: 8px; }
+/* The logo IS the way home (data-fleet): every stage can be left, so the all-projects screen
+   needs no button of its own beside the sidebar's ＋. `.on` says you are already there. */
+.brand { display: flex; align-items: center; gap: 8px; border: 1px solid transparent; background: none; color: inherit; font: inherit; cursor: pointer; padding: 2px 7px 2px 5px; margin-left: -4px; border-radius: var(--radius-sm); }
+.brand:hover { background: var(--lift); border-color: var(--hair); }
+.brand.on { background: var(--accent-wash); border-color: var(--accent-line); }
+.brand.on b { color: var(--accent-ink); }
 .logo { width: 17px; height: 17px; border-radius: 6px; background: conic-gradient(from 210deg, #a78bfa, #38bdf8, #fb923c, #a78bfa); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .brand b { font-weight: 700; letter-spacing: -.01em; font-size: 12.5px; }
 .kbar { margin: 0 auto; width: min(380px, 40vw); height: 26px; border-radius: 999px; cursor: text; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 11px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted-2); box-shadow: inset 0 1px 0 var(--lift); }
 .kbar:hover { border-color: var(--hair-strong); }
 .kbar span { font-size: 11px; }
 .kbd { margin-left: auto; display: flex; gap: 3px; }
-.kbd kbd, .empty kbd, .shortpop kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
+.kbd kbd, .shortpop kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
 .kbar > span:first-child { display: inline-flex; align-items: center; justify-content: center; width: 14px; }
 .top-right { display: flex; align-items: center; gap: 7px; }
 /* --rc follows the fleet's most-urgent state via the react-* class renderAttn sets */
@@ -210,9 +215,8 @@ html.win .wctl { display: flex; }
 .rail-top { display: flex; align-items: center; justify-content: space-between; padding: 2px 6px 10px; }
 .rail-top .count { flex: none; white-space: nowrap; font-size: 9.5px; color: var(--muted-2); font-family: var(--font-mono); }
 .rt-right { display: flex; align-items: center; gap: 6px; }
-.rail-collapse, .rail-add, .rail-sort, .rail-fleet { width: 24px; height: 24px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; display: grid; place-items: center; box-shadow: inset 0 1px 0 var(--lift); }
-.rail-collapse:hover, .rail-add:hover, .rail-sort:hover, .rail-fleet:hover { color: var(--text); border-color: var(--hair-strong); }
-.rail-fleet.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.rail-collapse, .rail-add, .rail-sort { width: 24px; height: 24px; border-radius: var(--radius-sm); border: 1px solid var(--hair); background: var(--surface); color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1; display: grid; place-items: center; box-shadow: inset 0 1px 0 var(--lift); }
+.rail-collapse:hover, .rail-add:hover, .rail-sort:hover { color: var(--text); border-color: var(--hair-strong); }
 .rail-sort.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 /* draw the plus with two centered bars — reliably centered regardless of font */
 .rail-add { font-size: 0; position: relative; }
@@ -533,21 +537,11 @@ html.win .wctl { display: flex; }
 /* Highlight the console while files are dragged over it (see initFileDrop). */
 #terminals.dropping::after { content: ""; position: absolute; inset: 6px; z-index: 5; pointer-events: none; border-radius: var(--radius); border: 1.5px dashed var(--accent-line); background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-glow); }
 
-.empty, .ext-pane { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+.ext-pane { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
 .ext-pane { padding: 24px; }
 .ext-pane .ext-logo { width: 40px; height: 40px; border-radius: 12px; margin: 0 auto 14px; background: conic-gradient(from 210deg, #a78bfa, #38bdf8, #fb923c, #f472b6, #a78bfa); opacity: .8; box-shadow: 0 8px 30px -10px var(--accent-glow); }
 .ext-pane h2 { margin: 0 0 6px; font-size: 15px; font-weight: 700; color: var(--text); }
 .ext-pane p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.7; max-width: 340px; }
-.empty-card { text-align: center; max-width: 320px; padding: 24px; }
-.empty-logo { width: 44px; height: 44px; border-radius: 13px; margin: 0 auto 16px; background: conic-gradient(from 210deg, #a78bfa, #38bdf8, #fb923c, #f472b6, #a78bfa); opacity: .9; box-shadow: 0 8px 30px -10px var(--accent-glow); }
-@media (prefers-reduced-motion: no-preference) {
-  .empty-logo { animation: logo-float 14s ease-in-out infinite, logo-glow 4.5s ease-in-out infinite, logo-hue 9s ease-in-out infinite; }
-  @keyframes logo-float { 0%, 100% { transform: rotate(0deg) scale(1); border-radius: 13px; } 50% { transform: rotate(180deg) scale(1.07); border-radius: 17px; } }
-  @keyframes logo-glow { 0%, 100% { box-shadow: 0 8px 30px -12px var(--accent-glow); } 50% { box-shadow: 0 16px 48px -8px var(--accent-glow); } }
-  @keyframes logo-hue { 0%, 100% { filter: hue-rotate(-14deg); } 50% { filter: hue-rotate(14deg); } }
-}
-.empty h2 { margin: 0 0 6px; font-size: 15px; font-weight: 700; color: var(--text); }
-.empty p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
 
 /* right: inspector */
 .insp { grid-area: insp; background: linear-gradient(180deg, var(--lift), transparent 22%), var(--panel); border-left: 1px solid var(--hair); display: flex; flex-direction: column; min-height: 0; }
@@ -1578,8 +1572,8 @@ select.in-ctl { cursor: pointer; }
    whatever is left over — one clipped line, with its own scrollbar — instead of the column scrolling. */
 .hist-tv { flex: none; display: flex; flex-direction: column; gap: 9px; min-height: 96px; max-height: 34vh; overflow-y: auto; padding: 10px 11px; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--terminal-bg); }
 .hist-tv .tvtext { font-size: 11px; line-height: 1.55; }
-/* tv-empty, NOT a bare `empty`: `.empty` is the stage splash (position: absolute; inset: 0) and
-   stretched this over the whole dialog. Every placeholder in the app is prefixed. */
+/* tv-empty, NOT a bare `empty`: it once collided with the stage splash and stretched this
+   over the whole dialog. Every placeholder in the app is prefixed. */
 .hist-tv.tv-empty { display: block; color: var(--muted-2); font: 10.5px var(--font-ui); padding: 12px 11px; text-align: center; }
 
 @media (max-width: 900px) { .histdlg .wt-body { grid-template-columns: minmax(0, 1fr); } }
@@ -2492,13 +2486,127 @@ select.in-ctl { cursor: pointer; }
 .dash-view[hidden] { display: none; }
 .dash { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-/* Mirrors .dash-view: the fleet is a stage of its own, not a dialog over one. */
+/* Mirrors .dash-view: the fleet is a stage of its own, not a dialog over one. Three columns —
+   who wants something, every project, what it all cost — each its own scroller. */
 .fleet-view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
 .fleet-view[hidden] { display: none; }
-.fl-head { flex: none; display: flex; flex-direction: column; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--hair); }
-.fl-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 22px; }
-/* .cr's pointer is keyed to [data-dashwt]; the fleet's rows carry their own verb. */
-.cr[data-flproj] { cursor: pointer; }
+.fl-head { flex: none; display: flex; flex-direction: column; gap: 11px; padding: 12px 16px 14px; border-bottom: 1px solid var(--hair); }
+.fl-body { flex: 1; min-height: 0; display: flex; }
+
+.fl-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.fl-top .t { font-size: 15px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+.fl-top .sp { flex: 1; }
+.fl-sub, .fl-when { font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The band: five figures, a box each. A tile states the figure before it names it. */
+.fl-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr)); gap: 10px; }
+.fl-tile { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 10px 13px; border-radius: var(--radius-lg); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--panel); border: 1px solid var(--hair); }
+.fl-tile .v { font: 700 25px var(--font-mono); line-height: 1.15; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.fl-tile .v.s-attn { color: var(--st-attention); }
+.fl-tile .v.s-warn { color: var(--st-working); }
+.fl-tile .v.s-bad { color: var(--st-error); }
+.fl-tile .sub { font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.fl-cols { display: grid; grid-template-columns: minmax(258px, 20%) minmax(0, 1fr) minmax(296px, 24%); flex: 1; min-width: 0; min-height: 0; }
+.fl-col { min-width: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 17px; }
+.fl-col-a { border-right: 1px solid var(--hair); }
+.fl-col-c { border-left: 1px solid var(--hair); }
+
+/* A section is a label and its rows, never a card: boxing three headings over four rows each
+   is what made this screen read as a form rather than as a dashboard. */
+.fl-sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.fl-sh { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fl-sh .sp { flex: 1; }
+.fl-sh .n { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.fl-sh .aslink { align-self: auto; }
+.fl-sec.waiting .fl-sh .label { color: var(--st-attention); }
+.fl-sec.waiting .fl-sh .n { color: var(--st-attention); background: color-mix(in srgb, var(--st-attention) 14%, transparent); padding: 1px 6px; border-radius: 5px; }
+.fl-rows { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fl-none { margin: 0; padding: 2px 1px 4px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+
+/* Two lines: which session, and what it wants. The tint follows the glyph, so an ask reads
+   as urgent where a finished turn only reads as yours. */
+.fl-need { position: relative; display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 8px 10px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); cursor: pointer; }
+.fl-need:hover { background: var(--surface); border-color: var(--hair-strong); }
+.fl-need.g-attn { background: color-mix(in srgb, var(--st-attention) 10%, var(--panel)); border-color: color-mix(in srgb, var(--st-attention) 35%, transparent); }
+.fl-need.g-error { border-color: color-mix(in srgb, var(--st-error) 28%, transparent); }
+.fl-need .sglyph { flex: none; width: 14px; margin-top: 2px; font-size: 11px; }
+.fl-nt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.fl-nt .t { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-nt .w { font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-age { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
+
+.fl-row { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; padding: 0 10px; border-radius: 9px; background: var(--panel); cursor: pointer; }
+.fl-row:hover { background: var(--surface); }
+.fl-row .sglyph { flex: none; width: 12px; }
+.fl-row .ti { flex: 1; min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-row .pj { flex: none; font-size: 10px; color: var(--muted-2); }
+.fl-need:hover .sclose, .fl-row:hover .sclose { opacity: 1; }
+
+/* One card per project, wrapping to the column's width: the grid is what puts six projects on
+   one screen where a row list put six names down one edge of it. */
+.fl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr)); gap: 12px; align-content: start; }
+.fl-card { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 12px 13px; border-radius: var(--radius-lg); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--panel); border: 1px solid var(--hair); cursor: pointer; }
+.fl-card:hover { border-color: var(--hair-strong); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); }
+.fc-h { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.fc-av { flex: none; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); color: var(--bg-2); }
+.fc-nm { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fc-gl { flex: none; display: flex; gap: 5px; }
+/* A day is a count, so the card's window is bars: ./format's barRow, the ribbon's geometry. */
+.fc-bars { display: flex; align-items: flex-end; gap: 2px; height: 22px; }
+.fc-b { flex: 1 1 0; min-width: 1px; border-radius: 2px; background: var(--c, var(--accent)); }
+.fc-b.nil { background: var(--hair-strong); }
+.fc-git { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.fc-br { max-width: 100%; font: 10.5px var(--font-mono); color: var(--muted); padding: 1px 6px; border-radius: 5px; background: var(--surface-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fc-foot { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.fc-foot .sp { flex: 1; }
+.fc-spend { font: 700 13px var(--font-mono); }
+.fc-work { min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fc-age { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
+
+/* The same facts on one line, for a fleet too long to scan as cards. Nothing is dropped. */
+.fl-prow { display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; padding: 0 9px; border-radius: 9px; cursor: pointer; }
+.fl-prow:hover { background: var(--panel); }
+.fl-prow .k { flex: none; font-size: 9px; }
+.fl-prow .ti { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-prow .rt { flex: none; display: flex; align-items: center; gap: 7px; }
+.fl-prow .fc-bars { flex: none; width: 76px; height: 16px; }
+.fl-prow .fc-work { max-width: 140px; }
+.fl-prow .fc-spend { font-size: 11.5px; }
+
+.fl-bars { display: flex; align-items: flex-end; gap: 3px; height: 62px; }
+.fl-bar { flex: 1 1 0; min-width: 1px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 34%, transparent); }
+.fl-bar.lit { background: var(--accent-ink); }
+.fl-bar.nil { background: var(--hair-strong); }
+.fl-bfoot { display: flex; justify-content: space-between; gap: 10px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.fl-stack { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--surface); }
+.fl-stack i { display: block; }
+.fl-mrow { display: flex; align-items: center; gap: 8px; min-width: 0; height: 19px; }
+.fl-mrow .msw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
+.fl-mrow .nm { flex: 1; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-mrow .tk { font-size: 11px; color: var(--muted); }
+.fl-mrow .usd { flex: none; width: 52px; text-align: right; font-size: 11px; }
+.fl-crow { display: flex; align-items: center; gap: 9px; min-width: 0; height: 21px; }
+.fl-crow .nm { flex: none; width: 74px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-crow .track { flex: 1; height: 7px; border-radius: 4px; background: var(--surface); overflow: hidden; }
+.fl-crow .track i { display: block; height: 7px; border-radius: 4px; }
+.fl-crow .usd { flex: none; width: 48px; text-align: right; font-size: 11px; }
+.fl-lim { display: flex; flex-direction: column; gap: 4px; }
+.fl-lh { display: flex; align-items: baseline; gap: 8px; }
+.fl-lh .nm { flex: 1; font-size: 11px; }
+.fl-lh .pct { font-size: 11px; color: var(--muted); }
+.fl-lh .pct.s-ok { color: var(--st-done); }
+.fl-lh .pct.s-warn { color: var(--st-working); }
+.fl-lh .pct.s-bad { color: var(--st-error); }
+.fl-track { height: 7px; border-radius: 4px; background: var(--surface); overflow: hidden; }
+.fl-track i { display: block; height: 7px; border-radius: 4px; background: var(--muted-2); }
+.fl-track.s-ok i { background: var(--st-done); }
+.fl-track.s-warn i { background: var(--st-working); }
+.fl-track.s-bad i { background: var(--st-error); }
+.fl-lim .rs { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.fl-fore { margin: 1px 0 0; font-size: 11px; line-height: 1.45; color: var(--muted); }
+.fl-fore.s-warn { color: var(--st-working); }
+.fl-fore.s-bad { color: var(--st-error); }
 
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card
    never pushes another off screen. Column B is a query container: the lite graph collapses against
@@ -2834,6 +2942,22 @@ select.in-ctl { cursor: pointer; }
   .db-cols, #dashPane.fold-next .db-cols { grid-template-columns: minmax(0, 1fr); }
   .db-col-a { border-right: 0; border-bottom: 1px solid var(--hair); }
   .db-col-c { grid-column: auto; }
+}
+/* The fleet gives way in the same order and later: its three columns are narrower, and the
+   stage is the window minus the rail, which is 1208px on the commonest screen there is. */
+@media (max-width: 1100px) {
+  .fl-body { overflow-y: auto; }
+  .fl-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fl-col { overflow: visible; }
+  /* Stacked, the money column is a row of sections rather than one full-bleed stack: a
+     62px chart drawn 1200px wide is a different chart. */
+  .fl-col-c { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--hair);
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(264px, 1fr)); align-items: start; }
+}
+@media (max-width: 860px) {
+  .fl-cols { grid-template-columns: minmax(0, 1fr); }
+  .fl-col-a { border-right: 0; border-bottom: 1px solid var(--hair); }
+  .fl-col-c { grid-column: auto; }
 }
 @media (prefers-reduced-motion: reduce) { .ovl { transition: none; } }
 

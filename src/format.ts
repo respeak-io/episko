@@ -295,13 +295,13 @@ export interface Bar { h: number; cls: string }
 // A day is a count, so a ribbon of days is bars: a line drawn between two counts invents the
 // days in between, and over thirty points it reads as one story where the truth is a dozen
 // quiet days. A zero keeps a stub, or the row reads as "nothing recorded"; `lit` is how many
-// of the newest bars wear the accent. Geometry only — the markup is the view's, because each
-// column is a click target and every `data-dash*` must be somewhere dispatch.test.ts reads.
-export function barRow(vals: number[], lit = 0): Bar[] {
+// of the newest bars wear the accent and `cap` is the row's height. Geometry only — the markup
+// is the view's, since a column is a click target dispatch.test.ts must be able to read.
+export function barRow(vals: number[], lit = 0, cap = 24): Bar[] {
   const hi = Math.max(1, ...vals);
   const from = vals.length - lit;
   return vals.map((n, i) => ({
-    h: n === 0 ? 3 : Math.round(3 + (n / hi) * 21),
+    h: n === 0 ? 3 : Math.round(3 + (n / hi) * (cap - 3)),
     cls: n === 0 ? "nil" : i >= from ? "lit" : "",
   }));
 }

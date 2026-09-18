@@ -9,7 +9,7 @@ import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
-import { $, chord, IS_MAC, IS_TAURI, IS_WIN, toast, wireTips } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, setStageHome, takeStage, toast, wireTips } from "./dom";
 import { wireMenu } from "./menu";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -59,7 +59,7 @@ import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
 } from "./taskrun";
 import {
-  flushRoster, forgetDormant, jumpExternal, jumpPastMessage, loadDormants, openDormant, openExternal,
+  flushRoster, forgetDormant, jumpExternal, jumpPastMessage, leaveMirror, loadDormants, openDormant, openExternal,
   queueRosterSave, refreshDirtyStates, refreshExternals,
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
@@ -105,7 +105,7 @@ import {
   closeSettings, keyRecording, openSettings, openSettingsOn, setSettingsHost, settingsIndex, settingsOpen,
   type PrivacyAsk,
 } from "./settings";
-import { closeUsage, openUsage, renderUsage, usageOpen } from "./usagedlg";
+import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -283,8 +283,15 @@ setDashHost({
 });
 wireDashboard();
 // The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
-setFleetHost({ setActive, closeSession, openDashboard, renderAll });
+setFleetHost({
+  setActive, closeSession, openDashboard, renderAll,
+  openUsage, openHistory: () => { void openHistory(true); },
+  refreshUsage: () => { void refreshTokens().then(renderAll); },
+});
 wireFleet();
+// The stage's home: whatever steps off it lands here, so "no sessions running" is not a
+// screen the app has any more. Wired before anything can close a pane.
+setStageHome(() => openFleet());
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
@@ -578,7 +585,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);
   else if (el.dataset.dash) { openDashboard(el.dataset.proj || basename(el.dataset.dash), el.dataset.dash); closeAttnPop(); }
-  else if (el.dataset.fleet) { openFleet(); closeAttnPop(); }
+  else if (el.dataset.fleet) { openFleet(true); closeAttnPop(); }
   // colorKey stays the repo root (data-root), so the new session joins its project.
   // closePeek first: the row clicked is about to reappear as a session row above it.
   else if (el.dataset.wtadd) { closePeek(); launchWorktree(el.dataset.proj || basename(el.dataset.wtadd), el.dataset.root || el.dataset.wtadd, el.dataset.wtadd, el.dataset.branch || ""); }
@@ -671,6 +678,9 @@ $("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessio
 $("btnClose").addEventListener("click", () => {
   if (fleetMirror()) { closeFleet(); renderAll(); return; }
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
+  // Anything left on `mirror` is a read-only one (external or shelved): stepping out of it
+  // is `leaveMirror`, never `closeSession` — the session it shows is not ours to close.
+  if (mirror) { leaveMirror(); renderAll(); return; }
   if (activeId) closeSession(activeId);
 });
 
@@ -713,6 +723,9 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
+  // The read-only mirrors, which had no way out but a click on something else. Same verb as
+  // their ✕, or the two would disagree about where leaving a mirror lands.
+  else if (e.key === "Escape" && mirror) { e.preventDefault(); leaveMirror(); renderAll(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
 });
 // ⌘⇧⏎ reveal: a capture-phase listener, because the palette's Enter drops the scrim
@@ -886,3 +899,6 @@ initFileDrop();
 // false at boot. initCaf covers a webview reload that left the backend still asserting.
 initCaf();
 renderAll();
+// Nothing restored takes the stage, so this is where the app lands: every project, not a
+// card saying no sessions are running. Last, because it is the fallback for all of the above.
+if (!activeId && !mirror) takeStage("home");

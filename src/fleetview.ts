@@ -1,139 +1,258 @@
 // The fleet screen's markup: data in, string out, like every other *view module. ./fleet owns
-// the rules and ./fleetui owns the pane, its two invokes and its events. Every attribute here
-// is data-fl*, which is what keeps this file out of dispatch.test.ts's dashboard sweep.
+// the rules and ./fleetui owns the pane, its reads and its events. Every attribute here is
+// data-fl*, which is what keeps this file out of dispatch.test.ts's dashboard sweep.
 
-import { esc, escAttr, fmtUntil, relTime, sparkline, tilde, uTok, uUsd, uUsd2 } from "./format";
-import type { FleetCard, FleetSort, FleetTally } from "./fleet";
+import { barRow, esc, escAttr, fmtUntil, relTime, tilde, uTok, uUsd, uUsd2 } from "./format";
+import { chord } from "./dom"; // a platform-spelled chord, not DOM access: the *view rule allows it
+import { FLEET_RANGES, type FleetCard, type FleetSort, type FleetTally } from "./fleet";
 import type { Forecast } from "./rl";
 import type { DiffStat } from "./types";
 import type { ModelSeries } from "./usage";
-import { usageRow } from "./usageview";
+import { foreText } from "./usageview";
 
 /** One live session's glyph on a project card: identity only, never a click target. */
 export interface FleetGlyph { id: string; glyph: string; cls: string; title: string }
-/** What a card needs that ./fleet's rules do not carry: who is running, and the 14-day shape. */
+/** What a card needs that ./fleet's rules do not carry: who is running, and the window's shape. */
 export interface FleetExtra { glyphs: FleetGlyph[]; spark: number[] }
 // One row of the left column. `note` is the host's own wording (why it wants you, what it is
 // doing): the view chooses no sentence, so a provider with no phase invents none here either.
 export interface FleetRow {
   id: string; project: string; accent: string; label: string;
   glyph: string; cls: string; note: string; since: number;
+  ext?: boolean;  // somebody else's terminal: Episko can show it and jump to it, not drive it
 }
 /** A shelved or dormant session: it opens its project, since restoring lives on that dashboard. */
 export interface FleetResume { path: string; name: string; accent: string; label: string; when: number }
 export interface FleetSpendRow { name: string; accent: string; spend: number }
+/** A model's tokens (the mix) and what they cost (the money), joined on its display name. */
+export interface FleetModel extends ModelSeries { cost: number }
 export interface FleetUsage {
-  days: number; spend: number; tokens: number;
-  daily: number[];          // cost per day over the window, oldest first
-  models: ModelSeries[];    // modelSeries' order, so the mix reads like every other model surface
-  projects: FleetSpendRow[]; // costliest first, already capped by the host
+  days: number; spend: number; today: number; tokens: number; cached: number;
+  daily: number[]; first: string;   // cost per day over the window, oldest first, and its first day
+  lastSpend: string;                // the newest day the ledger has at all, "" when it has none
+  models: FleetModel[];             // modelSeries' order, so the mix reads like every other model surface
+  projects: FleetSpendRow[];        // costliest first, already capped by the host
 }
+export type FleetLayout = "cards" | "list";
 export interface FleetView {
-  cards: FleetCard[];              // fleetSorted's output, in the order it is drawn
+  cards: FleetCard[];                // fleetSorted's output, in the order it is drawn
   extra: Record<string, FleetExtra>; // keyed by FleetCard.path; a missing entry draws no spark
-  shared: string[];                // project names whose spend is merged with another basename
+  shared: string[];                  // project names whose spend is merged with another basename
+  sort: FleetSort; layout: FleetLayout; range: number;
+  today: string; when: string; tally: FleetTally; needsNote: string;
   needs: FleetRow[]; live: FleetRow[]; resume: FleetResume[];
   usage: FleetUsage;
   limits: { h5: Forecast; d7: Forecast };
 }
 
+const DASH = `<span class="dim">—</span>`;
+// To the cent while a figure is small enough to have cents worth reading; `uUsd` past that,
+// because four digits and a decimal in a 25px face is a number nobody parses at a glance.
+const money = (n: number) => (n >= 1000 ? uUsd(n) : uUsd2(n));
+const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+// ---------- the head: what this screen is, and the two controls that change it ----------
+
+// Every data-fl* here is spelled out where it is written: test/dispatch.test.ts reads these
+// calls as source, so an attribute built from a variable would be invisible to it.
+const segBtn = (attr: string, on: boolean, label: string, tip: string) =>
+  `<button${on ? ` class="on"` : ""} ${attr} data-tip="${escAttr(tip)}">${esc(label)}</button>`;
+const rangeSeg = (cur: number) => `<div class="db-seg">` + FLEET_RANGES.map((n) =>
+  segBtn(`data-flrange="${n}"`, n === cur, `${n}d`, `The last ${n} days`)).join("") + `</div>`;
 const SORTS: [FleetSort, string, string][] = [
-  ["attention", "Urgent", "most urgent first"],
-  ["recent", "Recent", "last moved first"],
+  ["attention", "Urgent", "Most urgent first"],
+  ["recent", "Recent", "Last moved first"],
   ["name", "Name", "A to Z"],
 ];
-// `v` carries markup (a dim dash, a formatted figure), so the caller escapes it — ./dashview's
-// deleted tile did the same, and `.sb-fig`'s .k/.v/.d typography is that tile's, verbatim.
-const fig = (k: string, v: string, d = "") =>
-  `<div class="sb-fig"><span class="k">${esc(k)}</span><span class="v">${v}</span>`
-  + (d ? `<span class="d">${esc(d)}</span>` : "") + `</div>`;
-const DASH = `<span class="dim">—</span>`;
+const sortSeg = (cur: FleetSort) => `<div class="db-seg">` + SORTS.map(([id, label, tip]) =>
+  segBtn(`data-flsort="${id}"`, id === cur, label, tip)).join("") + `</div>`;
+const layoutSeg = (cur: FleetLayout) => `<div class="db-seg">`
+  + segBtn(`data-fllayout="cards"`, cur === "cards", "▦", "One card per project")
+  + segBtn(`data-fllayout="list"`, cur === "list", "☰", "One row per project") + `</div>`;
 
-export function fleetHeadHtml(
-  t: FleetTally, sort: FleetSort, when: string, u: FleetUsage, week: Forecast,
-): string {
-  const seg = SORTS.map(([id, label, tip]) =>
-    `<button${id === sort ? ` class="on"` : ""} data-flsort="${id}" title="${escAttr(tip)}">${esc(label)}</button>`).join("");
-  const wk = week.used == null ? DASH : Math.round(week.used) + "%";
-  const wkSub = week.resetTs != null ? `resets in ${fmtUntil(week.resetTs)}` : "no active window";
-  const figs = fig("Live", String(t.live), `${t.projects} project${t.projects === 1 ? "" : "s"}`)
-    + fig("Needs you", String(t.needs), t.needs ? "waiting on you" : "nothing waiting")
-    + fig("Spend", u.spend > 0 ? esc(uUsd(u.spend)) : DASH, `last ${u.days} days`)
-    + fig("Tokens", u.tokens > 0 ? esc(uTok(u.tokens)) : DASH, `last ${u.days} days`)
-    + fig("Week used", wk, wkSub);
-  return `<div class="sb-h"><span class="t">All projects</span>`
-    + (when ? `<span class="dim">${esc(when)}</span>` : "")
-    + `<span class="db-seg">${seg}</span></div><div class="sb-figs">${figs}</div>`;
+// Value then label, with the sub under both: the band answers "how much" before "of what".
+const tile = (label: string, value: string, sub: string, cls = "") =>
+  `<div class="fl-tile"><span class="label">${esc(label)}</span>
+    <span class="v${cls ? " " + cls : ""}">${value}</span>
+    <span class="sub">${esc(sub)}</span></div>`;
+
+export function fleetHeadHtml(v: FleetView): string {
+  const u = v.usage, t = v.tally, wk = v.limits.d7;
+  const sub = `${v.today} · ${plural(t.projects, "project")} · ${plural(t.checkouts, "checkout")}`;
+  const pct = wk.used == null ? DASH : `${Math.round(wk.used)}%`;
+  const tiles = tile("Live sessions", String(t.live),
+      t.live ? `across ${plural(t.liveProjects, "project")}` : "nothing running")
+    + tile("Needs you", String(t.needs), v.needsNote, t.needs ? "s-attn" : "")
+    + tile(`Spend · ${u.days} days`, u.spend > 0 ? esc(money(u.spend)) : DASH,
+      u.today > 0 ? `${uUsd2(u.today)} today` : "nothing today")
+    + tile(`Tokens · ${u.days} days`, u.tokens > 0 ? esc(uTok(u.tokens)) : DASH,
+      u.cached > 0 ? `${uTok(u.cached)} cached` : "no token data yet")
+    + tile("Week used", pct,
+      wk.resetTs != null ? `resets in ${fmtUntil(wk.resetTs)}` : "no active window",
+      wk.used == null ? "" : `s-${wk.status}`);
+  return `<div class="fl-top"><span class="t">All projects</span>
+      <span class="fl-sub mono">${esc(sub)}</span><span class="sp"></span>
+      ${v.when ? `<span class="fl-when mono">${esc(v.when)}</span>` : ""}
+      ${rangeSeg(v.range)}
+    </div>
+    <div class="fl-tiles">${tiles}</div>`;
 }
 
-// A card says what it has and says the blank in words otherwise: an empty panel reads as
-// breakage, not as an honest nothing.
-function acCard(title: string, count: string, body: string, empty: string): string {
-  return `<div class="ac"><div class="ac-h"><span class="t">${esc(title)}</span>`
-    + `<span class="n">${esc(count)}</span></div>`
-    + (body ? `<div class="ac-b">${body}</div>` : `<div class="ac-empty">${esc(empty)}</div>`)
-    + `</div>`;
+// ---------- the left column: who wants something ----------
+
+// A section is a label and its rows, never a card: the artboard's left column has no chrome,
+// and three boxed headings over four rows each is what made this screen read as a form.
+function sec(label: string, count: string, link: string, body: string, empty: string, cls = ""): string {
+  return `<section class="fl-sec${cls ? " " + cls : ""}">
+    <div class="fl-sh"><span class="label">${esc(label)}</span>
+      ${count ? `<span class="n">${esc(count)}</span>` : ""}<span class="sp"></span>${link}</div>`
+    + (body ? `<div class="fl-rows">${body}</div>` : `<p class="fl-none">${esc(empty)}</p>`)
+    + `</section>`;
 }
 
-// The ✕ is nested inside the row, so ./fleetui must probe data-flclose BEFORE data-flsel or
-// the row swallows the close — the same ordering every nested control in the dash chain has.
-function rowHtml(r: FleetRow, close: boolean): string {
+const closeBtn = (id: string) =>
+  `<span class="sclose" data-flclose="${escAttr(id)}" data-tip="Close this session">✕</span>`;
+
+// Two lines, because "which session" and "what it wants" are different questions and the
+// second is the one you came for. The row's tint follows its glyph, so an ask reads as urgent.
+function needRow(r: FleetRow): string {
   const tip = `${r.project} · ${r.label}${r.note ? ` · ${r.note}` : ""}`;
-  return `<div class="srow o3" data-flsel="${escAttr(r.id)}" title="${escAttr(tip)}">
+  return `<div class="fl-need ${esc(r.cls)}" data-flsel="${escAttr(r.id)}" data-tip="${escAttr(tip)}">
     <span class="sglyph ${esc(r.cls)}">${esc(r.glyph)}</span>
-    <span class="sbranch"><b style="color:${escAttr(r.accent)}">${esc(r.project)}</b> ${esc(r.label)}</span>
-    <span class="stags">${r.note ? `<span class="tag">${esc(r.note)}</span>` : ""}</span>
-    <span class="sctx">${r.since ? esc(relTime(r.since)) : ""}</span>`
-    + (close ? `<span class="sclose" data-flclose="${escAttr(r.id)}" title="Close this session">✕</span>` : "")
-    + `</div>`;
+    <span class="fl-nt"><span class="t"><b style="color:${escAttr(r.accent)}">${esc(r.project)}</b>
+      · ${esc(r.label)}</span><span class="w">${esc(r.note)}</span></span>
+    <span class="fl-age mono">${r.since ? esc(relTime(r.since)) : ""}</span>${closeBtn(r.id)}</div>`;
 }
 
-const resumeHtml = (r: FleetResume) =>
-  `<div class="cr" data-flproj="${escAttr(r.path)}" data-flname="${escAttr(r.name)}"
-    title="${escAttr(`${tilde(r.path)} · open this project to pick it back up`)}">
-    <span class="k" style="color:${escAttr(r.accent)}">◷</span>
-    <span class="ti">${esc(r.label)}</span>
-    <span class="rt"><span class="sctx">${r.when ? esc(relTime(r.when)) : ""}</span></span></div>`;
+// An external session opens its read-only mirror rather than a pane, and carries no ✕: the
+// terminal it runs in is not ours to close. `ext` is the whole difference between the two.
+function liveRow(r: FleetRow): string {
+  const tip = `${r.project} · ${r.label}${r.note ? ` · ${r.note}` : ""}`;
+  const open = r.ext ? `data-flext="${escAttr(r.id)}"` : `data-flsel="${escAttr(r.id)}"`;
+  return `<div class="fl-row" ${open} data-tip="${escAttr(tip)}">
+    <span class="sglyph ${esc(r.cls)}">${esc(r.glyph)}</span>
+    <span class="ti">${esc(r.label)}</span>`
+    + (r.ext ? `<span class="ext-tag">ext</span>` : "")
+    + `<span class="pj mono">${esc(r.project)}</span>${r.ext ? "" : closeBtn(r.id)}</div>`;
+}
+
+const resumeRow = (r: FleetResume) =>
+  `<div class="fl-row" data-flproj="${escAttr(r.path)}" data-flname="${escAttr(r.name)}"
+    data-tip="${escAttr(`${tilde(r.path)} · open this project to pick it back up`)}">
+    <span class="sglyph g-ended">◷</span><span class="ti">${esc(r.label)}</span>
+    <span class="pj mono">${r.when ? esc(relTime(r.when)) : ""}</span></div>`;
+
+// ---------- the centre: one card per project ----------
 
 // `undefined` is a folder nothing has swept — the map is only filled for folders in play — and
 // it must never read as clean. Three states, exactly as ./fleet and ./dashview keep them.
 function dirtyTag(g: DiffStat | null | undefined): string {
-  if (g === undefined) return `<span class="tag" title="Not read yet">—</span>`;
+  if (g === undefined) return `<span class="tag" data-tip="Not read yet">—</span>`;
   if (!g || !g.dirty) return `<span class="tag ok">clean</span>`;
-  return `<span class="tag warn" title="${g.dirty} uncommitted">${g.dirty}</span>`;
+  return `<span class="tag warn">${g.dirty} uncommitted</span>`;
 }
-// Every count here is as old as the last fetch, so the chip says so rather than implying live.
+// Every count here is as old as the last fetch, so the tip says so rather than implying live.
 function syncTag(g: DiffStat | null | undefined): string {
-  if (!g || !g.upstream || (!g.ahead && !g.behind)) return "";
+  if (!g || !g.upstream) return "";
   const txt = (g.ahead ? `↑${g.ahead}` : "") + (g.ahead && g.behind ? " " : "") + (g.behind ? `↓${g.behind}` : "");
-  return `<span class="tag" title="${escAttr(`${g.upstream} · as of the last fetch`)}">${txt}</span>`;
+  return `<span class="tag" data-tip="${escAttr(`${g.upstream} · as of the last fetch`)}">${txt || "in sync"}</span>`;
+}
+function branchChip(c: FleetCard): string {
+  if (c.branch) return `<span class="fc-br mono">${esc(c.branch)}</span>`;
+  return c.dirty === null ? `<span class="fc-br mono dim">not a repo</span>` : "";
 }
 
-function projRow(c: FleetCard, x: FleetExtra | undefined, shared: boolean): string {
-  const glyphs = (x?.glyphs ?? []).map((g) =>
-    `<span class="sglyph ${esc(g.cls)}" data-flsid="${escAttr(g.id)}" title="${escAttr(g.title)}">${esc(g.glyph)}</span>`).join("");
-  const spark = x && x.spark.length > 1 ? sparkline(x.spark) : "";
+// Spend is recorded by project NAME, so two repos of one basename sum and cannot be told
+// apart afterwards; the figure says which of the two it is rather than pretending.
+const spendTip = (c: FleetCard, shared: boolean) => shared
+  ? `${uUsd2(c.spend)} — shared with another project of this name: the record is kept by name`
+  : `${uUsd2(c.spend)} over the window`;
+
+// What this project has had done to it in the window. Commits and sessions are what this
+// screen already read; issues are the project dashboard's, and it buys them when you open it.
+function workText(c: FleetCard, days: number): string {
+  const parts: string[] = [];
+  if (c.commits) parts.push(plural(c.commits, "commit"));
+  if (c.sessions) parts.push(plural(c.sessions, "session"));
+  return parts.length ? parts.join(" · ") : `quiet ${days} days`;
+}
+
+const glyphRow = (x: FleetExtra | undefined) => (x?.glyphs ?? []).map((g) =>
+  `<span class="sglyph ${esc(g.cls)}" data-flsid="${escAttr(g.id)}" data-tip="${escAttr(g.title)}">${esc(g.glyph)}</span>`).join("");
+
+// One bar a day, in the project's own colour: a line between two counts invents the days in
+// between (./format's `barRow` is the geometry, ./dashview's ribbon the precedent).
+function sparkBars(x: FleetExtra | undefined, accent: string, cap = 22): string {
+  if (!x || x.spark.length < 2) return `<div class="fc-bars"></div>`;
+  const bars = barRow(x.spark, 0, cap).map((b, i) =>
+    `<i class="fc-b${b.cls ? " " + b.cls : ""}" style="height:${b.h}px"
+      data-tip="${escAttr(`${plural(x.spark[i], "commit")}`)}"></i>`).join("");
+  return `<div class="fc-bars" style="--c:${escAttr(accent)}">${bars}</div>`;
+}
+
+function projCard(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number): string {
   const touched = Math.max(c.lastCommit, c.lastSession);
-  // Spend is recorded by project NAME, so two repos of one basename sum and cannot be told
-  // apart afterwards; the figure says which of the two it is rather than pretending.
-  const spendTip = shared
-    ? `${uUsd2(c.spend)} — shared with another project of this name: the record is kept by name`
-    : `${uUsd2(c.spend)} over the window`;
-  const needs = c.needs ? `<span class="tag acc" title="${c.needs} waiting on you">${c.needs} ◆</span>` : "";
-  return `<div class="cr" data-flproj="${escAttr(c.path)}" data-flname="${escAttr(c.name)}"
-    title="${escAttr(tilde(c.path))}">
+  return `<div class="fl-card" data-flproj="${escAttr(c.path)}" data-flname="${escAttr(c.name)}"
+    data-tip="${escAttr(`${tilde(c.path)} · open this project`)}">
+    <div class="fc-h"><span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>
+      <span class="fc-nm">${esc(c.name)}</span><span class="fc-gl">${glyphRow(x)}</span></div>
+    ${sparkBars(x, c.accent)}
+    <div class="fc-git">${branchChip(c)}${dirtyTag(c.dirty)}${syncTag(c.dirty)}</div>
+    <div class="fc-foot">
+      <span class="fc-spend mono" data-tip="${escAttr(spendTip(c, shared))}">${c.spend > 0 ? esc(uUsd2(c.spend)) : DASH}</span>
+      <span class="fc-work">${esc(workText(c, days))}</span><span class="sp"></span>
+      <span class="fc-age mono">${touched ? esc(relTime(touched)) : DASH}</span></div>
+  </div>`;
+}
+
+// The same facts on one line, for a fleet too long to scan as cards. Nothing is dropped: the
+// spark and the glyphs ride the row, which is what keeps the toggle a layout and not a filter.
+function projRow(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number): string {
+  const touched = Math.max(c.lastCommit, c.lastSession);
+  return `<div class="fl-prow" data-flproj="${escAttr(c.path)}" data-flname="${escAttr(c.name)}"
+    data-tip="${escAttr(`${tilde(c.path)} · open this project`)}">
     <span class="k" style="color:${escAttr(c.accent)}">▪</span>
     <span class="ti">${esc(c.name)}</span>
-    <span class="rt">${glyphs}${spark}${needs}${dirtyTag(c.dirty)}${syncTag(c.dirty)}
-      <span class="sctx" title="${escAttr(spendTip)}">${c.spend > 0 ? esc(uUsd2(c.spend)) : DASH}</span>
-      <span class="sctx">${touched ? esc(relTime(touched)) : DASH}</span></span></div>`;
+    <span class="rt">${glyphRow(x)}${sparkBars(x, c.accent, 16)}${branchChip(c)}${dirtyTag(c.dirty)}${syncTag(c.dirty)}
+      <span class="fc-work">${esc(workText(c, days))}</span>
+      <span class="fc-spend mono" data-tip="${escAttr(spendTip(c, shared))}">${c.spend > 0 ? esc(uUsd2(c.spend)) : DASH}</span>
+      <span class="fc-age mono">${touched ? esc(relTime(touched)) : DASH}</span></span></div>`;
 }
 
-function projectsCard(v: FleetView): string {
-  const dirty = v.cards.filter((c) => !!c.dirty && c.dirty.dirty > 0).length;
-  const count = `${v.cards.length}${dirty ? ` · ${dirty} uncommitted` : ""}`;
-  const rows = v.cards.map((c) => projRow(c, v.extra[c.path], v.shared.includes(c.name))).join("");
-  return acCard("Projects", count, rows, "No projects yet. Add a folder from the sidebar.");
+function projectsSec(v: FleetView): string {
+  const t = v.tally;
+  const count = `${t.projects}${t.dirty ? ` · ${t.dirty} uncommitted` : ""}`;
+  const controls = sortSeg(v.sort) + layoutSeg(v.layout);
+  const draw = v.layout === "cards" ? projCard : projRow;
+  const body = v.cards.map((c) => draw(c, v.extra[c.path], v.shared.includes(c.name), v.usage.days)).join("");
+  return `<section class="fl-sec">
+    <div class="fl-sh"><span class="label">Projects</span><span class="n">${esc(count)}</span>
+      <span class="sp"></span>${controls}</div>
+    <div class="${v.layout === "cards" ? "fl-grid" : "fl-rows"}">${body
+      || `<p class="fl-none">No projects yet. Add a folder from the sidebar, or press ${esc(chord("K"))}.</p>`}</div></section>`;
+}
+
+// ---------- the right: what it all cost ----------
+
+function spendSec(u: FleetUsage): string {
+  const lit = Math.min(7, u.daily.length);
+  // Nothing spent draws no chart: a row of stubs under a "today $0.00" reads as a broken
+  // chart rather than as an honest nothing, which is what the sentence is for.
+  const bars = u.spend > 0 && u.daily.length > 1
+    ? barRow(u.daily, lit, 62).map((b, i) =>
+      `<i class="fl-bar${b.cls ? " " + b.cls : ""}" style="height:${b.h}px"
+        data-tip="${escAttr(uUsd2(u.daily[i]))}"></i>`).join("")
+    : "";
+  const link = `<button class="aslink" data-flopen="usage" data-tip="Open Usage &amp; spend">Usage &amp; spend ⤢</button>`;
+  const body = bars ? `<div class="fl-bars">${bars}</div>
+    <div class="fl-bfoot"><span class="mono">${esc(u.first)}</span>
+      <span class="mono">today ${u.today > 0 ? esc(uUsd2(u.today)) : esc(uUsd2(0))}</span></div>` : "";
+  // "Nothing here" and "nothing anywhere" are different facts: a ledger whose newest day is
+  // outside the window reads as a broken figure unless the card says where its data went.
+  const none = u.lastSpend
+    ? `Nothing in this window. The last spend recorded here was ${u.lastSpend} — widen the range above.`
+    : "Nothing recorded yet. The money figures count what Episko's own sessions spend.";
+  return sec("Spend", "", link, body, none);
 }
 
 // The family hues and the shade ladder ./usageview paints the Usage window with, so a model
@@ -149,52 +268,51 @@ function modelHue(r: ModelSeries): string {
   return pct === 100 ? `var(${v})` : `color-mix(in srgb, var(${v}) ${pct}%, var(--m-fade))`;
 }
 
-function spendCard(u: FleetUsage): string {
-  const rib = u.daily.length > 1 ? `<span class="sb-rib">${sparkline(u.daily)}</span>` : "";
-  const figs = fig("Total", u.spend > 0 ? esc(uUsd(u.spend)) : DASH, `last ${u.days} days`)
-    + fig("Per day", u.days && u.spend > 0 ? esc(uUsd2(u.spend / u.days)) : DASH, "average")
-    + fig("Tokens", u.tokens > 0 ? esc(uTok(u.tokens)) : DASH, "in range");
-  return `<section class="u-card"><div class="label">Spend by day</div>
-    <div class="sb-figs" style="margin:9px 0">${figs}</div>${rib}</section>`;
+function modelSec(u: FleetUsage): string {
+  const total = u.models.reduce((n, r) => n + r.total, 0);
+  const stack = u.models.map((r) =>
+    `<i style="width:${(r.total / total * 100).toFixed(1)}%;background:${modelHue(r)}"></i>`).join("");
+  const rows = u.models.map((r) =>
+    `<div class="fl-mrow"><span class="msw" style="background:${modelHue(r)}"></span>
+      <span class="nm">${esc(r.name)}</span>
+      <span class="tk mono">${esc(uTok(r.total))}</span>
+      <span class="usd mono">${r.cost > 0 ? esc(uUsd2(r.cost)) : DASH}</span></div>`).join("");
+  const body = total > 0 ? `<div class="fl-stack">${stack}</div><div class="fl-rows">${rows}</div>` : "";
+  return sec(`Where it went · ${u.days} days`, "", "", body, "No token data in range yet.");
 }
 
-function modelCard(models: ModelSeries[]): string {
-  const total = models.reduce((n, r) => n + r.total, 0);
-  const rows = models.map((r) => {
-    const c = modelHue(r), pct = total ? r.total / total * 100 : 0;
-    return `<div class="u-srow"><div class="u-stop"><span class="u-sw" style="background:${c}"></span>`
-      + `<span class="u-snm">${esc(r.name)}</span><span class="u-susd mono">${esc(uTok(r.total))}</span></div>`
-      + `<div class="u-strack"><i style="width:${pct.toFixed(1)}%;background:${c}"></i></div></div>`;
-  }).join("");
-  const body = total > 0 ? `<div class="u-share">${rows}</div>` : `<p class="u-hint">No token data in range yet.</p>`;
-  return `<section class="u-card"><div class="label">Model mix <span class="u-byline">· by tokens</span></div>${body}</section>`;
-}
-
-function costCard(rows: FleetSpendRow[]): string {
-  if (!rows.length) return "";
-  const max = rows[0].spend || 1;
+function costSec(rows: FleetSpendRow[]): string {
+  const max = rows[0]?.spend || 1;
   const body = rows.map((r) =>
-    `<tr><td><span class="u-pj"><span class="u-dot" style="background:${escAttr(r.accent)}"></span>${esc(r.name)}</span></td>`
-    + `<td class="u-num"><span class="u-pjbar"><i style="width:${(r.spend / max * 100).toFixed(0)}%"></i></span></td>`
-    + `<td class="u-num"><span class="u-usd mono">${esc(uUsd2(r.spend))}</span></td></tr>`).join("");
-  return `<section class="u-card"><div class="label">Costliest projects</div>
-    <table class="u-tbl" style="margin-top:9px"><thead><tr><th>Project</th><th class="u-num">Share</th><th class="u-num">Spend</th></tr></thead>
-    <tbody>${body}</tbody></table></section>`;
+    `<div class="fl-crow"><span class="nm">${esc(r.name)}</span>
+      <span class="track"><i style="width:${(r.spend / max * 100).toFixed(0)}%;background:${escAttr(r.accent)}"></i></span>
+      <span class="usd mono">${esc(uUsd2(r.spend))}</span></div>`).join("");
+  return sec("Costliest projects", "", "", body, "Nothing recorded per project yet.");
 }
 
-// `.usagepop` is where every `.up-*` rule in the file is scoped, so the wrapper is what makes
-// the shared forecast rows render here — the same borrowing Settings' popover previews do.
-const limitsCard = (l: { h5: Forecast; d7: Forecast }) =>
-  `<section class="u-card"><div class="label">Claude usage limits</div>
-    <div class="usagepop">${usageRow("Session", "5-hour window", l.h5)}${usageRow("Weekly", "7-day window", l.d7)}</div></section>`;
+// The meter, its reset and one sentence — the weekly forecast, which is the one that decides
+// whether today's plan survives. ./usageview's `foreText` writes it, so there is one wording.
+function limitRow(label: string, f: Forecast): string {
+  const cls = f.used == null ? "" : ` s-${f.status}`;
+  const w = f.used == null ? 0 : Math.min(100, Math.max(0, f.used));
+  return `<div class="fl-lim"><div class="fl-lh"><span class="nm">${esc(label)}</span>
+      <span class="pct mono${cls}">${f.used == null ? "–" : `${Math.round(f.used)}%`}</span></div>
+    <div class="fl-track${cls}"><i style="width:${w}%"></i></div>
+    <span class="rs mono">${f.resetTs != null ? `resets in ${esc(fmtUntil(f.resetTs))}` : "no active window"}</span></div>`;
+}
+const limitsSec = (l: { h5: Forecast; d7: Forecast }) =>
+  sec("Account limits", "", "", limitRow("5-hour window", l.h5) + limitRow("Week", l.d7)
+    + `<p class="fl-fore${l.d7.used == null ? "" : ` s-${l.d7.status}`}">${esc(foreText(l.d7))}</p>`, "");
 
 export function fleetBodyHtml(v: FleetView): string {
-  const colA = acCard("Needs you", String(v.needs.length), v.needs.map((r) => rowHtml(r, true)).join(""), "Nothing is waiting on you.")
-    + acCard("Live now", String(v.live.length), v.live.map((r) => rowHtml(r, true)).join(""), "No sessions running.")
-    + acCard("Pick back up", String(v.resume.length), v.resume.map(resumeHtml).join(""), "Nothing left open.");
-  const colC = spendCard(v.usage) + modelCard(v.usage.models) + costCard(v.usage.projects) + limitsCard(v.limits);
-  return `<div class="db-cols">
-    <div class="db-col db-col-a">${colA}</div>
-    <div class="db-col db-col-b">${projectsCard(v)}</div>
-    <div class="db-col db-col-c">${colC}</div></div>`;
+  const history = `<button class="aslink" data-flopen="history" data-tip="Every session this machine has had">History ⤢</button>`;
+  const colA = sec("Needs you", String(v.needs.length), "", v.needs.map(needRow).join(""),
+      "Nothing is waiting on you.", v.needs.length ? "waiting" : "")
+    + sec("Live now", String(v.live.length), "", v.live.map(liveRow).join(""), "No sessions running.")
+    + sec("Pick back up", String(v.resume.length), history, v.resume.map(resumeRow).join(""), "Nothing left open.");
+  const colC = spendSec(v.usage) + modelSec(v.usage) + costSec(v.usage.projects) + limitsSec(v.limits);
+  return `<div class="fl-cols">
+    <div class="fl-col fl-col-a">${colA}</div>
+    <div class="fl-col fl-col-b">${projectsSec(v)}</div>
+    <div class="fl-col fl-col-c">${colC}</div></div>`;
 }

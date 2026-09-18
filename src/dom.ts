@@ -13,15 +13,20 @@ export function dropScrim() {
   if (!SCRIM_DLGS.some((id) => $(id).classList.contains("show"))) $("scrim").classList.remove("show");
 }
 
-export type Stage = "session" | "ext" | "dash" | "fleet" | "none"; // ext: the read-only mirror, external or dormant
+export type Stage = "session" | "ext" | "dash" | "fleet" | "home"; // ext: the read-only mirror, external or dormant
 export let stageGen = 0; // bumped per handover; an #inspector paint cache is valid within one tenancy
-// The only code that may touch #extPane/#dashPane/#fleetPane/#empty (the stage has one owner).
+// `home` is the all-projects dashboard: with no session and no mirror the stage shows every
+// project rather than a card saying nothing is running. main.ts wires it, since dom.ts must
+// import nothing — and "nothing on the stage" is therefore not a state this app can reach.
+let home: () => void = () => {};
+export function setStageHome(fn: () => void) { home = fn; }
+// The only code that may touch #extPane/#dashPane/#fleetPane (the stage has one owner).
 export function takeStage(show: Stage) {
   stageGen++;
+  if (show === "home") { home(); return; }
   ($("extPane") as HTMLElement).hidden = show !== "ext";
   ($("dashPane") as HTMLElement).hidden = show !== "dash";
   ($("fleetPane") as HTMLElement).hidden = show !== "fleet";
-  ($("empty") as HTMLElement).style.display = show === "none" ? "grid" : "none";
   // Both stages own the whole width: the inspector column collapses to 0 rather than to a rail.
   $("app").classList.toggle("stage-dash", show === "dash");
   $("app").classList.toggle("stage-fleet", show === "fleet");

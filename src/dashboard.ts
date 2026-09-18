@@ -888,9 +888,11 @@ export function renderDash(): void {
 // Name and location only: a project has no branch chip or session title, and the
 // project verbs live in the inspector.
 export function renderDashHeader(): void {
-  // No ✕ here: this pane is a place you look, not a session you own, and Escape leaves it.
-  // Every stage taker sets both, or the last one's state is inherited.
-  ($("btnClose") as HTMLButtonElement).hidden = true;
+  // ✕ leaves the pane rather than closing anything of the project's — this is a place you
+  // look, not a session you own — and lands on the home stage, as Escape does.
+  const xb = $("btnClose") as HTMLButtonElement;
+  xb.hidden = false;
+  xb.title = "Close this project view (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;   // ⇩ is a session verb; every stage taker sets both
   $("hProj").textContent = name();
   const hb = $("hBranch");
@@ -957,7 +959,7 @@ export function closeDashboard(): void {
   if (!dashMirror()) return;
   setMirror(null);
   openView = null;
-  takeStage("none");   // the collapsed rail is dash-only, and renderAll never restores #empty
+  takeStage("home");   // the collapsed rail is dash-only, and renderAll never re-takes the stage
 }
 
 // Esc steps out one layer at a time: sheet, overlay, then the pane. Same rule as the

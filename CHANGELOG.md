@@ -12,6 +12,13 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ **The app opens on that dashboard instead of a "No sessions running" card.** Closing the last
+  session, stepping out of a project dashboard or a read-only mirror, and starting Episko with
+  nothing restored all land on every project rather than on a splash. The Episko logo is the way
+  back to it from anywhere — it lights up when you are there, and the ▦ button it replaces is gone.
+  ✕ on that screen is a way back to a session, so it is only there when there is one.
+~ **✕ leaves a project dashboard or a read-only mirror**, which had no close button at all; Esc now
+  leaves a mirror too, and both land on the all-projects screen.
 ~ **The project page is three columns now, and it reads left to right**: where you are, what moved,
   what's next. The sessions running here, the branch and its checkouts sit on the left; the middle
   says what changed and shows the uncommitted work; everything you might start next is one ranked
@@ -49,10 +56,13 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ **⌘I on a project page folds the right-hand column** instead of collapsing the inspector to a strip
   of glyphs. The strip existed because the page's verbs lived only in the inspector; they no longer
   do.
-+ **A dashboard for every project at once** (▦ beside the sidebar's ＋). What needs you across the
-  whole fleet, what is running, one card per project with its branch, its uncommitted work and what
-  it has cost, and the week's spend, model mix and rate-limit forecast beside them. A checkout
-  nobody has read yet says so rather than claiming to be clean.
++ **A dashboard for every project at once** (the Episko logo, top left). Five figures for the whole
+  fleet, then what needs you and what is running, one card per project — its live sessions, its
+  commits a bar a day, its branch, its uncommitted work and what it has cost — and the week's spend,
+  model mix and rate-limit forecast beside them. 7, 14 or 30 days; ▦ cards or ☰ rows; sessions
+  running outside Episko counted and listed with the rest; and a checkout nobody has read yet says
+  so rather than claiming to be clean. Opening it reads this machine's token history, which until
+  now only the Usage & spend window did.
 + **A Dependencies card on the project dashboard.** Dependabot's advisories and the update
   bots' pull requests, one row per advisory however many packages it hit, each saying what
   the fix will cost, from a lockfile bump to a major upgrade. ▶ hands an agent the whole
