@@ -293,6 +293,26 @@ pub(crate) fn resolve_claude() -> String {
     "claude".to_string()
 }
 
+/// Rank `where` output by what can be STARTED. An npm global install writes three files,
+/// and the extensionless sh shim sorts first: `CreateProcessW` answers it with
+/// ERROR_BAD_EXE_FORMAT, so taking a line raw is how a whole install becomes unlaunchable.
+/// `.ps1` is skipped for the same reason; a `.cmd` needs `argv_command`'s detour.
+/// Compiled everywhere so a Mac can test it.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pick_launchable<'a>(lines: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut shim = None;
+    for l in lines.map(str::trim).filter(|l| !l.is_empty()) {
+        let low = l.to_ascii_lowercase();
+        if low.ends_with(".exe") || low.ends_with(".com") {
+            return Some(l.to_string());
+        }
+        if shim.is_none() && (low.ends_with(".cmd") || low.ends_with(".bat")) {
+            shim = Some(l.to_string());
+        }
+    }
+    shim
+}
+
 /// Windows: prefer the native installer's `claude.exe` (spawnable directly, unlike the
 /// npm `.cmd` shim which needs a shell), then `where`.
 #[cfg(windows)]
@@ -308,17 +328,13 @@ pub(crate) fn resolve_claude() -> String {
             return c.clone();
         }
     }
-    // `where` may print several lines (claude.exe + claude.cmd); prefer a .exe.
     if let Ok(o) = sys_command("where").arg("claude").output() {
         let text = String::from_utf8_lossy(&o.stdout);
-        let lines: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-        if let Some(exe) = lines.iter().find(|l| l.to_lowercase().ends_with(".exe")) {
-            return exe.to_string();
-        }
-        if let Some(first) = lines.first() {
-            return first.to_string();
+        if let Some(p) = pick_launchable(text.lines()) {
+            return p;
         }
     }
+    // Nothing startable was named; the bare word still lets `argv_command` walk PATHEXT.
     "claude".to_string()
 }
 
@@ -1202,6 +1218,46 @@ mod tests {
             path_from_probe(&format!("{PATH_MARK}/nope/one:/nope/two{PATH_MARK}")),
             None
         );
+    }
+
+    /// The three files `npm i -g` writes, in the order `where` prints them. Taking the
+    /// first line is what left every npm-installed claude unlaunchable on Windows.
+    #[test]
+    fn where_output_skips_the_shim_createprocess_refuses() {
+        let npm = r"C:\npm\prefix\claude
+C:\npm\prefix\claude.cmd
+C:\npm\prefix\claude.ps1";
+        assert_eq!(pick_launchable(npm.lines()).as_deref(), Some(r"C:\npm\prefix\claude.cmd"));
+    }
+
+    #[test]
+    fn a_real_executable_outranks_a_shim_listed_before_it() {
+        let both = r"C:\npm\prefix\claude
+C:\npm\prefix\claude.cmd
+C:\Users\a\.local\bin\claude.exe";
+        assert_eq!(
+            pick_launchable(both.lines()).as_deref(),
+            Some(r"C:\Users\a\.local\bin\claude.exe")
+        );
+    }
+
+    /// None rather than a guess: the caller then falls back to the bare word, which
+    /// `argv_command` can still walk PATHEXT for.
+    #[test]
+    fn where_output_naming_nothing_startable_is_none() {
+        assert_eq!(pick_launchable("C:\\p\\claude\nC:\\p\\claude.ps1".lines()), None);
+        assert_eq!(pick_launchable("".lines()), None);
+        assert_eq!(pick_launchable("\n  \n".lines()), None);
+    }
+
+    /// `where` prints CRLF, and an unrecognised extension must not survive the trim.
+    #[test]
+    fn where_output_is_trimmed_and_matched_case_insensitively() {
+        assert_eq!(
+            pick_launchable("  C:\\pnpm\\claude.CMD  \r\n".lines()).as_deref(),
+            Some(r"C:\pnpm\claude.CMD")
+        );
+        assert_eq!(pick_launchable(r"C:\p\claude.cmd.bak".lines()), None);
     }
 
     /// Against this machine's real shell; must pass whether or not the probe lands.

@@ -17,6 +17,8 @@ Markers: `+` new · `~` changed · `!` fixed
   separate from the account's, and no telemetry carries it, so the limits popover and
   *Usage & spend* ask the CLI when they open. Levels rather than forecasts: one reading
   has no pace behind it.
+! **Claude Code installed through npm now launches on Windows.** `npm i -g` leaves an
+  extensionless sh shim beside `claude.cmd`, and Episko was starting the one Windows refuses.
 
 ## 0.29.0 — 2026-09-17
 

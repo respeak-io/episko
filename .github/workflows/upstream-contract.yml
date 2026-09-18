@@ -82,9 +82,12 @@ jobs:
           EPISKO_REQUIRE_CLAUDE: "1"
         run: |
           set -o pipefail
+          # `2>&1` is load-bearing: a panic goes to stderr, so a stdout-only capture left the
+          # reporting step below unable to tell a moved directory from a CLI it could not
+          # start, and it named the wrong one twice (#137, #155).
           cargo test --locked -- --ignored --nocapture --exact \
             pty::tests::claude_layout_still_names_its_temp_dir_the_way_we_probe_for_it \
-            | tee "$RUNNER_TEMP/layout.txt"
+            2>&1 | tee "$RUNNER_TEMP/layout.txt"
           grep -q '1 passed' "$RUNNER_TEMP/layout.txt"
 
       - name: Report a moved layout as an issue, not as a red badge
