@@ -12,6 +12,14 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.30.0 — 2026-09-18
+
+Episko opens on a dashboard of every project rather than a card saying nothing is running,
+the project page is three columns ending in one ranked list of what is next, an issue reads
+in full beside the project it belongs to, and Claude Code installed through npm launches on
+Windows.
+
 + **A dashboard for every project at once** (the Episko logo, top left). Five figures for the fleet,
   then a card a project — sessions, commits a bar a day, branch, uncommitted work (or "not read yet",
   never a false clean) and cost — beside the week's spend and limits. 7/14/30 days; cards or rows.
@@ -54,7 +62,6 @@ Markers: `+` new · `~` changed · `!` fixed
   extensionless sh shim beside `claude.cmd`, and Episko was starting the one Windows refuses.
 
 ## 0.29.0 — 2026-09-17
-
 The project dashboard reads your dependencies, ⌘T opens a shell beside the session rather
 than over it, a link in a pane waits for ⌘, and a Finder launch no longer makes every project
 claim it isn't a git repository.
