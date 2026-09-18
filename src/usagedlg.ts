@@ -9,6 +9,7 @@ import { dlog } from "./debug";
 import { esc } from "./format";
 import { setTokenScanning, tokenScanning, usagePanelHtml } from "./usageview";
 import { setTokenDays, setUsageRange, tokenDays, tokenScanAt, type DayUsage } from "./usage";
+import { refreshScopedLimits } from "./rlprobe";
 
 export function usageOpen() { return $("usageDlg").classList.contains("show"); }
 
@@ -29,6 +30,7 @@ export function openUsage() {
   $("usageDlg").classList.add("show");
   renderUsage();
   void refreshTokens(); // throttled and cached; the panel paints from localStorage meanwhile
+  void refreshScopedLimits().then(renderUsage); // the per-model windows, asked for on open
 }
 export function closeUsage() {
   $("usageDlg").classList.remove("show");

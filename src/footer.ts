@@ -8,6 +8,7 @@ import { toggleDbg } from "./debug";
 import { esc, fmtMb, fmtUntil } from "./format";
 import { abbr } from "./phase";
 import { forecastWin, type Forecast } from "./rl";
+import { refreshScopedLimits } from "./rlprobe";
 import { hasAgentCapability, isAgent, phaseText, statusKey, type AgentRateLimit, type Engine, type Sess } from "./types";
 import { costPopHtml, ioFigures, ioPopHtml, liveIo, usageRow } from "./usageview";
 import { closeCafPop } from "./caffeinate";
@@ -51,8 +52,8 @@ export function renderFoot() {
   if ($("ioPop").classList.contains("show")) renderIoPop();
 }
 
-interface LimitWindowView extends AgentRateLimit { forecast: Forecast }
-interface SelectedLimits { label: string; forecast: boolean; reported: boolean; windows: LimitWindowView[] }
+interface LimitWindowView extends AgentRateLimit { forecast: Forecast; label?: string; sub?: string; note?: string }
+interface SelectedLimits { id: string; label: string; forecast: boolean; reported: boolean; windows: LimitWindowView[] }
 
 const emptyForecast = (): Forecast => forecastWin(null, null, null);
 const limitShort = (mins: number | null): string => mins === 300 ? "5h"
@@ -71,6 +72,7 @@ function selectedLimits(): SelectedLimits | null {
     ? specialized.map((window) => ({
         usedPercent: window.forecast.used ?? 0, resetsAt: window.forecast.resetTs,
         windowMins: window.windowMins, forecast: window.forecast,
+        label: window.label, sub: window.sub, note: window.note,
       }))
     : [...s.rateLimits]
         .sort((a, b) => (a.windowMins ?? Number.MAX_SAFE_INTEGER) - (b.windowMins ?? Number.MAX_SAFE_INTEGER))
@@ -78,8 +80,9 @@ function selectedLimits(): SelectedLimits | null {
           ...window,
           forecast: forecastWin(window.usedPercent, window.resetsAt, null, window.windowMins == null ? undefined : window.windowMins * 60),
         }));
-  const windows = source.slice(0, 2);
+  const windows = source.slice(0, 6);
   return {
+    id: adapter?.id ?? s.provider ?? "",
     label: adapter?.label ?? s.provider ?? "Agent",
     forecast: !!specialized?.length,
     reported: windows.some((window) => window.forecast.used != null),
@@ -129,7 +132,7 @@ function renderUsagePop() {
   const limits = selectedLimits();
   const rows = limits?.windows.map((window) => {
     const [title, sub] = limitName(window.windowMins);
-    return usageRow(title, sub, window.forecast);
+    return usageRow(window.label ?? title, window.sub ?? sub, window.forecast, window.note);
   }).join("") ?? "";
   const html = `<div class="up-h">${esc(limits ? `${limits.label} usage limits` : "Usage limits")}${
     popGoHtml({ go: "usage", label: "Usage & spend", sub: "the burn rate behind these, and every day so far" })
@@ -146,6 +149,8 @@ function openUsagePop() {
   const r = $("fUsageSeg").getBoundingClientRect();
   const pop = $("usagePop");
   renderUsagePop();
+  // Per-model windows are asked for on open, never on the render pass this popover repaints on.
+  if (selectedLimits()?.id === "claude") void refreshScopedLimits().then(renderUsagePop);
   closeFootMenus("usagePop");
   pop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 260)) + "px";
   pop.style.bottom = (window.innerHeight - r.top + 6) + "px";

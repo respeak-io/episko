@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $ } from "./dom";
 import { esc } from "./format";
-import { rl } from "./rl";
+import { rl, rlScoped } from "./rl";
 import {
   activeId, bgLogHealth, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
   pastMirrorId, revivePrefs, sessions, telemetryUp, termEngine, vitalsPrefs,
@@ -95,7 +95,7 @@ function dbgFanout(s: Sess): string | null {
 export function dbgSnapshot() {
   return {
     generatedAt: new Date().toISOString(),
-    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl,
+    version: appVersion, activeId, activeExtId: extMirrorId(), activePastId: pastMirrorId(), termEngine, rateLimits: rl, scopedLimits: rlScoped,
     telemetry: { ...telem, up: telemetryUp }, // an idle fleet means two different things depending on `up`
     // Where the backend last found background-shell logs: rows stuck at "starting…" may be a wrong path.
     bgRoot: bgLogHealth,

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants,
+  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -250,7 +250,7 @@ export async function adoptOrphans(): Promise<number> {
     dlog("warn", `adopted ${orphans.length} orphaned pane${orphans.length === 1 ? "" : "s"} after a webview reload`);
     toast(`Reattached ${orphans.length} running session${orphans.length === 1 ? "" : "s"} after a reload`);
     // Give the stage to the freshest orphan, unless the user has already picked something.
-    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror()) {
+    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror() && !fleetMirror()) {
       const front = [...sessions.values()].sort((a, b) => b.lastActivity - a.lastActivity)[0];
       if (front) setActive(front.id);
     }
@@ -506,7 +506,7 @@ export function closeSession(id: string) {
     setStageGroup(null);
     $("terminals").classList.remove("tiled", "split");
     document.documentElement.style.setProperty("--accent", "#a78bfa");
-    takeStage("none");
+    takeStage("home");
     renderAll();
     return;
   }
@@ -682,7 +682,7 @@ export function setActive(id: string, keepGroup = false) {
   // A split shell is never the stage's owner: its anchor is, with the shell's tile focused.
   const anchor = s.splitOf ? sessions.get(s.splitOf) : undefined;
   if (anchor) { setActive(anchor.id); focusTile(s); return; }
-  // closeExternalView drops the stage to the empty card; takeStage below replaces it with the pane.
+  // Drops the mirror pointer only; the takeStage below is what gives the stage to this pane.
   closeExternalView();
   setActiveId(id);
   // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
@@ -853,7 +853,12 @@ export function scheduleDismiss(s: Sess) {
 }
 
 export function renderHeader(s: Sess | null) {
-  ($("btnClose") as HTMLButtonElement).hidden = !s;
+  clearStageBadges();
+  // ✕ is on every stage now, and it does something different on each: every taker sets the
+  // wording as well as the flag, or it inherits the last stage's and lies about what it does.
+  const xb = $("btnClose") as HTMLButtonElement;
+  xb.hidden = !s;
+  xb.title = "Close session";
   // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
@@ -937,6 +942,9 @@ export async function handToTerminal(project: string, workdir: string, cmd: stri
 
 // Greyed with no active project: a live button whose only answer is an error toast reads as a failed click.
 export function syncStageButtons() {
+  // The logo is the way home, so it says when you are already there — the one "you are here"
+  // mark in the top bar, and the reason the fleet needs no button beside the sidebar's ＋.
+  $("brand").classList.toggle("on", !!fleetMirror());
   const wd = activeCwd();
   const set = (id: string, enabled: string, disabled = "Start a session first; this runs in the active project") => {
     const b = $(id) as HTMLButtonElement;
@@ -948,6 +956,25 @@ export function syncStageButtons() {
   // ◷ History's disabled reason differs: the whole-machine view is one click away up top.
   set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
       "No project selected. The ◷ button up top opens history for every project");
+  // The project pane offers Terminal / Run / History as tiles in its own first column, so the
+  // header's copies are hidden there rather than sitting a hand's width from the originals.
+  // The fleet has no one project for them to act on at all.
+  const bare = !!dashMirror() || !!fleetMirror();
+  for (const id of ["btnRun", "btnTerm", "btnHist"]) ($(id) as HTMLButtonElement).hidden = bare;
+  // ◨ stays on every stage: on the dashboard it folds the Next column, a verb this pane has
+  // and no other surface offers, so hiding it there would leave ⌘I with nothing to find. Only
+  // the fleet disables it — CSS hides that column outright — and a disabled button must stay
+  // VISIBLE or the reason it gives is a tooltip nobody can reach. Here rather than in each
+  // header writer, because this runs on every pass and so is also what turns it back on.
+  const ib = $("inspBtn") as HTMLButtonElement;
+  ib.disabled = !!fleetMirror();
+  ib.title = ib.disabled ? "Nothing to fold on this screen" : "Toggle inspector (⌘I)";
+  // Lit from the truth for whichever stage is up, never left over from the last one: the
+  // dashboard's fold and the inspector's own switch are different classes on different
+  // elements, and ./actions paints the same answer on the click that cannot wait for a pass.
+  ib.classList.toggle("on", !ib.disabled && (dashMirror()
+    ? !$("dashPane").classList.contains("fold-next")
+    : !$("app").classList.contains("insp-off")));
 }
 
 // Auto-fetch (./autofetch owns the rule, Settings > Git the switch): only the checkout on

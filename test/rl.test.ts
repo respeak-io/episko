@@ -3,7 +3,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
   rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
-  lastClosed, H5_LEN,
+  lastClosed, H5_LEN, applyPlanLimits, rlScoped, scopedForecasts,
 } from "../src/rl";
 
 // A fixed epoch so "one hour before the reset" is a number. 2027-01-15T08:00:00Z.
@@ -22,6 +22,7 @@ beforeEach(() => {
   midSnap.h5 = midSnap.d7 = null;
   lastClosed.h5 = lastClosed.d7 = null;
   setRlLogger(() => {});
+  rlScoped.wins = []; rlScoped.at = 0; rlScoped.avail = true;
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -440,5 +441,71 @@ describe("forecast5h / forecast7d — each reads its own window", () => {
     expect(f5.proj).toBeCloseTo(40 + 10 * 1, 6);
     expect(f7).toMatchObject({ used: 90, secLeft: 3 * 86400, hasRate: true });
     expect(f7.status).toBe("bad"); // 90% with days to go and a real slope
+  });
+});
+
+describe("per-model weekly windows", () => {
+  const iso = (sec: number) => new Date(sec * 1000).toISOString();
+  const fable = (pct: number | null, at = NOW_S + 3 * 86400) =>
+    ({ display_name: "Fable", utilization: pct, resets_at: iso(at) });
+
+  it("reads a window's level and reset off the CLI's answer", () => {
+    applyPlanLimits({ available: true, scoped: [fable(77)] });
+    expect(rlScoped.wins).toEqual([{ label: "Fable", pct: 77, resetTs: NOW_S + 3 * 86400 }]);
+    expect(rlScoped.at).toBe(NOW_MS);
+    const [win] = scopedForecasts();
+    expect(win.label).toBe("Fable");
+    // A level, never a forecast: one on-demand reading has no slope behind it.
+    expect(win.forecast).toMatchObject({ used: 77, proj: 77, hasRate: false, rate: null });
+    expect(win.forecast.status).toBe("ok");
+  });
+
+  // The distinction the payload is shaped around: absent is "nothing was learned" and must
+  // leave a live meter standing, where an empty array is the account having no such window.
+  it("keeps the last reading when the answer says nothing, and clears on an empty list", () => {
+    applyPlanLimits({ available: true, scoped: [fable(77)] });
+    applyPlanLimits({ available: true });
+    expect(rlScoped.wins).toHaveLength(1);
+    applyPlanLimits({ available: true, scoped: null });
+    expect(rlScoped.wins).toHaveLength(1);
+    applyPlanLimits({ available: true, scoped: [] });
+    expect(rlScoped.wins).toEqual([]);
+  });
+
+  it("drops a nameless row and never reads a missing figure as 0%", () => {
+    applyPlanLimits({ available: true, scoped: [
+      { display_name: "  ", utilization: 5, resets_at: iso(NOW_S + 60) },
+      { display_name: "Fable", utilization: null, resets_at: null },
+      { display_name: "Mythos", utilization: 12, resets_at: "not a date" },
+    ] });
+    expect(rlScoped.wins.map((w) => w.label)).toEqual(["Fable", "Mythos"]);
+    expect(rlScoped.wins[0]).toMatchObject({ pct: null, resetTs: null });
+    expect(rlScoped.wins[1]).toMatchObject({ pct: 12, resetTs: null });
+    expect(scopedForecasts()[0].forecast.used).toBeNull(); // no reading, not a clear window
+  });
+
+  it("an account plan limits do not apply to has no windows and says which case it is", () => {
+    applyPlanLimits({ available: true, scoped: [fable(77)] });
+    applyPlanLimits({ available: false });
+    expect(rlScoped.avail).toBe(false);
+    expect(rlScoped.wins).toEqual([]);
+  });
+
+  it("ignores an answer that never arrived rather than blanking the meter", () => {
+    applyPlanLimits({ available: true, scoped: [fable(77)] });
+    const at = rlScoped.at;
+    applyPlanLimits(null);
+    applyPlanLimits(undefined);
+    expect(rlScoped.wins).toHaveLength(1);
+    expect(rlScoped.at).toBe(at);
+  });
+
+  // The window rules the statusLine's two already obey apply here too: past its reset a
+  // maxed-out meter must not linger.
+  it("shows 0% once the window's reset has passed", () => {
+    applyPlanLimits({ available: true, scoped: [fable(96, NOW_S + 60)] });
+    expect(scopedForecasts()[0].forecast.used).toBe(96);
+    tick(2);
+    expect(scopedForecasts()[0].forecast).toMatchObject({ used: 0, resetTs: null });
   });
 });

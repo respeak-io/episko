@@ -3,7 +3,7 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
@@ -15,13 +15,13 @@ import { extWorking } from "./sidebarview";
 import {
   providerAdapter, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
 } from "./providers";
-import { dormantBusy, orderedSessions } from "./grouping";
+import { allProjects, dormantBusy } from "./grouping";
 import {
   hasAgentCapability, isAgent, providerSessionKey,
   type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
   setExternals, setMirror, worktreesByRepo,
 } from "./state";
@@ -93,10 +93,7 @@ export async function refreshExternals() {
         setMirror({ kind: "ext", id: e.session_id, pid: e.pid });
         renderExtHeader(e); renderExtInspector(e);
       } else {
-        // Truly gone: fall back to an Episko session, or the empty card.
-        closeExternalView();
-        const next = orderedSessions()[0];
-        if (next) setActive(next.id);
+        leaveMirror(); // truly gone: the home stage rather than a session nobody picked
       }
     }
     renderSidebar(); renderMini();
@@ -118,11 +115,21 @@ export async function refreshDirtyStates(force = false) {
   // prune below drops them again as soon as it closes.
   const dash = dashMirror();
   if (dash) for (const w of worktreesByRepo.get(dash.root) ?? []) if (w.exists) folders.add(w.path);
+  // The fleet asks the same question about every project at once — and it is the home stage,
+  // so it holds the screen whenever nothing else does. Its folders are therefore read when it
+  // opens and when one has never been read at all, never on the recurring sweep: an idle app
+  // must not spawn a git per project every 15s for a column nobody is watching change.
+  const onlyFleet = new Set<string>();
+  if (fleetMirror()) {
+    for (const p of allProjects()) if (!folders.has(p.path)) { onlyFleet.add(p.path); folders.add(p.path); }
+  }
   for (const f of [...dirtyByFolder.keys()]) if (!folders.has(f)) dirtyByFolder.delete(f);
   const sweep = force || Date.now() - dirtySweptAt >= DIRTY_SWEEP_MS;
   if (sweep) dirtySweptAt = Date.now();
   // A folder never read is read now, or a new session shows no dot until the next sweep.
-  const targets = [...folders].filter((f) => sweep || dirtyStale.has(f) || !dirtyByFolder.has(f));
+  const targets = [...folders].filter((f) => (onlyFleet.has(f)
+    ? force || !dirtyByFolder.has(f)
+    : sweep || dirtyStale.has(f) || !dirtyByFolder.has(f)));
   dirtyStale.clear();
   if (!targets.length) return;
   // Every field the card prints, `dirty` included, or a change only it sees never repaints.
@@ -135,6 +142,7 @@ export async function refreshDirtyStates(force = false) {
   }));
   if (!changed) return;
   renderSidebar();
+  if (fleetMirror()) renderAll(); // the fleet's figures are only repainted from renderAll's pass
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) renderExtInspector(e); }
 }
 export function openExternal(sid: string) {
@@ -155,13 +163,19 @@ export function openExternal(sid: string) {
     if (cur) loadTranscript(cur, false);
   }, 2500);
 }
+// Clears the pointer and its poll, and nothing else: the stage belongs to whoever takes it
+// next — `setActive` for a pane, `leaveMirror` when there is no pane to take it.
 export function closeExternalView() {
   if (mirror == null) return;
   setMirror(null);   // clears the ext pid with it — one pointer, one lifetime
   clearInterval(extTranscriptTimer);
-  // The dashboard rides the same pointer, so it goes with it. `none` rather than
-  // `session`: every caller either activates a session next or wants the empty card.
-  takeStage("none");
+}
+// Step out of a mirror — by ✕, by Esc, or because the thing it mirrored went away. Always
+// the home stage: picking a session for you means picking the first one in the sidebar,
+// which is somewhere you did not ask to be and, on a resume, is not even the one arriving.
+export function leaveMirror() {
+  closeExternalView();
+  takeStage("home");
 }
 // ---------- dormant (restorable) sessions ----------
 // Mirrors the transcript read-only, so you can see which conversation it is before resuming.
@@ -193,7 +207,12 @@ export function jumpPastMessage(index: string) {
   row?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 export function renderPastHeader(d: Restorable) {
-  ($("btnClose") as HTMLButtonElement).hidden = true;
+  clearStageBadges();
+  // ✕ steps out of the mirror; it never reaches the session behind it, which is somebody
+  // else's terminal or a shelved transcript. `leaveMirror` decides where that lands.
+  const xb = $("btnClose") as HTMLButtonElement;
+  xb.hidden = false;
+  xb.title = "Close this mirror (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · shelved, not running · ⟲ Resume to carry on";
   $("hProj").textContent = d.project;
@@ -231,17 +250,12 @@ export function resumeDormant(id: string) {
   const d = dormants.find((x) => x.id === id);
   if (!d) return;
   if (dormantBusy(d)) { toast("That session is already running"); return; }
-  closeExternalView();
+  leaveMirror();   // the launch takes the stage a beat later; this is what it takes it from
   launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId, resumeProvider: d.provider || "claude" });
 }
 export function forgetDormant(id: string) {
   setDormants(dormants.filter((x) => x.id !== id));
-  if (pastMirrorId() === id) {
-    // closeExternalView leaves the empty card; only the fall-back case needs saying.
-    closeExternalView();
-    const next = orderedSessions()[0];
-    if (next) setActive(next.id);
-  }
+  if (pastMirrorId() === id) leaveMirror();
   flushRoster();
   renderAll();
 }
@@ -319,7 +333,12 @@ function renderTranscript(msgs: { role: string; text: string }[], initial: boole
   if (initial || nearBottom) body.scrollTop = body.scrollHeight;
 }
 export function renderExtHeader(e: ExtSession) {
-  ($("btnClose") as HTMLButtonElement).hidden = true;
+  clearStageBadges();
+  // ✕ steps out of the mirror; it never reaches the session behind it, which is somebody
+  // else's terminal or a shelved transcript. `leaveMirror` decides where that lands.
+  const xb = $("btnClose") as HTMLButtonElement;
+  xb.hidden = false;
+  xb.title = "Close this mirror (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · this session runs in another terminal";
   $("hProj").textContent = basename(e.cwd);

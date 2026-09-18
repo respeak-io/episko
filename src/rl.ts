@@ -27,6 +27,45 @@ export function rlReset(reset: number | null): number | null {
   return (reset != null && reset * 1000 <= Date.now()) ? null : reset;
 }
 
+// ---------- per-model weekly windows ----------
+// Claude's statusLine carries the 5h and 7d windows and nothing else, so the window that
+// binds first on a premium model (Fable's today) is invisible to telemetry. ./rlprobe asks
+// the CLI for it when a surface that shows it opens, which is why these are a LEVEL and
+// never a forecast: one reading on demand has no slope behind it. docs/architecture.md.
+export interface ScopedWin { label: string; pct: number | null; resetTs: number | null }
+// `avail` false is an account plan limits do not apply to at all (an API key, Bedrock,
+// Vertex): saying so beats an empty meter that reads as nothing used.
+export const rlScoped: { wins: ScopedWin[]; at: number; avail: boolean } =
+  { wins: [], at: 0, avail: true };
+
+export interface PlanLimitRow { display_name?: string; utilization?: number | null; resets_at?: string | null }
+export interface PlanLimits {
+  available?: boolean;
+  // Absent means nothing was learned and the last reading stands; `[]` is the account having
+  // no per-model window at all. The same split is spelled in `usage.rs`.
+  scoped?: PlanLimitRow[] | null;
+}
+export function applyPlanLimits(p: PlanLimits | null | undefined): void {
+  if (!p || typeof p !== "object") return;
+  rlScoped.at = Date.now();
+  rlScoped.avail = p.available !== false;
+  if (!rlScoped.avail) { rlScoped.wins = []; return; }
+  if (!Array.isArray(p.scoped)) return; // nothing known — keep what the last answer gave us
+  rlScoped.wins = p.scoped.map(scopedWin).filter((w): w is ScopedWin => w != null);
+}
+// A row with no name has nothing to label a meter with; a missing figure is null, not 0%.
+function scopedWin(row: PlanLimitRow): ScopedWin | null {
+  const label = typeof row?.display_name === "string" ? row.display_name.trim() : "";
+  if (!label) return null;
+  const pct = typeof row.utilization === "number" && isFinite(row.utilization) ? row.utilization : null;
+  const ms = typeof row.resets_at === "string" ? Date.parse(row.resets_at) : NaN;
+  return { label, pct, resetTs: isFinite(ms) ? Math.floor(ms / 1000) : null };
+}
+// One per window, in the order the CLI listed them. Level only, so no burn rate is passed.
+export function scopedForecasts(): { label: string; forecast: Forecast }[] {
+  return rlScoped.wins.map((w) => ({ label: w.label, forecast: forecastWin(w.pct, w.resetTs, null, D7_LEN) }));
+}
+
 // ---------- Usage-limit forecast ----------
 // A level alone says nothing (62% burning fast is a lockout, 68% flat is fine), so sample
 // used-% over time and extrapolate to the reset. Until two samples span `minSpan`, judge by level.

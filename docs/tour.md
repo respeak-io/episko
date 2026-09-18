@@ -135,9 +135,12 @@ coexists with them; `dropScrim()` stays a question only dialogs answer.
 
 - **A collapsed panel is opened, not stepped over.** ⌘I takes the whole inspector away
   (`#app.insp-off`) and with it the permission buttons and every Context card; ⌘B does
-  the same to the rail. A step says which panel its anchor lives in (`needs: ["rail"]`),
+  the same to the rail, and on the project dashboard ⌘I folds the Next column
+  (`#dashPane.fold-next`). A step says which panel its anchor lives in (`needs: ["rail"]`),
   and ./tourui asks its host to open it before measuring anything — a control the user
-  has folded away is not a missing anchor, it is a panel to open.
+  has folded away is not a missing anchor, it is a panel to open. **`"next"` is the one
+  arm ./tourui answers itself** rather than through `host.ensure`: the fold is the
+  dashboard's own, and the only thing that may toggle it is ⌘I's verb.
 - **A missing anchor skips the step and `dlog`s** rather than lighting a hole over
   nothing — this feature's version of the dead `[data-*]` branch. An element that is
   present but has a zero box (a hidden pane's children) counts as missing. This is what
@@ -209,8 +212,9 @@ The manifest rules it also enforces, one per way this feature has gone wrong:
   self-advances);
 - **no two consecutive steps in a chapter share an anchor** — the hole not moving reads
   as a Next that did not land;
-- an anchor that lives inside the rail or the inspector must declare `needs`, or the step
-  lights nothing for anyone who works with that panel collapsed;
+- an anchor that lives inside the rail, the inspector or the dashboard's Next column must
+  declare `needs`, or the step lights nothing for anyone who works with that panel
+  collapsed (`test/tour.test.ts`'s `PANEL` map is what holds the two halves together);
 - the permission modes the guide plans around must exist in the provider registry;
   each mode's neutral `asks` fact controls only how long the prompt step waits, while
   the later card/no-card pair follows the observed permission latch;

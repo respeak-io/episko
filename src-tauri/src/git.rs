@@ -3314,7 +3314,10 @@ canonicalizehostname false
         commit(&dir, "main work");
         git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false",
                     "merge", "-q", "--no-ff", "-m", "merge side", "side"]);
-        git(&dir, &["tag", "v1"]);
+        // Identity and signing via `-c`, like every call above: a developer with `tag.gpgsign`
+        // set globally turns a lightweight tag into a signed one, which then wants a committer.
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "tag.gpgsign=false",
+                    "tag", "v1"]);
 
         let p = git_graph(path.clone(), 0, 10, "all".into()).unwrap();
         let merge = &p.commits[0];

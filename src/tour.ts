@@ -45,9 +45,10 @@ const isOpen = (w: TourWorld, id: OpenId) => w.open.includes(id);
 export type TourActId = "paste-first-prompt";
 export interface TourAct { label: string; id: TourActId }
 
-// A collapsed panel the anchor lives in (⌘I hides the inspector, ⌘B minimises the rail);
-// ./tourui asks its host to open it before painting rather than stepping over the anchor.
-export type TourNeed = "rail" | "inspector";
+// A collapsed panel the anchor lives in (⌘B minimises the rail; ⌘I hides the inspector on
+// a session and folds the dashboard's Next column away, which is "next");
+// ./tourui opens it before painting rather than stepping over the anchor.
+export type TourNeed = "rail" | "inspector" | "next";
 
 export interface TourStep {
   anchor?: string;  // CSS selector to light; omitted means a centred card over a plain dim
@@ -330,7 +331,7 @@ export const CHAPTERS: Chapter[] = [
   },
 
   {
-    id: "project", rev: 2,
+    id: "project", rev: 3,
     name: "The project homepage", mins: "90s",
     blurb: "Issues, PRs, and your own scripts",
     steps: [
@@ -343,15 +344,17 @@ export const CHAPTERS: Chapter[] = [
         done: (w) => w.stage === "dash",
       },
       {
-        anchor: "#dashSpine",
+        anchor: "#dashNext", needs: ["next"],
         title: "Dispatch an agent at an issue",
-        body: "Open issues and PRs, with a button on each row. It opens a worktree, briefs the session with the issue, "
-          + "and <b>claims it</b> so nobody on the team doubles up.",
+        body: "<b>Next</b> is one ranked list: open issues, pull requests, dependency advisories and the notes left "
+          + "here. The <b>▶</b> on a row opens a worktree, briefs the session with the item, and <b>claims it</b> so "
+          + "nobody on the team doubles up.",
       },
       {
-        anchor: "#dashPulse",
+        anchor: "#dashMoved",
         title: "Today, and who else is in here",
-        body: "What moved, what it cost, and a note you can leave for whoever opens this next.",
+        body: "<b>Since you were last here</b>: commits, sessions, spend and who else has been in, measured from your "
+          + "last visit rather than from midnight. Below it, the working set and what has landed.",
       },
       {
         anchor: "#btnRun",

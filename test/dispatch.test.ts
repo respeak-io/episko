@@ -95,10 +95,12 @@ describe("the footer popovers' quick opens", () => {
 
 const DASHVIEW = readFileSync(new URL("../src/dashview.ts", import.meta.url), "utf8");
 const DEPSVIEW = readFileSync(new URL("../src/depsview.ts", import.meta.url), "utf8");
+const LANDEDVIEW = readFileSync(new URL("../src/landedview.ts", import.meta.url), "utf8");
+const ISSUEVIEW = readFileSync(new URL("../src/issueview.ts", import.meta.url), "utf8");
 const DASHBOARD = readFileSync(new URL("../src/dashboard.ts", import.meta.url), "utf8");
 // The pane's markup outgrew one file; the attribute contract has to follow it rather than
 // quietly stop covering whatever moved out. `EMITTERS` is held against the directory below.
-const EMITTERS = ["dashview.ts", "depsview.ts"];
+const EMITTERS = ["dashview.ts", "depsview.ts", "landedview.ts", "issueview.ts"];
 
 function body(src: string, decl: string): string {
   const start = src.indexOf(decl);
@@ -116,16 +118,23 @@ const verbs = (src: string, decl: string, helper: string): string[] => {
 };
 
 describe("the project dashboard's verbs", () => {
-  const rows = verbs(DASHVIEW, "export function dashInspector(", "act");
-  const rail = verbs(DASHVIEW, "export function dashStrip(", "b");
+  const rows = verbs(DASHVIEW, "export function verbTiles(", "act");
+  // The column's foot carries the two verbs that are not tiles: Change… and Copy path.
+  const foot = verbs(DASHVIEW, "export function projectFoot(", "act");
+  // Running here offers one verb, and only when it is empty: ＋ Start a session.
+  const lhere = verbs(DASHVIEW, "export function liveHereCard(", "act");
   // The git card is dispatched by a different listener (`#dashPane`) into the same if-chain.
-  const gcard = verbs(DASHVIEW, "export function repoCard(", "gb");
+  const gcard = verbs(DASHVIEW, "export function checkoutCard(", "gb");
   // The GitHub picker writes its one fixed verb straight into the attribute; its
   // `ghacct:<login>` buttons are matched by prefix and invisible to both halves.
   const ghpick = [...new Set(
     [...body(DASHVIEW, "export function ghPicker(").matchAll(/data-dashact="([a-z]+)"/g)].map((m) => m[1]),
   )];
-  const offered = [...new Set([...rows, ...rail, ...gcard, ...ghpick])];
+  // The Landed card writes its one verb straight into the attribute, as ghPicker does.
+  const lcard = [...new Set([...LANDEDVIEW.matchAll(/data-dashact="([a-z]+)"/g)].map((m) => m[1]))];
+  // The band's "Full trail" is a third literal: it reuses a tile's verb rather than minting one.
+  const sband = [...new Set([...body(DASHVIEW, "const TRAIL =").matchAll(/data-dashact="([a-z]+)"/g)].map((m) => m[1]))];
+  const offered = [...new Set([...rows, ...foot, ...lhere, ...gcard, ...ghpick, ...lcard, ...sband])];
   const handled = [...new Set(
     [...body(DASHBOARD, "function dashAction(act: string): void {")
       .matchAll(/act === "([a-z]+)"/g)].map((m) => m[1]),
@@ -134,10 +143,16 @@ describe("the project dashboard's verbs", () => {
   // Every surface is checked, or one that stopped matching would quietly shrink `offered`
   // and the two comparisons below would pass over a hole.
   it("finds all four surfaces and the if-chain to compare", () => {
-    expect(rows.length).toBeGreaterThan(5);
-    expect(rail.length).toBeGreaterThan(4);
-    expect(gcard.length).toBeGreaterThan(3);
+    // Floors, not counts: they catch an extraction that has silently stopped matching. Five
+    // tiles, one foot verb, and three on the checkout section (pull, push, cleanup — the
+    // commit graph moved to the Landed card, which offers it as a literal).
+    expect(rows.length).toBeGreaterThan(4);
+    expect(foot.length).toBeGreaterThan(0);
+    expect(lhere.length).toBeGreaterThan(0);
+    expect(gcard.length).toBeGreaterThan(2);
     expect(ghpick.length).toBeGreaterThan(0);
+    expect(lcard.length).toBeGreaterThan(0);
+    expect(sband.length).toBeGreaterThan(0);
     expect(handled.length).toBeGreaterThan(5);
   });
 
@@ -156,12 +171,6 @@ describe("the project dashboard's verbs", () => {
     expect(pane.slice(0, pane.indexOf("\n  });"))).toContain('closest<HTMLElement>("[data-dashact]")');
   });
 
-  it("keeps the rail inside the panel's verb set", () => {
-    // The rail may carry fewer verbs than the expanded panel, never one the panel lacks:
-    // a button reachable only while collapsed is a button nobody finds.
-    const railOnly = rail.filter((v) => !rows.includes(v));
-    expect(railOnly, `on the rail but not in the panel: ${railOnly.join(", ")}`).toEqual([]);
-  });
 });
 
 // One level wider than the verbs above: `data-dashact` is only one of thirty attributes
@@ -172,8 +181,8 @@ describe("the project dashboard's verbs", () => {
 describe("the project dashboard's own dispatcher", () => {
   // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
   // are deliberately not verbs. Adding one here should be a decision, not an oversight.
-  const KEYS = new Set(["day", "note", "sha"]);
-  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const KEYS = new Set(["note", "sha"]);
+  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW + LANDEDVIEW + ISSUEVIEW).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
   // The ordering rules below are about ONE if-chain, so they read only the click listener:
@@ -273,6 +282,58 @@ describe("the servers popover's own dispatcher", () => {
     expect(
       probed.indexOf("toggle"),
       `[data-svtoggle] is probed at position ${probed.indexOf("toggle")} of ${probed.length}; everything after it (${probed.slice(probed.indexOf("toggle") + 1).join(", ")}) is unreachable`,
+    ).toBe(probed.length - 1);
+  });
+});
+
+// The same join again for the fleet dashboard: `fleetview.ts` writes the markup and `fleetui.ts`
+// owns its own `#fleetPane` listener. It stays on the `data-fl*` prefix deliberately — a
+// `data-dash*` here would put a second pane's rows inside the dashboard's contract above.
+
+const FLEETVIEW = readFileSync(new URL("../src/fleetview.ts", import.meta.url), "utf8");
+const FLEETUI = readFileSync(new URL("../src/fleetui.ts", import.meta.url), "utf8");
+
+describe("the fleet dashboard's own dispatcher", () => {
+  // Payload read off an element that already matched: a project row carries both its path and
+  // its name, and a session glyph its id, none of which is a probe target.
+  const PAYLOAD = new Set(["name", "sid"]);
+  const emitted = [...FLEETVIEW.matchAll(/data-fl([a-z]+)="/g)].map((m) => m[1]);
+  const probed = [...FLEETUI.matchAll(/closest<HTMLElement>\("\[data-fl([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves", () => {
+    expect(emitted.length).toBeGreaterThan(3);
+    expect(probed.length).toBeGreaterThan(3);
+  });
+
+  it("keeps data-dash* out of the fleet's markup", () => {
+    // fleetview.ts ends in `view.ts`, so the EMITTERS sweep above would fail it the moment it
+    // emitted one — and adding it there would compare it against the wrong dispatcher.
+    expect(FLEETVIEW).not.toContain("data-dash");
+  });
+
+  it("emits no attribute it never probes for — that is a row that does nothing", () => {
+    const dead = [...new Set(emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k)))];
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-fl${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-fl${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a session row's ✕ BEFORE the row that contains it", () => {
+    // The ✕ is a child of the row that carries data-flsel, so a row-first probe ships a close
+    // button that selects the session instead of closing it.
+    expect(probed).toContain("sel");
+    expect(probed.indexOf("close"), "data-flclose must be probed before data-flsel")
+      .toBeLessThan(probed.indexOf("sel"));
+  });
+
+  it("probes the project card LAST, because it is the card's whole background", () => {
+    expect(probed).toContain("proj");
+    expect(
+      probed.indexOf("proj"),
+      `[data-flproj] is probed at position ${probed.indexOf("proj")} of ${probed.length}; everything after it (${probed.slice(probed.indexOf("proj") + 1).join(", ")}) is unreachable`,
     ).toBe(probed.length - 1);
   });
 });

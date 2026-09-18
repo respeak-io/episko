@@ -7,6 +7,7 @@ import { $, EMOJI_PICKER_KEY, FILE_MANAGER, IS_WIN, toast } from "./dom";
 import { EM_HEAD_H, EM_ROW_H, emojiRows, rowWindow } from "./emoji";
 import type { EmRow } from "./emoji";
 import { basename, esc, tilde } from "./format";
+import { openMenu, type MenuItem } from "./menu";
 import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
 import { clearIcon, customIcons, emojiFor, iconFor, pickCustomIcon, resetCustomIcon, setEmojiIcon } from "./icons";
@@ -221,15 +222,25 @@ const ctxRowHtml = (r: CtxRow) =>
     : `<span class="mp-ic${[...(r.ic || "")].length === 2 ? " mp-mono" : ""}">${r.ic || ""}</span>`)
   + `<span class="mp-main"><span class="mp-l">${esc(r.label)}</span>${r.sub ? `<span class="mp-s">${esc(r.sub)}</span>` : ""}</span>`
   + (r.chev ? `<span class="mp-chev">›</span>` : "") + `</button>`;
-const ctxRowsHtml = (rows: (CtxRow | null)[]) =>
-  rows.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
+// A separator divides two things; a `null` that ends up leading, trailing or beside another
+// divides nothing and draws a line across empty menu. Every list here is built with conditional
+// rows, so normalising is the renderer's job rather than each caller's.
+const ctxRowsHtml = (rows: (CtxRow | null)[]) => {
+  const kept: (CtxRow | null)[] = [];
+  for (const r of rows) {
+    if (!r && (!kept.length || !kept[kept.length - 1])) continue;
+    kept.push(r);
+  }
+  while (kept.length && !kept[kept.length - 1]) kept.pop();
+  return kept.map((r) => (r ? ctxRowHtml(r) : `<div class="mp-sep"></div>`)).join("");
+};
 
 // Where the menu was opened, so a drill-down and its ‹ Back land on the same pixels.
 let menuX = 0, menuY = 0;
 
-function openCtxMenu(key: string, x: number, y: number) {
+export function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
+  wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -287,7 +298,7 @@ function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = brTarget = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -428,7 +439,7 @@ function switchRowFor(t: BranchTarget): CtxRow {
 
 export function openBranchMenu(t: BranchTarget, x: number, y: number, run: (act: string) => void) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = agentKey = ghKey = brTarget = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
   brTarget = t;
   brRun = run;
   const rows: (CtxRow | null)[] = [
@@ -468,7 +479,6 @@ $("ctxMenu").addEventListener("click", (e) => {
 // A drill-down of the one #ctxMenu (a list of rows, so it replaces the menu in place with
 // ‹ Back). It sets a per-project preference and does not launch: nobody switches agent
 // per session, so `＋ New session` reads the stored answer.
-let agentKey: string | null = null;   // the project whose agent is being chosen
 
 // Names where the answer came from: a repo pinned to Codex must not read the same as one
 // inheriting Codex from the default, or clearing a forgotten override is guesswork.
@@ -480,13 +490,11 @@ function agentSub(key: string): string {
 
 // Sticky for the app's life, not per open: re-collapsing under somebody who expanded it
 // would read as the menu forgetting.
-let agentShowAll = false;
 
 // ---------- which GitHub account this project reads as ----------
 // A copy of the agent picker on purpose: the same shape of question. It exists because
 // `gh` holds one active account per host, and the failure when it is the wrong one is a
 // "could not be resolved" that names no account and suggests no fix.
-let ghKey: string | null = null;   // the project whose account is being chosen
 
 // The same three states `ghWho` returns: "set for this project" and "gh's default" look
 // alike on the row above and are the whole answer when the reads are failing.
@@ -496,78 +504,66 @@ function ghSub(key: string): string {
   return w.known ? "set for this project" : "set for this project · gh is not logged in as it";
 }
 
-function openGhPicker(key: string, x: number, y: number) {
-  closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = agentKey = brTarget = null; // one #ctxMenu, one target
-  ghKey = key;
+export function openGhPicker(at: HTMLElement | DOMRect, key: string) {
   const cur = ghAccountFor(key);
   const w = ghWho(cur, ghLogins);
-  const rows: (CtxRow | null)[] = [
-    { act: "hback", ic: "‹", label: "Back", sub: projName(key) },
-    null,
-    ...ghLogins.map((a) => ({
-      act: `hpick:${a.login}`, ic: a.login === w.login ? "✓" : "▪", label: a.login,
-      // The tick marks the effective account; this line tells a pin from the default.
-      sub: a.login === cur ? "set for this project" : a.active ? "gh's active account" : "logged in, not active",
-    })),
-    // A pin gh has forgotten is still in force (the backend refuses the read rather than
-    // answering as somebody else), so it gets a row of its own to be seen and cleared.
-    cur && !w.known ? { act: `hpick:${cur}`, ic: "✓", label: cur, sub: "set for this project · gh is not logged in as it", cls: "dis" } : null,
-    cur ? { act: "hclear", ic: "⊘", label: "Follow gh's active account", sub: "what every project with no setting uses" } : null,
-  ];
-  const menu = $("ctxMenu");
-  menu.classList.remove("agent-all");
-  menu.innerHTML =
-    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
-    + `<span class="mp-hmain"><span class="mp-hname">GitHub account</span>`
-    + `<span class="mp-hpath">${esc(projName(key))} · reads as ${esc(w.login ?? "—")}</span></span></div>`
-    + ctxRowsHtml(rows);
-  placePop(menu, x, y);
+  const accounts: MenuItem[] = ghLogins.map((a) => ({
+    id: `pick:${a.login}`, label: a.login, mark: a.login === w.login ? "✓" : "",
+    // The tick marks the effective account; this line tells a pin from the default.
+    sub: a.login === cur ? "set for this project" : a.active ? "gh's active account" : "logged in, not active",
+  }));
+  // A pin gh has forgotten is still in force (the backend refuses the read rather than
+  // answering as somebody else), so it gets a row of its own to be seen and cleared.
+  if (cur && !w.known) {
+    accounts.push({ id: "", label: cur, mark: "✓", disabled: true,
+      sub: "set for this project · gh is not logged in as it" });
+  }
+  openMenu(at, {
+    title: "GitHub account", accent: accentFor(key),
+    sub: `${projName(key)} · reads as ${w.login ?? "—"}`,
+    groups: [
+      { items: accounts },
+      { items: cur ? [{ id: "clear", mark: "⊘", label: "Follow gh's active account",
+        sub: "what every project with no setting uses" }] : [] },
+    ],
+    onPick: (id) => {
+      host.setGhAccount(key, id === "clear" ? null : id.slice(5));
+      host.renderAll();
+    },
+  });
 }
 
-function openAgentPicker(key: string, x: number, y: number) {
-  closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = ghKey = brTarget = null; // one #ctxMenu, one target
-  agentKey = key;
+export function openAgentPicker(at: HTMLElement | DOMRect, key: string) {
   const cur = agentByProject[key];
-  const eff = effectiveAgent(key);
   const missing = missingAgents();
-  const rows: (CtxRow | null)[] = [
-    { act: "aback", ic: "‹", label: "Back", sub: projName(key) },
-    null,
-    // Claude plus what the probe found: a row here promises the binary exists.
-    ...allAgents().map((a) => ({
-      act: `apick:${a.id}`, logo: agentLogo(a.id), label: a.label,
-      // The tick marks the override, not the effective agent: ticking an inherited row
-      // would make "Follow the default" below it look like a no-op.
-      sub: a.id === cur ? "✓ set for this project"
-        : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
-        : tilde(a.path ?? ""),
-    })),
-    cur ? { act: "aclear", ic: "⊘", label: "Follow the default", sub: `Settings › Launching · ${defaultAgentDef().label}` } : null,
-    // Below the fold, what Episko supports but this machine lacks: folded so they don't
-    // bury the pickable rows, present so a missing row isn't read as "not supported".
-    ...(missing.length ? [null, {
-      act: "amore", ic: agentShowAll ? "−" : "+",
-      label: `${missing.length} more supported`,
-      sub: agentShowAll ? "installed ones are above" : "not found on this machine",
-    }] as (CtxRow | null)[] : []),
-    // `cls: "dis"` makes them inert: every click listener on this menu bails on a `.dis` row.
-    ...(agentShowAll
-      ? missing.map((a) => ({
-        act: "", logo: agentLogo(a.id), label: a.label, cls: "dis",
-        // The binary name says exactly what Episko searched PATH for, and cannot rot like a URL.
-        sub: `not on PATH · ${a.bin}`,
-      }))
-      : []),
-  ];
-  const menu = $("ctxMenu");
-  menu.classList.toggle("agent-all", agentShowAll);
-  menu.innerHTML =
-    `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(key)}"></span>`
-    + `<span class="mp-hmain"><span class="mp-hname">Agent</span><span class="mp-hpath">${esc(projName(key))} · runs ${esc(eff.label)}</span></span></div>`
-    + `<div class="agent-pick-list">${ctxRowsHtml(rows)}</div>`;
-  placePop(menu, x, y);
+  // Claude plus what the probe found: a row here promises the binary exists.
+  const installed: MenuItem[] = allAgents().map((a) => ({
+    id: `pick:${a.id}`, logo: agentLogo(a.id), label: a.label, mark: a.id === cur ? "✓" : "",
+    // The tick marks the override, not the effective agent: ticking an inherited row
+    // would make "Follow the default" below it look like a no-op.
+    sub: a.id === cur ? "set for this project"
+      : a.capabilities.length ? `integrated — ${agentCapabilitySummary(a)}`
+      : tilde(a.path ?? ""),
+  }));
+  openMenu(at, {
+    title: "Agent", accent: accentFor(key),
+    sub: `${projName(key)} · runs ${effectiveAgent(key).label}`,
+    groups: [
+      { items: installed },
+      { items: cur ? [{ id: "clear", mark: "⊘", label: "Follow the default",
+        sub: `Settings › Launching · ${defaultAgentDef().label}` }] : [] },
+      // What Episko supports but this machine lacks: shown and inert, so a missing row is
+      // not read as "not supported". The binary name says what was searched for on PATH.
+      { label: missing.length ? "Not on this machine" : "",
+        items: missing.map((a) => ({
+          id: "", logo: agentLogo(a.id), label: a.label, disabled: true, sub: `not on PATH · ${a.bin}`,
+        })) },
+    ],
+    onPick: (id) => {
+      host.setProjectAgent(key, id === "clear" ? null : id.slice(5));
+      host.renderAll();
+    },
+  });
 }
 
 
@@ -586,7 +582,7 @@ const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputEl
 
 function openGroupPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = agentKey = ghKey = null;
+  ctxKey = wtTarget = gTarget = null;
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
@@ -610,7 +606,7 @@ function openGroupPicker(key: string, x: number, y: number) {
 
 function openGroupMenu(gid: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = pickPath = agentKey = ghKey = null;
+  ctxKey = wtTarget = pickPath = null;
   gTarget = gid;
   menuX = x; menuY = y;
   const g = groupById(projGroups, gid);
@@ -658,25 +654,6 @@ $("ctxMenu").addEventListener("click", (e) => {
   const b = (e.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
   if (!b || b.classList.contains("dis")) return;
   const act = b.dataset.ctx || "";
-  if (agentKey) {
-    const key = agentKey;
-    if (act === "aback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
-    // The fold is a re-render in place, not a commit, like ‹ Back.
-    if (act === "amore") { keepMenuOpen(e); agentShowAll = !agentShowAll; openAgentPicker(key, menuX, menuY); return; }
-    // A row this picker did not draw leaves the menu alone.
-    if (act !== "aclear" && !act.startsWith("apick:")) return;
-    closeCtxMenu();
-    host.setProjectAgent(key, act === "aclear" ? null : act.slice(6));
-    return;
-  }
-  if (ghKey) {
-    const key = ghKey;
-    if (act === "hback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(key, menuX, menuY); return; }
-    if (act !== "hclear" && !act.startsWith("hpick:")) return;
-    closeCtxMenu();
-    host.setGhAccount(key, act === "hclear" ? null : act.slice(6));
-    return;
-  }
   if (pickPath) {
     const path = pickPath;
     if (act === "gback") { keepMenuOpen(e); closeCtxMenu(); openCtxMenu(path, menuX, menuY); return; }
@@ -732,8 +709,9 @@ $("ctxMenu").addEventListener("click", (e) => {
   if (b.dataset.ctx === "appearance") { openAppearanceSub(b); return; }
   // Drill-downs replace the menu in place, so they take keepMenuOpen and must not reach the close below.
   if (b.dataset.ctx === "movegroup") { keepMenuOpen(e); openGroupPicker(key, menuX, menuY); return; }
-  if (b.dataset.ctx === "agents") { keepMenuOpen(e); openAgentPicker(key, menuX, menuY); return; }
-  if (b.dataset.ctx === "ghacct") { keepMenuOpen(e); openGhPicker(key, menuX, menuY); return; }
+  // Not a drill-down any more: the picker is its own popover, so the menu behind it goes.
+  if (b.dataset.ctx === "agents") { const r = b.getBoundingClientRect(); closeCtxMenu(); openAgentPicker(r, key); return; }
+  if (b.dataset.ctx === "ghacct") { const r = b.getBoundingClientRect(); closeCtxMenu(); openGhPicker(r, key); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
     case "launch": host.requestLaunch(name, key); break;

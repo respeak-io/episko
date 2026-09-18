@@ -168,7 +168,28 @@ export function emojiDataUri(em: string): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
+// ---------- a person ----------
+
+// Two letters for an avatar: the first letter of the first two words, else the first two of a
+// single one. Split on anything that is not a letter or digit, so `dependabot[bot]` and
+// `ada.lovelace` initial as cleanly as a name with a space in it. Codepoints, never `[0]`.
+export function initials(name: string): string {
+  const words = name.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  if (!words.length) return "";
+  const first = [...words[0]];
+  return (words.length > 1 ? first[0] + [...words[1]][0] : first.slice(0, 2).join("")).toUpperCase();
+}
+
 // ---------- colour ----------
+
+/** A stable hue per name, for an avatar or a label: nothing to store, and the same person or
+ *  label keeps its colour everywhere. */
+export function nameHue(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 62% 68%)`;
+}
+
 export function hslToHex(h: number, s: number, l: number): string {
   const a = s * Math.min(l, 1 - l);
   const f = (n: number) => { const k = (n + h / 30) % 12; return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
@@ -192,6 +213,19 @@ export function fmtDur(ms: number) {
   return h > 0 ? `${h}h ${m}m` : `${m}m ${String(ss).padStart(2, "0")}s`;
 }
 export function fmtClock(ts: number): string { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+/** A calendar day with no year: the band's ribbon and every tooltip on it. `ms`, not seconds. */
+export const fmtDay = (ms: number) => new Date(ms).toLocaleDateString([], { day: "numeric", month: "short" });
+/** The same day with its weekday, for a heading: "which day was that" is half the question. */
+export const fmtDayLong = (ms: number) =>
+  new Date(ms).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+// The dashboard band's floor, said the way a person would: a clock time while the visit is
+// still this week, a date once it isn't. `ms`, unlike `fmtClock`'s seconds.
+export function fmtSince(ms: number, now = Date.now()): string {
+  const d = new Date(ms);
+  return now - ms < 6 * 86_400_000
+    ? `${d.toLocaleDateString([], { weekday: "short" })} ${fmtClock(ms / 1000)}`
+    : fmtDay(ms);
+}
 // Until an epoch-seconds target — "2h 10m" / "3d 4h"; the weekly window can be days out.
 export function fmtUntil(ts: number): string {
   const s = Math.max(0, Math.floor(ts - Date.now() / 1000));
@@ -253,6 +287,23 @@ export function sparkline(vals: number[], opts: { lo?: number; hi?: number } = {
   const line = "M" + pts.join(" L");
   const area = `${line} L${px(n - 1).toFixed(1)},${h} L0,${h} Z`;
   return `<svg class="spark" viewBox="0 0 ${w} ${h}"><path class="spk-a" d="${area}"></path><path class="spk-l" d="${line}"></path><circle class="spk-d" cx="${px(n - 1).toFixed(1)}" cy="${py(vals[n - 1]).toFixed(1)}" r="2.1"></circle></svg>`;
+}
+
+/** One bar's geometry: `h` in px, `cls` the modifier its element carries. */
+export interface Bar { h: number; cls: string }
+
+// A day is a count, so a ribbon of days is bars: a line drawn between two counts invents the
+// days in between, and over thirty points it reads as one story where the truth is a dozen
+// quiet days. A zero keeps a stub, or the row reads as "nothing recorded"; `lit` is how many
+// of the newest bars wear the accent and `cap` is the row's height. Geometry only — the markup
+// is the view's, since a column is a click target dispatch.test.ts must be able to read.
+export function barRow(vals: number[], lit = 0, cap = 24): Bar[] {
+  const hi = Math.max(1, ...vals);
+  const from = vals.length - lit;
+  return vals.map((n, i) => ({
+    h: n === 0 ? 3 : Math.round(3 + (n / hi) * (cap - 3)),
+    cls: n === 0 ? "nil" : i >= from ? "lit" : "",
+  }));
 }
 
 // ---------- money & tokens (the usage panel) ----------

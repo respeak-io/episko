@@ -110,7 +110,9 @@ pub(crate) fn spawn_claude(
         .map_err(|e| e.to_string())?;
 
     let claude = resolve_claude();
-    let mut cmd = CommandBuilder::new(&claude);
+    // Not `CommandBuilder::new`: an npm-installed claude is a `.cmd` shim, which portable-pty
+    // cannot start. Same detour every other agent CLI already takes.
+    let mut cmd = argv_command(&claude, Vec::new());
     match &resume {
         Some(prev) => {
             cmd.arg("--resume");
@@ -3446,8 +3448,8 @@ mod tests {
             .spawn();
         let mut child = match spawned {
             Ok(c) => c,
-            // Not installed is a skip unless the runner says it installed it. On Windows an npm
-            // global install leaves an sh shim CreateProcessW cannot start: a different bug report.
+            // Not installed is a skip unless the runner says it installed it. A shim that cannot
+            // start is ERROR_BAD_EXE_FORMAT, not NotFound, so it lands in the panic below.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && !required => {
                 eprintln!("skipping: `claude` is not installed (looked at {claude:?})");
                 return;

@@ -1,11 +1,17 @@
-//! Everything Episko reads out of `~/.claude`: the transcripts and the token ledger.
-//! That layout is internal to Claude Code and unstable, so every reader is a fallback
-//! chain, and every reader takes its base dir so a test can point it at a fixture tree.
+//! Everything Episko reads out of `~/.claude`: the transcripts and the token ledger, plus
+//! the one thing that tree does not hold — the account's per-model plan limits, which are
+//! asked of the CLI itself. That layout is internal to Claude Code and unstable, so every
+//! reader is a fallback chain, and every reader takes its base dir so a test can point it
+//! at a fixture tree.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::git::repo_root_of;
-use crate::platform::{home_dir, nfc, norm_path, physical_cwd};
+use crate::platform::{augmented_path, home_dir, nfc, norm_path, physical_cwd, resolve_claude, sys_command};
 
 /// None when there is no home directory; every caller reports that rather than hiding it.
 fn claude_dir() -> Option<PathBuf> {
@@ -795,10 +801,224 @@ fn move_session_transcript_in(
     Ok(dst.display().to_string())
 }
 
+// ---------- the account's per-model plan limits ----------
+// The statusLine payload carries `five_hour` and `seven_day` and nothing else, so a
+// per-model weekly window — Fable's — reaches the telemetry stream nowhere. The CLI answers
+// one over its control protocol for no tokens; the rules are in docs/architecture.md.
+
+/// One per-model weekly window. `resets_at` stays the ISO string the CLI sends: `Date.parse`
+/// is the reader on the frontend, and one timestamp spelling per side beats two.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct ScopedLimit {
+    display_name: String,
+    utilization: Option<f64>,
+    resets_at: Option<String>,
+}
+
+/// `scoped: None` means nothing is known (an answer served from the CLI's cache, or rows an
+/// allowlist hides) and must leave the last reading standing; `Some([])` is the endpoint
+/// saying this account has no per-model window at all. Collapsing the two blanks a live meter.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct PlanLimits {
+    available: bool,
+    scoped: Option<Vec<ScopedLimit>>,
+}
+
+/// No `initialize` handshake: the CLI answers this cold, one request and one line.
+/// `skip_behaviors` matters — without it the answer waits on a scan of every transcript
+/// touched in the last seven days.
+const USAGE_REQUEST: &str =
+    r#"{"type":"control_request","request_id":"1","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+const PROBE_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Ask the CLI what this account has spent against its plan. No model turn, so no tokens.
+#[tauri::command(async)]
+pub(crate) fn claude_usage_limits() -> Result<PlanLimits, String> {
+    parse_usage_limits(&run_usage_probe()?)
+}
+
+/// Hooks are off (a probe must not fire somebody's SessionStart), and stdin is CLOSED rather
+/// than the child killed: on EOF it exits 0 and removes its own `~/.claude/sessions/<pid>.json`,
+/// where a kill leaves a stale one for the external-session list to filter.
+fn run_usage_probe() -> Result<String, String> {
+    let cwd = crate::summarize::scratch_cwd();
+    let _ = std::fs::create_dir_all(&cwd); // `scratch_cwd` only names it
+    let mut child = sys_command(resolve_claude())
+        .env("PATH", augmented_path())
+        .current_dir(cwd)
+        .args([
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--settings",
+            r#"{"disableAllHooks":true}"#,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not start claude: {e}"))?;
+
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    // A reader thread, since the answer arrives after a banner of other stream-json lines and
+    // a `wait()` that only reads afterwards deadlocks past one pipe buffer.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line.contains("control_response") && tx.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    writeln!(stdin, "{USAGE_REQUEST}").map_err(|e| format!("could not ask claude: {e}"))?;
+    let _ = stdin.flush();
+    let answer = rx
+        .recv_timeout(PROBE_TIMEOUT)
+        .map_err(|_| "claude did not answer the usage request".to_string());
+
+    drop(stdin);
+    let deadline = Instant::now() + PROBE_EXIT_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+    answer
+}
+
+/// The shape is the CLI's own and documented as experimental, so every field is read
+/// defensively and a row without a name is dropped rather than shown blank.
+fn parse_usage_limits(line: &str) -> Result<PlanLimits, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(line.trim()).map_err(|e| format!("unreadable answer: {e}"))?;
+    let outer = &v["response"];
+    if outer["subtype"].as_str() != Some("success") {
+        return Err(match outer["error"].as_str() {
+            Some(e) if !e.is_empty() => e.to_string(),
+            _ => "claude refused the usage request".to_string(),
+        });
+    }
+    let body = &outer["response"];
+    let limits = &body["rate_limits"];
+    let scoped = limits["model_scoped"].as_array().map(|rows| {
+        rows.iter()
+            .filter_map(|row| {
+                let name = row["display_name"].as_str().unwrap_or("").trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(ScopedLimit {
+                    display_name: name.to_string(),
+                    utilization: row["utilization"].as_f64(),
+                    resets_at: row["resets_at"].as_str().map(str::to_string),
+                })
+            })
+            .collect()
+    });
+    Ok(PlanLimits {
+        available: body["rate_limits_available"].as_bool().unwrap_or(false),
+        scoped,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    /// Captured from the real CLI (2.1.276) rather than written to match our intent: the
+    /// account's Fable window is the row this whole path exists to carry.
+    const REAL_ANSWER: &str = r#"{"type":"control_response","response":{"subtype":"success","request_id":"1","response":{
+        "session":{"total_cost_usd":0},"subscription_type":"max","rate_limits_available":true,
+        "rate_limits":{"five_hour":{"utilization":3,"resets_at":"2026-09-18T12:10:00.276372+00:00"},
+        "seven_day":{"utilization":42,"resets_at":"2026-09-22T19:00:00.276390+00:00"},
+        "seven_day_opus":null,"seven_day_sonnet":null,
+        "model_scoped":[{"display_name":"Fable","utilization":77,"resets_at":"2026-09-22T19:00:00.276554+00:00"}]}}}}"#;
+
+    #[test]
+    fn parses_the_per_model_window_out_of_a_real_answer() {
+        let p = parse_usage_limits(REAL_ANSWER).unwrap();
+        assert!(p.available);
+        let scoped = p.scoped.expect("the answer listed a per-model window");
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].display_name, "Fable");
+        assert_eq!(scoped[0].utilization, Some(77.0));
+        assert_eq!(
+            scoped[0].resets_at.as_deref(),
+            Some("2026-09-22T19:00:00.276554+00:00"),
+            "the ISO string is passed through; the frontend parses it"
+        );
+    }
+
+    /// The distinction the whole struct exists for: absent means nothing was learned (a cached
+    /// answer, or rows an allowlist hides) and must leave the last reading standing, where an
+    /// empty array is the endpoint saying this account has no per-model window.
+    #[test]
+    fn an_absent_model_scoped_is_not_an_empty_one() {
+        let absent = r#"{"response":{"subtype":"success","response":{"rate_limits_available":true,"rate_limits":{"five_hour":null}}}}"#;
+        assert_eq!(parse_usage_limits(absent).unwrap().scoped, None);
+        let empty = r#"{"response":{"subtype":"success","response":{"rate_limits_available":true,"rate_limits":{"model_scoped":[]}}}}"#;
+        assert_eq!(parse_usage_limits(empty).unwrap().scoped, Some(vec![]));
+    }
+
+    #[test]
+    fn plan_limits_that_do_not_apply_say_so_rather_than_reading_as_zero() {
+        let api_key = r#"{"response":{"subtype":"success","response":{"rate_limits_available":false,"rate_limits":null}}}"#;
+        let p = parse_usage_limits(api_key).unwrap();
+        assert!(!p.available, "an API-key session has no plan window");
+        assert_eq!(p.scoped, None);
+    }
+
+    #[test]
+    fn a_nameless_row_is_dropped_and_null_figures_survive() {
+        let mixed = r#"{"response":{"subtype":"success","response":{"rate_limits_available":true,"rate_limits":{"model_scoped":[
+            {"display_name":"  ","utilization":5,"resets_at":null},
+            {"display_name":"Fable","utilization":null,"resets_at":null}]}}}}"#;
+        let scoped = parse_usage_limits(mixed).unwrap().scoped.unwrap();
+        assert_eq!(scoped.len(), 1, "a window with no name has nothing to label a meter with");
+        assert_eq!(scoped[0].utilization, None, "no reading is not 0%");
+        assert_eq!(scoped[0].resets_at, None);
+    }
+
+    /// Against the real CLI, like the other `--ignored` pair: the control protocol is somebody
+    /// else's surface and documented as experimental, so the only honest check is to ask it.
+    /// A release step (RELEASE.md), never CI — it needs a logged-in `claude` on the machine.
+    #[test]
+    #[ignore = "runs the real `claude` binary — no model turn, so no tokens"]
+    fn the_real_cli_answers_a_usage_probe() {
+        let raw = run_usage_probe().expect("the CLI answered");
+        let limits = parse_usage_limits(&raw).expect("a success response");
+        assert!(limits.available, "a logged-in plan session reports its windows");
+        // The rows themselves depend on the account, so only their shape is asserted.
+        if let Some(scoped) = &limits.scoped {
+            for w in scoped {
+                assert!(!w.display_name.is_empty());
+                assert!(w.utilization.is_none_or(|u| (0.0..=200.0).contains(&u)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_refused_or_unreadable_answer_is_an_error_not_an_empty_reading() {
+        let err = r#"{"type":"control_response","response":{"subtype":"error","request_id":"1","error":"not supported"}}"#;
+        assert_eq!(parse_usage_limits(err), Err("not supported".to_string()));
+        assert!(parse_usage_limits("{not json").is_err());
+        assert!(
+            parse_usage_limits(r#"{"response":{"subtype":"error"}}"#).is_err(),
+            "an error with no message is still an error"
+        );
+    }
 
     /// A transcript, optionally with its sidecar, where Claude would write it for `workdir`.
     fn seed_transcript(base: &Path, workdir: &Path, id: &str, body: &str, sidecar: bool) -> PathBuf {
