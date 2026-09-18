@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Fable's own weekly limit, in the meters.** A premium model spends a weekly allowance
+  separate from the account's, and no telemetry carries it, so the limits popover and
+  *Usage & spend* ask the CLI when they open. Levels rather than forecasts: one reading
+  has no pace behind it.
+
 ## 0.29.0 — 2026-09-17
 
 The project dashboard reads your dependencies, ⌘T opens a shell beside the session rather

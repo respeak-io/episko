@@ -9,7 +9,7 @@ import {
   agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
 import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
-import { forecast5h, forecast7d, type Forecast } from "../rl";
+import { forecast5h, forecast7d, scopedForecasts, type Forecast } from "../rl";
 
 const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇", asks: true },
@@ -39,7 +39,9 @@ export interface AgentProviderAdapter {
   events?: (event: ProviderEvent) => AgentEvent[];
   history?: ProviderHistory;
   permissionModes?: readonly AgentPermissionMode[];
-  rateLimitForecasts?: () => { windowMins: number; forecast: Forecast }[];
+  // `label`/`sub` override the window's name where its length cannot say what it is: two
+  // weekly windows differ by the model they cover, not by their span.
+  rateLimitForecasts?: () => { windowMins: number; forecast: Forecast; label?: string; sub?: string; note?: string }[];
 }
 
 const claudeHistory: ProviderHistory = {
@@ -113,6 +115,12 @@ export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
   { id: "claude", label: "Claude", history: claudeHistory, permissionModes: CLAUDE_PERMISSION_MODES, rateLimitForecasts: () => [
     { windowMins: 300, forecast: forecast5h() },
     { windowMins: 10080, forecast: forecast7d() },
+    // Per-model weekly windows last: they are the same 7 days, named by the model they cover,
+    // and they arrive from ./rlprobe rather than from the statusLine.
+    ...scopedForecasts().map((w) => ({
+      windowMins: 10080, forecast: w.forecast, label: w.label, sub: "weekly · this model",
+      note: "level only · no pace behind it",
+    })),
   ] },
   { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
 ];

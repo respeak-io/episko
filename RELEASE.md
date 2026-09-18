@@ -56,7 +56,7 @@ cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Three checks against Claude Code's real state, in one pass:
+Four checks against Claude Code's real state, in one pass:
 
 - `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
   throwaway session in a temp dir and asserts our hooks reach our server, that routing
@@ -80,6 +80,14 @@ Three checks against Claude Code's real state, in one pass:
   them. The macOS row has a developer's laptop for a witness; the Windows row has
   nothing but the weekly `upstream-contract` job, and a release is the one moment
   somebody is actually looking at it.
+
+- `the_real_cli_answers_a_usage_probe` sends one `get_usage` control request and asserts
+  the account's plan windows come back in the shape the per-model meters read. The control
+  protocol is documented upstream as experimental, and the windows it carries are the only
+  source for a premium model's weekly limit, so a rename there takes those meters dark
+  while every other gate stays green. **No tokens** (there is no model turn) but it does
+  need an authenticated `claude`: an API-key or unauthenticated session answers
+  `rate_limits_available: false` and the assertion fails for the right reason.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet

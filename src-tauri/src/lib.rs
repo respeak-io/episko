@@ -511,6 +511,7 @@ pub fn run() {
             usage::list_past_sessions,
             usage::list_session_history,
             usage::token_usage_by_day,
+            usage::claude_usage_limits,
             summarize::summarize_day,
             summarize::read_digest,
             summarize::has_digest,

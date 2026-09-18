@@ -5,7 +5,7 @@
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { popGoHtml } from "./footerview";
-import { D7_LEN, forecast5h, forecast7d, H5_LEN, type Forecast } from "./rl";
+import { D7_LEN, forecast5h, forecast7d, H5_LEN, rlScoped, scopedForecasts, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
 import {
@@ -32,7 +32,9 @@ export function verdictChip(f: Forecast): string {
 }
 // One usage window (session/5h or weekly/7d): label, a dual-track meter (solid =
 // used now, hatched = projected by reset), the forecast line, and the reset time.
-export function usageRow(label: string, sub: string, f: Forecast): string {
+// `note` replaces that line for a window no pace will ever be measured for, which
+// "gathering pace…" would otherwise promise forever.
+export function usageRow(label: string, sub: string, f: Forecast, note?: string): string {
   const cls = f.used == null ? "" : "s-" + f.status;
   const pctTxt = f.used == null ? "–" : Math.round(f.used) + "%";
   const usedW = f.used == null ? 0 : Math.min(100, Math.max(0, f.used));
@@ -44,7 +46,7 @@ export function usageRow(label: string, sub: string, f: Forecast): string {
   return `<div class="up-row">
     <div class="up-top"><span class="up-l">${label}</span><span class="up-sub">${sub}</span><span class="up-pct ${cls}">${pctTxt}</span></div>
     <div class="up-bar ${cls}"><i class="up-fill" style="width:${usedW}%"></i><i class="up-ghost" style="left:${usedW}%;width:${ghostW}%"></i></div>
-    <div class="up-fore"><span>${foreText(f)}</span>${verdictChip(f)}</div>
+    <div class="up-fore"><span>${note && f.used != null ? note : foreText(f)}</span>${verdictChip(f)}</div>
     <div class="up-reset">${resetTxt}</div>
   </div>`;
 }
@@ -265,7 +267,7 @@ function uProjects(): string {
 }
 
 // One window of the forecast card. Reads the same forecast() the footer and popup use.
-function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | null, len: number, burnUnit: string): string {
+function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | null, len: number, burnUnit: string, note?: string): string {
   const cls = f.used == null ? "" : "s-" + f.status;
   const pctTxt = f.used == null ? "–" : Math.round(f.used) + "%";
   const usedW = f.used == null ? 0 : Math.min(100, Math.max(0, f.used));
@@ -280,11 +282,14 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
     : vc || `<span class="vchip s-mut">level only</span>`;
   const burnTxt = burnPerHr == null ? "—" : `${burnPerHr.toFixed(burnPerHr < 10 ? 1 : 0)} <small>${burnUnit}</small>`;
   const etaTxt = (f.runsOut && f.etaSec != null && f.etaSec > 0) ? `${fmtSpan(f.etaSec)} <small>to cap</small>` : "—";
-  const projTxt = f.proj == null ? "—" : `~${Math.round(f.proj)}%`;
+  // A window carrying a `note` can never gather a pace, so its "projection" would only be the
+  // level echoed back with a ~ in front of it.
+  const projTxt = f.proj == null || note ? "—" : `~${Math.round(f.proj)}%`;
   const resetInTxt = f.resetTs != null ? fmtUntil(f.resetTs) : "—";
   let rec: string;
   if (f.used == null) rec = `<span class="fc-recic">·</span><div>No reading yet. It appears once a running session reports a statusLine.</div>`;
   else if (f.used >= 100) rec = `<span class="fc-recic">✕</span><div><b>At the cap.</b> New work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
+  else if (note) rec = `<span class="fc-recic">·</span><div>${note}</div>`;
   else if (!f.hasRate) rec = `<span class="fc-recic">·</span><div>Gathering pace. The forecast sharpens after a few statusLine ticks; for now this is the level only.</div>`;
   else if (f.status === "bad") rec = `<span class="fc-recic">✕</span><div>On this pace you'll be <b>locked out ~${fmtSpan(f.secLeft! - f.etaSec!)} before reset</b>. Ease off, or move work to the other window.</div>`;
   else if (f.status === "warn") rec = `<span class="fc-recic">!</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset. You can keep going, but there isn't much slack.</div>`;
@@ -316,7 +321,22 @@ function forecastBlockHtml(): string {
       ${fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr")}
       ${fcWinHtml("Weekly", "7-day window", f7, f7.rate == null ? null : f7.rate * 24, D7_LEN, "%/day")}
     </div>
+    ${scopedBlockHtml()}
   </div>`;
+}
+// The per-model weekly windows, under their own heading because they are levels and the
+// block above them forecasts. A premium model has its own allowance, and on the account
+// that runs one it is usually the window that binds first.
+function scopedBlockHtml(): string {
+  const wins = scopedForecasts();
+  if (!wins.length) {
+    return rlScoped.avail ? "" : `<div class="fc-hint" style="margin-top:11px">Plan limits do not apply to this session, so there is nothing to meter.</div>`;
+  }
+  const note = "Read from the CLI when this panel opened. No per-model window reaches the telemetry stream, so this is the level with no pace behind it.";
+  return `<div class="label" style="margin-top:15px">Per-model limits <span class="fc-hint">· a premium model spends its own weekly allowance</span></div>
+    <div class="fc-grid">
+      ${wins.map((w) => fcWinHtml(esc(w.label), "weekly · this model", w.forecast, null, D7_LEN, "%/day", note)).join("")}
+    </div>`;
 }
 export function usagePanelHtml(): string {
   const ranges = USAGE_RANGES.map(([n, l]) => `<button class="u-rbtn${n === usageRange ? " on" : ""}" data-urange="${n}">${l}</button>`).join("");
