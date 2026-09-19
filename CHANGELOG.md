@@ -13,7 +13,7 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-## 0.30.0 — 2026-09-18
+## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
 the project page is three columns ending in one ranked list of what is next, an issue reads
 in full beside the project it belongs to, and Claude Code installed through npm launches on
