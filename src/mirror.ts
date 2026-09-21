@@ -48,7 +48,9 @@ export function rosterEntry(s: Sess): Restorable {
 // The roster must not be written before this run has read it: `sessions` and `dormants`
 // are empty until adoptOrphans and loadDormants finish, and a save before then (a
 // reload's beforeunload) writes [] over the identities every live pane is rebuilt from.
-let rosterReady = false;
+// Exported for the fleet: it is already "loadDormants has answered", which is exactly what
+// separates an empty Pick back up from one that has not been read yet.
+export let rosterReady = false;
 function saveRoster() {
   if (!rosterReady) return;
   const open = [...sessions.values()].filter((s) => hasAgentCapability(s, "resume") && s.workdir).map(rosterEntry);

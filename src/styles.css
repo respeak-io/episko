@@ -2547,9 +2547,20 @@ select.in-ctl { cursor: pointer; }
 .fl-row { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; padding: 0 10px; border-radius: 9px; background: var(--panel); cursor: pointer; }
 .fl-row:hover { background: var(--surface); }
 .fl-row .sglyph { flex: none; width: 12px; }
+/* A shimmering row is not a row you can open: ./dashview's `.ac.sk` rule, one screen over. */
+.fl-row.sk, .fl-card.sk, .fl-prow.sk { cursor: default; pointer-events: none; }
 .fl-row .ti { flex: 1; min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-row .pj { flex: none; font-size: 10px; color: var(--muted-2); }
 .fl-need:hover .sclose, .fl-row:hover .sclose { opacity: 1; }
+
+/* A named run inside Projects, from the sidebar's own groups: a rule across the column rather
+   than a boxed section, so the grid still reads as one list and not as five dashboards. */
+.fl-gsec { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.fl-gsec + .fl-gsec { margin-top: 5px; }
+.fl-gh { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fl-gh .label { color: var(--muted); }
+.fl-gh .n { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.fl-gh .ln { flex: 1; height: 1px; background: var(--hair); }
 
 /* One card per project, wrapping to the column's width: the grid is what puts six projects on
    one screen where a row list put six names down one edge of it. */
@@ -2558,6 +2569,7 @@ select.in-ctl { cursor: pointer; }
 .fl-card:hover { border-color: var(--hair-strong); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); }
 .fc-h { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .fc-av { flex: none; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); color: var(--bg-2); }
+.fc-av .picon { width: 22px; height: 22px; border-radius: 7px; box-shadow: none; }
 .fc-nm { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fc-gl { flex: none; display: flex; gap: 5px; }
 /* A day is a count, so the card's window is bars: ./format's barRow, the ribbon's geometry. */
@@ -2579,6 +2591,10 @@ select.in-ctl { cursor: pointer; }
 .fl-prow .ti { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-prow .rt { flex: none; display: flex; align-items: center; gap: 7px; }
 .fl-prow .fc-bars { flex: none; width: 76px; height: 16px; }
+/* A project with no commits in the window draws no bars, and 76px of reserved nothing between
+   the session glyph and the tags stranded the glyph mid-row. The card keeps its slot: there the
+   empty box is what holds every card to one height. */
+.fl-prow .fc-bars:empty { display: none; }
 .fl-prow .fc-work { max-width: 140px; }
 .fl-prow .fc-spend { font-size: 11.5px; }
 

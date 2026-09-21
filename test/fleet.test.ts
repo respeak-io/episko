@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import "./localstorage"; // must precede the subject imports (state.ts reads it at load)
 import { sessions, setDormants, setFavorites } from "../src/state";
 import {
-  fleetCards, fleetSorted, fleetTally, needsSplit,
+  fleetCards, fleetSections, fleetSorted, fleetTally, needsSplit, TOP_LEVEL,
   type FleetCard, type FleetInput,
 } from "../src/fleet";
+import { NO_GROUPS, type GroupDef, type GroupStore } from "../src/projgroups";
 import type { ProjGroup } from "../src/grouping";
 import type { HistEntry } from "../src/history";
 import type { TrailCommit } from "../src/trail";
@@ -30,10 +31,10 @@ const head = (o: Partial<WtHead> = {}): WtHead =>
   ({ path: "/w/epi", branch: "main", is_main: true, exists: true, ...o });
 const input = (o: Partial<FleetInput> = {}): FleetInput => ({
   projects: [], commits: [], hist: [], heads: new Map(), dirty: new Map(), costFor: () => 0,
-  attnPending: () => false, urgency: () => 6, days: 7, now: NOW, ...o,
+  groups: NO_GROUPS, attnPending: () => false, urgency: () => 6, days: 7, now: NOW, ...o,
 });
 const card = (o: Partial<FleetCard> = {}): FleetCard => ({
-  path: "/w/epi", name: "epi", accent: "#fff", live: 0, needs: 0, urgency: 99,
+  path: "/w/epi", name: "epi", accent: "#fff", group: null, live: 0, needs: 0, urgency: 99,
   dirty: null, branch: "", checkouts: 0, lastCommit: 0, lastSession: 0,
   commits: 0, sessions: 0, spend: 0, ...o,
 });
@@ -193,6 +194,71 @@ describe("fleetSorted", () => {
     const out = fleetSorted(cards, "name");
     expect(out).not.toBe(cards);
     expect(paths(cards)).toEqual(["/w/b", "/w/a"]);
+  });
+});
+
+describe("fleetSections — the sidebar's own groups, over the cards", () => {
+  const gdef = (id: string, name: string): GroupDef => ({ id, name, collapsed: false });
+  const store = (of: Record<string, string>, ...groups: GroupDef[]): GroupStore => ({ groups, of });
+  const names = (l: { name: string }[]) => l.map((s) => s.name);
+
+  it("files a card by its own path", () => {
+    const [c] = fleetCards(input({
+      projects: [grp()], groups: store({ "/w/epi": "g1" }, gdef("g1", "Work")),
+    }));
+    expect(c.group).toBe("g1");
+  });
+  it("falls back to the repo the checkout belongs to, as the sidebar's foldIdOf does", () => {
+    const [c] = fleetCards(input({
+      projects: [grp({ path: "/w/epi-wt", repoRoot: "/w/epi" })],
+      groups: store({ "/w/epi": "g1" }, gdef("g1", "Work")),
+    }));
+    expect(c.group).toBe("g1");
+  });
+  it("leaves a project filed nowhere ungrouped", () => {
+    const cards = fleetCards(input({
+      projects: [grp()], groups: store({ "/w/other": "g1" }, gdef("g1", "Work")),
+    }));
+    expect(cards[0].group).toBeNull();
+  });
+  // `groupOf` reports what the store says; `clampGroups` is what drops a membership pointing
+  // at a group that no longer exists, and ./state runs every write through it.
+  it("carries a dangling id rather than second-guessing the store, and sections absorb it", () => {
+    const [c] = fleetCards(input({
+      projects: [grp()], groups: store({ "/w/epi": "gone" }, gdef("g1", "Work")),
+    }));
+    expect(c.group).toBe("gone");
+    expect(fleetSections([c], [gdef("g1", "Work")])).toEqual([{ name: TOP_LEVEL, cards: [c] }]);
+  });
+
+  it("puts every run where its first member sits, so the switch reorders nothing", () => {
+    const cards = [
+      card({ path: "/w/a", group: null }), card({ path: "/w/b", group: "g1" }),
+      card({ path: "/w/c", group: null }), card({ path: "/w/d", group: "g1" }),
+    ];
+    const secs = fleetSections(cards, [gdef("g1", "Work")]);
+    expect(names(secs)).toEqual([TOP_LEVEL, "Work"]);
+    expect(secs.map((x) => paths(x.cards))).toEqual([["/w/a", "/w/c"], ["/w/b", "/w/d"]]);
+  });
+  it("drops a group nothing is filed in: here it is a heading over nothing", () => {
+    const secs = fleetSections([card({ group: "g1" })], [gdef("g1", "Work"), gdef("g2", "Empty")]);
+    expect(names(secs)).toEqual(["Work"]);
+  });
+  it("keeps two groups of one name apart, since the id is what files a card", () => {
+    const secs = fleetSections(
+      [card({ path: "/w/a", group: "g1" }), card({ path: "/w/b", group: "g2" })],
+      [gdef("g1", "Work"), gdef("g2", "Work")]);
+    expect(secs.map((x) => paths(x.cards))).toEqual([["/w/a"], ["/w/b"]]);
+  });
+  it("loses no card, whatever the store says", () => {
+    const cards = [card({ path: "/w/a", group: "g1" }), card({ path: "/w/b", group: "gone" }),
+      card({ path: "/w/c", group: null })];
+    const secs = fleetSections(cards, [gdef("g1", "Work")]);
+    expect(secs.flatMap((x) => paths(x.cards)).sort()).toEqual(["/w/a", "/w/b", "/w/c"]);
+    expect(names(secs)).toEqual(["Work", TOP_LEVEL]);
+  });
+  it("answers nothing for an empty fleet rather than one empty run", () => {
+    expect(fleetSections([], [gdef("g1", "Work")])).toEqual([]);
   });
 });
 
