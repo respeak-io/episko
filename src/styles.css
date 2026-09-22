@@ -2222,6 +2222,7 @@ select.in-ctl { cursor: pointer; }
 .svrpop .sv-src { margin-right: 5px; font-size: 8px; color: var(--accent-ink); }
 /* ◎: nobody announced this one; the kernel says the socket is open under this pane */
 .svrpop .sv-obs { color: var(--muted-2); }
+.svrpop .sv-orphan { font-size: 10px; color: var(--st-error); opacity: .8; }
 /* a column kept empty rather than dropped, so ◨ stays in line the whole way down the list */
 .svrpop .sv-none { display: inline-block; }
 .svrpop .sv-url { flex: none; max-width: 170px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); font: 600 10px var(--font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

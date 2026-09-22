@@ -192,8 +192,8 @@ export function bgRetire(rec: BgServer, now: number): boolean {
 
 // ---------- the ports the kernel says are open ----------
 
-/** One TCP port a session's process tree is listening on, from `session_ports`. */
-export interface SessionPort { sessionId: string; port: number; pid: number; name: string }
+/** One TCP port a session's process tree is listening on, from `session_ports`. `orphan`: its pane is gone. */
+export interface SessionPort { sessionId: string; port: number; pid: number; name: string; orphan: boolean }
 
 export function portOf(url: string): number {
   const m = /^(https?):\/\/[^/:]+(?::(\d{1,5}))?/i.exec(url);
@@ -256,6 +256,18 @@ export function failedServers(list: readonly BgServer[]): BgServer[] {
 
 export function shownServers(list: readonly BgServer[]): BgServer[] {
   return [...liveServers(list), ...failedServers(list)]; // the popover's list; the poll re-reads liveServers
+}
+
+// After Episko killed whatever held `port`: end the live records that named it as "stopped"
+// (exit null, like a TaskStop), so the kill's own non-zero exit sentinel never paints it red.
+export function markKilled(list: BgServer[], port: number, now: number): boolean {
+  let changed = false;
+  for (const b of liveServers(list)) {
+    if (!b.url || portOf(b.url) !== port) continue;
+    b.ended = now; b.exit = null;
+    changed = true;
+  }
+  return changed;
 }
 
 export function forgetServer(list: BgServer[], taskId: string): boolean {

@@ -22,6 +22,15 @@ Markers: `+` new · `~` changed · `!` fixed
 + **A task row's menu runs the task.** ⟳ *Run again*, ⋯ *Run again with…* (its parameters), ■ *Stop*,
   ↗ *Reveal source* and the ▶ Run pin — the inspector's task card, on the row itself. ■ keeps the
   pane and its output; ✕ takes both, and each says which.
++ **✕ on a port in the servers popover kills whatever holds it.** A server typed by hand in a shell,
+  or one an agent left running after its pane closed, finally has a stop: Episko confirms, checks
+  that the pid still holds that port and was started from one of its panes, kills it and everything
+  it started, and says whether the port came free. A server that outlived its pane stays listed as
+  *orphaned* instead of vanishing. An agent's server is still *asked* to stop while its session is
+  alive, and killed once there is nobody left to ask.
+! **The servers popover shows ports nobody announced.** One started by hand (`pnpm dev` typed into a shell
+  pane, say) was meant to appear as a ◎ row, but the port list reached the frontend under the wrong
+  field name, so none ever appeared.
 
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
