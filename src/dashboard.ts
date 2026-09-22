@@ -802,7 +802,7 @@ export function renderDash(): void {
       : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared))
     + worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none")
     + landedCard({
-      rows, span, head, hidden,
+      rows, span, head, hidden, on: botFold,
       loading: landedLoading, known: factsKnown && tier !== "none",
     }));
 

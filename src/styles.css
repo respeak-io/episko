@@ -1054,7 +1054,15 @@ html.win .wctl { display: flex; }
 /* never shrink: flex would turn `dev` into `dev…` for a neighbour; each chip has its own ceiling */
 .gchip { display: inline-flex; align-items: center; flex: none; max-width: 190px; font: 600 10px var(--font-mono); padding: 1px 5px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap; overflow: hidden; }
 /* only the NAME truncates, or a long branch loses the marker the collapse added */
-.gchip .gn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gchip .gn { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+/* The head is everything before the ref's last `/` and the tail is that segment, which is what
+   identifies a branch. Only the HEAD may shrink: any share at all leaves the tail a fraction of
+   a pixel short, and `ellipsis` then pays for itself in whole characters (`/eslint-plugin-v…`).
+   The tail is capped at the chip instead, so it ellipsises only once the head is gone — and its
+   leading `/` is what then says a path was elided in front of it. */
+.gchip .gh { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gchip .gt { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.gchip .gk { flex: none; margin-right: 3px; }
 /* "⇡" — this branch is also on its remote, so one chip stands for both refs */
 .gr { flex: none; margin-left: 3px; font-size: 9px; opacity: .65; }
 .gc-more { flex: none; color: var(--muted-2); background: var(--surface-2); }
@@ -1063,7 +1071,7 @@ html.win .wctl { display: flex; }
 .gc-remote { color: var(--muted); background: color-mix(in srgb, var(--muted) 13%, transparent); }
 .gc-tag { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 
-/* What a narrow panel gives up, in order; the full forms stay in titles and the detail strip.
+/* What a narrow panel gives up, in order; the full forms stay in the tooltips and the detail strip.
    Container queries, not viewport: the panel's width is what the table lives in. */
 @container (max-width: 1040px) {
   .gwhen { width: 44px; }
@@ -1835,7 +1843,8 @@ select.in-ctl { cursor: pointer; }
 .u-pjbar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
 .u-usd { font-weight: 700; }
 
-.tip { position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
+/* `pre-line` so a tip written with a newline in it keeps the break and still wraps. */
+.tip { white-space: pre-line; position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
 .tip[hidden] { display: none; }
 .u-tip { position: fixed; z-index: 60; pointer-events: none; transform: translate(-50%, -100%); background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 7px 9px; font-size: 11px; line-height: 1.5; white-space: nowrap; box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
 

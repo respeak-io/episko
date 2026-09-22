@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
-import { basename, esc, tilde } from "./format";
+import { basename, esc, escAttr, tilde } from "./format";
 import {
   inSpan, laneColor, layoutGraph, lineTip, refChips, refChipsHtml, rowSvg, shortRel, spanNeedsMore,
   type GraphCommit, type GraphLayout, type GraphMark,
@@ -158,18 +158,18 @@ function render() {
   const rows = layout.rows.map((r) => {
     const chips = refChips(r.c.refs);
     const head = chips.some((x) => x.kind === "head");
-    // Eight lane colours only, so the node's title is the one place a line (and a merge) is named.
-    const tip = esc(lineTip(r));
+    // Eight lane colours only, so the node's tooltip is the one place a line (and a merge) is named.
+    const tip = escAttr(lineTip(r));
     // Graph and chips share one cell, so the chips sit against the graph's actual silhouette.
     const hit = mark && inSpan(r.c, mark) ? " hit" : "";
     return `<div class="grow${r.c.sha === sel ? " on" : ""}${hit}" data-gsha="${r.c.sha}" role="option" aria-selected="${r.c.sha === sel}">`
       + `<span class="gleft">`
-      + `<span class="gcol" title="${tip}">${rowSvg(r, { head })}</span>`
+      + `<span class="gcol" data-tip="${tip}">${rowSvg(r, { head })}</span>`
       + `<span class="grefs">${refChipsHtml(chips)}</span></span>`
-      + `<span class="gsubj" title="${esc(r.c.subject)}">${esc(r.c.subject) || "<em>no subject</em>"}</span>`
+      + `<span class="gsubj" data-tip="${escAttr(r.c.subject)}">${esc(r.c.subject) || "<em>no subject</em>"}</span>`
       + `<span class="gsha">${esc(r.c.short)}</span>`
       + `<span class="gwho">${esc(r.c.author)}</span>`
-      + `<span class="gwhen" title="${esc(r.c.rel)}"><span class="w-l">${esc(r.c.rel)}</span><span class="w-s">${esc(shortRel(r.c.rel))}</span></span>`
+      + `<span class="gwhen" data-tip="${escAttr(r.c.rel)}"><span class="w-l">${esc(r.c.rel)}</span><span class="w-s">${esc(shortRel(r.c.rel))}</span></span>`
       + `</div>`;
   }).join("");
 
@@ -190,7 +190,7 @@ function markChip(): string {
   const hunting = !marked && more;
   return ` · <span class="g-mk"><span class="g-mk-l">${esc(mark.label)}</span>`
     + `<b>${hunting ? "…" : n}</b>`
-    + `<button class="g-mk-x" data-gmark="clear" title="Stop highlighting ${esc(mark.label)}">✕</button></span>`;
+    + `<button class="g-mk-x" data-gmark="clear" data-tip="Stop highlighting ${escAttr(mark.label)}">✕</button></span>`;
 }
 
 // Bring the newest commit of the span to the top of the scroller. `block: "start"` and not
@@ -234,25 +234,25 @@ function detailHtml(): string {
       const known = commits.some((x) => x.sha === p);
       // A parent past the loaded frontier isn't a row yet: say so rather than offer a dead click.
       return known
-        ? `<button class="gp" data-gsha="${p}" title="Jump to this parent">${esc(p.slice(0, 7))}</button>`
-        : `<span class="gp gp-off" title="Not loaded yet; load more to reach it">${esc(p.slice(0, 7))}</span>`;
+        ? `<button class="gp" data-gsha="${p}" data-tip="Jump to this parent">${esc(p.slice(0, 7))}</button>`
+        : `<span class="gp gp-off" data-tip="Not loaded yet; load more to reach it">${esc(p.slice(0, 7))}</span>`;
     }).join("")
     : `<span class="g-dim">root</span>`;
   const row = layout.rows.find((r) => r.c.sha === c.sha);
   const lane = row
-    ? `<span class="gd-lane" title="${esc(lineTip(row))}" style="--lc:${laneColor(row.line)}">`
+    ? `<span class="gd-lane" data-tip="${escAttr(lineTip(row))}" style="--lc:${laneColor(row.line)}">`
       + `${row.label ? `on ${esc(row.label.name)}` : "no branch on this line"}`
       + `${row.merged.length ? ` · merges ${esc(row.merged.join(", "))}` : ""}</span>`
     : "";
   // A summary only: the full sha and the body live in the overlay. The short sha IS the copy button.
   return `<div class="gd-l1">${refChipsHtml(refChips(c.refs, 99))}`
-    + `<span class="gd-subj" title="${esc(c.subject)}">${esc(c.subject)}</span></div>`
+    + `<span class="gd-subj" data-tip="${escAttr(c.subject)}">${esc(c.subject)}</span></div>`
     + `<div class="gd-l2">${lane}<span class="gd-sep">·</span><span>${esc(c.author)}</span>`
     + `<span class="g-dim">${esc(when)}</span><span class="gd-sep">·</span>`
-    + `<button class="gd-sha-b" data-gcopy="${esc(c.sha)}" title="Copy the full sha\n${esc(c.sha)}">⧉ ${esc(c.short)}</button>`
+    + `<button class="gd-sha-b" data-gcopy="${esc(c.sha)}" data-tip="Copy the full sha\n${esc(c.sha)}">⧉ ${esc(c.short)}</button>`
     + `<span class="gd-par">parents ${parents}</span>`
     // Shares the `gswap` footprint with the overlay's close button, so closing lands under the pointer.
-    + `<button class="gd-b gswap" data-gopen="${esc(c.sha)}" title="Show the whole commit (⏎)">`
+    + `<button class="gd-b gswap" data-gopen="${esc(c.sha)}" data-tip="Show the whole commit (⏎)">`
     + `⤢ Full message</button></div>`;
 }
 
@@ -271,8 +271,8 @@ function renderCommit() {
     ? c.parents.map((p) => {
       const known = commits.some((x) => x.sha === p);
       return known
-        ? `<button class="gp" data-gsha="${p}" data-gjump="1" title="Jump to this parent">${esc(p.slice(0, 12))}</button>`
-        : `<span class="gp gp-off" title="Not loaded yet; load more to reach it">${esc(p.slice(0, 12))}</span>`;
+        ? `<button class="gp" data-gsha="${p}" data-gjump="1" data-tip="Jump to this parent">${esc(p.slice(0, 12))}</button>`
+        : `<span class="gp gp-off" data-tip="Not loaded yet; load more to reach it">${esc(p.slice(0, 12))}</span>`;
     }).join("")
     : `<span class="g-dim">none (root commit)</span>`;
   el.hidden = false;
@@ -281,7 +281,7 @@ function renderCommit() {
     + `<button class="gd-b" data-gcopy="${esc(c.sha)}">⧉ Sha</button>`
     + `<button class="gd-b" data-gcopymsg="1">⧉ Message</button>`
     + `<span class="gco-sp"></span>`
-    + `<button class="diff-x" data-gclose1="1" title="Back to the graph (Esc)">✕</button></div>`
+    + `<button class="diff-x" data-gclose1="1" data-tip="Back to the graph (Esc)">✕</button></div>`
     + `<div class="gco-body">`
     + `<div class="gco-refs">${refChipsHtml(refChips(c.refs, 99))}</div>`
     + `<h3 class="gco-subj">${esc(c.subject)}</h3>`
@@ -293,12 +293,12 @@ function renderCommit() {
     + `</div>`
     + `<div class="gco-meta">`
     + `<span><b>${esc(c.author)}</b></span><span class="g-dim">${esc(when)}</span>`
-    + (row ? `<span class="gd-lane" style="--lc:${laneColor(row.line)}" title="${esc(lineTip(row))}">`
+    + (row ? `<span class="gd-lane" style="--lc:${laneColor(row.line)}" data-tip="${escAttr(lineTip(row))}">`
       + `${row.label ? `on ${esc(row.label.name)}` : "no branch on this line"}`
       + `${row.merged.length ? ` · merges ${esc(row.merged.join(", "))}` : ""}</span>` : "")
     + `<span class="gco-sp"></span><span class="gd-par">parents ${parents}</span>`
     // A second close at the bottom right, where the pointer is when you finish reading.
-    + `<button class="gd-b gswap gco-x2" data-gclose1="1" title="Back to the graph (Esc)">✕ Close</button>`
+    + `<button class="gd-b gswap gco-x2" data-gclose1="1" data-tip="Back to the graph (Esc)">✕ Close</button>`
     + `</div>`;
 }
 
