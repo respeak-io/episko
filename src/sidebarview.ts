@@ -58,17 +58,26 @@ const clusterChip = (c: WtCluster) =>
   `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
   + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(c.branch)}</span></span>`;
 
+// Title, else the branch until Claude sets one; `nested` drops the ▶ a run group's header carries.
+export const rowLabel = (s: Sess, nested = false) => s.kind === "task"
+  ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
+  : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
+export const pastLabel = (d: Restorable) => d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
+// A shell (❯) or terminal-only agent (») has no phase; a dot once exited. Tasks keep the status
+// glyphs, since an exit code is a done/error phase. Exported with the labels above so a row's
+// right-click menu (./projmenu) heads with the row's own words, not a second spelling of them.
+export function rowGlyph(s: Sess): { glyph: string; cls: string } {
+  const bare = s.kind === "shell" ? "❯" : isAgent(s) && !hasSessionState(s) ? "»" : "";
+  const k = statusKey(s);
+  return bare
+    ? { glyph: s.phase === "ended" ? GLYPH.ended : bare, cls: s.phase === "ended" ? GCLASS.ended : "g-idle" }
+    : { glyph: GLYPH[k], cls: GCLASS[k] };
+}
+
 function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
   const k = statusKey(s);
-  // Title, else the branch until Claude sets one; `nested` drops the ▶ a run group's header carries.
-  const label = s.kind === "task"
-    ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
-    : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
-  // A shell (❯) or terminal-only agent (») has no phase; a dot once exited. Tasks keep the
-  // status glyphs, since an exit code is a done/error phase.
-  const bare = s.kind === "shell" ? "❯" : isAgent(s) && !hasSessionState(s) ? "»" : "";
-  const glyph = bare ? (s.phase === "ended" ? GLYPH.ended : bare) : GLYPH[k];
-  const gcls = bare ? (s.phase === "ended" ? GCLASS.ended : "g-idle") : GCLASS[k];
+  const label = rowLabel(s, nested);
+  const { glyph, cls: gcls } = rowGlyph(s);
   const chipHtml = chip ? clusterChip(chip) : "";
   const fan = fanoutTally(s);
   const carried = fan ? orphanAgents(s).length : 0;
@@ -201,7 +210,7 @@ export function dormantRows(p: ProjGroup): string {
 }
 function dormantRow(d: Restorable): string {
   const busy = dormantBusy(d);
-  const label = d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
+  const label = pastLabel(d);
   const when = relTime(d.lastActivity);
   const tip = busy
     ? "This provider session is already running, so it cannot be resumed twice"

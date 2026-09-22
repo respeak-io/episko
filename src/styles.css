@@ -2136,6 +2136,7 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-head { display: flex; align-items: center; gap: 9px; padding: 4px 9px 7px; min-width: 0; }
 .ctxmenu .mp-hico { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: contain; }
 .ctxmenu .mp-hsw { flex: none; width: 10px; height: 10px; margin: 0 4px; border-radius: 50%; }
+.ctxmenu .mp-hgl { flex: none; width: 18px; text-align: center; font-size: 11px; line-height: 1; }
 .ctxmenu .mp-hmain { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ctxmenu .mp-hname { font: 700 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ctxmenu .mp-hpath { font: 500 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
