@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **What's next folds a run of rows that say the same thing.** Sixteen dependency pull requests from
+  one bot become one row — *16 pull requests from dependabot · all ready to merge* — that opens where
+  it sits, and so do the out-of-date packages. Folded, not filtered: an advisory, an issue and a note
+  are never folded away, a run of two stays as it was, and a search folds nothing, since what it left
+  is the list you asked for. Ready-to-merge and blocked runs are two folds, because the ladder already
+  says they are not the same pile of work.
+
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
 the project page is three columns ending in one ranked list of what is next, an issue reads
