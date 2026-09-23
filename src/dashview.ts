@@ -13,7 +13,7 @@ import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
-import { type QueueFilter, type QueueItem } from "./queue";
+import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
 import {
   anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
   orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
@@ -33,7 +33,9 @@ const AI_MARK = aiMark("ai", "ai-cnr"); // cornered, not inline: inline it read 
 // substitution rather than a jump. The bars carry no text; ./dashboard marks the pane
 // aria-busy. The shimmer (.db-sk) and spinner (.u-spin) are the usage screen's own.
 
-const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
+// Exported: ./fleetview draws the same shimmer, and two copies of one style helper is how a
+// screen ends up with a skeleton nothing else on the machine looks like.
+export const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
 
 // For the local reads and for the GitHub half, which fires after the rest and needs one
 // most: an absent Open work card reads as gh being broken rather than slow.
@@ -477,8 +479,25 @@ function qNoteRow(i: QueueItem): string {
 const qRow = (i: QueueItem): string =>
   i.kind === "work" ? qWorkRow(i) : i.kind === "deps" ? qDepsRow(i) : qNoteRow(i);
 
+// The whole row toggles, so the chevron says the state rather than being a second control
+// beside it. An open fold keeps its head: that head is how you close it again.
+function qFoldRow(f: QueueFold): string {
+  const lead = f.items[0].pr ? `<span class="k pr">pr</span>` : `<span class="k">pkg</span>`;
+  return `<div class="qrow qfold${f.open ? " open" : ""}" data-dashqfold="${escAttr(f.key)}"
+    role="button" aria-expanded="${f.open}"
+    data-tip="${escAttr(f.open ? "Fold these back into one row" : `Show all ${f.items.length}`)}">${lead}
+    <span class="mid"><span class="ti">${esc(f.title)}</span><span class="sub">${esc(f.sub)}</span></span>
+    <span class="rt"><span class="qchev">${f.open ? "⌃" : "⌄"}</span></span></div>`;
+}
+
+// One box for an open fold's rows, so the indent and the rule down their left are one rule
+// rather than a class every child has to remember to carry.
+const drawRow = (r: QueueRow): string =>
+  r.kind === "item" ? qRow(r.item)
+  : qFoldRow(r.fold) + (r.fold.open ? `<div class="qkids">${r.fold.items.map(qRow).join("")}</div>` : "");
+
 export function queueCard(
-  items: QueueItem[], tally: Record<QueueFilter, number>, filter: QueueFilter, query: string,
+  rows: QueueRow[], tally: Record<QueueFilter, number>, filter: QueueFilter, query: string,
   ghKnown: boolean, depKnown: boolean,
 ): string {
   // A count of nought is not a filter worth arming: the chip stays, greyed, so the list's
@@ -502,10 +521,10 @@ export function queueCard(
     || (!depKnown && filter !== "iss" && filter !== "note");
   // Every row, because the column is a scroller with a sticky head and a pinned foot: a cap
   // plus "…and 14 more" made a list that ended in an apology where there was room to read.
-  const rows = items.map(qRow).join("") + (waiting ? cardSkeleton(2) : "");
+  const html = rows.map(drawRow).join("") + (waiting ? cardSkeleton(2) : "");
   // A search that matches nothing says so against the words you typed; the empty queue
   // says the other thing, and the two must not be one sentence.
-  const body = rows
+  const body = html
     || (query
       ? `<div class="ac-empty">Nothing here matches <b>${esc(query)}</b>.</div>`
       : `<div class="ac-empty">Nothing open, nothing out of date, nothing jotted.</div>`);

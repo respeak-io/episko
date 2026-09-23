@@ -140,7 +140,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died, and what the row says when the log was never found), telling a *server* from a *job* Claude auto-backgrounded at its 120s timeout (`timedOut`, `isJob`, `bgKind`), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `autofetch.ts` | when the checkout on stage is due a `git fetch`: the cadence, the repo-keyed record of the last one, and how far a remote that cannot be reached is backed off |
-| `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg`/`rowSvgAt`, and `foldBots` — why a run of bot commits is *folded* rather than filtered out |
+| `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg`/`rowSvgAt`, and `foldBots` — why bot work is *folded* rather than filtered out, in the two shapes it arrives in (a run down one lane, a fan of branch tips) |
 | `peek.ts` | the sidebar's hover-to-reveal: what arms, what cancels, what the next deadline is |
 | `attn.ts` | the moment a session starts wanting you: the highlight that fades off its row, the order the "your turn" badge queues in, and what opening a pane does to it |
 | `projgroups.ts` | the user's named groups of projects: the store, its repair, and every mutation of it |
@@ -149,7 +149,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `branches.ts` | branches as ONE row each wherever their refs live: what is worth deleting, which half of it may go, what blocks each, the filter chips that narrow before a select-all, and where a checkout can switch to (see docs/worktrees.md) |
 | `pick.ts` | the ONE selection rule every tick-box table obeys: toggle, shift-extends-**and-adds** from the anchor each table keeps for itself, an off row never ticked, and the header tick's three states over the rows on screen |
 | `dash.ts` | the project dashboard's rules: `projectTier`, `dashDays`, `dashPulse`, `projectCost`, and `sinceFacts` + the `cc-dash-seen` stamp behind *Since you were last here* |
-| `queue.ts` | the project pane's one ranked queue: what open work, triage, dependency advisories and notes look like as one list, in what order, and why a thread that is two of those is still one row. `quiet` is a **facet**, not a source — a quiet row is also an issue and is counted in both, so the chips deliberately do not sum to *All*. `searchQueue` is the pool the chips then count over, never a seventh chip |
+| `queue.ts` | the project pane's one ranked queue: what open work, triage, dependency advisories and notes look like as one list, in what order, and why a thread that is two of those is still one row. `quiet` is a **facet**, not a source — a quiet row is also an issue and is counted in both, so the chips deliberately do not sum to *All*. `searchQueue` is the pool the chips then count over, never a seventh chip. A run of rows that say the same thing — one bot's pull requests, the out-of-date packages — stands behind one fold row (`groupKey`, `foldQueue`), which is why `rankQueue` clusters a group before it returns: without that, two bots interleave by recency and neither run ever reaches three |
 | `fleet.ts` | the all-projects dashboard's rules: one card per project, the three sorts, the window's own figures, and the three states of a checkout nobody has swept |
 | `explore.ts` | the explorer's rules: browse vs. find over one index, the scope filters, the touch join, what ↵ does (see docs/explorer.md) |
 | `ghwork.ts` | issues and PRs: recency buckets, what triage dares suggest, who already has one |
@@ -551,15 +551,18 @@ And the things that hold however the files are arranged:
   when the shell is recorded and never recomputed (./servers, ./types); widening the
   ROOT must never re-derive it. Same trap as the `X-CC-Session` rule above, one level
   down.
-- **Stopping a server is asked of the agent, never done behind its back.** The process
-  is a descendant of Episko's own tree and could be killed — but the agent holds
-  `TaskStop`, believes the server is up, and goes on saying so after a kill it never
-  saw. So ./serversui prefills `TaskStop <id>` into the session and the human presses
-  Enter: the `handToTerminal`/`sendOutputToSession` contract. A server whose session is
-  gone is an **orphan**: `session_ports` cannot see it either, because attribution is by
-  ancestry and its chain is broken, so it belongs to no pane and there is nobody to ask.
-  Listing orphans would need a *project*-level answer (match the process's cwd or command
-  line against known roots), which is a separate feature and not this one.
+- **Stopping a server is asked of the agent while the agent can hear, and killed once it
+  cannot.** The agent holds `TaskStop`, believes the server is up, and goes on saying so
+  after a kill it never saw. So while its Claude session is live, ./serversui prefills
+  `TaskStop <id>` and the human presses Enter (the `handToTerminal`/`sendOutputToSession`
+  contract). Once the session has ended or gone there is nobody to ask, and ✕ becomes
+  `kill_listener` on the pid the kernel says holds the server's port. A listener whose pane
+  exited is an **orphan**: ancestry dies with the pane, so `session_ports` keeps it only
+  because a poll saw it under that pane first (`AppState.seen_ports`, forgotten the poll
+  its socket closes, so a reused pid cannot inherit it). One started and orphaned inside a
+  single poll is never seen; catching those would need a *project*-level answer.
+  **`kill_listener` re-checks at the kernel** that the pid still holds that port and is
+  ours before killing its tree, because the row it came from is one poll old.
 - **The kernel is the authority; a parsed log line is a guess.** `session_ports`
   (external.rs) walks every listening TCP socket back up the ppid chain to a pane's PTY
   child — measured **eight** hops from a `vite` leaf to `episko.exe`, well inside
@@ -584,11 +587,12 @@ And the things that hold however the files are arranged:
   already gone red about the first. A bare **port** is listed when nothing else explains
   it, which is the only way a server started by hand in a shell pane has ever been
   visible. Stopping differs with the source and honestly so: Episko owns a task's PTY, so
-  ✕ there is a real `closeSession` (what the pane's own ✕ does), an agent's shell is only
-  ever asked, and a port row has **no ✕ at all** — we know which pid holds the socket, but
-  it sits several hops below a pane that has its own ✕, and the row exists to tell you the
-  port is open rather than to take responsibility for it. Its empty cell is kept so ◨
-  stays in line down the list.
+  ✕ there is a real `closeSession` (what the pane's own ✕ does), an agent's shell is
+  asked (see above), and a port row's ✕ kills the pid holding it, behind a confirm, since
+  nothing else will ever stop a server typed by hand or left behind by a closed pane. A
+  kill ends the records that named the port as *stopped* (`markKilled`), or the kill's
+  own non-zero exit sentinel would paint the pill red. **Dismiss stops nothing**: it
+  only clears a row that has already ended.
 - **Claude Code backgrounds things nobody chose to background.** Any Bash command still
   running at its **120s timeout** is auto-backgrounded with `run_in_background` UNSET —
   12 of 143 real payloads, and they are `npm ci`, `pytest`, `vue-tsc`, `gh run watch`
@@ -692,7 +696,7 @@ The full design notes (the shipped-bug histories and every invariant's reasoning
 - **`docs/commit-graph.md`**: never read a whole history (one page at a time, `--date-order`); a tag never names a lane; `gc-*` is the chip prefix, `gco-*` the overlay's.
 - **`docs/architecture.md`**: the deep halves of the backend/frontend sections above: disk-I/O accounting, the `innerHTML` guards, the needs-you set's two stamps, the WebGL pool, keystrokes/clipboard, `StopFailure`, storage cadences, the two logging tiers, and the per-model plan-limit probe.
 - **`docs/worktrees.md`**: project groups, the peek rows, the worktree roster and polls (`worktree_heads` is spawn-free and pollable; `list_worktrees` is neither), removal (a failed `git worktree remove` does **not** mean nothing happened), drift (`Drift.via` decides the repair: follow in place vs. kill-wait-move-relaunch), and the Branches view — one row per branch with the scope toggles deciding where a delete lands, never what may be ticked, and the default branch refused whatever the trunk is set to.
-- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), the shell beside a session (⌘T; a split shell is never `activeId`), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, shelving (a shelved session becomes the same restorable row a quit writes — never a second kind of row — and the dormant entry must go on the list *before* `closeSession` flushes the roster), and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
+- **`docs/sessions.md`**: launch engines, permission modes (a whitelist rather than a passthrough), the shell beside a session (⌘T; a split shell is never `activeId`), a session row's own right-click menu (matched before `[data-key]`, since a shelved or external row carries its project's key), external sessions (filter owned ones by pid rather than by session id), restore (use `resumeId` rather than `id`; `costDelta` baselines, since anything that diffs a cumulative telemetry figure against a `Sess` field repeats a shipped bug), History, shelving (a shelved session becomes the same restorable row a quit writes — never a second kind of row — and the dormant entry must go on the list *before* `closeSession` flushes the roster), and the revive watchdog (never type at a session that is asking you something; the attempt counter must survive the turns it starts, or the ladder flattens into a hammer).
 - **`docs/providers.md`**: the provider contract, shared capability matrix, adapter/backend boundaries, feature checklist and the definition of done for adding first-class agents.
 - **`docs/native-ui.md`**: the title bar (the window is built in `setup()` rather than by config; drag-region gotchas), the tray menu (icons exist because menu text is always menu-coloured; project headers must be disabled items), and the OS dialogs Episko stopped drawing (`confirm.ts` — a native box cannot mark its destructive button; the file picker is the one that stays).
 - **`docs/tour.md`**: the guided tour. It opens on the *absence* of `cc-tour` and never after an update; a release intro is a chapter with a `since`, not a second mechanism; the veil is `pointer-events:none` so the lit control is the live one, and it must never join `SCRIM_DLGS`; a missing anchor skips a step **unless the step is waiting**, because a waiting step's anchor is usually what it is waiting for. **Write a step against the app, never against a mock, and walk it before you believe it** — every bug this feature has had was a card pointing confidently at something that was not there.

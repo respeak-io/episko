@@ -8,11 +8,10 @@ import { toast } from "./dom";
 import { readObj } from "./store";
 import { basename, emojiDataUri, esc, nfcKeys, normEmoji } from "./format";
 
-// Wired by main.ts at startup; until then (and in a test) an icon change paints nothing.
-let renderSidebar: () => void = () => {};
-export function setIconRenderSidebar(fn: typeof renderSidebar) { renderSidebar = fn; }
-let renderMini: () => void = () => {};
-export function setIconRenderMini(fn: typeof renderMini) { renderMini = fn; }
+// Wired by main.ts at startup; until then (and in a test) an icon change paints nothing. One
+// hook rather than one per surface: every surface that draws an icon repaints on the same beat.
+let repaint: () => void = () => {};
+export function setIconRepaint(fn: typeof repaint) { repaint = fn; }
 
 // path → data URI; "" means probed and none found, and a present key is never re-probed.
 const icons: Record<string, string> = nfcKeys(readObj<string>("cc-icons"));
@@ -46,13 +45,13 @@ export async function probeIcon(key: string) {
     icons[key] = r?.data_uri || "";
   } catch { icons[key] = ""; }
   saveIcons();
-  renderSidebar(); renderMini();
+  repaint();
 }
 // "Use the color dot instead": drops the hand-picked logo and marks discovery as probed-none.
 export function clearIcon(key: string) {
   delete customIcons[key]; saveCustomIcons();
   icons[key] = ""; saveIcons();
-  renderSidebar(); renderMini();
+  repaint();
 }
 export async function pickCustomIcon(key: string) {
   const file = await open({
@@ -66,7 +65,7 @@ export async function pickCustomIcon(key: string) {
     const r = await invoke<{ data_uri: string }>("read_custom_icon", { path: file });
     customIcons[key] = r.data_uri;
     saveCustomIcons();
-    renderSidebar(); renderMini();
+    repaint();
     toast(`Logo set for ${basename(key)}`);
   } catch (e) { toast(String(e)); }
 }
@@ -77,7 +76,7 @@ export function setEmojiIcon(key: string, raw: string): boolean {
   if (!em) { toast("Pick or paste a single emoji"); return false; }
   customIcons[key] = em;
   saveCustomIcons();
-  renderSidebar(); renderMini();
+  repaint();
   toast(`${em} set for ${basename(key)}`);
   return true;
 }
@@ -85,7 +84,7 @@ export function resetCustomIcon(key: string) {
   delete customIcons[key]; saveCustomIcons();
   delete icons[key]; saveIcons();
   void probeIcon(key);            // async: paints again if disk turns up a logo
-  renderSidebar(); renderMini();  // the removal itself, now rather than a probe later
+  repaint();                      // the removal itself, now rather than a probe later
 }
 
 export function projGlyph(key: string, accent: string): string {

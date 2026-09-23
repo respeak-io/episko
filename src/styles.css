@@ -1054,7 +1054,15 @@ html.win .wctl { display: flex; }
 /* never shrink: flex would turn `dev` into `dev…` for a neighbour; each chip has its own ceiling */
 .gchip { display: inline-flex; align-items: center; flex: none; max-width: 190px; font: 600 10px var(--font-mono); padding: 1px 5px; border-radius: 5px; border: 1px solid transparent; white-space: nowrap; overflow: hidden; }
 /* only the NAME truncates, or a long branch loses the marker the collapse added */
-.gchip .gn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.gchip .gn { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+/* The head is everything before the ref's last `/` and the tail is that segment, which is what
+   identifies a branch. Only the HEAD may shrink: any share at all leaves the tail a fraction of
+   a pixel short, and `ellipsis` then pays for itself in whole characters (`/eslint-plugin-v…`).
+   The tail is capped at the chip instead, so it ellipsises only once the head is gone — and its
+   leading `/` is what then says a path was elided in front of it. */
+.gchip .gh { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gchip .gt { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.gchip .gk { flex: none; margin-right: 3px; }
 /* "⇡" — this branch is also on its remote, so one chip stands for both refs */
 .gr { flex: none; margin-left: 3px; font-size: 9px; opacity: .65; }
 .gc-more { flex: none; color: var(--muted-2); background: var(--surface-2); }
@@ -1063,7 +1071,7 @@ html.win .wctl { display: flex; }
 .gc-remote { color: var(--muted); background: color-mix(in srgb, var(--muted) 13%, transparent); }
 .gc-tag { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 
-/* What a narrow panel gives up, in order; the full forms stay in titles and the detail strip.
+/* What a narrow panel gives up, in order; the full forms stay in the tooltips and the detail strip.
    Container queries, not viewport: the panel's width is what the table lives in. */
 @container (max-width: 1040px) {
   .gwhen { width: 44px; }
@@ -1835,7 +1843,8 @@ select.in-ctl { cursor: pointer; }
 .u-pjbar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
 .u-usd { font-weight: 700; }
 
-.tip { position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
+/* `pre-line` so a tip written with a newline in it keeps the break and still wraps. */
+.tip { white-space: pre-line; position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
 .tip[hidden] { display: none; }
 .u-tip { position: fixed; z-index: 60; pointer-events: none; transform: translate(-50%, -100%); background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 7px 9px; font-size: 11px; line-height: 1.5; white-space: nowrap; box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
 
@@ -2136,6 +2145,7 @@ select.in-ctl { cursor: pointer; }
 .ctxmenu .mp-head { display: flex; align-items: center; gap: 9px; padding: 4px 9px 7px; min-width: 0; }
 .ctxmenu .mp-hico { flex: none; width: 18px; height: 18px; border-radius: 4px; object-fit: contain; }
 .ctxmenu .mp-hsw { flex: none; width: 10px; height: 10px; margin: 0 4px; border-radius: 50%; }
+.ctxmenu .mp-hgl { flex: none; width: 18px; text-align: center; font-size: 11px; line-height: 1; }
 .ctxmenu .mp-hmain { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ctxmenu .mp-hname { font: 700 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ctxmenu .mp-hpath { font: 500 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2221,6 +2231,7 @@ select.in-ctl { cursor: pointer; }
 .svrpop .sv-src { margin-right: 5px; font-size: 8px; color: var(--accent-ink); }
 /* ◎: nobody announced this one; the kernel says the socket is open under this pane */
 .svrpop .sv-obs { color: var(--muted-2); }
+.svrpop .sv-orphan { font-size: 10px; color: var(--st-error); opacity: .8; }
 /* a column kept empty rather than dropped, so ◨ stays in line the whole way down the list */
 .svrpop .sv-none { display: inline-block; }
 .svrpop .sv-url { flex: none; max-width: 170px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); font: 600 10px var(--font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2547,9 +2558,20 @@ select.in-ctl { cursor: pointer; }
 .fl-row { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; padding: 0 10px; border-radius: 9px; background: var(--panel); cursor: pointer; }
 .fl-row:hover { background: var(--surface); }
 .fl-row .sglyph { flex: none; width: 12px; }
+/* A shimmering row is not a row you can open: ./dashview's `.ac.sk` rule, one screen over. */
+.fl-row.sk, .fl-card.sk, .fl-prow.sk { cursor: default; pointer-events: none; }
 .fl-row .ti { flex: 1; min-width: 0; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-row .pj { flex: none; font-size: 10px; color: var(--muted-2); }
 .fl-need:hover .sclose, .fl-row:hover .sclose { opacity: 1; }
+
+/* A named run inside Projects, from the sidebar's own groups: a rule across the column rather
+   than a boxed section, so the grid still reads as one list and not as five dashboards. */
+.fl-gsec { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.fl-gsec + .fl-gsec { margin-top: 5px; }
+.fl-gh { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.fl-gh .label { color: var(--muted); }
+.fl-gh .n { font: 9.5px var(--font-mono); color: var(--muted-2); }
+.fl-gh .ln { flex: 1; height: 1px; background: var(--hair); }
 
 /* One card per project, wrapping to the column's width: the grid is what puts six projects on
    one screen where a row list put six names down one edge of it. */
@@ -2558,6 +2580,7 @@ select.in-ctl { cursor: pointer; }
 .fl-card:hover { border-color: var(--hair-strong); background: linear-gradient(180deg, var(--lift), transparent 42%), var(--surface); }
 .fc-h { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .fc-av { flex: none; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); color: var(--bg-2); }
+.fc-av .picon { width: 22px; height: 22px; border-radius: 7px; box-shadow: none; }
 .fc-nm { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fc-gl { flex: none; display: flex; gap: 5px; }
 /* A day is a count, so the card's window is bars: ./format's barRow, the ribbon's geometry. */
@@ -2579,6 +2602,10 @@ select.in-ctl { cursor: pointer; }
 .fl-prow .ti { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-prow .rt { flex: none; display: flex; align-items: center; gap: 7px; }
 .fl-prow .fc-bars { flex: none; width: 76px; height: 16px; }
+/* A project with no commits in the window draws no bars, and 76px of reserved nothing between
+   the session glyph and the tags stranded the glyph mid-row. The card keeps its slot: there the
+   empty box is what holds every card to one height. */
+.fl-prow .fc-bars:empty { display: none; }
 .fl-prow .fc-work { max-width: 140px; }
 .fl-prow .fc-spend { font-size: 11.5px; }
 
@@ -2800,6 +2827,14 @@ select.in-ctl { cursor: pointer; }
 .qrow:hover { background: var(--surface-2); }
 /* An advisory is the one row with somebody else's clock on it, so it alone is washed. */
 .qrow.q-deps:has(.k.adv) { background: color-mix(in srgb, var(--st-error) 7%, transparent); }
+/* A folded run: dimmer than the rows it stands for, since it is a count rather than work. */
+.qrow.qfold { background: var(--bg-2); }
+.qrow.qfold .ti { color: var(--muted-2); }
+.qrow.qfold:hover .ti, .qrow.qfold.open .ti { color: var(--muted); }
+.qrow .qchev { font: 11px var(--font-mono); color: var(--muted-2); padding: 0 5px; }
+.qrow.qfold:hover .qchev { color: var(--text); }
+/* The opened rows, indented under their head and tied to it by one rule. */
+.qkids { display: flex; flex-direction: column; gap: 3px; margin: 3px 0 3px 9px; padding-left: 8px; border-left: 1px solid var(--hair); }
 .qrow.claimed .ti { color: var(--muted-2); }
 /* The queue's row vocabulary. Every row family in this file scopes its own .k/.mid/.ti/.sub/.go
    (see .dbr, .br, .dep): the four sources the queue merges had four sets, and this is the one. */

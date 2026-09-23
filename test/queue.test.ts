@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterQueue, queueTally, rankQueue, searchQueue, type QueueInput } from "../src/queue";
+import { filterQueue, foldQueue, groupKey, plainRows, queueTally, rankQueue, searchQueue, type QueueInput, type QueueRow } from "../src/queue";
 import type { Advisory, DepAlert, DepPr, OutRow } from "../src/deps";
 import type { GhThread, Holder } from "../src/ghwork";
 import type { Note, SharedNote } from "../src/notes";
@@ -272,5 +272,106 @@ describe("searchQueue", () => {
   it("hands back the list untouched when nothing was typed", () => {
     expect(searchQueue(items, "   ")).toBe(items);
     expect(searchQueue(items, "")).toBe(items);
+  });
+});
+
+describe("folding a run", () => {
+  const bots = (n: number, bot: string, o: Partial<DepPr> = {}) =>
+    Array.from({ length: n }, (_, k) => pr({ number: 100 + k, bot, updatedAt: ago(k), ...o }));
+  const folds = (rows: QueueRow[]) => rows.filter((r) => r.kind === "fold").map((r) => r.fold);
+
+  it("names what a row is one of, and nothing else", () => {
+    const items = rankQueue(input({
+      threads: [th({ number: 1, kind: "pr" })], adv: [adv()], prs: [pr()], out: [out()], notes: [note()],
+    }));
+    const by = new Map(items.map((i) => [i.key, groupKey(i)]));
+    expect(by.get("deps:pr:7")).toBe("bot:dependabot");
+    expect(by.get("deps:out:vitest")).toBe("out");
+    expect(by.get("work:1")).toBeNull();
+    expect(by.get("deps:adv:GHSA-a")).toBeNull();
+    expect(by.get("note:n1")).toBeNull();
+  });
+
+  it("stands a run of three or more behind one row, and leaves a pair alone", () => {
+    const three = foldQueue(rankQueue(input({ prs: bots(3, "dependabot") })), new Set());
+    expect(three).toHaveLength(1);
+    expect(folds(three)[0]).toMatchObject({
+      key: "2:bot:dependabot", open: false,
+      title: "3 pull requests from dependabot", sub: "all ready to merge",
+    });
+    const two = foldQueue(rankQueue(input({ prs: bots(2, "dependabot") })), new Set());
+    expect(two.map((r) => r.kind)).toEqual(["item", "item"]);
+  });
+
+  it("pulls a bot's pull requests together first, or two bots interleave and neither folds", () => {
+    // Both bots run nightly, so recency alone lands them d, r, d, r, d, r.
+    const prs = [
+      pr({ number: 1, bot: "dependabot", updatedAt: ago(1) }), pr({ number: 2, bot: "renovate", updatedAt: ago(1.5) }),
+      pr({ number: 3, bot: "dependabot", updatedAt: ago(2) }), pr({ number: 4, bot: "renovate", updatedAt: ago(2.5) }),
+      pr({ number: 5, bot: "dependabot", updatedAt: ago(3) }), pr({ number: 6, bot: "renovate", updatedAt: ago(3.5) }),
+    ];
+    const items = rankQueue(input({ prs }));
+    expect(items.map((i) => i.pr!.number)).toEqual([1, 3, 5, 2, 4, 6]);
+    expect(folds(foldQueue(items, new Set())).map((f) => f.key))
+      .toEqual(["2:bot:dependabot", "2:bot:renovate"]);
+  });
+
+  it("never folds across a rank: what is ready and what is blocked are two piles", () => {
+    const items = rankQueue(input({
+      prs: [...bots(3, "dependabot"), ...bots(3, "dependabot", { draft: true }).map((p, k) => ({ ...p, number: 200 + k }))],
+    }));
+    expect(folds(foldQueue(items, new Set())).map((f) => [f.key, f.sub])).toEqual([
+      ["2:bot:dependabot", "all ready to merge"],
+      ["3:bot:dependabot", "draft"],
+    ]);
+  });
+
+  it("keeps a group inside its rank, so nothing overtakes an advisory", () => {
+    const items = rankQueue(input({
+      adv: [adv({ ghsa: "GHSA-crit", severity: "critical" })],
+      prs: bots(3, "dependabot"), out: [out({ pkg: "a" }), out({ pkg: "b" }), out({ pkg: "c", bump: "minor" })],
+      notes: [note()],
+    }));
+    expect(items.map((i) => i.rank)).toEqual([0, 2, 2, 2, 4, 7, 7, 7]);
+    const rows = foldQueue(items, new Set());
+    expect(rows.map((r) => (r.kind === "fold" ? r.fold.key : r.item.key)))
+      .toEqual(["deps:adv:GHSA-crit", "2:bot:dependabot", "note:n1", "7:out"]);
+    expect(folds(rows)[1]).toMatchObject({ title: "3 packages out of date", sub: "2 major · 1 minor" });
+  });
+
+  it("opens only the keys it was given, and keeps its rows inside the fold", () => {
+    const items = rankQueue(input({ prs: bots(3, "dependabot") }));
+    const rows = foldQueue(items, new Set(["2:bot:dependabot"]));
+    // One row out, open, carrying its three: the view draws them, so none is emitted twice.
+    expect(rows).toHaveLength(1);
+    expect(folds(rows)[0].open).toBe(true);
+    expect(folds(rows)[0].items.map((i) => i.key)).toEqual(items.map((i) => i.key));
+    expect(foldQueue(items, new Set(["2:bot:renovate"]))[0]).toMatchObject({ kind: "fold" });
+    expect(folds(foldQueue(items, new Set(["2:bot:renovate"])))[0].open).toBe(false);
+  });
+
+  it("says what is holding a blocked run up, busiest first and never past two", () => {
+    const blocked = (o: Partial<DepPr>, k: number) => pr({ number: 300 + k, updatedAt: ago(k), ...o });
+    const items = rankQueue(input({
+      prs: [
+        blocked({ mergeState: "BEHIND" }, 0), blocked({ mergeState: "BEHIND" }, 1),
+        blocked({ draft: true }, 2), blocked({ mergeable: "CONFLICTING" }, 3),
+        blocked({ checks: { total: 2, passed: 1, failed: 1, pending: 0, skipped: 0 } }, 4),
+      ],
+    }));
+    expect(folds(foldQueue(items, new Set()))[0].sub)
+      .toBe("behind the base branch · 1 check failing · +2 more");
+  });
+
+  it("calls a run with no verdict yet what the rows themselves call it", () => {
+    const none = { total: 0, passed: 0, failed: 0, pending: 0, skipped: 0 };
+    const items = rankQueue(input({ prs: bots(3, "dependabot", { checks: none }) }));
+    expect(folds(foldQueue(items, new Set()))[0].sub).toBe("no check has run");
+  });
+
+  it("folds nothing when the list is the one a search left", () => {
+    const items = rankQueue(input({ prs: bots(4, "dependabot") }));
+    expect(plainRows(items).map((r) => r.kind)).toEqual(["item", "item", "item", "item"]);
+    expect(plainRows(items).map((r) => (r.kind === "item" ? r.item.key : ""))).toEqual(items.map((i) => i.key));
   });
 });

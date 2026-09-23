@@ -13,6 +13,57 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Group the all-projects dashboard the way the sidebar is grouped.** *Group* beside the sort
+  puts the cards (or the rows) under the sidebar's own headings, with everything you have filed
+  nowhere under *Top level*. Each run sits where its first member already sat, so the switch
+  reorders nothing; it is offered once you have made a group.
++ **What's next folds a run of rows that say the same thing.** Sixteen dependency pull requests from
+  one bot become one row — *16 pull requests from dependabot · all ready to merge* — that opens where
+  it sits, and so do the out-of-date packages. Folded, not filtered: an advisory, an issue and a note
+  are never folded away, a run of two stays as it was, and a search folds nothing, since what it left
+  is the list you asked for. Ready-to-merge and blocked runs are two folds, because the ladder already
+  says they are not the same pile of work.
++ **Right-click a session in the sidebar.** The row's own verbs, where the row is: a terminal beside
+  it, switch its branch, review its working set, open its folder or copy the path, shelve it, close
+  it — and *Follow it* when the session has drifted to another checkout. Shelved rows get resume and
+  take-off-the-shelf; an external one gets a jump to its terminal. A row that cannot do something
+  says why rather than offering it: ⇩ is absent where a conversation could not come back, and
+  *Review working set…* greys with "not read yet" rather than pretending a folder is clean.
++ **A task row's menu runs the task.** ⟳ *Run again*, ⋯ *Run again with…* (its parameters), ■ *Stop*,
+  ↗ *Reveal source* and the ▶ Run pin — the inspector's task card, on the row itself. ■ keeps the
+  pane and its output; ✕ takes both, and each says which.
++ **✕ on a port in the servers popover kills whatever holds it.** A server typed by hand in a shell,
+  or one an agent left running after its pane closed, finally has a stop: Episko confirms, checks
+  that the pid still holds that port and was started from one of its panes, kills it and everything
+  it started, and says whether the port came free. A server that outlived its pane stays listed as
+  *orphaned* instead of vanishing. An agent's server is still *asked* to stop while its session is
+  alive, and killed once there is nobody left to ask.
+~ **The all-projects dashboard says what it is still reading.** A project's bars, branch chip and
+  activity shimmer until the scan answers, while its name, icon, live sessions and cost — all local
+  — paint at once. *Where it went*, the token figure, *Pick back up* and the project list
+  itself no longer claim there is nothing there while they are still being read — in
+  particular, *No projects yet* can no longer flash in front of a fleet that is about to paint. A refresh over figures already on screen keeps
+  them and says so in the header, as before.
+~ **A project wears its own icon on the all-projects dashboard.** The card and the list row draw
+  the logo the sidebar already found (or the emoji you picked), and keep the coloured initial for
+  a folder that has none.
+~ **A long branch chip keeps the end that names it.** `origin/dependabot/npm_and_yarn/01_frontend/…`
+  said nothing at all once the ellipsis had eaten the last segment; the chip now gives away the path
+  in front of it instead and keeps `…/eslint-plugin-vue`.
+~ **The commit graph and the Landed card use the app's own tooltips**, not the OS's — they appear
+  without the wait, sit still under the control they belong to, and a `+N` chip lists the branches it
+  stands for one per line.
+! **A project with no commits in the window no longer strands its session glyph mid-row.** The
+  row list reserved the spark's width whether or not there were bars to put in it.
+! **⊘ bots on the Landed card actually folds something.** It only ever took a run of bare bot
+  commits down one lane, and a repo dependabot watches has none of those — its bot work arrives as a
+  fan of branch tips, each with its own lane and its own ref. Those fold now, into one row that says
+  how many branches and whose, and the chip lights on the setting rather than on the outcome, so it
+  no longer looks off in both states on a page with nothing to fold.
+! **The servers popover shows ports nobody announced.** One started by hand (`pnpm dev` typed into a shell
+  pane, say) was meant to appear as a ◎ row, but the port list reached the frontend under the wrong
+  field name, so none ever appeared.
+
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
 the project page is three columns ending in one ranked list of what is next, an issue reads

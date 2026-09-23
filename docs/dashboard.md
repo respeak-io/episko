@@ -77,6 +77,25 @@ Easy to get wrong:
   and the caret back after each repaint (the Branches filter's own trick, now shared by both). The
   head it sits in is **sticky**, and the enlarge link is right-aligned in it and names the view it
   opens: a narrowed list you have to scroll back up to escape is the trap this shape avoids.
+- **A run of rows that say the same thing stands behind ONE row, where the ranking already put
+  them side by side.** `groupKey` names what a row is one of — the bot that opened a pull request,
+  or the fact that a package is behind — and everything else answers null: an advisory, an issue
+  and a note are never folded away. `foldQueue` takes runs of `FOLD_MIN` (3) or more, since folding
+  a pair behind a click says less than the pair did (./graph's `foldBots`, the precedent, answers
+  the same way), and a fold sits at **one rank**, so dependabot's ready-to-merge run and its
+  blocked run are two folds that open apart. The head row says how many, whose, and the one fact
+  that decides whether you open it — *all ready to merge*, or the blockers they share, commonest
+  first, **with no count in front of them**, because `prBlockers` already spells its own ("3 checks
+  failing") and a second number says it twice.
+- **`rankQueue` clusters before it returns, or the fold would be a lie.** Two bots run nightly, so
+  recency alone lands their pull requests `d, r, d, r, d, r` and no run reaches three; "16 from
+  dependabot" with five more scattered below is a count you cannot act on. A group sits where its
+  FIRST row ranked, so it overtakes nothing and no row crosses a rank boundary, and the seat is
+  derived from the sorted list, so a repaint of unchanged state reorders nothing. Which folds are
+  open lives in `dashboard.ts` and is **cleared on the project switch** — what you unfolded to read
+  once is not a preference, and it never reaches `localStorage`. **A search folds nothing**
+  (`plainRows`): its result is the pool you asked for, and hiding part of it behind a count is the
+  opposite of narrowing.
 - **A row's SECOND verbs are collapsed until the row is under the pointer** (`qacts`/`.qacts`,
   opened by `:hover` and by `:focus-within`, so Tab never lands on a button nobody can see): ✓ / ✕
   on a quiet issue, ⤢ into the reader, ↗ to GitHub, ✕ on a note. **▶ is never in that box** — it is

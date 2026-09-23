@@ -307,32 +307,47 @@ export function refChips(decoration: string, max = 3): RefChip[] {
   }];
 }
 
-/** A chip's full name for a tooltip — `main (also on origin)`, `v1.0`, `origin/next`. */
+/** A chip's full name for a tooltip — `main (also on origin)`, `v1.0`, `origin/next`. A `+N`
+ *  lists what it stands for one per line; eleven dependabot branches comma-joined wrap into
+ *  a wall that no name survives (`.tip` is `white-space: pre-line`). */
 export function chipText(chip: RefChip): string {
-  if (chip.kind === "more") return (chip.rest ?? []).join(", ");
+  if (chip.kind === "more") return (chip.rest ?? []).join("\n");
   return chip.also?.length ? `${chip.label} (also on ${chip.also.join(", ")})` : chip.label;
 }
 
 // `esc` covers `&` and `<` only, and a ref name may legally contain a double quote.
 const attr = (s: string) => esc(s).replace(/"/g, "&quot;");
 
-// A chip that absorbed a remote carries `⇡` instead of a second chip. Only the name span
-// ellipsises, so a long branch never loses the marker; the title is how you read the rest.
+// A chip that absorbed a remote carries `⇡` instead of a second chip, outside the truncating
+// part so a long branch never loses the marker. The name splits at its LAST `/` and the head is
+// what gives way: `origin/dependabot/npm_and_yarn/01_frontend/eslint-plugin-vue` says nothing
+// until its final segment, which is exactly what a tail-first ellipsis ate.
 export function refChipsHtml(chips: RefChip[]): string {
   return chips.map((r) => {
-    const title = ` title="${attr(chipText(r))}"`;
+    const cut = r.label.lastIndexOf("/");
+    const head = cut < 0 ? "" : `<span class="gh">${esc(r.label.slice(0, cut))}</span>`;
+    const tail = `<span class="gt">${esc(r.label.slice(cut < 0 ? 0 : cut))}</span>`;
     const mark = r.also?.length
       ? `<span class="gr">⇡${r.also.includes("origin") && r.also.length === 1 ? "" : esc(r.also.join(" "))}</span>`
       : "";
-    const name = `<span class="gn">${r.kind === "tag" ? "⚑ " : ""}${esc(r.label)}</span>`;
-    return `<span class="gchip gc-${r.kind}"${title}>${name}${mark}</span>`;
+    return `<span class="gchip gc-${r.kind}" data-tip="${attr(chipText(r))}">`
+      + `<span class="gn">${r.kind === "tag" ? `<span class="gk">⚑</span>` : ""}${head}${tail}</span>`
+      + `${mark}</span>`;
   }).join("");
 }
 
 // ---------- the lite graph: bot runs folded ----------
 
-/** One collapsed run; `commits` is it newest-first, so `.length` is the count the row hides. */
-export interface GraphFold { row: GraphRow; commits: GraphCommit[]; authors: string[] }
+/** One collapsed run; `commits` is it newest-first, so `.length` is the count the row hides.
+ *  `kind` says what was folded — a stretch of one line, or a fan of branch tips — and `refs`
+ *  carries every decoration the run wore, so a swallowed branch is still named on the row. */
+export interface GraphFold {
+  kind: "line" | "tips";
+  row: GraphRow;
+  commits: GraphCommit[];
+  authors: string[];
+  refs: string;
+}
 
 /** What the lite graph draws, in page order. */
 export type LiteRow = { kind: "commit"; row: GraphRow } | { kind: "fold"; fold: GraphFold };
@@ -346,20 +361,36 @@ const foldable = (r: GraphRow, i: number, isBot: (author: string) => boolean) =>
   i > 0 && isBot(r.c.author) && r.c.parents.length === 1 && r.above.length <= 1
   && r.below.length === 1 && r.below[0].line === r.line && r.c.refs.trim() === "";
 
-function foldOf(run: GraphRow[]): GraphFold {
-  const first = run[0], last = run[run.length - 1];
+// The other shape bot work arrives in, and the one an all-refs page is made of: a branch TIP
+// nothing on the page descends from, eleven deep on a repo dependabot watches. Disjoint from
+// `foldable`, which takes an undecorated commit only; here the refs are the point, and `foldOf`
+// keeps every one of them so none vanishes with the row.
+const tipFoldable = (r: GraphRow, isBot: (author: string) => boolean) => {
+  const chips = parseRefs(r.c.refs);
+  return isBot(r.c.author) && r.c.parents.length === 1 && r.above.length === 0
+    && r.below.length === 1 && chips.length > 0
+    && chips.every((c) => c.kind === "remote" || c.kind === "branch");
+};
+
+function foldOf(run: GraphRow[], kind: GraphFold["kind"]): GraphFold {
+  const first = run[0];
   const tally = new Map<string, number>();
   for (const r of run) tally.set(r.c.author, (tally.get(r.c.author) ?? 0) + 1);
+  const below: Line[] = [];
+  for (const r of run) for (const b of r.below) if (!below.some((x) => x.lane === b.lane)) below.push(b);
   return {
-    // The run's own geometry: it is entered where the first row was and left where the last was.
+    kind,
+    // Entered where the first row was, and left by every lane the run leaves by: one for a
+    // stretch of a single line, one per branch for a fan of tips.
     row: {
       c: first.c, lane: first.lane, line: first.line,
-      above: first.above, below: last.below, through: first.through,
+      above: first.above, below, through: first.through,
       label: first.label, merged: [], span: Math.max(...run.map((r) => r.span)),
     },
     commits: run.map((r) => r.c),
     // Busiest first, localeCompare on a tie, so a repaint of unchanged state never reorders.
     authors: [...tally].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([a]) => a),
+    refs: run.map((r) => r.c.refs).filter((d) => d.trim()).join(", "),
   };
 }
 
@@ -368,15 +399,25 @@ function foldOf(run: GraphRow[]): GraphFold {
 // folding one commit into "1 bot commit" says less than the commit did.
 export function foldBots(rows: GraphRow[], isBot: (author: string) => boolean, minRun = 2): LiteRow[] {
   const out: LiteRow[] = [];
+  const emit = (run: GraphRow[], kind: GraphFold["kind"]) => {
+    if (run.length < minRun) for (const r of run) out.push({ kind: "commit", row: r });
+    else out.push({ kind: "fold", fold: foldOf(run, kind) });
+  };
   for (let i = 0; i < rows.length;) {
+    // A fan of tips needs no lane signature: a tip closes nothing, so no line ends inside one.
+    if (tipFoldable(rows[i], isBot)) {
+      let j = i + 1;
+      while (j < rows.length && tipFoldable(rows[j], isBot)) j++;
+      emit(rows.slice(i, j), "tips");
+      i = j;
+      continue;
+    }
     if (!foldable(rows[i], i, isBot)) { out.push({ kind: "commit", row: rows[i++] }); continue; }
     const head = rows[i], key = throughKey(head);
     let j = i + 1;
     while (j < rows.length && foldable(rows[j], j, isBot) && rows[j].lane === head.lane
       && rows[j].line === head.line && throughKey(rows[j]) === key) j++;
-    const run = rows.slice(i, j);
-    if (run.length < minRun) for (const r of run) out.push({ kind: "commit", row: r });
-    else out.push({ kind: "fold", fold: foldOf(run) });
+    emit(rows.slice(i, j), "line");
     i = j;
   }
   return out;

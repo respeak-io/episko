@@ -25,7 +25,7 @@ import {
 import { landedCard } from "./landedview";
 import { issueOverlay } from "./issueview";
 import type { GhIssueRead } from "./issue";
-import { filterQueue, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
+import { filterQueue, foldQueue, plainRows, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
 import { foldBots, layoutGraph, parseRefs, ROW_H, type GraphCommit, type GraphMark, type LiteRow } from "./graph";
 import {
   advisoryBrief, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
@@ -195,6 +195,9 @@ let queueFilter: QueueFilter = "all";
 // The search narrows the pool the chips then count over; it lives here rather than in the
 // markup, because the queue is repainted by every answer that lands while you are typing.
 let queueQuery = "";
+// Which folded runs are showing their rows. Keyed so a repaint keeps one open, and in
+// memory only: what you unfolded to read once is not a preference.
+const queueOpen = new Set<string>();
 /// ---- the thread reader ----
 // Which thread the ⤢ opened, kept apart from `openView` so a failed read still knows what it
 // was reading, and `null` data means "not answered yet" rather than "nothing there".
@@ -802,7 +805,7 @@ export function renderDash(): void {
       : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared))
     + worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none")
     + landedCard({
-      rows, span, head, hidden,
+      rows, span, head, hidden, on: botFold,
       loading: landedLoading, known: factsKnown && tier !== "none",
     }));
 
@@ -820,8 +823,10 @@ export function renderDash(): void {
   // The search is the pool and the chips narrow it: the tally is of everything the search
   // left, never of what the filter left, so a chip still says what it would reveal.
   const found = searchQueue(items, queueQuery);
-  paintNext(queueCard(filterQueue(found, queueFilter), queueTally(found), queueFilter, queueQuery,
-      gh.available || !ghLoading, !depLoading)
+  // A search folds nothing: its result is the pool you asked for (docs/dashboard.md).
+  const shown = filterQueue(found, queueFilter);
+  paintNext(queueCard(queueQuery.trim() ? plainRows(shown) : foldQueue(shown, queueOpen),
+      queueTally(found), queueFilter, queueQuery, gh.available || !ghLoading, !depLoading)
     + (tier === "github" && !gh.available && gh.reason
       ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
     + missingCard(tier, facts));
@@ -948,7 +953,8 @@ export function openDashboard(project: string, path: string): void {
     seen = stampSeen(seen, path, Date.now());
     saveSeen(seen);
     days = []; heads = []; facts = null; openView = null;
-    queueFilter = "all"; queueQuery = ""; botFold = true; landed = null; landedLoading = false;
+    queueFilter = "all"; queueQuery = ""; queueOpen.clear(); botFold = true;
+    landed = null; landedLoading = false;
     issueAt = null; issueData = null; issueLoading = false;
     tier = "none"; factsKnown = false; loading = true; ghLoading = false;
     gh = { available: false, reason: null, threads: [], viewer: null };
@@ -1053,6 +1059,14 @@ export function wireDashboard(): void {
       queueQuery = "";
       renderDash();
       $("dashNext").querySelector<HTMLInputElement>(".qq")?.focus();
+      return;
+    }
+    // A folded run opens and closes in place; the ranking decided where it sits.
+    const qfold = t.closest<HTMLElement>("[data-dashqfold]");
+    if (qfold) {
+      const k = qfold.dataset.dashqfold!;
+      if (!queueOpen.delete(k)) queueOpen.add(k);
+      renderDash();
       return;
     }
     // One probe for the Landed card's chip and every folded row: both mean the same thing.

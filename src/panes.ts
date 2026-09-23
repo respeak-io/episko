@@ -923,6 +923,15 @@ export function openPlainTerminal(opts: { other?: boolean } = {}) {
   launchShell(s ? s.project : (d?.project ?? dm?.name ?? basename(colorKey)), wd, { colorKey, worktree, branch, beside: splitBeside(s, opts.other) });
 }
 
+// The same shell for a session that is NOT on stage (the sidebar's row menu). openPlainTerminal
+// reads the stage; this is handed the pane, and splitBeside still decides where it lands.
+export function openShellFor(id: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: s.workdir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
+  void launchShell(s.project, s.workdir, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, beside: splitBeside(s) });
+}
+
 // Prefill a command into a shell pane, or open the external terminal with it on the clipboard.
 // `from` is the session the command was refused for; the shell opens beside it when ⌘T would.
 export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; from?: string } = {}) {
