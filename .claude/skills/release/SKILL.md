@@ -12,7 +12,7 @@ repo has shipped that failure twice already (`health.rs` vs `health.ts`, and the
 hand-kept status-letter tables that each claimed to be shared with the other). **When this
 file and `RELEASE.md` disagree, `RELEASE.md` wins and gets fixed in the same commit.**
 
-Work top to bottom. **Steps 3, 4 and 7 are STOP points** — do not pass one without an
+Work top to bottom. **Steps 1, 3, 4 and 7 are STOP points** — do not pass one without an
 answer from the human. Everything between them is mechanical and takes about ten minutes,
 which is what the release history shows: every `release:` commit since 0.13.x lands within
 two minutes of its merge commit.
@@ -33,15 +33,26 @@ git rev-list --count origin/dev..origin/main      # must be 0
   last release skipped step 9 and `dev` is about to re-propose notes that already shipped.
 - Local `main` is usually far behind — it is only touched at release time. Never assume it.
 
-## 1. Merge every open PR into dev
+## 1. STOP — which PRs go in
+
+**An open PR is not a release candidate.** Never merge the list because it is the list: it
+routinely holds work nobody is shipping today, and two entries are near-certain traps —
+**the branch the human is standing on** (`git branch --show-current`, their own work in
+flight) and **any PR that is itself part of this release effort**. At 0.30.0 there were six
+open and two were exactly those.
+
+Show the list and ask which ones go in. Ask even when the answer looks obvious, and ask
+again if the human says "all" while a draft or their own current branch is in it.
 
 ```sh
-gh pr list --state open --base dev --json number,title,mergeable,statusCheckRollup
+gh pr list --state open --base dev \
+  --json number,title,isDraft,headRefName,author,mergeable,statusCheckRollup
+git branch --show-current     # flag this one in the list
 ```
 
-Each one needs `build-check` green on **both** macOS and Windows. The `changelog` check
-shows `SKIPPED` on a PR onto `dev` — that gate only runs on a PR onto `main`, and skipped is
-correct here.
+Each PR they pick needs `build-check` green on **both** macOS and Windows. A draft is out
+unless they say otherwise. The `changelog` check shows `SKIPPED` on a PR onto `dev` — that
+gate only runs on a PR onto `main`, and skipped is correct here.
 
 ```sh
 gh pr merge <n> --merge        # a merge commit, never a squash
