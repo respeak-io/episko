@@ -78,12 +78,15 @@ impl ProcTable {
 
 // ---------- which ports our sessions are actually listening on ----------
 
+// camelCase: the frontend reads `sessionId`; snake_case filed every port under `undefined`.
 #[derive(serde::Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SessionPort {
     session_id: String, // the pane whose PTY child this socket descends from
     port: u16,
     pid: u32, // the leaf holding the socket, several hops below the pane
     name: String, // that leaf's name (node.exe), not what the user or agent ran
+    orphan: bool, // its pane is gone: attributed from `AppState.seen_ports`, not ancestry
 }
 
 /// One row per (session, port): a server bound "everywhere" is several listeners (`0.0.0.0`,
@@ -97,19 +100,15 @@ fn dedupe_ports(mut found: Vec<SessionPort>) -> Vec<SessionPort> {
 }
 
 /// Every TCP port listened on by a descendant of a pane's PTY child: the kernel's answer,
-/// the only one that sees a server nobody announced. An orphan (chain broken by its
-/// session's exit) is left out on purpose. Spawn-free on every OS, because it is polled.
+/// the only one that sees a server nobody announced. A listener whose pane has since exited
+/// is kept as an orphan only if a poll saw it under that pane first (`AppState.seen_ports`),
+/// since ancestry dies with the pane. Spawn-free on every OS, because it is polled.
 #[tauri::command]
 pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
-    // Roster first: with no panes open the whole scan is skipped.
-    let roster: Vec<(String, u32)> = state
-        .sessions
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|(id, s)| s.pid.map(|p| (id.clone(), p)))
-        .collect();
-    if roster.is_empty() {
+    let roster = pane_roots(&state);
+    let mut seen = state.seen_ports.lock().unwrap();
+    // With no panes and nothing remembered the whole scan is skipped.
+    if roster.is_empty() && seen.is_empty() {
         return Vec::new();
     }
     let Ok(all) = listeners::get_all() else { return Vec::new() };
@@ -120,18 +119,67 @@ pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
         if l.protocol != listeners::Protocol::TCP || l.state != listeners::SocketState::Listen {
             continue;
         }
-        let Some((id, _)) = roster.iter().find(|(_, root)| table.is_descendant_of(l.process.pid, *root))
-        else {
-            continue;
-        };
-        found.push(SessionPort {
-            session_id: id.clone(),
-            port: l.socket.port(),
-            pid: l.process.pid,
-            name: l.process.name.clone(),
-        });
+        let key = (l.process.pid, l.socket.port());
+        let owner = roster
+            .iter()
+            .find(|(_, root)| table.is_descendant_of(l.process.pid, *root))
+            .map(|(id, _)| (id.clone(), false))
+            .or_else(|| seen.get(&key).map(|id| (id.clone(), true)));
+        let Some((id, orphan)) = owner else { continue };
+        found.push(SessionPort { session_id: id, port: key.1, pid: key.0, name: l.process.name.clone(), orphan });
+    }
+    // Forget a closed listener at once, so a reused pid can never inherit a dead pane's port.
+    seen.clear();
+    for p in &found {
+        seen.insert((p.pid, p.port), p.session_id.clone());
     }
     dedupe_ports(found)
+}
+
+fn pane_roots(state: &AppState) -> Vec<(String, u32)> {
+    state.sessions.lock().unwrap().iter().filter_map(|(id, s)| s.pid.map(|p| (id.clone(), p))).collect()
+}
+
+/// Kill the process listening on `port` and its descendants; true once the port is free.
+/// Refused unless `pid` holds that port right now AND is ours (under a live pane, or an
+/// orphan `session_ports` saw under one), so a stale row cannot kill a pid that was reused.
+#[tauri::command]
+pub(crate) async fn kill_listener(state: State<'_, AppState>, pid: u32, port: u16) -> Result<bool, String> {
+    let holds = |pid: u32, port: u16| {
+        listeners::get_all().is_ok_and(|all| {
+            all.iter().any(|l| {
+                l.protocol == listeners::Protocol::TCP
+                    && l.state == listeners::SocketState::Listen
+                    && l.process.pid == pid
+                    && l.socket.port() == port
+            })
+        })
+    };
+    if !holds(pid, port) {
+        return Err(format!("nothing with pid {pid} is listening on port {port} any more"));
+    }
+    let roster = pane_roots(&state);
+    let table = ProcTable::snapshot();
+    let ours = roster.iter().any(|(_, root)| table.is_descendant_of(pid, *root))
+        || state.seen_ports.lock().unwrap().contains_key(&(pid, port));
+    if !ours {
+        return Err(format!("pid {pid} was not started from an Episko pane"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if !crate::platform::kill_pid_tree(pid) {
+            return Err(format!("could not kill pid {pid}"));
+        }
+        // taskkill and kill -9 return before the socket closes; give it a moment.
+        for _ in 0..15 {
+            if !holds(pid, port) {
+                return Ok(true);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Ok(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// None for a malformed file or a non-interactive entry (`claude -p`, SDK runs).
@@ -419,7 +467,7 @@ mod tests {
     }
 
     fn sp(session: &str, port: u16, pid: u32) -> SessionPort {
-        SessionPort { session_id: session.into(), port, pid, name: "node.exe".into() }
+        SessionPort { session_id: session.into(), port, pid, name: "node.exe".into(), orphan: false }
     }
 
     /// A server bound "everywhere" appears once per address and must be one row, or the

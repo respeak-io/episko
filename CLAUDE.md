@@ -551,15 +551,18 @@ And the things that hold however the files are arranged:
   when the shell is recorded and never recomputed (./servers, ./types); widening the
   ROOT must never re-derive it. Same trap as the `X-CC-Session` rule above, one level
   down.
-- **Stopping a server is asked of the agent, never done behind its back.** The process
-  is a descendant of Episko's own tree and could be killed — but the agent holds
-  `TaskStop`, believes the server is up, and goes on saying so after a kill it never
-  saw. So ./serversui prefills `TaskStop <id>` into the session and the human presses
-  Enter: the `handToTerminal`/`sendOutputToSession` contract. A server whose session is
-  gone is an **orphan**: `session_ports` cannot see it either, because attribution is by
-  ancestry and its chain is broken, so it belongs to no pane and there is nobody to ask.
-  Listing orphans would need a *project*-level answer (match the process's cwd or command
-  line against known roots), which is a separate feature and not this one.
+- **Stopping a server is asked of the agent while the agent can hear, and killed once it
+  cannot.** The agent holds `TaskStop`, believes the server is up, and goes on saying so
+  after a kill it never saw. So while its Claude session is live, ./serversui prefills
+  `TaskStop <id>` and the human presses Enter (the `handToTerminal`/`sendOutputToSession`
+  contract). Once the session has ended or gone there is nobody to ask, and ✕ becomes
+  `kill_listener` on the pid the kernel says holds the server's port. A listener whose pane
+  exited is an **orphan**: ancestry dies with the pane, so `session_ports` keeps it only
+  because a poll saw it under that pane first (`AppState.seen_ports`, forgotten the poll
+  its socket closes, so a reused pid cannot inherit it). One started and orphaned inside a
+  single poll is never seen; catching those would need a *project*-level answer.
+  **`kill_listener` re-checks at the kernel** that the pid still holds that port and is
+  ours before killing its tree, because the row it came from is one poll old.
 - **The kernel is the authority; a parsed log line is a guess.** `session_ports`
   (external.rs) walks every listening TCP socket back up the ppid chain to a pane's PTY
   child — measured **eight** hops from a `vite` leaf to `episko.exe`, well inside
@@ -584,11 +587,12 @@ And the things that hold however the files are arranged:
   already gone red about the first. A bare **port** is listed when nothing else explains
   it, which is the only way a server started by hand in a shell pane has ever been
   visible. Stopping differs with the source and honestly so: Episko owns a task's PTY, so
-  ✕ there is a real `closeSession` (what the pane's own ✕ does), an agent's shell is only
-  ever asked, and a port row has **no ✕ at all** — we know which pid holds the socket, but
-  it sits several hops below a pane that has its own ✕, and the row exists to tell you the
-  port is open rather than to take responsibility for it. Its empty cell is kept so ◨
-  stays in line down the list.
+  ✕ there is a real `closeSession` (what the pane's own ✕ does), an agent's shell is
+  asked (see above), and a port row's ✕ kills the pid holding it, behind a confirm, since
+  nothing else will ever stop a server typed by hand or left behind by a closed pane. A
+  kill ends the records that named the port as *stopped* (`markKilled`), or the kill's
+  own non-zero exit sentinel would paint the pill red. **Dismiss stops nothing**: it
+  only clears a row that has already ended.
 - **Claude Code backgrounds things nobody chose to background.** Any Bash command still
   running at its **120s timeout** is auto-backgrounded with `run_in_background` UNSET —
   12 of 143 real payloads, and they are `npm ci`, `pytest`, `vue-tsc`, `gh run watch`

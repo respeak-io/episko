@@ -32,6 +32,12 @@ Markers: `+` new · `~` changed · `!` fixed
 + **A task row's menu runs the task.** ⟳ *Run again*, ⋯ *Run again with…* (its parameters), ■ *Stop*,
   ↗ *Reveal source* and the ▶ Run pin — the inspector's task card, on the row itself. ■ keeps the
   pane and its output; ✕ takes both, and each says which.
++ **✕ on a port in the servers popover kills whatever holds it.** A server typed by hand in a shell,
+  or one an agent left running after its pane closed, finally has a stop: Episko confirms, checks
+  that the pid still holds that port and was started from one of its panes, kills it and everything
+  it started, and says whether the port came free. A server that outlived its pane stays listed as
+  *orphaned* instead of vanishing. An agent's server is still *asked* to stop while its session is
+  alive, and killed once there is nobody left to ask.
 ~ **The all-projects dashboard says what it is still reading.** A project's bars, branch chip and
   activity shimmer until the scan answers, while its name, icon, live sessions and cost — all local
   — paint at once. *Where it went*, the token figure, *Pick back up* and the project list
@@ -54,6 +60,9 @@ Markers: `+` new · `~` changed · `!` fixed
   fan of branch tips, each with its own lane and its own ref. Those fold now, into one row that says
   how many branches and whose, and the chip lights on the setting rather than on the outcome, so it
   no longer looks off in both states on a page with nothing to fold.
+! **The servers popover shows ports nobody announced.** One started by hand (`pnpm dev` typed into a shell
+  pane, say) was meant to appear as a ◎ row, but the port list reached the frontend under the wrong
+  field name, so none ever appeared.
 
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,

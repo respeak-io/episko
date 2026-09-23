@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyBg, applyBgLog, applyBgMiss, BG_RETIRE_MS, bgBlind, bgKind, bgLogPath, bgOutcome,
   bgPeekEmpty, bgRetire, bgSentinel, bgStopId, bgTaskId, bgTimedOut, cmdLabel, endBg,
-  failedServers, forgetServer, isJob, liveServers, logLines, logTail, serverUrl,
+  failedServers, forgetServer, isJob, markKilled, liveServers, logLines, logTail, serverUrl,
   portOf, reconcilePorts, servingUrls, shownServers, taskServerUrl, usefulPort,
   type BgRead,
 } from "../src/servers";
@@ -574,6 +574,19 @@ describe("a server that died on its own", () => {
     expect(forgetServer(list, "crashed")).toBe(true);
     expect(list.map((b) => b.taskId)).toEqual(["live"]);
     expect(forgetServer(list, "crashed")).toBe(false); // and again is a no-op
+  });
+
+  it("ends as stopped when Episko killed its port, so the kill's own exit never reads as a crash", () => {
+    const list = [mk("vite", { url: "http://localhost:5173" }), mk("api", { url: "http://localhost:8000" }), mk("quiet")];
+    expect(markKilled(list, 5173, 7)).toBe(true);
+    expect(list[0]).toMatchObject({ ended: 7, exit: null });
+    expect(bgOutcome(list[0])).toBe("stopped");
+    expect(list[1].ended).toBeUndefined(); // another port is another server
+    expect(list[2].ended).toBeUndefined(); // no URL, no claim on the port
+    // The sentinel `[exited with code 1]` lands a poll later and must not move it.
+    expect(endBg(list[0], 9, "sentinel", 1)).toBe(false);
+    expect(failedServers(list)).toEqual([]);
+    expect(markKilled(list, 5173, 8)).toBe(false); // already ended
   });
 });
 

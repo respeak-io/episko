@@ -5,24 +5,26 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ask } from "./confirm";
 import { $, FILE_MANAGER, toast } from "./dom";
 import { esc, escAttr } from "./format";
 import { sessions, activeId } from "./state";
 import {
   applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
-  failedServers, forgetServer, liveServers,
+  failedServers, forgetServer, liveServers, markKilled, portOf,
   reconcilePorts, servingUrls, shownServers, type BgRead, type SessionPort,
 } from "./servers";
 import { isClaude, type BgServer, type Sess } from "./types";
 
 // A row: "bg" is a shell an agent backgrounded (the record is all there is), "task" a
-// runnable Episko launched (the pane is the server), "port" a socket nothing announced.
+// runnable Episko launched (the pane is the server), "port" a socket nothing announced. A
+// port row's pane may be closed already (`orphan`), so it carries its own id and project.
 type Row =
   | { kind: "bg"; s: Sess; at: number; b: BgServer }
   | { kind: "task"; s: Sess; at: number }
-  | { kind: "port"; s: Sess; at: number; port: number; name: string };
+  | { kind: "port"; sid: string; project: string; at: number; port: number; name: string; pid: number; orphan: boolean };
 
-interface LoosePort { port: number; name: string; at: number }
+interface LoosePort { port: number; name: string; pid: number; orphan: boolean; at: number }
 
 // Ports under each pane that no record explains, keyed by session id. Filled by the poll,
 // never by a render pass: `reconcilePorts` mutates.
@@ -31,9 +33,15 @@ let loosePorts = new Map<string, LoosePort[]>();
 // First-seen stamps keyed `<session>:<port>`: a socket has no age of its own, and rows sort by age.
 const portSeen = new Map<string, number>();
 
-function looseOf(s: Sess): LoosePort[] {
-  return loosePorts.get(s.id) ?? [];
-}
+// Every listener the last poll saw, `<session>:<port>` → pid, loose or claimed: what a
+// server row's kill needs once its agent can no longer be asked.
+let portPids = new Map<string, number>();
+
+// Pane id → project, kept past the pane: an orphan's row still has to say whose it was.
+const paneProject = new Map<string, string>();
+
+const sidOf = (r: Row) => r.kind === "port" ? r.sid : r.s.id;
+const projectOf = (r: Row) => r.kind === "port" ? r.project : r.s.project;
 
 function taskRows(): Row[] {
   const out: Row[] = [];
@@ -49,7 +57,10 @@ function rows(): Row[] {
   const out: Row[] = [];
   for (const s of sessions.values()) {
     for (const b of shownServers(s.servers)) out.push({ kind: "bg", s, at: b.startedAt, b });
-    for (const p of looseOf(s)) out.push({ kind: "port", s, at: p.at, port: p.port, name: p.name });
+  }
+  for (const [sid, list] of loosePorts) {
+    const project = sessions.get(sid)?.project ?? paneProject.get(sid) ?? "closed pane";
+    for (const p of list) out.push({ kind: "port", sid, project, ...p });
   }
   out.push(...taskRows());
   return out.sort((a, b) => a.at - b.at); // oldest first: the forgotten server must not scroll off
@@ -91,7 +102,7 @@ export function renderServers() {
   $("svrBadgeTxt").textContent = String(servers || jobs);
   el.classList.toggle("jobs-only", servers === 0);
   // One line per row, jobs prefixed, so the hover list and the number agree.
-  el.title = shown.map((r) => `${isServerRow(r) ? "" : "job · "}${r.s.project} · ${rowTitle(r)}`).join("\n");
+  el.title = shown.map((r) => `${isServerRow(r) ? "" : "job · "}${projectOf(r)} ·${rowTitle(r)}`).join("\n");
   el.classList.toggle("serving", serving > 0 && !failed); // failure wins the colour
   el.classList.toggle("failed", failed > 0);
   if ($("svrPop").classList.contains("show")) renderServersPop();
@@ -109,7 +120,7 @@ function rowTitle(r: Row): string {
 
 function rowKey(r: Row): string {
   if (r.kind === "task") return `t:${r.s.id}`;
-  if (r.kind === "port") return `p:${r.s.id}:${r.port}`;
+  if (r.kind === "port") return `p:${r.sid}:${r.port}`;
   return `b:${r.b.taskId}`;
 }
 
@@ -118,12 +129,13 @@ function rowKey(r: Row): string {
 function rowFacts(r: Row) {
   if (r.kind === "port") {
     // A socket the kernel says is open under this pane; the process holding it is all we know.
+    const seen = r.orphan
+      ? "Still listening after the pane that started it closed"
+      : "Seen listening under this pane — nothing announced it";
     return {
       url: `http://localhost:${r.port}`, dead: false, outcome: "", tail: undefined,
-      label: `<span class="sv-src sv-obs" title="Seen listening under this pane — nothing announced it">◎</span>${esc(r.name || "port " + r.port)}`,
-      // No ✕, but the cell stays: the row is a six-column grid and a missing cell pulls ◨ out
-      // of line. Killing the pid is not what this row is for (CLAUDE.md's header rules).
-      x: `<span class="sv-stop sv-none"></span>`,
+      label: `<span class="sv-src sv-obs" title="${seen}">◎</span>${esc(r.name || "port " + r.port)}${r.orphan ? ` <span class="sv-orphan">orphaned</span>` : ""}`,
+      x: killBtn(r.sid, r.pid, r.port, r.name),
       go: "Go to the pane this is running under",
     };
   }
@@ -141,16 +153,33 @@ function rowFacts(r: Row) {
   return {
     url: b.url ?? "", dead, outcome: bgOutcome(b), tail: b.tail,
     label: esc(cmdLabel(b.cmd)),
-    // A dead row is cleared, a live one only asked; separate attributes so the two cannot be confused.
+    // A dead row is cleared, a live one asked while its agent can hear and killed by its port
+    // once it cannot; separate attributes so the three cannot be confused.
     x: dead
-      ? `<button class="sv-stop" data-svforget="${b.taskId}" data-svsid="${r.s.id}" title="Dismiss">✕</button>`
-      : `<button class="sv-stop" data-svstop="${b.taskId}" data-svsid="${r.s.id}" title="Ask this session's agent to stop it (TaskStop)">✕</button>`,
+      ? `<button class="sv-stop" data-svforget="${b.taskId}" data-svsid="${r.s.id}" title="Clear this row (stops nothing: it has already ended)">✕</button>`
+      : bgKiller(r.s, b) ?? `<button class="sv-stop" data-svstop="${b.taskId}" data-svsid="${r.s.id}" title="Ask this session's agent to stop it (TaskStop)">✕</button>`,
     go: "Go to the session that started this",
   };
 }
 
+// The kill ✕: pid and port travel as one value, since both must still match at the kernel.
+function killBtn(sid: string, pid: number, port: number, name: string): string {
+  return `<button class="sv-stop sv-kill" data-svport="${pid}:${port}" data-svsid="${sid}" title="Kill ${escAttr(name || "the process")} (pid ${pid}) and free port ${port}">✕</button>`;
+}
+
+// While its agent can be asked, a server is asked (it holds TaskStop and believes the server
+// is up); once it cannot, the kernel's pid for its port is the only handle left.
+function bgKiller(s: Sess, b: BgServer): string | null {
+  if (canAsk(s) || !b.url) return null;
+  const port = portOf(b.url);
+  const pid = portPids.get(`${s.id}:${port}`);
+  return pid ? killBtn(s.id, pid, port, cmdLabel(b.cmd, 30)) : null;
+}
+
+const canAsk = (s: Sess) => isClaude(s) && s.phase !== "ended";
+
 function rowHtml(r: Row, open: boolean): string {
-  const s = r.s;
+  const sid = sidOf(r);
   const { url, dead, outcome, tail, label, x, go } = rowFacts(r);
   // An empty peek says which silence this is: `bgPeekEmpty` carries the backend's reason.
   // A task or a port has no log file, so those keep the literal.
@@ -178,13 +207,13 @@ function rowHtml(r: Row, open: boolean): string {
     <button class="sv-head" data-svtoggle="${escAttr(rowKey(r))}" title="Show the last lines of this output">
       <span class="sv-dot${dead ? " down" : url ? " up" : ""}"></span>
       <span class="sv-main">
-        <span class="sv-proj">${esc(s.project)}</span>
+        <span class="sv-proj">${esc(projectOf(r))}</span>
         <span class="sv-cmd">${label}</span>
       </span>
     </button>
     ${mid}
     ${logs}
-    <button class="sv-go" data-svgo="${s.id}" title="${go}">◨</button>
+    <button class="sv-go" data-svgo="${sid}" title="${go}">◨</button>
     ${x}
     ${peek}
   </div>`;
@@ -204,7 +233,7 @@ function renderServersPop() {
         ? `<div class="sv-h sv-h2">Background jobs<span class="sv-hn">${jobs.length}</span></div>`
           + jobs.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
         : "")
-      + `<div class="sv-foot">▶ is a task Episko ran and can stop. The rest were backgrounded by an agent, and Stop asks that session to run <code>TaskStop</code>. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
+      + `<div class="sv-foot">▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
     : "";
   // innerHTML guard: an assignment between mousedown and mouseup drops the click (docs/architecture.md).
   if (html === lastPop) return;
@@ -263,20 +292,28 @@ async function refreshPorts(): Promise<boolean> {
   const alive = new Set(seen.map((p) => `${p.sessionId}:${p.port}`));
   for (const k of [...portSeen.keys()]) if (!alive.has(k)) portSeen.delete(k);
 
+  portPids = new Map(seen.map((p) => [`${p.sessionId}:${p.port}`, p.pid]));
+  for (const s of sessions.values()) paneProject.set(s.id, s.project);
+
   let changed = false;
   const next = new Map<string, LoosePort[]>();
+  const addLoose = (sid: string, mine: SessionPort[], ports: number[]) => {
+    if (!ports.length) return;
+    next.set(sid, ports.map((port) => {
+      const p = mine.find((x) => x.port === port)!;
+      return { port, name: p.name, pid: p.pid, orphan: p.orphan, at: portSeen.get(`${sid}:${port}`) ?? now };
+    }));
+  };
   for (const s of sessions.values()) {
     const mine = bySession.get(s.id) ?? [];
     // Runs even with no ports: a closed port does not un-say what the server announced.
     const { loose, changed: adopted } = reconcilePorts(s.servers, s.run?.url, mine.map((p) => p.port));
     if (adopted) changed = true;
-    if (loose.length) {
-      next.set(s.id, loose.map((p) => ({
-        port: p,
-        name: mine.find((x) => x.port === p)?.name ?? "",
-        at: portSeen.get(`${s.id}:${p}`) ?? now,
-      })));
-    }
+    addLoose(s.id, mine, loose);
+  }
+  // A pane closed outright has no records left to explain its ports: every useful one is loose.
+  for (const [sid, mine] of bySession) {
+    if (!sessions.has(sid)) addLoose(sid, mine, reconcilePorts([], undefined, mine.map((p) => p.port)).loose);
   }
   // A repaint is owed whenever the set of loose rows moved.
   const key = (m: Map<string, LoosePort[]>) =>
@@ -331,6 +368,8 @@ $("svrPop").addEventListener("click", (e) => {
   if (stop) { e.stopPropagation(); askStop(stop.dataset.svsid!, stop.dataset.svstop!); return; }
   const forget = t.closest<HTMLElement>("[data-svforget]");
   if (forget) { e.stopPropagation(); dismiss(forget.dataset.svsid!, forget.dataset.svforget!); return; }
+  const port = t.closest<HTMLElement>("[data-svport]");
+  if (port) { e.stopPropagation(); void killPort(port.dataset.svsid!, port.dataset.svport!); return; }
   const kill = t.closest<HTMLElement>("[data-svkill]");
   if (kill) { e.stopPropagation(); stopTask(kill.dataset.svkill!); return; }
   // Neither closes the popover: you are still reading the row. A path that no longer
@@ -379,6 +418,28 @@ function stopTask(sessionId: string) {
   closePane(sessionId);
   lastPop = "";
   toast(`Stopped ${label}`);
+}
+
+// The one stop Episko makes behind an agent's back, so it asks first. The backend re-checks
+// that the pid still holds the port and descends from a pane of ours before killing anything.
+async function killPort(sid: string, pidPort: string) {
+  const [pid, port] = pidPort.split(":").map(Number);
+  const ok = await ask(
+    `Kill pid ${pid} and everything it started, freeing port ${port}?\n\nAn agent that started it may still believe it is running.`,
+    { title: `Kill the process on :${port}`, kind: "warning", okLabel: "Kill", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  try {
+    const freed = await invoke<boolean>("kill_listener", { pid, port });
+    const s = sessions.get(sid);
+    if (s) markKilled(s.servers, port, Date.now());
+    toast(freed ? `Killed pid ${pid}: port ${port} is free` : `Killed pid ${pid}, but port ${port} is still taken`);
+  } catch (err) {
+    toast(String(err));
+  }
+  lastPop = "";
+  await pollServers();
+  repaint();
 }
 
 // `forgetServer` re-checks that the row has ended rather than trusting the markup.
