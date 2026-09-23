@@ -165,16 +165,21 @@ export function driftHtml(s: Sess): string {
 // The clickable half of the working-set card; ./mirror paints the same block for an
 // external session's folder. No churn, no split bar. Count everything git calls dirty,
 // not only numstat's tracked files, and drop the `+N −M` pair rather than print `+0 −0`.
-export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
-  const churn = g.added + g.removed;
-  const aw = churn ? Math.round((g.added / churn) * 100) : 0;
+// How much is uncommitted, in words. Exported because the sidebar's session menu offers
+// the same card behind a row and must not spell its own count.
+export function dirtyCount(g: DiffStat): string {
   // git's porcelain count covers what numstat misses; the sum is for a stat that predates it.
   const touched = g.dirty || g.files + g.untracked;
   const plural = touched === 1 ? "" : "s";
   // When every dirty entry is new, say so instead of "1 file · 1 new".
-  const count = g.untracked >= touched
+  return g.untracked >= touched
     ? `${touched} new file${plural}`
     : `${touched} file${plural}${g.untracked ? ` · ${g.untracked} new` : ""}`;
+}
+export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
+  const churn = g.added + g.removed;
+  const aw = churn ? Math.round((g.added / churn) * 100) : 0;
+  const count = dirtyCount(g);
   const lines = churn ? `<span class="add">+${g.added}</span><span class="del">−${g.removed}</span>` : "";
   const bar = churn
     ? `<div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`

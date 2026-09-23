@@ -1,29 +1,39 @@
-// The project context menu, the worktree one, and the appearance panel the sidebar's
-// colour dots share. Every mode shares the one #ctxMenu and its .mp-* skin, so each opener
-// clears every other mode's target. Nothing here is on renderAll()'s path.
+// The right-click menus the sidebar and the dashboard share — a project, a worktree cluster, a
+// session row, a branch row — plus the appearance panel behind the colour dots. Every mode shares
+// the one #ctxMenu and its .mp-* skin, so each opener clears every other mode's target. Nothing
+// here is on renderAll()'s path.
 
 import { invoke } from "@tauri-apps/api/core";
 import { $, EMOJI_PICKER_KEY, FILE_MANAGER, IS_WIN, toast } from "./dom";
 import { EM_HEAD_H, EM_ROW_H, emojiRows, rowWindow } from "./emoji";
 import type { EmRow } from "./emoji";
-import { basename, esc, tilde } from "./format";
+import { basename, esc, relTime, tilde } from "./format";
 import { openMenu, type MenuItem } from "./menu";
 import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
 import { clearIcon, customIcons, emojiFor, iconFor, pickCustomIcon, resetCustomIcon, setEmojiIcon } from "./icons";
-import { openWt, removeWorktreeAt } from "./worktree";
+import { openSessionBranchPop, openWt, removeWorktreeAt } from "./worktree";
 import {
-  collapseAllProjGroups, copyPath, deleteProjectGroup, newProjectGroup, openTerminalIn,
-  renameProjectGroup, setProjectGroup, toggleProjGroup,
+  collapseAllProjGroups, copyPath, deleteProjectGroup, followSessionDrift, newProjectGroup,
+  openTerminalIn, renameProjectGroup, setProjectGroup, shelveSessionAsked, toggleProjGroup,
 } from "./actions";
 import { groupById, groupOf, groupPaths } from "./projgroups";
-import { extWorking } from "./sidebarview";
-import { agentCapabilitySummary, isAgent, isExited, midFlight } from "./types";
+import { dormantBusy } from "./grouping";
+import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
+import { rerunTask, revealSource } from "./taskrun";
+import { forgetDormant, jumpExternal, resumeDormant } from "./mirror";
+import { openDiff } from "./diffview";
+import { dirtyCount } from "./inspectorview";
+import { extWorking, GCLASS, GLYPH, pastLabel, rowGlyph, rowLabel } from "./sidebarview";
+import {
+  agentCapabilitySummary, canShelve, isAgent, isExited, midFlight, midWork, paneDir,
+  type ExtSession, type Restorable, type Sess,
+} from "./types";
 import { agentLogo } from "./providers/logos";
 import {
-  accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, effectiveAgent,
-  engineDef, externals, FAVORITES, ghAccountFor, ghLogins, missingAgents, projGroups, sessions,
-  termEngine,
+  accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, dirtyByFolder,
+  dormants, effectiveAgent, engineDef, externals, FAVORITES, ghAccountFor, ghLogins, isDirty,
+  missingAgents, projGroups, sessions, termEngine,
 } from "./state";
 import { ghPickable, ghWho } from "./ghwork";
 
@@ -39,10 +49,12 @@ let host: {
   openProjectFolder: (key: string) => void;
   addProjectPath: (dir: string) => void;
   removeFavorite: (path: string) => void;
+  openShellFor: (id: string) => void;
+  closeSession: (id: string) => void;
 } = {
   renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
   setProjectAgent: () => {}, openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
-  setGhAccount: () => {},
+  setGhAccount: () => {}, openShellFor: () => {}, closeSession: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
@@ -240,7 +252,7 @@ let menuX = 0, menuY = 0;
 
 export function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
+  wtTarget = gTarget = pickPath = brTarget = sessTarget = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -298,7 +310,7 @@ export function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = brTarget = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = brTarget = sessTarget = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -324,8 +336,7 @@ function removeRow(t: WtTarget): CtxRow {
 // absent rather than greyed (unlike removal, whose absence would look like a bug). When
 // busy it names what to wait for; *All worktrees…* one row up lists those sessions.
 function switchRow(t: WtTarget): CtxRow {
-  const busy = [...sessions.values()].filter((s) => s.workdir === t.dir && midFlight(s)).length
-    + externals.filter((e) => e.cwd === t.dir && extWorking(e)).length;
+  const busy = busyIn(t.dir);
   if (busy) {
     return { act: "", ic: "⇄", label: "Switch branch…", sub: `waiting: ${busy} session${busy > 1 ? "s" : ""} still working here`, cls: "dis" };
   }
@@ -340,7 +351,7 @@ function switchRow(t: WtTarget): CtxRow {
 
 function openWtMenu(t: WtTarget, x: number, y: number) {
   closeColorPop();
-  ctxKey = brTarget = null; // one #ctxMenu, one target
+  ctxKey = brTarget = sessTarget = null; // one #ctxMenu, one target
   wtTarget = t;
   // No `menuX`/`menuY` stamp: those exist for the drill-downs that re-open a menu at its
   // own coordinates (agents, groups, gh), and this menu has none.
@@ -392,6 +403,198 @@ $("ctxMenu").addEventListener("click", (e) => {
   }
 });
 
+// ---------- the sidebar's session rows ----------
+// Right-click a row under a project. One mode for all three kinds, because they answer the same
+// question and differ only in how much of the session is ours: a live pane, a shelved one (a row
+// and a transcript) or an external one (neither). The row's own glyph and label head it.
+type SessTarget = { kind: "live" | "past" | "ext"; id: string; row: HTMLElement };
+let sessTarget: SessTarget | null = null;
+
+// Sessions mid-turn in a checkout, ours and other people's: what a branch switch must wait for.
+const busyIn = (dir: string) =>
+  [...sessions.values()].filter((s) => s.workdir === dir && midFlight(s)).length
+  + externals.filter((e) => e.cwd === dir && extWorking(e)).length;
+
+// Where the branch pop hangs: the row you right-clicked, or its twin in the sidebar if a repaint
+// has replaced it meanwhile — this menu is long closed by the time git answers.
+function rowAnchor(t: SessTarget): HTMLElement {
+  if (t.row.isConnected) return t.row;
+  const attr = t.kind === "live" ? "sel" : t.kind === "past" ? "past" : "ext";
+  return $("projects").querySelector<HTMLElement>(`.srow[data-${attr}="${t.id}"]`) ?? t.row;
+}
+const termRow = (): CtxRow => ({
+  act: "sterm", ic: "❯", label: "Open terminal here",
+  sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label,
+});
+const folderRow: CtxRow = { act: "sfolder", ic: "⌂", label: "Open folder", sub: FILE_MANAGER };
+const copyRow: CtxRow = { act: "scopy", ic: "⧉", label: "Copy path" };
+
+// The app-wide map rather than `Sess.git`, which is only fresh while the pane is on stage.
+// Greyed rather than dropped, because the row is on every other agent's menu — and a folder
+// nobody has read is not a clean one.
+function wsetRow(dir: string): CtxRow {
+  const row = { ic: "◧", label: "Review working set…" };
+  if (!dirtyByFolder.has(dir)) return { ...row, act: "", sub: "not read yet", cls: "dis" };
+  const g = dirtyByFolder.get(dir);
+  if (!g) return { ...row, act: "", sub: "not a git repository", cls: "dis" };
+  if (!isDirty(g)) return { ...row, act: "", sub: "nothing uncommitted", cls: "dis" };
+  return { ...row, act: "swset", sub: dirtyCount(g) };
+}
+// What ✕ costs here: a finished pane is a row to clear, a working one is work to stop. A running
+// task spells out the difference from ■ Stop two rows up, which keeps the pane and its output.
+const closeSub = (s: Sess) => isExited(s)
+  ? "takes the finished pane off the list"
+  : s.kind === "task" ? "stops it, and the pane goes with it"
+    : midWork(s) ? "it is still working — this stops it now" : "ends the process and closes the pane";
+
+// A task pane's own verbs, the ones the inspector's card has had all along: a row you can only
+// close is not what this menu is for. ⟳ replaces the pane rather than adding one (./taskrun), so
+// it says *again* rather than *run*, and a definition that has gone says so instead of toasting.
+function taskRows(s: Sess): (CtxRow | null)[] {
+  const r = s.run!;
+  const spec = lastRunnableById.get(r.id);
+  const running = !isExited(s);
+  const again = running ? "stops it and starts it over"
+    : r.groupId ? "this step only — the chain's other steps are not repeated"
+      : "in this pane, with the same parameters";
+  return [
+    spec
+      ? { act: "srerun", ic: "⟳", label: "Run again", sub: again }
+      : { act: "", ic: "⟳", label: "Run again", sub: "its definition is gone — rescan with ▶ Run", cls: "dis" },
+    ...(spec?.inputs.length ? [{ act: "sreparams", ic: "⋯", label: "Run again with…", sub: "change what it runs with" }] : []),
+    ...(running ? [{ act: "sstop", ic: "■", label: "Stop", sub: "kills the process; the pane and its output stay" }] : []),
+    null,
+  ];
+}
+// Beside *Open folder*, because both answer "where does this come from"; the pin is the ▶ Run
+// picker's, and belongs to the task rather than to this pane.
+const taskWhereRows = (s: Sess): CtxRow[] => [
+  { act: "sreveal", ic: "↗", label: "Reveal source", sub: s.run!.sourceFile || basename(s.run!.root) },
+  pinnedIds(s.colorKey).includes(s.run!.id)
+    ? { act: "spin", ic: "★", label: "Unpin from ▶ Run", sub: "back into the list with the rest" }
+    : { act: "spin", ic: "☆", label: "Pin to ▶ Run", sub: "keeps it at the top of the picker" },
+];
+
+// A spread, not a null: in these lists a null is a separator. ⇩ follows `canShelve`, which the
+// header's own button reads, so the two never disagree about what can be put down.
+function liveRows(s: Sess): (CtxRow | null)[] {
+  const busy = busyIn(s.workdir);
+  const d = s.drift;
+  const task = s.kind === "task" && !!s.run;
+  return [
+    ...(task ? taskRows(s) : []),
+    termRow(),
+    ...(s.branch ? [busy
+      ? { act: "", ic: "⇄", label: "Switch branch…", sub: `waiting: ${busy} session${busy > 1 ? "s" : ""} still working here`, cls: "dis" }
+      : { act: "sswitch", ic: "⇄", label: "Switch branch…", sub: `${basename(s.workdir)}/ is on ${s.branch}` }] : []),
+    // The two drifts cost different things to repair, so they are not one row (docs/worktrees.md).
+    ...(d ? [d.via === "cwd"
+      ? { act: "sdrift", ic: "⤳", label: `Follow it to ${d.branch}`, sub: "it moved itself; Episko catches up" }
+      : { act: "sdrift", ic: "⤳", label: `Move it to ${d.branch}`, sub: "ends it, takes the conversation, resumes there" }] : []),
+    null,
+    // Only an agent's folder is measured (./mirror's dirty sweep), so a shell or task has no
+    // working set to review and says nothing about one.
+    ...(isAgent(s) ? [wsetRow(s.workdir)] : []),
+    ...(task ? taskWhereRows(s) : []),
+    folderRow,
+    copyRow,
+    null,
+    ...(canShelve(s) ? [{ act: "sshelve", ic: "⇩", label: "Shelve session", sub: "stops it now; the row stays, and resumes" }] : []),
+    { act: "sclose", ic: "✕", label: "Close session", sub: closeSub(s), cls: "mp-danger" },
+  ];
+}
+function pastRows(d: Restorable): (CtxRow | null)[] {
+  return [
+    dormantBusy(d)
+      ? { act: "", ic: "⟲", label: "Resume session", sub: "already running — it cannot be resumed twice", cls: "dis" }
+      : { act: "sresume", ic: "⟲", label: "Resume session", sub: `picks the conversation up · last active ${relTime(d.lastActivity)}` },
+    termRow(),
+    null,
+    folderRow,
+    copyRow,
+    null,
+    // Not destructive, and the sub must say so: the conversation is the provider's, not this row.
+    { act: "sforget", ic: "✕", label: "Take off the shelf", sub: "clears the row; the conversation stays on disk" },
+  ];
+}
+// Nothing here stops it: Episko did not start it, and `kill_session` cannot reach it.
+function extRows(e: ExtSession): (CtxRow | null)[] {
+  return [
+    { act: "sjump", ic: "↗", label: "Jump to its terminal", sub: `Claude v${e.version} · pid ${e.pid}` },
+    termRow(),
+    null,
+    wsetRow(e.cwd),
+    folderRow,
+    copyRow,
+  ];
+}
+
+// The folder the ⌂/⧉/❯ rows mean. A drifted pane is working somewhere else, and the header
+// already says so; a task's own root is where it runs.
+const sessDir = (s?: Sess | null, d?: Restorable | null, e?: ExtSession | null) =>
+  s ? (s.drift?.dir ?? paneDir(s)) : d ? d.workdir : e ? e.cwd : "";
+
+function openSessionMenu(kind: SessTarget["kind"], id: string, row: HTMLElement, x: number, y: number) {
+  const s = kind === "live" ? sessions.get(id) : null;
+  const d = kind === "past" ? dormants.find((r) => r.id === id) : null;
+  const e = kind === "ext" ? externals.find((r) => r.session_id === id) : null;
+  if (!s && !d && !e) return;
+  closeColorPop();
+  ctxKey = wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
+  sessTarget = { kind, id, row };
+  const working = !!e && extWorking(e);
+  const g = s ? rowGlyph(s)
+    : e ? { glyph: working ? GLYPH.working : GLYPH.idle, cls: working ? GCLASS.working : GCLASS.idle }
+      : { glyph: GLYPH.ended, cls: GCLASS.ended };
+  const name = s ? rowLabel(s) : d ? pastLabel(d) : (e!.name || basename(e!.cwd));
+  const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
+  menu.innerHTML =
+    `<div class="mp-head"><span class="mp-hgl ${g.cls}">${g.glyph}</span>`
+    + `<span class="mp-hmain"><span class="mp-hname">${esc(name)}</span>`
+    + `<span class="mp-hpath">${esc(tilde(sessDir(s, d, e)))}</span></span></div>`
+    + ctxRowsHtml(s ? liveRows(s) : d ? pastRows(d) : extRows(e!));
+  placePop(menu, x, y);
+}
+$("ctxMenu").addEventListener("click", (ev) => {
+  const b = (ev.target as HTMLElement).closest<HTMLElement>("[data-ctx]");
+  if (!b || !sessTarget || b.classList.contains("dis")) return;
+  const t = sessTarget;
+  // Read the session again rather than trusting the menu: markup outlives the state that drew
+  // it, and a pane can exit or be shelved from somewhere else while this is up.
+  const s = t.kind === "live" ? sessions.get(t.id) : null;
+  const d = t.kind === "past" ? dormants.find((r) => r.id === t.id) : null;
+  const e = t.kind === "ext" ? externals.find((r) => r.session_id === t.id) : null;
+  const dir = sessDir(s, d, e);
+  const anchor = rowAnchor(t);
+  closeCtxMenu(); closeColorPop();
+  switch (b.dataset.ctx) {
+    // A live pane's shell is ⌘T's: it keeps the pane's colorKey and splits beside it when
+    // Settings says so. The other two have no pane to sit beside.
+    case "sterm": if (s) host.openShellFor(s.id); else if (dir) openTerminalIn(d ? d.project : basename(e?.repo_root || dir), dir); break;
+    case "sfolder": if (dir) host.openProjectFolder(dir); break;
+    case "scopy": if (dir) void copyPath(dir); break;
+    case "sswitch": if (s) void openSessionBranchPop(anchor, s.id); break;
+    case "sdrift": if (s) void followSessionDrift(s.id); break;
+    // ./taskrun owns every one of these; the rerun closes this pane and opens the next itself.
+    case "srerun": if (s) void rerunTask(s); break;
+    case "sreparams": if (s) void rerunTask(s, true); break;
+    case "sstop": if (s) void invoke("kill_session", { sessionId: s.id }).catch(() => {}); break;
+    case "sreveal": if (s?.run) revealSource(s.run.root, s.run.sourceFile); break;
+    case "spin": if (s?.run) togglePin(s.colorKey, s.run.id); break;
+    // The inspector's own card: the launch checkout, titled the way that card titles it.
+    case "swset":
+      if (s) void openDiff(s.workdir, s.project + (s.branch ? " · " + s.branch : ""));
+      else if (e) void openDiff(e.cwd, e.name || basename(e.cwd));
+      break;
+    case "sshelve": if (s) void shelveSessionAsked(s.id); break;
+    case "sclose": if (s) host.closeSession(s.id); break;
+    case "sresume": if (d) resumeDormant(d.id); break;
+    case "sforget": if (d) forgetDormant(d.id); break;
+    case "sjump": if (e) jumpExternal(e.pid); break;
+  }
+});
+
 // ---------- the Branches view's row menu ----------
 // Right-click a branch row, or its ⋯. The verbs arrive as a callback rather than as host
 // entries: the two menus above are the app's, where this one belongs to one view and every
@@ -439,7 +642,7 @@ function switchRowFor(t: BranchTarget): CtxRow {
 
 export function openBranchMenu(t: BranchTarget, x: number, y: number, run: (act: string) => void) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = sessTarget = null; // one #ctxMenu, one target
   brTarget = t;
   brRun = run;
   const rows: (CtxRow | null)[] = [
@@ -582,7 +785,7 @@ const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputEl
 
 function openGroupPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = null;
+  ctxKey = wtTarget = gTarget = sessTarget = null;
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
@@ -606,7 +809,7 @@ function openGroupPicker(key: string, x: number, y: number) {
 
 function openGroupMenu(gid: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = pickPath = null;
+  ctxKey = wtTarget = pickPath = sessTarget = null;
   gTarget = gid;
   menuX = x; menuY = y;
   const g = groupById(projGroups, gid);
@@ -733,6 +936,18 @@ document.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     openGroupMenu(fold.dataset.gid, e.clientX, e.clientY);
     return;
+  }
+  // Before [data-key]: a shelved or external row carries the project key itself, and the menu
+  // for the row you clicked is not the menu for its project.
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".srow");
+  if (row) {
+    const sel = row.dataset.sel || "", past = row.dataset.past || "", ext = row.dataset.ext || "";
+    if (sel || past || ext) {
+      e.preventDefault();
+      const kind = sel ? "live" : past ? "past" : "ext";
+      openSessionMenu(kind, sel || past || ext, row, e.clientX, e.clientY);
+      return;
+    }
   }
   const wt = (e.target as HTMLElement).closest<HTMLElement>("[data-wt]");
   if (wt?.dataset.wt) {

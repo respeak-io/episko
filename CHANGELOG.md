@@ -23,6 +23,15 @@ Markers: `+` new · `~` changed · `!` fixed
   are never folded away, a run of two stays as it was, and a search folds nothing, since what it left
   is the list you asked for. Ready-to-merge and blocked runs are two folds, because the ladder already
   says they are not the same pile of work.
++ **Right-click a session in the sidebar.** The row's own verbs, where the row is: a terminal beside
+  it, switch its branch, review its working set, open its folder or copy the path, shelve it, close
+  it — and *Follow it* when the session has drifted to another checkout. Shelved rows get resume and
+  take-off-the-shelf; an external one gets a jump to its terminal. A row that cannot do something
+  says why rather than offering it: ⇩ is absent where a conversation could not come back, and
+  *Review working set…* greys with "not read yet" rather than pretending a folder is clean.
++ **A task row's menu runs the task.** ⟳ *Run again*, ⋯ *Run again with…* (its parameters), ■ *Stop*,
+  ↗ *Reveal source* and the ▶ Run pin — the inspector's task card, on the row itself. ■ keeps the
+  pane and its output; ✕ takes both, and each says which.
 ~ **The all-projects dashboard says what it is still reading.** A project's bars, branch chip and
   activity shimmer until the scan answers, while its name, icon, live sessions and cost — all local
   — paint at once. *Where it went*, the token figure, *Pick back up* and the project list

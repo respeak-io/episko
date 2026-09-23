@@ -50,7 +50,7 @@ import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
-  noteGitCommand, openPlainTerminal, openRunGroup, pollIo, refreshGitViews,
+  noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
@@ -204,7 +204,7 @@ setPaletteHost({
 });
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
-  addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount,
+  addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount, openShellFor, closeSession,
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
