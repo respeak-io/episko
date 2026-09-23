@@ -8,6 +8,11 @@ whether to *use* Episko; this is a procedure for the one person shipping it, and
 is long enough that folding it in would bury the install instructions. It also has a
 different lifetime — it changes when the OS edge changes, not when the app does.
 
+`.claude/skills/release/SKILL.md` drives the mechanical half of this page for an agent
+and stops at the three answers only you have: the version, the click-through, and the
+tag push. It deliberately does not copy the checklist below — this page is the
+authority, and the skill is wrong the moment it disagrees.
+
 ---
 
 ## What CI already guarantees, so you needn't re-check it
