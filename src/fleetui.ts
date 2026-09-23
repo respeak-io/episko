@@ -4,12 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, clearStageBadges, setHeadPath, takeStage } from "./dom";
 import { dlog } from "./debug";
-import { openExternal, refreshDirtyStates } from "./mirror";
+import { openExternal, refreshDirtyStates, rosterReady } from "./mirror";
 import { basename, fmtDay, fmtDayLong, relTime } from "./format";
 import { projectCost } from "./dash";
 import {
-  FLEET_RANGES, fleetCards, fleetSorted, fleetTally, needsSplit,
-  type FleetCard, type FleetSort, type NeedKind,
+  FLEET_RANGES, fleetCards, fleetSections, fleetSorted, fleetTally, needsSplit,
+  type FleetCard, type FleetSection, type FleetSort, type NeedKind,
 } from "./fleet";
 import {
   fleetBodyHtml, fleetHeadHtml,
@@ -19,15 +19,20 @@ import {
 import {
   allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
+import { iconFor } from "./icons";
 import type { HistEntry } from "./history";
 import { forecast5h, forecast7d } from "./rl";
 import { extWorking, GCLASS, GLYPH } from "./sidebarview";
 import {
-  accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, sessions, setActiveId, setMirror,
+  accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, projGroups, sessions,
+  setActiveId, setMirror,
 } from "./state";
 import type { TrailCommit } from "./trail";
 import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from "./types";
-import { modelSeries, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type UDay } from "./usage";
+import {
+  modelSeries, tokenDays, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type UDay,
+} from "./usage";
+import { tokenScanning } from "./usageview"; // the transcript scan's own flag, ./usagedlg drives it
 
 // What this pane does but does not own; one host object rather than six setters, so nothing
 // here imports main.ts or ./panes (the DashHost precedent).
@@ -68,6 +73,14 @@ export let fleetLayout: FleetLayout = storedLayout === "list" ? "list" : "cards"
 export function setFleetLayout(l: FleetLayout) {
   fleetLayout = l === "list" ? "list" : "cards";
   localStorage.setItem("cc-fleet-layout", fleetLayout);
+  renderFleet();
+}
+// Off by default: the switch is new, and a fleet that reshuffles itself on upgrade is a bug
+// report. The sidebar's groups are the only source, so it is offered only once one exists.
+export let fleetGroup: boolean = localStorage.getItem("cc-fleet-group") === "1";
+export function setFleetGroup(on: boolean) {
+  fleetGroup = on;
+  localStorage.setItem("cc-fleet-group", on ? "1" : "0");
   renderFleet();
 }
 // One window for every figure on the screen, so "last 7 days" means one thing across it.
@@ -238,9 +251,14 @@ function buildView(now: number): FleetView {
   };
   // `dirtyByFolder` itself, never `folderDirty`: an unswept folder must read as unread.
   const cards = fleetSorted(fleetCards({
-    projects, commits, hist, heads, dirty: dirtyByFolder, costFor,
+    projects, commits, hist, heads, dirty: dirtyByFolder, costFor, groups: projGroups,
     attnPending, urgency: urgencyRank, days, now,
   }), fleetSort);
+  // A store the user emptied leaves the switch with nothing to do, so it falls back to flat
+  // rather than drawing one "Top level" heading over the whole fleet.
+  const canGroup = projGroups.groups.length > 0;
+  const sections: FleetSection[] = fleetGroup && canGroup
+    ? fleetSections(cards, projGroups.groups) : [{ name: "", cards }];
   const spark = sparks(now, days);
   const projectOf = new Map(projects.map((p) => [p.path, p.name]));
   const extra: Record<string, FleetExtra> = {};
@@ -254,6 +272,8 @@ function buildView(now: number): FleetView {
         ...p.externals.map(extGlyph),
       ],
       spark: spark.get(p.repoRoot ?? p.path) ?? [],
+      // The probe is somebody else's (./actions, ./panes, ./mirror); this only reads its store.
+      icon: iconFor(p.path),
     };
   }
   const resume: FleetResume[] = [...dormants]
@@ -264,9 +284,15 @@ function buildView(now: number): FleetView {
     }));
   // `syncAttn` is main.ts's, once a paint: this only reads the set it stamped.
   const waiting = needsYouSessions();
+  // Both are "no answer YET", never "an answer is on its way": a reload keeps what is drawn,
+  // since `fetchedAt` survives it and `tokenDays` is merged rather than emptied. The head's
+  // own line is what says a refresh is running over figures you can already read.
+  const firstLoad = loading && !fetchedAt;
   return {
-    cards, extra, shared: sharedNames(projects),
+    sections, extra, shared: sharedNames(projects),
     sort: fleetSort, layout: fleetLayout, range: days,
+    grouped: fleetGroup && canGroup, canGroup,
+    firstLoad, tokenWait: tokenScanning && !tokenDays.length, resumeWait: !rosterReady,
     today: fmtDayLong(now),
     when: loading ? "reading every project…" : fetchedAt ? `refreshed ${relTime(fetchedAt)}` : "",
     tally: fleetTally(cards),
@@ -299,7 +325,8 @@ export function renderFleet(): void {
   // One `forecast7d()` for the head tile and the limits meter, so the two cannot disagree.
   paint("fleetHead", fleetHeadHtml(view));
   paint("fleetBody", fleetBodyHtml(view));
-  $("fleetPane").setAttribute("aria-busy", loading ? "true" : "false");
+  const busy = loading || view.tokenWait || view.resumeWait;
+  $("fleetPane").setAttribute("aria-busy", busy ? "true" : "false");
 }
 
 // Every stage taker owns the whole top bar, or the previous stage's survives under this one:
@@ -363,6 +390,8 @@ export function wireFleet(): void {
     if (range) { setFleetRange(Number(range.dataset.flrange)); return; }
     const layout = t.closest<HTMLElement>("[data-fllayout]");
     if (layout) { setFleetLayout(layout.dataset.fllayout as FleetLayout); return; }
+    const group = t.closest<HTMLElement>("[data-flgroup]");
+    if (group) { setFleetGroup(!fleetGroup); return; }
     const open = t.closest<HTMLElement>("[data-flopen]");
     if (open) { open.dataset.flopen === "usage" ? host.openUsage() : host.openHistory(); return; }
 

@@ -13,6 +13,22 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **The all-projects dashboard says what it is still reading.** A project's bars, branch chip and
+  activity shimmer until the scan answers, while its name, icon, live sessions and cost — all local
+  — paint at once. *Where it went*, the token figure, *Pick back up* and the project list
+  itself no longer claim there is nothing there while they are still being read — in
+  particular, *No projects yet* can no longer flash in front of a fleet that is about to paint. A refresh over figures already on screen keeps
+  them and says so in the header, as before.
++ **Group the all-projects dashboard the way the sidebar is grouped.** *Group* beside the sort
+  puts the cards (or the rows) under the sidebar's own headings, with everything you have filed
+  nowhere under *Top level*. Each run sits where its first member already sat, so the switch
+  reorders nothing; it is offered once you have made a group.
+! **A project with no commits in the window no longer strands its session glyph mid-row.** The
+  row list reserved the spark's width whether or not there were bars to put in it.
+~ **A project wears its own icon on the all-projects dashboard.** The card and the list row draw
+  the logo the sidebar already found (or the emoji you picked), and keep the coloured initial for
+  a folder that has none.
+
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
 the project page is three columns ending in one ranked list of what is next, an issue reads

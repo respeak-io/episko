@@ -65,7 +65,7 @@ import {
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
 import "./update"; // side-effect import: it owns its footer chip, listeners and launch check
-import { probeIcon, setIconRenderMini, setIconRenderSidebar } from "./icons";
+import { probeIcon, setIconRepaint } from "./icons";
 import {
   closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
@@ -179,8 +179,8 @@ setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
 setTaskRepaint(renderAll);
-setIconRenderSidebar(renderSidebar);
-setIconRenderMini(renderMini);
+// Every surface that draws a project icon; `renderFleet` is a no-op unless it is on stage.
+setIconRepaint(() => { renderSidebar(); renderMini(); renderFleet(); });
 setSidebarSetSort(setSort);
 setSidebarRenderAll(renderAll);
 setFooterCloseColorPop(closeColorPop);

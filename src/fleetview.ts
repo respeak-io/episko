@@ -4,16 +4,18 @@
 
 import { barRow, esc, escAttr, fmtUntil, relTime, tilde, uTok, uUsd, uUsd2 } from "./format";
 import { chord } from "./dom"; // a platform-spelled chord, not DOM access: the *view rule allows it
-import { FLEET_RANGES, type FleetCard, type FleetSort, type FleetTally } from "./fleet";
+import { FLEET_RANGES, type FleetCard, type FleetSection, type FleetSort, type FleetTally } from "./fleet";
 import type { Forecast } from "./rl";
 import type { DiffStat } from "./types";
 import type { ModelSeries } from "./usage";
 import { foreText } from "./usageview";
+import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 
 /** One live session's glyph on a project card: identity only, never a click target. */
 export interface FleetGlyph { id: string; glyph: string; cls: string; title: string }
-/** What a card needs that ./fleet's rules do not carry: who is running, and the window's shape. */
-export interface FleetExtra { glyphs: FleetGlyph[]; spark: number[] }
+/** What a card needs that ./fleet's rules do not carry: who is running, the window's shape,
+ * and the project's own glyph — ./icons' store, so a card wears what the sidebar does. */
+export interface FleetExtra { glyphs: FleetGlyph[]; spark: number[]; icon: string | null }
 // One row of the left column. `note` is the host's own wording (why it wants you, what it is
 // doing): the view chooses no sentence, so a provider with no phase invents none here either.
 export interface FleetRow {
@@ -35,10 +37,20 @@ export interface FleetUsage {
 }
 export type FleetLayout = "cards" | "list";
 export interface FleetView {
-  cards: FleetCard[];                // fleetSorted's output, in the order it is drawn
+  sections: FleetSection[];          // fleetSorted's output, in the order it is drawn; one run when flat
   extra: Record<string, FleetExtra>; // keyed by FleetCard.path; a missing entry draws no spark
   shared: string[];                  // project names whose spend is merged with another basename
   sort: FleetSort; layout: FleetLayout; range: number;
+  grouped: boolean; canGroup: boolean; // the switch, and whether there is anything to group by
+  // A skeleton stands in for what is NOT KNOWN YET, never for what is on screen: a reload over
+  // real figures keeps them and says so in the head instead. Everything not named here — the
+  // live rows, the money, the limits — is local state or a `cc-` rollup and never waits.
+  firstLoad: boolean;  // the project scan has never answered: commits, branches, last-touched
+  tokenWait: boolean;  // the transcript scan is running and has never answered: tokens + the mix
+  // The roster is still being reconciled against each provider's history. It gates the project
+  // list as well as Pick back up: `allProjects` counts a project a dormant session names, so a
+  // fleet whose projects are all restorable ones is genuinely EMPTY until this answers.
+  resumeWait: boolean;
   today: string; when: string; tally: FleetTally; needsNote: string;
   needs: FleetRow[]; live: FleetRow[]; resume: FleetResume[];
   usage: FleetUsage;
@@ -69,6 +81,10 @@ const sortSeg = (cur: FleetSort) => `<div class="db-seg">` + SORTS.map(([id, lab
 const layoutSeg = (cur: FleetLayout) => `<div class="db-seg">`
   + segBtn(`data-fllayout="cards"`, cur === "cards", "▦", "One card per project")
   + segBtn(`data-fllayout="list"`, cur === "list", "☰", "One row per project") + `</div>`;
+// One button, because it is a switch. Offered only where there is something to group BY: the
+// groups are made and named in the sidebar, and a lit toggle over none would do nothing.
+const groupSeg = (on: boolean) => `<div class="db-seg">`
+  + segBtn(`data-flgroup="1"`, on, "Group", "Group projects under the sidebar's own headings") + `</div>`;
 
 // Value then label, with the sub under both: the band answers "how much" before "of what".
 const tile = (label: string, value: string, sub: string, cls = "") =>
@@ -78,15 +94,19 @@ const tile = (label: string, value: string, sub: string, cls = "") =>
 
 export function fleetHeadHtml(v: FleetView): string {
   const u = v.usage, t = v.tally, wk = v.limits.d7;
-  const sub = `${v.today} · ${plural(t.projects, "project")} · ${plural(t.checkouts, "checkout")}`;
+  const sub = v.resumeWait && !t.projects
+    ? v.today
+    : `${v.today} · ${plural(t.projects, "project")} · ${plural(t.checkouts, "checkout")}`;
   const pct = wk.used == null ? DASH : `${Math.round(wk.used)}%`;
   const tiles = tile("Live sessions", String(t.live),
       t.live ? `across ${plural(t.liveProjects, "project")}` : "nothing running")
     + tile("Needs you", String(t.needs), v.needsNote, t.needs ? "s-attn" : "")
     + tile(`Spend · ${u.days} days`, u.spend > 0 ? esc(money(u.spend)) : DASH,
       u.today > 0 ? `${uUsd2(u.today)} today` : "nothing today")
-    + tile(`Tokens · ${u.days} days`, u.tokens > 0 ? esc(uTok(u.tokens)) : DASH,
-      u.cached > 0 ? `${uTok(u.cached)} cached` : "no token data yet")
+    + tile(`Tokens · ${u.days} days`,
+      v.tokenWait ? sk("92px", 22) : u.tokens > 0 ? esc(uTok(u.tokens)) : DASH,
+      v.tokenWait ? "scanning agent history…"
+        : u.cached > 0 ? `${uTok(u.cached)} cached` : "no token data yet")
     + tile("Week used", pct,
       wk.resetTs != null ? `resets in ${fmtUntil(wk.resetTs)}` : "no active window",
       wk.used == null ? "" : `s-${wk.status}`);
@@ -136,6 +156,12 @@ function liveRow(r: FleetRow): string {
     + `<span class="pj mono">${esc(r.project)}</span>${r.ext ? "" : closeBtn(r.id)}</div>`;
 }
 
+// Nothing left open and not read yet are different answers, and the row list is where the
+// difference shows: an empty section under a roster still being reconciled says the wrong one.
+const resumeSkel = () => [62, 48, 55].map((w) =>
+  `<div class="fl-row sk"><span class="sglyph">${sk("12px", 12)}</span>
+    <span class="ti">${sk(`${w}%`, 9)}</span><span class="pj">${sk("36px", 9)}</span></div>`).join("");
+
 const resumeRow = (r: FleetResume) =>
   `<div class="fl-row" data-flproj="${escAttr(r.path)}" data-flname="${escAttr(r.name)}"
     data-tip="${escAttr(`${tilde(r.path)} · open this project to pick it back up`)}">
@@ -177,6 +203,15 @@ function workText(c: FleetCard, days: number): string {
   return parts.length ? parts.join(" · ") : `quiet ${days} days`;
 }
 
+// The project's logo where it has one, as the sidebar and the project header wear it; the
+// coloured initial is the fallback for a folder nothing was found in.
+const avatar = (c: FleetCard, icon: string | null | undefined) => icon
+  ? `<span class="fc-av"><img class="picon" src="${escAttr(icon)}" alt="" /></span>`
+  : `<span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>`;
+const rowMark = (c: FleetCard, icon: string | null | undefined) => icon
+  ? `<img class="picon k" src="${escAttr(icon)}" alt="" />`
+  : `<span class="k" style="color:${escAttr(c.accent)}">▪</span>`;
+
 const glyphRow = (x: FleetExtra | undefined) => (x?.glyphs ?? []).map((g) =>
   `<span class="sglyph ${esc(g.cls)}" data-flsid="${escAttr(g.id)}" data-tip="${escAttr(g.title)}">${esc(g.glyph)}</span>`).join("");
 
@@ -190,46 +225,93 @@ function sparkBars(x: FleetExtra | undefined, accent: string, cap = 22): string 
   return `<div class="fc-bars" style="--c:${escAttr(accent)}">${bars}</div>`;
 }
 
-function projCard(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number): string {
+// The name, the icon, the live glyphs and the money are local and paint at once; the bars, the
+// branch and what has been done here are the scan's, so those are what shimmer. A card whose
+// head went blank while it loaded would be a worse answer than the one it replaced.
+function projCard(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number, wait: boolean): string {
   const touched = Math.max(c.lastCommit, c.lastSession);
   return `<div class="fl-card" data-flproj="${escAttr(c.path)}" data-flname="${escAttr(c.name)}"
     data-tip="${escAttr(`${tilde(c.path)} · open this project`)}">
-    <div class="fc-h"><span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>
+    <div class="fc-h">${avatar(c, x?.icon)}
       <span class="fc-nm">${esc(c.name)}</span><span class="fc-gl">${glyphRow(x)}</span></div>
-    ${sparkBars(x, c.accent)}
-    <div class="fc-git">${branchChip(c)}${dirtyTag(c.dirty)}${syncTag(c.dirty)}</div>
+    ${wait ? `<div class="fc-bars">${sk("100%", 22)}</div>` : sparkBars(x, c.accent)}
+    <div class="fc-git">${wait
+      ? sk("62px", 14) + sk("74px", 14)
+      : branchChip(c) + dirtyTag(c.dirty) + syncTag(c.dirty)}</div>
     <div class="fc-foot">
       <span class="fc-spend mono" data-tip="${escAttr(spendTip(c, shared))}">${c.spend > 0 ? esc(uUsd2(c.spend)) : DASH}</span>
-      <span class="fc-work">${esc(workText(c, days))}</span><span class="sp"></span>
-      <span class="fc-age mono">${touched ? esc(relTime(touched)) : DASH}</span></div>
+      <span class="fc-work">${wait ? sk("78px", 9) : esc(workText(c, days))}</span><span class="sp"></span>
+      <span class="fc-age mono">${wait ? sk("34px", 9) : touched ? esc(relTime(touched)) : DASH}</span></div>
   </div>`;
 }
 
 // The same facts on one line, for a fleet too long to scan as cards. Nothing is dropped: the
 // spark and the glyphs ride the row, which is what keeps the toggle a layout and not a filter.
-function projRow(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number): string {
+function projRow(c: FleetCard, x: FleetExtra | undefined, shared: boolean, days: number, wait: boolean): string {
   const touched = Math.max(c.lastCommit, c.lastSession);
+  const mid = wait
+    ? `<div class="fc-bars">${sk("100%", 16)}</div>${sk("54px", 13)}${sk("62px", 13)}
+      <span class="fc-work">${sk("70px", 9)}</span>`
+    : `${sparkBars(x, c.accent, 16)}${branchChip(c)}${dirtyTag(c.dirty)}${syncTag(c.dirty)}
+      <span class="fc-work">${esc(workText(c, days))}</span>`;
   return `<div class="fl-prow" data-flproj="${escAttr(c.path)}" data-flname="${escAttr(c.name)}"
     data-tip="${escAttr(`${tilde(c.path)} · open this project`)}">
-    <span class="k" style="color:${escAttr(c.accent)}">▪</span>
+    ${rowMark(c, x?.icon)}
     <span class="ti">${esc(c.name)}</span>
-    <span class="rt">${glyphRow(x)}${sparkBars(x, c.accent, 16)}${branchChip(c)}${dirtyTag(c.dirty)}${syncTag(c.dirty)}
-      <span class="fc-work">${esc(workText(c, days))}</span>
+    <span class="rt">${glyphRow(x)}${mid}
       <span class="fc-spend mono" data-tip="${escAttr(spendTip(c, shared))}">${c.spend > 0 ? esc(uUsd2(c.spend)) : DASH}</span>
-      <span class="fc-age mono">${touched ? esc(relTime(touched)) : DASH}</span></span></div>`;
+      <span class="fc-age mono">${wait ? sk("34px", 9) : touched ? esc(relTime(touched)) : DASH}</span></span></div>`;
 }
+
+// A heading only where one was asked for: flat, the single run is nameless and the column
+// looks exactly as it did before the switch existed.
+function projectsRun(s: FleetSection, v: FleetView): string {
+  const draw = v.layout === "cards" ? projCard : projRow;
+  const head = v.grouped
+    ? `<div class="fl-gh"><span class="label">${esc(s.name)}</span>
+        <span class="n">${s.cards.length}</span><span class="ln"></span></div>`
+    : "";
+  const body = s.cards.map((c) =>
+    draw(c, v.extra[c.path], v.shared.includes(c.name), v.usage.days, v.firstLoad)).join("");
+  return `<div class="fl-gsec">${head}
+    <div class="${v.layout === "cards" ? "fl-grid" : "fl-rows"}">${body}</div></div>`;
+}
+
+// A card with nothing known about it at all, for the window before the list itself has
+// answered. `projCard(…, wait)` is the other half: that one keeps the name it already has.
+const cardSkel = () => `<div class="fl-card sk">
+  <div class="fc-h">${sk("22px", 22)}<span class="fc-nm">${sk("58%", 11)}</span></div>
+  <div class="fc-bars">${sk("100%", 22)}</div>
+  <div class="fc-git">${sk("62px", 14)}${sk("74px", 14)}</div>
+  <div class="fc-foot">${sk("46px", 13)}<span class="fc-work">${sk("78px", 9)}</span>
+    <span class="sp"></span>${sk("34px", 9)}</div></div>`;
+const rowSkel = () => `<div class="fl-prow sk">${sk("15px", 15)}
+  <span class="ti">${sk("38%", 9)}</span>
+  <span class="rt"><div class="fc-bars">${sk("100%", 16)}</div>${sk("54px", 13)}${sk("62px", 13)}
+    <span class="fc-work">${sk("70px", 9)}</span>${sk("44px", 11)}${sk("34px", 9)}</span></div>`;
+// Enough to fill the fold at either layout; the real count replaces them within a frame or two.
+const BLIND_SKELS = 6;
 
 function projectsSec(v: FleetView): string {
   const t = v.tally;
-  const count = `${t.projects}${t.dirty ? ` · ${t.dirty} uncommitted` : ""}`;
-  const controls = sortSeg(v.sort) + layoutSeg(v.layout);
-  const draw = v.layout === "cards" ? projCard : projRow;
-  const body = v.cards.map((c) => draw(c, v.extra[c.path], v.shared.includes(c.name), v.usage.days)).join("");
+  // The same fact as the body, so it cannot assert a zero the body is drawing a skeleton for.
+  const count = v.resumeWait && !t.projects
+    ? "" : `${t.projects}${t.dirty ? ` · ${t.dirty} uncommitted` : ""}`;
+  const controls = sortSeg(v.sort) + (v.canGroup ? groupSeg(v.grouped) : "") + layoutSeg(v.layout);
   return `<section class="fl-sec">
-    <div class="fl-sh"><span class="label">Projects</span><span class="n">${esc(count)}</span>
-      <span class="sp"></span>${controls}</div>
-    <div class="${v.layout === "cards" ? "fl-grid" : "fl-rows"}">${body
-      || `<p class="fl-none">No projects yet. Add a folder from the sidebar, or press ${esc(chord("K"))}.</p>`}</div></section>`;
+    <div class="fl-sh"><span class="label">Projects</span>${count ? `<span class="n">${esc(count)}</span>` : ""}
+      <span class="sp"></span>${controls}</div>`
+    + (t.projects ? v.sections.map((s) => projectsRun(s, v)).join("")
+      // An empty list is only "you have no projects" once the read that could still FILL it has
+      // answered — the roster, not the project scan, which adds figures and never a project.
+      // The first-run sentence flashing in front of a fleet about to paint is the same lie
+      // Pick back up told, and on a machine whose projects are all restorable it flashed on
+      // every boot.
+      : v.resumeWait || v.firstLoad
+        ? `<div class="${v.layout === "cards" ? "fl-grid" : "fl-rows"}">${
+          Array.from({ length: BLIND_SKELS }, v.layout === "cards" ? cardSkel : rowSkel).join("")}</div>`
+        : `<p class="fl-none">No projects yet. Add a folder from the sidebar, or press ${esc(chord("K"))}.</p>`)
+    + `</section>`;
 }
 
 // ---------- the right: what it all cost ----------
@@ -268,7 +350,14 @@ function modelHue(r: ModelSeries): string {
   return pct === 100 ? `var(${v})` : `color-mix(in srgb, var(${v}) ${pct}%, var(--m-fade))`;
 }
 
-function modelSec(u: FleetUsage): string {
+// In the geometry of the stack and its rows. The empty sentence stays for a window that
+// genuinely holds nothing: only a scan with no answer yet earns this.
+const modelSkel = () => `<div class="fl-stack">${sk("100%", 10)}</div>
+  <div class="fl-rows">${["46%", "34%", "28%"].map((w) =>
+    `<div class="fl-mrow"><span class="msw db-sk"></span><span class="nm">${sk(w, 9)}</span>
+      <span class="tk">${sk("40px", 9)}</span><span class="usd">${sk("34px", 9)}</span></div>`).join("")}</div>`;
+
+function modelSec(u: FleetUsage, wait: boolean): string {
   const total = u.models.reduce((n, r) => n + r.total, 0);
   const stack = u.models.map((r) =>
     `<i style="width:${(r.total / total * 100).toFixed(1)}%;background:${modelHue(r)}"></i>`).join("");
@@ -277,7 +366,9 @@ function modelSec(u: FleetUsage): string {
       <span class="nm">${esc(r.name)}</span>
       <span class="tk mono">${esc(uTok(r.total))}</span>
       <span class="usd mono">${r.cost > 0 ? esc(uUsd2(r.cost)) : DASH}</span></div>`).join("");
-  const body = total > 0 ? `<div class="fl-stack">${stack}</div><div class="fl-rows">${rows}</div>` : "";
+  const body = total > 0
+    ? `<div class="fl-stack">${stack}</div><div class="fl-rows">${rows}</div>`
+    : wait ? modelSkel() : "";
   return sec(`Where it went · ${u.days} days`, "", "", body, "No token data in range yet.");
 }
 
@@ -309,8 +400,10 @@ export function fleetBodyHtml(v: FleetView): string {
   const colA = sec("Needs you", String(v.needs.length), "", v.needs.map(needRow).join(""),
       "Nothing is waiting on you.", v.needs.length ? "waiting" : "")
     + sec("Live now", String(v.live.length), "", v.live.map(liveRow).join(""), "No sessions running.")
-    + sec("Pick back up", String(v.resume.length), history, v.resume.map(resumeRow).join(""), "Nothing left open.");
-  const colC = spendSec(v.usage) + modelSec(v.usage) + costSec(v.usage.projects) + limitsSec(v.limits);
+    + sec("Pick back up", v.resumeWait ? "" : String(v.resume.length), history,
+      v.resumeWait ? resumeSkel() : v.resume.map(resumeRow).join(""), "Nothing left open.");
+  const colC = spendSec(v.usage) + modelSec(v.usage, v.tokenWait)
+    + costSec(v.usage.projects) + limitsSec(v.limits);
   return `<div class="fl-cols">
     <div class="fl-col fl-col-a">${colA}</div>
     <div class="fl-col fl-col-b">${projectsSec(v)}</div>

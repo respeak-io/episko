@@ -2,6 +2,7 @@
 // owns the markup. See docs/dashboard.md and test/fleet.test.ts.
 
 import type { ProjGroup } from "./grouping";
+import { groupOf, type GroupDef, type GroupStore } from "./projgroups";
 import { histProject, type HistEntry } from "./history";
 import type { TrailCommit } from "./trail";
 import type { DiffStat, Sess, WtHead } from "./types";
@@ -11,6 +12,7 @@ export const FLEET_RANGES = [7, 14, 30] as const;
 
 export interface FleetCard {
   path: string; name: string; accent: string;
+  group: string | null;   // the sidebar group it is filed in, or null for the top level
   live: number; needs: number; urgency: number;
   dirty: DiffStat | null | undefined;
   branch: string; checkouts: number;
@@ -26,6 +28,7 @@ export interface FleetInput {
   heads: ReadonlyMap<string, WtHead[]>; // worktree_heads by repo root: the branch chip and the count
   dirty: ReadonlyMap<string, DiffStat | null>;
   costFor: (projectName: string) => number;
+  groups: GroupStore;     // the sidebar's own store, injected: nothing here reads ./state
   attnPending: (s: Sess) => boolean;
   urgency: (s: Sess) => number;
   days: number;
@@ -55,6 +58,9 @@ export function fleetCards(i: FleetInput): FleetCard[] {
     const heads = i.heads.get(repo) ?? [];
     return {
       path: p.path, name: p.name, accent: p.accent,
+      // The sidebar's fallback too (./grouping's `foldIdOf`): the user filed the repo, so
+      // every checkout of it answers with that group.
+      group: groupOf(i.groups, p.path) ?? (p.repoRoot ? groupOf(i.groups, p.repoRoot) : null),
       // Both kinds: an external is as live as ours, and this figure is what the band counts.
       // `needs` and `urgency` stay ours alone — an external has no hooks and can want nothing.
       live: p.sessions.length + p.externals.length,
@@ -84,6 +90,27 @@ export function fleetSorted(cards: FleetCard[], sort: FleetSort): FleetCard[] {
       : (a, b) => a.name.localeCompare(b.name);
   // Every sort ends on the path, so a repaint of unchanged state never reorders a card.
   return [...cards].sort((a, b) => cmp(a, b) || a.path.localeCompare(b.path));
+}
+
+/** One heading's worth of cards. `name` is the group's, or `TOP_LEVEL` for the unfiled run. */
+export interface FleetSection { name: string; cards: FleetCard[] }
+export const TOP_LEVEL = "Top level";   // ./projmenu's word for a project in no group
+
+// ./grouping's sidebar rule over the cards: every run — a group, or the unfiled ones — sits
+// where its first member does under the active sort, so the switch reorders nothing. An empty
+// group is dropped rather than kept last: on this screen it is a heading over nothing, where
+// in the sidebar it is the drop target that refills it.
+export function fleetSections(cards: FleetCard[], groups: GroupDef[]): FleetSection[] {
+  const out: FleetSection[] = [];
+  const open = new Map<string, FleetSection>();
+  for (const c of cards) {
+    const g = c.group ? groups.find((x) => x.id === c.group) : undefined;
+    const id = g?.id ?? "";
+    let sec = open.get(id);
+    if (!sec) { sec = { name: g?.name ?? TOP_LEVEL, cards: [] }; open.set(id, sec); out.push(sec); }
+    sec.cards.push(c);
+  }
+  return out;
 }
 
 export function fleetTally(cards: FleetCard[]): FleetTally {

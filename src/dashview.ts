@@ -33,7 +33,9 @@ const AI_MARK = aiMark("ai", "ai-cnr"); // cornered, not inline: inline it read 
 // substitution rather than a jump. The bars carry no text; ./dashboard marks the pane
 // aria-busy. The shimmer (.db-sk) and spinner (.u-spin) are the usage screen's own.
 
-const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
+// Exported: ./fleetview draws the same shimmer, and two copies of one style helper is how a
+// screen ends up with a skeleton nothing else on the machine looks like.
+export const sk = (w: string, h = 9) => `<i class="db-sk" style="width:${w};height:${h}px"></i>`;
 
 // For the local reads and for the GitHub half, which fires after the rest and needs one
 // most: an absent Open work card reads as gh being broken rather than slow.
