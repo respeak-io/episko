@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.31.0 — 2026-09-23
+A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
+could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
+dashboard wears each project's icon, groups like the sidebar, and says what it is still reading.
+
 + **Group the all-projects dashboard the way the sidebar is grouped.** *Group* beside the sort
   puts the cards (or the rows) under the sidebar's own headings, with everything you have filed
   nowhere under *Top level*. Each run sits where its first member already sat, so the switch
