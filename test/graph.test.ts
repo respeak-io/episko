@@ -320,7 +320,8 @@ describe("refChips", () => {
     expect(chips.map((c) => c.label)).toEqual(["a", "b", "c", "+2"]);
     const more = chips[3];
     expect(more.kind).toBe("more");
-    expect(chipText(more)).toBe("d, v1");
+    // One per line: a `+N` over eleven dependabot branches is a list, not a sentence.
+    expect(chipText(more)).toBe("d\nv1");
     // Under the cap, nothing is folded.
     expect(refChips("refs/heads/a, refs/heads/b", 3).some((c) => c.kind === "more")).toBe(false);
   });
@@ -364,7 +365,7 @@ describe("rowSvg / refChipsHtml", () => {
     expect(rowSvg(l.rows[0])).not.toContain("ghead");
   });
 
-  it("escapes a ref name in text and in the title attribute", () => {
+  it("escapes a ref name in text and in the tooltip attribute", () => {
     expect(refChipsHtml([])).toBe("");
     // A branch name can contain almost anything, and it lands in innerHTML *and* in a
     // quoted attribute — esc() neutralises the angle bracket, attr() also the quote.
@@ -372,13 +373,13 @@ describe("rowSvg / refChipsHtml", () => {
     expect(html).toContain("&lt;script");
     expect(html).not.toContain("<script");
     expect(html).toContain("&quot;");
-    expect(html).not.toContain('title="a"b"');
+    expect(html).not.toContain('data-tip="a"b"');
   });
 
   it("marks a pushed branch with a glyph instead of a second chip", () => {
     const html = refChipsHtml(refChips("refs/heads/main, refs/remotes/origin/main"));
     expect(html).toContain("⇡");
-    expect(html).toContain('title="main (also on origin)"');
+    expect(html).toContain('data-tip="main (also on origin)"');
     // A remote that isn't origin is named, since "pushed where" then matters.
     expect(refChipsHtml(refChips("refs/heads/x, refs/remotes/fork/x"))).toContain("⇡fork");
   });
@@ -387,8 +388,19 @@ describe("rowSvg / refChipsHtml", () => {
     // The name is what ellipsises; the ⇡ must not, or a long branch loses the one thing
     // the collapse added.
     const html = refChipsHtml(refChips("refs/heads/a-very-long-branch-name-indeed, refs/remotes/origin/a-very-long-branch-name-indeed"));
-    expect(html).toContain('<span class="gn">a-very-long-branch-name-indeed</span>');
+    expect(html).toContain('<span class="gn"><span class="gt">a-very-long-branch-name-indeed</span></span>');
     expect(html.indexOf('class="gr"')).toBeGreaterThan(html.indexOf('class="gn"'));
+  });
+
+  it("splits a path-shaped ref so the LAST segment is the part that survives", () => {
+    // The head is what CSS gives away first, so the tail must carry the separator: eliding
+    // into `origin/depend…eslint-plugin-vue` reads as one word, `…/eslint-plugin-vue` does not.
+    const html = refChipsHtml(refChips("refs/remotes/origin/dependabot/npm_and_yarn/eslint-plugin-vue"));
+    expect(html).toContain('<span class="gh">origin/dependabot/npm_and_yarn</span>');
+    expect(html).toContain('<span class="gt">/eslint-plugin-vue</span>');
+    // A name with no slash is all tail; an empty head would still cost its own min-width.
+    expect(refChipsHtml(refChips("refs/heads/dev"))).toContain('<span class="gn"><span class="gt">dev</span></span>');
+    expect(refChipsHtml(refChips("refs/heads/dev"))).not.toContain('class="gh"');
   });
 });
 
@@ -561,10 +573,82 @@ describe("foldBots", () => {
     expect(lite).toHaveLength(2);
   });
 
+  // How bot work reaches an all-refs page: not a stretch of one line, but a fan of branch
+  // tips, each with its own lane and its own ref. `crossed()` above can't produce one.
+  const tips = () => layoutGraph([
+    by("Ada", "h", ["base"]),
+    by("dependabot[bot]", "d1", ["base"], "refs/remotes/origin/dependabot/npm/vue"),
+    by("dependabot[bot]", "d2", ["base"], "refs/remotes/origin/dependabot/pip/fastapi"),
+    by("dependabot[bot]", "d3", ["base"], "refs/remotes/origin/dependabot/pip/openai"),
+    by("Ada", "base"),
+  ]);
+
+  it("folds a fan of bot branch tips, which is what an all-refs page is made of", () => {
+    const l = tips();
+    // Each tip opens a lane of its own, so the old run rule — one lane, one line, no ref —
+    // could never touch these, and the chip that claimed to fold them removed nothing.
+    expect(l.rows.slice(1, 4).map((r) => r.lane)).toEqual([1, 2, 3]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite.map((r) => r.kind)).toEqual(["commit", "fold", "commit"]);
+    const [f] = folds(lite);
+    expect(f.kind).toBe("tips");
+    expect(f.commits.map((x) => x.sha)).toEqual(["d1", "d2", "d3"]);
+  });
+
+  it("leaves the fold by every lane the fan opened, so the rows below still join up", () => {
+    const l = tips();
+    const [f] = folds(foldBots(l.rows, bot));
+    // Three tips, three lanes still open below the one row that stands for them; `base`
+    // underneath has all three arriving, and a fold keeping only the last would orphan two.
+    expect(f.row.below.map((b) => b.lane)).toEqual([1, 2, 3]);
+    expect(f.row.above).toEqual([]);
+    expect(f.row.through.map((t) => t.lane)).toEqual([0]);
+    expect(f.row.span).toBe(4);
+  });
+
+  it("keeps every ref the fan wore, since a branch nobody can name is a branch hidden", () => {
+    const [f] = folds(foldBots(tips().rows, bot));
+    expect(f.refs).toBe(
+      "refs/remotes/origin/dependabot/npm/vue, refs/remotes/origin/dependabot/pip/fastapi,"
+      + " refs/remotes/origin/dependabot/pip/openai",
+    );
+    expect(refChips(f.refs, 0).map((r) => r.label)).toEqual(["+3"]);
+  });
+
+  it("folds no tip a human could be standing on", () => {
+    // HEAD and a tag are both excluded: one is the checkout, the other marks a moment that
+    // only this commit has. Either would vanish with the row that carried it.
+    const l = layoutGraph([
+      by("dependabot[bot]", "d1", ["base"], "HEAD -> refs/heads/dependabot/npm/vue"),
+      by("dependabot[bot]", "d2", ["base"], "refs/tags/v1"),
+      by("dependabot[bot]", "d3", ["base"], "refs/remotes/origin/dependabot/pip/openai"),
+      by("dependabot[bot]", "d4", ["base"], "refs/remotes/origin/dependabot/pip/fastapi"),
+      by("Ada", "base"),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(lite.map((r) => r.kind)).toEqual(["commit", "commit", "fold", "commit"]);
+    expect(folds(lite)[0].commits.map((x) => x.sha)).toEqual(["d3", "d4"]);
+  });
+
+  it("does not steal an undecorated tip from the run rule", () => {
+    // A bot tip with no ref is `foldable`'s, not the fan's: taken as a fan of one it would
+    // fall under minRun and split the run of commits below it into nothing.
+    const l = layoutGraph([
+      by("Ada", "h", ["x"]),
+      by("dependabot[bot]", "b1", ["b2"]),   // a tip, but undecorated
+      by("dependabot[bot]", "b2", ["gone"]),
+      by("Ada", "x", ["gone"]),
+    ]);
+    const lite = foldBots(l.rows, bot);
+    expect(folds(lite).map((f) => [f.kind, f.commits.map((x) => x.sha)]))
+      .toEqual([["line", ["b1", "b2"]]]);
+  });
+
   it("loses no commit, whatever it folds", () => {
     const l = crossed();
     expect(shas(foldBots(l.rows, bot))).toEqual(l.rows.map((r) => r.c.sha));
     expect(shas(foldBots(l.rows, () => false))).toEqual(l.rows.map((r) => r.c.sha));
+    expect(shas(foldBots(tips().rows, bot))).toEqual(tips().rows.map((r) => r.c.sha));
     expect(foldBots([], bot)).toEqual([]);
   });
 });

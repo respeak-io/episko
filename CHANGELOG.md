@@ -32,8 +32,19 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ **A project wears its own icon on the all-projects dashboard.** The card and the list row draw
   the logo the sidebar already found (or the emoji you picked), and keep the coloured initial for
   a folder that has none.
+~ **A long branch chip keeps the end that names it.** `origin/dependabot/npm_and_yarn/01_frontend/…`
+  said nothing at all once the ellipsis had eaten the last segment; the chip now gives away the path
+  in front of it instead and keeps `…/eslint-plugin-vue`.
+~ **The commit graph and the Landed card use the app's own tooltips**, not the OS's — they appear
+  without the wait, sit still under the control they belong to, and a `+N` chip lists the branches it
+  stands for one per line.
 ! **A project with no commits in the window no longer strands its session glyph mid-row.** The
   row list reserved the spark's width whether or not there were bars to put in it.
+! **⊘ bots on the Landed card actually folds something.** It only ever took a run of bare bot
+  commits down one lane, and a repo dependabot watches has none of those — its bot work arrives as a
+  fan of branch tips, each with its own lane and its own ref. Those fold now, into one row that says
+  how many branches and whose, and the chip lights on the setting rather than on the outcome, so it
+  no longer looks off in both states on a page with nothing to fold.
 
 ## 0.30.0 — 2026-09-19
 Episko opens on a dashboard of every project rather than a card saying nothing is running,
