@@ -164,12 +164,100 @@ export function rankQueue(q: QueueInput): QueueItem[] {
   // outright (✓/✕), so the few there are belong at the top of the rank they share rather than
   // wherever recency — which favours the newest issues — would scatter them.
   // Ties then break on `moved` and `key`, so a repaint never reorders a row under the pointer.
-  return items.sort((a, b) =>
+  return cluster(items.sort((a, b) =>
     a.rank - b.rank
     || Number(!!b.triage) - Number(!!a.triage)
     || b.moved - a.moved
-    || a.key.localeCompare(b.key));
+    || a.key.localeCompare(b.key)));
 }
+
+// ---------- folding a run ----------
+
+/// What a row is one of, or null for a row that is only itself. An advisory, an issue and a
+/// note answer null whatever they neighbour: a fold is for rows nobody reads one by one.
+export const groupKey = (i: QueueItem): string | null =>
+  i.pr?.bot ? `bot:${i.pr.bot}` : i.out ? "out" : null;
+
+// A fold sits at ONE rank, so dependabot's ready-to-merge run and its blocked run are two
+// folds that open apart — the ladder already says they are not the same pile of work.
+const foldKey = (i: QueueItem): string | null => {
+  const k = groupKey(i);
+  return k === null ? null : `${i.rank}:${k}`;
+};
+
+// Same rank, same group, pulled together: two bots' pull requests interleave by update time,
+// and "16 from dependabot" with five more further down is a count you cannot act on. A group
+// sits where its FIRST row ranked, so it overtakes nothing and no row crosses a rank.
+function cluster(items: QueueItem[]): QueueItem[] {
+  const seat = new Map<string, number>();
+  items.forEach((i, n) => {
+    const k = foldKey(i);
+    if (k !== null && !seat.has(k)) seat.set(k, n);
+  });
+  return items
+    .map((i, n) => { const k = foldKey(i); return { i, n, at: k === null ? n : seat.get(k)! }; })
+    .sort((a, b) => a.at - b.at || a.n - b.n)
+    .map((x) => x.i);
+}
+
+/// One collapsed run: `items` is it in the order it would have been drawn in.
+export interface QueueFold { key: string; open: boolean; title: string; sub: string; items: QueueItem[] }
+
+/// What the list draws, in order. An open fold keeps its rows — the view draws them under it,
+/// so a row is emitted once and belongs to exactly one thing.
+export type QueueRow = { kind: "item"; item: QueueItem } | { kind: "fold"; fold: QueueFold };
+
+export const FOLD_MIN = 3;
+
+// Majors first: the order is the reading, and it must not shuffle between two paints.
+const BUMPS = ["major", "minor", "patch", "unknown", "none"];
+
+// The blockers a run shares, commonest first and alphabetical on a tie so two paints of one
+// state never reorder it. The count drives that order but is never printed: `prBlockers`
+// already spells its own ("3 checks failing"), and a second number in front says it twice.
+function topReasons(all: string[]): string {
+  const by = new Map<string, number>();
+  for (const s of all) by.set(s, (by.get(s) ?? 0) + 1);
+  const rank = [...by].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([s]) => s);
+  return [...rank.slice(0, 2), rank.length > 2 ? `+${rank.length - 2} more` : ""]
+    .filter(Boolean).join(" · ");
+}
+
+// What the one row says for the run behind it: how many, whose, and the one fact that decides
+// whether you open it at all. A fold sits at one rank, so "ready" is all of them or none.
+function foldOf(run: QueueItem[], key: string): QueueFold {
+  const n = run.length;
+  const bot = run[0].pr?.bot;
+  if (bot) {
+    const why = run.map((i) => prBlockers(i.pr!)[0] ?? (prReady(i.pr!) ? "" : "no check has run"));
+    return { key, open: false, items: run, title: `${n} pull requests from ${bot}`,
+      sub: why.some(Boolean) ? topReasons(why.filter(Boolean)) : "all ready to merge" };
+  }
+  const bumps = BUMPS.filter((b) => run.some((i) => i.out!.bump === b))
+    .map((b) => `${run.filter((i) => i.out!.bump === b).length} ${b}`);
+  return { key, open: false, items: run, title: `${n} packages out of date`, sub: bumps.join(" · ") };
+}
+
+/// Runs of `minRun` or more folded where `rankQueue` already put them side by side; `open` is
+/// which folds are showing their rows. A pair stays as it was: folding two rows behind a click
+/// says less than the two rows did (./graph's `foldBots` answers the same way).
+export function foldQueue(items: QueueItem[], open: ReadonlySet<string>, minRun = FOLD_MIN): QueueRow[] {
+  const out: QueueRow[] = [];
+  for (let i = 0; i < items.length;) {
+    const k = foldKey(items[i]);
+    let j = i + 1;
+    if (k !== null) while (j < items.length && foldKey(items[j]) === k) j++;
+    const run = items.slice(i, j);
+    if (k === null || run.length < minRun) for (const it of run) out.push({ kind: "item", item: it });
+    else out.push({ kind: "fold", fold: { ...foldOf(run, k), open: open.has(k) } });
+    i = j;
+  }
+  return out;
+}
+
+/// The same list with nothing folded: what a search shows, since its result is the pool you
+/// asked for and hiding part of it behind a count is the opposite of narrowing.
+export const plainRows = (items: QueueItem[]): QueueRow[] => items.map((item) => ({ kind: "item", item }));
 
 const isPr = (i: QueueItem): boolean => i.thread?.kind === "pr" || !!i.pr;
 const inFilter = (i: QueueItem, f: QueueFilter): boolean =>

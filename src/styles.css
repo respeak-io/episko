@@ -2816,6 +2816,14 @@ select.in-ctl { cursor: pointer; }
 .qrow:hover { background: var(--surface-2); }
 /* An advisory is the one row with somebody else's clock on it, so it alone is washed. */
 .qrow.q-deps:has(.k.adv) { background: color-mix(in srgb, var(--st-error) 7%, transparent); }
+/* A folded run: dimmer than the rows it stands for, since it is a count rather than work. */
+.qrow.qfold { background: var(--bg-2); }
+.qrow.qfold .ti { color: var(--muted-2); }
+.qrow.qfold:hover .ti, .qrow.qfold.open .ti { color: var(--muted); }
+.qrow .qchev { font: 11px var(--font-mono); color: var(--muted-2); padding: 0 5px; }
+.qrow.qfold:hover .qchev { color: var(--text); }
+/* The opened rows, indented under their head and tied to it by one rule. */
+.qkids { display: flex; flex-direction: column; gap: 3px; margin: 3px 0 3px 9px; padding-left: 8px; border-left: 1px solid var(--hair); }
 .qrow.claimed .ti { color: var(--muted-2); }
 /* The queue's row vocabulary. Every row family in this file scopes its own .k/.mid/.ti/.sub/.go
    (see .dbr, .br, .dep): the four sources the queue merges had four sets, and this is the one. */
