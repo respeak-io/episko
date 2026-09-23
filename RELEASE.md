@@ -338,6 +338,12 @@ macOS and Linux halves are three separate implementations of the same question.
 - [ ] **A second server in the same pane does NOT get guessed at.** With two servers
       under one pane and neither announced, both must appear as their own `◎` rows —
       nothing should adopt an address it cannot be sure of.
+- [ ] **✕ on a `◎` row kills it, behind a confirm.** The server started by hand above:
+      ✕ asks first, then the process and everything it started die and a toast says the
+      port came free; the row leaves without the pill going red (`markKilled`). Then close
+      the pane of a *second* such server: its row must stay, marked *orphaned*, and ✕
+      there must work too. An agent's server whose session is still live must still be
+      **asked** (the prefilled `TaskStop` above), never killed.
 - [ ] **It costs nothing when idle.** With no panes open the scan must not run at all
       (the roster is checked first). With panes open and no servers, the pill stays
       hidden and the paint counter stays flat.
