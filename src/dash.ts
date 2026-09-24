@@ -48,13 +48,18 @@ export function dashDays(
 
 // 0 when the day has no detail record, never the fleet total: a borrowed `cc-usage` figure is
 // a lie that looks like data. Keyed by project name, as `addUsage` records it.
+// `keys`: the project's id and its name, since a day recorded before ids is keyed by name.
 export function projectCost(
   detail: Record<string, { projects?: Record<string, number> } | undefined>,
   dayKey: string,
-  projectName: string,
+  keys: string | (string | undefined)[],
 ): number {
-  const v = detail[dayKey]?.projects?.[projectName];
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+  let sum = 0;
+  for (const k of new Set(typeof keys === "string" ? [keys] : keys)) {
+    const v = k ? detail[dayKey]?.projects?.[k] : undefined;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) sum += v;
+  }
+  return sum;
 }
 
 // ---------- the pulse strip ----------

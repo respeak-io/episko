@@ -53,11 +53,18 @@ export function modelName(m: string): string {
 // `cc-usage` is the authoritative per-day total; `cc-usage-detail` layers the per-model /
 // per-project / per-session split on it, each recorded only from the build that added it.
 export interface DaySess { usd: number; title: string; project: string }
+// `projects` is keyed by project id where one is known (docs/sync.md), else by name; `names`
+// labels the ids, so a legacy name key needs none.
 export interface DayDetail {
   models: Record<string, number>;
   projects: Record<string, number>;
+  names?: Record<string, string>;
   sess?: Record<string, DaySess>;
 }
+export const isProjectId = (k: string) => /^(git|remote):/.test(k);
+// The id `addUsage` files a project's spend under; ./synclink sets it once ids resolve.
+let projectKeyOf: (s: Sess) => string | undefined = () => undefined;
+export function setProjectKeyer(fn: (s: Sess) => string | undefined) { projectKeyOf = fn; }
 export const usage: Record<string, number> = readObj<number>("cc-usage");
 export const usageDetail: Record<string, DayDetail> = readObj<DayDetail>("cc-usage-detail");
 // Keyed by project NAME, the basename of a path that is spelled precomposed since 0.29.
@@ -82,8 +89,26 @@ export function dayDetail(day: string): DayDetail | undefined {
     for (const [k, v] of Object.entries(b)) o[k] = (o[k] || 0) + v;
     return o;
   };
-  return { models: add(own?.models, peer.models), projects: add(own?.projects, peer.projects), sess: own?.sess };
+  return { models: add(own?.models, peer.models), projects: add(own?.projects, peer.projects), names: { ...peer.names, ...own?.names }, sess: own?.sess };
 }
+
+/** The one-time move of name-keyed spend onto ids; a name that maps to no single id stays as it is. */
+export function rekeyDetail(detail: Record<string, DayDetail>, idForName: (name: string) => string | undefined): string[] {
+  const moved: string[] = [];
+  for (const [day, d] of Object.entries(detail)) {
+    if (!d?.projects) continue;
+    for (const [k, v] of Object.entries(d.projects)) {
+      const id = isProjectId(k) ? undefined : idForName(k);
+      if (!id) continue;
+      d.projects[id] = (d.projects[id] || 0) + v;
+      delete d.projects[k];
+      (d.names || (d.names = {}))[id] = k;
+      if (!moved.includes(day)) moved.push(day);
+    }
+  }
+  return moved;
+}
+export function markDetailDirty() { detailDirty = true; flushUsageDetail(); }
 export function todayKey() { return dayKeyOf(Date.now()); }
 // Local wall-clock day, never UTC, like every key in both stores. One formatter, two
 // spellings: `uDkey` takes a Date, `dayKeyOf` the milliseconds.
@@ -123,7 +148,9 @@ export function addUsage(delta: number, s?: Sess) {
   const fam = modelName(s.model);
   d.models[fam] = (d.models[fam] || 0) + delta;
   const proj = s.project || basename(s.workdir) || "unknown";
-  d.projects[proj] = (d.projects[proj] || 0) + delta;
+  const pk = projectKeyOf(s) ?? proj;
+  d.projects[pk] = (d.projects[pk] || 0) + delta;
+  if (pk !== proj) (d.names || (d.names = {}))[pk] = proj;
   if (!s.id) return;
   const bag = d.sess || (d.sess = {});
   const e = bag[s.id] || (bag[s.id] = { usd: 0, title: "", project: proj });
@@ -153,7 +180,7 @@ export function daySpend(
     return rows;
   };
   const projects = Object.entries(d?.projects || {}).filter(([, v]) => v > 0)
-    .map(([k, v]) => ({ key: k, label: k, sub: "", usd: v }))
+    .map(([k, v]) => ({ key: k, label: d?.names?.[k] ?? k, sub: "", usd: v }))
     .sort((a, b) => b.usd - a.usd);
   const split = projects.reduce((n, r) => n + r.usd, 0);
   const sessions = Object.entries(d?.sess || {}).filter(([, v]) => v.usd > 0)

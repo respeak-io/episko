@@ -32,6 +32,7 @@ import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from ".
 import {
   dayDetail, dayTotal, modelSeries, peerUsage, tokenDays, uDkey, uModels, usage, usageWindow, uSum, type UDay,
 } from "./usage";
+import { idsNamed } from "./synclink";
 import { tokenScanning } from "./usageview"; // the transcript scan's own flag, ./usagedlg drives it
 
 // What this pane does but does not own; one host object rather than six setters, so nothing
@@ -246,7 +247,7 @@ function buildView(now: number): FleetView {
   const cost = new Map<string, number>();
   const costFor = (name: string): number => {
     let v = cost.get(name);
-    if (v === undefined) { v = uSum(win, (d) => projectCost({ [d.key]: dayDetail(d.key) }, d.key, name)); cost.set(name, v); }
+    if (v === undefined) { v = uSum(win, (d) => projectCost({ [d.key]: dayDetail(d.key) }, d.key, [name, ...idsNamed(name)])); cost.set(name, v); }
     return v;
   };
   // `dirtyByFolder` itself, never `folderDirty`: an unswept folder must read as unread.

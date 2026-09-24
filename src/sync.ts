@@ -20,7 +20,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-usage": "account", "cc-usage-detail": "account",
 
   "cc-favorites": "roster", "cc-proj-order": "roster", "cc-proj-groups": "roster",
-  "cc-icons": "roster", "cc-custom-icons": "roster", "cc-colors": "roster",
+  "cc-custom-icons": "roster", "cc-colors": "roster",
   "cc-agent-by-project": "roster", "cc-gh-account": "roster",
 
   "cc-perm-modes": "local", "cc-perm-mode": "local", "cc-trusted": "local", "cc-autofetch": "local",
@@ -37,6 +37,9 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // Sync's own bookkeeping, and what it received: never sent back.
   "cc-usage-peers": "local", "cc-detail-peers": "local", "cc-sync-stamps": "local",
   "cc-sync-dirty": "local", "cc-sync-sent": "local", "cc-sync-limits": "local", "cc-sync-seed": "local",
+  "cc-sync-roster": "local", "cc-proj-ids": "local",
+  // A cache of what each project's own site declares: every machine probes it for itself.
+  "cc-icons": "local",
 };
 
 export const syncClass = (key: string): SyncClass => SYNC_KEYS[key] ?? "local";

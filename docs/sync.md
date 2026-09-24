@@ -127,6 +127,30 @@ batch, and that is harmless because every merge is idempotent.
 once: they wait in `cc-sync-seed` until the first catch-up ends. It then offers only the keys
 the server had nothing for, at the oldest possible stamp.
 
+## Project identity and the roster
+
+`project_id` (git.rs) answers a folder's id: `git:<root sha>` (several roots sorted and joined
+with `+`), or `remote:<owner/repo>` for a repo with no commit yet. It never uses the host, which
+an ssh alias rewrites per machine. `synclink` asks once per folder and caches the answer in
+`cc-proj-ids`. An id is useful without sync too: `addUsage` files a project's spend under it
+(`setProjectKeyer`), and `rekeyDetail` moves name-keyed history onto the one id that name maps
+to on this machine. A name that maps to several ids stays under the name, and that loss was
+accepted.
+
+The roster (favourites, order, groups, colours, custom icons, per-project agent and gh account)
+travels as `roster` events keyed `fav|<id>`, `color|<id>`, and so on, with `order` and `groups`
+as whole values. Rules, all in `roster.ts`:
+
+- **Applied one entry at a time**, onto `pathOf(id)`, this machine's checkout of that project.
+  An entry for a project not cloned here is **held** in `cc-sync-roster` and applied once an id
+  resolves to a local folder.
+- **Never send an absence you cannot see.** `mergeWire` carries entries for unknown ids through
+  untouched, and keeps unknown ids in their slots in `order`.
+- **Revealed entries lose.** An entry that only became visible (a pairing, an id resolving) goes
+  at stamp 1 and never over a key the server already holds. Only a real local edit is stamped
+  now.
+- A group's `collapsed` state stays on this screen.
+
 ## Running the server
 
 ```sh

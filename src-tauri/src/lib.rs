@@ -478,6 +478,7 @@ pub fn run() {
             git::git_commit_info,
             git::git_log_days,
             git::project_facts,
+            git::project_id,
             deps::dep_report,
             deps::dep_invalidate,
             deps::dep_manifests,
