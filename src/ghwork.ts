@@ -1,7 +1,7 @@
 // The GitHub half of the dashboard's rules: ordering, triage, who has what. No DOM, no Tauri;
 // ./dashview owns the markup, ./dashboard the fetch. See docs/dashboard.md.
 
-import { claimIsStale, type ClaimRecord } from "./claim";
+import { claimIsStale, leaseLive, type ClaimRecord, type Lease } from "./claim";
 
 /// One issue or PR, as `gh_threads` returns it. Mirrors the Rust struct.
 export interface GhThread {
@@ -132,10 +132,12 @@ export interface Holder {
 // Our local ledger wins (it knows a dispatch not yet pushed), then an assignee, then the
 // `agent:` label, which cannot say whose machine.
 export function holderOf(
-  t: GhThread, viewer: string | null, claims: ClaimRecord[], now: number,
+  t: GhThread, viewer: string | null, claims: ClaimRecord[], now: number, lease?: Lease | null,
 ): Holder | null {
   const mineRec = claims.find((c) => c.number === t.number && c.kind === (t.kind === "pr" ? "pr" : "issue"));
   if (mineRec) return { who: viewer || "you", mine: true, stale: claimIsStale(mineRec.at, now) };
+  // A live lease beats an assignee: it says an agent is on it now, which an assignment never did.
+  if (leaseLive(lease, now)) return { who: lease.who, mine: !!viewer && lease.who === viewer, stale: false };
   const who = t.assignees[0];
   if (who) return { who, mine: !!viewer && who === viewer, stale: false };
   if (t.labels.some((l) => l.toLowerCase().startsWith("agent:"))) {

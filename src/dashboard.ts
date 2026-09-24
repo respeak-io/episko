@@ -65,7 +65,9 @@ import {
 } from "./trail";
 import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { dayDetail, usageWindow } from "./usage";
-import { projectIdOf, publishDigest, publishNote, serverDigest, serverNotes, syncOn } from "./synclink";
+import {
+  leaseFor, projectIdOf, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
+} from "./synclink";
 import {
   accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
   permissionModeFor, removingWt, sessions, setActiveId, setMirror, shareModeOf,
@@ -835,7 +837,8 @@ export function renderDash(): void {
     }));
 
   // ---- column C: one ranked queue over what were four cards ----
-  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
+  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now,
+    leaseFor(pid(), t.kind === "pr" ? "pr" : "issue", t.number));
   const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
   const dn = depsNow();
   const dtally = depTally(dn.adv, dn.prs, dn.out);
@@ -1835,6 +1838,9 @@ async function doDispatch(): Promise<void> {
   // Follows the project provider preference; claim release rides the provider-neutral `pty-exit`.
   const sid = await host.launch(n, r, { colorKey: r });
   if (typeof sid !== "string") return;   // launch already toasted the spawn error; no claim either
+  // The server's lease goes whatever the GitHub policy writes: it is the fast path, gh the floor.
+  const p = pid();
+  if (p && shareMode() !== "off") takeLease(p, t.kind === "pr" ? "pr" : "issue", t.number, gh.viewer || "someone", sid);
 
   const eff = resolveClaim(policy, allow);
   // Pass every argument the command declares, `body` included: Tauri rejects the whole
@@ -1874,6 +1880,7 @@ async function doDispatch(): Promise<void> {
 }
 
 export function releaseClaimFor(sessionId: string): void {
+  releaseLeases(sessionId);
   const rec = claimForSession(sessionId);
   if (!rec) return;
   dropClaim(rec.threadId);

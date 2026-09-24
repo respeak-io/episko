@@ -18,6 +18,7 @@ import {
 } from "./state";
 import { customIcons } from "./icons";
 import { basename } from "./format";
+import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
 
 export interface SyncStatus {
   configured: boolean; url: string; user: string; device: string; label: string; cursor: number;
@@ -147,10 +148,12 @@ const wireDetail = (day: string): WireDetail => {
   return { models: { ...d.models }, projects: { ...d.projects }, ...(d.names ? { names: { ...d.names } } : {}) };
 };
 
-// The team streams' values live with their owners below; claims register theirs through here.
-let claimValue: (key: string) => unknown = () => null;
-export function setClaimValue(fn: (key: string) => unknown) { claimValue = fn; }
-const owedValue = (stream: Stream, key: string): unknown => stream === "notes" ? team[key] ?? null : claimValue(key);
+// The team streams' values live with their owners below.
+const owedValue = (stream: Stream, key: string): unknown => {
+  if (stream === "notes") return team[key] ?? null;
+  const l = leases[key];
+  return l ? { who: l.who, until: l.until } : null;
+};
 
 /** Everything owed right now, as one push; nothing leaves while the server is not answering. */
 export function flush() {
@@ -257,6 +260,7 @@ function apply(ev: SyncEvent): boolean {
       return false;
     }
     case "notes": return applyTeam(ev);
+    case "claims": return applyLease(ev);
     default: return onForeign(ev);
   }
 }
@@ -354,8 +358,12 @@ export async function forgetSync() {
   render();
 }
 export function reconnectSync() { void invoke("sync_reconnect"); }
-/** A tick from main.ts: sends what the last minute left owed, and repaints the health. */
-export function tickSync() { if (status.connected) flush(); render(); }
+/** A tick from main.ts: renews this machine's leases, sends what is owed, repaints the health. */
+export function tickSync(alive: (sessionId: string) => boolean = () => true) {
+  renewLeases(alive);
+  if (status.connected) flush();
+  render();
+}
 export const todaySent = () => sentLog.filter((e) => dayKeyOf(e.at) === dayKeyOf(Date.now())).length;
 
 // ---------- project identity and the roster (docs/sync.md) ----------
@@ -546,4 +554,58 @@ export function beatPresence(items: PresenceItem[]) {
   if (j === beat && now - beatAt < 15_000) return;
   beat = j; beatAt = now;
   invoke("sync_presence", { items }).catch((e) => log("warn", `sync presence: ${e}`));
+}
+
+// ---------- claims as leases (docs/sync.md) ----------
+
+const CLAIMS = "cc-team-claims";
+// Everyone's leases as last heard; `sid` marks one this machine holds, and never leaves it.
+const leases: Record<string, Lease & { sid?: string }> = {};
+for (const [k, v] of Object.entries(readObj<unknown>(CLAIMS))) {
+  const l = narrowLease(v);
+  const sid = (v as { sid?: unknown })?.sid;
+  if (l) leases[k] = typeof sid === "string" ? { ...l, sid } : l;
+}
+function saveLeases() { quiet(() => raw.set.call(localStorage, CLAIMS, JSON.stringify(leases))); }
+
+function applyLease(ev: SyncEvent): boolean {
+  const sk = stampKey("claims", ev.key);
+  if (ev.device === status.device || !wins(ev, stamps[sk])) return false;
+  const l = ev.payload === null ? null : narrowLease(ev.payload);
+  if (ev.payload !== null && !l) return false;
+  stamps[sk] = { at: ev.at, device: ev.device };
+  if (l) leases[ev.key] = l; else delete leases[ev.key];
+  saveLeases();
+  return true;
+}
+function publishLease(key: string) {
+  owe("claims", key, Date.now());
+  saveLeases();
+  saveBook();
+  schedule(500);
+}
+
+export function leaseFor(pid: string | undefined, kind: "issue" | "pr", number: number): Lease | null {
+  if (!pid) return null;
+  const l = leases[leaseKey(pid, kind, number)];
+  return leaseLive(l, Date.now()) ? l : null;
+}
+/** A dispatch at shared work: the team sees it within a second, and it lapses with the session. */
+export function takeLease(pid: string, kind: "issue" | "pr", number: number, who: string, sid: string) {
+  if (!status.configured) return;
+  const key = leaseKey(pid, kind, number);
+  leases[key] = { who, until: Date.now() + LEASE_MS, sid };
+  publishLease(key);
+}
+/** The session ended: every lease it held goes, rather than waiting out its time. */
+export function releaseLeases(sid: string) {
+  for (const [k, l] of Object.entries(leases)) if (l.sid === sid) { delete leases[k]; publishLease(k); }
+}
+function renewLeases(alive: (sid: string) => boolean) {
+  const now = Date.now();
+  for (const [k, l] of Object.entries(leases)) {
+    if (!l.sid) { if (!leaseLive(l, now - LEASE_MS)) delete leases[k]; continue; }
+    if (!alive(l.sid)) { delete leases[k]; publishLease(k); }
+    else if (leaseDue(l, now)) { l.until = now + LEASE_MS; publishLease(k); }
+  }
 }

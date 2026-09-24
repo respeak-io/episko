@@ -122,3 +122,16 @@ describe("the ledger of what we claimed", () => {
     expect(claims).toEqual([]);
   });
 });
+
+describe("leases", () => {
+  it("narrows what a peer sent, and knows when one has lapsed or wants renewing", async () => {
+    const { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease } = await import("../src/claim");
+    expect(narrowLease({ who: "ana", until: 5, extra: 1 })).toEqual({ who: "ana", until: 5 });
+    for (const bad of [null, "x", { who: 1, until: 5 }, { who: "a", until: NaN }]) expect(narrowLease(bad)).toBeNull();
+    expect(leaseLive({ who: "a", until: 10 }, 9)).toBe(true);
+    expect(leaseLive({ who: "a", until: 10 }, 10)).toBe(false);
+    expect(leaseDue({ who: "a", until: 1000 + LEASE_MS }, 1000)).toBe(false);
+    expect(leaseDue({ who: "a", until: 1000 + LEASE_MS / 2 - 1 }, 1000)).toBe(true);
+    expect(leaseKey("git:1", "pr", 7)).toBe("git:1|pr#7");
+  });
+});

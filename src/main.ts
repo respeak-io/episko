@@ -822,7 +822,7 @@ setInterval(flushDebug, 4000);
 // on a cadence change (see tickVitals).
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 // Sends what the last half-minute left owed, and ages the sync badge past its window.
-setInterval(tickSync, 30_000);
+setInterval(() => tickSync((sid) => { const s = sessions.get(sid); return !!s && !isExited(s); }), 30_000);
 // Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
 setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
   pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),
