@@ -190,6 +190,10 @@ describe("finding the question in the scrollback", () => {
     expect(hit("> go on", "go on")).toBe(true);
     expect(hit("> now tell it to go on", "go on")).toBe(false);
   });
+  it("reads past the `❯` the fullscreen TUI puts before a question", () => {
+    expect(normLine("❯ sure")).toBe("sure");
+    expect(hit("❯ sure", "sure")).toBe(true);
+  });
 });
 
 describe("how far a screen moved between two readings", () => {

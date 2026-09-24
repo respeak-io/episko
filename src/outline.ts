@@ -105,9 +105,9 @@ export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] 
 // The address is the text, not a coordinate: the submit hook fires when you press Enter, and
 // the REPL commits the line afterwards, above where the cursor then was (docs/sessions.md).
 
-/** A terminal row, read as prose: the REPL's own `>` marker is not part of the question. */
+/** A terminal row, read as prose: the REPL's own marker (`❯` today, `>` before) is not the question. */
 export const normLine = (raw: string): string =>
-  raw.replace(/\s+/g, " ").replace(/^[\s>│┃|]+/, "").trim();
+  raw.replace(/\s+/g, " ").replace(/^[\s>❯│┃|]+/, "").trim();
 
 export interface PromptKey { key: string; strict: boolean }
 const KEY_MAX = 60; // enough to be this question rather than a similar one
