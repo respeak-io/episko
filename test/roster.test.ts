@@ -6,7 +6,7 @@ import { applyWire, isRosterKey, mergeWire, rosterWire, wireDiff, type Roster } 
 const IDS: Record<string, string> = { "/a/app": "git:1", "/a/app-wt": "git:1", "/a/site": "git:2", "/b/app": "git:1", "/b/site": "git:2", "/b/mine": "git:3" };
 const idOf = (p: string) => IDS[p];
 const pathOfB = (id: string) => ({ "git:1": "/b/app", "git:2": "/b/site", "git:3": "/b/mine" } as Record<string, string>)[id];
-const empty = (): Roster => ({ favorites: [], order: [], groups: { groups: [], of: {} }, colors: {}, icons: {}, agent: {}, gh: {} });
+const empty = (): Roster => ({ favorites: [], order: [], groups: { groups: [], of: {} }, colors: {}, icons: {}, agent: {}, gh: {}, share: {} });
 
 describe("rosterWire", () => {
   it("speaks in ids, and leaves out a project that has none yet", () => {
@@ -14,12 +14,13 @@ describe("rosterWire", () => {
       favorites: [{ name: "app", path: "/a/app" }, { name: "scratch", path: "/tmp/x" }],
       order: ["/a/site", "/tmp/x", "/a/app"],
       groups: { groups: [{ id: "g1", name: "Work", collapsed: true }], of: { "/a/app": "g1", "/tmp/x": "g1" } },
-      colors: { "/a/app": "#f00" }, icons: {}, agent: { "/a/site": "codex" }, gh: {},
+      colors: { "/a/app": "#f00" }, icons: {}, agent: { "/a/site": "codex" }, gh: {}, share: { "/a/app": "server" },
     };
     expect(rosterWire(r, idOf)).toEqual({
       "fav|git:1": { name: "app" },
       "color|git:1": "#f00",
       "agent|git:2": "codex",
+      "share|git:1": "server",
       order: ["git:2", "git:1"],
       groups: { groups: [{ id: "g1", name: "Work" }], of: { "git:1": "g1" } },
     });

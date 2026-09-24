@@ -11,13 +11,14 @@ export interface Roster {
   icons: Record<string, string>;
   agent: Record<string, string>;
   gh: Record<string, string>;
+  share: Record<string, string>;
 }
 /** A roster as the server holds it: wire key → value. A removed entry is an absent key. */
 export type Wire = Record<string, unknown>;
 export type IdOf = (path: string) => string | undefined;
 export type PathOf = (id: string) => string | undefined;
 
-const MAPS = { color: "colors", icon: "icons", agent: "agent", gh: "gh" } as const;
+const MAPS = { color: "colors", icon: "icons", agent: "agent", gh: "gh", share: "share" } as const;
 type MapKind = keyof typeof MAPS;
 
 /** The roster, id-keyed. A project with no id yet is simply not on the wire. */
@@ -79,7 +80,7 @@ export function wireDiff(prev: Wire, next: Wire): string[] {
   return [...keys].filter((k) => JSON.stringify(prev[k]) !== JSON.stringify(next[k])).sort();
 }
 
-export const isRosterKey = (k: string) => k === "order" || k === "groups" || /^(fav|color|icon|agent|gh)\|.+/.test(k);
+export const isRosterKey = (k: string) => k === "order" || k === "groups" || /^(fav|color|icon|agent|gh|share)\|.+/.test(k);
 
 /**
  * One wire entry applied to this machine's roster. False when there is no local checkout of the

@@ -39,6 +39,7 @@ import {
   cmpBase, setCmpBase as setCmpBaseState,
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   titlePrefs, setTitlePrefs as setTitlePrefsState,
+  shareByProject, setShareMode, type ShareMode,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
@@ -403,6 +404,14 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
 // and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
 // dependency reads are a cache of their own, which the same switch has to drop too.
+export function setProjectShareMode(colorKey: string, m: ShareMode) {
+  setShareMode(colorKey, m);
+  localStorage.setItem("cc-episko-share", JSON.stringify(shareByProject));
+  toast(m === "git" ? `${basename(colorKey)} shares through git`
+    : m === "server" ? `${basename(colorKey)} shares through the sync server; nothing goes in the repo`
+    : `${basename(colorKey)} shares nothing`);
+}
+
 export function setProjectGhAccount(colorKey: string, login: string | null) {
   setProjectGhAccountState(colorKey, login);
   localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));

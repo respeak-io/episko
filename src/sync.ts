@@ -21,7 +21,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
 
   "cc-favorites": "roster", "cc-proj-order": "roster", "cc-proj-groups": "roster",
   "cc-custom-icons": "roster", "cc-colors": "roster",
-  "cc-agent-by-project": "roster", "cc-gh-account": "roster",
+  "cc-agent-by-project": "roster", "cc-gh-account": "roster", "cc-episko-share": "roster",
 
   "cc-perm-modes": "local", "cc-perm-mode": "local", "cc-trusted": "local", "cc-autofetch": "local",
   "cc-task-prefs": "local", "cc-task-onstop": "local", "cc-task-runner": "local", "cc-task-inputs": "local",
@@ -37,7 +37,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // Sync's own bookkeeping, and what it received: never sent back.
   "cc-usage-peers": "local", "cc-detail-peers": "local", "cc-sync-stamps": "local",
   "cc-sync-dirty": "local", "cc-sync-sent": "local", "cc-sync-limits": "local", "cc-sync-seed": "local",
-  "cc-sync-roster": "local", "cc-proj-ids": "local",
+  "cc-sync-roster": "local", "cc-proj-ids": "local", "cc-team-notes": "local", "cc-digest-no": "local",
   // A cache of what each project's own site declares: every machine probes it for itself.
   "cc-icons": "local",
 };

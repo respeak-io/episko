@@ -151,6 +151,28 @@ as whole values. Rules, all in `roster.ts`:
   now.
 - A group's `collapsed` state stays on this screen.
 
+## Shared notes and the work log: where they go is per project
+
+Project menu › **Sharing** holds one choice per project (`cc-episko-share`, synced with the
+roster):
+
+| Mode | Notes and work log |
+| --- | --- |
+| **Git** (the default) | Committed in `.episko/notes.toml` and `.episko/digest.md`, as before. With sync on, the server also carries them, so the team sees them before anyone pushes. |
+| **Sync server** | Only the server carries them. Nothing is written into the repo, and no consent dialog appears, because choosing the mode is the consent. |
+| **Nowhere** | Nothing is shared and nothing is offered. Notes a teammate committed still show. |
+
+- **Notes** travel on the team stream `notes`, keyed `<project id>|<note id>`, with last writer
+  wins. The dashboard shows the committed file and the server's copy as one list, one row per
+  id, and the later `at` wins a disagreement (`sharedNow`).
+- **Work-log lines** travel as `digest|<project id>|<day>` and seed the day's project sentence.
+  A line from the file wins over the server's.
+- **The "Not written down anywhere" offer** appears only in Git mode. Its **Don't offer this**
+  button silences it for one project (`cc-digest-no`).
+
+`tasks.toml`, `[branches] protect` and `[health]` never take this route, whatever the mode.
+They change what runs or what is permitted.
+
 ## Running the server
 
 ```sh

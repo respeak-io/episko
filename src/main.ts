@@ -33,7 +33,7 @@ import {
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
+  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
@@ -212,6 +212,7 @@ setPaletteHost({
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount, openShellFor, closeSession,
+  setShareMode: setProjectShareMode,
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });

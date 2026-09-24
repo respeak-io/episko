@@ -34,6 +34,7 @@ import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, dirtyByFolder,
   dormants, effectiveAgent, engineDef, externals, FAVORITES, ghAccountFor, ghLogins, isDirty,
   missingAgents, projGroups, sessions, termEngine,
+  shareModeOf, type ShareMode,
 } from "./state";
 import { ghPickable, ghWho } from "./ghwork";
 
@@ -46,6 +47,7 @@ let host: {
   launchShell: (project: string, workdir: string, opts: { colorKey?: string }) => void;
   setProjectAgent: (colorKey: string, id: string | null) => void;
   setGhAccount: (colorKey: string, login: string | null) => void;
+  setShareMode: (colorKey: string, mode: ShareMode) => void;
   openProjectFolder: (key: string) => void;
   addProjectPath: (dir: string) => void;
   removeFavorite: (path: string) => void;
@@ -54,7 +56,7 @@ let host: {
 } = {
   renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
   setProjectAgent: () => {}, openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
-  setGhAccount: () => {}, openShellFor: () => {}, closeSession: () => {},
+  setGhAccount: () => {}, openShellFor: () => {}, closeSession: () => {}, setShareMode: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
@@ -273,6 +275,7 @@ export function openCtxMenu(key: string, x: number, y: number) {
     ghPickable(ghLogins)
       ? { act: "ghacct", ic: "◈", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
       : null,
+    { act: "sharing", ic: "⇄", label: `Sharing · ${SHARE_LABEL[shareModeOf(key)]}`, sub: SHARE_SUB[shareModeOf(key)], chev: true },
     null,
     // Dropped below unless the probe says this folder is a repo.
     { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
@@ -736,6 +739,25 @@ export function openGhPicker(at: HTMLElement | DOMRect, key: string) {
   });
 }
 
+// ---------- where a project's shared notes and work log go (docs/sync.md) ----------
+const SHARE_LABEL: Record<ShareMode, string> = { git: "Git", server: "Sync server", off: "Nowhere" };
+const SHARE_SUB: Record<ShareMode, string> = {
+  git: "notes and the work log are committed in .episko/",
+  server: "the team sees them through sync; nothing in the repo",
+  off: "nothing is shared, and nothing is offered",
+};
+export function openSharePicker(at: HTMLElement | DOMRect, key: string) {
+  const cur = shareModeOf(key);
+  openMenu(at, {
+    title: "Sharing", accent: accentFor(key),
+    sub: `${projName(key)} · where shared notes and the work log go`,
+    groups: [{ items: (["git", "server", "off"] as ShareMode[]).map((m) => ({
+      id: m, label: SHARE_LABEL[m], mark: m === cur ? "✓" : "", sub: SHARE_SUB[m],
+    })) }],
+    onPick: (id) => { host.setShareMode(key, id as ShareMode); host.renderAll(); },
+  });
+}
+
 export function openAgentPicker(at: HTMLElement | DOMRect, key: string) {
   const cur = agentByProject[key];
   const missing = missingAgents();
@@ -915,6 +937,7 @@ $("ctxMenu").addEventListener("click", (e) => {
   // Not a drill-down any more: the picker is its own popover, so the menu behind it goes.
   if (b.dataset.ctx === "agents") { const r = b.getBoundingClientRect(); closeCtxMenu(); openAgentPicker(r, key); return; }
   if (b.dataset.ctx === "ghacct") { const r = b.getBoundingClientRect(); closeCtxMenu(); openGhPicker(r, key); return; }
+  if (b.dataset.ctx === "sharing") { const r = b.getBoundingClientRect(); closeCtxMenu(); openSharePicker(r, key); return; }
   closeCtxMenu(); closeColorPop();
   switch (b.dataset.ctx) {
     case "launch": host.requestLaunch(name, key); break;

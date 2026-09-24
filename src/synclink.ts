@@ -12,7 +12,7 @@ import { mergeRl, rl, rlScoped } from "./rl";
 import { readObj, safeParse } from "./store";
 import { applyWire, idOfKey, isRosterKey, mergeWire, rosterWire, wireDiff, type Roster, type Wire } from "./roster";
 import {
-  FAVORITES, agentByProject, colorOverrides, ghAccountByProject, projGroups, projOrder,
+  FAVORITES, agentByProject, colorOverrides, ghAccountByProject, projGroups, projOrder, shareByProject,
   setFavorites, setProjGroups, setProjOrder,
 } from "./state";
 import { customIcons } from "./icons";
@@ -56,7 +56,8 @@ export function setSyncHost(h: {
 const STAMPS = "cc-sync-stamps", DIRTY = "cc-sync-dirty", SENT = "cc-sync-sent", LIMITS = "cc-sync-limits", SEED = "cc-sync-seed";
 const stamps: Stamps = readStamps(localStorage.getItem(STAMPS));
 // Every entry is a `stream:key` stamp key; prefs and roster entries share one ledger.
-const dirty = new Set(readKeyList(localStorage.getItem(DIRTY)).filter((k) => k.startsWith("prefs:") || k.startsWith("roster:")));
+const OWED = ["prefs:", "roster:", "notes:", "claims:"];
+const dirty = new Set(readKeyList(localStorage.getItem(DIRTY)).filter((k) => OWED.some((p) => k.startsWith(p))));
 // A newly paired machine's prefs, offered only after its first catch-up and only where the
 // server had nothing: joining an existing setup adopts it rather than overwriting it.
 const seed = new Set(readKeyList(localStorage.getItem(SEED)));
@@ -145,6 +146,11 @@ const wireDetail = (day: string): WireDetail => {
   return { models: { ...d.models }, projects: { ...d.projects }, ...(d.names ? { names: { ...d.names } } : {}) };
 };
 
+// The team streams' values live with their owners below; claims register theirs through here.
+let claimValue: (key: string) => unknown = () => null;
+export function setClaimValue(fn: (key: string) => unknown) { claimValue = fn; }
+const owedValue = (stream: Stream, key: string): unknown => stream === "notes" ? team[key] ?? null : claimValue(key);
+
 /** Everything owed right now, as one push; nothing leaves while the server is not answering. */
 export function flush() {
   if (!status.connected || !status.device) return;
@@ -155,7 +161,7 @@ export function flush() {
     const i = sk.indexOf(":");
     const stream = sk.slice(0, i) as Stream, key = sk.slice(i + 1);
     const at = stamps[sk]?.at ?? now;
-    const payload = stream === "prefs" ? localStorage.getItem(key) : wire[key] ?? null;
+    const payload = stream === "prefs" ? localStorage.getItem(key) : stream === "roster" ? wire[key] ?? null : owedValue(stream, key);
     events.push({ stream, key, at, payload });
     f.owed.set(sk, at);
   }
@@ -249,6 +255,7 @@ function apply(ev: SyncEvent): boolean {
       }
       return false;
     }
+    case "notes": return applyTeam(ev);
     default: return onForeign(ev);
   }
 }
@@ -346,7 +353,7 @@ export const todaySent = () => sentLog.filter((e) => dayKeyOf(e.at) === dayKeyOf
 
 const ROSTER_STORES: Record<string, keyof Roster> = {
   "cc-favorites": "favorites", "cc-proj-order": "order", "cc-proj-groups": "groups", "cc-colors": "colors",
-  "cc-custom-icons": "icons", "cc-agent-by-project": "agent", "cc-gh-account": "gh",
+  "cc-custom-icons": "icons", "cc-agent-by-project": "agent", "cc-gh-account": "gh", "cc-episko-share": "share",
 };
 const IDS = "cc-proj-ids", WIRE = "cc-sync-roster", ROSTER_SEED = "@roster";
 // Path → project id, or "" for a folder git gave none (asked again next run, never mid-run).
@@ -373,13 +380,13 @@ export const idsNamed = (name: string): string[] =>
   [...new Set(Object.entries(ids).filter(([p, id]) => id && basename(p) === name).map(([, id]) => id))];
 
 function rosterNow(): Roster {
-  return { favorites: FAVORITES, order: projOrder, groups: projGroups, colors: colorOverrides, icons: customIcons, agent: agentByProject, gh: ghAccountByProject };
+  return { favorites: FAVORITES, order: projOrder, groups: projGroups, colors: colorOverrides, icons: customIcons, agent: agentByProject, gh: ghAccountByProject, share: shareByProject };
 }
 function rosterPaths(): string[] {
   const r = rosterNow();
   return [...new Set([
     ...r.favorites.map((f) => f.path), ...r.order, ...Object.keys(r.groups.of),
-    ...Object.keys(r.colors), ...Object.keys(r.icons), ...Object.keys(r.agent), ...Object.keys(r.gh),
+    ...Object.keys(r.colors), ...Object.keys(r.icons), ...Object.keys(r.agent), ...Object.keys(r.gh), ...Object.keys(r.share),
   ])];
 }
 function saveRoster(r: Roster) {
@@ -392,6 +399,7 @@ function saveRoster(r: Roster) {
     raw.set.call(localStorage, "cc-custom-icons", JSON.stringify(r.icons));
     raw.set.call(localStorage, "cc-agent-by-project", JSON.stringify(r.agent));
     raw.set.call(localStorage, "cc-gh-account", JSON.stringify(r.gh));
+    raw.set.call(localStorage, "cc-episko-share", JSON.stringify(r.share));
   });
   render();
 }
@@ -453,3 +461,65 @@ function resolveIds(paths: string[]): Promise<unknown> {
   });
   return resolving;
 }
+
+// ---------- the team half: shared notes and the work log (docs/sync.md) ----------
+
+// Wire key → value: `<pid>|<note id>` a note, `digest|<pid>|<day>` a work-log line. The file
+// in git stays the record wherever a project keeps one; this is the channel beside it.
+export interface TeamNote { id: string; text: string; who: string; at: string }
+const TEAM = "cc-team-notes";
+const team: Record<string, unknown> = readObj<unknown>(TEAM);
+function saveTeam() { quiet(() => raw.set.call(localStorage, TEAM, JSON.stringify(team))); }
+
+function narrowNote(v: unknown): Omit<TeamNote, "id"> | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const text = typeof o.text === "string" ? o.text.slice(0, 4000) : "";
+  if (!text.trim()) return null;
+  return { text, who: typeof o.who === "string" ? o.who.slice(0, 80) : "", at: typeof o.at === "string" ? o.at.slice(0, 32) : "" };
+}
+
+function applyTeam(ev: SyncEvent): boolean {
+  const sk = stampKey(ev.stream, ev.key);
+  if (!wins(ev, stamps[sk])) return false;
+  const digest = ev.key.startsWith("digest|");
+  if (ev.payload !== null && (digest ? typeof ev.payload !== "string" : !narrowNote(ev.payload))) return false;
+  stamps[sk] = { at: ev.at, device: ev.device };
+  dirty.delete(sk);
+  if (ev.payload === null) delete team[ev.key];
+  else team[ev.key] = digest ? String(ev.payload).slice(0, 2000) : narrowNote(ev.payload);
+  saveTeam();
+  return true;
+}
+
+/** The notes this project's team shared through the server. */
+export function serverNotes(pid: string | undefined): TeamNote[] {
+  if (!pid) return [];
+  const out: TeamNote[] = [];
+  for (const [k, v] of Object.entries(team)) {
+    if (!k.startsWith(`${pid}|`)) continue;
+    const n = narrowNote(v);
+    if (n) out.push({ id: k.slice(pid.length + 1), ...n });
+  }
+  return out;
+}
+/** The project's work-log lines the team published, by day. */
+export function serverDigest(pid: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!pid) return out;
+  const pre = `digest|${pid}|`;
+  for (const [k, v] of Object.entries(team)) if (k.startsWith(pre) && typeof v === "string") out[k.slice(pre.length)] = v;
+  return out;
+}
+function publish(key: string, value: unknown) {
+  if (!status.configured) return;
+  if (value === null) delete team[key]; else team[key] = value;
+  owe("notes", key, Date.now());
+  saveTeam();
+  saveBook();
+  schedule(500);
+}
+export const publishNote = (pid: string, note: TeamNote | null, id: string) =>
+  publish(`${pid}|${id}`, note && { text: note.text, who: note.who, at: note.at });
+export const publishDigest = (pid: string, day: string, line: string) => publish(`digest|${pid}|${day}`, line);
+export const syncOn = () => status.configured;
