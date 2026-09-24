@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Open work narrows by kind, by label and by who has it.** Issues, pull requests and
+  *Unclaimed* sit beside a search box, and every label on the board is a chip; picked labels
+  AND together, like GitHub's own filter. A label on a row is a chip too, so "what else is
+  area:output?" is one click. Opened from a narrowed *What's next*, the view starts on that kind.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
