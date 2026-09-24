@@ -32,7 +32,7 @@ import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from ".
 import {
   dayDetail, dayTotal, modelSeries, peerUsage, tokenDays, uDkey, uModels, usage, usageWindow, uSum, type UDay,
 } from "./usage";
-import { idsNamed } from "./synclink";
+import { idsNamed, teamNow } from "./synclink";
 import { tokenScanning } from "./usageview"; // the transcript scan's own flag, ./usagedlg drives it
 
 // What this pane does but does not own; one host object rather than six setters, so nothing
@@ -307,6 +307,7 @@ function buildView(now: number): FleetView {
     resume,
     usage: fleetUsage(cards, win, days),
     limits: { h5: forecast5h(), d7: forecast7d() },
+    team: teamNow(),
   };
 }
 

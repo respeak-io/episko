@@ -2567,6 +2567,7 @@ select.in-ctl { cursor: pointer; }
 .fl-age { flex: none; font: 10px var(--font-mono); color: var(--muted-2); }
 
 .fl-row { position: relative; display: flex; align-items: center; gap: 9px; min-width: 0; height: 30px; padding: 0 10px; border-radius: 9px; background: var(--panel); cursor: pointer; }
+.fl-row.fl-team { cursor: default; } /* another device's session: a fact, not a door */
 .fl-row:hover { background: var(--surface); }
 .fl-row .sglyph { flex: none; width: 12px; }
 /* A shimmering row is not a row you can open: ./dashview's `.ac.sk` rule, one screen over. */

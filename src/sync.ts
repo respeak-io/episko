@@ -264,3 +264,35 @@ export function syncHealth(configured: boolean, connected: boolean, lastOkAt: nu
   if (lastOkAt === null || now - lastOkAt >= SYNC_DOWN_MS) return "down";
   return "lagging";
 }
+
+// ---------- presence: what a device has open, never what was said in it ----------
+
+// Project, branch and state only: a session's title is written from the conversation.
+export interface PresenceItem { pid: string; project: string; branch: string; state: string }
+const STATES = new Set(["attention", "working", "thinking", "done", "donebg", "idle", "error", "ended", "background"]);
+export const PRESENCE_MAX = 40;
+
+export function narrowPresence(v: unknown): PresenceItem[] {
+  if (!Array.isArray(v)) return [];
+  const out: PresenceItem[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    const project = typeof o.project === "string" ? o.project.slice(0, 80) : "";
+    const state = typeof o.state === "string" && STATES.has(o.state) ? o.state : "";
+    if (!project || !state) continue;
+    out.push({ pid: typeof o.pid === "string" ? o.pid.slice(0, 200) : "", project, branch: typeof o.branch === "string" ? o.branch.slice(0, 120) : "", state });
+    if (out.length >= PRESENCE_MAX) break;
+  }
+  return out;
+}
+
+export interface TeamRow extends PresenceItem { user: string; device: string; mine: boolean }
+const URGENT: Record<string, number> = { attention: 0, error: 1, working: 2, thinking: 2, background: 3, done: 4, donebg: 4, idle: 5, ended: 6 };
+
+/** Every other device's sessions, what needs someone first; your own other machines say so. */
+export function teamRows(peers: Record<string, { user: string; items: PresenceItem[] }>, selfUser: string): TeamRow[] {
+  const rows: TeamRow[] = [];
+  for (const [device, p] of Object.entries(peers)) for (const it of p.items) rows.push({ ...it, user: p.user, device, mine: p.user === selfUser });
+  return rows.sort((a, b) => (URGENT[a.state] ?? 9) - (URGENT[b.state] ?? 9) || a.user.localeCompare(b.user) || a.project.localeCompare(b.project));
+}

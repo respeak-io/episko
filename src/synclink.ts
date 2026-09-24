@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   SYNC_DOWN_MS, acceptDetail, acceptPref, acceptUsage, changedDays, mergeScoped, peerDays, peerDetailDays,
   readDetailPeers, readKeyList, readPeers, readStamps, stampKey, syncClass, syncHealth, wins,
+  narrowPresence, teamRows, type PresenceItem, type TeamRow,
   type DetailPeers, type NewEvent, type Peers, type Stamps, type Stream, type SyncEvent, type SyncHealth, type WireDetail,
 } from "./sync";
 import { dayKeyOf, markDetailDirty, rekeyDetail, setPeerUsage, setProjectKeyer, usage, usageDetail } from "./usage";
@@ -294,7 +295,10 @@ export function onSyncEvent(o: SyncOut) {
   if (o.kind === "status") {
     const was = status;
     status = o.status;
-    if (was.connected && !status.connected) log("warn", `sync: disconnected${status.error ? ` (${status.error})` : ""}`);
+    if (was.connected && !status.connected) {
+      log("warn", `sync: disconnected${status.error ? ` (${status.error})` : ""}`);
+      presence.clear(); // nobody can vouch for it any more
+    }
     render();
   } else if (o.kind === "pushed") pushed(o.id);
   else if (o.msg.t === "welcome") {
@@ -304,7 +308,12 @@ export function onSyncEvent(o: SyncOut) {
     flush();
     render();
   } else if (o.msg.t === "events") applyAll(o.msg.events, o.msg.more);
-  else if (o.msg.t === "presence") onPresence(o.msg.user, o.msg.device, o.msg.items);
+  else if (o.msg.t === "presence") {
+    const items = narrowPresence(o.msg.items);
+    if (items.length) presence.set(o.msg.device, { user: o.msg.user, items }); else presence.delete(o.msg.device);
+    onPresence(o.msg.user, o.msg.device, o.msg.items);
+    render();
+  }
   else if (o.msg.t === "error") log("error", `sync server: ${o.msg.code}: ${o.msg.message}`);
 }
 
@@ -523,3 +532,18 @@ export const publishNote = (pid: string, note: TeamNote | null, id: string) =>
   publish(`${pid}|${id}`, note && { text: note.text, who: note.who, at: note.at });
 export const publishDigest = (pid: string, day: string, line: string) => publish(`digest|${pid}|${day}`, line);
 export const syncOn = () => status.configured;
+
+// ---------- presence: held in memory, gone with the connection ----------
+
+const presence = new Map<string, { user: string; items: PresenceItem[] }>();
+/** Everyone else's open sessions right now, or null when sync is not set up at all. */
+export const teamNow = (): TeamRow[] | null => status.configured ? teamRows(Object.fromEntries(presence), status.user) : null;
+let beat = "", beatAt = 0;
+/** What this machine has open; sent on a change, and repeated inside the server's TTL. */
+export function beatPresence(items: PresenceItem[]) {
+  if (!status.connected) { beat = ""; return; }
+  const j = JSON.stringify(items), now = Date.now();
+  if (j === beat && now - beatAt < 15_000) return;
+  beat = j; beatAt = now;
+  invoke("sync_presence", { items }).catch((e) => log("warn", `sync presence: ${e}`));
+}

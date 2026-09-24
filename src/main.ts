@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -121,7 +121,8 @@ import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import {
-  forgetSync, hookStorage, onSyncEvent, pairSync, reconnectSync, setSyncHost, startSync, tickSync, type SyncOut,
+  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHost, startSync,
+  tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
 import {
@@ -822,6 +823,10 @@ setInterval(flushDebug, 4000);
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 // Sends what the last half-minute left owed, and ages the sync badge past its window.
 setInterval(tickSync, 30_000);
+// Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
+setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
+  pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),
+}))), 5_000);
 
 FAVORITES.forEach((f) => probeIcon(f.path));
 

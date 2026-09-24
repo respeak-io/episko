@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import {
-  SYNC_KEYS, SYNC_DOWN_MS, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
+  SYNC_KEYS, SYNC_DOWN_MS, PRESENCE_MAX, narrowPresence, teamRows, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
   prefOutbox, readPeers, syncClass, syncHealth, usageOutbox, wins, type Peers, type SyncEvent,
 } from "../src/sync";
 
@@ -153,5 +153,26 @@ describe("syncHealth", () => {
     expect(syncHealth(true, false, 1000, 1000 + SYNC_DOWN_MS - 1)).toBe("lagging");
     expect(syncHealth(true, false, 1000, 1000 + SYNC_DOWN_MS)).toBe("down");
     expect(syncHealth(true, false, null, 5)).toBe("down");
+  });
+});
+
+describe("presence", () => {
+  it("keeps project, branch and state, and drops anything else a peer sends", () => {
+    const got = narrowPresence([{ pid: "git:1", project: "app", branch: "main", state: "working", title: "Fix the login bug", prompt: "secret" }]);
+    expect(got).toEqual([{ pid: "git:1", project: "app", branch: "main", state: "working" }]);
+  });
+  it("drops rows with no project or an unknown state, and caps the list", () => {
+    expect(narrowPresence([{ project: "", state: "working" }, { project: "a", state: "hacking" }, null, "x"])).toEqual([]);
+    expect(narrowPresence(null)).toEqual([]);
+    const many = Array.from({ length: PRESENCE_MAX + 5 }, (_, i) => ({ project: `p${i}`, state: "idle" }));
+    expect(narrowPresence(many)).toHaveLength(PRESENCE_MAX);
+  });
+  it("puts a blocked session first and marks your own other machines", () => {
+    const rows = teamRows({
+      d1: { user: "ana", items: [{ pid: "", project: "api", branch: "", state: "idle" }] },
+      d2: { user: "ben", items: [{ pid: "", project: "web", branch: "x", state: "attention" }] },
+      d3: { user: "me", items: [{ pid: "", project: "cli", branch: "", state: "working" }] },
+    }, "me");
+    expect(rows.map((r) => [r.user, r.state, r.mine])).toEqual([["ben", "attention", false], ["me", "working", true], ["ana", "idle", false]]);
   });
 });
