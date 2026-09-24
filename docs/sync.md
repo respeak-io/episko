@@ -77,11 +77,16 @@ reaches `localStorage`, `fetch` or Tauri.
 
 ## Phasing
 
-| Phase | Delivers |
-| --- | --- |
-| 1. Personal sync | event log, prefs, usage partitioning, limits; one user, one token |
-| 2. Identity and roster | root-commit ids, the seven path-keyed stores' migrations, `cc-usage-detail` re-key, shared notes, presence |
-| 3. Coordination | claims as leases, the shared queue and dashboard |
+| Phase | Delivers | State |
+| --- | --- | --- |
+| 1. Personal sync | event log, prefs, usage partitioning, limits; one user, one token | built |
+| 2. Identity and roster | root-commit ids, the path-keyed stores, the `cc-usage-detail` re-key, shared notes, presence | built |
+| 3. Coordination | claims as leases, shown on the shared queue | built |
+
+Not built yet: the *shelved on another device* row, which is a non-goal's honest half. It needs
+a roster of dormant sessions that carries no title, since a title is written from the
+conversation. Also not built: `episko-server` workspaces beyond the one default. A team runs
+one server, which is the per-team answer.
 
 ## Where the code lives
 
@@ -182,7 +187,17 @@ EPISKO_DB=/srv/episko.db ./target/release/episko-server invite   # prints EPSK-X
 ```
 
 It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. The backup is
-`cp episko.db`.
+`cp episko.db`. `episko-server devices` lists paired machines, and `revoke <device>` shuts one
+out; the app then halts and asks to pair again rather than retrying. Every six hours the server
+compacts: an event superseded by a newer one of the same key goes once it is older than
+`EPISKO_RETENTION_DAYS` (30). The latest per key always stays, so a device that was away for
+months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
+(`episko-server/README.md`).
+
+**Testing against the real binary.** The ignored test `two_devices_meet_through_a_real_server`
+in `sync.rs` pairs two devices through a running server and checks that a push arrives. Set
+`EPISKO_E2E_URL` and `EPISKO_E2E_CODES` (two fresh invites, comma-separated), then run
+`cargo test -- --ignored two_devices_meet`.
 
 **The conversation.** A client sends `pair {code, label}` and gets back `paired {token, user,
 device}`. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by

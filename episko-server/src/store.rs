@@ -14,10 +14,12 @@ const CODE_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT NOT NULL, stream TEXT NOT NULL, key TEXT NOT NULL,
-  actor TEXT NOT NULL, device TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL);
+  actor TEXT NOT NULL, device TEXT NOT NULL, at INTEGER NOT NULL, payload TEXT NOT NULL,
+  rx INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS heads ON events (ws, stream, key, seq);
 CREATE INDEX IF NOT EXISTS by_ws ON events (ws, seq);
 CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, ws TEXT NOT NULL, user TEXT NOT NULL, expires INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS by_rx ON events (rx);
 CREATE TABLE IF NOT EXISTS tokens (
   hash TEXT PRIMARY KEY, ws TEXT NOT NULL, user TEXT NOT NULL, device TEXT NOT NULL,
   label TEXT NOT NULL, created INTEGER NOT NULL);
@@ -80,8 +82,36 @@ impl Store {
     }
 
     fn init(conn: Connection) -> rusqlite::Result<Store> {
+        // A database from before `rx` existed gains it; every old row reads as received at 0.
+        let has_rx = conn.prepare("SELECT rx FROM events LIMIT 0").is_ok();
+        let events_exist = conn.prepare("SELECT 1 FROM events LIMIT 0").is_ok();
+        if events_exist && !has_rx {
+            conn.execute_batch("ALTER TABLE events ADD COLUMN rx INTEGER NOT NULL DEFAULT 0")?;
+        }
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
+    }
+
+    /// Drops every event a newer one of the same key has superseded, once it is older than
+    /// `keep_ms`. The latest per key always stays, so a device that was away still converges.
+    pub fn compact(&self, now: i64, keep_ms: i64) -> rusqlite::Result<usize> {
+        self.db().execute(
+            "DELETE FROM events WHERE rx < ?1 AND seq NOT IN (SELECT MAX(seq) FROM events GROUP BY ws, stream, key)",
+            params![now - keep_ms],
+        )
+    }
+
+    /// Every paired device: (user, device, label, created).
+    pub fn devices(&self) -> rusqlite::Result<Vec<(String, String, String, i64)>> {
+        let db = self.db();
+        let mut q = db.prepare("SELECT user, device, label, created FROM tokens ORDER BY created")?;
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect()
+    }
+
+    /// Shuts a device out: its next hello is refused, and the app asks to pair again.
+    pub fn revoke(&self, device: &str) -> rusqlite::Result<usize> {
+        self.db().execute("DELETE FROM tokens WHERE device = ?1", params![device])
     }
 
     fn db(&self) -> std::sync::MutexGuard<'_, Connection> {
@@ -137,6 +167,10 @@ impl Store {
 
     /// Appends a push as one transaction, stamped with `who` whatever the client claimed.
     pub fn append(&self, who: &Identity, events: &[NewEvent]) -> Result<Vec<Event>, PushError> {
+        self.append_at(who, events, crate::serve::now_ms())
+    }
+
+    pub fn append_at(&self, who: &Identity, events: &[NewEvent], now: i64) -> Result<Vec<Event>, PushError> {
         let mut rows = Vec::with_capacity(events.len());
         for e in events {
             let payload = e.payload.to_string();
@@ -154,8 +188,8 @@ impl Store {
         let mut out = Vec::with_capacity(rows.len());
         for (e, payload) in rows {
             tx.execute(
-                "INSERT INTO events (ws, stream, key, actor, device, at, payload) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![who.ws, e.stream.as_str(), e.key, who.user, who.device, e.at, payload],
+                "INSERT INTO events (ws, stream, key, actor, device, at, payload, rx) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![who.ws, e.stream.as_str(), e.key, who.user, who.device, e.at, payload, now],
             )
             .map_err(db_err)?;
             out.push(Event {
@@ -249,6 +283,30 @@ mod tests {
         let theirs: Vec<_> = s.since("team", "them", 0, 10).unwrap().into_iter().map(|e| e.key).collect();
         assert_eq!(theirs, vec!["n1"]);
         assert_eq!(s.since("team", "me", 0, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn compaction_keeps_the_latest_per_key_and_anything_recent() {
+        let s = Store::open_in_memory().unwrap();
+        let who = Identity { ws: "w".into(), user: "me".into(), device: "d".into() };
+        s.append_at(&who, &[ev("cc-sort", 1), ev("cc-foot", 1)], 100).unwrap();
+        s.append_at(&who, &[ev("cc-sort", 2)], 200).unwrap();
+        s.append_at(&who, &[ev("cc-sort", 3)], 10_000).unwrap();
+        // Inside the window a superseded event is kept, so a device a day behind still sees it.
+        assert_eq!(s.compact(10_050, 9_900).unwrap(), 1, "only the rx-100 cc-sort is both old and superseded");
+        let keys: Vec<_> = s.since("w", "me", 0, 10).unwrap().into_iter().map(|e| (e.key, e.at)).collect();
+        assert_eq!(keys, vec![("cc-foot".to_string(), 1), ("cc-sort".to_string(), 2), ("cc-sort".to_string(), 3)]);
+        assert_eq!(s.compact(1_000_000, 0).unwrap(), 1);
+        assert_eq!(s.compact(1_000_000, 0).unwrap(), 0, "the latest per key always stays");
+    }
+
+    #[test]
+    fn a_revoked_device_is_refused() {
+        let s = Store::open_in_memory().unwrap();
+        let (token, who) = s.redeem(&s.create_invite("default", "me", 0).unwrap(), "lap", 1).unwrap().unwrap();
+        assert_eq!(s.devices().unwrap().len(), 1);
+        assert_eq!(s.revoke(&who.device).unwrap(), 1);
+        assert_eq!(s.auth(&token).unwrap(), None);
     }
 
     #[test]

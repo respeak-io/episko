@@ -1,4 +1,5 @@
 /target
-# A local run's database
+# A local run's database, and the compose volume
 *.db
 *.db-*
+/data

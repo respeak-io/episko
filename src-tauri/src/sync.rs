@@ -526,6 +526,36 @@ mod tests {
         assert_eq!(session(&url, "tk", 0, &rx, &|_| {}, &|| true, &|| {}), End::Halt("unknown".into()));
     }
 
+    // Against a real episko-server: EPISKO_E2E_URL and two fresh invite codes in EPISKO_E2E_CODES.
+    #[test]
+    #[ignore]
+    fn two_devices_meet_through_a_real_server() {
+        let url = norm_url(&std::env::var("EPISKO_E2E_URL").expect("EPISKO_E2E_URL")).unwrap();
+        let codes = std::env::var("EPISKO_E2E_CODES").expect("EPISKO_E2E_CODES");
+        let (ca, cb) = codes.split_once(',').expect("two codes, comma-separated");
+        let (ta, _, da) = pair_with(&url, ca, "laptop").unwrap();
+        let (tb, _, db) = pair_with(&url, cb, "desk").unwrap();
+        assert_ne!(da, db);
+        let heard = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let (h, u) = (heard.clone(), url.clone());
+        let listener = std::thread::spawn(move || {
+            let (_tx, rx) = channel();
+            let start = Instant::now();
+            session(&u, &tb, 0, &rx, &|o| lock(&h).push(serde_json::to_value(&o).unwrap()),
+                &|| start.elapsed() < Duration::from_secs(4), &|| {})
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let (tx, rx) = channel();
+        tx.send(Ctl::Push(1, vec![NewEvent { stream: episko_proto::Stream::Prefs, key: "cc-sort".into(), at: 1, payload: "active".into() }])).unwrap();
+        let start = Instant::now();
+        session(&url, &ta, 0, &rx, &|_| {}, &|| start.elapsed() < Duration::from_secs(2), &|| {});
+        assert_eq!(listener.join().unwrap(), End::Stopped);
+        let got = lock(&heard).clone();
+        let ev = got.iter().flat_map(|v| v["msg"]["events"].as_array().cloned().unwrap_or_default())
+            .find(|e| e["key"] == "cc-sort").expect("the desk heard the laptop's push");
+        assert_eq!((ev["device"].as_str(), ev["payload"].as_str()), (Some(da.as_str()), Some("active")));
+    }
+
     #[test]
     fn an_unreachable_server_is_a_retry() {
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();

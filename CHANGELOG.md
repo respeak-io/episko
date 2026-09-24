@@ -12,6 +12,32 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+Episko can sync through a small server you run yourself, so a second machine feels like the
+first and a team sees each other's work without a round trip through git. It is an accelerator,
+never an authority: with the server down or absent, everything works exactly as before.
+
++ **Sync your settings, spend and limits between machines.** Run `episko-server` (one binary, one
+  SQLite file, or `docker compose up`), print an invite with `episko-server invite`, and pair in
+  *Settings › Sync*. Preferences follow you and apply on the next reload. Today's spend becomes the
+  sum of every machine rather than whichever one you are looking at, and a limit window one machine
+  has learned shows on the others with no probe. Joining an existing setup adopts it rather than
+  overwriting it.
++ **Your projects follow you too.** Favourites, order, groups, colours, custom icons and each
+  project's agent and GitHub account travel by the project's root commit, so a checkout at a
+  different path on another machine is the same project. A project not cloned there waits until it is.
++ **See who on the team has a session open, and where.** With a shared server the all-projects
+  dashboard gains *Team now*: every teammate's live sessions, blocked ones first. It shows the
+  project, branch and state, never a session's title.
++ **Choose where a project's shared notes and work log go.** *Project menu › Sharing*: committed in
+  git as before, through the sync server with nothing in the repo, or nowhere. The *Not written down
+  anywhere* offer now has a *Don't offer this*.
++ **A claim on an issue is a lease.** Dispatching an agent at shared work tells the team within a
+  second, is renewed while the session runs, and lapses minutes after a machine disappears. It is
+  still only a hint.
+~ **Per-project spend is kept per project, not per folder name.** Two checkouts both called `api`
+  no longer share a row. Existing history moves over where the name is unambiguous.
+~ **A sync that stops is said out loud.** A red *sync* badge joins the telemetry one in the top bar
+  whenever the server has been unreachable for two minutes.
 
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
