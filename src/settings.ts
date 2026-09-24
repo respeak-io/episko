@@ -67,6 +67,7 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import { health as syncHealthNow, prefsArrived, sentLog, status as syncStatus } from "./synclink";
 import { syncPanelHtml, syncSummary, type SyncDraft } from "./syncview";
+import { parseHeaders } from "./sync";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -112,7 +113,8 @@ export interface SettingsHost {
   reloadUi: () => void;
   vitalsDrift: () => VitalsDrift | null;
   // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
-  syncPair: (url: string, code: string, label: string) => Promise<void>;
+  syncPair: (url: string, code: string, label: string, headers: [string, string][]) => Promise<void>;
+  syncSetHeaders: (headers: [string, string][]) => Promise<void>;
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
 }
@@ -159,6 +161,7 @@ let host: SettingsHost = {
   vitalsDrift: () => null,
   openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
+  syncSetHeaders: () => Promise.resolve(),
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -1525,21 +1528,29 @@ function asksPreview(): string {
 
 // ---- Settings › Sync ----
 // The form's text survives a repaint here, not in the DOM: a status change repaints the panel.
-const syncDraft: SyncDraft = { url: "", code: "", label: "" };
+const syncDraft: SyncDraft = { url: "", code: "", label: "", headers: "" };
 let syncBusy = false, syncErr: string | null = null;
 
 function applySyncSetting(verb: string) {
-  if (verb === "pair") {
+  if (verb === "pair" || verb === "headers") {
     if (syncBusy) return;
+    const h = parseHeaders(syncDraft.headers);
+    if (h.error) { syncErr = h.error; renderSettings(); return; }
     syncBusy = true; syncErr = null; renderSettings();
-    host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label)
-      .then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
+    const done = verb === "pair"
+      ? host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label, h.headers).then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
+      : host.syncSetHeaders(h.headers).then(() => toast(h.headers.length ? "Headers saved; reconnecting" : "No extra headers; reconnecting"));
+    done
+      .then(() => { syncDraft.headers = ""; })
       .catch((e) => { syncErr = String(e); })
       .finally(() => { syncBusy = false; renderSettings(); });
   } else if (verb === "forget") {
     void ask("This machine stops syncing and forgets its token. Everything it holds stays here.\n\nThe server keeps what it was sent.",
       { title: "Forget this machine?", kind: "warning", okLabel: "Forget" })
       .then((ok) => { if (ok) return host.syncForget().then(() => renderSettings()); });
+  } else if (verb === "noheaders") {
+    host.syncSetHeaders([]).then(() => toast("Extra headers removed; reconnecting")).catch((e) => { syncErr = String(e); })
+      .finally(() => renderSettings());
   } else if (verb === "reconnect") host.syncReconnect();
   else if (verb === "reload") void host.reloadUi();
 }

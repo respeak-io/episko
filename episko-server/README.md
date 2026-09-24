@@ -30,6 +30,45 @@ It binds localhost and does not terminate TLS. For other machines, put
 | `EPISKO_BIND` | `127.0.0.1:7878` | where to listen |
 | `EPISKO_RETENTION_DAYS` | `30` | how long superseded events are kept; the latest per key always stays |
 
+## Behind Traefik, with or without an auth layer
+
+WebSockets pass through Traefik as they are. Drop the compose file's `ports:` and add labels:
+
+```yaml
+    networks: [traefik]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.episko.rule=Host(`sync.example.com`)
+      - traefik.http.routers.episko.entrypoints=websecure
+      - traefik.http.routers.episko.tls.certresolver=le
+      - traefik.http.services.episko.loadbalancer.server.port=7878
+      - traefik.http.routers.episko.middlewares=episko-auth
+      - traefik.http.middlewares.episko-auth.basicauth.users=episko:$$apr1$$...   # htpasswd output, $ doubled
+```
+
+In Episko, enter `https://sync.example.com` and, under **Extra headers**,
+`Authorization: Basic <base64 of user:password>`. Any middleware that checks a header works the
+same way, including ForwardAuth that reads a static token. A middleware that redirects to a login page
+(Authelia, Authentik, oauth2-proxy in browser mode) does **not**, because nothing follows the
+redirect. Give those a bypass rule or a service token instead.
+
+## Behind Cloudflare Access
+
+Create a **service token** in Zero Trust › Access › Service credentials, and add a *Service
+Auth* policy for it to the application in front of the server. In Episko, under **Extra
+headers**, enter:
+
+```
+CF-Access-Client-Id: <id>.access
+CF-Access-Client-Secret: <secret>
+```
+
+Cloudflare carries WebSockets. The server pings every 30 seconds, well inside Cloudflare's
+100-second idle limit. The headers are sealed with the sync token (DPAPI on Windows, the
+Keychain on macOS) and are never shown again. To rotate them, use *Replace the extra headers* in
+Settings › Sync. A proxy that refuses the connection is named as such in the panel and on the
+red badge, instead of appearing as a server fault.
+
 ## Pair a machine
 
 ```sh

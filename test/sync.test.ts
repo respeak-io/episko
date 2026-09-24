@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import {
-  SYNC_KEYS, SYNC_DOWN_MS, PRESENCE_MAX, narrowPresence, teamRows, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
+  SYNC_KEYS, SYNC_DOWN_MS, PRESENCE_MAX, narrowPresence, parseHeaders, teamRows, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
   prefOutbox, readPeers, syncClass, syncHealth, usageOutbox, wins, type Peers, type SyncEvent,
 } from "../src/sync";
 
@@ -174,5 +174,27 @@ describe("presence", () => {
       d3: { user: "me", items: [{ pid: "", project: "cli", branch: "", state: "working" }] },
     }, "me");
     expect(rows.map((r) => [r.user, r.state, r.mine])).toEqual([["ben", "attention", false], ["me", "working", true], ["ana", "idle", false]]);
+  });
+});
+
+describe("parseHeaders", () => {
+  it("reads a Cloudflare Access service token and a basic-auth line", () => {
+    const text = "# Cloudflare Access\nCF-Access-Client-Id: abc.access\r\nCF-Access-Client-Secret:  s3cr:et \n\nAuthorization: Basic dTpw\n";
+    expect(parseHeaders(text)).toEqual({ error: null, headers: [
+      ["CF-Access-Client-Id", "abc.access"], ["CF-Access-Client-Secret", "s3cr:et"], ["Authorization", "Basic dTpw"],
+    ] });
+    expect(parseHeaders("  \n# only a comment")).toEqual({ headers: [], error: null });
+  });
+  it("names the line and the reason, and takes nothing from a bad paste", () => {
+    for (const [text, why] of [
+      ["no colon here", "Name: value"], ["Bad Name: x", "not a header name"], ["X-Empty:", "no value"],
+      ["Host: evil", "connection itself"], ["sec-websocket-key: x", "connection itself"],
+      ["X-A: 1\nx-a: 2", "twice"], ["X-A: tab\tok\nX-B: bell\u0007", "cannot carry"],
+    ] as const) {
+      const r = parseHeaders(text);
+      expect(r.headers, text).toEqual([]);
+      expect(r.error, text).toContain(why);
+    }
+    expect(parseHeaders("X-B: 1\nnope").error).toMatch(/^line 2:/);
   });
 });

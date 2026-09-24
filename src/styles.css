@@ -1923,6 +1923,8 @@ select.in-ctl { cursor: pointer; }
 .sync-h.sync-down { color: var(--st-error); }
 .syncbox .sync-arrived { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--st-attention); }
 .syncbox .sync-sent summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+.syncbox .sync-sent[open] { display: flex; flex-direction: column; gap: 8px; }
+.syncbox .sync-hdrs { resize: vertical; min-height: 54px; }
 #fSyncSeg.sync-down b, #fSyncSeg.sync-lagging b { color: var(--st-error); }
 #fSyncSeg.sync-ok b { color: var(--st-done); }
 .tlabel { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }

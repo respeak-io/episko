@@ -23,6 +23,7 @@ import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from
 export interface SyncStatus {
   configured: boolean; url: string; user: string; device: string; label: string; cursor: number;
   connected: boolean; lastOkAt: number | null; error: string | null; halted: boolean;
+  headerNames: string[]; // what the proxy headers are called; their values never reach this side
 }
 type ServerMsg =
   | { t: "welcome"; user: string; device: string; head: number }
@@ -35,7 +36,7 @@ export type SyncOut =
   | { kind: "server"; msg: ServerMsg }
   | { kind: "pushed"; id: number; seqs: number[] };
 
-const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", label: "", cursor: 0, connected: false, lastOkAt: null, error: null, halted: false };
+const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", label: "", cursor: 0, connected: false, lastOkAt: null, error: null, halted: false, headerNames: [] };
 export let status: SyncStatus = OFF;
 /** Remote prefs were written: they take effect on the next reload, and the UI says so. */
 export let prefsArrived = 0;
@@ -339,8 +340,8 @@ export async function startSync() {
   // Ids are worth having unsynced too: they are what keeps two `api` checkouts' spend apart.
   await resolveIds(rosterPaths());
 }
-export async function pairSync(url: string, code: string, label: string) {
-  status = await invoke<SyncStatus>("sync_pair", { url, code, label });
+export async function pairSync(url: string, code: string, label: string, headers: [string, string][]) {
+  status = await invoke<SyncStatus>("sync_pair", { url, code, label, headers });
   // A newly paired machine owes the server all its spend, and offers its prefs (see `seed`).
   dirty.clear();
   seed.clear();
@@ -358,6 +359,11 @@ export async function forgetSync() {
   render();
 }
 export function reconnectSync() { void invoke("sync_reconnect"); }
+/** Replaces the proxy headers (an empty list removes them) and reconnects with the new set. */
+export async function setSyncHeaders(headers: [string, string][]) {
+  status = await invoke<SyncStatus>("sync_set_headers", { headers });
+  render();
+}
 /** A tick from main.ts: renews this machine's leases, sends what is owed, repaints the health. */
 export function tickSync(alive: (sessionId: string) => boolean = () => true) {
   renewLeases(alive);

@@ -13,6 +13,9 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::HandshakeError;
+use tungstenite::http::{HeaderName, HeaderValue, StatusCode};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
@@ -46,6 +49,28 @@ pub(crate) struct SyncStatus {
     error: Option<String>,
     /// The server refused our token or protocol: retrying cannot help, re-pairing can.
     halted: bool,
+    /// The extra headers' NAMES; their values are sealed with the token and never leave Rust.
+    header_names: Vec<String>,
+}
+
+/// Extra handshake headers for a proxy in front of the server: Traefik's basic auth, or a
+/// Cloudflare Access service token (`CF-Access-Client-Id` + `CF-Access-Client-Secret`).
+pub(crate) type Headers = Vec<(String, String)>;
+const MAX_HEADERS: usize = 16;
+// The handshake's own: a proxy header must never be able to rewrite the upgrade itself.
+const RESERVED: [&str; 6] = ["host", "connection", "upgrade", "content-length", "transfer-encoding", "origin"];
+
+fn check_headers(h: &Headers) -> Result<(), String> {
+    if h.len() > MAX_HEADERS { return Err(format!("at most {MAX_HEADERS} extra headers")); }
+    let mut seen = std::collections::HashSet::new();
+    for (k, v) in h {
+        let lower = k.trim().to_ascii_lowercase();
+        if RESERVED.contains(&lower.as_str()) || lower.starts_with("sec-websocket-") { return Err(format!("{k} is the WebSocket handshake's own header")); }
+        HeaderName::from_bytes(k.trim().as_bytes()).map_err(|_| format!("{k:?} is not a header name"))?;
+        HeaderValue::from_str(v.trim()).map_err(|_| format!("the value of {k} has characters a header cannot carry"))?;
+        if !seen.insert(lower) { return Err(format!("{k} is given twice")); }
+    }
+    Ok(())
 }
 
 /// Everything the connection thread reports, emitted verbatim as `sync-event`.
@@ -114,14 +139,32 @@ fn host_port(url: &str) -> Result<(String, u16), String> {
 
 type Sock = WebSocket<MaybeTlsStream<TcpStream>>;
 
-fn open(url: &str) -> Result<Sock, String> {
+/// What a proxy's refusal means, in words that point at the fix rather than at HTTP.
+fn refused(code: StatusCode) -> String {
+    let n = code.as_u16();
+    match n {
+        401 | 403 => format!("the proxy in front of the server refused this machine (HTTP {n}); check the extra headers in Settings › Sync"),
+        300..=399 => format!("the address redirects (HTTP {n}), usually to a login page; Cloudflare Access and similar need a service token in the extra headers"),
+        _ => format!("the server answered HTTP {n} instead of opening a sync connection"),
+    }
+}
+
+fn open(url: &str, headers: &Headers) -> Result<Sock, String> {
     let (host, port) = host_port(url)?;
+    let mut req = url.into_client_request().map_err(|e| format!("{url} is not a server address: {e}"))?;
+    for (k, v) in headers {
+        let name = HeaderName::from_bytes(k.trim().as_bytes()).map_err(|_| format!("{k:?} is not a header name"))?;
+        req.headers_mut().insert(name, HeaderValue::from_str(v.trim()).map_err(|_| format!("bad value for {k}"))?);
+    }
     let addr = (host.as_str(), port).to_socket_addrs().map_err(|e| format!("cannot resolve {host}: {e}"))?
         .next().ok_or_else(|| format!("{host} has no address"))?;
     let tcp = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| format!("cannot reach {host}:{port}: {e}"))?;
     tcp.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| e.to_string())?;
-    let (sock, _) = tungstenite::client_tls(url, tcp).map_err(|e| format!("handshake with {url} failed: {e}"))?;
-    Ok(sock)
+    match tungstenite::client_tls(req, tcp) {
+        Ok((sock, _)) => Ok(sock),
+        Err(HandshakeError::Failure(tungstenite::Error::Http(r))) => Err(refused(r.status())),
+        Err(e) => Err(format!("handshake with {url} failed: {e}")),
+    }
 }
 
 fn tcp_of(sock: &Sock) -> &TcpStream {
@@ -147,8 +190,8 @@ fn hear(sock: &mut Sock) -> Result<Option<ServerMsg>, String> {
 }
 
 /// Trades an invite code for a token over a short-lived connection of its own.
-fn pair_with(url: &str, code: &str, label: &str) -> Result<(String, String, String), String> {
-    let mut sock = open(url)?;
+fn pair_with(url: &str, code: &str, label: &str, headers: &Headers) -> Result<(String, String, String), String> {
+    let mut sock = open(url, headers)?;
     say(&mut sock, &ClientMsg::Pair { code: code.trim().to_string(), label: label.to_string() })?;
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     while Instant::now() < deadline {
@@ -166,8 +209,9 @@ fn pair_with(url: &str, code: &str, label: &str) -> Result<(String, String, Stri
 enum End { Retry(String), Halt(String), Stopped }
 
 /// One connected session: hello, then relay both ways until it fails or `rx` says reconnect.
-fn session(url: &str, token: &str, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn()) -> End {
-    let mut sock = match open(url) { Ok(s) => s, Err(e) => return End::Retry(e) };
+#[allow(clippy::too_many_arguments)] // one connection's whole context; a struct would only rename it
+fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn()) -> End {
+    let mut sock = match open(url, headers) { Ok(s) => s, Err(e) => return End::Retry(e) };
     if let Err(e) = say(&mut sock, &ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL }) { return End::Retry(e); }
     if let Err(e) = tcp_of(&sock).set_read_timeout(Some(POLL)) { return End::Retry(e.to_string()); }
     let mut inflight: std::collections::VecDeque<u64> = Default::default();
@@ -200,9 +244,16 @@ fn session(url: &str, token: &str, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(
     }
 }
 
-// ---------- the token, sealed per OS (docs/sync.md) ----------
+// ---------- secrets, sealed per OS (docs/sync.md) ----------
 
-const TOKEN_FILE: &str = "sync.token";
+/// The token and the extra headers, each sealed on its own: DPAPI, a keychain item, a 0600 file.
+#[derive(Clone, Copy)]
+enum Secret { Token, Headers }
+impl Secret {
+    fn file(self) -> &'static str { match self { Secret::Token => "sync.token", Secret::Headers => "sync.headers" } }
+    #[cfg(target_os = "macos")]
+    fn account(self) -> &'static str { match self { Secret::Token => "sync", Secret::Headers => "sync-headers" } }
+}
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Episko sync";
 
@@ -224,52 +275,71 @@ fn dpapi(data: &[u8], seal: bool) -> Result<Vec<u8>, String> {
     Ok(v)
 }
 
-fn save_token(dir: &std::path::Path, token: &str) -> Result<(), String> {
+/// `value` must be printable ASCII with no spaces or quotes (the keychain arm types it): hex is.
+fn save_secret(dir: &std::path::Path, which: Secret, value: &str) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     #[cfg(windows)]
-    { std::fs::write(dir.join(TOKEN_FILE), dpapi(token.as_bytes(), true)?).map_err(|e| e.to_string()) }
+    { std::fs::write(dir.join(which.file()), dpapi(value.as_bytes(), true)?).map_err(|e| e.to_string()) }
     #[cfg(target_os = "macos")]
     {
         let _ = dir;
-        // `-i` reads the command from stdin, so the token never appears in a process listing.
+        // `-i` reads the command from stdin, so the secret never appears in a process listing.
         let mut child = std::process::Command::new("/usr/bin/security").arg("-i")
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
         use std::io::Write;
-        let line = format!("add-generic-password -U -a sync -s \"{KEYCHAIN_SERVICE}\" -w {token}\n");
+        let line = format!("add-generic-password -U -a {} -s \"{KEYCHAIN_SERVICE}\" -w {value}\n", which.account());
         child.stdin.take().ok_or("no stdin")?.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
         let st = child.wait().map_err(|e| e.to_string())?;
-        if st.success() { Ok(()) } else { Err("the keychain refused the token".into()) }
+        if st.success() { Ok(()) } else { Err("the keychain refused the secret".into()) }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         use std::os::unix::fs::OpenOptionsExt;
         use std::io::Write;
         let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
-            .open(dir.join(TOKEN_FILE)).map_err(|e| e.to_string())?;
-        f.write_all(token.as_bytes()).map_err(|e| e.to_string())
+            .open(dir.join(which.file())).map_err(|e| e.to_string())?;
+        f.write_all(value.as_bytes()).map_err(|e| e.to_string())
     }
 }
 
-fn load_token(dir: &std::path::Path) -> Option<String> {
+fn load_secret(dir: &std::path::Path, which: Secret) -> Option<String> {
     #[cfg(windows)]
-    { String::from_utf8(dpapi(&std::fs::read(dir.join(TOKEN_FILE)).ok()?, false).ok()?).ok() }
+    { String::from_utf8(dpapi(&std::fs::read(dir.join(which.file())).ok()?, false).ok()?).ok() }
     #[cfg(target_os = "macos")]
     {
         let _ = dir;
         let o = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-a", "sync", "-s", KEYCHAIN_SERVICE, "-w"]).output().ok()?;
+            .args(["find-generic-password", "-a", which.account(), "-s", KEYCHAIN_SERVICE, "-w"]).output().ok()?;
         let t = String::from_utf8(o.stdout).ok()?.trim().to_string();
         (o.status.success() && !t.is_empty()).then_some(t)
     }
     #[cfg(not(any(windows, target_os = "macos")))]
-    { std::fs::read_to_string(dir.join(TOKEN_FILE)).ok().map(|s| s.trim().to_string()) }
+    { std::fs::read_to_string(dir.join(which.file())).ok().map(|s| s.trim().to_string()) }
 }
 
-fn drop_token(dir: &std::path::Path) {
-    let _ = std::fs::remove_file(dir.join(TOKEN_FILE));
+fn drop_secret(dir: &std::path::Path, which: Secret) {
+    let _ = std::fs::remove_file(dir.join(which.file()));
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("/usr/bin/security").args(["delete-generic-password", "-a", "sync", "-s", KEYCHAIN_SERVICE]).output(); }
+    { let _ = std::process::Command::new("/usr/bin/security").args(["delete-generic-password", "-a", which.account(), "-s", KEYCHAIN_SERVICE]).output(); }
 }
+
+fn save_token(dir: &std::path::Path, token: &str) -> Result<(), String> { save_secret(dir, Secret::Token, token) }
+fn load_token(dir: &std::path::Path) -> Option<String> { load_secret(dir, Secret::Token) }
+
+fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    (s.len() % 2 == 0).then_some(())?;
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+/// Stored as hex JSON, which every arm can carry verbatim. None is sealed as no file at all.
+fn save_headers(dir: &std::path::Path, h: &Headers) -> Result<(), String> {
+    if h.is_empty() { drop_secret(dir, Secret::Headers); return Ok(()); }
+    save_secret(dir, Secret::Headers, &hex(serde_json::to_string(h).map_err(|e| e.to_string())?.as_bytes()))
+}
+fn load_headers(dir: &std::path::Path) -> Headers {
+    load_secret(dir, Secret::Headers).and_then(|s| unhex(&s)).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+fn names(h: &Headers) -> Vec<String> { h.iter().map(|(k, _)| k.trim().to_string()).collect() }
 
 fn read_config(dir: &std::path::Path) -> Option<SyncConfig> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(CONFIG_FILE)).ok()?).ok()
@@ -292,9 +362,9 @@ fn emit_status(app: &AppHandle, ctl: &SyncCtl) {
 fn set_status(app: &AppHandle, ctl: &SyncCtl, f: impl FnOnce(&mut SyncStatus)) {
     let changed = {
         let mut s = lock(&ctl.status);
-        let before = (s.connected, s.error.clone(), s.halted, s.configured);
+        let before = (s.connected, s.error.clone(), s.halted, s.configured, s.header_names.clone());
         f(&mut s);
-        before != (s.connected, s.error.clone(), s.halted, s.configured)
+        before != (s.connected, s.error.clone(), s.halted, s.configured, s.header_names.clone())
     };
     if changed { emit_status(app, ctl); }
 }
@@ -311,17 +381,18 @@ fn restart(app: &AppHandle, ctl: &Arc<SyncCtl>) {
         return;
     };
     let token = load_token(&dir);
+    let headers = load_headers(&dir);
     set_status(app, ctl, |s| {
         s.configured = true; s.url = cfg.url.clone(); s.user = cfg.user.clone(); s.device = cfg.device.clone();
-        s.label = cfg.label.clone(); s.cursor = cfg.cursor; s.halted = false;
+        s.label = cfg.label.clone(); s.cursor = cfg.cursor; s.halted = false; s.header_names = names(&headers);
         s.error = token.is_none().then(|| "this device's sync token is missing; pair it again".to_string());
     });
     if token.is_none() || !ctl.ready.load(Ordering::SeqCst) { return; }
     let (app, ctl, token) = (app.clone(), ctl.clone(), token.unwrap_or_default());
-    std::thread::spawn(move || supervise(app, ctl, gen, cfg.url, token, rx));
+    std::thread::spawn(move || supervise(app, ctl, gen, cfg.url, token, headers, rx));
 }
 
-fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: String, rx: Receiver<Ctl>) {
+fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: String, headers: Headers, rx: Receiver<Ctl>) {
     let alive = || ctl.generation.load(Ordering::SeqCst) == gen;
     let mut backoff = Duration::from_secs(1);
     while alive() {
@@ -334,7 +405,7 @@ fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: St
             let _ = app.emit("sync-event", o);
         };
         let on_ok = || lock(&ctl.status).last_ok_at = Some(now_ms());
-        let end = session(&url, &token, since, &rx, &out, &alive, &on_ok);
+        let end = session(&url, &token, &headers, since, &rx, &out, &alive, &on_ok);
         let was_up = lock(&ctl.status).connected;
         match end {
             End::Stopped => { set_status(&app, &ctl, |s| s.connected = false); return; }
@@ -379,14 +450,18 @@ pub(crate) fn sync_start(app: AppHandle, state: State<'_, crate::AppState>) -> S
 }
 
 #[tauri::command]
-pub(crate) async fn sync_pair(app: AppHandle, url: String, code: String, label: String) -> Result<SyncStatus, String> {
+pub(crate) async fn sync_pair(app: AppHandle, url: String, code: String, label: String, headers: Headers) -> Result<SyncStatus, String> {
     let url = norm_url(&url)?;
+    check_headers(&headers)?;
     let label = if label.trim().is_empty() { "this machine".to_string() } else { label.trim().to_string() };
-    let (token, user, device) = tauri::async_runtime::spawn_blocking({ let (url, label) = (url.clone(), label.clone()); move || pair_with(&url, &code, &label) })
-        .await.map_err(|e| e.to_string())??;
+    let (token, user, device) = tauri::async_runtime::spawn_blocking({
+        let (url, label, headers) = (url.clone(), label.clone(), headers.clone());
+        move || pair_with(&url, &code, &label, &headers)
+    }).await.map_err(|e| e.to_string())??;
     let state = app.state::<crate::AppState>();
     let dir = lock(&state.sync.dir).clone().ok_or("no config directory")?;
     save_token(&dir, &token)?;
+    save_headers(&dir, &headers)?;
     write_config(&dir, &SyncConfig { url, user, device, label, cursor: 0 })?;
     restart(&app, &state.sync);
     let status = lock(&state.sync.status).clone();
@@ -396,11 +471,23 @@ pub(crate) async fn sync_pair(app: AppHandle, url: String, code: String, label: 
 #[tauri::command]
 pub(crate) fn sync_forget(app: AppHandle, state: State<'_, crate::AppState>) -> SyncStatus {
     if let Some(dir) = lock(&state.sync.dir).clone() {
-        drop_token(&dir);
+        drop_secret(&dir, Secret::Token);
+        drop_secret(&dir, Secret::Headers);
         let _ = std::fs::remove_file(dir.join(CONFIG_FILE));
     }
     restart(&app, &state.sync);
     lock(&state.sync.status).clone()
+}
+
+/// Replaces the extra headers (a rotated Access secret, say) and reconnects with them.
+#[tauri::command]
+pub(crate) fn sync_set_headers(app: AppHandle, state: State<'_, crate::AppState>, headers: Headers) -> Result<SyncStatus, String> {
+    check_headers(&headers)?;
+    let dir = lock(&state.sync.dir).clone().ok_or("no config directory")?;
+    save_headers(&dir, &headers)?;
+    restart(&app, &state.sync);
+    let status = lock(&state.sync.status).clone();
+    Ok(status)
 }
 
 #[tauri::command]
@@ -451,6 +538,49 @@ mod tests {
     }
 
     #[test]
+    fn extra_headers_may_not_touch_the_handshake() {
+        let ok: Headers = vec![("CF-Access-Client-Id".into(), "x".into()), ("Authorization".into(), "Basic dTpw".into())];
+        assert!(check_headers(&ok).is_ok());
+        for bad in [("Host", "evil"), ("Upgrade", "h2c"), ("Sec-WebSocket-Key", "x"), ("bad name", "x"), ("X-A", "line\nbreak")] {
+            assert!(check_headers(&vec![(bad.0.into(), bad.1.into())]).is_err(), "{bad:?}");
+        }
+        assert!(check_headers(&vec![("X-A".into(), "1".into()), ("x-a".into(), "2".into())]).is_err(), "twice, whatever the case");
+    }
+
+    #[test]
+    fn a_proxy_refusal_says_where_to_look() {
+        assert!(refused(StatusCode::FORBIDDEN).contains("extra headers"));
+        assert!(refused(StatusCode::FOUND).contains("service token"));
+        assert!(refused(StatusCode::BAD_GATEWAY).contains("502"));
+    }
+
+    #[test]
+    fn the_extra_headers_ride_the_handshake_and_a_refusal_is_named() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/", l.local_addr().unwrap());
+        let seen = std::sync::Arc::new(Mutex::new(None::<String>));
+        let s2 = seen.clone();
+        std::thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            let _ = tungstenite::accept_hdr(s, |req: &tungstenite::handshake::server::Request, resp| {
+                *lock(&s2) = req.headers().get("cf-access-client-id").and_then(|v| v.to_str().ok()).map(String::from);
+                Ok(resp)
+            });
+            // The second connection plays a proxy that says no.
+            let (mut s, _) = l.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
+        });
+        let h: Headers = vec![("CF-Access-Client-Id".into(), "abc.access".into())];
+        assert!(open(&url, &h).is_ok());
+        assert_eq!(lock(&seen).as_deref(), Some("abc.access"));
+        let Err(err) = open(&url, &h) else { panic!("the proxy said no, so the handshake must fail") };
+        assert!(err.contains("HTTP 403") && err.contains("extra headers"), "{err}");
+    }
+
+    #[test]
     fn host_and_port_come_out_of_every_shape() {
         assert_eq!(host_port("wss://sync.example.com/").unwrap(), ("sync.example.com".into(), 443));
         assert_eq!(host_port("ws://box:7878/").unwrap(), ("box".into(), 7878));
@@ -464,10 +594,15 @@ mod tests {
         let dir = crate::testutil::scratch_dir();
         save_token(&dir, "abc123").unwrap();
         #[cfg(windows)]
-        assert_ne!(std::fs::read(dir.join(TOKEN_FILE)).unwrap(), b"abc123", "sealed, not plain");
+        assert_ne!(std::fs::read(dir.join(Secret::Token.file())).unwrap(), b"abc123", "sealed, not plain");
         assert_eq!(load_token(&dir).as_deref(), Some("abc123"));
-        drop_token(&dir);
+        drop_secret(&dir, Secret::Token);
         assert_eq!(load_token(&dir), None);
+        let h: Headers = vec![("CF-Access-Client-Id".into(), "id.access".into()), ("CF-Access-Client-Secret".into(), "s3 cr\"et".into())];
+        save_headers(&dir, &h).unwrap();
+        assert_eq!(load_headers(&dir), h);
+        save_headers(&dir, &vec![]).unwrap();
+        assert!(load_headers(&dir).is_empty() && !dir.join(Secret::Headers.file()).exists());
     }
 
     #[test]
@@ -509,7 +644,7 @@ mod tests {
             if matches!(o, SyncOut::Pushed { .. }) { stop.store(true, Ordering::SeqCst); }
             lock(&seen).push(serde_json::to_value(&o).unwrap());
         };
-        let end = session(&url, "tk", 7, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {});
+        let end = session(&url, "tk", &vec![], 7, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {});
         assert_eq!(end, End::Stopped);
         let kinds: Vec<String> = lock(&seen).iter().map(|v| v["kind"].as_str().unwrap().to_string()).collect();
         assert_eq!(kinds, ["server", "server", "pushed"]);
@@ -523,7 +658,7 @@ mod tests {
             write_msg(ws, &ServerMsg::Error { code: ErrorCode::BadToken, message: "unknown".into() });
         });
         let (_tx, rx) = channel();
-        assert_eq!(session(&url, "tk", 0, &rx, &|_| {}, &|| true, &|| {}), End::Halt("unknown".into()));
+        assert_eq!(session(&url, "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}), End::Halt("unknown".into()));
     }
 
     // Against a real episko-server: EPISKO_E2E_URL and two fresh invite codes in EPISKO_E2E_CODES.
@@ -533,22 +668,22 @@ mod tests {
         let url = norm_url(&std::env::var("EPISKO_E2E_URL").expect("EPISKO_E2E_URL")).unwrap();
         let codes = std::env::var("EPISKO_E2E_CODES").expect("EPISKO_E2E_CODES");
         let (ca, cb) = codes.split_once(',').expect("two codes, comma-separated");
-        let (ta, _, da) = pair_with(&url, ca, "laptop").unwrap();
-        let (tb, _, db) = pair_with(&url, cb, "desk").unwrap();
+        let (ta, _, da) = pair_with(&url, ca, "laptop", &vec![]).unwrap();
+        let (tb, _, db) = pair_with(&url, cb, "desk", &vec![]).unwrap();
         assert_ne!(da, db);
         let heard = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let (h, u) = (heard.clone(), url.clone());
         let listener = std::thread::spawn(move || {
             let (_tx, rx) = channel();
             let start = Instant::now();
-            session(&u, &tb, 0, &rx, &|o| lock(&h).push(serde_json::to_value(&o).unwrap()),
+            session(&u, &tb, &vec![], 0, &rx, &|o| lock(&h).push(serde_json::to_value(&o).unwrap()),
                 &|| start.elapsed() < Duration::from_secs(4), &|| {})
         });
         std::thread::sleep(Duration::from_millis(500));
         let (tx, rx) = channel();
         tx.send(Ctl::Push(1, vec![NewEvent { stream: episko_proto::Stream::Prefs, key: "cc-sort".into(), at: 1, payload: "active".into() }])).unwrap();
         let start = Instant::now();
-        session(&url, &ta, 0, &rx, &|_| {}, &|| start.elapsed() < Duration::from_secs(2), &|| {});
+        session(&url, &ta, &vec![], 0, &rx, &|_| {}, &|| start.elapsed() < Duration::from_secs(2), &|| {});
         assert_eq!(listener.join().unwrap(), End::Stopped);
         let got = lock(&heard).clone();
         let ev = got.iter().flat_map(|v| v["msg"]["events"].as_array().cloned().unwrap_or_default())
@@ -560,6 +695,6 @@ mod tests {
     fn an_unreachable_server_is_a_retry() {
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let (_tx, rx) = channel();
-        assert!(matches!(session(&format!("ws://127.0.0.1:{port}/"), "tk", 0, &rx, &|_| {}, &|| true, &|| {}), End::Retry(_)));
+        assert!(matches!(session(&format!("ws://127.0.0.1:{port}/"), "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}), End::Retry(_)));
     }
 }

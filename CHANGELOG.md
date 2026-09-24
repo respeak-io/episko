@@ -34,6 +34,10 @@ never an authority: with the server down or absent, everything works exactly as 
 + **A claim on an issue is a lease.** Dispatching an agent at shared work tells the team within a
   second, is renewed while the session runs, and lapses minutes after a machine disappears. It is
   still only a hint.
++ **Put the sync server behind Traefik auth or Cloudflare Access.** *Settings › Sync* takes extra
+  headers for the proxy in front: `Authorization: Basic …`, or a Cloudflare Access service token's
+  two `CF-Access-Client-*` lines. They are sealed with the sync token and never shown again, and a
+  proxy that says no is named as the reason.
 ~ **Per-project spend is kept per project, not per folder name.** Two checkouts both called `api`
   no longer share a row. Existing history moves over where the name is unambiguous.
 ~ **A sync that stops is said out loud.** A red *sync* badge joins the telemetry one in the top bar

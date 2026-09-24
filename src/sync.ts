@@ -296,3 +296,35 @@ export function teamRows(peers: Record<string, { user: string; items: PresenceIt
   for (const [device, p] of Object.entries(peers)) for (const it of p.items) rows.push({ ...it, user: p.user, device, mine: p.user === selfUser });
   return rows.sort((a, b) => (URGENT[a.state] ?? 9) - (URGENT[b.state] ?? 9) || a.user.localeCompare(b.user) || a.project.localeCompare(b.project));
 }
+
+// ---------- extra headers for a proxy in front of the server ----------
+
+// One per line, `Name: value`; `#` starts a comment. The handshake's own headers are refused
+// here and again in sync.rs, so a pasted line can never rewrite the upgrade itself.
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const RESERVED_HEADERS = new Set(["host", "connection", "upgrade", "content-length", "transfer-encoding", "origin"]);
+export const MAX_HEADERS = 16;
+
+export function parseHeaders(text: string): { headers: [string, string][]; error: string | null } {
+  const headers: [string, string][] = [];
+  const seen = new Set<string>();
+  for (const [i, raw] of text.split(/\r?\n/).entries()) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const at = line.indexOf(":");
+    const name = at > 0 ? line.slice(0, at).trim() : "";
+    const value = at > 0 ? line.slice(at + 1).trim() : "";
+    const where = `line ${i + 1}`;
+    if (!name) return { headers: [], error: `${where}: write it as Name: value` };
+    if (!HEADER_NAME.test(name)) return { headers: [], error: `${where}: "${name}" is not a header name` };
+    const lower = name.toLowerCase();
+    if (RESERVED_HEADERS.has(lower) || lower.startsWith("sec-websocket-")) return { headers: [], error: `${where}: ${name} belongs to the connection itself` };
+    if (!value) return { headers: [], error: `${where}: ${name} has no value` };
+    if (/[\x00-\x08\x0a-\x1f\x7f]/.test(value)) return { headers: [], error: `${where}: the value has characters a header cannot carry` };
+    if (seen.has(lower)) return { headers: [], error: `${where}: ${name} is given twice` };
+    seen.add(lower);
+    headers.push([name, value]);
+  }
+  if (headers.length > MAX_HEADERS) return { headers: [], error: `at most ${MAX_HEADERS} headers` };
+  return { headers, error: null };
+}

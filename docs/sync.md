@@ -194,6 +194,19 @@ compacts: an event superseded by a newer one of the same key goes once it is old
 months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
 (`episko-server/README.md`).
 
+**A proxy in front: extra headers.** Every handshake, the pairing one included, carries
+whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,
+ForwardAuth on a header, and a Cloudflare Access service token (`CF-Access-Client-Id` +
+`CF-Access-Client-Secret`). The rules:
+
+- `parseHeaders` (sync.ts) and `check_headers` (sync.rs) each refuse the handshake's own
+  headers (`Host`, `Upgrade`, `Sec-WebSocket-*`, …).
+- Values are sealed beside the token (`Secret::Headers`, stored as hex JSON so the keychain arm
+  can type it) and are **write-only**: status carries `headerNames` only.
+- A 401, 403 or redirect from the proxy becomes a sentence naming the fix (`refused`), and the
+  connection keeps retrying.
+- A login-page redirect (browser SSO) cannot work, because nothing follows it.
+
 **Testing against the real binary.** The ignored test `two_devices_meet_through_a_real_server`
 in `sync.rs` pairs two devices through a running server and checks that a push arrives. Set
 `EPISKO_E2E_URL` and `EPISKO_E2E_CODES` (two fresh invites, comma-separated), then run

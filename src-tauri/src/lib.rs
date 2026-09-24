@@ -532,6 +532,7 @@ pub fn run() {
             sync::sync_presence,
             sync::sync_ack,
             sync::sync_reconnect,
+            sync::sync_set_headers,
             summarize::summarize_day,
             summarize::read_digest,
             summarize::has_digest,

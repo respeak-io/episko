@@ -121,7 +121,7 @@ import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import {
-  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHost, startSync,
+  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
   tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
@@ -240,7 +240,7 @@ setSettingsHost({
   openPrivacyPane: (pane) => invoke("open_privacy_pane", { pane }),
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
-  syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync,
+  syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
 });
 setTourHost({
   pasteToActive: (text) => {
