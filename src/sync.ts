@@ -17,8 +17,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-fleet-sort": "pref", "cc-fleet-layout": "pref", "cc-fleet-group": "pref", "cc-fleet-range": "pref",
   "cc-peek": "pref", "cc-outline": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
 
-  "cc-usage": "account", "cc-usage-detail": "account", "cc-usage-tokens": "account",
-  "cc-agent-usage-tokens": "account", "cc-io": "account",
+  "cc-usage": "account", "cc-usage-detail": "account",
 
   "cc-favorites": "roster", "cc-proj-order": "roster", "cc-proj-groups": "roster",
   "cc-icons": "roster", "cc-custom-icons": "roster", "cc-colors": "roster",
@@ -33,14 +32,21 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
   "cc-forecast-log": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
   "cc-dash-seen": "local",
+  // Measured on this machine (its disk, its transcripts): a sum across machines means nothing.
+  "cc-io": "local", "cc-usage-tokens": "local", "cc-agent-usage-tokens": "local",
+  // Sync's own bookkeeping, and what it received: never sent back.
+  "cc-usage-peers": "local", "cc-detail-peers": "local", "cc-sync-stamps": "local",
+  "cc-sync-dirty": "local", "cc-sync-sent": "local", "cc-sync-limits": "local", "cc-sync-seed": "local",
 };
 
 export const syncClass = (key: string): SyncClass => SYNC_KEYS[key] ?? "local";
 
 // ---------- the wire's shape, as the client sees it ----------
 
-export type Stream = "prefs" | "usage" | "limits";
-export interface SyncEvent { seq: number; stream: Stream; key: string; device: string; at: number; payload: unknown }
+export type Stream = "prefs" | "usage" | "limits" | "roster" | "detail" | "notes" | "claims";
+export interface SyncEvent { seq: number; stream: Stream; key: string; actor: string; device: string; at: number; payload: unknown }
+/** What a client pushes; `actor`, `device` and `seq` are the server's to stamp. */
+export interface NewEvent { stream: Stream; key: string; at: number; payload: unknown }
 /** What this machine last applied, per stream key: enough to decide last-writer-wins. */
 export interface Stamp { at: number; device: string }
 
@@ -57,6 +63,8 @@ export const advance = (cursor: number, seq: unknown): number =>
 // ---------- prefs: last-writer-wins per key ----------
 
 export interface PrefOut { key: string; value: string }
+/** An incoming pref: `null` is the key removed, which is how a pref says "back to the default". */
+export interface PrefIn { key: string; value: string | null }
 
 /** The one payload builder for prefs. It reads only through `get`, and only `pref` keys. */
 export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
@@ -70,9 +78,11 @@ export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
 }
 
 /** An incoming pref to write, or null. A key we would not send is a key we will not take. */
-export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string): PrefOut | null {
+export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string): PrefIn | null {
   if (ev.stream !== "prefs" || ev.device === self || syncClass(ev.key) !== "pref") return null;
-  if (typeof ev.payload !== "string" || !wins(ev, held)) return null;
+  if (!wins(ev, held)) return null;
+  if (ev.payload === null) return { key: ev.key, value: null };
+  if (typeof ev.payload !== "string") return null;
   // A JSON pref arrives as its stored text; one that no longer parses is dropped on its own.
   if (/^[[{]/.test(ev.payload) && safeParse(ev.payload) === null) return null;
   return { key: ev.key, value: ev.payload };
@@ -125,6 +135,100 @@ export function readPeers(raw: string | null): Peers {
     out[device] = days;
   }
   return out;
+}
+
+// ---------- the day's split: models and projects, per device like the total ----------
+
+// Session titles stay home: they are written from the conversation (the privacy floor).
+export interface WireDetail { models: Record<string, number>; projects: Record<string, number>; names?: Record<string, string> }
+export type DetailPeers = Record<string, Record<string, WireDetail>>; // device → day → split
+
+const numMap = (v: unknown): Record<string, number> => {
+  const out: Record<string, number> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) {
+    for (const [k, n] of Object.entries(v)) if (typeof n === "number" && Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return out;
+};
+const strMap = (v: unknown): Record<string, string> => {
+  const out: Record<string, string> = {};
+  if (v && typeof v === "object" && !Array.isArray(v)) for (const [k, n] of Object.entries(v)) if (typeof n === "string") out[k] = n;
+  return out;
+};
+export function narrowDetail(v: unknown): WireDetail | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const d: WireDetail = { models: numMap(o.models), projects: numMap(o.projects) };
+  const names = strMap(o.names);
+  if (Object.keys(names).length) d.names = names;
+  return d;
+}
+const total = (m: Record<string, number>) => Object.values(m).reduce((a, b) => a + b, 0);
+
+/** Folds one detail event in; like a total, a day's split only grows. */
+export function acceptDetail(peers: DetailPeers, ev: SyncEvent, self: string): boolean {
+  if (ev.stream !== "detail") return false;
+  const bar = ev.key.indexOf("|");
+  const day = ev.key.slice(0, bar), device = ev.key.slice(bar + 1);
+  if (bar < 0 || !DAY.test(day) || !device || device !== ev.device || device === self) return false;
+  const d = narrowDetail(ev.payload);
+  if (!d) return false;
+  const row = peers[device] || (peers[device] = {});
+  const held = row[day];
+  if (held && total(d.models) + total(d.projects) <= total(held.models) + total(held.projects)) return false;
+  row[day] = d;
+  return true;
+}
+
+/** Every other machine's split per day, summed, for the day's own split to add to. */
+export function peerDetailDays(peers: DetailPeers): Record<string, WireDetail> {
+  const out: Record<string, WireDetail> = {};
+  for (const row of Object.values(peers)) for (const [day, d] of Object.entries(row)) {
+    const o = out[day] || (out[day] = { models: {}, projects: {} });
+    for (const [k, v] of Object.entries(d.models)) o.models[k] = (o.models[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(d.projects)) o.projects[k] = (o.projects[k] ?? 0) + v;
+    if (d.names) o.names = { ...o.names, ...d.names };
+  }
+  return out;
+}
+
+export function readDetailPeers(raw: string | null): DetailPeers {
+  const v = safeParse<DetailPeers>(raw);
+  const out: DetailPeers = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [device, row] of Object.entries(v)) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const days: Record<string, WireDetail> = {};
+    for (const [day, d] of Object.entries(row)) { const n = DAY.test(day) ? narrowDetail(d) : null; if (n) days[day] = n; }
+    out[device] = days;
+  }
+  return out;
+}
+
+// ---------- what this machine still owes the server ----------
+
+/** Per stream key, the stamp of the value this machine holds; `cc-sync-stamps`. */
+export type Stamps = Record<string, Stamp>;
+export const stampKey = (stream: Stream, key: string) => `${stream}:${key}`;
+
+export function readStamps(raw: string | null): Stamps {
+  const v = safeParse<Stamps>(raw);
+  const out: Stamps = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [k, s] of Object.entries(v)) {
+    if (s && typeof s === "object" && typeof s.at === "number" && Number.isFinite(s.at) && typeof s.device === "string") out[k] = { at: s.at, device: s.device };
+  }
+  return out;
+}
+
+export function readKeyList(raw: string | null): string[] {
+  const v = safeParse<unknown[]>(raw);
+  return Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === "string"))] : [];
+}
+
+/** A day's figure worth sending: it grew since the last one the server took. */
+export function changedDays(now: Record<string, number>, sent: Record<string, number>): string[] {
+  return Object.keys(now).filter((d) => DAY.test(d) && Number.isFinite(now[d]) && now[d] > (sent[d] ?? 0) + 1e-9).sort();
 }
 
 // ---------- limits: the freshest reading wins, and absent is not empty ----------

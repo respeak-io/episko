@@ -20,7 +20,16 @@ pub enum Stream {
     Prefs,
     Usage,
     Limits,
+    /// Per-project settings keyed by project id, never by path.
+    Roster,
+    /// A day's spend split by model and project, per device.
+    Detail,
+    Notes,
+    Claims,
 }
+
+/// Every stream, for a peer that has to list them.
+pub const STREAMS: [Stream; 7] = [Stream::Prefs, Stream::Usage, Stream::Limits, Stream::Roster, Stream::Detail, Stream::Notes, Stream::Claims];
 
 impl Stream {
     pub fn as_str(self) -> &'static str {
@@ -28,13 +37,25 @@ impl Stream {
             Stream::Prefs => "prefs",
             Stream::Usage => "usage",
             Stream::Limits => "limits",
+            Stream::Roster => "roster",
+            Stream::Detail => "detail",
+            Stream::Notes => "notes",
+            Stream::Claims => "claims",
         }
+    }
+    /// A personal stream reaches only its own user's devices, even in a team workspace.
+    pub fn is_personal(self) -> bool {
+        !matches!(self, Stream::Notes | Stream::Claims)
     }
     pub fn parse(s: &str) -> Option<Stream> {
         match s {
             "prefs" => Some(Stream::Prefs),
             "usage" => Some(Stream::Usage),
             "limits" => Some(Stream::Limits),
+            "roster" => Some(Stream::Roster),
+            "detail" => Some(Stream::Detail),
+            "notes" => Some(Stream::Notes),
+            "claims" => Some(Stream::Claims),
             _ => None,
         }
     }
@@ -71,6 +92,8 @@ pub enum ClientMsg {
     /// Open a session; the server replays everything after `since`, then streams.
     Hello { token: String, since: u64, protocol: u32 },
     Push { events: Vec<NewEvent> },
+    /// What this device has open right now. Held in memory with a TTL, never logged.
+    Presence { items: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,7 +118,12 @@ pub enum ServerMsg {
     /// The seqs the log gave a push's events, in the order they were sent.
     Pushed { seqs: Vec<u64> },
     Error { code: ErrorCode, message: String },
+    /// A device's presence; `items: null` means it went away or its heartbeat lapsed.
+    Presence { user: String, device: String, items: serde_json::Value },
 }
+
+/// A device that has not repeated its presence within this long is dropped.
+pub const PRESENCE_TTL_MS: u64 = 45_000;
 
 #[cfg(test)]
 mod tests {
@@ -118,7 +146,7 @@ mod tests {
     fn an_unknown_stream_is_refused_at_the_parse() {
         let bad = json!({"t":"push","events":[{"stream":"tasks","key":"k","at":1,"payload":null}]});
         assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
-        for s in [Stream::Prefs, Stream::Usage, Stream::Limits] { assert_eq!(Stream::parse(s.as_str()), Some(s)); }
+        for s in STREAMS { assert_eq!(Stream::parse(s.as_str()), Some(s)); }
         assert_eq!(Stream::parse("tasks"), None);
     }
 }

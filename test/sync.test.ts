@@ -14,7 +14,7 @@ const SRC = [
 const keysIn = (text: string) => new Set([...text.matchAll(/["'`](cc-[a-z0-9-]+)["'`]/g)].map((m) => m[1]));
 const used = new Set(SRC.flatMap((f) => [...keysIn(read(f))]));
 
-const ev = (over: Partial<SyncEvent>): SyncEvent => ({ seq: 1, stream: "prefs", key: "cc-sort", device: "b", at: 10, payload: "manual", ...over });
+const ev = (over: Partial<SyncEvent>): SyncEvent => ({ seq: 1, stream: "prefs", key: "cc-sort", actor: "me", device: "b", at: 10, payload: "manual", ...over });
 
 // The allowlist is only as good as its coverage: a key nobody classified is a decision nobody made.
 describe("the allowlist contract", () => {
@@ -82,6 +82,9 @@ describe("acceptPref", () => {
     expect(acceptPref(ev({ key: "cc-sound", payload: '{"on":' }), undefined, "a")).toBeNull();
     expect(acceptPref(ev({ key: "cc-sound", payload: 7 }), undefined, "a")).toBeNull();
     expect(acceptPref(ev({ key: "cc-sound", payload: '{"on":true}' }), undefined, "a")).toEqual({ key: "cc-sound", value: '{"on":true}' });
+  });
+  it("takes a removed pref as back-to-default", () => {
+    expect(acceptPref(ev({ key: "cc-keys", payload: null }), undefined, "a")).toEqual({ key: "cc-keys", value: null });
   });
 });
 

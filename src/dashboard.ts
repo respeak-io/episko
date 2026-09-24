@@ -64,7 +64,7 @@ import {
   type TrailCommit, type TrailDay,
 } from "./trail";
 import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
-import { usageDetail, usageWindow } from "./usage";
+import { dayDetail, usageWindow } from "./usage";
 import {
   accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
   permissionModeFor, removingWt, sessions, setActiveId, setMirror,
@@ -321,7 +321,7 @@ async function loadDash(): Promise<void> {
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
     if (root() !== r) return;   // a second await, so the stage may have moved again since
     hasDigest = anyDigest;
-    days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
+    days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost({ [k]: dayDetail(k) }, k, name()));
   } finally {
     if (root() === r) loading = false;   // guarded: the next project's load may be running
   }

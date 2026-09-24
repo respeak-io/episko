@@ -64,6 +64,9 @@ import { costPopHtml, ioPopHtml, usageRow } from "./usageview";
 import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
 import { providerAdapter, providerPermissionMode } from "./providers";
+import { ask } from "./confirm";
+import { health as syncHealthNow, prefsArrived, sentLog, status as syncStatus } from "./synclink";
+import { syncPanelHtml, syncSummary, type SyncDraft } from "./syncview";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -108,6 +111,10 @@ export interface SettingsHost {
   openDevtools: () => void;
   reloadUi: () => void;
   vitalsDrift: () => VitalsDrift | null;
+  // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
+  syncPair: (url: string, code: string, label: string) => Promise<void>;
+  syncForget: () => Promise<void>;
+  syncReconnect: () => void;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -151,6 +158,7 @@ let host: SettingsHost = {
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
   openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
+  syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -185,6 +193,7 @@ type SetShape =
   // Prose with no control under it: a rule governing the group below.
   | { kind: "note"; hint: string }
   | { kind: "guide" }
+  | { kind: "sync" }
   | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
@@ -557,6 +566,15 @@ const SET_TABS: SetTab[] = [
         more: "Read from the system log, about three seconds. A prompt you saw is one of these; most are answered from the system's cache without asking.",
         aliases: ["log show", "which agent", "binary", "audit"], since: "0.28.0",
         preview: () => asksPreview() },
+    ],
+  },
+  {
+    id: "sync", label: "Sync", glyph: "⇅", group: "app", sub: "Your settings and spend on every machine",
+    controls: () => [
+      { kind: "sync", id: "syncserver", label: "Sync server", hint: "Carries your preferences, spend and limits between your machines.",
+        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it: no prompts, transcripts, tool output or diffs. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
+        aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted"], since: "0.32.0",
+        summary: () => syncSummary(syncStatus, syncHealthNow()) },
     ],
   },
   {
@@ -1358,6 +1376,11 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "sound": ctl = sw(soundPrefs.enabled, `data-setsound="toggle"`) + fold(c.summary!()); panel = renderSoundControl(); break;
     case "keys": ctl = sw(keyPrefs.enabled, `data-setkey="toggle"`) + fold(c.summary!()); panel = renderKeysControl(); break;
     case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
+    case "sync":
+      ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
+      panel = syncPanelHtml(syncStatus, syncHealthNow(), syncDraft, syncBusy, syncErr, prefsArrived, sentLog, Date.now());
+      always = true;
+      break;
     case "wtpreview": ctl = fold(c.summary!()); panel = renderWtPreview(c.active()); break;
     case "font":
       ctl = `<div class="set-font">
@@ -1498,6 +1521,34 @@ function asksPreview(): string {
   return `${head}${asks.length} check${asks.length === 1 ? "" : "s"} in the last 24 hours${more}</div>`
     + `<table class="sv-tbl"><thead><tr><th>When</th><th>Checked</th><th>By</th></tr></thead><tbody>${rows}</tbody></table>`
     + `<div class="sv-foot">The <b>By</b> column is the binary that actually reached \u2014 an agent, something it ran, or Episko itself.</div></div>`;
+}
+
+// ---- Settings › Sync ----
+// The form's text survives a repaint here, not in the DOM: a status change repaints the panel.
+const syncDraft: SyncDraft = { url: "", code: "", label: "" };
+let syncBusy = false, syncErr: string | null = null;
+
+function applySyncSetting(verb: string) {
+  if (verb === "pair") {
+    if (syncBusy) return;
+    syncBusy = true; syncErr = null; renderSettings();
+    host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label)
+      .then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
+      .catch((e) => { syncErr = String(e); })
+      .finally(() => { syncBusy = false; renderSettings(); });
+  } else if (verb === "forget") {
+    void ask("This machine stops syncing and forgets its token. Everything it holds stays here.\n\nThe server keeps what it was sent.",
+      { title: "Forget this machine?", kind: "warning", okLabel: "Forget" })
+      .then((ok) => { if (ok) return host.syncForget().then(() => renderSettings()); });
+  } else if (verb === "reconnect") host.syncReconnect();
+  else if (verb === "reload") void host.reloadUi();
+}
+
+/** A sync status change, repainted unless it would take a field out from under the caret. */
+export function repaintSync() {
+  if (!settingsOpen()) return;
+  if ((document.activeElement as HTMLElement | null)?.closest?.("[data-syncfield]")) return;
+  renderSettings();
 }
 
 function resetPrompts() {
@@ -1748,6 +1799,8 @@ $("setBody").addEventListener("click", (e) => {
   // Clicking a preview row is the third way to replay it; it changes no setting.
   const ad = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
   if (ad) { attnDemoReplay(ad); return; }
+  const sy = (e.target as HTMLElement).closest<HTMLElement>("[data-setsync]");
+  if (sy) { applySyncSetting(sy.dataset.setsync!); return; }
   const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
   if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
@@ -1772,6 +1825,8 @@ $("setBody").addEventListener("click", (e) => {
 $("setBody").addEventListener("input", (e) => {
   const f = (e.target as HTMLElement).closest<HTMLInputElement>("[data-titleextra]");
   if (f) applyTitleExtra(f);
+  const sf = (e.target as HTMLElement).closest<HTMLInputElement>("[data-syncfield]");
+  if (sf) syncDraft[sf.dataset.syncfield as keyof SyncDraft] = sf.value;
 });
 
 // Delegated on the persistent #setBody: renderSettings() replaces the demo DOM on every press.

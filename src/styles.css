@@ -1914,6 +1914,17 @@ select.in-ctl { cursor: pointer; }
    disabling the field — the characters you collected stay where you left them. */
 .titlebox { display: flex; flex-direction: column; gap: 8px; margin-top: 11px; }
 .titlebox.off { opacity: .55; }
+/* Settings › Sync: the form and the connection's state reuse the title box's parts. */
+.syncbox .sync-err { font-size: 11.5px; color: var(--st-error); }
+.syncbox .sync-dim { color: var(--muted-2); font-size: 10.5px; }
+.syncbox .sync-h { font-weight: 650; }
+.sync-h.sync-ok { color: var(--st-done); }
+.sync-h.sync-lagging { color: var(--st-attention); }
+.sync-h.sync-down { color: var(--st-error); }
+.syncbox .sync-arrived { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--st-attention); }
+.syncbox .sync-sent summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+#fSyncSeg.sync-down b, #fSyncSeg.sync-lagging b { color: var(--st-error); }
+#fSyncSeg.sync-ok b { color: var(--st-done); }
 .tlabel { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
 .tfield { width: 100%; box-sizing: border-box; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font-size: 13px; }
 .tfield:focus { outline: none; border-color: var(--accent-line); background: var(--accent-wash); }

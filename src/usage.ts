@@ -62,6 +62,28 @@ export const usage: Record<string, number> = readObj<number>("cc-usage");
 export const usageDetail: Record<string, DayDetail> = readObj<DayDetail>("cc-usage-detail");
 // Keyed by project NAME, the basename of a path that is spelled precomposed since 0.29.
 for (const d of Object.values(usageDetail)) if (d?.projects && typeof d.projects === "object") d.projects = nfcKeys(d.projects);
+// Other machines' spend, kept beside this one's rather than in it (docs/sync.md): `usage` and
+// `usageDetail` stay THIS machine's, and every surface reads the sum through `dayTotal`/`dayDetail`.
+export const peerUsage: Record<string, number> = {};
+export const peerDetail: Record<string, { models: Record<string, number>; projects: Record<string, number>; names?: Record<string, string> }> = {};
+export function setPeerUsage(totals: Record<string, number>, detail: typeof peerDetail) {
+  for (const k of Object.keys(peerUsage)) delete peerUsage[k];
+  for (const k of Object.keys(peerDetail)) delete peerDetail[k];
+  Object.assign(peerUsage, totals);
+  Object.assign(peerDetail, detail);
+}
+export const dayTotal = (day: string): number => (usage[day] || 0) + (peerUsage[day] || 0);
+/** This machine's split of a day plus every peer's; sessions stay this machine's own. */
+export function dayDetail(day: string): DayDetail | undefined {
+  const own = usageDetail[day], peer = peerDetail[day];
+  if (!peer) return own;
+  const add = (a: Record<string, number> = {}, b: Record<string, number>) => {
+    const o = { ...a };
+    for (const [k, v] of Object.entries(b)) o[k] = (o[k] || 0) + v;
+    return o;
+  };
+  return { models: add(own?.models, peer.models), projects: add(own?.projects, peer.projects), sess: own?.sess };
+}
 export function todayKey() { return dayKeyOf(Date.now()); }
 // Local wall-clock day, never UTC, like every key in both stores. One formatter, two
 // spellings: `uDkey` takes a Date, `dayKeyOf` the milliseconds.
@@ -545,7 +567,7 @@ export function usageWindow(n: number): UDay[] {
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date(today); d.setDate(d.getDate() - i);
     const key = uDkey(d); const t = tk.get(key);
-    out.push({ key, cost: usage[key] || 0, tok: t ? t.input + t.output + t.cache_read + t.cache_write : 0, u: t });
+    out.push({ key, cost: dayTotal(key), tok: t ? t.input + t.output + t.cache_read + t.cache_write : 0, u: t });
   }
   return out;
 }

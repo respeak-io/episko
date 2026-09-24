@@ -2,7 +2,8 @@
 //! hello, is replayed everything after its cursor, and then hears every other device's pushes.
 
 use crate::store::{Identity, PushError, Store};
-use episko_proto::{ClientMsg, ErrorCode, Event, ServerMsg, MAX_PUSH, PAGE, PROTOCOL};
+use episko_proto::{ClientMsg, ErrorCode, Event, ServerMsg, MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL};
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,37 +19,90 @@ const POLL: Duration = Duration::from_millis(100);
 const PING_EVERY: Duration = Duration::from_secs(30);
 
 type Sock = WebSocket<TcpStream>;
-type Batch = Arc<Vec<Event>>;
+
+/// What the hub hands a connection: a batch of log events, or one device's presence.
+#[derive(Clone)]
+enum Out {
+    Events(Arc<Vec<Event>>),
+    Presence(ServerMsg),
+}
 
 struct Sub {
     id: u64,
-    ws: String,
-    tx: Sender<Batch>,
+    who: Identity,
+    tx: Sender<Out>,
+}
+
+struct Seen {
+    user: String,
+    items: serde_json::Value,
+    until: Instant,
 }
 
 #[derive(Default)]
 pub struct Hub {
     next: AtomicU64,
     subs: Mutex<Vec<Sub>>,
+    // Presence lives here and nowhere else: a crashed client fades, and the log never grows by it.
+    presence: Mutex<HashMap<(String, String), Seen>>,
+}
+
+fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl Hub {
-    fn join(&self, ws: &str) -> (u64, Receiver<Batch>) {
+    fn join(&self, who: &Identity) -> (u64, Receiver<Out>) {
         let (tx, rx) = channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        self.lock().push(Sub { id, ws: ws.to_string(), tx });
+        for ((ws, device), seen) in guard(&self.presence).iter() {
+            if *ws == who.ws && *device != who.device {
+                let _ = tx.send(Out::Presence(ServerMsg::Presence { user: seen.user.clone(), device: device.clone(), items: seen.items.clone() }));
+            }
+        }
+        guard(&self.subs).push(Sub { id, who: who.clone(), tx });
         (id, rx)
     }
-    fn leave(&self, id: u64) {
-        self.lock().retain(|s| s.id != id);
-    }
-    fn publish(&self, from: u64, ws: &str, events: Batch) {
-        for s in self.lock().iter().filter(|s| s.id != from && s.ws == ws) {
-            let _ = s.tx.send(events.clone());
+    fn leave(&self, id: u64, who: &Identity) {
+        guard(&self.subs).retain(|s| s.id != id);
+        // Another connection from the same device (a reconnect racing this close) keeps it present.
+        if !guard(&self.subs).iter().any(|s| s.who.device == who.device && s.who.ws == who.ws) {
+            self.set_presence(who, serde_json::Value::Null);
         }
     }
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Sub>> {
-        self.subs.lock().unwrap_or_else(|p| p.into_inner())
+    /// Log events go to the workspace, except a personal stream, which only its own user hears.
+    fn publish(&self, from: u64, ws: &str, events: &[Event]) {
+        for s in guard(&self.subs).iter().filter(|s| s.id != from && s.who.ws == ws) {
+            let mine: Vec<Event> = events.iter().filter(|e| !e.stream.is_personal() || e.actor == s.who.user).cloned().collect();
+            if !mine.is_empty() { let _ = s.tx.send(Out::Events(Arc::new(mine))); }
+        }
+    }
+    fn set_presence(&self, who: &Identity, items: serde_json::Value) {
+        let key = (who.ws.clone(), who.device.clone());
+        let changed = {
+            let mut p = guard(&self.presence);
+            if items.is_null() { p.remove(&key).is_some() } else {
+                let until = Instant::now() + Duration::from_millis(PRESENCE_TTL_MS);
+                let prev = p.insert(key, Seen { user: who.user.clone(), items: items.clone(), until });
+                prev.is_none_or(|s| s.items != items)
+            }
+        };
+        if changed { self.announce(who, items); }
+    }
+    fn announce(&self, who: &Identity, items: serde_json::Value) {
+        let msg = ServerMsg::Presence { user: who.user.clone(), device: who.device.clone(), items };
+        for s in guard(&self.subs).iter().filter(|s| s.who.ws == who.ws && s.who.device != who.device) {
+            let _ = s.tx.send(Out::Presence(msg.clone()));
+        }
+    }
+    /// Drops every device whose heartbeat lapsed and tells the workspace it went away.
+    pub fn sweep(&self, now: Instant) {
+        let gone: Vec<Identity> = {
+            let mut p = guard(&self.presence);
+            let dead: Vec<_> = p.iter().filter(|(_, s)| s.until <= now).map(|(k, s)| (k.clone(), s.user.clone())).collect();
+            dead.into_iter().map(|((ws, device), user)| { p.remove(&(ws.clone(), device.clone())); Identity { ws, user, device } }).collect()
+        };
+        for who in gone { self.announce(&who, serde_json::Value::Null); }
     }
 }
 
@@ -59,6 +113,11 @@ pub fn now_ms() -> i64 {
 /// Accepts forever. Each connection's failure is its own and never reaches the listener.
 pub fn serve(listener: TcpListener, store: Arc<Store>) {
     let hub = Arc::new(Hub::default());
+    let sweeper = hub.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        sweeper.sweep(Instant::now());
+    });
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let (store, hub) = (store.clone(), hub.clone());
@@ -112,24 +171,24 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub) -> Result<(), String>
                 }
                 Err(e) => return Err(e.to_string()),
             },
-            Ok(ClientMsg::Push { .. }) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
+            Ok(ClientMsg::Push { .. } | ClientMsg::Presence { .. }) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
             Err(e) => refuse(&mut sock, ErrorCode::BadMessage, e.to_string()).map_err(|e| e.to_string())?,
         }
     };
     // Join before replaying, so a push landing mid-catch-up is queued rather than missed.
-    let (id, rx) = hub.join(&who.ws);
+    let (id, rx) = hub.join(&who);
     let out = session(&mut sock, store, hub, id, &rx, &who, since);
-    hub.leave(id);
+    hub.leave(id, &who);
     out
 }
 
-fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Batch>, who: &Identity, since: u64) -> Result<(), String> {
+fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out>, who: &Identity, since: u64) -> Result<(), String> {
     let err = |e: tungstenite::Error| e.to_string();
     let head = store.head(&who.ws).map_err(|e| e.to_string())?;
     send(sock, &ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head }).map_err(err)?;
     let mut sent = since;
     loop {
-        let mut page = store.since(&who.ws, sent, PAGE + 1).map_err(|e| e.to_string())?;
+        let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1).map_err(|e| e.to_string())?;
         let more = page.len() > PAGE;
         page.truncate(PAGE);
         if let Some(last) = page.last() { sent = last.seq; }
@@ -147,10 +206,15 @@ fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Bat
             Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => return Ok(()),
             Err(e) => return Err(e.to_string()),
         }
-        while let Ok(batch) = rx.try_recv() {
-            let fresh: Vec<Event> = batch.iter().filter(|e| e.seq > sent).cloned().collect();
-            if let Some(last) = fresh.last() { sent = last.seq; }
-            if !fresh.is_empty() { send(sock, &ServerMsg::Events { events: fresh, more: false }).map_err(err)?; }
+        while let Ok(out) = rx.try_recv() {
+            match out {
+                Out::Events(batch) => {
+                    let fresh: Vec<Event> = batch.iter().filter(|e| e.seq > sent).cloned().collect();
+                    if let Some(last) = fresh.last() { sent = last.seq; }
+                    if !fresh.is_empty() { send(sock, &ServerMsg::Events { events: fresh, more: false }).map_err(err)?; }
+                }
+                Out::Presence(msg) => send(sock, &msg).map_err(err)?,
+            }
         }
         if pinged.elapsed() >= PING_EVERY {
             sock.send(Message::Ping(Vec::new().into())).map_err(err)?;
@@ -162,6 +226,11 @@ fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Bat
 fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text: &str) -> tungstenite::Result<()> {
     let events = match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Push { events }) => events,
+        Ok(ClientMsg::Presence { items }) => {
+            if items.to_string().len() > episko_proto::MAX_PAYLOAD { return refuse(sock, ErrorCode::TooLarge, "presence too large"); }
+            hub.set_presence(who, items);
+            return Ok(());
+        }
         Ok(_) => return refuse(sock, ErrorCode::BadMessage, "already said hello; only push from here"),
         Err(e) => return refuse(sock, ErrorCode::BadMessage, e.to_string()),
     };
@@ -171,7 +240,7 @@ fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text
     match store.append(who, &events) {
         Ok(out) => {
             let seqs = out.iter().map(|e| e.seq).collect();
-            hub.publish(id, &who.ws, Arc::new(out));
+            hub.publish(id, &who.ws, &out);
             send(sock, &ServerMsg::Pushed { seqs })
         }
         Err(PushError::TooLarge(m)) => refuse(sock, ErrorCode::TooLarge, m),
@@ -270,6 +339,38 @@ mod tests {
         assert_eq!(hello(addr, &token, 0).1.len(), PAGE + 3);
         let tail = hello(addr, &token, PAGE as u64).1;
         assert_eq!(tail.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![PAGE as u64 + 1, PAGE as u64 + 2, PAGE as u64 + 3]);
+    }
+
+    #[test]
+    fn presence_reaches_the_rest_of_the_workspace_and_clears_when_the_device_leaves() {
+        let (addr, store) = start();
+        let (ta, da) = pair(addr, &store, "laptop");
+        let (tb, _) = pair(addr, &store, "desk");
+        let (mut a, _) = hello(addr, &ta, 0);
+        let (mut b, _) = hello(addr, &tb, 0);
+        say(&mut a, &ClientMsg::Presence { items: json!([{"project": "p1", "phase": "working"}]) });
+        match hear(&mut b) {
+            ServerMsg::Presence { device, items, .. } => { assert_eq!(device, da); assert_eq!(items[0]["phase"], "working"); }
+            m => panic!("expected Presence, got {m:?}"),
+        }
+        let (mut c, _) = hello(addr, &tb, 0);
+        assert!(matches!(hear(&mut c), ServerMsg::Presence { .. }), "a late joiner is told who is already here");
+        a.close(None).unwrap();
+        loop {
+            if let ServerMsg::Presence { items, .. } = hear(&mut b) { assert!(items.is_null()); break; }
+        }
+    }
+
+    #[test]
+    fn a_lapsed_heartbeat_is_swept() {
+        let hub = Hub::default();
+        let who = Identity { ws: "w".into(), user: "u".into(), device: "d".into() };
+        let watcher = Identity { device: "e".into(), ..who.clone() };
+        let (_, rx) = hub.join(&watcher);
+        hub.set_presence(&who, json!(["x"]));
+        assert!(matches!(rx.try_recv(), Ok(Out::Presence(_))));
+        hub.sweep(Instant::now() + Duration::from_millis(PRESENCE_TTL_MS + 1));
+        match rx.try_recv() { Ok(Out::Presence(ServerMsg::Presence { items, .. })) => assert!(items.is_null()), _ => panic!("no sweep") }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The one SQLite file: the event log, one-use invites, and the tokens they were traded for.
 
-use episko_proto::{Event, NewEvent, Stream, MAX_PAYLOAD};
+use episko_proto::{Event, NewEvent, Stream, MAX_PAYLOAD, STREAMS};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -172,13 +172,15 @@ impl Store {
         Ok(out)
     }
 
-    /// Up to `limit` events after `cursor`, oldest first.
-    pub fn since(&self, ws: &str, cursor: u64, limit: usize) -> rusqlite::Result<Vec<Event>> {
+    /// Up to `limit` events after `cursor` that `user` may see, oldest first: the team's
+    /// shared streams, and only their own personal ones.
+    pub fn since(&self, ws: &str, user: &str, cursor: u64, limit: usize) -> rusqlite::Result<Vec<Event>> {
+        let shared = STREAMS.iter().filter(|s| !s.is_personal()).map(|s| format!("'{}'", s.as_str())).collect::<Vec<_>>().join(",");
         let db = self.db();
-        let mut q = db.prepare_cached(
-            "SELECT seq, stream, key, actor, device, at, payload FROM events WHERE ws = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
-        )?;
-        let rows = q.query_map(params![ws, cursor, limit as i64], |r| {
+        let mut q = db.prepare_cached(&format!(
+            "SELECT seq, stream, key, actor, device, at, payload FROM events              WHERE ws = ?1 AND seq > ?2 AND (actor = ?4 OR stream IN ({shared})) ORDER BY seq LIMIT ?3",
+        ))?;
+        let rows = q.query_map(params![ws, cursor, limit as i64, user], |r| {
             let stream: String = r.get(1)?;
             let payload: String = r.get(6)?;
             Ok((r.get::<_, u64>(0)?, stream, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, payload))
@@ -233,9 +235,20 @@ mod tests {
         assert_eq!(out.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(out[0].device, "d1");
         assert_eq!(s.head("default").unwrap(), 2);
-        assert_eq!(s.since("default", 0, 1).unwrap()[0].key, "cc-sort");
-        assert_eq!(s.since("default", 1, 10).unwrap()[0].key, "cc-foot");
-        assert!(s.since("other", 0, 10).unwrap().is_empty(), "workspaces never see each other");
+        assert_eq!(s.since("default", "me", 0, 1).unwrap()[0].key, "cc-sort");
+        assert_eq!(s.since("default", "me", 1, 10).unwrap()[0].key, "cc-foot");
+        assert!(s.since("other", "me", 0, 10).unwrap().is_empty(), "workspaces never see each other");
+    }
+
+    #[test]
+    fn a_teammate_sees_shared_streams_and_none_of_your_personal_ones() {
+        let s = Store::open_in_memory().unwrap();
+        let me = Identity { ws: "team".into(), user: "me".into(), device: "d1".into() };
+        let note = NewEvent { stream: Stream::Notes, key: "n1".into(), at: 1, payload: json!({"text": "hi"}) };
+        s.append(&me, &[ev("cc-sort", 1), note]).unwrap();
+        let theirs: Vec<_> = s.since("team", "them", 0, 10).unwrap().into_iter().map(|e| e.key).collect();
+        assert_eq!(theirs, vec!["n1"]);
+        assert_eq!(s.since("team", "me", 0, 10).unwrap().len(), 2);
     }
 
     #[test]

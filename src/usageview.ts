@@ -9,8 +9,8 @@ import { D7_LEN, forecast5h, forecast7d, H5_LEN, rlScoped, scopedForecasts, type
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
 import {
-  dayIo, ioDayCount, ioSameNote, ioTotal, modelSeries, todayKey, tokenDays, U_MONTHS, uBuckets,
-  uDkey, uModels, usage, usageRange, usageWindow, uSum,
+  dayIo, dayTotal, ioDayCount, ioSameNote, ioTotal, modelSeries, todayKey, tokenDays, U_MONTHS, uBuckets,
+  peerUsage, uDkey, uModels, usage, usageRange, usageWindow, uSum,
   type DaySpend, type ModelSeries, type UDay,
 } from "./usage";
 
@@ -160,7 +160,7 @@ function uTiles(): string {
 function uHeatmap(): string {
   const DAY = 86400000;
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const nz = Object.values(usage).filter((v) => v > 0).sort((a, b) => a - b);
+  const nz = [...new Set([...Object.keys(usage), ...Object.keys(peerUsage)])].map(dayTotal).filter((v) => v > 0).sort((a, b) => a - b);
   const q = (p: number) => nz.length ? nz[Math.floor(p * (nz.length - 1))] : 0;
   const th = [q(0.20), q(0.40), q(0.62), q(0.84)];
   const level = (v: number) => v <= 0 ? 0 : v <= th[0] ? 1 : v <= th[1] ? 2 : v <= th[2] ? 3 : 4;
@@ -171,7 +171,7 @@ function uHeatmap(): string {
   for (let w = 0; w < WEEKS; w++) for (let r = 0; r < 7; r++) {
     const t = start + (w * 7 + r) * DAY;
     if (t > today.getTime()) { cells += `<i class="u-cell" style="visibility:hidden"></i>`; continue; }
-    const d = new Date(t), key = uDkey(d), v = usage[key] || 0;
+    const d = new Date(t), key = uDkey(d), v = dayTotal(key);
     if (v > maxCost) { maxCost = v; maxKey = key; }
     const head = `${U_WD[d.getDay()]}, ${U_MONTHS[d.getMonth()]} ${d.getDate()}`;
     cells += `<i class="u-cell l${level(v)}" data-tip="${esc(head + "||" + (v > 0 ? uUsd2(v) : "no sessions"))}"></i>`;

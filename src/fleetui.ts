@@ -30,7 +30,7 @@ import {
 import type { TrailCommit } from "./trail";
 import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from "./types";
 import {
-  modelSeries, tokenDays, uDkey, uModels, usage, usageDetail, usageWindow, uSum, type UDay,
+  dayDetail, dayTotal, modelSeries, peerUsage, tokenDays, uDkey, uModels, usage, usageWindow, uSum, type UDay,
 } from "./usage";
 import { tokenScanning } from "./usageview"; // the transcript scan's own flag, ./usagedlg drives it
 
@@ -205,7 +205,7 @@ function sharedNames(projects: ProjGroup[]): string[] {
 function fleetModels(win: UDay[]): FleetModel[] {
   const cost: Record<string, number> = {};
   for (const d of win) {
-    for (const [k, v] of Object.entries(usageDetail[d.key]?.models ?? {})) cost[k] = (cost[k] || 0) + v;
+    for (const [k, v] of Object.entries(dayDetail(d.key)?.models ?? {})) cost[k] = (cost[k] || 0) + v;
   }
   return modelSeries(uModels(win)).map((r) => ({ ...r, cost: cost[r.name] ?? 0 }));
 }
@@ -213,7 +213,7 @@ function fleetModels(win: UDay[]): FleetModel[] {
 // The newest day the ledger holds anything for, whatever the window is. An empty column with
 // two months of records behind it is a different answer from one with no records at all.
 function lastSpendDay(): string {
-  const days = Object.keys(usage).filter((k) => usage[k] > 0).sort();
+  const days = [...new Set([...Object.keys(usage), ...Object.keys(peerUsage)])].filter((k) => dayTotal(k) > 0).sort();
   const last = days[days.length - 1];
   return last ? fmtDay(new Date(last + "T00:00:00").getTime()) : "";
 }
@@ -246,7 +246,7 @@ function buildView(now: number): FleetView {
   const cost = new Map<string, number>();
   const costFor = (name: string): number => {
     let v = cost.get(name);
-    if (v === undefined) { v = uSum(win, (d) => projectCost(usageDetail, d.key, name)); cost.set(name, v); }
+    if (v === undefined) { v = uSum(win, (d) => projectCost({ [d.key]: dayDetail(d.key) }, d.key, name)); cost.set(name, v); }
     return v;
   };
   // `dirtyByFolder` itself, never `folderDirty`: an unswept folder must read as unread.

@@ -40,7 +40,10 @@ serde_json = "1"
 # One spelling for a path compared by exact string: macOS's folder dialog hands back a
 # decomposed umlaut where Claude and git write the precomposed one (`platform::nfc`).
 unicode-normalization = "0.1"
-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+# `native-tls` for sync's `wss://`: a self-hosted server sits behind Caddy or similar (docs/sync.md).
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "native-tls"] }
+# Sync's wire types, shared with episko-server so a message cannot drift between the two.
+episko-proto = { path = "../episko-proto" }
 portable-pty = "0.9.0"
 tiny_http = "0.12.0"
 base64 = "0.22.1"
@@ -97,6 +100,8 @@ windows-sys = { version = "0.61", features = [
   # way `_getwch` (and so Python's `getpass`) does: key-DOWN records only. Reading it
   # any other way would pass while the bug it guards is present.
   "Win32_System_Console",
+  # DPAPI (`CryptProtectData`): the sync token, sealed to this Windows user.
+  "Win32_Security_Cryptography",
 ] }
 
 # macOS-only: read the pre-rename WebKit localStorage SQLite to recover cost/

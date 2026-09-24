@@ -86,15 +86,46 @@ reaches `localStorage`, `fetch` or Tauri.
 ## Where the code lives
 
 Three crates joined by **path dependency**, not a cargo workspace. Each keeps its own
-`Cargo.lock` and `target/`, so `src-tauri` and the release pipeline are unchanged. CI tests and
-lints the two sync crates in their own step. Converting to a workspace later is one small PR.
+`Cargo.lock` and `target/`, so the release pipeline is unchanged. CI tests and lints the two
+sync crates in their own step. Converting to a workspace later is one small PR.
 
 - `episko-proto/` holds the wire types (`ClientMsg`, `ServerMsg`, `Event`, `Stream`). Both
   sides compile against it, so a message's shape cannot drift.
 - `episko-server/` is the binary. `store.rs` holds the SQLite log, invites and tokens.
-  `serve.rs` runs one thread per WebSocket connection.
-- `src/sync.ts` holds the client rules. `sync.rs` (socket, token, `sync-event`) and
-  `syncui.ts` are not built yet.
+  `serve.rs` runs one thread per WebSocket connection, fans pushes out, and keeps presence in
+  memory.
+- `src-tauri/src/sync.rs` owns the connection. The socket, backoff and token live in Rust, so
+  the token never reaches the webview and the socket survives a reload. It decides nothing
+  about what syncs, and emits each server message as `sync-event`.
+- `src/sync.ts` holds the rules (tested). `src/synclink.ts` is the driver. `src/syncui.ts`
+  draws the badge and the status-bar segment, and `src/syncview.ts` draws the Settings › Sync
+  panel.
+
+## How a write travels
+
+`synclink.hookStorage()` replaces `Storage.prototype.setItem`/`removeItem` once, before
+anything writes. Every `localStorage` write in the app therefore passes one choke point, and
+no call site has to remember sync exists.
+
+1. A `pref` write marks the key **dirty** and stamps it, in `cc-sync-dirty` and
+   `cc-sync-stamps`. Both survive a restart, so an edit made offline is still owed later.
+2. A flush builds one push. It carries the dirty prefs, every day whose `cc-usage` total grew
+   past what the server last took (`cc-sync-sent`), the day's detail split, and the limit
+   readings if they changed.
+3. The server answers `pushed`. Only then is a key cleared, and only if its stamp has not moved
+   since. A key edited again mid-flight stays owed.
+4. A reconnect (`welcome`) discards whatever was in flight and rebuilds the push from scratch.
+
+Arriving events are applied through the rules. Remote prefs are written to `localStorage`
+**without** marking them dirty, and take effect on the next reload. Settings › Sync and the
+status bar say so. Peer spend lands in `cc-usage-peers`/`cc-detail-peers`, and every money
+surface reads `dayTotal`/`dayDetail` in `usage.ts`. After applying a batch, the frontend acks
+its highest seq, which `sync.rs` persists as the cursor. A crash between the two replays a
+batch, and that is harmless because every merge is idempotent.
+
+**Joining an existing setup adopts it.** A newly paired machine does not push its prefs at
+once: they wait in `cc-sync-seed` until the first catch-up ends. It then offers only the keys
+the server had nothing for, at the oldest possible stamp.
 
 ## Running the server
 
