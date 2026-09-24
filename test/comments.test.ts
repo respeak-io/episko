@@ -16,6 +16,8 @@ const FILES = [
   ...list("src/", ".ts"),
   ...list("src/providers/", ".ts"),
   ...list("src-tauri/src/", ".rs"),
+  ...list("episko-proto/src/", ".rs"),
+  ...list("episko-server/src/", ".rs"),
   ...list("test/", ".ts"),
   "src/styles.css",
   "index.html",

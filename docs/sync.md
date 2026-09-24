@@ -83,7 +83,36 @@ reaches `localStorage`, `fetch` or Tauri.
 | 2. Identity and roster | root-commit ids, the seven path-keyed stores' migrations, `cc-usage-detail` re-key, shared notes, presence |
 | 3. Coordination | claims as leases, the shared queue and dashboard |
 
-Built so far: `src/sync.ts` (the rules) and `test/sync.test.ts`. Still to build: `episko-proto`
-(the shared wire types), `episko-server`, `sync.rs` (the socket and token, emitting
-`sync-event`), `syncui.ts` (the Settings `sync` section and the status-bar segment), and the
-`cc-usage-peers` fold in `usage.ts`.
+## Where the code lives
+
+Three crates joined by **path dependency**, not a cargo workspace. Each keeps its own
+`Cargo.lock` and `target/`, so `src-tauri` and the release pipeline are unchanged. CI tests and
+lints the two sync crates in their own step. Converting to a workspace later is one small PR.
+
+- `episko-proto/` holds the wire types (`ClientMsg`, `ServerMsg`, `Event`, `Stream`). Both
+  sides compile against it, so a message's shape cannot drift.
+- `episko-server/` is the binary. `store.rs` holds the SQLite log, invites and tokens.
+  `serve.rs` runs one thread per WebSocket connection.
+- `src/sync.ts` holds the client rules. `sync.rs` (socket, token, `sync-event`) and
+  `syncui.ts` are not built yet.
+
+## Running the server
+
+```sh
+cd episko-server && cargo build --release
+EPISKO_DB=/srv/episko.db ./target/release/episko-server          # listens on 127.0.0.1:7878
+EPISKO_DB=/srv/episko.db ./target/release/episko-server invite   # prints EPSK-XXXX-XXXX
+```
+
+It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. The backup is
+`cp episko.db`.
+
+**The conversation.** A client sends `pair {code, label}` and gets back `paired {token, user,
+device}`. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by
+`events` pages until `more` is false. After that it pushes with `push {events}`, answered by
+`pushed {seqs}`, and hears the other devices' pushes as `events`. The rules the server enforces:
+
+- It mints the device id, so two machines with one label never share a usage cell.
+- It stamps `actor`/`device` from the token, whatever the client sent.
+- It stores only a hash of each token.
+- It refuses a mismatched protocol with `error {code: "protocol"}` rather than misreading it.
