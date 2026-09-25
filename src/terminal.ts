@@ -429,6 +429,8 @@ interface TermLink {
   range: { start: { x: number; y: number }; end: { x: number; y: number } };
   text: string;
   activate: (e: MouseEvent) => void;
+  hover?: () => void;
+  leave?: () => void;
 }
 type Buf = Terminal["buffer"]["active"];
 
@@ -549,6 +551,11 @@ async function openFilePath(path: string) {
   catch (e) { toast(String(e)); }
 }
 
+// Terminals whose pointer is on a link right now, from xterm's own hover/leave, so the click guard
+// below agrees with what is underlined.
+const onLink = new WeakSet<Terminal>();
+const hoverOf = (term: Terminal) => ({ hover: () => { onLink.add(term); }, leave: () => { onLink.delete(term); } });
+
 async function provide(id: string, term: Terminal, y: number, cb: (links: TermLink[] | undefined) => void) {
   const row = joinRows(term, y - 1); // provideLinks counts rows 1-based; the buffer does not
   const hits = row.text.trim() ? findLinks(row.text) : [];
@@ -566,21 +573,33 @@ async function provide(id: string, term: Terminal, y: number, cb: (links: TermLi
   for (const h of hits) {
     if (h.kind === "url") {
       const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
-      if (range) out.push({ range, text: h.text, activate: (e) => { if (modClick(e)) void openHref(h.text); } });
+      if (range) out.push({ range, text: h.text, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openHref(h.text); } });
       continue;
     }
     const won = await resolvePath(s, h.cands);
     if (!won || !claim(h.start, won.end)) continue;
     const range = mkRange(row, h.start, won.end);
-    if (range) out.push({ range, text: won.abs, activate: (e) => { if (modClick(e)) void openFilePath(won.abs); } });
+    if (range) out.push({ range, text: won.abs, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openFilePath(won.abs); } });
   }
   cb(out.length ? out : undefined);
 }
 
 // Called by every spawner after `term.open`; xterm keeps every link provider, so this composes.
 export function wireLinks(id: string, term: Terminal) {
-  term.options.linkHandler = { activate: (e, text) => { if (modClick(e)) void openHref(text); } };
+  term.options.linkHandler = { ...hoverOf(term), activate: (e, text) => { if (modClick(e)) void openHref(text); } };
   term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
+  // A MOD+click on a link is ours alone. Under mouse tracking xterm also reports it to the app, and
+  // Claude's fullscreen TUI opens a Ctrl+clicked link itself: two browser tabs on Windows (Cmd has no
+  // mouse-protocol bit, so macOS never saw it). Stopped at `.xterm-screen`, where the linkifier has
+  // already seen the press, before it bubbles to the element that reports it; no press, no release.
+  term.element?.querySelector(".xterm-screen")?.addEventListener("mousedown", (ev) => {
+    const e = ev as MouseEvent;
+    if (e.button !== 0 || !(IS_MAC ? e.metaKey : e.ctrlKey) || !onLink.has(term)) return;
+    if (term.modes.mouseTrackingMode === "none") return;
+    e.stopPropagation();
+    e.preventDefault();
+    term.focus(); // what xterm's own mousedown would have done
+  });
 }
 
 // Fit, push the size to the PTY, and force a full repaint: on resize the WebGL renderer redraws only

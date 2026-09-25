@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Ctrl+click on a link in a Claude pane opens it once on Windows, not twice.** Claude Code's
+  fullscreen renderer captures the mouse and opens a Ctrl+clicked link itself, and the terminal
+  was handing it the click as well as opening the link. A modifier-click on an underlined link
+  now stays with Episko. macOS never saw this: the mouse protocol has no bit for Cmd.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
