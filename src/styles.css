@@ -1541,7 +1541,10 @@ select.in-ctl { cursor: pointer; }
 .wt-sessb:hover { border-color: var(--accent-line); color: var(--text); }
 .wt-sessb i { width: 6px; height: 6px; border-radius: 50%; display: block; }
 
+/* every file the backend sent, in a box of its own: a long list pushed the actions out of the pane */
+.wt-detail .fslist { max-height: 188px; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
 .wt-acts { margin-top: auto; padding-top: 6px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.wtdlg .wt-acts { position: sticky; bottom: -12px; margin-bottom: -12px; padding-bottom: 12px; background: var(--panel); }
 .wt-go { font: 600 12px var(--font-ui); padding: 7px 13px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; color: #16121f; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); }
 .wt-go:hover { filter: brightness(1.08); }
 .wt-go[disabled] { opacity: .45; cursor: not-allowed; filter: none; }
