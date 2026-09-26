@@ -214,7 +214,7 @@ And the things that hold however the files are arranged:
   `shape_sdf` (`chevron`, `dchevron`). The tray once spelled every kind of pane with the
   phase vocabulary and drew a live shell as an idle agent.
 - **A pane's WebGL context comes from a small LRU pool** (`attachWebgl`/`detachWebgl` in `terminal.ts`, `GL_POOL_MAX` = 8). Both simpler designs (a context per pane for life, dispose-per-deactivation) were tried and are wrong; `docs/architecture.md` says why, along with the ended-pane scrollback rules.
-- **A claude pane's keystrokes are filtered before the PTY sees them.** They go through `claudeInput` in `terminal.ts`, which swallows a fast double `^C`. xterm keeps only **one** `attachCustomKeyEventHandler` per pane: a new key rule belongs in `claudeInput`/`winClaudePaste` (claude), `shellKeys` (shell) or `clipboardKeys` (task), never in a second handler.
+- **A claude pane's keystrokes are filtered before the PTY sees them.** They go through `claudeInput` in `terminal.ts`, which swallows a fast double `^C`. xterm keeps only **one** `attachCustomKeyEventHandler` per pane: a new key rule belongs in `claudeInput`/`claudeKeys` (claude), `shellKeys` (shell) or `clipboardKeys` (task), never in a second handler.
 - **A path in a pane is only a link once disk says so.** ./termlinks proposes readings
   of a line (a folder a person named has spaces in it, the agent may have broken the path
   across lines of its own, and a `printf` puts a literal `\n` inside the token),

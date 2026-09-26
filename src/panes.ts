@@ -25,8 +25,8 @@ import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
-  attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
-  shellKeys, trimScrollback, winClaudePaste, wireLinks,
+  attachWebgl, claudeInput, claudeKeys, clipboardKeys, detachWebgl, fitSession, MONO,
+  shellKeys, trimScrollback, wireLinks,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -87,7 +87,7 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   term.open(pane);
   wireLinks(id, term);
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
-  winClaudePaste(id, term, pane);
+  claudeKeys(id, term, pane);
   return { term, fit };
 }
 
