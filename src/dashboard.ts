@@ -64,10 +64,13 @@ import {
   type TrailCommit, type TrailDay,
 } from "./trail";
 import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
-import { usageDetail, usageWindow } from "./usage";
+import { dayDetail, usageWindow } from "./usage";
+import {
+  leaseFor, projectIdOf, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
+} from "./synclink";
 import {
   accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
-  permissionModeFor, removingWt, sessions, setActiveId, setMirror,
+  permissionModeFor, removingWt, sessions, setActiveId, setMirror, shareModeOf,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { copyText, refreshGhAccounts } from "./actions";
@@ -172,6 +175,23 @@ let gh: GhResult = { available: false, reason: null, threads: [], viewer: null }
 let kept: KeptIssue[] = [];
 let allow: ClaimAllow = ALLOW_ALL;
 let shared: SharedNote[] = [];       // the project's committed notes
+
+// Where this project's shared notes and work log go: project menu › Sharing (docs/sync.md).
+const shareMode = () => shareModeOf(root());
+const pid = () => projectIdOf(root());
+/** Committed notes and the server's as one list, one row per id; the later `at` wins. */
+function sharedNow(): SharedNote[] {
+  const by = new Map<string, SharedNote>(shared.map((n) => [n.id, n]));
+  for (const n of serverNotes(pid())) { const h = by.get(n.id); if (!h || n.at >= h.at) by.set(n.id, n); }
+  return [...by.values()];
+}
+const canShareHere = () => {
+  const m = shareMode();
+  return m === "off" ? false : m === "server" ? syncOn() && !!pid() : canShare(tier);
+};
+// Off by default in server mode, where nothing would be written: the offer is a question about git.
+const NO_KEY = "cc-digest-no";
+const offerRefused = () => readList<string>(NO_KEY).includes(root());
 // The confirm sheet up, if any: both writes are public, so nothing is written unseen.
 // The dependency sheet carries its whole brief rather than a row id: the text is what is
 // sent, it is editable in the sheet, and re-deriving it on submit would discard the edit.
@@ -321,7 +341,7 @@ async function loadDash(): Promise<void> {
       || (wantGit && await invoke<boolean>("has_digest", { root: r }).catch(() => false));
     if (root() !== r) return;   // a second await, so the stage may have moved again since
     hasDigest = anyDigest;
-    days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost(usageDetail, k, name()));
+    days = dashDays(r, hist, commits, usageWindow(dashRange), (k) => projectCost({ [k]: dayDetail(k) }, k, [projectIdOf(r), name()]));
   } finally {
     if (root() === r) loading = false;   // guarded: the next project's load may be running
   }
@@ -538,6 +558,7 @@ async function runSummaryQueue(): Promise<void> {
 // whole window wherever it is being written (docs/dashboard.md).
 function summaryDays(now: number, scope: "me" | "project"): TrailDay[] {
   if (scope === "project" && canShare(tier) && (hasDigest || digestOk().includes(root()))) return days;
+  if (scope === "project" && shareMode() === "server" && syncOn()) return days;
   const keys = new Set(bandFacts(days, sinceAt, now, isBotAuthor).keys.slice(0, SINCE_LINES));
   return days.filter((d) => keys.has(d.key));
 }
@@ -573,7 +594,9 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
   const allowed = digestOk().includes(r);
   // The project's line is only bought if something will use it: shown when the day had
   // more than one human committer, written when the project keeps a digest.
-  if (!mine && !sharedDay(d) && !(canShare(tier) && (allowed || hasDigest))) return true;
+  const toGit = shareMode() === "git" && canShare(tier) && (allowed || hasDigest);
+  const toServer = shareMode() !== "off" && syncOn() && !!pid();
+  if (!mine && !sharedDay(d) && !toGit && !(toServer && shareMode() === "server")) return true;
   // The project's line is only about commits; an empty record would buy "quiet day".
   const f = mine ? dayFacts(d) : projectDayFacts(d);
   if (!f.trim()) return true;
@@ -589,9 +612,11 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
     // Only this half is shared, and only a closed day (today's line changes as the day
     // goes on). Creating the file needs a yes; contributing to one already in the repo
     // does not, or a pulled digest becomes one person's diary.
-    if (!mine && canShare(tier) && closed && (allowed || hasDigest)) {
+    if (!mine && closed && toGit) {
       void invoke("write_digest", { root: r, key: d.key, line, create: allowed }).catch(() => {});
     }
+    // The server is the fast path beside the file, or the only path where the repo stays clean.
+    if (!mine && closed && toServer) publishDigest(pid()!, d.key, line);
   } catch (e) {
     // No summary is a fine state: the band prints one line fewer and nothing else reads it.
     dlog("warn", `dash: ${scope} summary for ${d.key} failed: ${e}`);
@@ -723,6 +748,8 @@ const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root(
 
 export function renderDash(): void {
   if (!dashMirror()) return;
+  // A teammate's work-log line can arrive over sync while the pane is open; a file's line wins.
+  for (const [k, v] of Object.entries(serverDigest(pid()))) if (!teamSummaries.has(k)) teamSummaries.set(k, v);
   // The bars are `<i>`s of colour, so aria-busy is what says the pane is working.
   $("dashPane").setAttribute("aria-busy",
     loading || ghLoading || landedLoading || queueRunning ? "true" : "false");
@@ -767,7 +794,7 @@ export function renderDash(): void {
   const f = bandFacts(days, sinceAt, now, isBotAuthor);
   // The offer counts closed days with commits, not sentences in hand: a solo day's
   // project line is not bought until somebody wants a digest.
-  const unshared = canShare(tier) && !hasDigest && !digestOk().includes(root())
+  const unshared = shareMode() === "git" && !offerRefused() && canShare(tier) && !hasDigest && !digestOk().includes(root())
     ? days.filter((d) => dayIsClosed(d) && d.commits.length > 0).length
     : 0;
   // A day stage 2 is going to ask for gets its box before the sentence exists; `stage` says
@@ -810,12 +837,13 @@ export function renderDash(): void {
     }));
 
   // ---- column C: one ranked queue over what were four cards ----
-  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now);
+  const holder = (t: GhThread) => holderOf(t, gh.viewer, claims.filter((c) => c.root === root()), now,
+    leaseFor(pid(), t.kind === "pr" ? "pr" : "issue", t.number));
   const stale = staleCandidates(gh.threads, kept, now).map((t) => ({ t, why: quietFor(t.updated_at, now) }));
   const dn = depsNow();
   const dtally = depTally(dn.adv, dn.prs, dn.out);
   // A note of yours that is also committed is one row, not two; the shared copy is theirs.
-  const theirs = shared.filter((n) => !noteList(root()).some((x) => x.id === n.id));
+  const theirs = sharedNow().filter((n) => !noteList(root()).some((x) => x.id === n.id));
   const items = rankQueue({
     threads: gh.threads, stale, adv: dn.adv, prs: dn.prs, out: dn.out,
     notes: noteList(root()), shared: theirs, holder, now,
@@ -835,8 +863,8 @@ export function renderDash(): void {
   ovl.classList.toggle("show", openView !== null);
   if (openView === null) ovl.dataset.view = "";
   else if (openView === "notes") {
-    const mineShared = new Set(shared.map((n) => n.id));
-    paintOverlay(openView, notesOverlay(noteList(root()), theirs, mineShared, canShare(tier)));
+    const mineShared = new Set(sharedNow().map((n) => n.id));
+    paintOverlay(openView, notesOverlay(noteList(root()), theirs, mineShared, canShareHere()));
   }
   else if (openView === "work") paintOverlay(openView, workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
@@ -1079,6 +1107,12 @@ export function wireDashboard(): void {
     if (seenBtn) { sinceAt = Date.now(); renderDash(); return; }
 
     if (t.closest("[data-dashworklog]")) { void enableDigest(); return; }
+    if (t.closest("[data-dashworklogno]")) {
+      localStorage.setItem(NO_KEY, JSON.stringify([...readList<string>(NO_KEY), root()]));
+      toast("Not offered again here. Project menu › Sharing decides where notes go");
+      renderDash();
+      return;
+    }
 
     const view = t.closest<HTMLElement>("[data-dashopen-view]");
     if (view) {
@@ -1804,6 +1838,9 @@ async function doDispatch(): Promise<void> {
   // Follows the project provider preference; claim release rides the provider-neutral `pty-exit`.
   const sid = await host.launch(n, r, { colorKey: r });
   if (typeof sid !== "string") return;   // launch already toasted the spawn error; no claim either
+  // The server's lease goes whatever the GitHub policy writes: it is the fast path, gh the floor.
+  const p = pid();
+  if (p && shareMode() !== "off") takeLease(p, t.kind === "pr" ? "pr" : "issue", t.number, gh.viewer || "someone", sid);
 
   const eff = resolveClaim(policy, allow);
   // Pass every argument the command declares, `body` included: Tauri rejects the whole
@@ -1843,6 +1880,7 @@ async function doDispatch(): Promise<void> {
 }
 
 export function releaseClaimFor(sessionId: string): void {
+  releaseLeases(sessionId);
   const rec = claimForSession(sessionId);
   if (!rec) return;
   dropClaim(rec.threadId);
@@ -1865,7 +1903,18 @@ async function toggleShare(id: string): Promise<void> {
   const r = root();
   const n = noteList(r).find((x) => x.id === id);
   if (!n) return;
-  const on = shared.some((x) => x.id === id);
+  const on = sharedNow().some((x) => x.id === id);
+  const mode = shareMode(), p = pid();
+  if (mode === "off") { toast("Sharing is off for this project (project menu › Sharing)"); return; }
+  const note = { id, text: n.text, who: gh.viewer || "someone", at: isoDay(Date.now()) };
+  if (mode === "server") {
+    if (!syncOn() || !p) { toast(syncOn() ? "This folder has no project id to share under" : "Set up Settings › Sync to share through the server"); return; }
+    publishNote(p, on ? null : note, id);
+    toast(on ? "Note is yours again" : "Shared with the team through the sync server");
+    renderDash();
+    return;
+  }
+  if (syncOn() && p) publishNote(p, on ? null : note, id);
   try {
     const wrote = await withConsent((create) => invoke("set_shared_note", {
       root: r, id, text: n.text, who: gh.viewer || "someone",
@@ -1895,7 +1944,7 @@ async function dispatchText(text: string): Promise<void> {
 // the rest come from the re-run. `teamSummaries`, never `summaries`: your line stays private.
 export async function enableDigest(): Promise<void> {
   const r = root();
-  if (!r || !canShare(tier)) return;
+  if (!r || !canShare(tier) || shareMode() !== "git") return;
   allowDigest(r);
   const done = [...teamSummaries.entries()].filter(([k]) => days.some((d) => d.key === k && dayIsClosed(d)));
   // Consent with nothing written yet is still consent: the re-run writes each day as it lands.

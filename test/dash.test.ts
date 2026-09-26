@@ -76,6 +76,11 @@ describe("projectCost", () => {
     expect(projectCost(detail, dk(3), "epi")).toBe(0);
     expect(projectCost(detail, dk(0), "not-this-one")).toBe(0);
   });
+  it("adds a day's id-keyed and name-keyed halves of one project", () => {
+    const both = { [dk(0)]: { projects: { "git:abc": 2, epi: 1.5, other: 9 } } };
+    expect(projectCost(both, dk(0), ["git:abc", "epi"])).toBe(3.5);
+    expect(projectCost(both, dk(0), [undefined, "epi", "epi"])).toBe(1.5);
+  });
   it("ignores a corrupt or negative value rather than propagating it", () => {
     expect(projectCost({ x: { projects: { epi: NaN } } }, "x", "epi")).toBe(0);
     expect(projectCost({ x: { projects: { epi: -1 } } }, "x", "epi")).toBe(0);

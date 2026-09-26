@@ -1,0 +1,11 @@
+[package]
+name = "episko-proto"
+version = "0.1.0"
+description = "Episko sync's wire types, shared by the app and the server"
+authors = ["Respeak"]
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

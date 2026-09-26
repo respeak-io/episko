@@ -131,6 +131,12 @@ describe("holderOf — a hint, never a lock", () => {
     expect(holderOf(th(), "tim", [], NOW)).toBeNull();
     expect(holderOf(th({ labels: ["bug"] }), "tim", [], NOW)).toBeNull();
   });
+  it("takes a teammate's live lease over an assignee, and lets a lapsed one go", () => {
+    const lease = { who: "ana", until: NOW + 60_000 };
+    expect(holderOf(th({ assignees: ["fred"] }), "tim", [], NOW, lease)).toMatchObject({ who: "ana", mine: false, stale: false });
+    expect(holderOf(th({ assignees: ["fred"] }), "tim", [], NOW, { who: "ana", until: NOW - 1 })).toMatchObject({ who: "fred" });
+    expect(holderOf(th(), "ana", [], NOW, lease)).toMatchObject({ who: "ana", mine: true });
+  });
   it("does not confuse an issue with a PR of the same number", () => {
     expect(holderOf(th({ number: 7, kind: "pr" }), "tim", [rec({ number: 7, kind: "issue" })], NOW)).toBeNull();
   });

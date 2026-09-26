@@ -556,7 +556,8 @@ export function workLogOffer(n: number): string {
        result in <code>.episko/digest.md</code>. Committed, everyone who pulls gets the same account of
        what the project did, instead of re-deriving, and paying for, their own.</p>
     <p>Only the commits and pull requests go in. Your own sessions and spend stay on this machine.</p>
-    <button class="act" data-dashworklog>↑ Start the work log</button></div>`;
+    <button class="act" data-dashworklog>↑ Start the work log</button>
+    <button class="act ghost" data-dashworklogno>Don't offer this</button></div>`;
 }
 
 // What this folder can't do, said once, in place of the cards it replaces.

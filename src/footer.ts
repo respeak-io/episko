@@ -22,7 +22,7 @@ import {
   activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, telemetryUp, termEngine,
 } from "./state";
 import { providerAdapter } from "./providers";
-import { daySpend, todayKey, usage, usageDetail } from "./usage";
+import { dayDetail, daySpend, dayTotal, todayKey } from "./usage";
 
 // Owned by main.ts: the colour popover (project rows) and putting a pane on the stage.
 let closeColorPop: () => void = () => {};
@@ -31,7 +31,7 @@ let setActive: (id: string) => void = () => {};
 export function setFooterSetActive(fn: typeof setActive) { setActive = fn; }
 
 export function renderFoot() {
-  const total = usage[todayKey()] || 0;
+  const total = dayTotal(todayKey());
   $("fSessions").textContent = String(sessions.size);
   $("fCost").textContent = "$" + total.toFixed(2);
   const limits = selectedLimits();
@@ -138,7 +138,7 @@ function renderUsagePop() {
     popGoHtml({ go: "usage", label: "Usage & spend", sub: "the burn rate behind these, and every day so far" })
   }</div>
     ${rows}
-    <div class="up-foot"><span>today <b>$${(usage[todayKey()] || 0).toFixed(2)}</b></span><span>${sessions.size} live${limits ? ` · ${esc(limits.label)} account` : ""}</span></div>
+    <div class="up-foot"><span>today <b>$${dayTotal(todayKey()).toFixed(2)}</b></span><span>${sessions.size} live${limits ? ` · ${esc(limits.label)} account` : ""}</span></div>
     ${!limits ? `<div class="up-note">Select an integrated agent session to see its account limits.</div>`
       : !limits.reported ? `<div class="up-note">Waiting for ${esc(limits.label)} to report account limits.</div>` : ""}`;
   if (html === lastUsagePop) return;
@@ -162,7 +162,8 @@ export function closeUsagePop() { $("usagePop").classList.remove("show"); }
 // ---------- today's spend, split (footer "today $x.xx") ----------
 function renderCostPop() {
   const live = new Set([...sessions.values()].map((s) => s.id));
-  const html = costPopHtml(daySpend(usageDetail, todayKey(), usage[todayKey()] || 0), live);
+  const day = todayKey();
+  const html = costPopHtml(daySpend({ [day]: dayDetail(day) }, day, dayTotal(day)), live);
   if (html === lastCostPop) return;
   lastCostPop = html;
   $("costPop").innerHTML = html;
