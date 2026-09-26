@@ -3,7 +3,8 @@ import "./localstorage"; // must precede the subject imports
 import { CLAIM_STALE_MS, type ClaimRecord } from "../src/claim";
 import {
   bucketOf, bucketed, cardRows, closeComment, ghPickable, ghWho, holderOf, isoDay, quietFor,
-  staleCandidates, STALE_DAYS, type GhAccount, type GhThread, type KeptIssue,
+  staleCandidates, STALE_DAYS, filterWork, workTally, type GhAccount, type GhThread, type KeptIssue,
+  type WorkFilter,
 } from "../src/ghwork";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
@@ -193,5 +194,47 @@ describe("ghPickable", () => {
     expect(ghPickable([])).toBe(false);
     expect(ghPickable([{ login: "octo", active: true }])).toBe(false);
     expect(ghPickable([{ login: "octo", active: true }, { login: "octo-work", active: false }])).toBe(true);
+  });
+});
+
+describe("the Open work filters", () => {
+  const board = [
+    th({ number: 1, labels: ["bug", "area:output"] }),
+    th({ number: 2, labels: ["enhancement", "area:output"] }),
+    th({ number: 3, kind: "pr", labels: ["bug"], title: "fix the balken" }),
+    th({ number: 4, labels: [], assignees: ["ann"] }),
+  ];
+  const f = (o: Partial<WorkFilter> = {}): WorkFilter => ({ kind: "all", labels: new Set(), free: false, query: "", ...o });
+  const held = (t: GhThread) => t.assignees.length > 0;
+  const nums = (o: Partial<WorkFilter>) => filterWork(board, f(o), held).map((t) => t.number);
+
+  it("ANDs every picked label, like GitHub's own filter", () => {
+    expect(nums({ labels: new Set(["bug"]) })).toEqual([1, 3]);
+    expect(nums({ labels: new Set(["bug", "area:output"]) })).toEqual([1]);
+  });
+
+  it("narrows by kind, by nobody holding it, and by words or a number", () => {
+    expect(nums({ kind: "pr" })).toEqual([3]);
+    expect(nums({ free: true })).toEqual([1, 2, 3]);
+    expect(nums({ query: "BALKEN" })).toEqual([3]);
+    expect(nums({ query: "#2" })).toEqual([2]);
+    expect(nums({ query: "output" })).toEqual([1, 2]);
+  });
+
+  it("counts what each chip WOULD show, leaving its own dimension out", () => {
+    const t = workTally(board, f({ kind: "pr" }), held);
+    expect(t.kinds).toEqual({ all: 4, iss: 3, pr: 1 });
+    expect(t.labels).toEqual([{ name: "bug", n: 1, on: false }]);
+  });
+
+  it("orders labels by the whole board, so a pick never reshuffles the row", () => {
+    const names = (o: Partial<WorkFilter>) => workTally(board, f(o), held).labels.map((l) => l.name);
+    expect(names({})).toEqual(["area:output", "bug", "enhancement"]);
+    expect(names({ labels: new Set(["enhancement"]) })).toEqual(["area:output", "enhancement"]);
+  });
+
+  it("keeps a picked label the refresh took away, so it can be unpicked", () => {
+    const t = workTally(board, f({ labels: new Set(["gone"]) }), held);
+    expect(t.labels).toEqual([{ name: "gone", n: 0, on: true }]);
   });
 });

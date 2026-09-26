@@ -3114,6 +3114,14 @@ select.in-ctl { cursor: pointer; }
 .bvchip.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 .bvchip .n { font: 9px var(--font-mono); color: var(--muted-2); }
 .bvchip.on .n { color: var(--accent-ink); }
+/* Open work's labels: each wears its own hue, and a picked one fills with it. */
+.wlchips { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 0 0 10px; }
+.wlchip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 5px; cursor: pointer; font: 9.5px var(--font-mono);
+  border: 1px solid color-mix(in srgb, var(--lc) 30%, transparent); color: var(--lc); background: color-mix(in srgb, var(--lc) 7%, transparent); }
+.wlchip:hover, .br .lbl[data-dashwlabel]:hover { border-color: var(--lc); }
+.wlchip .n { font-size: 8.5px; opacity: .7; }
+.wlchip.on, .br .lbl.on { color: #100e15; border-color: transparent; background: var(--lc); }
+.br .lbl[data-dashwlabel] { cursor: pointer; }
 /* Where it lives, per half: dim when that half can't go, struck-through-red when it is going. */
 .dbbr .wh { display: flex; gap: 5px; align-items: center; overflow: hidden; }
 .hf { flex: none; padding: 1px 5px; border-radius: 4px; font: 9px var(--font-mono); color: var(--muted);
