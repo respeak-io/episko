@@ -512,8 +512,10 @@ html.win .wctl { display: flex; }
 #terminals { position: relative; flex: 1; min-height: 0; background: var(--terminal-bg); }
 .term-pane { position: absolute; inset: 0; display: none; padding: 8px 10px 6px; }
 .term-pane.active { display: flex; flex-direction: column; }
-/* flex + min-height: 0, not height: 100%: the tiled view adds a caption the xterm must leave room for */
-.term-pane .xterm { flex: 1; min-height: 0; }
+/* flex + min-height: 0, not height: 100%: the tiled view adds a caption the xterm must leave room for.
+   No padding on .term-host: FitAddon reads its border-box height as the terminal's (panes.ts termHost). */
+.term-pane .term-host { flex: 1; min-height: 0; min-width: 0; padding: 0; overflow: hidden; }
+.term-pane .xterm { height: 100%; }
 
 /* ---------- the tiled stage: one run group, side by side ----------
    Several panes are .active at once, as grid cells. grid-auto-rows must be minmax(0, 1fr): a bare
