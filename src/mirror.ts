@@ -38,10 +38,12 @@ export function setMirrorRenderAll(fn: typeof renderAll) { renderAll = fn; }
 // A roster row: what was open when Episko last closed; shell panes have nothing to resume.
 // Exported for shelving (./panes), which must build the same row rather than a second
 // kind (docs/sessions.md).
+// A tracked pane (Sess.home) resumes where its transcript is, not where it was shown.
 export function rosterEntry(s: Sess): Restorable {
+  const at = s.home ?? s;
   return {
-    id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: s.workdir,
-    colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
+    id: s.id, resumeId: s.resumeId || s.id, project: s.project, workdir: at.workdir,
+    colorKey: s.colorKey, worktree: at.worktree, branch: at.branch,
     title: s.title, lastActivity: s.lastActivity, provider: s.provider || "claude",
   };
 }

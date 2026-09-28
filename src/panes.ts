@@ -206,7 +206,7 @@ const SEED_READ = 200; // what the outline would keep anyway (PROMPT_CAP)
 async function seedOutline(s: Sess, resumeId: string) {
   if (!s.provider) return;
   try {
-    const msgs = await readProviderAsked(s.provider, resumeId, s.workdir, SEED_READ);
+    const msgs = await readProviderAsked(s.provider, resumeId, s.home?.workdir ?? s.workdir, SEED_READ);
     if (sessions.get(s.id) !== s) return; // closed while we read
     if (seedPrompts(s.prompts, msgs).length) renderAll();
   } catch (e) {
@@ -833,7 +833,7 @@ export function noteDrift(s: Sess, tool: string, data: any) {
   if (!hasAgentCapability(s, "activity") || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
-  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster, s.home?.workdir ?? null);
   // All three fields: the branch of a drifted-into checkout can be switched underneath us.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;

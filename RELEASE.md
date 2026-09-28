@@ -376,6 +376,11 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       Afterwards: marker gone, chip shows the new branch alone, and
       `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
 - [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+- [ ] **Just show it here** (same setup, second button): no confirm, the pane does not
+      blink, and the header, working set and ⌘T switch to the new checkout. The inspector
+      shows a note that the agent still runs in the old one. Further writes there raise no
+      marker. *Show <old> again* reverts it. Quit and restore: the session resumes in its
+      **old** folder with its history intact.
 
 - [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
       run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`

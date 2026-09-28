@@ -47,6 +47,11 @@ function checkoutOf(path: string, roster: readonly Checkout[]): Checkout | null 
   return best;
 }
 
+export function sameCheckout(a: string, b: string, roster: readonly Checkout[]): boolean {
+  const ca = checkoutOf(a, roster);
+  return !!ca && ca.path === checkoutOf(b, roster)?.path;
+}
+
 // Which checkout a pane's directory is in, for ./grouping. An exact match keeps the caller's
 // spelling, or a session key stops matching the project path it is compared against.
 export function checkoutDir(path: string, roster: readonly Checkout[]): string {
@@ -144,11 +149,13 @@ export function driftTarget(
 }
 
 // `cwd` first: Claude stating where the session, transcript included (see `via`), now lives.
+// `runsIn` is the process's own folder on a tracked pane (Sess.home): a cwd there is no news.
 export function driftUpdate(
   prev: Drift | null, workdir: string, tool: string, input: unknown, cwd: unknown,
-  roster: readonly Checkout[],
+  roster: readonly Checkout[], runsIn: string | null = null,
 ): Drift | null {
-  const byCwd = checkoutDrift(workdir, cwd, roster);
+  const atHome = !!runsIn && typeof cwd === "string" && sameCheckout(runsIn, cwd, roster);
+  const byCwd = !atHome && checkoutDrift(workdir, cwd, roster);
   if (byCwd) return { ...byCwd, via: "cwd" };
   // At home, `cwd` retires only a drift it reported; one naming no checkout says nothing.
   if (prev?.via === "cwd" && typeof cwd === "string" && checkoutOf(cwd, roster)) return null;

@@ -580,7 +580,9 @@ html.win .wctl { display: flex; }
 .drift-path { font: 10.5px var(--font-mono); color: var(--muted); word-break: break-all; }
 .drift-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
 .drift-note .b { font-family: var(--font-mono); color: var(--muted); }
-.drift-btns { display: flex; }
+.drift-btns { display: flex; gap: 6px; }
+.drift-btns button + button { font-weight: 600; color: var(--muted); border-color: var(--hair-strong); }
+.drift.tracked { padding: 9px 11px; background: none; }
 .drift-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
 .drift-btns button:hover { background: color-mix(in srgb, var(--st-working) 14%, var(--surface)); border-color: var(--st-working); }
 

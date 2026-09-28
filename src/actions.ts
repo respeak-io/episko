@@ -15,9 +15,10 @@ import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
+import { sameCheckout } from "./gitwatch";
 import {
   activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, footPrefs, keyPrefs,
-  markWorkdirStale,
+  markWorkdirStale, worktreesByRepo,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
   projGroups,
@@ -56,7 +57,7 @@ import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import { cleanTitle, type TitlePrefs } from "./format";
 import type { SoundPrefs } from "./sound";
-import { canShelve, CLAUDE_CLI, midWork, phaseText } from "./types";
+import { canShelve, CLAUDE_CLI, midWork, phaseText, type Sess } from "./types";
 import { resolveProviderPermission } from "./providers/control";
 import { removePermission } from "./permissions";
 import { providerAdapter, providerPermissionMode } from "./providers";
@@ -496,40 +497,74 @@ export function toggleInsp() {
 }
 
 // ---------- following a session to the checkout its agent moved to ----------
-// Two repairs (docs/worktrees.md). via "cwd": Claude already runs there, so adopt the
-// folder in place. via "write": only the writes moved, and `claude --resume` finds a
-// transcript only under its cwd, so kill, wait for `pty-exit`, move, relaunch, in that order.
+// Three repairs (docs/worktrees.md). via "cwd": Claude already runs there, so adopt the
+// folder in place. "track": show the new checkout while the process stays put (Sess.home).
+// via "write": `claude --resume` finds a transcript only under its cwd, so kill, wait for
+// `pty-exit`, move, relaunch, in that order.
 const KILL_WAIT_MS = 5000; // a wedged process must not strand the pane; past this the move is tried anyway
 
-export async function followSessionDrift(id: string) {
+// Re-point what the pane shows; nothing is killed, moved or written.
+function adoptCheckout(s: Sess, dir: string, branch: string) {
+  s.workdir = dir;
+  s.branch = branch;
+  s.worktree = dir === s.colorKey ? null : branch;
+  s.drift = null;
+  s.git = null;                  // the old checkout's working set is not this one's
+  markWorkdirStale(s, "Write");  // re-read the new folder on the next sweep
+  queueRosterSave();             // restore must target the folder the transcript is in
+  renderAll();
+}
+
+export async function followSessionDrift(id: string, mode: "follow" | "track" | "back" = "follow") {
   const s = sessions.get(id);
-  if (!s?.drift) return;
-  const { dir, branch, via } = s.drift;
+  if (!s) return;
+  if (mode === "back") {
+    if (!s.home) return;
+    const { workdir, branch } = s.home;
+    s.home = null;
+    adoptCheckout(s, workdir, branch);
+    return;
+  }
+  // A tracked pane can still be moved later: the checkout it shows is the target.
+  const drift = s.drift ?? (s.home ? { dir: s.workdir, branch: s.branch, via: "write" as const } : null);
+  if (!drift) return;
+  const { dir, branch, via } = drift;
 
   if (via === "cwd") {
-    // No confirm: nothing is destroyed or written; Episko only catches up with the session.
-    s.workdir = dir;
-    s.branch = branch;
-    s.worktree = dir === s.colorKey ? null : branch;
-    s.drift = null;
-    s.git = null;                  // the old checkout's working set is not this one's
-    markWorkdirStale(s, "Write");  // re-read the new folder on the next sweep
-    queueRosterSave();             // restore must target the folder the transcript is in
-    renderAll();
+    // No confirm: Claude re-homed process and transcript itself; Episko only catches up.
+    s.home = null;
+    adoptCheckout(s, dir, branch);
     toast(`Now following ${branch}`);
+    return;
+  }
+  if (s.home && sameCheckout(s.home.workdir, dir, worktreesByRepo.get(s.colorKey) ?? [])) {
+    // Its writes came back to where it runs: untracking is the whole repair.
+    s.home = null;
+    adoptCheckout(s, dir, branch);
+    toast(`Back in ${branch}`);
+    return;
+  }
+  if (mode === "track") {
+    const home = s.home ?? { workdir: s.workdir, branch: s.branch, worktree: s.worktree };
+    s.home = home;
+    adoptCheckout(s, dir, branch);
+    toast(`Showing ${branch}; the agent still runs in ${home.branch || basename(home.workdir)}`);
     return;
   }
 
   const ok = await ask(
     `Move this session to ${branch}?\n\n`
-    + `Episko will end the session, move its conversation to ${dir}, and resume it there.\n\n`
-    + `The conversation is kept. Anything the agent is doing right now is interrupted.`,
+    + `A running agent can't change folders, and its conversation is filed under the folder it `
+    + `started in. So Episko ends the session, moves the conversation to ${dir}, and resumes it there.\n\n`
+    + `The conversation is kept. Anything the agent is doing right now is interrupted. `
+    + (s.home ? "" : `To keep it running, use Just show it here instead.`),
     { title: "Move session", kind: "warning", okLabel: "Move & resume", cancelLabel: "Cancel" },
   );
   if (!ok) return;
 
   // Captured before the close: the fallback relaunch rebuilds the session as it was.
-  const { project, colorKey, workdir, resumeId, worktree: wasWt, branch: wasBranch } = s;
+  const { project, colorKey, resumeId } = s;
+  const { workdir, worktree: wasWt, branch: wasBranch } = s.home ?? s;   // where it really runs
   // Wait for `pty-exit`, not for `kill_session` (which only sends the signal): renaming the
   // transcript while it is open fails on Windows and corrupts on POSIX. Waiter before the
   // kill, or a fast exit resolves nothing; close after, since `closeSession` settles waiters.

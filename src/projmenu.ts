@@ -490,7 +490,8 @@ function liveRows(s: Sess): (CtxRow | null)[] {
     // The two drifts cost different things to repair, so they are not one row (docs/worktrees.md).
     ...(d ? [d.via === "cwd"
       ? { act: "sdrift", ic: "⤳", label: `Follow it to ${d.branch}`, sub: "it moved itself; Episko catches up" }
-      : { act: "sdrift", ic: "⤳", label: `Move it to ${d.branch}`, sub: "ends it, takes the conversation, resumes there" }] : []),
+      : { act: "sdrift", ic: "⤳", label: `Move it to ${d.branch}`, sub: "ends it, takes the conversation, resumes there" },
+    ...(d.via === "write" ? [{ act: "sdrifttrack", ic: "⤳", label: `Show ${d.branch} here`, sub: "no restart; the agent keeps running where it is" }] : [])] : []),
     null,
     // Only an agent's folder is measured (./mirror's dirty sweep), so a shell or task has no
     // working set to review and says nothing about one.
@@ -576,6 +577,7 @@ $("ctxMenu").addEventListener("click", (ev) => {
     case "scopy": if (dir) void copyPath(dir); break;
     case "sswitch": if (s) void openSessionBranchPop(anchor, s.id); break;
     case "sdrift": if (s) void followSessionDrift(s.id); break;
+    case "sdrifttrack": if (s) void followSessionDrift(s.id, "track"); break;
     // ./taskrun owns every one of these; the rerun closes this pane and opens the next itself.
     case "srerun": if (s) void rerunTask(s); break;
     case "sreparams": if (s) void rerunTask(s, true); break;
