@@ -328,7 +328,7 @@ fn load_token(dir: &std::path::Path) -> Option<String> { load_secret(dir, Secret
 
 fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{x:02x}")).collect() }
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    (s.len() % 2 == 0).then_some(())?;
+    s.len().is_multiple_of(2).then_some(())?;
     (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 /// Stored as hex JSON, which every arm can carry verbatim. None is sealed as no file at all.
@@ -562,6 +562,8 @@ mod tests {
         let s2 = seen.clone();
         std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
+            // The Err type is tungstenite's own; nothing here can shrink it.
+            #[allow(clippy::result_large_err)]
             let _ = tungstenite::accept_hdr(s, |req: &tungstenite::handshake::server::Request, resp| {
                 *lock(&s2) = req.headers().get("cf-access-client-id").and_then(|v| v.to_str().ok()).map(String::from);
                 Ok(resp)
