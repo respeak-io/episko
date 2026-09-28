@@ -69,7 +69,10 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
+          workspaces: |
+            ./src-tauri -> target
+            ./episko-proto -> target
+            ./episko-server -> target
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -124,3 +127,12 @@ jobs:
       - name: Clippy
         working-directory: ./src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      # The sync server and its wire types are standalone crates joined to the app by path
+      # dependency, not a workspace, so each keeps its own lock and target (docs/sync.md).
+      - name: Sync crates (test + clippy)
+        run: |
+          for c in episko-proto episko-server; do
+            (cd "$c" && cargo test --locked && cargo clippy --all-targets --locked -- -D warnings) || exit 1
+          done
+        shell: bash

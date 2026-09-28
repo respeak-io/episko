@@ -14,6 +14,7 @@ mod notes;
 mod platform;
 mod pty;
 mod summarize;
+mod sync;
 mod tasks;
 mod telemetry;
 #[cfg(test)]
@@ -83,6 +84,8 @@ pub(crate) struct AppState {
     /// Windows' `SetThreadExecutionState` assertion, the `caffeinate` equivalent.
     #[cfg(windows)]
     caffeinate: Mutex<Option<KeepAwake>>,
+    /// The sync connection's control and last status; idle unless sync is set up (sync.rs).
+    sync: std::sync::Arc<sync::SyncCtl>,
 }
 
 /// Write the frontend's debug snapshot to a fixed path so external tools can read live state.
@@ -295,7 +298,9 @@ pub fn run() {
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 caffeinate: Mutex::new(None),
+                sync: Default::default(),
             });
+            sync::init(app.handle());
 
             let handle = app.handle().clone();
             // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the first
@@ -473,6 +478,7 @@ pub fn run() {
             git::git_commit_info,
             git::git_log_days,
             git::project_facts,
+            git::project_id,
             deps::dep_report,
             deps::dep_invalidate,
             deps::dep_manifests,
@@ -518,6 +524,15 @@ pub fn run() {
             usage::list_session_history,
             usage::token_usage_by_day,
             usage::claude_usage_limits,
+            sync::sync_status,
+            sync::sync_start,
+            sync::sync_pair,
+            sync::sync_forget,
+            sync::sync_push,
+            sync::sync_presence,
+            sync::sync_ack,
+            sync::sync_reconnect,
+            sync::sync_set_headers,
             summarize::summarize_day,
             summarize::read_digest,
             summarize::has_digest,

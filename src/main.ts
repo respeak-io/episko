@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isExited, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -33,7 +33,7 @@ import {
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setGhReload, refreshGhAccounts,
+  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
@@ -121,8 +121,16 @@ import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import {
+  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
+  tickSync, type SyncOut,
+} from "./synclink";
+import { renderSync } from "./syncui";
+import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
+
+// Before anything writes: every localStorage write passes ./synclink's watch (docs/sync.md).
+hookStorage();
 
 // One-time import of the pre-rename (io.respeak.cclauncher) localStorage: macOS keys a
 // WKWebView store to its bundle id, so the renamed app booted empty. Fill-absent only,
@@ -205,6 +213,7 @@ setPaletteHost({
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount, openShellFor, closeSession,
+  setShareMode: setProjectShareMode,
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -231,6 +240,7 @@ setSettingsHost({
   openPrivacyPane: (pane) => invoke("open_privacy_pane", { pane }),
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
+  syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -338,7 +348,7 @@ function flushRender() {
 function renderAllNow() {
   telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (fleetMirror()) {
@@ -449,6 +459,10 @@ listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) =
 // means the probe fell through to a later candidate: the feature still works, so the
 // app warns before the fallback stops matching too. No toast (the telemetry-health
 // precedent); dlog tees into episko.log, so the line itself names the directory.
+// Sync (docs/sync.md). Connecting waits for this listener: a replay emitted before it exists is lost.
+setSyncHost({ render: renderAll, log: dlog });
+void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
+
 listen<BgLogHealthEvent>("bglog-health", (e) => {
   const h = e.payload;
   setBgLogHealth(h);
@@ -807,6 +821,12 @@ setInterval(flushDebug, 4000);
 // Vitals: a fixed tick asking ./debug whether a sample is due, never an interval rebuilt
 // on a cadence change (see tickVitals).
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
+// Sends what the last half-minute left owed, and ages the sync badge past its window.
+setInterval(() => tickSync((sid) => { const s = sessions.get(sid); return !!s && !isExited(s); }), 30_000);
+// Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
+setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
+  pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),
+}))), 5_000);
 
 FAVORITES.forEach((f) => probeIcon(f.path));
 

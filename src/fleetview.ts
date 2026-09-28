@@ -8,6 +8,8 @@ import { FLEET_RANGES, type FleetCard, type FleetSection, type FleetSort, type F
 import type { Forecast } from "./rl";
 import type { DiffStat } from "./types";
 import type { ModelSeries } from "./usage";
+import type { TeamRow } from "./sync";
+import { GCLASS, GLYPH } from "./sidebarview";
 import { foreText } from "./usageview";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 
@@ -55,6 +57,7 @@ export interface FleetView {
   needs: FleetRow[]; live: FleetRow[]; resume: FleetResume[];
   usage: FleetUsage;
   limits: { h5: Forecast; d7: Forecast };
+  team: TeamRow[] | null;            // null: sync is not set up, so the section is not drawn
 }
 
 const DASH = `<span class="dim">—</span>`;
@@ -154,6 +157,15 @@ function liveRow(r: FleetRow): string {
     <span class="ti">${esc(r.label)}</span>`
     + (r.ext ? `<span class="ext-tag">ext</span>` : "")
     + `<span class="pj mono">${esc(r.project)}</span>${r.ext ? "" : closeBtn(r.id)}</div>`;
+}
+
+// Another device's session: nothing to open or close from here, so the row is only a fact.
+function teamRow(r: TeamRow): string {
+  const who = r.mine ? `${r.user} · another machine` : r.user;
+  const tip = `${who} · ${r.project}${r.branch ? ` on ${r.branch}` : ""}`;
+  return `<div class="fl-row fl-team" data-tip="${escAttr(tip)}">
+    <span class="sglyph ${esc(GCLASS[r.state] ?? "")}">${esc(GLYPH[r.state] ?? "·")}</span>
+    <span class="ti">${esc(who)}</span><span class="pj mono">${esc(r.project)}${r.branch ? ` · ${esc(r.branch)}` : ""}</span></div>`;
 }
 
 // Nothing left open and not read yet are different answers, and the row list is where the
@@ -400,6 +412,7 @@ export function fleetBodyHtml(v: FleetView): string {
   const colA = sec("Needs you", String(v.needs.length), "", v.needs.map(needRow).join(""),
       "Nothing is waiting on you.", v.needs.length ? "waiting" : "")
     + sec("Live now", String(v.live.length), "", v.live.map(liveRow).join(""), "No sessions running.")
+    + (v.team ? sec("Team now", String(v.team.length), "", v.team.map(teamRow).join(""), "Nobody else has a session open.") : "")
     + sec("Pick back up", v.resumeWait ? "" : String(v.resume.length), history,
       v.resumeWait ? resumeSkel() : v.resume.map(resumeRow).join(""), "Nothing left open.");
   const colC = spendSec(v.usage) + modelSec(v.usage, v.tokenWait)
