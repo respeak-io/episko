@@ -67,6 +67,10 @@ never an authority: with the server down or absent, everything works exactly as 
   was handing it the click as well as opening the link. A modifier-click on an underlined link
   now stays with Episko. macOS never saw this: the mouse protocol has no bit for Cmd.
 
+! **History no longer loses a session that started with a pasted image.** The folder a
+  session ran in was looked for only near the top of its transcript, and an image in the
+  first prompt pushed it far past that, so the row was dropped while `/resume` still found it.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects

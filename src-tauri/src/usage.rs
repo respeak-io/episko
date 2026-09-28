@@ -267,14 +267,40 @@ fn transcript_meta_within(path: &std::path::Path, cap: u64) -> Option<(Transcrip
 
 /// The `(cwd, git_branch)` a transcript was recorded under, read from its head. The folder
 /// name is a lossy encoding of the cwd, so the real path can only come from inside the file.
+/// Head first, then the tail: a pasted image makes the first prompt a multi-MB line, which
+/// buries the head's first cwd far past any cap (every record carries it, so the tail has one).
 fn transcript_origin(path: &Path) -> (String, String) {
-    use std::io::{BufRead, BufReader, Read};
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
     const CAP: u64 = 64 * 1024;
     let none = (String::new(), String::new());
     let Ok(file) = std::fs::File::open(path) else {
         return none;
     };
-    for line in BufReader::new(file).take(CAP).lines().map_while(Result::ok) {
+    let head = BufReader::new(&file).take(CAP).lines().map_while(Result::ok);
+    if let Some(found) = origin_in(head) {
+        return found;
+    }
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return none;
+    };
+    for cap in [CAP, 512 * 1024] {
+        let mut reader = BufReader::new(&file);
+        if reader.seek(SeekFrom::Start(len.saturating_sub(cap))).is_err() {
+            return none;
+        }
+        if len > cap {
+            let _ = reader.read_line(&mut String::new()); // drop the partial first line
+        }
+        if let Some(found) = origin_in(reader.lines().map_while(Result::ok)) {
+            return found;
+        }
+    }
+    none
+}
+
+/// The first line in `lines` that names a cwd, as `(cwd, git_branch)`.
+fn origin_in(lines: impl Iterator<Item = String>) -> Option<(String, String)> {
+    for line in lines {
         if !line.contains("\"cwd\"") {
             continue;
         }
@@ -286,9 +312,9 @@ fn transcript_origin(path: &Path) -> (String, String) {
             continue;
         }
         let branch = v.get("gitBranch").and_then(|x| x.as_str()).unwrap_or("");
-        return (cwd.to_string(), branch.to_string());
+        return Some((cwd.to_string(), branch.to_string()));
     }
-    none
+    None
 }
 
 /// One row of the History panel: a conversation on disk anywhere on this machine.
@@ -1193,6 +1219,18 @@ mod tests {
         let c = dir.join("c.jsonl");
         std::fs::write(&c, "{\"type\":\"ai-title\",\"aiTitle\":\"no cwd here\"}\n").unwrap();
         assert_eq!(transcript_origin(&c), (String::new(), String::new()));
+
+        // A pasted image makes the first prompt one line far longer than the head's cap.
+        let d = dir.join("d.jsonl");
+        let image = "A".repeat(700 * 1024);
+        let mut body = format!(
+            "{{\"type\":\"mode\"}}\n{{\"type\":\"user\",\"message\":{{\"content\":\"{image}\"}},\"cwd\":\"/proj/img\",\"gitBranch\":\"main\"}}\n"
+        );
+        for _ in 0..50 {
+            body.push_str("{\"type\":\"assistant\",\"cwd\":\"/proj/img\",\"gitBranch\":\"main\"}\n");
+        }
+        std::fs::write(&d, body).unwrap();
+        assert_eq!(transcript_origin(&d), ("/proj/img".to_string(), "main".to_string()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
