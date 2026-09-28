@@ -77,6 +77,11 @@ never an authority: with the server down or absent, everything works exactly as 
   a background job: it is listed under *Background jobs* by its description, and it stands down
   when its log says it exited or was killed, exactly as a shell's does.
 
+! **A terminal fits its pane again.** Every terminal was sized a row or two taller than the space
+  it had — the pane's padding, and in a split or run group its caption, were counted as terminal —
+  so the prompt could sit below the bottom edge where no scroll reached it, and a split shell
+  scrolled its own caption (and its ✕) out of view to keep the cursor on screen.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
