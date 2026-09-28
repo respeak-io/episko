@@ -52,6 +52,10 @@ never an authority: with the server down or absent, everything works exactly as 
   dead the moment you clicked into a pane. A chord bound in Settings › Keys now reaches the app
   first; switch shortcuts off there and the terminal gets every key back.
 
+! **The new-session dialog keeps *Start session here* in view.** A checkout with dozens of
+  uncommitted files pushed the buttons below the pane; the file list now scrolls in a box of
+  its own (and names every file rather than the first ten), and the action row stays pinned.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
