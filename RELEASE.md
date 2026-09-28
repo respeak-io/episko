@@ -500,6 +500,27 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       the jump lands on the one running that session, not merely on the app. That
       tiebreak reads the window title, so it is the half no unit test can hold.
 
+### Sync
+
+Everything below the pairing form is driven by a live socket, so none of it has a test
+that is not a mock. Stand a server up the way the ignored test does (`docs/sync.md` ›
+*Running the server*: build `episko-server`, run it with `EPISKO_DB` on a throwaway file
+and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
+
+- [ ] **Pairing.** Settings › Sync: the address, the code and a name, then *Pair*. The form
+      is replaced by the state box within a second or two: *In step*, the server's address,
+      this machine's name beside its device id, and *Last exchange* counting up from
+      "0s ago". A wrong code says so in red under the form and leaves it standing.
+- [ ] **A change travels.** Flip any preference (the sort order is the cheapest). Open
+      *What this machine sent* — a row with the stream and the key lands within a second,
+      and the count in the summary moves. The status bar's sync segment says *In step*.
+- [ ] **The server going away is said out loud.** Stop the server. The state box turns to
+      *Reconnecting…* and, after two minutes without it, to *Unreachable* with a red
+      **sync** badge in the top bar beside where the telemetry one appears. Start it
+      again: the badge clears and *Last exchange* restarts, with no reload.
+- [ ] **Forgetting.** *Forget this machine* asks first (red button), then the pairing form
+      is back and the status bar's ⇅ segment reads *Off*. Every setting stays as it was.
+
 ### The OS edge
 
 - [ ] **Tray** mirrors the fleet; picking a session brings it to the stage.
