@@ -25,6 +25,9 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
   each leg runs the half that compiles for it (the platform tests are `cfg`-gated, so
   the two counts differ and neither equals the total)
 - `cargo clippy --all-targets --locked -- -D warnings`
+- the same `cargo test` and `cargo clippy` pair inside `episko-proto` and `episko-server`,
+  which are crates of their own rather than workspace members, so a run from `src-tauri`
+  never reaches them (the app only pulls `episko-proto` in as a path dependency)
 
 Both legs matter and neither is redundant: the platform code is `cfg`-gated, so each
 OS compiles and lints only its own half.
@@ -97,6 +100,13 @@ Four checks against Claude Code's real state, in one pass:
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
 rather than gone red.
+
+The same `--ignored` pass also runs `two_devices_meet_through_a_real_server`, which is
+ours rather than Anthropic's: two clients pair through a real `episko-server`, one pushes
+a preference and the other must hear it. It fails on `EPISKO_E2E_URL` alone unless a
+server is up, so stand one up first (`docs/sync.md` › *Running the server*): build the crate, run it
+with `EPISKO_DB` pointing at a throwaway file and `EPISKO_BIND` on a spare port, mint two
+invites, and pass them as `EPISKO_E2E_CODES`. No tokens and no auth; ~5s.
 
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through

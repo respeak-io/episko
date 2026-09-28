@@ -79,7 +79,11 @@ pnpm exec tsc --noEmit
 pnpm exec tsc -p tsconfig.test.json --noEmit
 pnpm test
 cd src-tauri && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
+for c in episko-proto episko-server; do (cd $c && cargo test --locked && cargo clippy --all-targets --locked -- -D warnings); done
 ```
+
+The last line is CI's too: those two are crates of their own, not workspace members, so a
+run from `src-tauri` never reaches them.
 
 Then the three things CI cannot do:
 
@@ -90,6 +94,9 @@ cargo test --locked -- --show-output read_bg_log_finds_a_log
 
 # 2. the CLI contract tests, not in CI. Four checks against the real `claude`.
 #    Three cost nothing; `claude_cli_still_honours_our_instrumentation` spends tokens — ASK FIRST.
+#    The same pass runs `two_devices_meet_through_a_real_server`, which needs a live
+#    episko-server plus two invites in EPISKO_E2E_URL / EPISKO_E2E_CODES (RELEASE.md says how);
+#    without them it fails on the env var, not on the feature.
 cargo test --locked -- --ignored --nocapture
 
 # 3. no import cycles (CLAUDE.md requires a sweep after any change that adds an import)
