@@ -11,7 +11,8 @@ import { dlog } from "./debug";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
-import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { activeId, keyPrefs, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { matchAction } from "./keys";
 import { inStageGroup } from "./grouping";
 
 // The bundled Nerd Font first (@font-face in styles.css) so icon glyphs draw on every OS.
@@ -77,6 +78,10 @@ export function applyScrollback(list: Iterable<Sess>, lines: number) {
   }
 }
 
+// xterm stopPropagation()s every Ctrl+key it encodes, so on Windows an app chord never reached
+// main.ts's window listener. `false` makes xterm skip the event untouched; every pane's handler asks this first.
+const appChord = (e: KeyboardEvent) => e.type === "keydown" && !!matchAction(keyPrefs, e);
+
 // xterm keeps only the last custom key handler; task panes take `clipboardKeys` alone (no prompt).
 export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boolean {
   const clip = clipboardKeys(term), nav = macShellKeys(id);
@@ -87,6 +92,7 @@ export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boo
 // Tauri's clipboard plugin, never `navigator.clipboard`: its read prompts.
 export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
   return (e) => {
+    if (appChord(e)) return false;
     if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
     const k = e.key.toLowerCase();
     if (k !== "c" && k !== "v") return true;
@@ -157,14 +163,13 @@ export function claudeInput(id: string): (d: string) => void {
   };
 }
 
-// Windows image paste for Claude panes. Claude binds chat:imagePaste to alt+v on native Windows and
-// xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and the paste event sends ESC v
-// when an image is aboard; text falls through to xterm's own paste. xterm keeps ONE custom key
-// handler per pane: a new claude key rule goes here or in `claudeInput`, never in a second handler.
-export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
+// A claude pane's one key handler: app chords, plus Windows image paste. Claude binds chat:imagePaste
+// to alt+v on native Windows and xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and
+// the paste event sends ESC v when an image is aboard; text falls through to xterm's own paste.
+export function claudeKeys(id: string, term: Terminal, pane: HTMLElement) {
+  term.attachCustomKeyEventHandler((e) => !appChord(e) && !(IS_WIN && e.type === "keydown"
+    && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
   if (!IS_WIN) return;
-  term.attachCustomKeyEventHandler((e) =>
-    !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
   // Capture phase: beats xterm's textarea paste handler, so an image paste never double-fires as text.
   pane.addEventListener("paste", (e) => {
     if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;

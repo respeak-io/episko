@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Ctrl shortcuts work on Windows while a session has focus.** The terminal turned Ctrl+K,
+  Ctrl+T, Ctrl+1… into control characters and kept them to itself, so every app shortcut went
+  dead the moment you clicked into a pane. A chord bound in Settings › Keys now reaches the app
+  first; switch shortcuts off there and the terminal gets every key back.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects
