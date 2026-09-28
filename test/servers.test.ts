@@ -28,6 +28,16 @@ const autoBg = (id: string, cmd: string) => ({
   },
 });
 
+/** A Monitor watching CI: a different response shape, and a command that is a whole script. */
+const monitor = (id: string) => ({
+  tool: "Monitor",
+  input: {
+    description: "TEST deploy run 36421214449 job results", timeout_ms: 1800000,
+    command: "cd /e/work/app\nprev=\"\"\nwhile true; do\n  j=$(gh run view 36421214449 --json status,jobs)",
+  },
+  response: { taskId: id, timeoutMs: 1800000, persistent: false },
+});
+
 const mk = (id: string, over: Partial<BgServer> = {}): BgServer =>
   ({ taskId: id, cmd: "pnpm dev", transcript: "t", startedAt: 0, ...over });
 
@@ -54,6 +64,24 @@ describe("recognising a backgrounded shell", () => {
     // TaskOutput echoes the same id; reading it as a start would resurrect a retired record.
     expect(bgTaskId("TaskOutput", { backgroundTaskId: "bczk8s47b" })).toBe("");
     expect(bgTaskId("TaskStop", { backgroundTaskId: "bczk8s47b" })).toBe("");
+  });
+
+  it("reads a Monitor's id from `taskId`, the field it answers with instead", () => {
+    const p = monitor("b1hd1gb44");
+    expect(bgTaskId(p.tool, p.response)).toBe("b1hd1gb44");
+    // Only a Monitor's: `taskId` on anything else is some other tool's handle.
+    expect(bgTaskId("Workflow", { status: "async_launched", taskId: "w21v9a4v4" })).toBe("");
+    expect(bgTaskId("Monitor", { backgroundTaskId: "b1hd1gb44" })).toBe("");
+  });
+
+  it("labels a Monitor by its description, not the script it runs", () => {
+    const p = monitor("b1hd1gb44");
+    const list: BgServer[] = [];
+    expect(applyBg(list, p.tool, p.input, p.response, "t.jsonl", 1_000)).toBe(true);
+    expect(list[0]).toMatchObject({ taskId: "b1hd1gb44", cmd: "TEST deploy run 36421214449 job results" });
+    expect(isJob(list[0])).toBe(false); // it asked for the background; nothing timed out
+    applyBg(list, "Monitor", { command: "gh run watch 1" }, { taskId: "b2" }, "t.jsonl", 1_000);
+    expect(list[1].cmd).toBe("gh run watch 1"); // no description: the command is all there is
   });
 
   it("reads TaskStop's id from its input", () => {

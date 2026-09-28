@@ -71,6 +71,12 @@ never an authority: with the server down or absent, everything works exactly as 
   session ran in was looked for only near the top of its transcript, and an image in the
   first prompt pushed it far past that, so the row was dropped while `/resume` still found it.
 
+! **A turn that ended on top of a Monitor shows ⧗, like one on top of a background shell.**
+  An agent watching a CI run with Claude Code's `Monitor` tool left its row on a plain ✓, because
+  a Monitor answers `taskId` where a backgrounded shell answers `backgroundTaskId`. It now counts as
+  a background job: it is listed under *Background jobs* by its description, and it stands down
+  when its log says it exited or was killed, exactly as a shell's does.
+
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else
 could, *What's next* folds sixteen bot pull requests into one row, and the all-projects

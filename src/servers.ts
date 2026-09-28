@@ -1,4 +1,4 @@
-// An agent's background shells (`Bash{run_in_background:true}`): payload in, records out,
+// An agent's background shells (`Bash{run_in_background:true}`, and a `Monitor`): payload in, records out,
 // log text in, facts out. Pure; ./serversui owns the DOM, IPC and timers. Every backgrounded
 // shell is a record, only a URL makes it a server, and no rule reads the command text.
 
@@ -7,10 +7,11 @@ import type { BgEnd, BgKind, BgMissReason, BgServer } from "./types";
 const NOT_A_START = new Set(["TaskStop", "TaskOutput"]); // their responses carry the same id; not a start
 
 // Keyed on the response field, not `run_in_background`: the id is the handle TaskStop takes.
+// A Monitor answers `taskId` instead, and its log and sentinels are a backgrounded shell's.
 export function bgTaskId(tool: string, response: unknown): string {
   if (NOT_A_START.has(tool)) return "";
   const r = response as Record<string, unknown> | null | undefined;
-  const id = r?.backgroundTaskId;
+  const id = tool === "Monitor" ? r?.taskId : r?.backgroundTaskId;
   return typeof id === "string" && id.trim() ? id.trim() : "";
 }
 
@@ -29,9 +30,10 @@ export function bgTimedOut(response: unknown): number {
   return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
 
-function bgCmd(input: unknown): string {
+// A Monitor's command is a whole polling script; its description is what a row can say.
+function bgCmd(tool: string, input: unknown): string {
   const i = input as Record<string, unknown> | null | undefined;
-  const c = i?.command;
+  const c = tool === "Monitor" && typeof i?.description === "string" && i.description.trim() ? i.description : i?.command;
   return typeof c === "string" ? c.replace(/\s+/g, " ").trim() : "";
 }
 
@@ -51,7 +53,7 @@ export function applyBg(
   if (list.some((b) => b.taskId === taskId)) return false; // TaskOutput echoing, or a hook seen twice
   const rec: BgServer = {
     taskId,
-    cmd: bgCmd(input),
+    cmd: bgCmd(tool, input),
     transcript: typeof transcript === "string" ? transcript : "", // captured now; see BgServer.transcript
     startedAt: now,
   };
