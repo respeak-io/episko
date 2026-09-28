@@ -12,7 +12,10 @@ import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
 import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
-import { ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue } from "./ghwork";
+import {
+  ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
+  type WorkKind, type WorkTally,
+} from "./ghwork";
 import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
 import {
   anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
@@ -946,9 +949,11 @@ export function ghPicker(accounts: GhAccount[], who: GhWho): string {
 
 const BUCKET_LABEL: Record<string, string> = { today: "Today", week: "This week", older: "Older" };
 
-function workBigRow(t: GhThread, h: Holder | null): string {
+// A row's label is also a filter: clicking one is the quickest way to ask "what else is this?".
+function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>): string {
   const labels = t.labels.slice(0, 3).map((l) =>
-    `<span class="lbl" style="--lc:${nameHue(l)}">${esc(l)}</span>`).join("");
+    `<span class="lbl${picked.has(l) ? " on" : ""}" style="--lc:${nameHue(l)}" data-dashwlabel="${escAttr(l)}"`
+    + ` title="${escAttr(picked.has(l) ? `Stop filtering by ${l}` : `Only show ${l}`)}">${esc(l)}</span>`).join("");
   const claim = h
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
   const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
@@ -962,18 +967,48 @@ function workBigRow(t: GhThread, h: Holder | null): string {
   </div>`;
 }
 
-export function workOverlay(
-  groups: { bucket: string; rows: GhThread[] }[], slug: string, total: number,
-  holder: (t: GhThread) => Holder | null,
-): string {
-  if (!total) return overlayHtml("Open work", `${esc(slug)} · nothing open`,
+const WORK_KINDS: { id: WorkKind; label: string }[] = [
+  { id: "all", label: "All" }, { id: "iss", label: "Issues" }, { id: "pr", label: "Pull requests" },
+];
+
+export interface WorkView {
+  groups: { bucket: string; rows: GhThread[] }[];
+  slug: string;
+  total: number;    // the whole board, before any filter
+  shown: number;
+  filter: WorkFilter;
+  tally: WorkTally;
+  holder: (t: GhThread) => Holder | null;
+}
+
+function workTools(o: WorkView): string {
+  const f = o.filter;
+  const kinds = WORK_KINDS.map((k) => `<button class="bvchip${k.id === f.kind ? " on" : ""}" data-dashwkind="${k.id}">`
+    + `${esc(k.label)}<span class="n">${o.tally.kinds[k.id]}</span></button>`).join("")
+    + `<button class="bvchip${f.free ? " on" : ""}" data-dashwfree title="Only what nobody has claimed or been assigned">`
+    + `Unclaimed<span class="n">${o.tally.free}</span></button>`;
+  const labels = o.tally.labels.map((l) =>
+    `<button class="wlchip${l.on ? " on" : ""}" style="--lc:${nameHue(l.name)}" data-dashwlabel="${escAttr(l.name)}">`
+    + `${esc(l.name)}<span class="n">${l.n}</span></button>`).join("");
+  const clear = f.labels.size ? `<button class="aslink" data-dashwlabelclear>Clear labels</button>` : "";
+  return `<div class="bvchips">${kinds}<span class="sp"></span>`
+    + `<input class="bvq wq" id="dashWorkQ" type="search" spellcheck="false" autocomplete="off" placeholder="Filter open work…"`
+    + ` aria-label="Filter open work" value="${escAttr(f.query)}" /></div>`
+    + (labels ? `<div class="wlchips">${labels}${clear}</div>` : "");
+}
+
+export function workOverlay(o: WorkView): string {
+  if (!o.total) return overlayHtml("Open work", `${esc(o.slug)} · nothing open`,
     `<div class="ac-empty">Nothing is open here.</div>`, "");
-  const body = `<div class="lst-hd"><span>Kind</span><span class="r">#</span><span>Title</span>
+  const sub = `${esc(o.slug)} · ${o.total} open${o.shown === o.total ? "" : ` · ${o.shown} shown`}`;
+  const list = o.shown
+    ? `<div class="lst-hd"><span>Kind</span><span class="r">#</span><span>Title</span>
       <span class="r">Age</span><span class="r">Action</span></div>`
-    + groups.map((g) => `<div class="bk">
+      + o.groups.map((g) => `<div class="bk">
         <div class="bk-h"><span class="t">${esc(BUCKET_LABEL[g.bucket] ?? g.bucket)}</span><span class="n">${g.rows.length}</span></div>
-        ${g.rows.map((t) => workBigRow(t, holder(t))).join("")}</div>`).join("");
-  return overlayHtml("Open work", `${esc(slug)} · ${total} open`, body,
+        ${g.rows.map((t) => workBigRow(t, o.holder(t), o.filter.labels)).join("")}</div>`).join("")
+    : `<div class="ac-empty">Nothing open matches these filters. <a href="#" data-dashwreset>Show everything</a></div>`;
+  return overlayHtml("Open work", sub, workTools(o) + list,
     `<b>◍</b> is a claim: somebody dispatched an agent at it. It is a hint rather than a lock, so you can always start anyway, and a claim older than 30 minutes reads as stale.`);
 }
 

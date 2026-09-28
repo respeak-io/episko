@@ -53,8 +53,8 @@ import {
   resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
 } from "./claim";
 import {
-  bucketed, claimComment, closeComment, ghPickable, ghWho, holderOf, isoDay, quietFor,
-  releaseComment, staleCandidates, type GhResult, type GhThread, type KeptIssue,
+  bucketed, claimComment, closeComment, filterWork, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  releaseComment, staleCandidates, workTally, type GhResult, type GhThread, type KeptIssue, type WorkKind,
 } from "./ghwork";
 import type { HistEntry } from "./history";
 import { addNote, noteList, removeNote, type SharedNote } from "./notes";
@@ -198,6 +198,11 @@ let queueQuery = "";
 // Which folded runs are showing their rows. Keyed so a repaint keeps one open, and in
 // memory only: what you unfolded to read once is not a preference.
 const queueOpen = new Set<string>();
+// The Open work view's narrowing, in memory only and dropped with the project.
+let workKind: WorkKind = "all";
+let workLabels = new Set<string>();
+let workFree = false;
+let workQuery = "";
 /// ---- the thread reader ----
 // Which thread the ⤢ opened, kept apart from `openView` so a failed read still knows what it
 // was reading, and `null` data means "not answered yet" rather than "nothing there".
@@ -838,7 +843,15 @@ export function renderDash(): void {
     const mineShared = new Set(shared.map((n) => n.id));
     paintOverlay(openView, notesOverlay(noteList(root()), theirs, mineShared, canShare(tier)));
   }
-  else if (openView === "work") paintOverlay(openView, workOverlay(bucketed(gh.threads, now), facts?.slug ?? name(), gh.threads.length, holder));
+  else if (openView === "work") {
+    const f = { kind: workKind, labels: workLabels, free: workFree, query: workQuery };
+    const held = (t: GhThread) => holder(t) !== null;
+    const rows = filterWork(gh.threads, f, held);
+    paintOverlay(openView, workOverlay({
+      groups: bucketed(rows, now), slug: facts?.slug ?? name(), total: gh.threads.length,
+      shown: rows.length, filter: f, tally: workTally(gh.threads, f, held), holder,
+    }));
+  }
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
   else if (openView === "issue" && issueAt) {
     const t = gh.threads.find((x) => x.number === issueAt!.number);
@@ -954,6 +967,7 @@ export function openDashboard(project: string, path: string): void {
     saveSeen(seen);
     days = []; heads = []; facts = null; openView = null;
     queueFilter = "all"; queueQuery = ""; queueOpen.clear(); botFold = true;
+    workKind = "all"; workLabels = new Set(); workFree = false; workQuery = "";
     landed = null; landedLoading = false;
     issueAt = null; issueData = null; issueLoading = false;
     tier = "none"; factsKnown = false; loading = true; ghLoading = false;
@@ -1090,11 +1104,34 @@ export function wireDashboard(): void {
       // Advisories is the wrong first tab where there can never be one; the scan is the
       // only half of this view a non-GitHub project has.
       if (openView === "deps" && tier !== "github") depTab = "stale";
+      // Opened from a narrowed queue, the view starts on the same kind.
+      if (openView === "work") workKind = queueFilter === "iss" || queueFilter === "pr" ? queueFilter : "all";
       renderDash();
       if (branchy) void loadBranches();
       return;
     }
     if (t.closest("[data-dashclose-view]")) { openView = null; branchResult = null; renderDash(); return; }
+
+    // ---- the Open work view ----
+    // A row's label sits inside the row's `data-dashurl`, so it is probed long before that.
+    const wkind = t.closest<HTMLElement>("[data-dashwkind]");
+    if (wkind) { workKind = wkind.dataset.dashwkind as WorkKind; renderDash(); return; }
+    if (t.closest("[data-dashwfree]")) { workFree = !workFree; renderDash(); return; }
+    const wlabel = t.closest<HTMLElement>("[data-dashwlabel]");
+    if (wlabel) {
+      const l = wlabel.dataset.dashwlabel!;
+      workLabels = new Set(workLabels);
+      if (!workLabels.delete(l)) workLabels.add(l);
+      renderDash();
+      return;
+    }
+    if (t.closest("[data-dashwlabelclear]")) { workLabels = new Set(); renderDash(); return; }
+    if (t.closest("[data-dashwreset]")) {
+      e.preventDefault();
+      workKind = "all"; workLabels = new Set(); workFree = false; workQuery = "";
+      renderDash();
+      return;
+    }
 
     // ---- the Branches view ----
     // Every nested control is probed before the row that contains it; a row-level probe
@@ -1232,10 +1269,12 @@ export function wireDashboard(): void {
     if (url?.dataset.dashurl) { void openUrl(url.dataset.dashurl).catch(() => {}); return; }
   });
 
-  // The two filter boxes; everything else in this pane is a click. A `type="search"` field
+  // The filter boxes; everything else in this pane is a click. A `type="search"` field
   // clears itself with its own ✕, which arrives here as an input event like any other.
   $("dashPane").addEventListener("input", (e) => {
     const el = e.target as HTMLElement;
+    const wq = el.closest<HTMLInputElement>(".wq");
+    if (wq) { workQuery = wq.value; renderDash(); return; }
     const q = el.closest<HTMLInputElement>(".bvq");
     if (q) { branchQuery = q.value; renderDash(); return; }
     const s = el.closest<HTMLInputElement>(".qq");

@@ -86,6 +86,76 @@ export function cardRows(threads: GhThread[]): GhThread[] {
   return [...threads].sort(byRecency).slice(0, CARD_ROWS);
 }
 
+// ---------- narrowing the Open work view ----------
+// Every filter ANDs, like GitHub's own label filter: a chip only ever narrows. `free` is a
+// facet (nobody holds it), so it counts across kinds rather than beside them.
+
+export type WorkKind = "all" | "iss" | "pr";
+
+export interface WorkFilter {
+  kind: WorkKind;
+  labels: ReadonlySet<string>;
+  free: boolean;
+  query: string;
+}
+
+export const workKindOf = (t: GhThread): "iss" | "pr" => (t.kind === "pr" ? "pr" : "iss");
+
+function queryHit(t: GhThread, terms: string[]): boolean {
+  const hay = [`#${t.number}`, t.title, t.author ?? "", t.branch ?? "", ...t.labels].join(" ").toLowerCase();
+  return terms.every((w) => hay.includes(w) || w.replace(/^#/, "") === String(t.number));
+}
+
+// `skip` leaves one dimension out, which is what a chip's count needs: what it WOULD show.
+function passes(
+  t: GhThread, f: WorkFilter, terms: string[], held: (t: GhThread) => boolean,
+  skip?: "kind" | "labels" | "free",
+): boolean {
+  if (skip !== "kind" && f.kind !== "all" && workKindOf(t) !== f.kind) return false;
+  if (skip !== "labels") for (const l of f.labels) if (!t.labels.includes(l)) return false;
+  if (skip !== "free" && f.free && held(t)) return false;
+  return !terms.length || queryHit(t, terms);
+}
+
+const termsOf = (q: string) => q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+
+export function filterWork(threads: GhThread[], f: WorkFilter, held: (t: GhThread) => boolean): GhThread[] {
+  const terms = termsOf(f.query);
+  return threads.filter((t) => passes(t, f, terms, held));
+}
+
+export interface WorkTally {
+  kinds: Record<WorkKind, number>;
+  free: number;
+  /** Every label worth a chip, in a stable order: most used across the whole board first. */
+  labels: { name: string; n: number; on: boolean }[];
+}
+
+export function workTally(threads: GhThread[], f: WorkFilter, held: (t: GhThread) => boolean): WorkTally {
+  const terms = termsOf(f.query);
+  const kinds: Record<WorkKind, number> = { all: 0, iss: 0, pr: 0 };
+  let free = 0;
+  const use = new Map<string, number>();
+  const n = new Map<string, number>();
+  for (const t of threads) {
+    for (const l of t.labels) use.set(l, (use.get(l) ?? 0) + 1);
+    if (passes(t, f, terms, held, "kind")) { kinds.all++; kinds[workKindOf(t)]++; }
+    if (passes(t, f, terms, held, "free") && !held(t)) free++;
+    if (passes(t, f, terms, held)) for (const l of t.labels) n.set(l, (n.get(l) ?? 0) + 1);
+  }
+  // Ordered by the whole board, not the current counts, so a click never reshuffles the row
+  // under the pointer. A picked label the refresh took away stays, so it can be unpicked.
+  for (const l of f.labels) if (!use.has(l)) use.set(l, 0);
+  const labels = [...use.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name]) => ({ name, n: n.get(name) ?? 0, on: f.labels.has(name) }))
+    .filter((l) => l.on || l.n);
+  return { kinds, free, labels };
+}
+
+export const workFiltered = (f: WorkFilter): boolean =>
+  f.kind !== "all" || f.labels.size > 0 || f.free || !!f.query.trim();
+
 // ---------- triage ----------
 
 export const STALE_DAYS = 4; // longer than a weekend, shorter than a sprint

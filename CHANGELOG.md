@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Open work narrows by kind, by label and by who has it.** Issues, pull requests and
+  *Unclaimed* sit beside a search box, and every label on the board is a chip; picked labels
+  AND together, like GitHub's own filter. A label on a row is a chip too, so "what else is
+  area:output?" is one click. Opened from a narrowed *What's next*, the view starts on that kind.
 ! **Ctrl shortcuts work on Windows while a session has focus.** The terminal turned Ctrl+K,
   Ctrl+T, Ctrl+1… into control characters and kept them to itself, so every app shortcut went
   dead the moment you clicked into a pane. A chord bound in Settings › Keys now reaches the app
