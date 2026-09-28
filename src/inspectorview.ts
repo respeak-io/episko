@@ -154,12 +154,24 @@ export function driftHtml(s: Sess): string {
   const cwdMove = d.via === "cwd";
   const note = cwdMove
     ? `Claude moved this session itself, so its conversation is already there. Episko is still showing <span class="b">${here}</span>; following it costs nothing and interrupts nothing.`
-    : `The session is still running in <span class="b">${here}</span>, so its branch, working set and git buttons read that checkout. Moving it takes the conversation along.`;
+    : `The session is still running in <span class="b">${here}</span>, so its branch, working set and git buttons read that checkout. Moving restarts it there with the conversation; showing it here changes only what Episko displays.`;
+  const btns = cwdMove
+    ? `<button data-driftfollow="${esc(s.id)}">Follow it here</button>`
+    : `<button data-driftfollow="${esc(s.id)}">Move session here</button><button data-drifttrack="${esc(s.id)}" title="Show this checkout without restarting; the agent keeps running where it started">Just show it here</button>`;
   return `<div class="drift">
     <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
     <div class="drift-path" title="${esc(d.dir)}">${esc(tilde(d.dir))}</div>
     <div class="drift-note">${note}</div>
-    <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">${cwdMove ? "Follow it here" : "Move session here"}</button></div>
+    <div class="drift-btns">${btns}</div>
+  </div>`;
+}
+// A tracked pane (Sess.home): it shows one checkout while the agent runs in another.
+export function trackedHtml(s: Sess): string {
+  const h = s.home!;
+  const at = esc(h.branch || basename(h.workdir));
+  return `<div class="drift tracked">
+    <div class="drift-note">Showing <span class="b">${esc(s.branch || basename(s.workdir))}</span>. The agent still runs in <span class="b">${at}</span>, so its relative paths, project instructions and settings still come from ${at}.</div>
+    <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">Move session here</button><button data-driftback="${esc(s.id)}">Show ${at} again</button></div>
   </div>`;
 }
 // The clickable half of the working-set card; ./mirror paints the same block for an

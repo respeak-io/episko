@@ -52,6 +52,12 @@ never an authority: with the server down or absent, everything works exactly as 
   dead the moment you clicked into a pane. A chord bound in Settings › Keys now reaches the app
   first; switch shortcuts off there and the terminal gets every key back.
 
++ **A session that is working in another worktree can be shown there without a restart.** Beside
+  *Move session here*, the drift card now offers *Just show it here*: the pane, its branch and its
+  working set switch to the checkout the agent is writing into, while the agent keeps running where
+  it started. A note in the inspector says so, and *Move session here* is still one click away.
+  The move dialog now also says why a move has to restart: a running agent can't change folders.
+
 ! **The new-session dialog keeps *Start session here* in view.** A checkout with dozens of
   uncommitted files pushed the buttons below the pane; the file list now scrolls in a box of
   its own (and names every file rather than the first ten), and the action row stays pinned.

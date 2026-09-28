@@ -11,7 +11,7 @@ import { activeId, dirtyByFolder, outlinePrefs, revivePrefs, sessions } from "./
 import { reviveStatus } from "./revive";
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
-  contextHtml, type CtxMode, driftHtml, dwellText, fanoutHtml, outlineHtml,
+  contextHtml, type CtxMode, driftHtml, trackedHtml, dwellText, fanoutHtml, outlineHtml,
   planHtml, RISK_LABEL, vitalHtml, wsetHtml, wsetSkeleton,
 } from "./inspectorview";
 import { anchoredPrompts, scrollToPrompt } from "./terminal";
@@ -106,6 +106,7 @@ export function renderInspector(s: Sess | null) {
   }
   // Above everything that reads the launch folder, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
+  else if (s.home) html.push(trackedHtml(s));
   html.push(vitalHtml(s));
   html.push(fanoutHtml(s));
   // Above the plan and the Context card: what you asked and what the tree looks like are
