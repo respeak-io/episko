@@ -26,7 +26,7 @@ import {
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
   agentByProject, agentDef, defaultAgent, effectiveAgent,
-  ghAccountByProject, setGhLogins, setProjectGhAccount as setProjectGhAccountState,
+  ghAccountByProject, setGhLogins, setGhOutdated, setProjectGhAccount as setProjectGhAccountState,
   setDefaultAgent as setDefaultAgentState, setProjectAgent as setProjectAgentState,
   setPeekPrefs as setPeekPrefsState, setProviderPermissionMode as setPermissionModeState,
   setProjGroups, setSortMode, SORT_META, SORT_MODES,
@@ -44,7 +44,7 @@ import {
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
-import type { GhAccount } from "./ghwork";
+import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import type { AutoFetchPrefs } from "./autofetch";
@@ -428,9 +428,11 @@ export function setProjectGhAccount(colorKey: string, login: string | null) {
 // Asked at startup and before any account picker is built, so `gh auth login` shows up
 // without a restart. Cheap: the backend caches the answer for 60s.
 export async function refreshGhAccounts(): Promise<GhAccount[]> {
-  const a = await invoke<GhAccount[]>("gh_accounts").catch(() => [] as GhAccount[]);
-  setGhLogins(a);
-  return a;
+  const a = await invoke<GhAccounts>("gh_accounts")
+    .catch((): GhAccounts => ({ accounts: [], outdated: null }));
+  setGhLogins(a.accounts);
+  setGhOutdated(a.outdated);
+  return a.accounts;
 }
 
 // Announced because a pane started in Bypass never raises a permission card, so there is

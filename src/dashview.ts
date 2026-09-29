@@ -2,7 +2,7 @@
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
 import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
-import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
+import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
   syncState,
   type ProjectFacts, type ProjectTier, type RibbonDay, type SinceFacts, type SyncOp,
@@ -13,7 +13,7 @@ import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import {
-  ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
+  ghOutdatedText, ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
   type WorkKind, type WorkTally,
 } from "./ghwork";
 import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
@@ -104,7 +104,7 @@ export function verbTiles(): string {
 }
 
 /** The column's foot: what this project is set up to run as. Each chip IS its own control. */
-export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean): string {
+export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null): string {
   const act = (a: string, inner: string, tip: string) =>
     `<button class="pfc pfc-b" data-dashact="${a}" data-tip="${escAttr(tip)}">${inner}</button>`;
   // Claims are the one fact here with no picker of its own: the preference is Settings', and the
@@ -117,6 +117,7 @@ export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: 
       ${act("agent", esc(agent), `Runs ${agent} here · pick another for this project`)}
       ${gh && ghPick ? act("ghpick", `gh: ${esc(gh)}`, `Reads GitHub as ${gh} · pin another account to this project`)
         : gh ? `<span class="pfc mono" data-tip="${escAttr(`Reads GitHub as ${gh}`)}">gh: ${esc(gh)}</span>` : ""}
+      ${ghOld ? oldGhChip(ghOld) : ""}
       <span class="pfc" data-tip="${escAttr(claimTip)}">${claims ? "claims on" : "claims off"}</span>
     </div></div>`;
 }
@@ -919,9 +920,17 @@ export function shortAge(iso: string): string {
 // gh missing, logged out, or signed in as the wrong account: one quiet row, never an
 // error dialog. The account picker is offered here because here is where you find out;
 // it is absent for anybody with one account, where it could not change the answer.
-export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho): string {
+export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho, ghOld: string | null): string {
+  const t = ghOld ? ghOutdatedText(ghOld, IS_MAC) : null;
+  const old = t ? `<p>${esc(t.why)} Update with <code>${esc(t.how)}</code> and reopen the dashboard.</p>` : "";
   return `<div class="miss"><span class="t">GitHub</span><p>${esc(reason)}.</p>
-    <p>Everything else on this dashboard still works.</p>${ghPicker(accounts, who)}</div>`;
+    <p>Everything else on this dashboard still works.</p>${old}${ghPicker(accounts, who)}</div>`;
+}
+
+// Stands where the account chip would be, since that is where its absence is noticed.
+function oldGhChip(version: string): string {
+  const t = ghOutdatedText(version, IS_MAC);
+  return `<span class="pfc pfc-warn" data-tip="${escAttr(`${t.why} Update with: ${t.how}`)}">${esc(t.short)}</span>`;
 }
 
 // One button per account gh holds, the effective one marked; the label underneath says

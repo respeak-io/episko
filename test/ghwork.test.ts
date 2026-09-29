@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports
 import { CLAIM_STALE_MS, type ClaimRecord } from "../src/claim";
 import {
-  bucketOf, bucketed, cardRows, closeComment, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  bucketOf, bucketed, cardRows, closeComment, GH_ACCOUNTS_MIN, ghOutdatedText, ghPickable, ghWho, holderOf, isoDay, quietFor,
   staleCandidates, STALE_DAYS, filterWork, workTally, type GhAccount, type GhThread, type KeptIssue,
   type WorkFilter,
 } from "../src/ghwork";
@@ -192,6 +192,20 @@ describe("ghWho", () => {
     expect(ghWho(null, [])).toEqual({ login: null, source: "none", known: false });
     // …but a pin still stands: gh being unreadable is not a reason to forget a setting.
     expect(ghWho("octo", [])).toMatchObject({ login: "octo", source: "pinned", known: false });
+  });
+});
+
+describe("ghOutdatedText", () => {
+  it("names the installed version, the one that works, and this OS's update", () => {
+    const win = ghOutdatedText("2.76.1", false);
+    expect(win.short).toBe("gh 2.76.1 · too old to pick accounts");
+    expect(win.why).toContain(`gh ${GH_ACCOUNTS_MIN} or later`);
+    expect(win.how).toBe("winget upgrade GitHub.cli");
+    expect(ghOutdatedText("2.76.1", true).how).toBe("brew upgrade gh");
+  });
+
+  it("still reads when the version could not be read", () => {
+    expect(ghOutdatedText("?", false).short).toBe("This gh · too old to pick accounts");
   });
 });
 
