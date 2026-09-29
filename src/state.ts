@@ -227,6 +227,17 @@ export function setProjectGhAccount(colorKey: string, login: string | null) {
 }
 // Passed to the backend per call; never stored on a `Sess` or pushed there as a second copy.
 export const ghAccountFor = (colorKey: string): string | null => ghAccountByProject[colorKey] ?? null;
+// --- where a project's shared notes and work log go (docs/sync.md) -------------
+// Absent is `git`, today's committed files; `server` keeps .episko out of the repo; `off` shares nothing.
+export type ShareMode = "git" | "server" | "off";
+export const shareByProject: Record<string, string> = pathMap(localStorage.getItem("cc-episko-share"));
+export const shareModeOf = (colorKey: string): ShareMode => {
+  const m = shareByProject[colorKey];
+  return m === "server" || m === "off" ? m : "git";
+};
+export function setShareMode(colorKey: string, m: ShareMode) {
+  if (m === "git") delete shareByProject[colorKey]; else shareByProject[colorKey] = m;
+}
 // Runtime only, never persisted: gh's state, and a stale copy would offer a logged-out account.
 export let ghLogins: GhAccount[] = [];
 export function setGhLogins(a: GhAccount[]) { ghLogins = a; }

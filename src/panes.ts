@@ -25,8 +25,8 @@ import { setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
-  attachWebgl, claudeInput, clipboardKeys, detachWebgl, fitSession, MONO,
-  shellKeys, trimScrollback, winClaudePaste, wireLinks,
+  attachWebgl, claudeInput, claudeKeys, clipboardKeys, detachWebgl, fitSession, MONO,
+  shellKeys, trimScrollback, wireLinks,
 } from "./terminal";
 import { gitBusy, setGitBusy } from "./inspectorview";
 import { GCLASS } from "./sidebarview";
@@ -61,8 +61,8 @@ function launchPermission(agent: AgentCli) {
   return { mode: def && def.id !== "default" ? def.id : null, def };
 }
 
-// One pane per session, with the caption the tiled stage shows (CSS-hidden otherwise). Made
-// before term.open, which appends, so the caption sits above the terminal; data-close → closeSession.
+// One pane per session, with the caption the tiled stage shows (CSS-hidden otherwise) above the
+// terminal's own host; data-close → closeSession. Open the terminal in `termHost`, never the pane.
 function newPane(id: string): HTMLElement {
   const pane = document.createElement("div");
   pane.className = "term-pane";
@@ -70,9 +70,16 @@ function newPane(id: string): HTMLElement {
   cap.className = "pane-cap";
   cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
     + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
-  pane.appendChild(cap);
+  const host = document.createElement("div");
+  host.className = "term-host";
+  pane.append(cap, host);
   $("terminals").appendChild(pane);
   return pane;
+}
+// FitAddon sizes rows from the parent's border-box height, so the parent must hold nothing but
+// the terminal: the pane's padding and caption made it too tall, and the pane scrolled to the cursor.
+function termHost(pane: HTMLElement): HTMLElement {
+  return pane.querySelector<HTMLElement>(".term-host") ?? pane;
 }
 
 // Shared by a fresh launch and reload adoption, so key wiring cannot drift between them.
@@ -84,10 +91,10 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
   const fit = new FitAddon();
   term.loadAddon(fit);
   // No WebGL here: setActive attaches a pooled context once the pane is on stage (attachWebgl).
-  term.open(pane);
+  term.open(termHost(pane));
   wireLinks(id, term);
   term.onData(claudeInput(id)); // ^C interrupts; it never exits the session
-  winClaudePaste(id, term, pane);
+  claudeKeys(id, term, pane);
   return { term, fit };
 }
 
@@ -111,7 +118,7 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
     theme: { background: "#0c0b11", foreground: "#dcd8e6", cursor: "#c3b6f0", selectionBackground: "#3a3350" },
   });
   const fit = new FitAddon();
-  term.loadAddon(fit); term.open(pane);
+  term.loadAddon(fit); term.open(termHost(pane));
   wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   term.attachCustomKeyEventHandler(clipboardKeys(term));
@@ -206,7 +213,7 @@ const SEED_READ = 200; // what the outline would keep anyway (PROMPT_CAP)
 async function seedOutline(s: Sess, resumeId: string) {
   if (!s.provider) return;
   try {
-    const msgs = await readProviderAsked(s.provider, resumeId, s.workdir, SEED_READ);
+    const msgs = await readProviderAsked(s.provider, resumeId, s.home?.workdir ?? s.workdir, SEED_READ);
     if (sessions.get(s.id) !== s) return; // closed while we read
     if (seedPrompts(s.prompts, msgs).length) renderAll();
   } catch (e) {
@@ -331,7 +338,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.open(pane);
+  term.open(termHost(pane));
   wireLinks(id, term);
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
   // One handler, both rules: Terminal.app-style ⌥/⌘ nav and Ctrl+Shift+C/V.
@@ -415,7 +422,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  term.open(pane);
+  term.open(termHost(pane));
   wireLinks(id, term);
   // Tasks are interactive: a prompt, a y/N, a dev server's "r" to reload all work.
   term.onData((d) => invoke("write_pty", { sessionId: id, data: d }));
@@ -833,7 +840,7 @@ export function noteDrift(s: Sess, tool: string, data: any) {
   if (!hasAgentCapability(s, "activity") || !s.workdir) return;
   const roster = worktreesByRepo.get(s.colorKey);
   if (!roster?.length) return;   // no roster yet — the 4s poll seeds it, then this works
-  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster);
+  const next = driftUpdate(s.drift, s.workdir, tool, data?.tool_input, data?.cwd, roster, s.home?.workdir ?? null);
   // All three fields: the branch of a drifted-into checkout can be switched underneath us.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;

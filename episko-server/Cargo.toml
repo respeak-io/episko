@@ -1,0 +1,17 @@
+[package]
+name = "episko-server"
+version = "0.1.0"
+description = "The self-hosted Episko sync server: one binary, one SQLite file"
+authors = ["Respeak"]
+edition = "2021"
+publish = false
+
+[dependencies]
+episko-proto = { path = "../episko-proto" }
+serde_json = "1"
+# `bundled` compiles SQLite in: the server ships as one static binary with no system lib.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# The same WebSocket crate the app already uses, on plain threads like its telemetry server.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+getrandom = "0.3"
+sha2 = "0.10"

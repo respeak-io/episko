@@ -74,6 +74,22 @@ export function claimText(who: string, claimedAt: number, now = Date.now()): str
   return claimIsStale(claimedAt, now) ? `${who} claimed this ${ago}, probably stale` : `${who} is on this · ${ago}`;
 }
 
+// ---------- leases: a claim the sync server can expire (docs/sync.md) ----------
+// Still a hint: shown, never enforced. It lives while its session does, renewed well inside
+// LEASE_MS, so a crashed machine's claim lapses in minutes rather than CLAIM_STALE_MS.
+
+export const LEASE_MS = 10 * 60_000;
+export interface Lease { who: string; until: number }
+export const leaseKey = (pid: string, kind: "issue" | "pr", number: number) => `${pid}|${kind}#${number}`;
+export function narrowLease(v: unknown): Lease | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  return typeof o.who === "string" && typeof o.until === "number" && Number.isFinite(o.until) ? { who: o.who.slice(0, 80), until: o.until } : null;
+}
+export const leaseLive = (l: Lease | null | undefined, now: number): l is Lease => !!l && l.until > now;
+/** A held lease is renewed once half its time has gone, so a missed tick never lets it lapse. */
+export const leaseDue = (l: Lease | null | undefined, now: number) => !l || l.until - now < LEASE_MS / 2;
+
 // ---------- the local ledger ----------
 // What we claimed, to release when the agent ends. Machine-local, so localStorage.
 

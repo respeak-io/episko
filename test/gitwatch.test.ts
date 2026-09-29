@@ -329,6 +329,27 @@ describe("driftTarget", () => {
         .toEqual({ dir: REPO, branch: "main", via: "write" });
     });
 
+    // Tracked (Sess.home): the pane shows the drifted-to checkout, the process still runs at home.
+    describe("on a tracked pane", () => {
+      const shown = `${WT}/overview`;
+      const trk = (prev: Drift | null, tool: string, fp: unknown, cwd: unknown = launched) =>
+        driftUpdate(prev, shown, tool, { file_path: fp }, cwd, roster, launched);
+
+      it("reads the pinned cwd at home as no news", () => {
+        expect(trk(null, "Read", `${shown}/a.ts`)).toBeNull();
+        expect(trk(null, "Write", `${shown}/a.ts`)).toBeNull();
+      });
+
+      it("still reports a write back home, which untracking then repairs", () => {
+        expect(trk(null, "Write", `${launched}/src/a.ts`))
+          .toEqual({ dir: launched, branch: "exp/overview", via: "write" });
+      });
+
+      it("still sees Claude moving the process somewhere else", () => {
+        expect(trk(null, "Read", `${REPO}/a.ts`, REPO)).toEqual({ dir: REPO, branch: "main", via: "cwd" });
+      });
+    });
+
     it("is a no-op on a session that never drifted", () => {
       expect(upd(null, "Read", `${WT}/overview/src/a.ts`)).toBeNull();
       expect(upd(null, "Write", `${launched}/src/a.ts`)).toBeNull();

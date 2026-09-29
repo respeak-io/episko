@@ -12,6 +12,68 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+Episko can sync through a small server you run yourself, so a second machine feels like the
+first and a team sees each other's work without a round trip through git. It is an accelerator,
+never an authority: with the server down or absent, everything works exactly as before.
+
++ **Sync your settings, spend and limits between machines.** Run `episko-server` (one binary, one
+  SQLite file, or `docker compose up`), print an invite with `episko-server invite`, and pair in
+  *Settings › Sync*. Preferences follow you and apply on the next reload. Today's spend becomes the
+  sum of every machine rather than whichever one you are looking at, and a limit window one machine
+  has learned shows on the others with no probe. Joining an existing setup adopts it rather than
+  overwriting it.
++ **Your projects follow you too.** Favourites, order, groups, colours, custom icons and each
+  project's agent and GitHub account travel by the project's root commit, so a checkout at a
+  different path on another machine is the same project. A project not cloned there waits until it is.
++ **See who on the team has a session open, and where.** With a shared server the all-projects
+  dashboard gains *Team now*: every teammate's live sessions, blocked ones first. It shows the
+  project, branch and state, never a session's title.
++ **Choose where a project's shared notes and work log go.** *Project menu › Sharing*: committed in
+  git as before, through the sync server with nothing in the repo, or nowhere. The *Not written down
+  anywhere* offer now has a *Don't offer this*.
++ **A claim on an issue is a lease.** Dispatching an agent at shared work tells the team within a
+  second, is renewed while the session runs, and lapses minutes after a machine disappears. It is
+  still only a hint.
++ **Put the sync server behind Traefik auth or Cloudflare Access.** *Settings › Sync* takes extra
+  headers for the proxy in front: `Authorization: Basic …`, or a Cloudflare Access service token's
+  two `CF-Access-Client-*` lines. They are sealed with the sync token and never shown again, and a
+  proxy that says no is named as the reason.
++ **Open work narrows by kind, by label and by who has it.** Issues, pull requests and
+  *Unclaimed* sit beside a search box, and every label on the board is a chip; picked labels
+  AND together, like GitHub's own filter. A label on a row is a chip too, so "what else is
+  area:output?" is one click. Opened from a narrowed *What's next*, the view starts on that kind.
++ **A session that is working in another worktree can be shown there without a restart.** Beside
+  *Move session here*, the drift card now offers *Just show it here*: the pane, its branch and its
+  working set switch to the checkout the agent is writing into, while the agent keeps running where
+  it started. A note in the inspector says so, and *Move session here* is still one click away.
+  The move dialog now also says why a move has to restart: a running agent can't change folders.
+~ **Per-project spend is kept per project, not per folder name.** Two checkouts both called `api`
+  no longer share a row. Existing history moves over where the name is unambiguous.
+~ **A sync that stops is said out loud.** A red *sync* badge joins the telemetry one in the top bar
+  whenever the server has been unreachable for two minutes.
+! **Ctrl shortcuts work on Windows while a session has focus.** The terminal turned Ctrl+K,
+  Ctrl+T, Ctrl+1… into control characters and kept them to itself, so every app shortcut went
+  dead the moment you clicked into a pane. A chord bound in Settings › Keys now reaches the app
+  first; switch shortcuts off there and the terminal gets every key back.
+! **The new-session dialog keeps *Start session here* in view.** A checkout with dozens of
+  uncommitted files pushed the buttons below the pane; the file list now scrolls in a box of
+  its own (and names every file rather than the first ten), and the action row stays pinned.
+! **Ctrl+click on a link in a Claude pane opens it once on Windows, not twice.** Claude Code's
+  fullscreen renderer captures the mouse and opens a Ctrl+clicked link itself, and the terminal
+  was handing it the click as well as opening the link. A modifier-click on an underlined link
+  now stays with Episko. macOS never saw this: the mouse protocol has no bit for Cmd.
+! **History no longer loses a session that started with a pasted image.** The folder a
+  session ran in was looked for only near the top of its transcript, and an image in the
+  first prompt pushed it far past that, so the row was dropped while `/resume` still found it.
+! **A turn that ended on top of a Monitor shows ⧗, like one on top of a background shell.**
+  An agent watching a CI run with Claude Code's `Monitor` tool left its row on a plain ✓, because
+  a Monitor answers `taskId` where a backgrounded shell answers `backgroundTaskId`. It now counts as
+  a background job: it is listed under *Background jobs* by its description, and it stands down
+  when its log says it exited or was killed, exactly as a shell's does.
+! **A terminal fits its pane again.** Every terminal was sized a row or two taller than the space
+  it had — the pane's padding, and in a split or run group its caption, were counted as terminal —
+  so the prompt could sit below the bottom edge where no scroll reached it, and a split shell
+  scrolled its own caption (and its ✕) out of view to keep the cursor on screen.
 
 ## 0.31.0 — 2026-09-23
 A session row in the sidebar has its own menu, ✕ on a port stops a server nobody else

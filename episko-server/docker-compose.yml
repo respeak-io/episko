@@ -1,0 +1,12 @@
+# Published on localhost only: put Tailscale or Caddy in front for other machines and TLS.
+# Pair a device with:  docker compose exec episko-server episko-server invite
+services:
+  episko-server:
+    build:
+      context: ..
+      dockerfile: episko-server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7878:7878"
+    volumes:
+      - ./data:/data

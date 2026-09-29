@@ -25,6 +25,9 @@ Every push and PR to `dev`/`main` runs, on **both macOS and Windows** (`ci.yml`)
   each leg runs the half that compiles for it (the platform tests are `cfg`-gated, so
   the two counts differ and neither equals the total)
 - `cargo clippy --all-targets --locked -- -D warnings`
+- the same `cargo test` and `cargo clippy` pair inside `episko-proto` and `episko-server`,
+  which are crates of their own rather than workspace members, so a run from `src-tauri`
+  never reaches them (the app only pulls `episko-proto` in as a path dependency)
 
 Both legs matter and neither is redundant: the platform code is `cfg`-gated, so each
 OS compiles and lints only its own half.
@@ -97,6 +100,13 @@ Four checks against Claude Code's real state, in one pass:
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
 rather than gone red.
+
+The same `--ignored` pass also runs `two_devices_meet_through_a_real_server`, which is
+ours rather than Anthropic's: two clients pair through a real `episko-server`, one pushes
+a preference and the other must hear it. It fails on `EPISKO_E2E_URL` alone unless a
+server is up, so stand one up first (`docs/sync.md` › *Running the server*): build the crate, run it
+with `EPISKO_DB` pointing at a throwaway file and `EPISKO_BIND` on a spare port, mint two
+invites, and pass them as `EPISKO_E2E_CODES`. No tokens and no auth; ~5s.
 
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through
@@ -376,6 +386,11 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       Afterwards: marker gone, chip shows the new branch alone, and
       `~/.claude/projects/<enc(new)>/<id>.jsonl` exists while the old one does not.
 - [ ] **A refused move is harmless** — deny at the confirm dialog and nothing changes.
+- [ ] **Just show it here** (same setup, second button): no confirm, the pane does not
+      blink, and the header, working set and ⌘T switch to the new checkout. The inspector
+      shows a note that the agent still runs in the old one. Further writes there raise no
+      marker. *Show <old> again* reverts it. Quit and restore: the session resumes in its
+      **old** folder with its history intact.
 
 - [ ] **Case 2 — Claude moves the session itself.** Prompt: *"create a new worktree and
       run a terminal command in it"*, which drives Claude Code's own `EnterWorktree`
@@ -484,6 +499,27 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       Code windows on different projects, or two Windows Terminal windows — and confirm
       the jump lands on the one running that session, not merely on the app. That
       tiebreak reads the window title, so it is the half no unit test can hold.
+
+### Sync
+
+Everything below the pairing form is driven by a live socket, so none of it has a test
+that is not a mock. Stand a server up the way the ignored test does (`docs/sync.md` ›
+*Running the server*: build `episko-server`, run it with `EPISKO_DB` on a throwaway file
+and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
+
+- [ ] **Pairing.** Settings › Sync: the address, the code and a name, then *Pair*. The form
+      is replaced by the state box within a second or two: *In step*, the server's address,
+      this machine's name beside its device id, and *Last exchange* counting up from
+      "0s ago". A wrong code says so in red under the form and leaves it standing.
+- [ ] **A change travels.** Flip any preference (the sort order is the cheapest). Open
+      *What this machine sent* — a row with the stream and the key lands within a second,
+      and the count in the summary moves. The status bar's sync segment says *In step*.
+- [ ] **The server going away is said out loud.** Stop the server. The state box turns to
+      *Reconnecting…* and, after two minutes without it, to *Unreachable* with a red
+      **sync** badge in the top bar beside where the telemetry one appears. Start it
+      again: the badge clears and *Last exchange* restarts, with no reload.
+- [ ] **Forgetting.** *Forget this machine* asks first (red button), then the pairing form
+      is back and the status bar's ⇅ segment reads *Off*. Every setting stays as it was.
 
 ### The OS edge
 

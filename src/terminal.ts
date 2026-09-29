@@ -11,7 +11,8 @@ import { dlog } from "./debug";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
-import { activeId, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { activeId, keyPrefs, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { matchAction } from "./keys";
 import { inStageGroup } from "./grouping";
 
 // The bundled Nerd Font first (@font-face in styles.css) so icon glyphs draw on every OS.
@@ -77,6 +78,10 @@ export function applyScrollback(list: Iterable<Sess>, lines: number) {
   }
 }
 
+// xterm stopPropagation()s every Ctrl+key it encodes, so on Windows an app chord never reached
+// main.ts's window listener. `false` makes xterm skip the event untouched; every pane's handler asks this first.
+const appChord = (e: KeyboardEvent) => e.type === "keydown" && !!matchAction(keyPrefs, e);
+
 // xterm keeps only the last custom key handler; task panes take `clipboardKeys` alone (no prompt).
 export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boolean {
   const clip = clipboardKeys(term), nav = macShellKeys(id);
@@ -87,6 +92,7 @@ export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boo
 // Tauri's clipboard plugin, never `navigator.clipboard`: its read prompts.
 export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
   return (e) => {
+    if (appChord(e)) return false;
     if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
     const k = e.key.toLowerCase();
     if (k !== "c" && k !== "v") return true;
@@ -157,14 +163,13 @@ export function claudeInput(id: string): (d: string) => void {
   };
 }
 
-// Windows image paste for Claude panes. Claude binds chat:imagePaste to alt+v on native Windows and
-// xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and the paste event sends ESC v
-// when an image is aboard; text falls through to xterm's own paste. xterm keeps ONE custom key
-// handler per pane: a new claude key rule goes here or in `claudeInput`, never in a second handler.
-export function winClaudePaste(id: string, term: Terminal, pane: HTMLElement) {
+// A claude pane's one key handler: app chords, plus Windows image paste. Claude binds chat:imagePaste
+// to alt+v on native Windows and xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and
+// the paste event sends ESC v when an image is aboard; text falls through to xterm's own paste.
+export function claudeKeys(id: string, term: Terminal, pane: HTMLElement) {
+  term.attachCustomKeyEventHandler((e) => !appChord(e) && !(IS_WIN && e.type === "keydown"
+    && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
   if (!IS_WIN) return;
-  term.attachCustomKeyEventHandler((e) =>
-    !(e.type === "keydown" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
   // Capture phase: beats xterm's textarea paste handler, so an image paste never double-fires as text.
   pane.addEventListener("paste", (e) => {
     if (!Array.from(e.clipboardData?.items ?? []).some((i) => i.type.startsWith("image/"))) return;
@@ -429,6 +434,8 @@ interface TermLink {
   range: { start: { x: number; y: number }; end: { x: number; y: number } };
   text: string;
   activate: (e: MouseEvent) => void;
+  hover?: () => void;
+  leave?: () => void;
 }
 type Buf = Terminal["buffer"]["active"];
 
@@ -549,6 +556,11 @@ async function openFilePath(path: string) {
   catch (e) { toast(String(e)); }
 }
 
+// Terminals whose pointer is on a link right now, from xterm's own hover/leave, so the click guard
+// below agrees with what is underlined.
+const onLink = new WeakSet<Terminal>();
+const hoverOf = (term: Terminal) => ({ hover: () => { onLink.add(term); }, leave: () => { onLink.delete(term); } });
+
 async function provide(id: string, term: Terminal, y: number, cb: (links: TermLink[] | undefined) => void) {
   const row = joinRows(term, y - 1); // provideLinks counts rows 1-based; the buffer does not
   const hits = row.text.trim() ? findLinks(row.text) : [];
@@ -566,21 +578,33 @@ async function provide(id: string, term: Terminal, y: number, cb: (links: TermLi
   for (const h of hits) {
     if (h.kind === "url") {
       const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
-      if (range) out.push({ range, text: h.text, activate: (e) => { if (modClick(e)) void openHref(h.text); } });
+      if (range) out.push({ range, text: h.text, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openHref(h.text); } });
       continue;
     }
     const won = await resolvePath(s, h.cands);
     if (!won || !claim(h.start, won.end)) continue;
     const range = mkRange(row, h.start, won.end);
-    if (range) out.push({ range, text: won.abs, activate: (e) => { if (modClick(e)) void openFilePath(won.abs); } });
+    if (range) out.push({ range, text: won.abs, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openFilePath(won.abs); } });
   }
   cb(out.length ? out : undefined);
 }
 
 // Called by every spawner after `term.open`; xterm keeps every link provider, so this composes.
 export function wireLinks(id: string, term: Terminal) {
-  term.options.linkHandler = { activate: (e, text) => { if (modClick(e)) void openHref(text); } };
+  term.options.linkHandler = { ...hoverOf(term), activate: (e, text) => { if (modClick(e)) void openHref(text); } };
   term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
+  // A MOD+click on a link is ours alone. Under mouse tracking xterm also reports it to the app, and
+  // Claude's fullscreen TUI opens a Ctrl+clicked link itself: two browser tabs on Windows (Cmd has no
+  // mouse-protocol bit, so macOS never saw it). Stopped at `.xterm-screen`, where the linkifier has
+  // already seen the press, before it bubbles to the element that reports it; no press, no release.
+  term.element?.querySelector(".xterm-screen")?.addEventListener("mousedown", (ev) => {
+    const e = ev as MouseEvent;
+    if (e.button !== 0 || !(IS_MAC ? e.metaKey : e.ctrlKey) || !onLink.has(term)) return;
+    if (term.modes.mouseTrackingMode === "none") return;
+    e.stopPropagation();
+    e.preventDefault();
+    term.focus(); // what xterm's own mousedown would have done
+  });
 }
 
 // Fit, push the size to the PTY, and force a full repaint: on resize the WebGL renderer redraws only

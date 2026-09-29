@@ -923,6 +923,17 @@ describe("a finished turn with a background shell still up", () => {
     expect(jobWaiting(s)).toBe(true);
     expect(phaseText(s)).toBe("your turn"); // it still is: needsYou reads the phase
   });
+  it("counts a Monitor, the tool an agent watches CI with", () => {
+    // The hook payload as Claude Code delivers it; the response says `taskId`, not `backgroundTaskId`.
+    const s = sess({ phase: "working" });
+    hook(s, "PostToolUse", {
+      tool_name: "Monitor", tool_use_id: "toolu_m1", transcript_path: "/t.jsonl",
+      tool_input: { description: "TEST deploy run job results", command: "while true; do gh run view 1; done" },
+      tool_response: { taskId: "b1hd1gb44", timeoutMs: 1800000, persistent: false },
+    });
+    hook(s, "Stop");
+    expect([statusKey(s), liveJobs(s)]).toEqual(["donebg", 1]);
+  });
   it("leaves a dev server on the plain check", () => {
     // Infrastructure you left running is not what the turn ended on top of, and the
     // header pill already counts it.

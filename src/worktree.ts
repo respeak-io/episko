@@ -481,7 +481,6 @@ function wtCommitKey(d: Dest): string {
   return "";
 }
 
-const WT_FILES_SHOWN = 10; // the pane is a paragraph of facts, not a diff viewer
 /** `pending` shows until the fetch lands. A worktree row already knows whether it is
  *  dirty from `list_worktrees`, so it says so at once and never flashes the opposite answer. */
 function wtWorkHtml(dir: string, pending: string): string {
@@ -491,7 +490,7 @@ function wtWorkHtml(dir: string, pending: string): string {
   return `<span class="warn">${g.dirty} file${g.dirty === 1 ? "" : "s"} uncommitted</span>`
     + (g.added || g.removed ? ` <span class="dim">·</span> <span class="add">+${g.added}</span> <span class="del">−${g.removed}</span>` : "")
     + (g.untracked ? ` <span class="dim">· ${g.untracked} new</span>` : "")
-    + fileSetHtml(g.entries, WT_FILES_SHOWN, g.dirty);
+    + fileSetHtml(g.entries, g.entries.length, g.dirty);
 }
 
 function wtFacts(pairs: [string, string][]) {

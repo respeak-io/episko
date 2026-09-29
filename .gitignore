@@ -41,3 +41,10 @@ build/
 
 # wrangler
 .wrangler/
+
+# The workspace crates' build output and a local server run. Their own .gitignores leave
+# with the crate on a branch switch, and git does not remove untracked files it leaves behind.
+/episko-*/target/
+/episko-server/data/
+/episko-server/*.db
+/episko-server/*.db-*

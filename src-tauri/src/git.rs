@@ -2407,6 +2407,29 @@ fn ssh_hostname_in(out: &str, alias: &str) -> Option<String> {
         .filter(|h| !h.is_empty() && !h.eq_ignore_ascii_case(alias))
 }
 
+/// A project's id that every machine and teammate agrees on (docs/sync.md): its root commit,
+/// which survives clones, renames, forks and remotes. `owner/repo` only for a repo with no
+/// commit yet, and never the host, which an ssh alias rewrites per machine.
+#[tauri::command(async)]
+pub(crate) fn project_id(dir: String) -> Option<String> {
+    let root = repo_root_of(&dir)?;
+    let out = git_cmd(&root, &["rev-list", "--max-parents=0", "HEAD"]).output().ok()?;
+    if out.status.success() {
+        if let Some(id) = roots_id(&String::from_utf8_lossy(&out.stdout)) { return Some(id); }
+    }
+    let url = git_cmd(&root, &["remote", "get-url", "origin"]).output().ok().filter(|o| o.status.success())?;
+    let (_, owner_repo) = split_remote(String::from_utf8_lossy(&url.stdout).trim());
+    owner_repo.map(|r| format!("remote:{}", r.to_ascii_lowercase()))
+}
+
+/// A grafted history has several roots: sorted, so every machine spells the set one way.
+fn roots_id(out: &str) -> Option<String> {
+    let mut roots: Vec<&str> = out.lines().map(str::trim).filter(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_hexdigit())).collect();
+    roots.sort_unstable();
+    roots.dedup();
+    (!roots.is_empty()).then(|| format!("git:{}", roots.join("+")))
+}
+
 /// The one probe the dashboard makes before deciding what it can show.
 #[tauri::command(async)]
 pub(crate) fn project_facts(dir: String) -> ProjectFacts {
@@ -2428,6 +2451,42 @@ pub(crate) fn project_facts(dir: String) -> ProjectFacts {
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    #[test]
+    fn a_project_is_its_root_commit_on_every_clone() {
+        let a = scratch_dir();
+        git(&a, &["init", "-q"]);
+        git(&a, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"]);
+        git(&a, &["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "next"]);
+        let id = project_id(a.to_string_lossy().into()).expect("a repo with commits has an id");
+        assert!(id.starts_with("git:") && id.len() == 44, "{id}");
+        let b = scratch_dir();
+        git(&b, &["clone", "-q", &a.to_string_lossy(), "copy"]);
+        assert_eq!(project_id(b.join("copy").to_string_lossy().into()), Some(id), "a clone is the same project");
+    }
+
+    #[test]
+    fn several_roots_are_one_id_in_one_order() {
+        assert_eq!(roots_id("bbb
+aaa
+
+bbb
+"), Some("git:aaa+bbb".into()));
+        assert_eq!(roots_id("fatal: bad revision
+"), None);
+        assert_eq!(roots_id(""), None);
+    }
+
+    #[test]
+    fn a_repo_with_no_commit_falls_back_to_owner_and_repo_and_a_folder_has_none() {
+        let a = scratch_dir();
+        git(&a, &["init", "-q"]);
+        assert_eq!(project_id(a.to_string_lossy().into()), None, "no commit, no remote");
+        // A fixture remote must not name a real owner: this machine rewrites some by insteadOf.
+        git(&a, &["remote", "add", "origin", "git@example.invalid:Some-Owner/Repo.git"]);
+        assert_eq!(project_id(a.to_string_lossy().into()), Some("remote:some-owner/repo".into()));
+        assert_eq!(project_id(scratch_dir().to_string_lossy().into()), None);
+    }
 
     /// No ssh config at all; assertions using it also assert the alias lookup was not needed.
     fn no_aliases(_: &str) -> Option<String> { None }

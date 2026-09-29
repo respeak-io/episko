@@ -347,6 +347,7 @@ mod tests {
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             caffeinate: Mutex::new(None),
+            sync: Default::default(),
         });
         let handle = app.handle().clone();
         std::thread::spawn(move || run_telemetry_server(server, handle));
