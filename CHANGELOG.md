@@ -12,9 +12,13 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,
-never an authority: with the server down or absent, everything works exactly as before.
+never an authority: with the server down or absent, everything works exactly as before. Beside
+it, *Open work* narrows by kind, label and owner, a session that drifted into another worktree
+can be shown there without a restart, and every terminal fits its pane again.
 
 + **Sync your settings, spend and limits between machines.** Run `episko-server` (one binary, one
   SQLite file, or `docker compose up`), print an invite with `episko-server invite`, and pair in
