@@ -1023,7 +1023,12 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
     let mut kept: Vec<KeptBranch> = Vec::new();
     let mut go: Vec<(String, String)> = Vec::new();   // (branch, sha as it stands now)
     let protect = list_protected_branches(repo_dir.clone());
+    let foreign = foreign_remote_prefixes(&repo_dir);
     for p in want {
+        if foreign.iter().any(|f| fills(f, &format!("{remote}/{}", p.branch))) {
+            kept.push(KeptBranch { branch: p.branch, reason: format!("not a branch — a fetch refspec mirrors it from {remote}'s tags or other refs"), forceable: false });
+            continue;
+        }
         let by = protected_by(&protect, &p.branch);
         if !by.is_empty() {
             kept.push(KeptBranch { branch: p.branch, reason: format!("protected by {by} in .episko/episko.toml"), forceable: false });
@@ -1054,9 +1059,11 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
     // culprit, so a small one is retried per branch; a large one reports git's message
     // against every branch rather than spending eighty round trips to phrase it per row.
     const ATTRIBUTE_MAX: usize = 12;
+    // Fully qualified: a bare `tags/v1` would DWIM onto the remote's refs/tags/v1 and delete the tag.
+    let heads: Vec<String> = go.iter().map(|(b, _)| format!("refs/heads/{b}")).collect();
     let mut args: Vec<&str> = vec!["push", &remote, "--delete"];
-    for (b, _) in &go {
-        args.push(b);
+    for h in &heads {
+        args.push(h);
     }
     let batch = git_run(git_cmd(&repo_dir, &args), 90);
     let ok = matches!(&batch, Ok(o) if o.status.success());
@@ -1077,7 +1084,7 @@ pub(crate) fn delete_remote_branches(repo_dir: String, remote: String, picks: Ve
         return Ok(finish_remote_sweep(deleted, kept, &remote));
     }
     for (branch, sha) in go {
-        match git_run(git_cmd(&repo_dir, &["push", &remote, "--delete", &branch]), 90) {
+        match git_run(git_cmd(&repo_dir, &["push", &remote, "--delete", &format!("refs/heads/{branch}")]), 90) {
             Ok(o) if o.status.success() => deleted.push(DeletedBranch { branch, sha, forced: false }),
             Ok(o) => kept.push(KeptBranch { branch, reason: first_line(&o), forceable: false }),
             Err(e) => kept.push(KeptBranch { branch, reason: e, forceable: false }),
@@ -1291,6 +1298,7 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
         None => return res,
     };
     let rtext = String::from_utf8_lossy(&rout.stdout);
+    let foreign = foreign_remote_prefixes(&repo_dir);
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Where a local row sits, so a ref it merely HAS (rather than follows) can reach it.
     // Owned keys: the loop below pushes to `res`, which a borrowed key would forbid.
@@ -1305,6 +1313,9 @@ pub(crate) fn git_branch_list(repo_dir: String, base: Option<String>) -> Vec<Bra
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
+        if foreign.iter().any(|p| fills(p, short)) {
+            continue;
+        }
         // Longest matching prefix: a remote `a` may sit beside `a/b`. An empty remainder drops
         // `refs/remotes/<remote>/HEAD`, which git shortens to a bare `origin` rather than
         // `origin/HEAD`; the `local == "HEAD"` test covers a git that spells it out.
@@ -1379,6 +1390,33 @@ fn ahead_behind(field: &str, measured: bool) -> (u32, u32) {
     }
     let mut n = field.split_whitespace().filter_map(|v| v.parse::<u32>().ok());
     (n.next().unwrap_or(0), n.next().unwrap_or(0))
+}
+
+/// Destinations under refs/remotes that a fetch refspec fills from something other than a
+/// branch (`+refs/tags/*:refs/remotes/origin/tags/*` → "origin/tags/*"); those refs are not branches.
+fn foreign_remote_prefixes(repo_dir: &str) -> Vec<String> {
+    let out = match git_cmd(repo_dir, &["config", "--get-regexp", r"^remote\..*\.fetch$"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once(' ').map(|(_, v)| v.trim().trim_start_matches('+')))
+        .filter_map(|spec| spec.split_once(':'))
+        .filter(|(src, _)| !src.starts_with("refs/heads/"))
+        .filter_map(|(_, dst)| dst.strip_prefix("refs/remotes/"))
+        .filter(|dst| !dst.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `short` (a refs/remotes short name) is what a destination pattern from
+/// `foreign_remote_prefixes` fills; a pattern without `*` names exactly one ref.
+fn fills(pattern: &str, short: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((head, tail)) => short.len() > head.len() + tail.len() && short.starts_with(head) && short.ends_with(tail),
+        None => short == pattern,
+    }
 }
 
 /// The remote a cleanup pushes to: `origin` when present, else the first configured.
@@ -4032,6 +4070,41 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
         let _ = std::fs::remove_dir_all(&theirs);
+    }
+
+    /// A refspec that mirrors tags under refs/remotes (`origin/tags/v1`) makes no branch rows,
+    /// and a remote delete of that name can never reach the real tag.
+    #[test]
+    fn tags_mirrored_under_refs_remotes_are_not_branches_and_survive_a_delete() {
+        let dir = scratch_dir();
+        let remote = scratch_dir();
+        git(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1"]);
+        git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git(&dir, &["push", "-q", "-u", "origin", "main", "v1"]);
+        git(&dir, &["push", "-q", "origin", "main:refs/heads/feature"]);
+        git(&dir, &["config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/remotes/origin/tags/*"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        git(&dir, &["remote", "set-head", "origin", "main"]);
+
+        let repo = dir.to_str().unwrap().to_string();
+        let names: Vec<String> = git_branch_list(repo.clone(), None).into_iter().map(|b| b.name).collect();
+        assert!(names.iter().any(|n| n == "feature"), "a real remote branch still lists: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("tags/")), "a mirrored tag is no branch: {names:?}");
+
+        let tag_sha = String::from_utf8_lossy(&Command::new("git").current_dir(&dir)
+            .args(["rev-parse", "refs/remotes/origin/tags/v1"]).output().unwrap().stdout).trim().to_string();
+        let r = delete_remote_branches(repo, "origin".into(), vec![RemotePick { branch: "tags/v1".into(), sha: tag_sha }])
+            .expect("call returns");
+        assert!(r.deleted.is_empty(), "{r:?}");
+        let tags = String::from_utf8_lossy(&Command::new("git").current_dir(&remote)
+            .args(["tag", "--list"]).output().unwrap().stdout).to_string();
+        assert!(tags.contains("v1"), "the remote's tag must survive: {tags:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
     }
 
     /// `merged` must mean exactly "already contained in the trunk": never the current branch
