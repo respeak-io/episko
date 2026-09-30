@@ -943,6 +943,75 @@ html.win .wctl { display: flex; }
   .dline.hmark, .sn.hmark, .sc.hmark { transition: background .12s, box-shadow .12s; }
 }
 
+/* --- the markdown reader (modal, mdreader.ts): a document at a reading measure ---
+   z 42: it opens over whichever dialog held the link. Everything inside is scoped to .mdr, because
+   the document's markup is arbitrary and must never pick up a rule written for the app. */
+.mddlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.985); width: min(1180px, 96vw); height: min(900px, 92vh); z-index: 42; display: flex; flex-direction: column; border-radius: var(--radius-lg); overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; background: color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
+.mddlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.mdr-back { flex: none; width: 26px; height: 26px; margin-right: 8px; border-radius: 7px; border: 1px solid var(--hair); background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.mdr-back:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.mdr-back:disabled { opacity: .3; cursor: default; }
+.mdr-tools { display: flex; gap: 4px; margin-left: auto; margin-right: 8px; flex: none; }
+.mdr-tool { height: 24px; min-width: 26px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--hair); background: none; color: var(--muted-2); font: 11px var(--font-ui); cursor: pointer; }
+.mdr-tool:hover { color: var(--text); border-color: var(--hair-strong); background: var(--surface-2); }
+.mdr-tool.on { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
+.mdr-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.mddlg.no-toc .mdr-body, .mdr-body:has(.mdr-rail:empty) { grid-template-columns: minmax(0, 1fr); }
+.mddlg.no-toc .mdr-rail, .mdr-rail:empty { display: none; }
+@media (max-width: 860px) { .mdr-body { grid-template-columns: minmax(0, 1fr); } .mdr-rail { display: none; } }
+/* flex: none on the rows: a flex column shrinks its children to fit rather than overflowing, and the rail never scrolled. */
+.mdr-rail { overflow-y: auto; min-height: 0; border-right: 1px solid var(--hair); padding: 12px 8px; display: flex; flex-direction: column; gap: 1px; }
+.mdr-rail > * { flex: none; }
+.mdr-toch { padding: 0 8px 6px; font: 700 9px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); }
+.mdr-toc { text-align: left; border: 0; background: none; color: var(--muted); font: 12px/1.35 var(--font-ui); padding: 4px 8px; border-radius: 6px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdr-toc:hover { color: var(--text); background: var(--lift); }
+.mdr-toc.on { color: var(--accent-ink); background: var(--accent-wash); }
+.mdr-toc.d0 { color: var(--text); font-weight: 600; }
+.mdr-toc.d1 { padding-left: 18px; }
+.mdr-toc.d2 { padding-left: 28px; font-size: 11.5px; }
+.mdr-scroll { overflow-y: auto; min-width: 0; outline: none; }
+.mdr { --mdr-fs: 14px; margin: 0 auto; padding: 22px 34px 60px; max-width: 760px; font: var(--mdr-fs)/1.65 var(--font-ui); color: var(--text); overflow-wrap: break-word; }
+.mddlg[data-width="wide"] .mdr { max-width: 1000px; }
+.mddlg[data-width="full"] .mdr { max-width: none; }
+.mddlg[data-size="s"] .mdr { --mdr-fs: 12.5px; }
+.mddlg[data-size="l"] .mdr { --mdr-fs: 16px; }
+.mdr > :first-child { margin-top: 0; }
+.mdr p, .mdr ul, .mdr ol, .mdr blockquote, .mdr table, .mdr pre, .mdr details, .mdr .mdr-html { margin: 0 0 .85em; }
+.mdr .mdr-h { margin: 1.5em 0 .55em; line-height: 1.25; font-weight: 650; scroll-margin-top: 14px; border-radius: 4px; }
+.mdr h1.mdr-h { font-size: 1.85em; padding-bottom: .3em; border-bottom: 1px solid var(--hair); }
+.mdr h2.mdr-h { font-size: 1.4em; padding-bottom: .25em; border-bottom: 1px solid var(--hair); }
+.mdr h3.mdr-h { font-size: 1.15em; }
+.mdr h4.mdr-h, .mdr h5.mdr-h, .mdr h6.mdr-h { font-size: 1em; color: var(--muted); }
+.mdr .mdr-h.lit { animation: mdr-lit 1.6s ease-out; }
+@keyframes mdr-lit { from { background: var(--accent-wash); } to { background: transparent; } }
+.mdr ul, .mdr ol { padding-left: 1.6em; }
+.mdr li { margin: .25em 0; }
+.mdr li > p { margin: .3em 0; }
+.mdr li:has(> .mdr-tk) { list-style: none; margin-left: -1.3em; }
+.mdr .mdr-tk { color: var(--accent-ink); }
+.mdr .mdr-a { color: var(--accent-ink); text-decoration: none; cursor: pointer; }
+.mdr .mdr-a:hover { text-decoration: underline; }
+.mdr code { padding: .12em .38em; border-radius: 5px; font: .86em var(--font-mono); background: var(--bg-2); border: 1px solid var(--hair); }
+.mdr .mdr-pre { position: relative; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--bg-2); border: 1px solid var(--hair); overflow-x: auto; }
+.mdr .mdr-pre code { padding: 0; border: 0; background: none; font-size: .84em; line-height: 1.55; white-space: pre; }
+.mdr .mdr-pre[data-lang]::after { content: attr(data-lang); position: absolute; top: 6px; right: 9px; font: 9.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.mdr blockquote { padding: 0 1em; border-left: 3px solid var(--hair-strong); color: var(--muted); }
+.mdr hr { border: 0; border-top: 1px solid var(--hair-strong); margin: 1.6em 0; }
+.mdr table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; font-size: .93em; }
+.mdr th, .mdr td { padding: 6px 12px; border: 1px solid var(--hair); }
+.mdr th { background: var(--surface); font-weight: 650; }
+.mdr tr:nth-child(2n) td { background: color-mix(in srgb, var(--surface) 45%, transparent); }
+.mdr .mdr-img { max-width: 100%; border-radius: 6px; vertical-align: middle; }
+.mdr .mdr-img:not([src]) { min-width: 40px; min-height: 24px; background: var(--bg-2); }
+.mdr .mdr-miss, .mdr .mdr-imgref { font-size: .88em; color: var(--muted-2); }
+.mdr kbd { padding: .1em .45em; border-radius: 5px; font: .82em var(--font-mono); background: var(--bg-2); border: 1px solid var(--hair-strong); border-bottom-width: 2px; }
+.mdr summary { cursor: pointer; }
+.mdr mark { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; }
+.mdr .mdr-src { margin: 0; font: 12.5px/1.6 var(--font-mono); white-space: pre-wrap; tab-size: 4; }
+.mdr .mdr-note { margin-bottom: 1em; padding: 7px 11px; border-radius: 7px; font-size: 12px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); }
+.mdr .mdr-err, .mdr .mdr-empty { padding: 40px 0; text-align: center; color: var(--muted); }
+.mdr .mdr-err span { font: 11.5px var(--font-mono); color: var(--muted-2); }
+
 /* --- the call sheet (modal): one tool call, in full ---
    Sized like Settings > Usage: every payload is an 80-120 column artifact the 296px rail cannot hold.
    Two rules, both the rail's opposite: ONE scroll (.call-detail) and NO word breaking (the default
@@ -3568,7 +3637,7 @@ select.in-ctl { cursor: pointer; }
 /* ---- a closed dialog is not a backdrop ----------------------------------
    Unconditional: eighteen dialogs stay mounted at opacity: 0 so they can fade, and a backdrop-filter
    on a transparent layer still keeps a blur surface alive. Gated on :not(.show), not visibility: hidden. */
-.expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .graphdlg:not(.show),
+.expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .mddlg:not(.show), .graphdlg:not(.show),
 .scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
 .mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .cfm-scrim:not(.show),
 .cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
@@ -3583,7 +3652,7 @@ select.in-ctl { cursor: pointer; }
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-:root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg,
+:root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg, :root.fx-flat .mddlg,
 :root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
 :root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
 :root.fx-flat .setdlg, :root.fx-flat .usagedlg, :root.fx-flat .cfm, :root.fx-flat .ovl,

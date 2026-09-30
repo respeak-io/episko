@@ -27,6 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
+import { closeMdReader, mdReaderOpen } from "./mdreader";
 import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
@@ -37,7 +38,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -231,7 +232,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -700,7 +701,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -727,7 +728,9 @@ window.addEventListener("keydown", (e) => {
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
   const act = matchAction(keyPrefs, e);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
-  if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
+  if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
+  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }

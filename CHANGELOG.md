@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Markdown files open in a reader inside Episko.** A `.md` link clicked in a pane, a row of the
+  Context card or a file picked in ⌘P now opens in a dialog: the document rendered with its tables,
+  task lists and screenshots, its headings in a rail beside it, and links to other documents
+  followed in place with ← to go back. *Source* shows the file as written, ↗ still hands it to your
+  default app. *Settings › Reader* sets the width, the text size and whether images load, and can
+  switch the reader off. Images from the web stay unfetched unless you ask for them.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,

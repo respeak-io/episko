@@ -8,6 +8,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { IS_MAC, IS_WIN, MOD, toast } from "./dom";
 import { dlog } from "./debug";
+import { openFileOrRead } from "./mdreader";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
@@ -549,11 +550,10 @@ async function openHref(url: string) {
   catch (e) { toast("Couldn't open the link: " + e); }
 }
 
-// A copy of ./actions' `openTouchedFile`, since ./actions imports this module; the error is surfaced.
+// ./mdreader decides between the in-app reader and the OS; the error is surfaced there.
 async function openFilePath(path: string) {
   dlog("info", `link: opening ${path}`); // the one trace an accidental open used to leave
-  try { await invoke("open_file", { path }); }
-  catch (e) { toast(String(e)); }
+  await openFileOrRead(path);
 }
 
 // Terminals whose pointer is on a link right now, from xterm's own hover/leave, so the click guard

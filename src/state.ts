@@ -12,6 +12,7 @@ import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { clampOutlinePrefs, type OutlinePrefs } from "./outline";
+import { clampMdPrefs, type MdPrefs } from "./markdown";
 import { clampScrollback, clampVitalsPrefs, type VitalsPrefs } from "./perf";
 import { agentInstalled, CLAUDE_CLI, pickAgent } from "./types";
 import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtHead } from "./types";
@@ -302,6 +303,9 @@ export function setVitalsPrefs(p: VitalsPrefs) { vitalsPrefs = clampVitalsPrefs(
 // The inspector's conversation outline (./outline); one blob, like cc-peek.
 export let outlinePrefs: OutlinePrefs = clampOutlinePrefs(safeParse(localStorage.getItem("cc-outline")));
 export function setOutlinePrefs(p: OutlinePrefs) { outlinePrefs = clampOutlinePrefs(p); }
+// The markdown reader (./markdown); one blob, like cc-outline.
+export let mdPrefs: MdPrefs = clampMdPrefs(safeParse(localStorage.getItem("cc-markdown")));
+export function setMdPrefs(p: MdPrefs) { mdPrefs = clampMdPrefs(p); }
 
 export let termScrollback: number = clampScrollback(localStorage.getItem("cc-scrollback"));
 export function setTermScrollback(n: number) { termScrollback = clampScrollback(n); }
