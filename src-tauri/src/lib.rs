@@ -549,6 +549,8 @@ pub fn run() {
             platform::open_file,
             platform::reveal_file,
             platform::resolve_link_path,
+            platform::read_markdown,
+            platform::read_md_image,
             pty::session_cwd,
             write_debug_file,
             log_frontend,

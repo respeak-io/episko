@@ -35,6 +35,7 @@ import {
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
   setTermSplit as setTermSplitState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
+  mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
   sortMode, setWtGroup as setWtGroupState, wtGroup,
   cmpBase, setCmpBase as setCmpBaseState,
@@ -65,6 +66,8 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { reviveGap, reviveStep, type RevivePrefs } from "./revive";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
+import { openFileOrRead, renderMdReader } from "./mdreader";
+import type { MdPrefs } from "./markdown";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -93,8 +96,7 @@ export async function openProjectFolder(key: string) {
 // The Context card's rows. Both surface the backend's error: an agent's file set outlives
 // the files in it (a removed worktree, a deleted temp file), and "no such file" is the truth.
 export async function openTouchedFile(path: string) {
-  try { await invoke("open_file", { path }); }
-  catch (e) { toast(String(e)); }
+  await openFileOrRead(path);
 }
 export async function revealTouchedFile(path: string) {
   try { await invoke("reveal_file", { path }); }
@@ -207,6 +209,14 @@ export function setOutlinePrefs(p: OutlinePrefs) {
   setOutlinePrefsState(p);
   localStorage.setItem("cc-outline", JSON.stringify(outlinePrefs));
   renderAll();
+  renderSettings();
+}
+
+// No renderAll: nothing but the reader and Settings reads these.
+export function setMdPrefs(p: MdPrefs) {
+  setMdPrefsState(p);
+  localStorage.setItem("cc-markdown", JSON.stringify(mdPrefs));
+  renderMdReader();
   renderSettings();
 }
 

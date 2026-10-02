@@ -15,7 +15,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-title": "pref", "cc-term-engine": "pref", "cc-term-font": "pref", "cc-term-split": "pref",
   "cc-agent": "pref", "cc-diff-mode": "pref", "cc-scrollback": "pref", "cc-sort": "pref",
   "cc-fleet-sort": "pref", "cc-fleet-layout": "pref", "cc-fleet-group": "pref", "cc-fleet-range": "pref",
-  "cc-peek": "pref", "cc-outline": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
+  "cc-peek": "pref", "cc-outline": "pref", "cc-markdown": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
 
   "cc-usage": "account", "cc-usage-detail": "account",
 

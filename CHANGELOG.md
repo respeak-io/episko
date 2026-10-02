@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Markdown files open in a reader inside Episko.** A `.md` link clicked in a pane, a row of the
+  Context card or a file picked in ⌘P now opens in a dialog: the document rendered with its tables,
+  task lists and screenshots, its headings in a rail beside it, and links to other documents
+  followed in place with ← to go back. *Source* shows the file as written, ↗ still hands it to your
+  default app. *Settings › Reader* sets the width, the text size and whether images load, and can
+  switch the reader off. Images from the web stay unfetched unless you ask for them.
 ! **The GitHub account picker no longer vanishes without a word on an older gh.** gh before
   2.81.0 cannot list its accounts, so the picker was simply missing. The dashboard now says
   which gh you have and how to update it, where the picker would be.
