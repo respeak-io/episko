@@ -44,6 +44,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ *Move to the server and commit* deletes `.episko/digest.md` and commits just that, leaving
   anything you had staged alone.
 ~ **⌘T from a task opens a shell of its own** rather than tiling it beside the run's output.
+~ **Dependencies are current.** Tauri 2.12 and its plugins (the updater among them, to 2.13), with
+  every Rust and JavaScript dependency moved to its latest compatible release.
 ! **The GitHub account picker no longer vanishes without a word on an older gh.** gh before
   2.81.0 cannot list its accounts, so the picker was simply missing. The dashboard now says
   which gh you have and how to update it, where the picker would be.
