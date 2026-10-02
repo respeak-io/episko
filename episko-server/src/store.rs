@@ -1,6 +1,6 @@
 //! The one SQLite file: the event log, one-use invites, and the tokens they were traded for.
 
-use episko_proto::{Event, NewEvent, Stream, MAX_PAYLOAD, STREAMS};
+use episko_proto::{DeviceInfo, Event, NewEvent, Stream, MAX_PAYLOAD, STREAMS};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -69,6 +69,29 @@ fn norm_code(code: &str) -> String {
     code.trim().to_ascii_uppercase().replace(' ', "")
 }
 
+/// A token for one new device of `user`; the device id is the server's, never the client's.
+fn mint(tx: &rusqlite::Transaction, ws: &str, user: &str, label: &str, now: i64) -> rusqlite::Result<(String, Identity)> {
+    let token = hex(&random_bytes::<32>());
+    let device = hex(&random_bytes::<6>());
+    let label: String = label.trim().chars().take(64).collect();
+    tx.execute(
+        "INSERT INTO tokens (hash, ws, user, device, label, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![token_hash(&token), ws, user, device, label, now],
+    )?;
+    Ok((token, Identity { ws: ws.into(), user: user.into(), device }))
+}
+
+/// A person's name as typed, or why it cannot be one: 1 to 40 letters, digits, spaces, `.`, `-`, `_`.
+pub fn valid_name(raw: &str) -> Result<String, &'static str> {
+    let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() { return Err("enter your name"); }
+    if name.chars().count() > 40 { return Err("a name is at most 40 characters"); }
+    if !name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_')) {
+        return Err("a name is letters, digits, spaces, dots, dashes and underscores");
+    }
+    Ok(name)
+}
+
 impl Store {
     pub fn open(path: &str) -> rusqlite::Result<Store> {
         let conn = Connection::open(path)?;
@@ -109,6 +132,14 @@ impl Store {
         rows.collect()
     }
 
+    /// The machines paired into one workspace, oldest first.
+    pub fn devices_in(&self, ws: &str) -> rusqlite::Result<Vec<DeviceInfo>> {
+        let db = self.db();
+        let mut q = db.prepare("SELECT user, device, label FROM tokens WHERE ws = ?1 ORDER BY created")?;
+        let rows = q.query_map(params![ws], |r| Ok(DeviceInfo { user: r.get(0)?, device: r.get(1)?, label: r.get(2)? }))?;
+        rows.collect()
+    }
+
     /// Shuts a device out: its next hello is refused, and the app asks to pair again.
     pub fn revoke(&self, device: &str) -> rusqlite::Result<usize> {
         self.db().execute("DELETE FROM tokens WHERE device = ?1", params![device])
@@ -128,6 +159,36 @@ impl Store {
         Ok(code)
     }
 
+    /// A new person joins with the server's registration code. `Ok(None)` when the name is taken:
+    /// anyone holding the team code could otherwise claim your name and read your settings.
+    pub fn register(&self, ws: &str, user: &str, label: &str, now: i64) -> rusqlite::Result<Option<(String, Identity)>> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        let taken: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tokens WHERE ws = ?1 AND lower(user) = lower(?2))",
+            params![ws, user],
+            |r| r.get(0),
+        )?;
+        if taken { return Ok(None); }
+        let (token, who) = mint(&tx, ws, user, label, now)?;
+        tx.commit()?;
+        Ok(Some((token, who)))
+    }
+
+    /// Renames a person everywhere their name is the key: tokens, pending invites and the log's
+    /// actor column, which is what keeps a personal stream personal. Refuses a name in use.
+    pub fn rename(&self, from: &str, to: &str) -> rusqlite::Result<Option<usize>> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        let taken: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tokens WHERE lower(user) = lower(?1))", params![to], |r| r.get(0))?;
+        if taken && !from.eq_ignore_ascii_case(to) { return Ok(None); }
+        let n = tx.execute("UPDATE tokens SET user = ?2 WHERE user = ?1", params![from, to])?;
+        tx.execute("UPDATE invites SET user = ?2 WHERE user = ?1", params![from, to])?;
+        tx.execute("UPDATE events SET actor = ?2 WHERE actor = ?1", params![from, to])?;
+        tx.commit()?;
+        Ok(Some(n))
+    }
+
     /// Spends an invite and returns the token and who it names; `None` for a bad or used code.
     pub fn redeem(&self, code: &str, label: &str, now: i64) -> rusqlite::Result<Option<(String, Identity)>> {
         let mut db = self.db();
@@ -140,15 +201,9 @@ impl Store {
             )
             .optional()?;
         let Some((ws, user)) = row else { return Ok(None) };
-        let token = hex(&random_bytes::<32>());
-        let device = hex(&random_bytes::<6>());
-        let label: String = label.trim().chars().take(64).collect();
-        tx.execute(
-            "INSERT INTO tokens (hash, ws, user, device, label, created) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![token_hash(&token), ws, user, device, label, now],
-        )?;
+        let (token, who) = mint(&tx, &ws, &user, label, now)?;
         tx.commit()?;
-        Ok(Some((token, Identity { ws, user, device })))
+        Ok(Some((token, who)))
     }
 
     pub fn auth(&self, token: &str) -> rusqlite::Result<Option<Identity>> {
@@ -298,6 +353,46 @@ mod tests {
         assert_eq!(keys, vec![("cc-foot".to_string(), 1), ("cc-sort".to_string(), 2), ("cc-sort".to_string(), 3)]);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 1);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 0, "the latest per key always stays");
+    }
+
+    #[test]
+    fn a_workspace_lists_its_own_machines_and_nobody_elses() {
+        let s = Store::open_in_memory().unwrap();
+        s.redeem(&s.create_invite("team", "me", 0).unwrap(), "Laptop", 1).unwrap();
+        s.redeem(&s.create_invite("team", "ana", 0).unwrap(), "Desk", 2).unwrap();
+        s.redeem(&s.create_invite("other", "bob", 0).unwrap(), "Box", 3).unwrap();
+        let got: Vec<_> = s.devices_in("team").unwrap().into_iter().map(|d| (d.user, d.label)).collect();
+        assert_eq!(got, [("me".to_string(), "Laptop".to_string()), ("ana".to_string(), "Desk".to_string())]);
+    }
+
+    #[test]
+    fn registering_takes_a_free_name_once() {
+        let s = Store::open_in_memory().unwrap();
+        let (_, who) = s.register("default", "Ana", "Desk", 1).unwrap().unwrap();
+        assert_eq!(who.user, "Ana");
+        assert!(s.register("default", "ana", "Laptop", 2).unwrap().is_none(), "a name is taken whatever its case");
+        assert!(s.register("other", "ana", "Box", 2).unwrap().is_some(), "names are per workspace");
+    }
+
+    #[test]
+    fn a_name_is_checked_before_it_is_a_user() {
+        assert_eq!(valid_name("  Ana   Lopez "), Ok("Ana Lopez".into()));
+        assert!(valid_name("").is_err());
+        assert!(valid_name("ana; drop").is_err());
+        assert!(valid_name(&"a".repeat(41)).is_err());
+    }
+
+    #[test]
+    fn renaming_carries_the_personal_log_with_it() {
+        let s = Store::open_in_memory().unwrap();
+        let (token, who) = s.redeem(&s.create_invite("default", "me", 0).unwrap(), "lap", 1).unwrap().unwrap();
+        s.append(&who, &[ev("cc-sort", 1)]).unwrap();
+        s.register("default", "ana", "desk", 1).unwrap().unwrap();
+        assert_eq!(s.rename("me", "ana").unwrap(), None, "a name in use is refused");
+        assert_eq!(s.rename("me", "Frederic").unwrap(), Some(1));
+        assert_eq!(s.auth(&token).unwrap().unwrap().user, "Frederic");
+        assert_eq!(s.since("default", "Frederic", 0, 10).unwrap().len(), 1, "their prefs follow the new name");
+        assert!(s.since("default", "me", 0, 10).unwrap().is_empty());
     }
 
     #[test]

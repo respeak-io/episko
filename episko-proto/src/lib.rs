@@ -88,7 +88,16 @@ pub struct Event {
 pub enum ClientMsg {
     /// Trade a one-use invite code for a token. `label` is for people; the device id is the
     /// server's, so two machines both called "MacBook" never share a usage cell.
-    Pair { code: String, label: String },
+    /// With a server's registration code instead of an invite, `user` names the new person; a
+    /// name already taken is refused, since a second machine of yours comes from `Invite`.
+    Pair {
+        code: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+    },
+    /// After hello: a one-use code that pairs another machine of this same user.
+    Invite {},
     /// Open a session; the server replays everything after `since`, then streams.
     Hello { token: String, since: u64, protocol: u32 },
     Push { events: Vec<NewEvent> },
@@ -112,14 +121,31 @@ pub enum ErrorCode {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ServerMsg {
     Paired { token: String, user: String, device: String },
-    Welcome { user: String, device: String, head: u64 },
+    /// `devices` names every machine in the workspace, so the app can say whose a figure is.
+    Welcome {
+        user: String,
+        device: String,
+        head: u64,
+        #[serde(default)]
+        devices: Vec<DeviceInfo>,
+    },
     /// `more` is true while a catch-up still has pages to send.
     Events { events: Vec<Event>, more: bool },
     /// The seqs the log gave a push's events, in the order they were sent.
     Pushed { seqs: Vec<u64> },
     Error { code: ErrorCode, message: String },
+    /// The answer to `Invite`: good once, until `expires` (ms).
+    Invited { code: String, expires: i64 },
     /// A device's presence; `items: null` means it went away or its heartbeat lapsed.
     Presence { user: String, device: String, items: serde_json::Value },
+}
+
+/// A paired machine as the app shows it; `user` is the name it was invited under.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub user: String,
+    pub device: String,
+    pub label: String,
 }
 
 /// A device that has not repeated its presence within this long is dropped.
@@ -129,6 +155,12 @@ pub const PRESENCE_TTL_MS: u64 = 45_000;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_welcome_from_an_older_server_still_parses() {
+        let m: ServerMsg = serde_json::from_value(json!({"t": "welcome", "user": "me", "device": "d1", "head": 3})).unwrap();
+        assert_eq!(m, ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 3, devices: vec![] });
+    }
 
     #[test]
     fn messages_have_the_shape_the_other_side_parses() {

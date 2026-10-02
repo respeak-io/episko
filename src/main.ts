@@ -34,7 +34,7 @@ import {
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, setGhReload, refreshGhAccounts,
+  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
@@ -121,8 +121,9 @@ import {
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
+import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
-  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
+  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
   tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
@@ -242,6 +243,8 @@ setSettingsHost({
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
   syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
+  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer, syncReview: openReview,
+  syncHasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -461,7 +464,13 @@ listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) =
 // app warns before the fallback stops matching too. No toast (the telemetry-health
 // precedent); dlog tees into episko.log, so the line itself names the directory.
 // Sync (docs/sync.md). Connecting waits for this listener: a replay emitted before it exists is lost.
-setSyncHost({ render: renderAll, log: dlog });
+setSyncHost({
+  render: renderAll, log: dlog,
+  // A teammate chose this project's channel: every checkout of it here follows.
+  share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
+  review: () => { refreshReview(); openReview(); },
+});
+setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 
 listen<BgLogHealthEvent>("bglog-health", (e) => {

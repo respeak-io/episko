@@ -177,7 +177,7 @@ function ribbonHtml(ribbon: RibbonDay[], range: number, repo: boolean): string {
 // stamp and outruns the window whenever you were last here longer ago than the ribbon reaches.
 export function sinceBand(
   f: SinceFacts, lines: BandLine[], ribbon: RibbonDay[], range: number,
-  tier: ProjectTier, known: boolean, offer: number,
+  tier: ProjectTier, known: boolean, offer: number, team: { user: string; usd: number }[] = [],
 ): string {
   const repo = known && tier !== "none";
   // Four wordings, never interchangeable: no stamp at all, a stamp older than anything read,
@@ -195,7 +195,10 @@ export function sinceBand(
   const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`);
   const figs = (repo ? fig(String(f.commits), plural(f.commits, "commit")) : "")
     + fig(String(f.sessions), plural(f.sessions, "session"))
-    + fig(f.spend > 0 ? esc(uUsd2(f.spend)) : `<span class="dim">—</span>`, "spend")
+    + fig(f.spend > 0 ? esc(uUsd2(f.spend)) : `<span class="dim">—</span>`, team.length ? "your spend" : "spend")
+    // With teammates on the sync server, the project's figure is everyone's, and says whose.
+    + (team.length ? fig(esc(uUsd2(f.spend + team.reduce((n, t) => n + t.usd, 0))), "project spend",
+      esc([...(f.spend > 0 ? [`you ${uUsd2(f.spend)}`] : []), ...team.map((t) => `${t.user} ${uUsd2(t.usd)}`)].join(" · "))) : "")
     + (repo ? fig(String(f.authors.length), plural(f.authors.length, "contributor"), whoText(f.authors)) : "");
   // Only when there is a gap with something in it: with no stamp, a stamp older than the
   // window, or nothing since the last visit, there is nothing left to catch up on.

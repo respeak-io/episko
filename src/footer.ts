@@ -5,7 +5,7 @@
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { closeServersPop } from "./serversui";
 import { toggleDbg } from "./debug";
-import { esc, fmtMb, fmtUntil } from "./format";
+import { esc, fmtMb, fmtUntil, uUsd2 } from "./format";
 import { abbr } from "./phase";
 import { forecastWin, type Forecast } from "./rl";
 import { refreshScopedLimits } from "./rlprobe";
@@ -23,6 +23,7 @@ import {
 } from "./state";
 import { providerAdapter } from "./providers";
 import { dayDetail, daySpend, dayTotal, todayKey } from "./usage";
+import { spendByMachine } from "./synclink";
 
 // Owned by main.ts: the colour popover (project rows) and putting a pane on the stage.
 let closeColorPop: () => void = () => {};
@@ -34,6 +35,10 @@ export function renderFoot() {
   const total = dayTotal(todayKey());
   $("fSessions").textContent = String(sessions.size);
   $("fCost").textContent = "$" + total.toFixed(2);
+  const from = spendByMachine([todayKey()]);
+  $("fCostSeg").title = from.some((r) => !r.self)
+    ? `Today across your machines: ${from.map((r) => `${r.label} ${uUsd2(r.usd)}`).join(" · ")} · click for detail`
+    : "Today's spend · click for the split by project and session";
   const limits = selectedLimits();
   const one = limits?.windows[0]; const two = limits?.windows[1];
   $("fLimitOwner").textContent = limits ? `${limits.label} limits` : "limits";
@@ -163,7 +168,7 @@ export function closeUsagePop() { $("usagePop").classList.remove("show"); }
 function renderCostPop() {
   const live = new Set([...sessions.values()].map((s) => s.id));
   const day = todayKey();
-  const html = costPopHtml(daySpend({ [day]: dayDetail(day) }, day, dayTotal(day)), live);
+  const html = costPopHtml(daySpend({ [day]: dayDetail(day) }, day, dayTotal(day)), live, spendByMachine([day]));
   if (html === lastCostPop) return;
   lastCostPop = html;
   $("costPop").innerHTML = html;

@@ -41,7 +41,7 @@ import {
   cmpBase, setCmpBase as setCmpBaseState,
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   titlePrefs, setTitlePrefs as setTitlePrefsState,
-  shareByProject, setShareMode, type ShareMode,
+  shareByProject, setShareMode, shareModeOf, type ShareMode,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
@@ -68,6 +68,7 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
+import { projectIdOf, publishDigest, publishShare, status as syncStatus } from "./synclink";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -415,12 +416,39 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
 // and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
 // dependency reads are a cache of their own, which the same switch has to drop too.
-export function setProjectShareMode(colorKey: string, m: ShareMode) {
+export function setProjectShareMode(colorKey: string, m: ShareMode, by?: string) {
+  if (by !== undefined && shareModeOf(colorKey) === "off") return;
+  if (by !== undefined && shareModeOf(colorKey) === m) return;
   setShareMode(colorKey, m);
   localStorage.setItem("cc-episko-share", JSON.stringify(shareByProject));
-  toast(m === "git" ? `${basename(colorKey)} shares through git`
-    : m === "server" ? `${basename(colorKey)} shares through the sync server; nothing goes in the repo`
+  const pid = projectIdOf(colorKey);
+  // Git or server is the team's choice and is published; Nowhere is yours; `by` is one arriving.
+  if (by === undefined && m !== "off" && pid) publishShare(pid, m);
+  const who = by ? `${by} switched ` : "";
+  toast(m === "git" ? `${who}${basename(colorKey)} shares through git`
+    : m === "server" ? `${who}${basename(colorKey)} shares through the sync server; nothing goes in the repo`
     : `${basename(colorKey)} shares nothing`);
+  renderAll();
+}
+
+/** Server mode's clean-up: every committed work-log line goes to the server, then the file goes. */
+export async function moveWorkLogToServer(colorKey: string): Promise<void> {
+  const pid = projectIdOf(colorKey);
+  if (!pid || !syncStatus.connected) { toast("Connect to the sync server first"); return; }
+  const lines = await invoke<Record<string, string>>("read_digest", { root: colorKey }).catch(() => ({} as Record<string, string>));
+  const n = Object.keys(lines).length;
+  const ok = await ask(`${n ? `${n} day${n === 1 ? "" : "s"} of .episko/digest.md go to the sync server, then the` : "The"} file is deleted `
+    + "and the deletion committed on the branch this checkout is on.\n\n"
+    + "Only that file goes into the commit: anything you have staged stays staged. Push it when you are ready.",
+    { title: `Move ${basename(colorKey)}'s work log to the server?`, kind: "warning", okLabel: "Move and commit", cancelLabel: "Keep the file" });
+  if (!ok) return;
+  for (const [day, line] of Object.entries(lines)) if (line) publishDigest(pid, day, line, null);
+  if (shareModeOf(colorKey) !== "server") setProjectShareMode(colorKey, "server");
+  try {
+    const committed = await invoke<boolean>("commit_digest_removal", { root: colorKey });
+    toast(committed ? "Work log moved; the deletion is committed, push when ready" : "Work log moved; git never tracked the file");
+  } catch (e) { toast(`The work log moved, but the commit failed: ${e}`); }
+  renderAll();
 }
 
 export function setProjectGhAccount(colorKey: string, login: string | null) {

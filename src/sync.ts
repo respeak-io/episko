@@ -37,7 +37,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // Sync's own bookkeeping, and what it received: never sent back.
   "cc-usage-peers": "local", "cc-detail-peers": "local", "cc-sync-stamps": "local",
   "cc-sync-dirty": "local", "cc-sync-sent": "local", "cc-sync-limits": "local", "cc-sync-seed": "local",
-  "cc-sync-roster": "local", "cc-proj-ids": "local", "cc-team-notes": "local", "cc-digest-no": "local", "cc-team-claims": "local",
+  "cc-sync-roster": "local", "cc-sync-devices": "local", "cc-sync-pending": "local", "cc-sync-exclude": "local", "cc-proj-ids": "local", "cc-team-notes": "local", "cc-digest-no": "local", "cc-team-claims": "local",
   // A cache of what each project's own site declares: every machine probes it for itself.
   "cc-icons": "local",
 };
@@ -70,10 +70,10 @@ export interface PrefOut { key: string; value: string }
 export interface PrefIn { key: string; value: string | null }
 
 /** The one payload builder for prefs. It reads only through `get`, and only `pref` keys. */
-export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
+export function prefOutbox(get: (key: string) => string | null, excluded: ReadonlySet<string> = new Set()): PrefOut[] {
   const out: PrefOut[] = [];
   for (const [key, cls] of Object.entries(SYNC_KEYS)) {
-    if (cls !== "pref") continue;
+    if (cls !== "pref" || excluded.has(key)) continue;
     const value = get(key);
     if (value !== null) out.push({ key, value });
   }
@@ -81,8 +81,9 @@ export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
 }
 
 /** An incoming pref to write, or null. A key we would not send is a key we will not take. */
-export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string): PrefIn | null {
-  if (ev.stream !== "prefs" || ev.device === self || syncClass(ev.key) !== "pref") return null;
+/** `excluded` is the keys kept to this machine (`cc-sync-exclude`): neither sent nor taken. */
+export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string, excluded: ReadonlySet<string> = new Set()): PrefIn | null {
+  if (ev.stream !== "prefs" || ev.device === self || syncClass(ev.key) !== "pref" || excluded.has(ev.key)) return null;
   if (!wins(ev, held)) return null;
   if (ev.payload === null) return { key: ev.key, value: null };
   if (typeof ev.payload !== "string") return null;
@@ -327,4 +328,184 @@ export function parseHeaders(text: string): { headers: [string, string][]; error
   }
   if (headers.length > MAX_HEADERS) return { headers: [], error: `at most ${MAX_HEADERS} headers` };
   return { headers, error: null };
+}
+
+// ---------- who is who: the server names every machine at welcome ----------
+
+/** `user` is the name the machine was invited under: one name is one person's settings and spend. */
+export interface DeviceInfo { user: string; device: string; label: string }
+
+export function narrowDevices(v: unknown): DeviceInfo[] {
+  if (!Array.isArray(v)) return [];
+  const out: DeviceInfo[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== "object") continue;
+    const o = x as Record<string, unknown>;
+    if (typeof o.device !== "string" || !o.device) continue;
+    out.push({
+      device: o.device.slice(0, 80),
+      user: typeof o.user === "string" ? o.user.slice(0, 80) : "",
+      label: typeof o.label === "string" ? o.label.slice(0, 80) : "",
+    });
+  }
+  return out;
+}
+
+/** What a device is called on screen; one this machine never heard named keeps a short id. */
+export function deviceName(devices: DeviceInfo[], id: string, self: string): string {
+  if (id === self) return "this machine";
+  const d = devices.find((x) => x.device === id);
+  return d?.label || `machine ${id.slice(0, 6)}`;
+}
+
+export interface UserDevices { user: string; mine: boolean; devices: DeviceInfo[] }
+/** Your machines first (this one leading), then each teammate's, grouped by user. */
+export function devicesByUser(devices: DeviceInfo[], selfUser: string, self: string): UserDevices[] {
+  const by = new Map<string, DeviceInfo[]>();
+  for (const d of devices) {
+    const list = by.get(d.user) ?? [];
+    list.push(d);
+    by.set(d.user, list);
+  }
+  return [...by.entries()]
+    .map(([user, ds]) => ({ user, mine: user === selfUser, devices: [...ds].sort((a, b) => Number(b.device === self) - Number(a.device === self)) }))
+    .sort((a, b) => Number(b.mine) - Number(a.mine) || a.user.localeCompare(b.user));
+}
+
+// ---------- where a day's spend came from ----------
+
+export interface SpendSource { device: string; label: string; usd: number; self: boolean }
+
+/** The days' spend per machine, this one included; only rows that spent anything, largest first. */
+export function spendSources(own: Record<string, number>, peers: Peers, days: string[], devices: DeviceInfo[], self: string): SpendSource[] {
+  const sum = (row: Record<string, number> | undefined) => days.reduce((n, d) => n + (row?.[d] ?? 0), 0);
+  const rows: SpendSource[] = [{ device: self, label: deviceName(devices, self, self), usd: sum(own), self: true }];
+  for (const [device, row] of Object.entries(peers)) {
+    if (device !== self) rows.push({ device, label: deviceName(devices, device, self), usd: sum(row), self: false });
+  }
+  return rows.filter((r) => r.usd > 0.005).sort((a, b) => b.usd - a.usd);
+}
+
+// ---------- what a synced preference changed, in words ----------
+
+export const PREF_LABEL: Readonly<Record<string, string>> = {
+  "cc-keys": "Keyboard shortcuts", "cc-sound": "Sounds", "cc-motion": "Motion and effects", "cc-foot": "Status bar",
+  "cc-title": "Session titles", "cc-term-engine": "Terminal engine", "cc-term-font": "Terminal font size",
+  "cc-term-split": "Shell beside a session", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout",
+  "cc-scrollback": "Scrollback", "cc-sort": "Sidebar sort", "cc-fleet-sort": "Fleet sort", "cc-fleet-layout": "Fleet layout",
+  "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-peek": "Hover to reveal",
+  "cc-outline": "Conversation outline", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
+};
+export const prefLabel = (key: string) => PREF_LABEL[key] ?? key.replace(/^cc-/, "");
+
+export interface DiffLine { path: string; from: string; to: string }
+const shown = (v: unknown): string => {
+  if (v === undefined) return "—";
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  return s.length > 48 ? s.slice(0, 47) + "…" : s;
+};
+function leaves(v: unknown, path: string, out: Map<string, unknown>, depth: number) {
+  if (v && typeof v === "object" && !Array.isArray(v) && depth < 3) {
+    for (const [k, x] of Object.entries(v)) leaves(x, path ? `${path}.${k}` : k, out, depth + 1);
+  } else out.set(path, v);
+}
+/** The fields a remote value changed, at most `max` of them; `more` counts the rest. */
+export function prefDiff(before: string | null, after: string | null, max = 8): { lines: DiffLine[]; more: number } {
+  const parse = (s: string | null): unknown => (s === null ? undefined : /^[[{]/.test(s) ? safeParse(s) ?? s : s);
+  const ma = new Map<string, unknown>(), mb = new Map<string, unknown>();
+  leaves(parse(before), "", ma, 0);
+  leaves(parse(after), "", mb, 0);
+  const lines: DiffLine[] = [];
+  for (const k of [...new Set([...ma.keys(), ...mb.keys()])].sort()) {
+    const x = ma.get(k), y = mb.get(k);
+    if (JSON.stringify(x) !== JSON.stringify(y)) lines.push({ path: k, from: shown(x), to: shown(y) });
+  }
+  return { lines: lines.slice(0, max), more: Math.max(0, lines.length - max) };
+}
+
+/** A preference another machine changed, held until you say whether it applies here. */
+export interface PendingPref { key: string; value: string | null; at: number; device: string; lines: DiffLine[]; more: number }
+export function readPending(raw: string | null): Record<string, PendingPref> {
+  const v = safeParse<Record<string, unknown>>(raw);
+  const out: Record<string, PendingPref> = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [k, x] of Object.entries(v)) {
+    const p = x as Partial<PendingPref> | null;
+    if (!p || typeof p !== "object" || p.key !== k || syncClass(k) !== "pref") continue;
+    if (typeof p.at !== "number" || typeof p.device !== "string" || !Array.isArray(p.lines)) continue;
+    if (p.value !== null && typeof p.value !== "string") continue;
+    out[k] = { key: k, value: p.value ?? null, at: p.at, device: p.device, lines: p.lines, more: typeof p.more === "number" ? p.more : 0 };
+  }
+  return out;
+}
+
+// ---------- what each stream carries, and who it reaches ----------
+
+/** `you` reaches only machines invited under your user name; `team` reaches everyone on the server. */
+export const STREAM_INFO: Readonly<Record<Stream, { label: string; scope: "you" | "team"; what: string }>> = {
+  prefs: { label: "Preferences", scope: "you", what: "display and keyboard settings; never permission modes, trust or tasks" },
+  usage: { label: "Spend", scope: "you", what: "each machine's daily total, summed on read" },
+  detail: { label: "Spend split", scope: "you", what: "each day by model and project; never session titles" },
+  limits: { label: "Limits", scope: "you", what: "the freshest rate-limit reading" },
+  roster: { label: "Projects", scope: "you", what: "favourites, order, groups, colours, icons, agent, gh account, sharing" },
+  notes: { label: "Notes and work log", scope: "team", what: "shared notes, each day's project line, the sharing channel, and each person's spend on a shared project" },
+  claims: { label: "Claims", scope: "team", what: "who dispatched at an issue or PR, while that session runs" },
+};
+
+// ---------- the work log on the server: which commits a line covers ----------
+
+// A line knows which commits it summarised, so a machine holding commits it missed can redo it.
+export interface DigestLine { line: string; covers: string[] | null }
+export const COVER_MAX = 400;
+const shaKey = (sha: string) => sha.slice(0, 12);
+
+/** A legacy plain string covers an unknown set, and is trusted as it stands. */
+export function narrowDigest(v: unknown): DigestLine | null {
+  if (typeof v === "string") return v.trim() ? { line: v.slice(0, 2000), covers: null } : null;
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.line !== "string" || !o.line.trim()) return null;
+  const covers = Array.isArray(o.covers)
+    ? o.covers.filter((s): s is string => typeof s === "string").map(shaKey).slice(0, COVER_MAX) : null;
+  return { line: o.line.slice(0, 2000), covers };
+}
+
+/** True when this machine has commits that day the server's line never saw. */
+export function digestMisses(d: DigestLine | undefined, shas: string[]): boolean {
+  if (!d || !d.covers) return false;
+  const have = new Set(d.covers);
+  return shas.some((s) => !have.has(shaKey(s)));
+}
+
+/** What a redone line covers: everything the old one did, plus what this machine summarised. */
+export function digestCover(prev: DigestLine | undefined, shas: string[]): string[] {
+  return [...new Set([...(prev?.covers ?? []), ...shas.map(shaKey)])].slice(0, COVER_MAX);
+}
+
+/** A project's sharing channel as the team set it: `share|<pid>` on the notes stream. */
+export const narrowShare = (v: unknown): "git" | "server" | null => (v === "git" || v === "server" ? v : null);
+
+// ---------- a shared project's spend, per person ----------
+
+// `spend|<pid>|<day>|<device>` on the team stream: one cell per machine, so nobody overwrites anybody.
+export interface TeamSpend { usd: number; user: string }
+export const spendKey = (pid: string, day: string, device: string) => `spend|${pid}|${day}|${device}`;
+export function narrowSpend(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Every teammate's spend on a project over `days`, per person, largest first; your own machines excluded. */
+export function teamSpend(cells: Record<string, unknown>, pid: string, days: string[], selfUser: string): { user: string; usd: number }[] {
+  const want = new Set(days), by = new Map<string, number>();
+  const pre = `spend|${pid}|`;
+  for (const [k, v] of Object.entries(cells)) {
+    if (!k.startsWith(pre)) continue;
+    const day = k.slice(pre.length).split("|")[0];
+    const c = v as Partial<TeamSpend> | null;
+    if (!want.has(day) || !c || typeof c.user !== "string" || c.user === selfUser) continue;
+    const usd = narrowSpend(c.usd);
+    if (usd) by.set(c.user, (by.get(c.user) ?? 0) + usd);
+  }
+  return [...by.entries()].map(([user, usd]) => ({ user, usd })).sort((a, b) => b.usd - a.usd);
 }

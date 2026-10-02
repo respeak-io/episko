@@ -20,6 +20,7 @@ import {
   setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
   type SortMode, type WtGroup,
+  FAVORITES, projOrder, shareModeOf, type ShareMode,
 } from "./state";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -66,9 +67,13 @@ import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
-import { health as syncHealthNow, prefsArrived, sentLog, status as syncStatus } from "./synclink";
-import { syncPanelHtml, syncSummary, type SyncDraft } from "./syncview";
-import { parseHeaders } from "./sync";
+import {
+  activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
+  onlineDevices, pending as syncPending, prefsArrived, projectIdOf, requestInvite, serverDigest, serverNotes, setExcluded,
+  status as syncStatus, teamShare,
+} from "./synclink";
+import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
+import { deviceName, devicesByUser, parseHeaders } from "./sync";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -115,10 +120,14 @@ export interface SettingsHost {
   reloadUi: () => void;
   vitalsDrift: () => VitalsDrift | null;
   // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
-  syncPair: (url: string, code: string, label: string, headers: [string, string][]) => Promise<void>;
+  syncPair: (url: string, code: string, label: string, user: string, headers: [string, string][]) => Promise<void>;
+  syncReview: () => void;
   syncSetHeaders: (headers: [string, string][]) => Promise<void>;
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
+  syncShare: (colorKey: string, m: ShareMode) => void;
+  syncMoveLog: (colorKey: string) => Promise<void>;
+  syncHasDigest: (root: string) => Promise<boolean>;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -163,7 +172,8 @@ let host: SettingsHost = {
   vitalsDrift: () => null,
   openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
-  syncSetHeaders: () => Promise.resolve(),
+  syncSetHeaders: () => Promise.resolve(), syncShare: () => {}, syncMoveLog: () => Promise.resolve(),
+  syncHasDigest: () => Promise.resolve(false), syncReview: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -1424,7 +1434,13 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
     case "sync":
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
-      panel = syncPanelHtml(syncStatus, syncHealthNow(), syncDraft, syncBusy, syncErr, prefsArrived, sentLog, Date.now());
+      panel = syncPanelHtml({
+        st: syncStatus, h: syncHealthNow(), draft: syncDraft, busy: syncBusy, err: syncErr, prefsArrived,
+        users: devicesByUser(syncDevices, syncStatus.user, syncStatus.device), online: onlineDevices(),
+        activity: syncActivity, pending: Object.values(syncPending), excluded: syncExcluded, invite: syncInvite,
+        nameOf: (d) => deviceName(syncDevices, d, syncStatus.device),
+        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(),
+      });
       always = true;
       break;
     case "wtpreview": ctl = fold(c.summary!()); panel = renderWtPreview(c.active()); break;
@@ -1571,7 +1587,7 @@ function asksPreview(): string {
 
 // ---- Settings › Sync ----
 // The form's text survives a repaint here, not in the DOM: a status change repaints the panel.
-const syncDraft: SyncDraft = { url: "", code: "", label: "", headers: "" };
+const syncDraft: SyncDraft = { url: "", code: "", user: "", label: "", headers: "" };
 let syncBusy = false, syncErr: string | null = null;
 
 function applySyncSetting(verb: string) {
@@ -1581,7 +1597,7 @@ function applySyncSetting(verb: string) {
     if (h.error) { syncErr = h.error; renderSettings(); return; }
     syncBusy = true; syncErr = null; renderSettings();
     const done = verb === "pair"
-      ? host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label, h.headers).then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
+      ? host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label, syncDraft.user, h.headers).then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
       : host.syncSetHeaders(h.headers).then(() => toast(h.headers.length ? "Headers saved; reconnecting" : "No extra headers; reconnecting"));
     done
       .then(() => { syncDraft.headers = ""; })
@@ -1596,6 +1612,39 @@ function applySyncSetting(verb: string) {
       .finally(() => renderSettings());
   } else if (verb === "reconnect") host.syncReconnect();
   else if (verb === "reload") void host.reloadUi();
+  else if (verb === "review") host.syncReview();
+  else if (verb === "invite") requestInvite();
+  else if (verb.startsWith("excl|")) {
+    const [, key, keep] = verb.split("|");
+    setExcluded(key, keep === "1");
+    renderSettings();
+  }
+  else if (verb.startsWith("share|")) {
+    const [, m, ...rest] = verb.split("|");
+    host.syncShare(rest.join("|"), m as ShareMode);
+    renderSettings();
+  } else if (verb.startsWith("movelog|")) {
+    const key = verb.slice(8);
+    void host.syncMoveLog(key).then(() => { digestFiles.delete(key); renderSettings(); });
+  }
+}
+
+// Whether each project still has .episko/digest.md, asked once per key and kept until it moves.
+const digestFiles = new Map<string, boolean>();
+function syncProjects(): ProjectSyncRow[] {
+  const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
+  for (const k of keys) {
+    if (digestFiles.has(k)) continue;
+    digestFiles.set(k, false);
+    void host.syncHasDigest(k).then((y) => { if (y) { digestFiles.set(k, true); repaintSync(); } }).catch(() => {});
+  }
+  return keys.map((key) => {
+    const id = projectIdOf(key);
+    return {
+      key, name: basename(key), id, mode: shareModeOf(key), team: teamShare(id),
+      lines: Object.keys(serverDigest(id)).length, notes: serverNotes(id).length, digestFile: digestFiles.get(key) ?? false,
+    };
+  });
 }
 
 /** A sync status change, repainted unless it would take a field out from under the caret. */
