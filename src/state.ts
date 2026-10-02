@@ -241,6 +241,9 @@ export function setShareMode(colorKey: string, m: ShareMode) {
 // Runtime only, never persisted: gh's state, and a stale copy would offer a logged-out account.
 export let ghLogins: GhAccount[] = [];
 export function setGhLogins(a: GhAccount[]) { ghLogins = a; }
+// The installed gh's version when it is too old to list accounts, else null.
+export let ghOutdated: string | null = null;
+export function setGhOutdated(v: string | null) { ghOutdated = v; }
 // Ignores project overrides but keeps a launch's fallback, so the row names what would run.
 export function defaultAgentDef(): AgentCli { return pickAgent("", defaultAgent, {}, availAgents); }
 export let termEngine: Engine = (localStorage.getItem("cc-term-engine") as Engine) || "embedded";

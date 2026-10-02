@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **The GitHub account picker no longer vanishes without a word on an older gh.** gh before
+  2.81.0 cannot list its accounts, so the picker was simply missing. The dashboard now says
+  which gh you have and how to update it, where the picker would be.
+! **"Signed in as …, which cannot see this repository" names the right account.** It named
+  whichever account was active when Episko started, even after `gh auth switch` changed it.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,

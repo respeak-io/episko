@@ -43,19 +43,17 @@ struct Cached { at: Instant, result: GhResult }
 
 static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None); // keyed by repo root
 
-/// The active account's login, cached per process rather than per repo: `gh api user`
-/// answers the same in every folder. A project pinned to another account never reaches
-/// this cache; the pin itself is the answer (`viewer_login`). Claims compare against it.
-static VIEWER: Mutex<Option<Option<String>>> = Mutex::new(None);
+/// The active account's login, shared across repos (`gh api user` answers the same in every
+/// folder) but only for TTL: `gh auth switch` is global, and a name kept past it blamed the
+/// wrong account. A pinned project never reaches this cache; the pin is the answer.
+static VIEWER: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
 
 fn viewer_login(root: &str, account: Option<&str>) -> Option<String> {
     if let Some(login) = account {
         return Some(login.to_string());
     }
-    if let Ok(g) = VIEWER.lock() {
-        if let Some(v) = g.as_ref() {
-            return v.clone();
-        }
+    if let Some(v) = fresh_viewer() {
+        return v;
     }
     let v = gh(root, None, &["api", "user", "--jq", ".login"])
         .ok()
@@ -63,9 +61,15 @@ fn viewer_login(root: &str, account: Option<&str>) -> Option<String> {
         .filter(|s| !s.is_empty());
     // A failure is cached too: an unauthenticated gh keeps failing, and a retry is a process.
     if let Ok(mut g) = VIEWER.lock() {
-        *g = Some(v.clone());
+        *g = Some((Instant::now(), v.clone()));
     }
     v
+}
+
+/// `Some(answer)` while the last probe is younger than TTL, `None` once it is due again.
+fn fresh_viewer() -> Option<Option<String>> {
+    let g = VIEWER.lock().ok()?;
+    g.as_ref().filter(|(at, _)| at.elapsed() < TTL).map(|(_, v)| v.clone())
 }
 
 /// One `gh` call, run as `account` when the project names one. `GH_TOKEN` is the only
@@ -137,12 +141,11 @@ pub(crate) fn classify(err: &str, who: Option<&str>) -> String {
     err.to_string()
 }
 
-/// The login to name in a failure: the pin, else the active account's last answer. Never
-/// a fresh probe; this runs on a path that already failed, and a second call can hang.
+/// The login to name in a failure: the pin, else the active account's answer while recent.
+/// Never a fresh probe (this path already failed, and a second call can hang); a stale name
+/// falls back to the unnamed message rather than blaming an account the call never ran as.
 pub(crate) fn who_for(account: Option<&str>) -> Option<String> {
-    account
-        .map(str::to_string)
-        .or_else(|| VIEWER.lock().ok().and_then(|g| g.clone().flatten()))
+    account.map(str::to_string).or_else(|| fresh_viewer().flatten())
 }
 
 // ---------- which of your accounts ----------
@@ -154,13 +157,32 @@ pub(crate) struct GhAccount {
     pub active: bool, // gh's default when nothing is pinned; the picker marks it as such
 }
 
-static ACCOUNT_CACHE: Mutex<Option<(Instant, Vec<GhAccount>)>> = Mutex::new(None);
+/// The account list, and why it is empty when it should not be.
+#[derive(serde::Serialize, Clone, Debug, Default, PartialEq)]
+pub(crate) struct GhAccounts {
+    pub accounts: Vec<GhAccount>,
+    /// The installed gh's version when it predates `auth status --json` (gh 2.81.0): such a
+    /// gh hides the picker from everyone with two accounts, so the dashboard says so.
+    pub outdated: Option<String>,
+}
+
+static ACCOUNT_CACHE: Mutex<Option<(Instant, GhAccounts)>> = Mutex::new(None);
+
+fn gh_quiet(args: &[&str]) -> Option<std::process::Output> {
+    sys_command("gh")
+        .env("PATH", augmented_path())
+        .args(args)
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .ok()
+}
 
 /// Every github.com account `gh` is logged in to (github.com only: `parse_remote` mints
 /// slugs for nothing else). `gh auth status` tests each account against the API, so this
 /// is cached, but for TTL rather than per process so a `gh auth login` shows up without a restart.
 #[tauri::command]
-pub(crate) async fn gh_accounts() -> Vec<GhAccount> {
+pub(crate) async fn gh_accounts() -> GhAccounts {
     tauri::async_runtime::spawn_blocking(|| {
         if let Ok(g) = ACCOUNT_CACHE.lock() {
             if let Some((at, v)) = g.as_ref() {
@@ -169,25 +191,40 @@ pub(crate) async fn gh_accounts() -> Vec<GhAccount> {
                 }
             }
         }
-        let out = sys_command("gh")
-            .env("PATH", augmented_path())
-            .args(["auth", "status", "--json", "hosts"])
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("GH_NO_UPDATE_NOTIFIER", "1")
-            .output()
-            .ok();
         // No gh means no accounts: the picker is simply absent, never an error dialog.
-        let list = out
-            .filter(|o| o.status.success())
-            .map(|o| parse_accounts(&String::from_utf8_lossy(&o.stdout)))
-            .unwrap_or_default();
+        let answer = match gh_quiet(&["auth", "status", "--json", "hosts"]) {
+            Some(o) if o.status.success() => GhAccounts {
+                accounts: parse_accounts(&String::from_utf8_lossy(&o.stdout)),
+                outdated: None,
+            },
+            Some(o) if rejects_json(&String::from_utf8_lossy(&o.stderr)) => GhAccounts {
+                accounts: vec![],
+                outdated: Some(
+                    gh_quiet(&["--version"])
+                        .and_then(|v| parse_gh_version(&String::from_utf8_lossy(&v.stdout)))
+                        .unwrap_or_else(|| "?".into()),
+                ),
+            },
+            _ => GhAccounts::default(),
+        };
         if let Ok(mut g) = ACCOUNT_CACHE.lock() {
-            *g = Some((Instant::now(), list.clone()));
+            *g = Some((Instant::now(), answer.clone()));
         }
-        list
+        answer
     })
     .await
     .unwrap_or_default()
+}
+
+/// gh before 2.81.0 answers `auth status --json` with `unknown flag: --json`.
+fn rejects_json(stderr: &str) -> bool {
+    stderr.to_lowercase().contains("unknown flag: --json")
+}
+
+/// `gh version 2.76.1 (2025-07-23)` → `2.76.1`.
+fn parse_gh_version(out: &str) -> Option<String> {
+    let rest = out.lines().next()?.trim().strip_prefix("gh version ")?;
+    rest.split_whitespace().next().map(str::to_string)
 }
 
 /// The github.com half of `gh auth status --json hosts`:
@@ -1310,12 +1347,25 @@ mod tests {
         assert!(parse_accounts(json).is_empty());
     }
 
-    /// No gh, a gh too old for `--json`, or a blank login all mean "no picker", never an error.
+    /// Unparseable output or a blank login means "no picker", never an error.
     #[test]
     fn unreadable_account_output_is_no_accounts_rather_than_a_panic() {
         assert!(parse_accounts("").is_empty());
         assert!(parse_accounts("not json at all").is_empty());
         assert!(parse_accounts(r#"{"hosts":{"github.com":[{"active":true,"login":""}]}}"#).is_empty());
         assert!(!parse_accounts(r#"{"hosts":{"github.com":[{"login":"octocat"}]}}"#)[0].active);
+    }
+
+    /// Told apart from "no gh at all", or the picker just vanishes with nothing said.
+    #[test]
+    fn a_gh_too_old_for_json_is_recognised_and_its_version_read() {
+        assert!(rejects_json("unknown flag: --json\n\nUsage:  gh auth status [flags]"));
+        assert!(!rejects_json("You are not logged into any GitHub hosts."));
+        assert_eq!(
+            parse_gh_version("gh version 2.76.1 (2025-07-23)\nhttps://github.com/cli/cli/releases/tag/v2.76.1\n"),
+            Some("2.76.1".into())
+        );
+        assert_eq!(parse_gh_version("something else"), None);
+        assert_eq!(parse_gh_version(""), None);
     }
 }

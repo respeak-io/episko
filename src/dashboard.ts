@@ -69,7 +69,7 @@ import {
   leaseFor, projectIdOf, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
 } from "./synclink";
 import {
-  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
+  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins, ghOutdated,
   permissionModeFor, removingWt, sessions, setActiveId, setMirror, shareModeOf,
 } from "./state";
 import { providerPermissionMode } from "./providers";
@@ -793,7 +793,7 @@ export function renderDash(): void {
     + (loading ? cardSkeleton(2) : checkoutCard(syncNow(), factsKnown, heads, liveIn, statFor))
     + projectFoot(effectiveAgent(root()).label,
       tier === "github" ? ghWho(ghAccountFor(root()), ghLogins).login ?? "" : "", claimsOn(),
-      ghPickable(ghLogins)));
+      ghPickable(ghLogins), tier === "github" ? ghOutdated : null));
 
   // ---- column B: what moved since you were last here, the working set, what landed ----
   const f = bandFacts(days, sinceAt, now, isBotAuthor);
@@ -861,7 +861,7 @@ export function renderDash(): void {
   paintNext(queueCard(queueQuery.trim() ? plainRows(shown) : foldQueue(shown, queueOpen),
       queueTally(found), queueFilter, queueQuery, gh.available || !ghLoading, !depLoading)
     + (tier === "github" && !gh.available && gh.reason
-      ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
+      ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins), ghOutdated) : "")
     + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");

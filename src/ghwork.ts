@@ -50,6 +50,22 @@ export function ghWho(pinned: string | null, accounts: GhAccount[]): GhWho {
 
 export const ghPickable = (accounts: GhAccount[]): boolean => accounts.length > 1;
 
+/// What `gh_accounts` returns: `outdated` is the installed version when gh predates
+/// `auth status --json`, which leaves `accounts` empty however many you have.
+export interface GhAccounts { accounts: GhAccount[]; outdated: string | null }
+
+export const GH_ACCOUNTS_MIN = "2.81.0";
+
+// Said only where the picker would be, so a one-account user with an old gh is never nagged.
+export function ghOutdatedText(version: string, mac: boolean): { short: string; why: string; how: string } {
+  const have = version === "?" ? "This gh" : `gh ${version}`;
+  return {
+    short: `${have} · too old to pick accounts`,
+    why: `${have} cannot list your accounts, so there is no account picker; gh ${GH_ACCOUNTS_MIN} or later can.`,
+    how: mac ? "brew upgrade gh" : "winget upgrade GitHub.cli",
+  };
+}
+
 // ---------- ordering ----------
 
 // "How recent" is the only ordering that survives sixty open issues.

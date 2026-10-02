@@ -2721,6 +2721,7 @@ select.in-ctl { cursor: pointer; }
 .pfc { font-size: 10.5px; color: var(--muted); padding: 3px 8px; border-radius: 6px; background: var(--surface); border: 1px solid transparent; }
 /* A chip that IS its own control says so on hover; the inert ones never light up. */
 .pfc-b { cursor: pointer; font-family: var(--font-ui); }
+.pfc-warn { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 28%, transparent); }
 .pfc-b:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 /* the checkout section's own pieces */
 .brpick { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 10px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--hair-strong); cursor: pointer; color: var(--text); }
