@@ -394,7 +394,7 @@ export const PREF_LABEL: Readonly<Record<string, string>> = {
   "cc-term-split": "Shell beside a session", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout",
   "cc-scrollback": "Scrollback", "cc-sort": "Sidebar sort", "cc-fleet-sort": "Fleet sort", "cc-fleet-layout": "Fleet layout",
   "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-peek": "Hover to reveal",
-  "cc-outline": "Conversation outline", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
+  "cc-outline": "Conversation outline", "cc-markdown": "Markdown reader", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
 };
 export const prefLabel = (key: string) => PREF_LABEL[key] ?? key.replace(/^cc-/, "");
 
