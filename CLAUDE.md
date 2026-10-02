@@ -203,7 +203,7 @@ And the things that hold however the files are arranged:
   `activeId`, so the header, inspector, auto-fetch and ✕ stay on the session you are reading.
   Closing the anchor un-splits its shells rather than killing them. `splitBeside` in ./panes is
   the ONE place that decides split vs. own pane (Settings › Launching; `terminalOther` is the
-  other layout either way); a chain step and an external pane never anchor (`splitAnchorFor`).
+  other layout either way); a task and an external pane never anchor (`splitAnchorFor`).
   `docs/sessions.md`.
 - **Provider adapters normalize; they do not fork the cockpit.** Claude hooks call
   `applyHook`/`applyStatusline`; Codex App Server methods pass through

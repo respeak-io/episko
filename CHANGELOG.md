@@ -43,11 +43,15 @@ Markers: `+` new · `~` changed · `!` fixed
   switches in Settings › Sync, keep a setting to this machine, neither sent nor taken.
 ~ *Move to the server and commit* deletes `.episko/digest.md` and commits just that, leaving
   anything you had staged alone.
+~ **⌘T from a task opens a shell of its own** rather than tiling it beside the run's output.
 ! **The GitHub account picker no longer vanishes without a word on an older gh.** gh before
   2.81.0 cannot list its accounts, so the picker was simply missing. The dashboard now says
   which gh you have and how to update it, where the picker would be.
 ! **"Signed in as …, which cannot see this repository" names the right account.** It named
   whichever account was active when Episko started, even after `gh auth switch` changed it.
+! **A task's address is found when it lives under a path or a `.localhost` name.** A line like
+  `Ready: http://app.localhost:8443/ui/` now lands in the running-servers pill with its path, and a
+  running task's inspector card shows it as a link.
 
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the

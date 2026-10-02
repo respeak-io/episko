@@ -236,10 +236,10 @@ export function splitShells(anchorId: string, all: Iterable<Sess> = sessions.val
   for (const s of all) if (s.splitOf === anchorId) out.push(s);
   return out;
 }
-// Where ⌘T from `s` opens: beside it, or beside the session `s` itself is split from. A chain
-// step is never an anchor (the mosaic is the chain's), nor is an external pane (there is no pane).
+// Where ⌘T from `s` opens: beside it, or beside the session `s` itself is split from. A task
+// is never an anchor (its pane is a run's output, not a workspace), nor an external pane (none).
 export function splitAnchorFor(s: Sess | null | undefined): string | null {
-  if (!s || s.external || s.run?.groupId) return null;
+  if (!s || s.external || s.kind === "task") return null;
   return s.splitOf ?? s.id;
 }
 

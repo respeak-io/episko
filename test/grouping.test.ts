@@ -1189,12 +1189,12 @@ describe("the stage's groups — a run chain or a session with shells beside it"
     expect(splitAnchorFor(sess({ id: "c" }))).toBe("c");
     expect(splitAnchorFor(shell("sh", "c"))).toBe("c");
     expect(splitAnchorFor(shell("sh"))).toBe("sh");
-    expect(splitAnchorFor(taskSess("solo"))).toBe("solo");
   });
 
-  it("never anchors on a chain step, an external pane, or nothing", () => {
-    // The mosaic is the chain's; an external session has no pane to sit beside.
+  it("never anchors on a task, an external pane, or nothing", () => {
+    // A shell split into a run's output read as part of the run; an external session has no pane.
     expect(splitAnchorFor(taskSess("t", {}, { groupId: "g1" }))).toBeNull();
+    expect(splitAnchorFor(taskSess("solo"))).toBeNull();
     expect(splitAnchorFor(sess({ id: "x", external: true }))).toBeNull();
     expect(splitAnchorFor(null)).toBeNull();
   });
