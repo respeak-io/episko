@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Dependencies are current.** Tauri 2.12 and its plugins (the updater among them, to 2.13), with
+  every Rust and JavaScript dependency moved to its latest compatible release.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,
