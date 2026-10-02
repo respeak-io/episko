@@ -423,6 +423,16 @@ describe("a server Episko itself ran (just / VS Code task / npm script)", () => 
     expect(feed(hmr, "http://localhost:5555")).toBe("http://localhost:5555");
   });
 
+  it("latches a *.localhost host with its path, as a reverse proxy announces it", () => {
+    // A just recipe fronting a docker stack: the app lives under /ui/, behind Caddy on 8443.
+    expect(feed(["Ready: http://app.localhost:8443/ui/"])).toBe("http://app.localhost:8443/ui/");
+    expect(feed(["Server ready at http://localhost:5173/ui/."])).toBe("http://localhost:5173/ui/");
+  });
+
+  it("never mistakes a real domain that merely starts with localhost", () => {
+    expect(feed(["Ready: http://localhost.example.com/"])).toBeUndefined();
+  });
+
   it("follows a restart onto a new port", () => {
     expect(feed(["  ➜  Local:   http://localhost:5556/"], "http://localhost:5555"))
       .toBe("http://localhost:5556");

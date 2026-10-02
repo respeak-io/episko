@@ -53,8 +53,9 @@ external app and the switch dims.
 - **One mechanism with run groups.** `stageGroup` holds a run's `groupId` *or* an anchor session's
   own id; `inStageGroup`/`stageKeyOf` (./grouping) answer membership for both, `paintStage`
   (./panes) lays either out, and `#terminals.tiled.split` is the grid variant. `groupMembers`, the
-  sidebar header and the run-only verbs stay run-only. A chain step never anchors (the mosaic is
-  the chain's), nor does an external pane (`splitAnchorFor`).
+  sidebar header and the run-only verbs stay run-only. A task never anchors — a shell tiled
+  into a run's output read as part of the run, and a chain's mosaic is the chain's — nor does an
+  external pane (`splitAnchorFor`).
 - **A split shell is never `activeId`.** `setActive(shell)` redirects to its anchor and focuses the
   tile; a tile click is `focusTile`, which moves the ring and the keyboard and nothing else. So the
   header, inspector, auto-fetch, the outline and the ✕ stay on the session being read, and

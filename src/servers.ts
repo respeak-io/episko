@@ -90,14 +90,16 @@ export function bgSentinel(text: string): BgEndSignal | undefined {
 // A server announcing itself (`Local:`, `running on`, `listening`); NOT `Vue DevTools: Open http://…`.
 const ANNOUNCE = /\b(local|listening|running|serving|server|ready|started|available)\b/i;
 
-// Origins only, so vite's `/` and `/__devtools__/` collapse; `0.0.0.0` and `[::]` become localhost.
-function origins(line: string): string[] {
+// Loopback URLs, `*.localhost` included (browsers resolve it locally). `0.0.0.0` and `[::]`
+// become localhost; a path is kept only when asked and not bare `/`, so vite's `/` collapses.
+function localUrls(line: string, keepPath = false): string[] {
   const out: string[] = [];
-  const re = /\bhttps?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\[::\])(?::(\d{1,5}))?/gi;
+  const re = /\bhttps?:\/\/((?:[a-z0-9-]+\.)*localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\[::\])(?![\w.-])(?::(\d{1,5}))?(\/[^\s"'<>`]*)?/gi;
   for (const m of line.matchAll(re)) {
     const scheme = m[0].slice(0, m[0].indexOf(":"));
     const host = /0\.0\.0\.0|\[::\]/.test(m[1]) ? "localhost" : m[1];
-    out.push(m[2] ? `${scheme}://${host}:${m[2]}` : `${scheme}://${host}`);
+    const path = keepPath ? (m[3] ?? "").replace(/[.,;:!?)\]]+$/, "") : "";
+    out.push(`${scheme}://${host}${m[2] ? ":" + m[2] : ""}${path === "/" ? "" : path}`);
   }
   return out;
 }
@@ -108,9 +110,10 @@ export function serverUrl(text: string): string {
   const lines = logLines(text);
   const announced: string[] = [], any: string[] = [];
   for (const l of lines) {
-    const o = origins(l);
+    const said = ANNOUNCE.test(l);
+    const o = localUrls(l, said); // a stray URL's path is a request, not where the app lives
     if (!o.length) continue;
-    (ANNOUNCE.test(l) ? announced : any).push(...o);
+    (said ? announced : any).push(...o);
   }
   const pick = announced.length ? announced : any;
   return pick.length ? pick[pick.length - 1] : "";
@@ -118,7 +121,7 @@ export function serverUrl(text: string): string {
 
 // No any-URL fallback, unlike `serverUrl`: this answer latches, so a stray URL would stick to a row.
 function announcedOn(line: string): string {
-  return ANNOUNCE.test(line) ? (origins(line).pop() ?? "") : "";
+  return ANNOUNCE.test(line) ? (localUrls(line, true).pop() ?? "") : "";
 }
 
 // Folded per line as it streams (`run.tail` is a rolling 40 lines); a later announcement wins.

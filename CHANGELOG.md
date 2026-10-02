@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A task's address is found when it lives under a path or a `.localhost` name.** A line like
+  `Ready: http://app.localhost:8443/ui/` now lands in the running-servers pill with its path, and a
+  running task's inspector card shows it as a link.
+~ **⌘T from a task opens a shell of its own** rather than tiling it beside the run's output.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,

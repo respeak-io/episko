@@ -383,12 +383,15 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   if (s.run) {
     const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      s.run.tail.push(line.trimEnd());
-      // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
-      s.run.url = taskServerUrl(s.run.url, line);
+      if (line.trim()) s.run.tail.push(line.trimEnd());
     }
     if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
+    // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
+    const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
+    s.run.partial = whole.pop()!.slice(-1024);
+    const was = s.run.url;
+    for (const line of whole) s.run.url = taskServerUrl(s.run.url, line);
+    if (s.run.url !== was) renderAll(); // the pill and the task's card both name it
   }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
