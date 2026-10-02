@@ -239,6 +239,22 @@ pub(crate) fn write_digest(root: String, key: String, line: String, create: bool
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
+/// The work log moved to the sync server: the file goes, and `.episko/` too if it is now empty.
+/// Deleting is all this does; committing the deletion stays the user's.
+#[tauri::command]
+pub(crate) fn remove_digest(root: String) -> Result<(), String> {
+    let path = digest_path(&root);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::remove_dir(dir); // refuses a non-empty dir, which is the point
+    }
+    Ok(())
+}
+
 /// One day's sentence, cached per `root` and `key` (`YYYY-MM-DD`). `facts` is titles and
 /// commit subjects only, never transcript bodies; the caller hands over the record that
 /// matches `scope`, since this end cannot tell a private fact from a shared one. `force`
@@ -325,7 +341,7 @@ fn first_sentence(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, first_sentence, parse_digest, prompt_for, render_digest, write_digest, Scope};
+    use super::{cache_key, first_sentence, parse_digest, prompt_for, remove_digest, render_digest, write_digest, Scope};
     use crate::testutil::scratch_dir;
 
     #[test]
@@ -422,6 +438,20 @@ mod tests {
         let text = std::fs::read_to_string(root.join(".episko").join("digest.md")).unwrap();
         assert_eq!(text.matches("## 2026-07-31").count(), 1);
         assert_eq!(parse_digest(&text).get("2026-07-31").map(String::as_str), Some("Better take."));
+    }
+
+    #[test]
+    fn removing_the_work_log_keeps_the_rest_of_episko() {
+        let root = scratch_dir();
+        let root_s = root.to_string_lossy().to_string();
+        write_digest(root_s.clone(), "2026-07-31".into(), "One.".into(), true).unwrap();
+        std::fs::write(root.join(".episko").join("notes.toml"), "").unwrap();
+        remove_digest(root_s.clone()).unwrap();
+        assert!(!root.join(".episko").join("digest.md").exists());
+        assert!(root.join(".episko").join("notes.toml").exists());
+        std::fs::remove_file(root.join(".episko").join("notes.toml")).unwrap();
+        remove_digest(root_s).unwrap();
+        assert!(!root.join(".episko").exists(), "an emptied .episko goes with it");
     }
 
     #[test]

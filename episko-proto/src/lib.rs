@@ -112,7 +112,14 @@ pub enum ErrorCode {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ServerMsg {
     Paired { token: String, user: String, device: String },
-    Welcome { user: String, device: String, head: u64 },
+    /// `devices` names every machine in the workspace, so the app can say whose a figure is.
+    Welcome {
+        user: String,
+        device: String,
+        head: u64,
+        #[serde(default)]
+        devices: Vec<DeviceInfo>,
+    },
     /// `more` is true while a catch-up still has pages to send.
     Events { events: Vec<Event>, more: bool },
     /// The seqs the log gave a push's events, in the order they were sent.
@@ -122,6 +129,14 @@ pub enum ServerMsg {
     Presence { user: String, device: String, items: serde_json::Value },
 }
 
+/// A paired machine as the app shows it; `user` is the name it was invited under.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub user: String,
+    pub device: String,
+    pub label: String,
+}
+
 /// A device that has not repeated its presence within this long is dropped.
 pub const PRESENCE_TTL_MS: u64 = 45_000;
 
@@ -129,6 +144,12 @@ pub const PRESENCE_TTL_MS: u64 = 45_000;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_welcome_from_an_older_server_still_parses() {
+        let m: ServerMsg = serde_json::from_value(json!({"t": "welcome", "user": "me", "device": "d1", "head": 3})).unwrap();
+        assert_eq!(m, ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 3, devices: vec![] });
+    }
 
     #[test]
     fn messages_have_the_shape_the_other_side_parses() {

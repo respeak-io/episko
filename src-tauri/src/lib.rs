@@ -537,6 +537,7 @@ pub fn run() {
             summarize::read_digest,
             summarize::has_digest,
             summarize::write_digest,
+            summarize::remove_digest,
             icons::find_project_icon,
             icons::read_custom_icon,
             platform::read_legacy_localstorage,

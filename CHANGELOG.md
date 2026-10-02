@@ -13,6 +13,21 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **See where your spend came from.** Once another of your machines has spent, the cost popover,
+  its tooltip and *Usage & spend* split the figure by machine, named the way you named them when
+  pairing.
+~ **Settings › Sync says who is who and what goes where.** It lists every machine on the server
+  under its user (yours first, teammates after, with who is online), what each stream carries and
+  whether it reaches your machines or everyone, and every preference another machine changed here
+  as a before-and-after diff. The raw log of sent keys is gone.
++ **Each project's sharing channel, in one table.** Settings › Sync › Projects shows every
+  project's sync id and lets you pick Git, Sync server or Nowhere. Choosing Git or Sync server now
+  switches your teammates too, so nobody keeps committing a file the rest moved off the repo.
+  *Move digest.md to the server* sends the committed work log to the server and deletes the file.
+~ **A work-log line knows which commits it covers.** A teammate holding commits the line missed
+  redoes it, starting from the old line, so neither machine's work drops out of the day.
+~ `episko-server invite` says which user the code pairs, and how to invite a teammate instead.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,

@@ -1,6 +1,6 @@
 //! The one SQLite file: the event log, one-use invites, and the tokens they were traded for.
 
-use episko_proto::{Event, NewEvent, Stream, MAX_PAYLOAD, STREAMS};
+use episko_proto::{DeviceInfo, Event, NewEvent, Stream, MAX_PAYLOAD, STREAMS};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
@@ -106,6 +106,14 @@ impl Store {
         let db = self.db();
         let mut q = db.prepare("SELECT user, device, label, created FROM tokens ORDER BY created")?;
         let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        rows.collect()
+    }
+
+    /// The machines paired into one workspace, oldest first.
+    pub fn devices_in(&self, ws: &str) -> rusqlite::Result<Vec<DeviceInfo>> {
+        let db = self.db();
+        let mut q = db.prepare("SELECT user, device, label FROM tokens WHERE ws = ?1 ORDER BY created")?;
+        let rows = q.query_map(params![ws], |r| Ok(DeviceInfo { user: r.get(0)?, device: r.get(1)?, label: r.get(2)? }))?;
         rows.collect()
     }
 
@@ -298,6 +306,16 @@ mod tests {
         assert_eq!(keys, vec![("cc-foot".to_string(), 1), ("cc-sort".to_string(), 2), ("cc-sort".to_string(), 3)]);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 1);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 0, "the latest per key always stays");
+    }
+
+    #[test]
+    fn a_workspace_lists_its_own_machines_and_nobody_elses() {
+        let s = Store::open_in_memory().unwrap();
+        s.redeem(&s.create_invite("team", "me", 0).unwrap(), "Laptop", 1).unwrap();
+        s.redeem(&s.create_invite("team", "ana", 0).unwrap(), "Desk", 2).unwrap();
+        s.redeem(&s.create_invite("other", "bob", 0).unwrap(), "Box", 3).unwrap();
+        let got: Vec<_> = s.devices_in("team").unwrap().into_iter().map(|d| (d.user, d.label)).collect();
+        assert_eq!(got, [("me".to_string(), "Laptop".to_string()), ("ana".to_string(), "Desk".to_string())]);
     }
 
     #[test]

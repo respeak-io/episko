@@ -3,6 +3,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import {
   SYNC_KEYS, SYNC_DOWN_MS, PRESENCE_MAX, narrowPresence, parseHeaders, teamRows, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
   prefOutbox, readPeers, syncClass, syncHealth, usageOutbox, wins, type Peers, type SyncEvent,
+  PREF_LABEL, STREAM_INFO, deviceName, devicesByUser, digestCover, digestMisses, narrowDevices, narrowDigest, narrowShare,
+  prefDiff, readArrivals, spendSources,
 } from "../src/sync";
 
 const ROOT = new URL("../", import.meta.url);
@@ -196,5 +198,95 @@ describe("parseHeaders", () => {
       expect(r.error, text).toContain(why);
     }
     expect(parseHeaders("X-B: 1\nnope").error).toMatch(/^line 2:/);
+  });
+});
+
+describe("who is who", () => {
+  const devs = narrowDevices([
+    { user: "me", device: "d1", label: "Laptop" }, { user: "ana", device: "d3", label: "Desk" },
+    { user: "me", device: "d2", label: "Tower" }, { nope: 1 }, { device: "" },
+  ]);
+  it("keeps only rows that name a device", () => {
+    expect(devs.map((d) => d.device)).toEqual(["d1", "d3", "d2"]);
+    expect(narrowDevices(null)).toEqual([]);
+  });
+  it("calls this machine so, and an unheard-of one by a short id", () => {
+    expect(deviceName(devs, "d1", "d1")).toBe("this machine");
+    expect(deviceName(devs, "d2", "d1")).toBe("Tower");
+    expect(deviceName(devs, "abcdef123456", "d1")).toBe("machine abcdef");
+  });
+  it("puts your machines first, this one leading", () => {
+    const g = devicesByUser(devs, "me", "d2");
+    expect(g.map((u) => [u.user, u.mine])).toEqual([["me", true], ["ana", false]]);
+    expect(g[0].devices.map((d) => d.device)).toEqual(["d2", "d1"]);
+  });
+});
+
+describe("where the spend came from", () => {
+  const devs = [{ user: "me", device: "lap", label: "Laptop" }];
+  it("names each machine and drops the ones that spent nothing", () => {
+    const peers: Peers = { lap: { "2026-10-01": 3, "2026-10-02": 1 }, gone: { "2026-09-01": 9 } };
+    const rows = spendSources({ "2026-10-02": 2 }, peers, ["2026-10-01", "2026-10-02"], devs, "me1");
+    expect(rows).toEqual([
+      { device: "lap", label: "Laptop", usd: 4, self: false },
+      { device: "me1", label: "this machine", usd: 2, self: true },
+    ]);
+  });
+});
+
+describe("a synced preference, in words", () => {
+  it("labels every pref key", () => {
+    for (const [k, c] of Object.entries(SYNC_KEYS)) if (c === "pref") expect(PREF_LABEL[k], k).toBeTruthy();
+  });
+  it("lists the changed fields of an object and nothing else", () => {
+    const d = prefDiff(JSON.stringify({ enabled: true, binds: { palette: "Mod+K", run: "Mod+R" } }),
+      JSON.stringify({ enabled: true, binds: { palette: "Mod+P", run: "Mod+R" } }));
+    expect(d).toEqual({ lines: [{ path: "binds.palette", from: "Mod+K", to: "Mod+P" }], more: 0 });
+  });
+  it("reads a scalar and a removal", () => {
+    expect(prefDiff("13", "14").lines).toEqual([{ path: "", from: "13", to: "14" }]);
+    expect(prefDiff("manual", null).lines).toEqual([{ path: "", from: "manual", to: "—" }]);
+  });
+  it("caps a long diff and counts the rest", () => {
+    const a: Record<string, number> = {}, b: Record<string, number> = {};
+    for (let i = 0; i < 12; i++) { a[`k${i}`] = i; b[`k${i}`] = i + 1; }
+    const d = prefDiff(JSON.stringify(a), JSON.stringify(b), 8);
+    expect([d.lines.length, d.more]).toEqual([8, 4]);
+  });
+  it("drops a stored arrival of the wrong shape on its own", () => {
+    const ok = { at: 1, key: "cc-sort", device: "d", lines: [] };
+    expect(readArrivals(JSON.stringify([ok, { at: "x" }, null]))).toEqual([{ ...ok, more: 0 }]);
+    expect(readArrivals("{")).toEqual([]);
+  });
+});
+
+describe("the streams' reach", () => {
+  it("keeps everything personal except the two team streams", () => {
+    const team = Object.entries(STREAM_INFO).filter(([, i]) => i.scope === "team").map(([s]) => s).sort();
+    expect(team).toEqual(["claims", "notes"]);
+  });
+});
+
+describe("a work-log line knows what it covers", () => {
+  it("reads a legacy string as covering an unknown set, which is trusted", () => {
+    const d = narrowDigest("Shipped sync.");
+    expect(d).toEqual({ line: "Shipped sync.", covers: null });
+    expect(digestMisses(d!, ["a".repeat(40)])).toBe(false);
+  });
+  it("is redone only when this machine has a commit the line never saw", () => {
+    const d = narrowDigest({ line: "x", covers: ["aaaaaaaaaaaa1234"] })!;
+    expect(d.covers).toEqual(["aaaaaaaaaaaa"]);
+    expect(digestMisses(d, ["aaaaaaaaaaaaffff"])).toBe(false);
+    expect(digestMisses(d, ["aaaaaaaaaaaaffff", "bbbbbbbbbbbb0000"])).toBe(true);
+  });
+  it("grows its cover rather than replacing it, so two machines converge", () => {
+    const d = narrowDigest({ line: "x", covers: ["aaaaaaaaaaaa"] })!;
+    expect(digestCover(d, ["bbbbbbbbbbbbcc"])).toEqual(["aaaaaaaaaaaa", "bbbbbbbbbbbb"]);
+    expect(digestCover(undefined, ["cccccccccccc00"])).toEqual(["cccccccccccc"]);
+  });
+  it("refuses an empty line, and a channel that is neither git nor the server", () => {
+    expect(narrowDigest({ line: " " })).toBeNull();
+    expect(narrowShare("server")).toBe("server");
+    expect(narrowShare("off")).toBeNull();
   });
 });

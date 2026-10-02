@@ -73,7 +73,8 @@ reaches `localStorage`, `fetch` or Tauri.
    cannot be mapped is accepted as lost.
 5. One workspace **per team**.
 6. The Windows token lives under **DPAPI**, and on macOS in the keychain.
-7. No user-facing audit view. A debug-only "what did this device send" is fine.
+7. No raw audit log. Settings › Sync shows, per stream, what it carries, whom it reaches and how
+   much moved this run, plus every preference another machine changed here, as a field-level diff.
 
 ## Phasing
 
@@ -132,6 +133,26 @@ batch, and that is harmless because every merge is idempotent.
 once: they wait in `cc-sync-seed` until the first catch-up ends. It then offers only the keys
 the server had nothing for, at the oldest possible stamp.
 
+## Who is who
+
+A machine's **user** is the name its invite was printed for (`episko-server invite --user ana`;
+no flag means `me`). That name is the whole identity. Machines under one name share the personal
+streams (prefs, spend, limits, roster), and a teammate under another name sees only the team ones
+(notes, claims, presence). `STREAM_INFO` in `sync.ts` is the table Settings › Sync shows, and the
+server's `is_personal` is what enforces it. So a teammate invited without `--user` shares your
+settings and spend. The `invite` command says so when it prints the code, and Settings › Sync
+lists each machine under its user so the mistake can be seen.
+
+`welcome` carries `devices` (user, device, label) for the whole workspace. An older server
+sends none and the last list heard stands (`cc-sync-devices`). A machine paired after this one
+connected is named from its next reconnect, and until then it shows as `machine <id>`. The cost
+popover, the status bar tooltip and *Usage & spend* split spend **by machine** once any other
+machine has spent (`spendSources`).
+
+**Arrived preferences are shown, not just applied.** Before writing a remote pref, `synclink`
+diffs it against what was there (`prefDiff`: changed leaves of a JSON value, or the scalar),
+and keeps one row per key in `cc-sync-arrivals`. The values still take effect on reload.
+
 ## Project identity and the roster
 
 `project_id` (git.rs) answers a folder's id: `git:<root sha>` (several roots sorted and joined
@@ -171,7 +192,20 @@ roster):
   wins. The dashboard shows the committed file and the server's copy as one list, one row per
   id, and the later `at` wins a disagreement (`sharedNow`).
 - **Work-log lines** travel as `digest|<project id>|<day>` and seed the day's project sentence.
-  A line from the file wins over the server's.
+  A line from the file wins over the server's. The payload is `{line, covers}`, where `covers`
+  holds the 12-character prefixes of the commits it summarised. A machine holding a closed day's
+  commits that the line never saw redoes the line once per run, with the old line among the
+  facts, and publishes the **union** of both covers (`digestMisses`, `digestCover`). Two machines
+  that each lack the other's commits therefore converge rather than overwrite each other. A
+  legacy plain-string line covers an unknown set and is trusted as it stands.
+- **The channel is the team's; Nowhere is yours.** Choosing Git or Sync server publishes
+  `share|<project id>` on the notes stream, and every teammate's checkout follows it, unless they
+  chose Nowhere. Without this, one teammate left on Git would keep committing the file the
+  others had moved off the repo.
+- **Moving off the repo**: Settings › Sync › Projects offers *Move digest.md to the server* for a
+  project not on Git that still has the file. It publishes every day in the file, then deletes
+  it (`remove_digest`, plus `.episko/` if that is now empty). Committing the deletion stays the
+  user's.
 - **The "Not written down anywhere" offer** appears only in Git mode. Its **Don't offer this**
   button silences it for one project (`cc-digest-no`).
 

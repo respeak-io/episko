@@ -185,7 +185,8 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub) -> Result<(), String>
 fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out>, who: &Identity, since: u64) -> Result<(), String> {
     let err = |e: tungstenite::Error| e.to_string();
     let head = store.head(&who.ws).map_err(|e| e.to_string())?;
-    send(sock, &ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head }).map_err(err)?;
+    let devices = store.devices_in(&who.ws).map_err(|e| e.to_string())?;
+    send(sock, &ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices }).map_err(err)?;
     let mut sent = since;
     loop {
         let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1).map_err(|e| e.to_string())?;

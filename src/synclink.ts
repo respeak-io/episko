@@ -6,9 +6,11 @@ import {
   SYNC_DOWN_MS, acceptDetail, acceptPref, acceptUsage, changedDays, mergeScoped, peerDays, peerDetailDays,
   readDetailPeers, readKeyList, readPeers, readStamps, stampKey, syncClass, syncHealth, wins,
   narrowPresence, teamRows, type PresenceItem, type TeamRow,
+  ARRIVALS_MAX, narrowDevices, narrowDigest, narrowShare, prefDiff, readArrivals, spendSources,
+  type Arrival, type DeviceInfo, type DigestLine, type SpendSource,
   type DetailPeers, type NewEvent, type Peers, type Stamps, type Stream, type SyncEvent, type SyncHealth, type WireDetail,
 } from "./sync";
-import { dayKeyOf, markDetailDirty, rekeyDetail, setPeerUsage, setProjectKeyer, usage, usageDetail } from "./usage";
+import { markDetailDirty, rekeyDetail, setPeerUsage, setProjectKeyer, usage, usageDetail } from "./usage";
 import { mergeRl, rl, rlScoped } from "./rl";
 import { readObj, safeParse } from "./store";
 import { applyWire, idOfKey, isRosterKey, mergeWire, rosterWire, wireDiff, type Roster, type Wire } from "./roster";
@@ -26,7 +28,7 @@ export interface SyncStatus {
   headerNames: string[]; // what the proxy headers are called; their values never reach this side
 }
 type ServerMsg =
-  | { t: "welcome"; user: string; device: string; head: number }
+  | { t: "welcome"; user: string; device: string; head: number; devices?: unknown }
   | { t: "events"; events: SyncEvent[]; more: boolean }
   | { t: "error"; code: string; message: string }
   | { t: "presence"; user: string; device: string; items: unknown }
@@ -40,19 +42,33 @@ const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", labe
 export let status: SyncStatus = OFF;
 /** Remote prefs were written: they take effect on the next reload, and the UI says so. */
 export let prefsArrived = 0;
-/** What this device sent, newest first, for Settings › Sync's debug list. Memory only. */
-export const sentLog: { at: number; stream: string; key: string }[] = [];
+/** Per stream, what this run sent and took in: Settings › Sync's activity table. Memory only. */
+export interface Activity { sent: number; got: number; sentAt: number; gotAt: number }
+export const activity: Partial<Record<Stream, Activity>> = {};
+const act = (stream: Stream) => (activity[stream] ??= { sent: 0, got: 0, sentAt: 0, gotAt: 0 });
+/** Every machine on the server as it last said at welcome; kept so names survive offline. */
+export let devices: DeviceInfo[] = narrowDevices(safeParse(localStorage.getItem("cc-sync-devices")));
+/** Preferences other machines changed here, newest first, each with what it changed. */
+export let arrivals: Arrival[] = readArrivals(localStorage.getItem("cc-sync-arrivals"));
 
 let render: () => void = () => {};
 let log: (lvl: "info" | "warn" | "error", msg: string) => void = () => {};
 let onForeign: (ev: SyncEvent) => boolean = () => false;
 let onPresence: (user: string, device: string, items: unknown) => void = () => {};
+let onShare: (pid: string, mode: "git" | "server", by: string) => void = () => {};
 export function setSyncHost(h: {
   render: () => void; log: typeof log;
   /** Streams owned elsewhere (roster, notes, claims): true when the event was taken. */
   foreign?: (ev: SyncEvent) => boolean;
   presence?: (user: string, device: string, items: unknown) => void;
-}) { render = h.render; log = h.log; if (h.foreign) onForeign = h.foreign; if (h.presence) onPresence = h.presence; }
+  /** A teammate moved a project's notes and work log to another channel. */
+  share?: (pid: string, mode: "git" | "server", by: string) => void;
+}) {
+  render = h.render; log = h.log;
+  if (h.foreign) onForeign = h.foreign;
+  if (h.presence) onPresence = h.presence;
+  if (h.share) onShare = h.share;
+}
 
 // ---------- what this machine owes ----------
 
@@ -151,7 +167,11 @@ const wireDetail = (day: string): WireDetail => {
 
 // The team streams' values live with their owners below.
 const owedValue = (stream: Stream, key: string): unknown => {
-  if (stream === "notes") return team[key] ?? null;
+  if (stream === "notes") {
+    const v = team[key] ?? null;
+    // Held with who chose it; the wire carries the mode alone, and the server stamps the actor.
+    return key.startsWith("share|") && v ? (v as { mode: unknown }).mode : v;
+  }
   const l = leases[key];
   return l ? { who: l.who, until: l.until } : null;
 };
@@ -194,10 +214,9 @@ export function flush() {
     const chunk = events.slice(i, i + 900);
     const id = nextId++;
     inflight.set(id, i === 0 ? f : { owed: new Map(), usage: {}, detail: {} });
-    for (const e of chunk) sentLog.unshift({ at: now, stream: e.stream, key: e.key });
+    for (const e of chunk) { const a = act(e.stream); a.sent++; a.sentAt = now; }
     invoke<boolean>("sync_push", { id, events: chunk }).catch((e) => log("warn", `sync push: ${e}`));
   }
-  sentLog.splice(200);
 }
 
 function pushed(id: number) {
@@ -222,6 +241,8 @@ function apply(ev: SyncEvent): boolean {
       const k = stampKey("prefs", ev.key);
       const p = acceptPref(ev, stamps[k], me);
       if (!p) return false;
+      const was = localStorage.getItem(p.key);
+      if (was !== p.value) noteArrival(p.key, ev, was, p.value);
       quiet(() => (p.value === null ? raw.remove.call(localStorage, p.key) : raw.set.call(localStorage, p.key, p.value)));
       stamps[k] = { at: ev.at, device: ev.device };
       dirty.delete(k);
@@ -266,13 +287,28 @@ function apply(ev: SyncEvent): boolean {
   }
 }
 
+function noteArrival(key: string, ev: SyncEvent, before: string | null, after: string | null) {
+  const d = prefDiff(before, after);
+  if (!d.lines.length) return;
+  // One row per key: a later change to the same setting replaces the earlier one.
+  arrivals = [{ at: ev.at, key, device: ev.device, ...d }, ...arrivals.filter((a) => a.key !== key)].slice(0, ARRIVALS_MAX);
+  quiet(() => raw.set.call(localStorage, "cc-sync-arrivals", JSON.stringify(arrivals)));
+}
+export function clearArrivals() {
+  arrivals = [];
+  quiet(() => raw.remove.call(localStorage, "cc-sync-arrivals"));
+  render();
+}
+
 function applyAll(events: SyncEvent[], more: boolean) {
   let usageMoved = false, prefsBefore = prefsArrived, top = 0;
   for (const ev of events) {
     if (!ev || typeof ev.seq !== "number") continue;
     top = Math.max(top, ev.seq);
     try {
-      if (apply(ev) && (ev.stream === "usage" || ev.stream === "detail")) usageMoved = true;
+      if (!apply(ev)) continue;
+      const a = act(ev.stream); a.got++; a.gotAt = Math.max(a.gotAt, ev.at);
+      if (ev.stream === "usage" || ev.stream === "detail") usageMoved = true;
     } catch (e) { log("warn", `sync: skipped ${ev.stream}:${ev.key} (${e})`); }
   }
   if (usageMoved) {
@@ -308,6 +344,12 @@ export function onSyncEvent(o: SyncOut) {
   } else if (o.kind === "pushed") pushed(o.id);
   else if (o.msg.t === "welcome") {
     status = { ...status, connected: true, error: null, device: o.msg.device, user: o.msg.user };
+    // An older server sends no list; the last one heard stands.
+    const named = narrowDevices(o.msg.devices);
+    if (named.length) {
+      devices = named;
+      quiet(() => raw.set.call(localStorage, "cc-sync-devices", JSON.stringify(devices)));
+    }
     // Whatever was in flight on the old socket is lost with it; the outbox is rebuilt from scratch.
     inflight.clear();
     flush();
@@ -370,7 +412,9 @@ export function tickSync(alive: (sessionId: string) => boolean = () => true) {
   if (status.connected) flush();
   render();
 }
-export const todaySent = () => sentLog.filter((e) => dayKeyOf(e.at) === dayKeyOf(Date.now())).length;
+/** The days' spend per machine; just this one when nothing synced. */
+export const spendByMachine = (days: string[]): SpendSource[] =>
+  spendSources(usage, peers, days, devices, status.device || "self");
 
 // ---------- project identity and the roster (docs/sync.md) ----------
 
@@ -387,6 +431,8 @@ const asked = new Set<string>();
 let wire: Wire = readObj<unknown>(WIRE);
 
 export const projectIdOf = (path: string): string | undefined => ids[path] || undefined;
+/** Every checkout on this machine that is this project. */
+export const pathsOfId = (id: string): string[] => Object.keys(ids).filter((p) => ids[p] === id);
 const idOf = projectIdOf;
 function pathOf(id: string): string | undefined {
   const cands = Object.keys(ids).filter((p) => ids[p] === id);
@@ -487,8 +533,8 @@ function resolveIds(paths: string[]): Promise<unknown> {
 
 // ---------- the team half: shared notes and the work log (docs/sync.md) ----------
 
-// Wire key → value: `<pid>|<note id>` a note, `digest|<pid>|<day>` a work-log line. The file
-// in git stays the record wherever a project keeps one; this is the channel beside it.
+// Wire key → value: `<pid>|<note id>` a note, `digest|<pid>|<day>` a work-log line, `share|<pid>`
+// the project's channel. The file in git stays the record wherever a project keeps one.
 export interface TeamNote { id: string; text: string; who: string; at: string }
 const TEAM = "cc-team-notes";
 const team: Record<string, unknown> = readObj<unknown>(TEAM);
@@ -505,13 +551,17 @@ function narrowNote(v: unknown): Omit<TeamNote, "id"> | null {
 function applyTeam(ev: SyncEvent): boolean {
   const sk = stampKey(ev.stream, ev.key);
   if (!wins(ev, stamps[sk])) return false;
-  const digest = ev.key.startsWith("digest|");
-  if (ev.payload !== null && (digest ? typeof ev.payload !== "string" : !narrowNote(ev.payload))) return false;
+  const digest = ev.key.startsWith("digest|"), share = ev.key.startsWith("share|");
+  const value = ev.payload === null ? null
+    : digest ? narrowDigest(ev.payload)
+    : share ? (narrowShare(ev.payload) && { mode: narrowShare(ev.payload), by: ev.actor })
+    : narrowNote(ev.payload);
+  if (ev.payload !== null && !value) return false;
   stamps[sk] = { at: ev.at, device: ev.device };
   dirty.delete(sk);
-  if (ev.payload === null) delete team[ev.key];
-  else team[ev.key] = digest ? String(ev.payload).slice(0, 2000) : narrowNote(ev.payload);
+  if (value === null) delete team[ev.key]; else team[ev.key] = value;
   saveTeam();
+  if (share && value && ev.device !== status.device) onShare(ev.key.slice(6), narrowShare(ev.payload)!, ev.actor);
   return true;
 }
 
@@ -526,17 +576,26 @@ export function serverNotes(pid: string | undefined): TeamNote[] {
   }
   return out;
 }
-/** The project's work-log lines the team published, by day. */
-export function serverDigest(pid: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
+/** The project's work-log lines the team published, by day, with the commits each covers. */
+export function serverDigest(pid: string | undefined): Record<string, DigestLine> {
+  const out: Record<string, DigestLine> = {};
   if (!pid) return out;
   const pre = `digest|${pid}|`;
-  for (const [k, v] of Object.entries(team)) if (k.startsWith(pre) && typeof v === "string") out[k.slice(pre.length)] = v;
+  for (const [k, v] of Object.entries(team)) {
+    const d = k.startsWith(pre) ? narrowDigest(v) : null;
+    if (d) out[k.slice(pre.length)] = d;
+  }
   return out;
 }
-function publish(key: string, value: unknown) {
+/** The channel the team last chose for a project, and who chose it. */
+export function teamShare(pid: string | undefined): { mode: "git" | "server"; by: string } | null {
+  const v = pid ? team[`share|${pid}`] as { mode?: unknown; by?: unknown } | undefined : undefined;
+  const mode = narrowShare(v?.mode);
+  return mode ? { mode, by: typeof v?.by === "string" ? v.by : "" } : null;
+}
+function publish(key: string, value: unknown, held: unknown = value) {
   if (!status.configured) return;
-  if (value === null) delete team[key]; else team[key] = value;
+  if (held === null) delete team[key]; else team[key] = held;
   owe("notes", key, Date.now());
   saveTeam();
   saveBook();
@@ -544,7 +603,11 @@ function publish(key: string, value: unknown) {
 }
 export const publishNote = (pid: string, note: TeamNote | null, id: string) =>
   publish(`${pid}|${id}`, note && { text: note.text, who: note.who, at: note.at });
-export const publishDigest = (pid: string, day: string, line: string) => publish(`digest|${pid}|${day}`, line);
+export const publishDigest = (pid: string, day: string, line: string, covers: string[] | null) =>
+  publish(`digest|${pid}|${day}`, covers ? { line, covers } : line);
+/** This machine chose a channel for a project: the team follows it (docs/sync.md). */
+export const publishShare = (pid: string, mode: "git" | "server") =>
+  publish(`share|${pid}`, mode, { mode, by: status.user });
 export const syncOn = () => status.configured;
 
 // ---------- presence: held in memory, gone with the connection ----------
@@ -552,6 +615,8 @@ export const syncOn = () => status.configured;
 const presence = new Map<string, { user: string; items: PresenceItem[] }>();
 /** Everyone else's open sessions right now, or null when sync is not set up at all. */
 export const teamNow = (): TeamRow[] | null => status.configured ? teamRows(Object.fromEntries(presence), status.user) : null;
+/** Devices with a live heartbeat right now. */
+export const onlineDevices = (): Set<string> => new Set(presence.keys());
 let beat = "", beatAt = 0;
 /** What this machine has open; sent on a change, and repeated inside the server's TTL. */
 export function beatPresence(items: PresenceItem[]) {

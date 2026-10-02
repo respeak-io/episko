@@ -53,10 +53,15 @@ fn main() {
             let code = store.create_invite(WORKSPACE, &user, serve::now_ms()).unwrap_or_else(|e| fail(&e.to_string()));
             println!("{code}");
             eprintln!("Enter this in Episko › Settings › Sync within ten minutes. It works once.");
+            // The user name is the whole identity: one name shares prefs and spend, two keep them apart.
+            eprintln!("It pairs a machine of user \"{user}\", which shares that user's settings, spend and project list.");
+            if args.get(1).is_none() {
+                eprintln!("For a teammate, run: episko-server invite --user NAME");
+            }
         }
         Some("devices") => {
             for (user, device, label, created) in store.devices().unwrap_or_else(|e| fail(&e.to_string())) {
-                println!("{device}  {user}  {label}  paired {}", created / 1000);
+                println!("{device}  user={user}  {label}  paired {}", created / 1000);
             }
         }
         Some("revoke") => {

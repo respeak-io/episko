@@ -8,6 +8,7 @@ import { popGoHtml } from "./footerview";
 import { D7_LEN, forecast5h, forecast7d, H5_LEN, rlScoped, scopedForecasts, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
+import type { SpendSource } from "./sync";
 import {
   dayIo, dayTotal, ioDayCount, ioSameNote, ioTotal, modelSeries, todayKey, tokenDays, U_MONTHS, uBuckets,
   peerUsage, uDkey, uModels, usage, usageRange, usageWindow, uSum,
@@ -53,7 +54,17 @@ export function usageRow(label: string, sub: string, f: Forecast, note?: string)
 // Today's spend by project and session. A day with no split says so rather than showing
 // zeros, and `unattributed` is a row, so this never reads lower than the footer figure.
 // A running session is a button; an ended one is a plain row.
-export function costPopHtml(d: DaySpend, live: Set<string>): string {
+// Where a figure came from once other machines add to it; silent while only this one spends.
+export function machinesHtml(rows: SpendSource[], cls = "cp"): string {
+  if (!rows.some((r) => !r.self)) return "";
+  const max = rows[0]?.usd || 1;
+  return `<div class="${cls}-lbl">By machine</div>` + rows.map((r) => `<div class="cp-row">
+      <div class="cp-top"><span class="cp-l${r.self ? " cp-self" : ""}">${esc(r.label)}</span><span class="cp-v">${uUsd2(r.usd)}</span></div>
+      <div class="cp-bar"><i class="${r.self ? "cp-me" : "cp-peer"}" style="width:${Math.max(2, r.usd / max * 100).toFixed(1)}%"></i></div>
+    </div>`).join("");
+}
+
+export function costPopHtml(d: DaySpend, live: Set<string>, machines: SpendSource[] = []): string {
   const maxP = d.projects[0]?.usd || 1;
   const rows = d.projects.map((r) => `<div class="cp-row">
       <div class="cp-top"><span class="cp-l${r.key ? "" : " cp-un"}">${esc(r.label)}</span><span class="cp-v">${uUsd2(r.usd)}</span></div>
@@ -79,6 +90,7 @@ export function costPopHtml(d: DaySpend, live: Set<string>): string {
     popGoHtml({ go: "usage", label: "Usage & spend", sub: "every day, per model and per project" })
   }</div>
     <div class="cp-tot">${uUsd2(d.total)}</div>
+    ${machinesHtml(machines)}
     ${rows ? `<div class="cp-lbl">By project</div>${rows}` : ""}
     ${sess ? `<div class="cp-lbl">By session</div><div class="cp-sess">${sess}</div>` : ""}
     ${note ? `<div class="up-note">${note}</div>` : ""}`;
@@ -338,13 +350,15 @@ function scopedBlockHtml(): string {
       ${wins.map((w) => fcWinHtml(esc(w.label), "weekly · this model", w.forecast, null, D7_LEN, "%/day", note)).join("")}
     </div>`;
 }
-export function usagePanelHtml(): string {
+export function usagePanelHtml(machines: SpendSource[] = []): string {
   const ranges = USAGE_RANGES.map(([n, l]) => `<button class="u-rbtn${n === usageRange ? " on" : ""}" data-urange="${n}">${l}</button>`).join("");
   return `<div class="u-pane">
     <header class="u-paneh"><div><div class="label">Analytics</div><h2 class="u-title">Usage &amp; spend</h2>
       <p class="u-hint">Every session Episko launches, account-wide. History stays on this machine.</p></div>
       <div class="u-range">${ranges}</div></header>
     ${uTiles()}
+    ${machines.some((r) => !r.self) ? `<section class="u-card costpop u-machines"><div class="u-cardh"><div><div class="label">Synced</div><h3 class="u-h">Spend by machine</h3></div>
+      <p class="u-hint" style="margin-top:5px">this range · your machines on the sync server</p></div>${machinesHtml(machines)}</section>` : ""}
     ${forecastBlockHtml()}
     ${uHeatmap()}
     <div class="u-cols">${uBars()}<section class="u-card">${uModelMix()}${uTokenMix()}</section></div>

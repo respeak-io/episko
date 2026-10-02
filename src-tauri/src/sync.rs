@@ -631,7 +631,7 @@ mod tests {
     fn a_session_says_hello_from_its_cursor_and_relays_both_ways() {
         let url = mock(|ws| {
             assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL });
-            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8 });
+            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8, devices: vec![] });
             let ev = Event { seq: 8, stream: Stream::Prefs, key: "cc-sort".into(), actor: "me".into(), device: "d2".into(), at: 1, payload: "x".into() };
             write_msg(ws, &ServerMsg::Events { events: vec![ev], more: false });
             assert!(matches!(read_msg(ws), ClientMsg::Push { .. }));
