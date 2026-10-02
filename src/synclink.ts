@@ -6,8 +6,8 @@ import {
   SYNC_DOWN_MS, acceptDetail, acceptPref, acceptUsage, changedDays, mergeScoped, peerDays, peerDetailDays,
   readDetailPeers, readKeyList, readPeers, readStamps, stampKey, syncClass, syncHealth, wins,
   narrowPresence, teamRows, type PresenceItem, type TeamRow,
-  ARRIVALS_MAX, narrowDevices, narrowDigest, narrowShare, prefDiff, readArrivals, spendSources,
-  type Arrival, type DeviceInfo, type DigestLine, type SpendSource,
+  narrowDevices, narrowDigest, narrowShare, narrowSpend, prefDiff, readPending, spendKey, spendSources, teamSpend,
+  type DeviceInfo, type DigestLine, type PendingPref, type SpendSource,
   type DetailPeers, type NewEvent, type Peers, type Stamps, type Stream, type SyncEvent, type SyncHealth, type WireDetail,
 } from "./sync";
 import { markDetailDirty, rekeyDetail, setPeerUsage, setProjectKeyer, usage, usageDetail } from "./usage";
@@ -15,7 +15,7 @@ import { mergeRl, rl, rlScoped } from "./rl";
 import { readObj, safeParse } from "./store";
 import { applyWire, idOfKey, isRosterKey, mergeWire, rosterWire, wireDiff, type Roster, type Wire } from "./roster";
 import {
-  FAVORITES, agentByProject, colorOverrides, ghAccountByProject, projGroups, projOrder, shareByProject,
+  FAVORITES, agentByProject, colorOverrides, ghAccountByProject, projGroups, projOrder, shareByProject, shareModeOf,
   setFavorites, setProjGroups, setProjOrder,
 } from "./state";
 import { customIcons } from "./icons";
@@ -32,6 +32,7 @@ type ServerMsg =
   | { t: "events"; events: SyncEvent[]; more: boolean }
   | { t: "error"; code: string; message: string }
   | { t: "presence"; user: string; device: string; items: unknown }
+  | { t: "invited"; code: string; expires: number }
   | { t: "paired" | "pushed" };
 export type SyncOut =
   | { kind: "status"; status: SyncStatus }
@@ -40,7 +41,7 @@ export type SyncOut =
 
 const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", label: "", cursor: 0, connected: false, lastOkAt: null, error: null, halted: false, headerNames: [] };
 export let status: SyncStatus = OFF;
-/** Remote prefs were written: they take effect on the next reload, and the UI says so. */
+/** Remote prefs you accepted were written: they take effect on the next reload, and the UI says so. */
 export let prefsArrived = 0;
 /** Per stream, what this run sent and took in: Settings › Sync's activity table. Memory only. */
 export interface Activity { sent: number; got: number; sentAt: number; gotAt: number }
@@ -48,14 +49,19 @@ export const activity: Partial<Record<Stream, Activity>> = {};
 const act = (stream: Stream) => (activity[stream] ??= { sent: 0, got: 0, sentAt: 0, gotAt: 0 });
 /** Every machine on the server as it last said at welcome; kept so names survive offline. */
 export let devices: DeviceInfo[] = narrowDevices(safeParse(localStorage.getItem("cc-sync-devices")));
-/** Preferences other machines changed here, newest first, each with what it changed. */
-export let arrivals: Arrival[] = readArrivals(localStorage.getItem("cc-sync-arrivals"));
+/** Preferences other machines changed, held for review: nothing is written until you accept it. */
+export const pending: Record<string, PendingPref> = readPending(localStorage.getItem("cc-sync-pending"));
+/** Settings kept to this machine: neither sent nor taken. */
+export const excluded = new Set(readKeyList(localStorage.getItem("cc-sync-exclude")));
+/** The last code `Add a machine` asked for, while it is still good. */
+export let invite: { code: string; expires: number } | null = null;
 
 let render: () => void = () => {};
 let log: (lvl: "info" | "warn" | "error", msg: string) => void = () => {};
 let onForeign: (ev: SyncEvent) => boolean = () => false;
 let onPresence: (user: string, device: string, items: unknown) => void = () => {};
 let onShare: (pid: string, mode: "git" | "server", by: string) => void = () => {};
+let onReview: () => void = () => {};
 export function setSyncHost(h: {
   render: () => void; log: typeof log;
   /** Streams owned elsewhere (roster, notes, claims): true when the event was taken. */
@@ -63,11 +69,14 @@ export function setSyncHost(h: {
   presence?: (user: string, device: string, items: unknown) => void;
   /** A teammate moved a project's notes and work log to another channel. */
   share?: (pid: string, mode: "git" | "server", by: string) => void;
+  /** New preferences are waiting for a yes or no. */
+  review?: () => void;
 }) {
   render = h.render; log = h.log;
   if (h.foreign) onForeign = h.foreign;
   if (h.presence) onPresence = h.presence;
   if (h.share) onShare = h.share;
+  if (h.review) onReview = h.review;
 }
 
 // ---------- what this machine owes ----------
@@ -129,7 +138,9 @@ function onLocalWrite(key: string) {
   if (applying || !key.startsWith("cc-")) return;
   const cls = syncClass(key);
   if (cls === "pref") {
-    if (!status.configured) return;
+    if (!status.configured || excluded.has(key)) return;
+    // An edit made here is newer than whatever was waiting to replace it.
+    if (pending[key]) { delete pending[key]; savePending(); }
     owe("prefs", key, Date.now());
     saveBook();
     schedule(2_000);
@@ -199,6 +210,10 @@ export function flush() {
   for (const day of changedDays(detailNow, sent.detail)) {
     events.push({ stream: "detail", key: `${day}|${me}`, at: now, payload: wireDetail(day) });
     f.detail[day] = detailNow[day];
+    // A shared project's spend goes to the team too; a project set to Nowhere never does.
+    for (const [pid, usd] of Object.entries(usageDetail[day].projects)) {
+      if (usd > 0 && sharesSpend(pid)) events.push({ stream: "notes", key: spendKey(pid, day, me), at: now, payload: usd });
+    }
   }
   const rlNow = JSON.stringify(rl);
   if (rl.h5 !== null || rl.d7 !== null) {
@@ -239,15 +254,16 @@ function apply(ev: SyncEvent): boolean {
   switch (ev.stream) {
     case "prefs": {
       const k = stampKey("prefs", ev.key);
-      const p = acceptPref(ev, stamps[k], me);
+      const p = acceptPref(ev, stamps[k], me, excluded);
       if (!p) return false;
-      const was = localStorage.getItem(p.key);
-      if (was !== p.value) noteArrival(p.key, ev, was, p.value);
-      quiet(() => (p.value === null ? raw.remove.call(localStorage, p.key) : raw.set.call(localStorage, p.key, p.value)));
       stamps[k] = { at: ev.at, device: ev.device };
       dirty.delete(k);
       seed.delete(p.key);
-      prefsArrived++;
+      // Held, never written: what another machine chose waits for a yes here (docs/sync.md).
+      const was = localStorage.getItem(p.key);
+      const d = prefDiff(was, p.value);
+      if (was === p.value || !d.lines.length) { delete pending[p.key]; return true; }
+      pending[p.key] = { key: p.key, value: p.value, at: ev.at, device: ev.device, ...d };
       return true;
     }
     case "roster": {
@@ -287,21 +303,33 @@ function apply(ev: SyncEvent): boolean {
   }
 }
 
-function noteArrival(key: string, ev: SyncEvent, before: string | null, after: string | null) {
-  const d = prefDiff(before, after);
-  if (!d.lines.length) return;
-  // One row per key: a later change to the same setting replaces the earlier one.
-  arrivals = [{ at: ev.at, key, device: ev.device, ...d }, ...arrivals.filter((a) => a.key !== key)].slice(0, ARRIVALS_MAX);
-  quiet(() => raw.set.call(localStorage, "cc-sync-arrivals", JSON.stringify(arrivals)));
+function savePending() { quiet(() => raw.set.call(localStorage, "cc-sync-pending", JSON.stringify(pending))); }
+
+/** Writes the accepted settings (they apply on reload) and lets the rest go; local values stand. */
+export function resolvePending(accept: string[], decline: string[]) {
+  for (const k of accept) {
+    const p = pending[k];
+    if (!p) continue;
+    quiet(() => (p.value === null ? raw.remove.call(localStorage, k) : raw.set.call(localStorage, k, p.value!)));
+    delete pending[k];
+    prefsArrived++;
+  }
+  for (const k of decline) delete pending[k];
+  savePending();
+  render();
 }
-export function clearArrivals() {
-  arrivals = [];
-  quiet(() => raw.remove.call(localStorage, "cc-sync-arrivals"));
+/** Keeps a setting to this machine, or lets it sync again; a kept one's waiting value is dropped. */
+export function setExcluded(key: string, keep: boolean) {
+  if (keep) { excluded.add(key); delete pending[key]; savePending(); } else excluded.delete(key);
+  quiet(() => raw.set.call(localStorage, "cc-sync-exclude", JSON.stringify([...excluded])));
+  // Synced again: this machine's value is offered, and loses to any newer one the server holds.
+  if (!keep && status.configured && localStorage.getItem(key) !== null) { owe("prefs", key, 1); saveBook(); schedule(2_000); }
   render();
 }
 
 function applyAll(events: SyncEvent[], more: boolean) {
-  let usageMoved = false, prefsBefore = prefsArrived, top = 0;
+  let usageMoved = false, top = 0;
+  const waitingBefore = Object.keys(pending).length;
   for (const ev of events) {
     if (!ev || typeof ev.seq !== "number") continue;
     top = Math.max(top, ev.seq);
@@ -320,13 +348,15 @@ function applyAll(events: SyncEvent[], more: boolean) {
   }
   if (!more && seed.size) {
     // Caught up: what the server never had is this machine's to give, at the oldest possible stamp.
-    for (const k of seed) if (k !== ROSTER_SEED) owe("prefs", k, 1);
+    for (const k of seed) if (k !== ROSTER_SEED && !excluded.has(k)) owe("prefs", k, 1);
     if (seed.has(ROSTER_SEED)) rosterEdited(true);
     seed.clear();
     flush();
   }
   saveBook();
-  if (prefsArrived > prefsBefore) log("info", `sync: ${prefsArrived - prefsBefore} preference(s) from another machine, applied on reload`);
+  savePending();
+  const waiting = Object.keys(pending).length;
+  if (waiting > waitingBefore) { log("info", `sync: ${waiting} preference(s) from another machine waiting for review`); onReview(); }
   if (top) invoke("sync_ack", { seq: top }).catch((e) => log("warn", `sync ack: ${e}`));
   render();
 }
@@ -361,6 +391,7 @@ export function onSyncEvent(o: SyncOut) {
     onPresence(o.msg.user, o.msg.device, o.msg.items);
     render();
   }
+  else if (o.msg.t === "invited") { invite = { code: o.msg.code, expires: o.msg.expires }; render(); }
   else if (o.msg.t === "error") log("error", `sync server: ${o.msg.code}: ${o.msg.message}`);
 }
 
@@ -382,12 +413,12 @@ export async function startSync() {
   // Ids are worth having unsynced too: they are what keeps two `api` checkouts' spend apart.
   await resolveIds(rosterPaths());
 }
-export async function pairSync(url: string, code: string, label: string, headers: [string, string][]) {
-  status = await invoke<SyncStatus>("sync_pair", { url, code, label, headers });
+export async function pairSync(url: string, code: string, label: string, user: string, headers: [string, string][]) {
+  status = await invoke<SyncStatus>("sync_pair", { url, code, label, user: user.trim() || null, headers });
   // A newly paired machine owes the server all its spend, and offers its prefs (see `seed`).
   dirty.clear();
   seed.clear();
-  for (const k of Object.keys(localStorage)) if (syncClass(k) === "pref") seed.add(k);
+  for (const k of Object.keys(localStorage)) if (syncClass(k) === "pref" && !excluded.has(k)) seed.add(k);
   seed.add(ROSTER_SEED);
   wire = {};
   saveWire();
@@ -401,6 +432,12 @@ export async function forgetSync() {
   render();
 }
 export function reconnectSync() { void invoke("sync_reconnect"); }
+/** Add a machine: the code arrives as `invited` and is shown until it expires. */
+export function requestInvite() {
+  invite = null;
+  void invoke<boolean>("sync_invite").then((ok) => { if (!ok) log("warn", "sync: not connected, no invite asked for"); });
+  render();
+}
 /** Replaces the proxy headers (an empty list removes them) and reconnects with the new set. */
 export async function setSyncHeaders(headers: [string, string][]) {
   status = await invoke<SyncStatus>("sync_set_headers", { headers });
@@ -412,6 +449,14 @@ export function tickSync(alive: (sessionId: string) => boolean = () => true) {
   if (status.connected) flush();
   render();
 }
+function sharesSpend(pid: string): boolean {
+  const paths = pathsOfId(pid);
+  return paths.length > 0 && paths.every((p) => shareModeOf(p) !== "off");
+}
+/** Teammates' spend on a project over `days`, per person; yours stays in `projectCost`. */
+export const projectTeamSpend = (pid: string | undefined, days: string[]) =>
+  pid && status.configured ? teamSpend(team, pid, days, status.user) : [];
+
 /** The days' spend per machine; just this one when nothing synced. */
 export const spendByMachine = (days: string[]): SpendSource[] =>
   spendSources(usage, peers, days, devices, status.device || "self");
@@ -551,6 +596,13 @@ function narrowNote(v: unknown): Omit<TeamNote, "id"> | null {
 function applyTeam(ev: SyncEvent): boolean {
   const sk = stampKey(ev.stream, ev.key);
   if (!wins(ev, stamps[sk])) return false;
+  if (ev.key.startsWith("spend|")) {
+    const usd = narrowSpend(ev.payload);
+    if (usd === null) return false;
+    team[ev.key] = { usd, user: ev.actor };
+    saveTeam();
+    return true;
+  }
   const digest = ev.key.startsWith("digest|"), share = ev.key.startsWith("share|");
   const value = ev.payload === null ? null
     : digest ? narrowDigest(ev.payload)

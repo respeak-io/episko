@@ -4,7 +4,7 @@ import {
   SYNC_KEYS, SYNC_DOWN_MS, PRESENCE_MAX, narrowPresence, parseHeaders, teamRows, acceptPref, acceptUsage, advance, mergeScoped, peerDays,
   prefOutbox, readPeers, syncClass, syncHealth, usageOutbox, wins, type Peers, type SyncEvent,
   PREF_LABEL, STREAM_INFO, deviceName, devicesByUser, digestCover, digestMisses, narrowDevices, narrowDigest, narrowShare,
-  prefDiff, readArrivals, spendSources,
+  prefDiff, readPending, spendSources, spendKey, teamSpend,
 } from "../src/sync";
 
 const ROOT = new URL("../", import.meta.url);
@@ -253,10 +253,34 @@ describe("a synced preference, in words", () => {
     const d = prefDiff(JSON.stringify(a), JSON.stringify(b), 8);
     expect([d.lines.length, d.more]).toEqual([8, 4]);
   });
-  it("drops a stored arrival of the wrong shape on its own", () => {
-    const ok = { at: 1, key: "cc-sort", device: "d", lines: [] };
-    expect(readArrivals(JSON.stringify([ok, { at: "x" }, null]))).toEqual([{ ...ok, more: 0 }]);
-    expect(readArrivals("{")).toEqual([]);
+  it("drops a held preference of the wrong shape, or one that is not a pref, on its own", () => {
+    const ok = { key: "cc-sort", value: "manual", at: 1, device: "d", lines: [] };
+    const held = readPending(JSON.stringify({ "cc-sort": ok, "cc-trusted": { ...ok, key: "cc-trusted" }, "cc-sound": { at: "x" } }));
+    expect(held).toEqual({ "cc-sort": { ...ok, more: 0 } });
+    expect(readPending("{")).toEqual({});
+  });
+});
+
+describe("a setting kept to this machine", () => {
+  it("is neither sent nor taken", () => {
+    const ex = new Set(["cc-sort"]);
+    expect(prefOutbox((k) => `v:${k}`, ex).some((p) => p.key === "cc-sort")).toBe(false);
+    expect(acceptPref(ev({ key: "cc-sort" }), undefined, "a", ex)).toBeNull();
+    expect(acceptPref(ev({ key: "cc-sort" }), undefined, "a")).not.toBeNull();
+  });
+});
+
+describe("a shared project's spend, per person", () => {
+  it("sums each teammate's machines over the days and leaves your own out", () => {
+    const cells = {
+      [spendKey("git:p", "2026-10-01", "d1")]: { usd: 2, user: "ana" },
+      [spendKey("git:p", "2026-10-02", "d2")]: { usd: 1, user: "ana" },
+      [spendKey("git:p", "2026-10-02", "d3")]: { usd: 5, user: "bob" },
+      [spendKey("git:p", "2026-10-02", "d4")]: { usd: 9, user: "me" },
+      [spendKey("git:q", "2026-10-02", "d3")]: { usd: 7, user: "bob" },
+      [spendKey("git:p", "2026-09-01", "d3")]: { usd: 7, user: "bob" },
+    };
+    expect(teamSpend(cells, "git:p", ["2026-10-01", "2026-10-02"], "me")).toEqual([{ user: "bob", usd: 5 }, { user: "ana", usd: 3 }]);
   });
 });
 

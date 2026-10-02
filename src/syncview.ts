@@ -4,11 +4,11 @@
 import { esc, escAttr } from "./format";
 import type { Activity, SyncStatus } from "./synclink";
 import {
-  STREAM_INFO, prefLabel, type Arrival, type DeviceInfo, type Stream, type SyncHealth, type UserDevices,
+  PREF_LABEL, STREAM_INFO, prefLabel, type DeviceInfo, type PendingPref, type Stream, type SyncHealth, type UserDevices,
 } from "./sync";
 import type { ShareMode } from "./state";
 
-export interface SyncDraft { url: string; code: string; label: string; headers: string }
+export interface SyncDraft { url: string; code: string; user: string; label: string; headers: string }
 
 /** One project as Settings › Sync lists it. `id` absent: not in git, so nothing of it syncs. */
 export interface ProjectSyncRow {
@@ -19,7 +19,8 @@ export interface ProjectSyncRow {
 export interface SyncPanel {
   st: SyncStatus; h: SyncHealth; draft: SyncDraft; busy: boolean; err: string | null; prefsArrived: number;
   users: UserDevices[]; online: Set<string>; activity: Partial<Record<Stream, Activity>>;
-  arrivals: Arrival[]; nameOf: (device: string) => string; projects: ProjectSyncRow[]; now: number;
+  pending: PendingPref[]; excluded: ReadonlySet<string>; invite: { code: string; expires: number } | null;
+  nameOf: (device: string) => string; projects: ProjectSyncRow[]; now: number;
 }
 
 const ago = (ms: number) => {
@@ -53,10 +54,12 @@ function pairForm(d: SyncDraft, busy: boolean, err: string | null): string {
       data-syncfield="${id}" placeholder="${escAttr(ph)}" value="${escAttr(d[id])}">`;
   return `<div class="titlebox syncbox">
     ${field("url", "Server address", "https://sync.example.com  or  100.64.0.2:7878")}
-    ${field("code", "Invite code", "EPSK-XXXX-XXXX")}
+    ${field("code", "Code", "the team's registration code, or EPSK-XXXX-XXXX")}
+    ${field("user", "Your name", "Ana", false)}
     ${field("label", "Name this machine", "Laptop", false)}
-    <div class="thint">On the server, <span class="mono">episko-server invite</span> prints a code for another machine of
-      yours; <span class="mono">episko-server invite --user NAME</span> prints one for a teammate. It works once, for ten minutes.</div>
+    <div class="thint"><b>New here:</b> enter the team's registration code and your name. <b>Another machine of yours:</b>
+      choose <i>Add a machine</i> in Settings › Sync on one that is already paired, and enter its code here; the name
+      can stay empty, since the code already knows who you are.</div>
     ${headerField(d.headers)}
     ${err ? `<div class="sync-err">${esc(err)}</div>` : ""}
     <div class="trow-end"><button class="set-abtn" data-setsync="pair"${busy ? " disabled" : ""}>${busy ? "Pairing…" : "Pair"}</button></div>
@@ -81,9 +84,24 @@ function machines(p: SyncPanel): string {
       <div class="sync-devs">${u.devices.map(dev).join("")}</div>
       <div class="sync-dim">${u.mine ? "share your preferences, spend, limits and projects" : "sees shared notes, the work log, claims and what is open"}</div>
     </div>`).join("");
-  return sect("Machines", rows, `A machine's user is the name it was invited under: one name is one person. Pair another
-    machine of yours with <span class="mono">episko-server invite</span>; a teammate needs
-    <span class="mono">--user NAME</span>, or they share your settings and spend.`);
+  const left = p.invite ? Math.max(0, Math.round((p.invite.expires - p.now) / 60_000)) : 0;
+  const code = p.invite && p.invite.expires > p.now
+    ? `<div class="sync-invite"><span class="mono">${esc(p.invite.code)}</span><span class="sync-dim">works once, for ${left} more minute${left === 1 ? "" : "s"}: enter it on the new machine</span></div>` : "";
+  return sect("Machines", `${rows}
+    <div class="trow-end"><button class="set-freset" data-setsync="invite"${p.st.connected ? "" : " disabled"}>Add a machine</button></div>${code}`,
+    `Everyone is one name. Your machines share your preferences, spend and projects; teammates join with the team's
+    registration code and their own name.`);
+}
+
+function prefs(p: SyncPanel): string {
+  const rows = Object.keys(PREF_LABEL).map((k) => {
+    const kept = p.excluded.has(k);
+    return `<div class="sync-pref"><span>${esc(prefLabel(k))}</span>
+      <button class="sync-seg${kept ? "" : " on"}" data-setsync="excl|${escAttr(k)}|0">Syncs</button><button class="sync-seg${kept ? " on" : ""}" data-setsync="excl|${escAttr(k)}|1">This machine only</button></div>`;
+  }).join("");
+  return sect("Settings that follow you", `<div class="sync-prefs">${rows}</div>`,
+    `A change another machine makes is shown to you before it applies here. A setting kept to this machine is neither
+    sent nor taken.`);
 }
 
 function streams(p: SyncPanel): string {
@@ -101,17 +119,24 @@ function streams(p: SyncPanel): string {
     (prompts, transcripts, diffs, session titles) ever does.`);
 }
 
-function arrived(p: SyncPanel): string {
-  if (!p.arrivals.length && !p.prefsArrived) return "";
-  const rows = p.arrivals.map((a) => `<div class="sync-arr">
-      <div class="sync-arr-h"><b>${esc(prefLabel(a.key))}</b><span class="sync-dim">from ${esc(p.nameOf(a.device))} · ${ago(p.now - a.at)}</span></div>
+function waiting(p: SyncPanel): string {
+  const n = p.pending.length;
+  const review = n ? `<div class="sync-arrived">${n} setting${n === 1 ? "" : "s"} from your other machines wait${n === 1 ? "s" : ""} for you.
+      <button class="set-abtn" data-setsync="review">Review</button></div>` : "";
+  const reload = p.prefsArrived ? `<div class="sync-arrived">What you accepted applies when the interface reloads.
+      <button class="set-abtn" data-setsync="reload">Reload now</button></div>` : "";
+  return review + reload;
+}
+
+/** The review dialog's list: what each setting becomes here, ticked to apply unless you untick it. */
+export function reviewHtml(items: PendingPref[], off: ReadonlySet<string>, nameOf: (device: string) => string, now: number): string {
+  return items.map((a) => `<div class="srv-item${off.has(a.key) ? " off" : ""}">
+      <label class="srv-h"><input type="checkbox" data-srv="tick|${escAttr(a.key)}"${off.has(a.key) ? "" : " checked"}>
+        <b>${esc(prefLabel(a.key))}</b><span class="sync-dim">from ${esc(nameOf(a.device))} · ${ago(now - a.at)}</span>
+        <button class="srv-keep" data-srv="keep|${escAttr(a.key)}" title="Never take or send this setting">Keep mine, always</button></label>
       ${a.lines.map((l) => `<div class="sync-diff mono">${l.path ? `<span class="sync-dp">${esc(l.path)}</span>` : ""}<span class="sync-del">${esc(l.from)}</span>→<span class="sync-add">${esc(l.to)}</span></div>`).join("")}
       ${a.more ? `<div class="sync-dim">and ${a.more} more</div>` : ""}
     </div>`).join("");
-  const banner = p.prefsArrived ? `<div class="sync-arrived">These apply when the interface reloads.
-      <button class="set-abtn" data-setsync="reload">Reload now</button></div>` : "";
-  return sect("Arrived from your other machines", `${banner}${rows}
-    ${p.arrivals.length ? `<div class="trow-end"><button class="set-freset" data-setsync="clearArrivals">Clear this list</button></div>` : ""}`);
 }
 
 const MODE_TEXT: Record<ShareMode, string> = { git: "Git", server: "Sync server", off: "Nowhere" };
@@ -125,7 +150,7 @@ function projects(p: SyncPanel): string {
       ? `<div class="sync-dim">the team last chose ${MODE_TEXT[r.team.mode]}${r.team.by ? ` (${esc(r.team.by)})` : ""}</div>` : "";
     const facts = [r.lines ? `${r.lines} work-log day${r.lines === 1 ? "" : "s"}` : "", r.notes ? `${r.notes} note${r.notes === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
     const move = r.digestFile && r.mode !== "git" && r.id
-      ? `<button class="set-freset" data-setsync="movelog|${escAttr(r.key)}" title="Send .episko/digest.md's days to the server, then delete the file">Move digest.md to the server</button>` : "";
+      ? `<button class="set-freset" data-setsync="movelog|${escAttr(r.key)}" title="Send .episko/digest.md's days to the server, then delete the file and commit the deletion">Move to the server and commit</button>` : "";
     return `<tr><td>${esc(r.name)}<div class="sync-dim mono">${r.id ? esc(r.id.slice(0, 16)) : "not in git: stays on this machine"}</div></td>
       <td><div class="sync-segs">${modes}</div>${team}</td>
       <td>${facts ? `<span class="sync-dim">on the server: ${facts}</span>` : ""}${r.digestFile ? `<div class="sync-dim">.episko/digest.md in the repo</div>` : ""}${move}</td></tr>`;
@@ -143,6 +168,8 @@ export function syncPanelHtml(p: SyncPanel): string {
   const row = (k: string, v: string, cls = "") => `<div class="tprev-r"><span class="tprev-k">${k}</span><span class="tprev-v${cls}">${v}</span></div>`;
   const state = st.halted ? "The server no longer accepts this machine. Forget it and pair again."
     : st.connected ? "Connected." : st.error ? esc(st.error) : "Connecting…";
+  const me = st.user === "me" ? `<div class="thint">Your name on this server is still <span class="mono">me</span>. Its admin can
+    run <span class="mono">episko-server rename me YourName</span>; your settings and spend follow the new name.</div>` : "";
   return `<div class="titlebox syncbox">
     <div class="tprev">
       ${row("State", `<span class="sync-h sync-${h}">${esc(syncSummary(st, h))}</span> ${state}`)}
@@ -150,8 +177,10 @@ export function syncPanelHtml(p: SyncPanel): string {
       ${row("You", `${esc(st.label || "unnamed")} <span class="sync-dim">as user</span> <span class="mono">${esc(st.user || "?")}</span>`)}
       ${row("Last", st.lastOkAt ? `exchange ${ago(p.now - st.lastOkAt)}` : "never")}
     </div>
-    ${arrived(p)}
+    ${me}
+    ${waiting(p)}
     ${machines(p)}
+    ${prefs(p)}
     ${streams(p)}
     ${projects(p)}
     <div class="trow-end">

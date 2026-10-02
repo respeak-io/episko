@@ -23,10 +23,20 @@ Markers: `+` new · `~` changed · `!` fixed
 + **Each project's sharing channel, in one table.** Settings › Sync › Projects shows every
   project's sync id and lets you pick Git, Sync server or Nowhere. Choosing Git or Sync server now
   switches your teammates too, so nobody keeps committing a file the rest moved off the repo.
-  *Move digest.md to the server* sends the committed work log to the server and deletes the file.
 ~ **A work-log line knows which commits it covers.** A teammate holding commits the line missed
   redoes it, starting from the old line, so neither machine's work drops out of the day.
-~ `episko-server invite` says which user the code pairs, and how to invite a teammate instead.
++ **People register themselves.** Set `EPISKO_REGISTER_CODE` on the server and a teammate pairs
+  with that code and their own name; no more inviting each person by hand. A name is claimed once,
+  so the team code cannot be used to read someone else's settings. Another machine of yours joins
+  through *Add a machine* in Settings › Sync, and `episko-server rename me YourName` retires the
+  old default name.
+~ **Settings from another machine wait for you.** They no longer land unseen: a dialog shows each
+  one as a before-and-after and applies what you leave ticked. *Keep mine, always*, or the per-setting
+  switches in Settings › Sync, keep a setting to this machine, neither sent nor taken.
++ **Your spend and the project's.** On a project shared through sync, the dashboard shows what you
+  spent beside what the whole team spent, person by person.
+~ *Move to the server and commit* deletes `.episko/digest.md` and commits just that, leaving
+  anything you had staged alone.
 
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the

@@ -1954,8 +1954,13 @@ select.in-ctl { cursor: pointer; }
 .syncbox .sync-seg.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); font-weight: 650; }
 .syncbox .sync-seg:disabled { opacity: .4; cursor: default; }
 .syncbox .sync-proj .set-freset { margin-top: 5px; }
-.syncbox .sync-arr { display: flex; flex-direction: column; gap: 2px; padding: 5px 9px; border-radius: 8px; background: var(--surface); border: 1px solid var(--hair); }
-.syncbox .sync-arr-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; }
+.syncbox .sync-prefs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 16px; }
+.syncbox .sync-pref { display: flex; align-items: center; gap: 0; font-size: 11.5px; }
+.syncbox .sync-pref > span { flex: 1; min-width: 0; }
+.syncbox .sync-pref .sync-seg { border: 1px solid var(--hair); }
+.syncbox .sync-pref .sync-seg + .sync-seg { border-left: 0; }
+.syncbox .sync-invite { display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; border-radius: 8px; border: 1px dashed var(--accent); }
+.syncbox .sync-invite .mono { font-size: 14px; font-weight: 700; user-select: all; }
 .syncbox .sync-diff { display: flex; align-items: baseline; gap: 6px; font-size: 10.5px; color: var(--muted); min-width: 0; }
 .syncbox .sync-dp { color: var(--muted-2); }
 .syncbox .sync-del { color: var(--st-error); text-decoration: line-through; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2112,6 +2117,20 @@ select.in-ctl { cursor: pointer; }
 .cfm.show { visibility: visible; opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); transition: opacity .14s, transform .14s cubic-bezier(.32,.72,0,1), visibility 0s; }
 
 .cfm-head { display: flex; align-items: center; gap: 9px; }
+/* the sync review: a list of settings, so wider than a question */
+.cfm.srv { width: min(560px, 94vw); }
+.srv-body { display: flex; flex-direction: column; gap: 6px; }
+.srv-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; border-radius: 8px; background: var(--surface); border: 1px solid var(--hair); }
+.srv-item.off { opacity: .55; }
+.srv-h { display: flex; align-items: baseline; gap: 7px; cursor: pointer; }
+.srv-h b { color: var(--text); }
+.srv-keep { margin-left: auto; font-size: 10.5px; color: var(--muted); background: transparent; border: 0; cursor: pointer; text-decoration: underline dotted; }
+.srv-keep:hover { color: var(--text); }
+.srv-body .sync-diff { display: flex; align-items: baseline; gap: 6px; font-size: 10.5px; color: var(--muted); min-width: 0; padding-left: 21px; }
+.srv-body .sync-dp { color: var(--muted-2); }
+.srv-body .sync-del { color: var(--st-error); text-decoration: line-through; opacity: .8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-body .sync-add { color: var(--st-done); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-body .sync-dim { color: var(--muted-2); font-size: 10.5px; }
 .cfm-head b { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
 /* a drawn box around a letter, not ⚠/ℹ️: those land as colour emoji in half the fonts (see ./confirm) */
 .cfm-ic { flex: none; width: 20px; height: 20px; border-radius: 7px; display: grid; place-items: center; font: 700 11px var(--font-ui); }

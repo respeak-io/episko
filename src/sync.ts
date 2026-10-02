@@ -37,7 +37,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // Sync's own bookkeeping, and what it received: never sent back.
   "cc-usage-peers": "local", "cc-detail-peers": "local", "cc-sync-stamps": "local",
   "cc-sync-dirty": "local", "cc-sync-sent": "local", "cc-sync-limits": "local", "cc-sync-seed": "local",
-  "cc-sync-roster": "local", "cc-sync-devices": "local", "cc-sync-arrivals": "local", "cc-proj-ids": "local", "cc-team-notes": "local", "cc-digest-no": "local", "cc-team-claims": "local",
+  "cc-sync-roster": "local", "cc-sync-devices": "local", "cc-sync-pending": "local", "cc-sync-exclude": "local", "cc-proj-ids": "local", "cc-team-notes": "local", "cc-digest-no": "local", "cc-team-claims": "local",
   // A cache of what each project's own site declares: every machine probes it for itself.
   "cc-icons": "local",
 };
@@ -70,10 +70,10 @@ export interface PrefOut { key: string; value: string }
 export interface PrefIn { key: string; value: string | null }
 
 /** The one payload builder for prefs. It reads only through `get`, and only `pref` keys. */
-export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
+export function prefOutbox(get: (key: string) => string | null, excluded: ReadonlySet<string> = new Set()): PrefOut[] {
   const out: PrefOut[] = [];
   for (const [key, cls] of Object.entries(SYNC_KEYS)) {
-    if (cls !== "pref") continue;
+    if (cls !== "pref" || excluded.has(key)) continue;
     const value = get(key);
     if (value !== null) out.push({ key, value });
   }
@@ -81,8 +81,9 @@ export function prefOutbox(get: (key: string) => string | null): PrefOut[] {
 }
 
 /** An incoming pref to write, or null. A key we would not send is a key we will not take. */
-export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string): PrefIn | null {
-  if (ev.stream !== "prefs" || ev.device === self || syncClass(ev.key) !== "pref") return null;
+/** `excluded` is the keys kept to this machine (`cc-sync-exclude`): neither sent nor taken. */
+export function acceptPref(ev: SyncEvent, held: Stamp | undefined, self: string, excluded: ReadonlySet<string> = new Set()): PrefIn | null {
+  if (ev.stream !== "prefs" || ev.device === self || syncClass(ev.key) !== "pref" || excluded.has(ev.key)) return null;
   if (!wins(ev, held)) return null;
   if (ev.payload === null) return { key: ev.key, value: null };
   if (typeof ev.payload !== "string") return null;
@@ -422,17 +423,20 @@ export function prefDiff(before: string | null, after: string | null, max = 8): 
   return { lines: lines.slice(0, max), more: Math.max(0, lines.length - max) };
 }
 
-/** One preference another machine changed here; `cc-sync-arrivals`, newest first. */
-export interface Arrival { at: number; key: string; device: string; lines: DiffLine[]; more: number }
-export const ARRIVALS_MAX = 30;
-export function readArrivals(raw: string | null): Arrival[] {
-  const v = safeParse<unknown[]>(raw);
-  if (!Array.isArray(v)) return [];
-  return v.filter((x): x is Arrival => {
-    const a = x as Partial<Arrival> | null;
-    return !!a && typeof a === "object" && typeof a.at === "number" && typeof a.key === "string"
-      && typeof a.device === "string" && Array.isArray(a.lines);
-  }).map((a) => ({ ...a, more: typeof a.more === "number" ? a.more : 0 })).slice(0, ARRIVALS_MAX);
+/** A preference another machine changed, held until you say whether it applies here. */
+export interface PendingPref { key: string; value: string | null; at: number; device: string; lines: DiffLine[]; more: number }
+export function readPending(raw: string | null): Record<string, PendingPref> {
+  const v = safeParse<Record<string, unknown>>(raw);
+  const out: Record<string, PendingPref> = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [k, x] of Object.entries(v)) {
+    const p = x as Partial<PendingPref> | null;
+    if (!p || typeof p !== "object" || p.key !== k || syncClass(k) !== "pref") continue;
+    if (typeof p.at !== "number" || typeof p.device !== "string" || !Array.isArray(p.lines)) continue;
+    if (p.value !== null && typeof p.value !== "string") continue;
+    out[k] = { key: k, value: p.value ?? null, at: p.at, device: p.device, lines: p.lines, more: typeof p.more === "number" ? p.more : 0 };
+  }
+  return out;
 }
 
 // ---------- what each stream carries, and who it reaches ----------
@@ -444,7 +448,7 @@ export const STREAM_INFO: Readonly<Record<Stream, { label: string; scope: "you" 
   detail: { label: "Spend split", scope: "you", what: "each day by model and project; never session titles" },
   limits: { label: "Limits", scope: "you", what: "the freshest rate-limit reading" },
   roster: { label: "Projects", scope: "you", what: "favourites, order, groups, colours, icons, agent, gh account, sharing" },
-  notes: { label: "Notes and work log", scope: "team", what: "shared notes, each day's project line, and a project's sharing channel" },
+  notes: { label: "Notes and work log", scope: "team", what: "shared notes, each day's project line, the sharing channel, and each person's spend on a shared project" },
   claims: { label: "Claims", scope: "team", what: "who dispatched at an issue or PR, while that session runs" },
 };
 
@@ -480,3 +484,28 @@ export function digestCover(prev: DigestLine | undefined, shas: string[]): strin
 
 /** A project's sharing channel as the team set it: `share|<pid>` on the notes stream. */
 export const narrowShare = (v: unknown): "git" | "server" | null => (v === "git" || v === "server" ? v : null);
+
+// ---------- a shared project's spend, per person ----------
+
+// `spend|<pid>|<day>|<device>` on the team stream: one cell per machine, so nobody overwrites anybody.
+export interface TeamSpend { usd: number; user: string }
+export const spendKey = (pid: string, day: string, device: string) => `spend|${pid}|${day}|${device}`;
+export function narrowSpend(v: unknown): number | null {
+  const n = typeof v === "string" ? Number(v) : v;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/** Every teammate's spend on a project over `days`, per person, largest first; your own machines excluded. */
+export function teamSpend(cells: Record<string, unknown>, pid: string, days: string[], selfUser: string): { user: string; usd: number }[] {
+  const want = new Set(days), by = new Map<string, number>();
+  const pre = `spend|${pid}|`;
+  for (const [k, v] of Object.entries(cells)) {
+    if (!k.startsWith(pre)) continue;
+    const day = k.slice(pre.length).split("|")[0];
+    const c = v as Partial<TeamSpend> | null;
+    if (!want.has(day) || !c || typeof c.user !== "string" || c.user === selfUser) continue;
+    const usd = narrowSpend(c.usd);
+    if (usd) by.set(c.user, (by.get(c.user) ?? 0) + usd);
+  }
+  return [...by.entries()].map(([user, usd]) => ({ user, usd })).sort((a, b) => b.usd - a.usd);
+}

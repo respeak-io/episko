@@ -434,6 +434,19 @@
       </div>
     </div>
 
+    <!-- Settings another machine changed, held until answered here (src/syncreview.ts). -->
+    <div class="cfm-scrim" id="srvScrim"></div>
+    <div class="cfm srv k-info" id="srvDlg" role="dialog" aria-modal="true" aria-labelledby="srvTitle">
+      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true">⇅</span><b id="srvTitle">Settings from your other machines</b></div>
+      <div class="cfm-body srv-body" id="srvBody"></div>
+      <div class="cfm-foot">
+        <span class="cfm-hint">Unticked ones keep this machine's value</span>
+        <button class="cfm-btn ghost" id="srvLater" type="button">Later</button>
+        <button class="cfm-btn ghost" id="srvApply" type="button">Apply</button>
+        <button class="cfm-btn go" id="srvReload" type="button">Apply and reload</button>
+      </div>
+    </div>
+
     <div class="toast" id="toast"></div>
     <div class="menupop ctxmenu" id="ctxMenu"></div>
     <!-- The popover menu (./menu): a title and groups of items, anchored to the control it

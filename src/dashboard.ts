@@ -67,7 +67,7 @@ import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from ".
 import { dayDetail, usageWindow } from "./usage";
 import { digestCover, digestMisses } from "./sync";
 import {
-  leaseFor, projectIdOf, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
+  leaseFor, projectIdOf, projectTeamSpend, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
 } from "./synclink";
 import {
   accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
@@ -762,6 +762,13 @@ function fitLanded(): boolean {
   return true;
 }
 
+// Teammates' spend over the band's window: every day of the range from `since`, not only the days
+// you worked, since a teammate's busy day may be one you never opened the project.
+function bandTeamSpend(since: number) {
+  const keys = usageWindow(dashRange).map((u) => u.key).filter((k) => new Date(`${k}T00:00:00`).getTime() >= since);
+  return shareMode() === "off" ? [] : projectTeamSpend(pid(), keys);
+}
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
@@ -851,7 +858,7 @@ export function renderDash(): void {
   landedDrawn = rows.length;
   const movedChanged = paint("dashMoved", (loading
       ? bandSkeleton(tier)
-      : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared))
+      : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared, bandTeamSpend(f.since)))
     + worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none")
     + landedCard({
       rows, span, head, hidden, on: botFold,

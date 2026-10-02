@@ -427,16 +427,17 @@ export async function moveWorkLogToServer(colorKey: string): Promise<void> {
   if (!pid || !syncStatus.connected) { toast("Connect to the sync server first"); return; }
   const lines = await invoke<Record<string, string>>("read_digest", { root: colorKey }).catch(() => ({} as Record<string, string>));
   const n = Object.keys(lines).length;
-  const ok = await ask(`${n ? `${n} day${n === 1 ? "" : "s"} of .episko/digest.md go to the sync server, then the` : "The"} file is deleted from this checkout.\n\n`
-    + "Commit the deletion yourself; teammates on the sync server keep seeing the work log.",
-    { title: `Move ${basename(colorKey)}'s work log to the server?`, kind: "warning", okLabel: "Move and delete", cancelLabel: "Keep the file" });
+  const ok = await ask(`${n ? `${n} day${n === 1 ? "" : "s"} of .episko/digest.md go to the sync server, then the` : "The"} file is deleted `
+    + "and the deletion committed on the branch this checkout is on.\n\n"
+    + "Only that file goes into the commit: anything you have staged stays staged. Push it when you are ready.",
+    { title: `Move ${basename(colorKey)}'s work log to the server?`, kind: "warning", okLabel: "Move and commit", cancelLabel: "Keep the file" });
   if (!ok) return;
   for (const [day, line] of Object.entries(lines)) if (line) publishDigest(pid, day, line, null);
   if (shareModeOf(colorKey) !== "server") setProjectShareMode(colorKey, "server");
   try {
-    await invoke("remove_digest", { root: colorKey });
-    toast(".episko/digest.md deleted; commit the deletion to share it");
-  } catch (e) { toast(`Could not delete .episko/digest.md: ${e}`); }
+    const committed = await invoke<boolean>("commit_digest_removal", { root: colorKey });
+    toast(committed ? "Work log moved; the deletion is committed, push when ready" : "Work log moved; git never tracked the file");
+  } catch (e) { toast(`The work log moved, but the commit failed: ${e}`); }
   renderAll();
 }
 

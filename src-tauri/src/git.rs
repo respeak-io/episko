@@ -1613,7 +1613,7 @@ fn git_checked(what: &str, dir: &str, args: &[&str]) -> Result<Option<std::proce
 
 /// Run git with a hard timeout: `Child::wait` has none, so a scratch thread waits and the
 /// pid is killed on overrun. Without it a fetch to an unreachable remote hangs a worker forever.
-fn git_run(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
+pub(crate) fn git_run(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

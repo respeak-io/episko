@@ -88,7 +88,16 @@ pub struct Event {
 pub enum ClientMsg {
     /// Trade a one-use invite code for a token. `label` is for people; the device id is the
     /// server's, so two machines both called "MacBook" never share a usage cell.
-    Pair { code: String, label: String },
+    /// With a server's registration code instead of an invite, `user` names the new person; a
+    /// name already taken is refused, since a second machine of yours comes from `Invite`.
+    Pair {
+        code: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+    },
+    /// After hello: a one-use code that pairs another machine of this same user.
+    Invite {},
     /// Open a session; the server replays everything after `since`, then streams.
     Hello { token: String, since: u64, protocol: u32 },
     Push { events: Vec<NewEvent> },
@@ -125,6 +134,8 @@ pub enum ServerMsg {
     /// The seqs the log gave a push's events, in the order they were sent.
     Pushed { seqs: Vec<u64> },
     Error { code: ErrorCode, message: String },
+    /// The answer to `Invite`: good once, until `expires` (ms).
+    Invited { code: String, expires: i64 },
     /// A device's presence; `items: null` means it went away or its heartbeat lapsed.
     Presence { user: String, device: String, items: serde_json::Value },
 }

@@ -1,7 +1,7 @@
 //! One thread per connection, like the app's telemetry server. A connection pairs or says
 //! hello, is replayed everything after its cursor, and then hears every other device's pushes.
 
-use crate::store::{Identity, PushError, Store};
+use crate::store::{valid_name, Identity, PushError, Store, INVITE_TTL_MS};
 use episko_proto::{ClientMsg, ErrorCode, Event, ServerMsg, MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL};
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -19,6 +19,16 @@ const POLL: Duration = Duration::from_millis(100);
 const PING_EVERY: Duration = Duration::from_secs(30);
 
 type Sock = WebSocket<TcpStream>;
+
+/// What the environment configured: the workspace everyone joins, and the code that lets a new
+/// person register themselves (`EPISKO_REGISTER_CODE`); `None` keeps pairing invite-only.
+pub struct Config {
+    pub ws: String,
+    pub register: Option<String>,
+}
+
+// A wrong code costs this long, so a registration code cannot be guessed at line speed.
+const WRONG_CODE_DELAY: Duration = Duration::from_millis(400);
 
 /// What the hub hands a connection: a batch of log events, or one device's presence.
 #[derive(Clone)]
@@ -111,7 +121,7 @@ pub fn now_ms() -> i64 {
 }
 
 /// Accepts forever. Each connection's failure is its own and never reaches the listener.
-pub fn serve(listener: TcpListener, store: Arc<Store>) {
+pub fn serve(listener: TcpListener, store: Arc<Store>, cfg: Arc<Config>) {
     let hub = Arc::new(Hub::default());
     let sweeper = hub.clone();
     std::thread::spawn(move || loop {
@@ -120,10 +130,10 @@ pub fn serve(listener: TcpListener, store: Arc<Store>) {
     });
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
-        let (store, hub) = (store.clone(), hub.clone());
+        let (store, hub, cfg) = (store.clone(), hub.clone(), cfg.clone());
         std::thread::spawn(move || {
             let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
-            if let Err(e) = connection(stream, &store, &hub) {
+            if let Err(e) = connection(stream, &store, &hub, &cfg) {
                 eprintln!("[episko-server] {peer}: {e}");
             }
         });
@@ -142,7 +152,29 @@ fn is_timeout(e: &tungstenite::Error) -> bool {
     matches!(e, tungstenite::Error::Io(io) if matches!(io.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut))
 }
 
-fn connection(stream: TcpStream, store: &Store, hub: &Hub) -> Result<(), String> {
+/// Equal-time comparison: how long a refusal takes must not say how much of the code was right.
+fn same_code(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim().as_bytes(), b.trim().as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// An invite pairs a machine of the user it names; the registration code makes a new person.
+fn pair(store: &Store, cfg: &Config, code: &str, label: &str, user: Option<&str>) -> Result<(String, Identity), (ErrorCode, String)> {
+    let internal = |e: rusqlite::Error| (ErrorCode::Internal, e.to_string());
+    if let Some(hit) = store.redeem(code, label, now_ms()).map_err(internal)? { return Ok(hit); }
+    if !cfg.register.as_deref().is_some_and(|r| !r.trim().is_empty() && same_code(code, r)) {
+        std::thread::sleep(WRONG_CODE_DELAY);
+        return Err((ErrorCode::BadInvite, "that code is wrong, used or expired".into()));
+    }
+    let name = valid_name(user.unwrap_or("")).map_err(|m| (ErrorCode::BadInvite, format!("this is the team's registration code: {m}")))?;
+    match store.register(&cfg.ws, &name, label, now_ms()).map_err(internal)? {
+        Some(hit) => Ok(hit),
+        None => Err((ErrorCode::BadInvite, format!(
+            "{name} is already registered here. To add another machine of yours, open Settings › Sync on one that is paired and choose Add a machine"))),
+    }
+}
+
+fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Result<(), String> {
     stream.set_read_timeout(Some(HELLO_WITHIN)).map_err(|e| e.to_string())?;
     let mut sock = tungstenite::accept(stream).map_err(|e| e.to_string())?;
     let (who, since) = loop {
@@ -153,10 +185,9 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub) -> Result<(), String>
             Err(e) => return Err(format!("before hello: {e}")),
         };
         match serde_json::from_str::<ClientMsg>(&text) {
-            Ok(ClientMsg::Pair { code, label }) => match store.redeem(&code, &label, now_ms()) {
-                Ok(Some((token, who))) => send(&mut sock, &ServerMsg::Paired { token, user: who.user, device: who.device }),
-                Ok(None) => refuse(&mut sock, ErrorCode::BadInvite, "that invite code is wrong, used or expired"),
-                Err(e) => refuse(&mut sock, ErrorCode::Internal, e.to_string()),
+            Ok(ClientMsg::Pair { code, label, user }) => match pair(store, cfg, &code, &label, user.as_deref()) {
+                Ok((token, who)) => send(&mut sock, &ServerMsg::Paired { token, user: who.user, device: who.device }),
+                Err((code, message)) => refuse(&mut sock, code, message),
             }
             .map_err(|e| e.to_string())?,
             Ok(ClientMsg::Hello { protocol, .. }) if protocol != PROTOCOL => {
@@ -171,7 +202,7 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub) -> Result<(), String>
                 }
                 Err(e) => return Err(e.to_string()),
             },
-            Ok(ClientMsg::Push { .. } | ClientMsg::Presence { .. }) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
+            Ok(ClientMsg::Push { .. } | ClientMsg::Presence { .. } | ClientMsg::Invite {}) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
             Err(e) => refuse(&mut sock, ErrorCode::BadMessage, e.to_string()).map_err(|e| e.to_string())?,
         }
     };
@@ -232,6 +263,14 @@ fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text
             hub.set_presence(who, items);
             return Ok(());
         }
+        // Another machine of the same person: the code names this connection's user, never another.
+        Ok(ClientMsg::Invite {}) => {
+            let now = now_ms();
+            return match store.create_invite(&who.ws, &who.user, now) {
+                Ok(code) => send(sock, &ServerMsg::Invited { code, expires: now + INVITE_TTL_MS }),
+                Err(e) => refuse(sock, ErrorCode::Internal, e.to_string()),
+            };
+        }
         Ok(_) => return refuse(sock, ErrorCode::BadMessage, "already said hello; only push from here"),
         Err(e) => return refuse(sock, ErrorCode::BadMessage, e.to_string()),
     };
@@ -263,7 +302,8 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let store = Arc::new(Store::open_in_memory().unwrap());
         let s = store.clone();
-        std::thread::spawn(move || serve(listener, s));
+        let cfg = Arc::new(Config { ws: "default".into(), register: Some("TEAM-CODE-1234".into()) });
+        std::thread::spawn(move || serve(listener, s, cfg));
         (addr, store)
     }
 
@@ -286,7 +326,7 @@ mod tests {
     fn pair(addr: SocketAddr, store: &Store, label: &str) -> (String, String) {
         let mut c = connect(addr);
         let code = store.create_invite("default", "me", now_ms()).unwrap();
-        say(&mut c, &ClientMsg::Pair { code, label: label.into() });
+        say(&mut c, &ClientMsg::Pair { code, label: label.into(), user: None });
         match hear(&mut c) {
             ServerMsg::Paired { token, device, .. } => (token, device),
             m => panic!("expected Paired, got {m:?}"),
@@ -374,13 +414,41 @@ mod tests {
         match rx.try_recv() { Ok(Out::Presence(ServerMsg::Presence { items, .. })) => assert!(items.is_null()), _ => panic!("no sweep") }
     }
 
+    fn register(addr: SocketAddr, code: &str, user: Option<&str>) -> ServerMsg {
+        let mut c = connect(addr);
+        say(&mut c, &ClientMsg::Pair { code: code.into(), label: "lap".into(), user: user.map(Into::into) });
+        hear(&mut c)
+    }
+
+    #[test]
+    fn a_person_registers_once_and_adds_machines_by_invite() {
+        let (addr, _) = start();
+        let token = match register(addr, "TEAM-CODE-1234", Some("Ana")) {
+            ServerMsg::Paired { token, user, .. } => { assert_eq!(user, "Ana"); token }
+            m => panic!("expected Paired, got {m:?}"),
+        };
+        assert!(matches!(register(addr, "TEAM-CODE-1234", Some("ana")), ServerMsg::Error { code: ErrorCode::BadInvite, .. }),
+            "the team code cannot claim a name that exists");
+        assert!(matches!(register(addr, "TEAM-CODE-1234", None), ServerMsg::Error { code: ErrorCode::BadInvite, .. }));
+        assert!(matches!(register(addr, "TEAM-CODE-0000", Some("bob")), ServerMsg::Error { code: ErrorCode::BadInvite, .. }));
+        let (mut c, _) = hello(addr, &token, 0);
+        say(&mut c, &ClientMsg::Invite {});
+        let code = loop {
+            if let ServerMsg::Invited { code, .. } = hear(&mut c) { break code; }
+        };
+        match register(addr, &code, None) {
+            ServerMsg::Paired { user, .. } => assert_eq!(user, "Ana", "an invite pairs the asker's own user"),
+            m => panic!("expected Paired, got {m:?}"),
+        }
+    }
+
     #[test]
     fn a_stranger_gets_an_answer_and_nothing_else() {
         let (addr, _) = start();
         let mut c = connect(addr);
         say(&mut c, &ClientMsg::Push { events: vec![pref("cc-sort")] });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::NotReady, .. }));
-        say(&mut c, &ClientMsg::Pair { code: "EPSK-0000-0000".into(), label: "x".into() });
+        say(&mut c, &ClientMsg::Pair { code: "EPSK-0000-0000".into(), label: "x".into(), user: None });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadInvite, .. }));
         say(&mut c, &ClientMsg::Hello { token: "nope".into(), since: 0, protocol: PROTOCOL });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadToken, .. }));

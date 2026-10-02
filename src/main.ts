@@ -120,6 +120,7 @@ import {
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
+import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
   beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
   tickSync, type SyncOut,
@@ -241,7 +242,7 @@ setSettingsHost({
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
   syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
-  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer,
+  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer, syncReview: openReview,
   syncHasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
 setTourHost({
@@ -466,7 +467,9 @@ setSyncHost({
   render: renderAll, log: dlog,
   // A teammate chose this project's channel: every checkout of it here follows.
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
+  review: () => { refreshReview(); openReview(); },
 });
+setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 
 listen<BgLogHealthEvent>("bglog-health", (e) => {

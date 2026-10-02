@@ -135,13 +135,22 @@ the server had nothing for, at the oldest possible stamp.
 
 ## Who is who
 
-A machine's **user** is the name its invite was printed for (`episko-server invite --user ana`;
-no flag means `me`). That name is the whole identity. Machines under one name share the personal
-streams (prefs, spend, limits, roster), and a teammate under another name sees only the team ones
+**A person is a name, and a name is claimed once.** Machines under one name share the personal
+streams (prefs, spend, limits, roster); a teammate under another name sees only the team ones
 (notes, claims, presence). `STREAM_INFO` in `sync.ts` is the table Settings › Sync shows, and the
-server's `is_personal` is what enforces it. So a teammate invited without `--user` shares your
-settings and spend. The `invite` command says so when it prints the code, and Settings › Sync
-lists each machine under its user so the mistake can be seen.
+server's `is_personal` is what enforces it. Three ways in:
+
+- **Registration** (`EPISKO_REGISTER_CODE`, at least 12 characters, off by default): a new person
+  pairs with the team code plus their own name. The name must be free (case-insensitive), so the
+  team code cannot be used to claim someone else's name and read their settings. A wrong code
+  costs 400 ms and is compared in equal time.
+- **Add a machine**: a paired machine asks for a one-use code (`Invite` → `Invited`), always for
+  its own user. This is how a second machine of yours joins, with the name left empty.
+- **Admin invite**: `episko-server invite NAME`, as before (`--user NAME` still works).
+
+`episko-server rename OLD NEW` renames a person in the tokens, the pending invites and the log's
+actor column, which is what keeps their personal history theirs. That is the way out of the old
+default name `me`, which Settings › Sync points out while it is still in use.
 
 `welcome` carries `devices` (user, device, label) for the whole workspace. An older server
 sends none and the last list heard stands (`cc-sync-devices`). A machine paired after this one
@@ -149,9 +158,14 @@ connected is named from its next reconnect, and until then it shows as `machine 
 popover, the status bar tooltip and *Usage & spend* split spend **by machine** once any other
 machine has spent (`spendSources`).
 
-**Arrived preferences are shown, not just applied.** Before writing a remote pref, `synclink`
-diffs it against what was there (`prefDiff`: changed leaves of a JSON value, or the scalar),
-and keeps one row per key in `cc-sync-arrivals`. The values still take effect on reload.
+**A preference from another machine is held until you say yes.** `synclink` never writes one
+on arrival. It diffs it against what is here (`prefDiff`: the changed leaves of a JSON value, or
+the scalar) and holds it in `cc-sync-pending`, and the review dialog (`syncreview.ts`) opens
+showing each setting ticked to apply. Unticked ones keep this machine's value, and *Later* decides
+nothing. The stamp is taken on arrival either way, so a declined value is not asked about again,
+and a local edit drops whatever was waiting for that key. *Keep mine, always* (also in Settings
+› Sync, per setting) adds the key to `cc-sync-exclude`: it is then neither sent nor taken
+(`prefOutbox`/`acceptPref` both take the set). Accepted values apply on reload, as before.
 
 ## Project identity and the roster
 
@@ -198,14 +212,19 @@ roster):
   facts, and publishes the **union** of both covers (`digestMisses`, `digestCover`). Two machines
   that each lack the other's commits therefore converge rather than overwrite each other. A
   legacy plain-string line covers an unknown set and is trusted as it stands.
+- **A shared project's spend is the team's to see.** Each machine adds
+  `spend|<project id>|<day>|<device>` beside its detail push, for every project not set to
+  Nowhere. The dashboard band then shows *your spend* beside *project spend*, broken down per
+  person (`teamSpend`). Your own machines are left out of that breakdown, since your figure
+  already includes them.
 - **The channel is the team's; Nowhere is yours.** Choosing Git or Sync server publishes
   `share|<project id>` on the notes stream, and every teammate's checkout follows it, unless they
   chose Nowhere. Without this, one teammate left on Git would keep committing the file the
   others had moved off the repo.
-- **Moving off the repo**: Settings › Sync › Projects offers *Move digest.md to the server* for a
-  project not on Git that still has the file. It publishes every day in the file, then deletes
-  it (`remove_digest`, plus `.episko/` if that is now empty). Committing the deletion stays the
-  user's.
+- **Moving off the repo**: Settings › Sync › Projects offers *Move to the server and commit* for
+  a project not on Git that still has the file. It publishes every day in the file, deletes it,
+  and commits that one path (`commit_digest_removal`: `git commit --only -- .episko/digest.md`,
+  so anything the user had staged stays staged and out of the commit). Pushing stays the user's.
 - **The "Not written down anywhere" offer** appears only in Git mode. Its **Don't offer this**
   button silences it for one project (`cc-digest-no`).
 
@@ -217,7 +236,8 @@ They change what runs or what is permitted.
 ```sh
 cd episko-server && cargo build --release
 EPISKO_DB=/srv/episko.db ./target/release/episko-server          # listens on 127.0.0.1:7878
-EPISKO_DB=/srv/episko.db ./target/release/episko-server invite   # prints EPSK-XXXX-XXXX
+EPISKO_DB=/srv/episko.db ./target/release/episko-server invite Ana   # prints EPSK-XXXX-XXXX
+EPISKO_REGISTER_CODE=a-long-team-code ./target/release/episko-server  # or: people join themselves
 ```
 
 It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. The backup is
@@ -246,8 +266,8 @@ in `sync.rs` pairs two devices through a running server and checks that a push a
 `EPISKO_E2E_URL` and `EPISKO_E2E_CODES` (two fresh invites, comma-separated), then run
 `cargo test -- --ignored two_devices_meet`.
 
-**The conversation.** A client sends `pair {code, label}` and gets back `paired {token, user,
-device}`. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by
+**The conversation.** A client sends `pair {code, label, user?}` and gets back `paired {token,
+user, device}`; `user` is read only with the registration code. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by
 `events` pages until `more` is false. After that it pushes with `push {events}`, answered by
 `pushed {seqs}`, and hears the other devices' pushes as `events`. The rules the server enforces:
 
