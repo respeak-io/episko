@@ -52,6 +52,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ! **A task's address is found when it lives under a path or a `.localhost` name.** A line like
   `Ready: http://app.localhost:8443/ui/` now lands in the running-servers pill with its path, and a
   running task's inspector card shows it as a link.
+! **A release tag is no longer listed as a branch, and deleting one can no longer delete the tag.** A
+  fetch refspec that mirrors tags under `refs/remotes` put every tag in Branches as a merged branch
+  `tags/vX`, and deleting it on the remote removed the real tag. Those refs are skipped now, and a
+  remote delete names `refs/heads/…` in full so it can only ever reach a branch.
 
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
