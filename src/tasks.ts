@@ -104,7 +104,10 @@ export function resolveRunInputs(r: Runnable, project: string, withParams = fals
   return withParams && r.inputs.length ? null : prefillInputs(r, project);
 }
 
-export const lastRunnableById = new Map<string, Runnable>(); // last discovery; a re-run needs no picker
+// Discovery root → its last discovery, so a re-run needs no picker. Keyed by root because an id is
+// only unique inside one: every JS project has an `npm:dev`, and an unscoped lookup ran another's.
+export const runnablesByRoot = new Map<string, Map<string, Runnable>>();
+export const runnableIn = (root: string, id: string): Runnable | undefined => runnablesByRoot.get(root)?.get(id);
 
 // ---------- dependsOn ----------
 
@@ -114,16 +117,17 @@ export function waitForExit(sessionId: string): Promise<number> {
 }
 
 // VS Code names dependencies by label, which can collide across providers: same provider wins.
-export function findDep(label: string, source: string): Runnable | undefined {
-  return [...lastRunnableById.values()].find((x) => x.label === label && x.source === source)
-    ?? [...lastRunnableById.values()].find((x) => x.label === label);
+// Only the dependant's own root is searched; another project's `build` is never a dependency.
+export function findDep(label: string, source: string, root: string): Runnable | undefined {
+  const all = [...runnablesByRoot.get(root)?.values() ?? []];
+  return all.find((x) => x.label === label && x.source === source) ?? all.find((x) => x.label === label);
 }
 
 // `null` (a dependency is unresolvable) must stay distinct from `[]` (none declared).
-export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
+export function resolveDeps(r: Runnable, seen: Set<string>, root: string): Runnable[] | null {
   const out: Runnable[] = [];
   for (const label of r.dependsOn) {
-    const dep = findDep(label, r.source);
+    const dep = findDep(label, r.source, root);
     if (!dep) { taskToast(`${r.label}: no task named “${label}”, so it will not run`); return null; }
     if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}”, so it will not run`); return null; }
     out.push(dep);
@@ -134,7 +138,7 @@ export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
 // The first cycle reachable from `r`, as the labels around it. Walked before anything
 // launches: the per-path check fires with half the stack running, and with memoised
 // dependencies two branches awaiting each other would deadlock instead of erroring.
-export function findDepCycle(r: Runnable): string[] | null {
+export function findDepCycle(r: Runnable, root: string): string[] | null {
   const stack: Runnable[] = [];
   const clean = new Set<string>();          // fully explored, provably cycle-free
   const walk = (t: Runnable): string[] | null => {
@@ -143,7 +147,7 @@ export function findDepCycle(r: Runnable): string[] | null {
     if (clean.has(t.id)) return null;       // a diamond, not a cycle — don't re-walk it
     stack.push(t);
     for (const label of t.dependsOn) {
-      const dep = findDep(label, t.source); // unresolvable is resolveDeps's error to report
+      const dep = findDep(label, t.source, root); // unresolvable is resolveDeps's error to report
       const cyc = dep && walk(dep);
       if (cyc) return cyc;
     }
@@ -178,16 +182,18 @@ export async function launchWithDeps(
   r: Runnable, project: string, opts: TaskLaunchOpts,
   seen = new Set<string>(), started: DepRuns = new Map(),
 ): Promise<LaunchResult> {
+  // The same fallback as the pane's `run.root`, so a re-run looks where this launch looked.
+  const root = opts.discoveredIn ?? opts.colorKey ?? "";
   // Outermost call only: check the whole graph before a single pane starts.
   if (!seen.size) {
-    const cyc = findDepCycle(r);
+    const cyc = findDepCycle(r, root);
     if (cyc) {
       taskToast(`${r.label}: dependency cycle · ${cyc.join(" → ")}`);
       taskLog("warn", `task ${r.id} skipped: cycle ${cyc.join(" -> ")}`);
       return FAILED;
     }
   }
-  const deps = resolveDeps(r, seen);
+  const deps = resolveDeps(r, seen, root);
   // Unresolved is failed, not absent; resolveDeps has already said which label and why.
   if (!deps) { taskLog("warn", `task ${r.id} skipped: dependency unresolved`); return FAILED; }
   if (!deps.length) return own(r, project, opts);
@@ -334,7 +340,8 @@ export async function discoverTasks(workdir: string, colorKey = workdir, include
       .filter((r) => taskPrefs.providers.includes(r.source as Provider));
     // The runner override goes in before the result is cached, so a re-run gets what the picker showed.
     const all = applyRunner(raw, colorKey);
-    for (const r of all) lastRunnableById.set(r.id, r); // hidden or not: hiding must not break a dependant
+    // Replaced whole, so a task deleted from its file is gone here too; hidden ones stay for their dependants.
+    runnablesByRoot.set(workdir, new Map(all.map((r) => [r.id, r])));
     const hid = hiddenIds(colorKey);
     return includeHidden ? all : all.filter((r) => !hid.includes(r.id));
   } catch (e) {

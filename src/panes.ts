@@ -39,7 +39,7 @@ import { openWt, refreshWtDialog } from "./worktree";
 import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
-import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
   accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
@@ -570,7 +570,7 @@ export async function rerunRunGroup(gid: string) {
   const members = groupMembers(gid);
   const head = members[0]?.run;
   if (!head) return;
-  const root = head.groupRoot ? lastRunnableById.get(head.groupRoot) : undefined;
+  const root = head.groupRoot ? runnableIn(head.root, head.groupRoot) : undefined;
   if (!root) { toast("Task definition is gone. Rescan"); return; }
   if (root.blocked) { toast(`${root.label}: ${root.blocked}`); return; }
   const live = members.filter((m) => m.run?.exitCode == null);

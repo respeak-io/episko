@@ -9,7 +9,7 @@ import { hasSessionState, type Runnable, type Sess } from "./types";
 import { sessions, stageGroup } from "./state";
 import { openInputPrompt } from "./taskui";
 import {
-  discoverTasks, lastRunnableById, launchWithDeps, prefillInputs, resolveRunInputs, stopRuleBlocked,
+  discoverTasks, runnableIn, launchWithDeps, prefillInputs, resolveRunInputs, stopRuleBlocked,
   stopRules, type TaskLaunchOpts,
 } from "./tasks";
 
@@ -70,7 +70,7 @@ export async function maybeRunOnStop(s: Sess) {
 // picker). Only this step runs — its dependencies are not repeated.
 export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
-  const spec = lastRunnableById.get(r.id);
+  const spec = runnableIn(r.root, r.id);
   if (!spec) { toast("Task definition is gone. Rescan"); return; }
   const grp = { groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot };
   // Reuses the last values silently; ⋯ Parameters is how you change them.
