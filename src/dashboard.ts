@@ -65,11 +65,12 @@ import {
 } from "./trail";
 import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { dayDetail, usageWindow } from "./usage";
+import { digestCover, digestMisses } from "./sync";
 import {
-  leaseFor, projectIdOf, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
+  leaseFor, projectIdOf, projectTeamSpend, publishDigest, publishNote, releaseLeases, serverDigest, serverNotes, syncOn, takeLease,
 } from "./synclink";
 import {
-  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins,
+  accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins, ghOutdated,
   permissionModeFor, removingWt, sessions, setActiveId, setMirror, shareModeOf,
 } from "./state";
 import { providerPermissionMode } from "./providers";
@@ -206,6 +207,10 @@ let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: run
 // `teamSummaries` is the project's (commits and PRs; the half `.episko/digest.md` holds).
 const summaries = new Map<string, string>();
 const teamSummaries = new Map<string, string>();
+// Days whose project line came from the server rather than the file or this machine: only those
+// can be redone, once a run, when this checkout holds commits the line never saw.
+const fromServer = new Set<string>();
+const redone = new Set<string>();
 let openView: "notes" | "work" | "triage" | "branches" | "deps" | "issue" | null = null;
 // When you last opened each project, machine-wide and capped; the band measures from it.
 let seen = readSeen();
@@ -297,6 +302,8 @@ async function loadDash(): Promise<void> {
   ghLoading = false;
   summaries.clear();
   teamSummaries.clear();
+  fromServer.clear();
+  redone.clear();
   renderDash();
   try {
     // `project_facts` first and alone: it decides which of the calls below are worth making.
@@ -594,26 +601,33 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
   if (!dashMirror() || root() !== r || !dashSummaries) return false;   // left, or switched off
   const mine = scope === "me";
   const into = mine ? summaries : teamSummaries;
-  if (into.has(d.key)) return true;                            // cache or digest already had it
   const closed = dayIsClosed(d, now);
+  const shas = d.commits.map((c) => c.sha);
+  const held = mine ? undefined : serverDigest(pid())[d.key];
+  // A teammate's line that missed commits held here is redone with it as a starting point.
+  const toServer = shareMode() !== "off" && syncOn() && !!pid();
+  const redo = !mine && closed && toServer && fromServer.has(d.key) && !redone.has(d.key) && digestMisses(held, shas);
+  if (into.has(d.key) && !redo) return true;                   // cache or digest already had it
   const allowed = digestOk().includes(r);
   // The project's line is only bought if something will use it: shown when the day had
   // more than one human committer, written when the project keeps a digest.
   const toGit = shareMode() === "git" && canShare(tier) && (allowed || hasDigest);
-  const toServer = shareMode() !== "off" && syncOn() && !!pid();
   if (!mine && !sharedDay(d) && !toGit && !(toServer && shareMode() === "server")) return true;
   // The project's line is only about commits; an empty record would buy "quiet day".
-  const f = mine ? dayFacts(d) : projectDayFacts(d);
-  if (!f.trim()) return true;
+  const base = mine ? dayFacts(d) : projectDayFacts(d);
+  if (!base.trim()) return true;
+  const f = redo && held ? `${base}\nearlier summary by a teammate, which missed some of these commits: ${held.line}` : base;
+  if (redo) redone.add(d.key);
   writing = { key: d.key, scope };   // past every early return: a cached or skipped day is not waiting
   renderDash();
   try {
     const line = await invoke<string>("summarize_day", {
-      root: r, key: d.key, facts: f, model: "haiku", scope, force: !closed,
+      root: r, key: d.key, facts: f, model: "haiku", scope, force: !closed || redo,
     });
     if (root() !== r) return false;   // both maps are the next project's now
     if (!line) return true;
     into.set(d.key, line);
+    fromServer.delete(d.key);
     // Only this half is shared, and only a closed day (today's line changes as the day
     // goes on). Creating the file needs a yes; contributing to one already in the repo
     // does not, or a pulled digest becomes one person's diary.
@@ -621,7 +635,7 @@ async function summariseDay(d: TrailDay, r: string, now: number, scope: "me" | "
       void invoke("write_digest", { root: r, key: d.key, line, create: allowed }).catch(() => {});
     }
     // The server is the fast path beside the file, or the only path where the repo stays clean.
-    if (!mine && closed && toServer) publishDigest(pid()!, d.key, line);
+    if (!mine && closed && toServer) publishDigest(pid()!, d.key, line, digestCover(held, shas));
   } catch (e) {
     // No summary is a fine state: the band prints one line fewer and nothing else reads it.
     dlog("warn", `dash: ${scope} summary for ${d.key} failed: ${e}`);
@@ -748,13 +762,23 @@ function fitLanded(): boolean {
   return true;
 }
 
+// Teammates' spend over the band's window: every day of the range from `since`, not only the days
+// you worked, since a teammate's busy day may be one you never opened the project.
+function bandTeamSpend(since: number) {
+  const keys = usageWindow(dashRange).map((u) => u.key).filter((k) => new Date(`${k}T00:00:00`).getTime() >= since);
+  return shareMode() === "off" ? [] : projectTeamSpend(pid(), keys);
+}
+
 const liveIn = (path: string) => [...sessions.values()].filter((s) => (s.workdir || "") === path).length;
 const liveHere = () => [...sessions.values()].filter((s) => s.colorKey === root());
 
 export function renderDash(): void {
   if (!dashMirror()) return;
   // A teammate's work-log line can arrive over sync while the pane is open; a file's line wins.
-  for (const [k, v] of Object.entries(serverDigest(pid()))) if (!teamSummaries.has(k)) teamSummaries.set(k, v);
+  for (const [k, v] of Object.entries(serverDigest(pid()))) {
+    if (!teamSummaries.has(k)) { teamSummaries.set(k, v.line); fromServer.add(k); }
+    else if (fromServer.has(k)) teamSummaries.set(k, v.line);   // a newer server line for the same day
+  }
   // The bars are `<i>`s of colour, so aria-busy is what says the pane is working.
   $("dashPane").setAttribute("aria-busy",
     loading || ghLoading || landedLoading || queueRunning ? "true" : "false");
@@ -793,7 +817,7 @@ export function renderDash(): void {
     + (loading ? cardSkeleton(2) : checkoutCard(syncNow(), factsKnown, heads, liveIn, statFor))
     + projectFoot(effectiveAgent(root()).label,
       tier === "github" ? ghWho(ghAccountFor(root()), ghLogins).login ?? "" : "", claimsOn(),
-      ghPickable(ghLogins)));
+      ghPickable(ghLogins), tier === "github" ? ghOutdated : null));
 
   // ---- column B: what moved since you were last here, the working set, what landed ----
   const f = bandFacts(days, sinceAt, now, isBotAuthor);
@@ -834,7 +858,7 @@ export function renderDash(): void {
   landedDrawn = rows.length;
   const movedChanged = paint("dashMoved", (loading
       ? bandSkeleton(tier)
-      : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared))
+      : sinceBand(f, lines, densePerDay(days, dashRange, now), dashRange, tier, factsKnown, unshared, bandTeamSpend(f.since)))
     + worksetCard(worksetDir(), worksetTitle(), mainWork, factsKnown && tier !== "none")
     + landedCard({
       rows, span, head, hidden, on: botFold,
@@ -861,7 +885,7 @@ export function renderDash(): void {
   paintNext(queueCard(queueQuery.trim() ? plainRows(shown) : foldQueue(shown, queueOpen),
       queueTally(found), queueFilter, queueQuery, gh.available || !ghLoading, !depLoading)
     + (tier === "github" && !gh.available && gh.reason
-      ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins)) : "")
+      ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins), ghOutdated) : "")
     + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");

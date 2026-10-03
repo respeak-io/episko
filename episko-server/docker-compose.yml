@@ -1,5 +1,6 @@
 # Published on localhost only: put Tailscale or Caddy in front for other machines and TLS.
-# Pair a device with:  docker compose exec episko-server episko-server invite
+# Invite one person's machine:  docker compose exec episko-server episko-server invite NAME
+# Or let people join themselves with a team code (12+ characters) and their own name:
 services:
   episko-server:
     build:
@@ -8,5 +9,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:7878:7878"
+    # environment:
+    #   EPISKO_REGISTER_CODE: a-long-team-code
     volumes:
       - ./data:/data

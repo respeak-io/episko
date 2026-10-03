@@ -380,6 +380,20 @@
       </div>
     </div>
 
+    <!-- A markdown file read in-app (mdreader.ts): its headings on the left, the document on the right. -->
+    <div class="mddlg" id="mdDlg" role="dialog" aria-modal="true" aria-label="Markdown">
+      <div class="diff-head">
+        <button class="mdr-back" id="mdBack" type="button" title="Back to the document you came from">&#8592;</button>
+        <div class="diff-title-wrap"><b id="mdTitle"></b><span class="diff-sub" id="mdSub"></span></div>
+        <div class="mdr-tools" id="mdTools"></div>
+        <button class="diff-x" id="mdClose" title="Close (Esc)">&#10005;</button>
+      </div>
+      <div class="mdr-body">
+        <nav class="mdr-rail" id="mdToc"></nav>
+        <div class="mdr-scroll" id="mdScroll" tabindex="-1"><article class="mdr" id="mdDoc"></article></div>
+      </div>
+    </div>
+
     <!-- One page: the rail is a table of contents that follows the scroll and, while the box
          has text, a match count per section (./settings, docs/settings.md). -->
     <div class="setdlg" id="setDlg" role="dialog" aria-modal="true" aria-label="Settings">
@@ -431,6 +445,19 @@
         <span class="cfm-hint"><kbd>⏎</kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
         <button class="cfm-btn ghost" id="cfmNo" type="button"></button>
         <button class="cfm-btn go" id="cfmYes" type="button"></button>
+      </div>
+    </div>
+
+    <!-- Settings another machine changed, held until answered here (src/syncreview.ts). -->
+    <div class="cfm-scrim" id="srvScrim"></div>
+    <div class="cfm srv k-info" id="srvDlg" role="dialog" aria-modal="true" aria-labelledby="srvTitle">
+      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true">⇅</span><b id="srvTitle">Settings from your other machines</b></div>
+      <div class="cfm-body srv-body" id="srvBody"></div>
+      <div class="cfm-foot">
+        <span class="cfm-hint">Unticked ones keep this machine's value</span>
+        <button class="cfm-btn ghost" id="srvLater" type="button">Later</button>
+        <button class="cfm-btn ghost" id="srvApply" type="button">Apply</button>
+        <button class="cfm-btn go" id="srvReload" type="button">Apply and reload</button>
       </div>
     </div>
 

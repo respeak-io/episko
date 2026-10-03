@@ -2,7 +2,7 @@
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
 import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
-import { FILE_MANAGER } from "./dom"; // a constant, not DOM access: the *view rule allows it
+import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
   syncState,
   type ProjectFacts, type ProjectTier, type RibbonDay, type SinceFacts, type SyncOp,
@@ -13,7 +13,7 @@ import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
 import type { ClaimAllow, ClaimPolicy } from "./claim";
 import {
-  ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
+  ghOutdatedText, ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
   type WorkKind, type WorkTally,
 } from "./ghwork";
 import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
@@ -104,7 +104,7 @@ export function verbTiles(): string {
 }
 
 /** The column's foot: what this project is set up to run as. Each chip IS its own control. */
-export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean): string {
+export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null): string {
   const act = (a: string, inner: string, tip: string) =>
     `<button class="pfc pfc-b" data-dashact="${a}" data-tip="${escAttr(tip)}">${inner}</button>`;
   // Claims are the one fact here with no picker of its own: the preference is Settings', and the
@@ -117,6 +117,7 @@ export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: 
       ${act("agent", esc(agent), `Runs ${agent} here · pick another for this project`)}
       ${gh && ghPick ? act("ghpick", `gh: ${esc(gh)}`, `Reads GitHub as ${gh} · pin another account to this project`)
         : gh ? `<span class="pfc mono" data-tip="${escAttr(`Reads GitHub as ${gh}`)}">gh: ${esc(gh)}</span>` : ""}
+      ${ghOld ? oldGhChip(ghOld) : ""}
       <span class="pfc" data-tip="${escAttr(claimTip)}">${claims ? "claims on" : "claims off"}</span>
     </div></div>`;
 }
@@ -176,7 +177,7 @@ function ribbonHtml(ribbon: RibbonDay[], range: number, repo: boolean): string {
 // stamp and outruns the window whenever you were last here longer ago than the ribbon reaches.
 export function sinceBand(
   f: SinceFacts, lines: BandLine[], ribbon: RibbonDay[], range: number,
-  tier: ProjectTier, known: boolean, offer: number,
+  tier: ProjectTier, known: boolean, offer: number, team: { user: string; usd: number }[] = [],
 ): string {
   const repo = known && tier !== "none";
   // Four wordings, never interchangeable: no stamp at all, a stamp older than anything read,
@@ -194,7 +195,10 @@ export function sinceBand(
   const plural = (n: number, one: string) => (n === 1 ? one : `${one}s`);
   const figs = (repo ? fig(String(f.commits), plural(f.commits, "commit")) : "")
     + fig(String(f.sessions), plural(f.sessions, "session"))
-    + fig(f.spend > 0 ? esc(uUsd2(f.spend)) : `<span class="dim">—</span>`, "spend")
+    + fig(f.spend > 0 ? esc(uUsd2(f.spend)) : `<span class="dim">—</span>`, team.length ? "your spend" : "spend")
+    // With teammates on the sync server, the project's figure is everyone's, and says whose.
+    + (team.length ? fig(esc(uUsd2(f.spend + team.reduce((n, t) => n + t.usd, 0))), "project spend",
+      esc([...(f.spend > 0 ? [`you ${uUsd2(f.spend)}`] : []), ...team.map((t) => `${t.user} ${uUsd2(t.usd)}`)].join(" · "))) : "")
     + (repo ? fig(String(f.authors.length), plural(f.authors.length, "contributor"), whoText(f.authors)) : "");
   // Only when there is a gap with something in it: with no stamp, a stamp older than the
   // window, or nothing since the last visit, there is nothing left to catch up on.
@@ -919,9 +923,17 @@ export function shortAge(iso: string): string {
 // gh missing, logged out, or signed in as the wrong account: one quiet row, never an
 // error dialog. The account picker is offered here because here is where you find out;
 // it is absent for anybody with one account, where it could not change the answer.
-export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho): string {
+export function ghUnavailable(reason: string, accounts: GhAccount[], who: GhWho, ghOld: string | null): string {
+  const t = ghOld ? ghOutdatedText(ghOld, IS_MAC) : null;
+  const old = t ? `<p>${esc(t.why)} Update with <code>${esc(t.how)}</code> and reopen the dashboard.</p>` : "";
   return `<div class="miss"><span class="t">GitHub</span><p>${esc(reason)}.</p>
-    <p>Everything else on this dashboard still works.</p>${ghPicker(accounts, who)}</div>`;
+    <p>Everything else on this dashboard still works.</p>${old}${ghPicker(accounts, who)}</div>`;
+}
+
+// Stands where the account chip would be, since that is where its absence is noticed.
+function oldGhChip(version: string): string {
+  const t = ghOutdatedText(version, IS_MAC);
+  return `<span class="pfc pfc-warn" data-tip="${escAttr(`${t.why} Update with: ${t.how}`)}">${esc(t.short)}</span>`;
 }
 
 // One button per account gh holds, the effective one marked; the label underneath says

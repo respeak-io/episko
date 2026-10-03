@@ -16,10 +16,11 @@ import {
   allAgents, attnPrefs, autoFetchPrefs, availEngines, defaultAgentDef, engineDef, footPrefs,
   motionPrefs,
   keyPrefs, missingAgents,
-  outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
+  mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
   type SortMode, type WtGroup,
+  FAVORITES, projOrder, shareModeOf, type ShareMode,
 } from "./state";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -40,6 +41,7 @@ import {
   VITALS_DEFAULTS, VITALS_EVERY, type VitalsDrift, type VitalsPrefs,
 } from "./perf";
 import { OUTLINE_DEFAULTS, OUTLINE_LINES, type OutlinePrefs } from "./outline";
+import { MD_DEFAULTS, MD_SIZES, MD_WIDTHS, type MdPrefs, type MdSize, type MdWidth } from "./markdown";
 import {
   bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
@@ -65,9 +67,13 @@ import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
 import type { Forecast } from "./rl";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
-import { health as syncHealthNow, prefsArrived, sentLog, status as syncStatus } from "./synclink";
-import { syncPanelHtml, syncSummary, type SyncDraft } from "./syncview";
-import { parseHeaders } from "./sync";
+import {
+  activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
+  onlineDevices, pending as syncPending, prefsArrived, projectIdOf, requestInvite, serverDigest, serverNotes, setExcluded,
+  status as syncStatus, teamShare,
+} from "./synclink";
+import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
+import { deviceName, devicesByUser, parseHeaders } from "./sync";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -97,6 +103,7 @@ export interface SettingsHost {
   setRevivePrefs: (p: RevivePrefs) => void;
   setVitalsPrefs: (p: VitalsPrefs) => void;
   setOutlinePrefs: (p: OutlinePrefs) => void;
+  setMdPrefs: (p: MdPrefs) => void;
   setScrollback: (lines: number) => void;
   // macOS permission dialogs. This module reaches no IPC, so the probe, the pane and the
   // log scan all arrive as promises; none of them grants anything (docs/macos-access.md).
@@ -113,10 +120,14 @@ export interface SettingsHost {
   reloadUi: () => void;
   vitalsDrift: () => VitalsDrift | null;
   // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
-  syncPair: (url: string, code: string, label: string, headers: [string, string][]) => Promise<void>;
+  syncPair: (url: string, code: string, label: string, user: string, headers: [string, string][]) => Promise<void>;
+  syncReview: () => void;
   syncSetHeaders: (headers: [string, string][]) => Promise<void>;
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
+  syncShare: (colorKey: string, m: ShareMode) => void;
+  syncMoveLog: (colorKey: string) => Promise<void>;
+  syncHasDigest: (root: string) => Promise<boolean>;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -155,13 +166,14 @@ let host: SettingsHost = {
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
-  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
   openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
-  syncSetHeaders: () => Promise.resolve(),
+  syncSetHeaders: () => Promise.resolve(), syncShare: () => {}, syncMoveLog: () => Promise.resolve(),
+  syncHasDigest: () => Promise.resolve(false), syncReview: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -208,6 +220,12 @@ interface SetTab {
   when?: () => boolean; os?: "mac"; controls: () => SetControl[];
 }
 
+const MD_WIDTH_LABEL: Record<MdWidth, { label: string; glyph: string; sub: string }> = {
+  narrow: { label: "Book", glyph: "▯", sub: "About 90 characters a line, the easiest to read" },
+  wide: { label: "Wide", glyph: "▭", sub: "More room for tables and code" },
+  full: { label: "Full", glyph: "▬", sub: "As wide as the window" },
+};
+const MD_SIZE_LABEL: Record<MdSize, string> = { s: "Small", m: "Medium", l: "Large" };
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
   { value: "off",       label: "Off",       glyph: "≡", sub: "Flat rows; branch shown only as a fallback label" },
@@ -381,6 +399,41 @@ const SET_TABS: SetTab[] = [
         on: () => outlinePrefs.hover, isDefault: () => outlinePrefs.hover === OUTLINE_DEFAULTS.hover,
         reset: () => host.setOutlinePrefs({ ...outlinePrefs, hover: OUTLINE_DEFAULTS.hover }) },
     ],
+  },
+  {
+    id: "reader", label: "Reader", glyph: "¶", group: "look", sub: "Markdown files, read in the app",
+    controls: () => {
+      const off = () => !mdPrefs.enabled;
+      const put = (p: Partial<MdPrefs>) => () => host.setMdPrefs({ ...mdPrefs, ...p });
+      return [
+        { kind: "toggle", set: "md:on", key: "cc-markdown", label: "Open markdown files in Episko",
+          hint: "A .md link in a pane, the Context card or ⌘P opens in a reader here instead of your default app.",
+          more: "Off, it goes to whatever your OS opens .md files with, like every other file. The reader's ↗ does that for one file either way, and links inside a document open the next one in place, with ← to go back.",
+          aliases: ["markdown", "readme", "md", "preview", "render", "viewer", "docs"], since: "0.33.0",
+          on: () => mdPrefs.enabled, isDefault: () => mdPrefs.enabled === MD_DEFAULTS.enabled, reset: put({ enabled: MD_DEFAULTS.enabled }) },
+        { kind: "seg", set: "md:width", key: "cc-markdown", label: "Reading width", hint: "How wide a line of text may run.",
+          aliases: ["measure", "column", "wide"], dim: off,
+          active: () => mdPrefs.width, isDefault: () => mdPrefs.width === MD_DEFAULTS.width, reset: put({ width: MD_DEFAULTS.width }),
+          segs: () => MD_WIDTHS.map((w) => ({ value: w, label: MD_WIDTH_LABEL[w].label, glyph: MD_WIDTH_LABEL[w].glyph, sub: MD_WIDTH_LABEL[w].sub })) },
+        { kind: "seg", set: "md:size", key: "cc-markdown", label: "Text size", hint: "The reader's type size; code and tables follow it.",
+          aliases: ["font", "zoom", "bigger", "smaller"], dim: off,
+          active: () => mdPrefs.size, isDefault: () => mdPrefs.size === MD_DEFAULTS.size, reset: put({ size: MD_DEFAULTS.size }),
+          segs: () => MD_SIZES.map((z) => ({ value: z, label: MD_SIZE_LABEL[z], glyph: "A" })) },
+        { kind: "toggle", set: "md:outline", key: "cc-markdown", label: "List the headings beside the text",
+          hint: "A contents rail on the left; click a heading to jump to it.", aliases: ["contents", "toc", "outline", "headings"], dim: off,
+          on: () => mdPrefs.outline, isDefault: () => mdPrefs.outline === MD_DEFAULTS.outline, reset: put({ outline: MD_DEFAULTS.outline }) },
+        { kind: "toggle", set: "md:images", key: "cc-markdown", label: "Show images from disk",
+          hint: "Pictures that sit beside the document, such as a README's screenshots.",
+          more: "Read from disk and drawn as they are; nothing is fetched. Off, each image is a link that opens the file.",
+          aliases: ["pictures", "screenshots", "png", "svg"], dim: off,
+          on: () => mdPrefs.images, isDefault: () => mdPrefs.images === MD_DEFAULTS.images, reset: put({ images: MD_DEFAULTS.images }) },
+        { kind: "toggle", set: "md:remote", key: "cc-markdown", label: "Load images from the web",
+          hint: "Badges and pictures a document links from the internet.",
+          more: "Off by default: drawing one fetches it, which tells that server you opened the file. Off, each is a link you can open in your browser.",
+          aliases: ["badges", "shields", "network", "privacy", "tracking", "remote"], dim: off,
+          on: () => mdPrefs.remote, isDefault: () => mdPrefs.remote === MD_DEFAULTS.remote, reset: put({ remote: MD_DEFAULTS.remote }) },
+      ];
+    },
   },
   {
     id: "statusbar", label: "Status bar", glyph: "▁", group: "look", sub: "Which segments show",
@@ -1381,7 +1434,13 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
     case "sync":
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
-      panel = syncPanelHtml(syncStatus, syncHealthNow(), syncDraft, syncBusy, syncErr, prefsArrived, sentLog, Date.now());
+      panel = syncPanelHtml({
+        st: syncStatus, h: syncHealthNow(), draft: syncDraft, busy: syncBusy, err: syncErr, prefsArrived,
+        users: devicesByUser(syncDevices, syncStatus.user, syncStatus.device), online: onlineDevices(),
+        activity: syncActivity, pending: Object.values(syncPending), excluded: syncExcluded, invite: syncInvite,
+        nameOf: (d) => deviceName(syncDevices, d, syncStatus.device),
+        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(),
+      });
       always = true;
       break;
     case "wtpreview": ctl = fold(c.summary!()); panel = renderWtPreview(c.active()); break;
@@ -1528,7 +1587,7 @@ function asksPreview(): string {
 
 // ---- Settings › Sync ----
 // The form's text survives a repaint here, not in the DOM: a status change repaints the panel.
-const syncDraft: SyncDraft = { url: "", code: "", label: "", headers: "" };
+const syncDraft: SyncDraft = { url: "", code: "", user: "", label: "", headers: "" };
 let syncBusy = false, syncErr: string | null = null;
 
 function applySyncSetting(verb: string) {
@@ -1538,7 +1597,7 @@ function applySyncSetting(verb: string) {
     if (h.error) { syncErr = h.error; renderSettings(); return; }
     syncBusy = true; syncErr = null; renderSettings();
     const done = verb === "pair"
-      ? host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label, h.headers).then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
+      ? host.syncPair(syncDraft.url, syncDraft.code, syncDraft.label, syncDraft.user, h.headers).then(() => { syncDraft.code = ""; toast("Paired; this machine now syncs"); })
       : host.syncSetHeaders(h.headers).then(() => toast(h.headers.length ? "Headers saved; reconnecting" : "No extra headers; reconnecting"));
     done
       .then(() => { syncDraft.headers = ""; })
@@ -1553,6 +1612,39 @@ function applySyncSetting(verb: string) {
       .finally(() => renderSettings());
   } else if (verb === "reconnect") host.syncReconnect();
   else if (verb === "reload") void host.reloadUi();
+  else if (verb === "review") host.syncReview();
+  else if (verb === "invite") requestInvite();
+  else if (verb.startsWith("excl|")) {
+    const [, key, keep] = verb.split("|");
+    setExcluded(key, keep === "1");
+    renderSettings();
+  }
+  else if (verb.startsWith("share|")) {
+    const [, m, ...rest] = verb.split("|");
+    host.syncShare(rest.join("|"), m as ShareMode);
+    renderSettings();
+  } else if (verb.startsWith("movelog|")) {
+    const key = verb.slice(8);
+    void host.syncMoveLog(key).then(() => { digestFiles.delete(key); renderSettings(); });
+  }
+}
+
+// Whether each project still has .episko/digest.md, asked once per key and kept until it moves.
+const digestFiles = new Map<string, boolean>();
+function syncProjects(): ProjectSyncRow[] {
+  const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
+  for (const k of keys) {
+    if (digestFiles.has(k)) continue;
+    digestFiles.set(k, false);
+    void host.syncHasDigest(k).then((y) => { if (y) { digestFiles.set(k, true); repaintSync(); } }).catch(() => {});
+  }
+  return keys.map((key) => {
+    const id = projectIdOf(key);
+    return {
+      key, name: basename(key), id, mode: shareModeOf(key), team: teamShare(id),
+      lines: Object.keys(serverDigest(id)).length, notes: serverNotes(id).length, digestFile: digestFiles.get(key) ?? false,
+    };
+  });
 }
 
 /** A sync status change, repainted unless it would take a field out from under the caret. */
@@ -1604,6 +1696,12 @@ function applySetting(set: string, val: string) {
   else if (set === "outline:on") host.setOutlinePrefs({ ...outlinePrefs, enabled: val === "1" });
   else if (set === "outline:lines") host.setOutlinePrefs({ ...outlinePrefs, lines: +val });
   else if (set === "outline:hover") host.setOutlinePrefs({ ...outlinePrefs, hover: val === "1" });
+  else if (set === "md:on") host.setMdPrefs({ ...mdPrefs, enabled: val === "1" });
+  else if (set === "md:width") host.setMdPrefs({ ...mdPrefs, width: val as MdWidth });
+  else if (set === "md:size") host.setMdPrefs({ ...mdPrefs, size: val as MdSize });
+  else if (set === "md:outline") host.setMdPrefs({ ...mdPrefs, outline: val === "1" });
+  else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
+  else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });

@@ -585,6 +585,68 @@ pub(crate) fn resolve_link_path(bases: Vec<String>, cands: Vec<String>) -> Optio
     None
 }
 
+/// What the markdown reader may read (src/markdown.ts's `isMarkdownPath` is the other half).
+/// A second list rather than trust in the caller: this is a read of any path the UI names.
+const MD_EXTS: &[&str] = &["md", "markdown", "mdown", "mkd", "mkdn", "mdx"];
+const MD_READ_CAP: u64 = 4 * 1024 * 1024;
+const MD_IMAGE_CAP: u64 = 12 * 1024 * 1024;
+
+fn ext_of(p: &std::path::Path) -> String {
+    p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct MdText {
+    path: String,
+    text: String,
+    truncated: bool,
+}
+
+/// One markdown document for the in-app reader, cut at `MD_READ_CAP` rather than refused.
+#[tauri::command]
+pub(crate) fn read_markdown(path: String) -> Result<MdText, String> {
+    use std::io::Read;
+    let p = std::path::Path::new(&path);
+    if !MD_EXTS.contains(&ext_of(p).as_str()) {
+        return Err(format!("not a markdown file: {path}"));
+    }
+    let f = std::fs::File::open(p).map_err(|e| format!("{path}: {e}"))?;
+    let mut buf = Vec::new();
+    f.take(MD_READ_CAP + 1).read_to_end(&mut buf).map_err(|e| format!("{path}: {e}"))?;
+    let truncated = buf.len() as u64 > MD_READ_CAP;
+    buf.truncate(MD_READ_CAP as usize);
+    Ok(MdText { path: norm_path(&path), text: String::from_utf8_lossy(&buf).into_owned(), truncated })
+}
+
+fn image_mime(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        _ => return None,
+    })
+}
+
+/// An image a markdown document shows, as a data URI: the webview has no asset protocol,
+/// and an `<img>` never runs an SVG's scripts, so a data URI is the whole trust story.
+#[tauri::command]
+pub(crate) fn read_md_image(path: String) -> Result<String, String> {
+    use base64::Engine as _;
+    let p = std::path::Path::new(&path);
+    let mime = image_mime(&ext_of(p)).ok_or_else(|| format!("not an image: {path}"))?;
+    let len = std::fs::metadata(p).map_err(|e| format!("{path}: {e}"))?.len();
+    if len > MD_IMAGE_CAP {
+        return Err(format!("{path}: {} MiB is more than the reader draws", len / (1024 * 1024)));
+    }
+    let bytes = std::fs::read(p).map_err(|e| format!("{path}: {e}"))?;
+    Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
 /// Open a file with the OS handler (primary click on a Context row). Separate from
 /// `reveal_path` because the trust story differs: the path is one the agent already
 /// read or wrote, so it may legitimately sit outside the project. On macOS falls back
@@ -1439,6 +1501,30 @@ C:\Users\a\.local\bin\claude.exe";
         let abs = root.join("notes.md").to_string_lossy().to_string();
         let (_, hit) = resolve_link_path(vec![], vec![abs]).expect("an absolute path needs no base");
         assert!(hit.ends_with("notes.md"), "resolved to {hit}");
+    }
+
+    #[test]
+    fn read_markdown_reads_markdown_and_nothing_else() {
+        let root = crate::testutil::scratch_dir();
+        std::fs::write(root.join("README.md"), "# Hi
+").unwrap();
+        std::fs::write(root.join("secret.env"), "KEY=1").unwrap();
+        let md = read_markdown(root.join("README.md").to_string_lossy().to_string()).unwrap();
+        assert_eq!(md.text, "# Hi
+");
+        assert!(!md.truncated);
+        assert!(read_markdown(root.join("secret.env").to_string_lossy().to_string()).is_err());
+        assert!(read_markdown(root.join("gone.md").to_string_lossy().to_string()).is_err());
+    }
+
+    #[test]
+    fn read_md_image_answers_a_data_uri_for_images_only() {
+        let root = crate::testutil::scratch_dir();
+        std::fs::write(root.join("a.png"), [0x89, b'P', b'N', b'G']).unwrap();
+        std::fs::write(root.join("a.md"), "x").unwrap();
+        let uri = read_md_image(root.join("a.png").to_string_lossy().to_string()).unwrap();
+        assert!(uri.starts_with("data:image/png;base64,"), "{uri}");
+        assert!(read_md_image(root.join("a.md").to_string_lossy().to_string()).is_err());
     }
 
     // Real `log show` output: the shape this parser is a join with.

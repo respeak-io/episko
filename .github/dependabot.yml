@@ -1,0 +1,39 @@
+version: 2
+
+# One weekly PR for Cargo and pnpm together: `tauri build` refuses a tauri crate and an
+# @tauri-apps/* package on different minors, so the two halves must never move apart.
+# Majors are left to a human (and the app's own Dependencies card), never bundled in here.
+multi-ecosystem-groups:
+  deps:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    target-branch: "dev"
+    labels: ["dependencies"]
+
+updates:
+  - package-ecosystem: "cargo"
+    directories: ["/src-tauri", "/episko-proto", "/episko-server"]
+    patterns: ["*"]
+    multi-ecosystem-group: "deps"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    patterns: ["*"]
+    multi-ecosystem-group: "deps"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    target-branch: "dev"
+    labels: ["dependencies"]
+    groups:
+      actions:
+        patterns: ["*"]

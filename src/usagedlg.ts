@@ -8,7 +8,8 @@ import { $, dropScrim } from "./dom";
 import { dlog } from "./debug";
 import { esc } from "./format";
 import { setTokenScanning, tokenScanning, usagePanelHtml } from "./usageview";
-import { setTokenDays, setUsageRange, tokenDays, tokenScanAt, type DayUsage } from "./usage";
+import { setTokenDays, setUsageRange, tokenDays, tokenScanAt, usageRange, usageWindow, type DayUsage } from "./usage";
+import { spendByMachine } from "./synclink";
 import { refreshScopedLimits } from "./rlprobe";
 
 export function usageOpen() { return $("usageDlg").classList.contains("show"); }
@@ -19,7 +20,7 @@ export function usageOpen() { return $("usageDlg").classList.contains("show"); }
 let lastUsage = "";
 export function renderUsage() {
   if (!usageOpen()) return;
-  const html = usagePanelHtml();
+  const html = usagePanelHtml(spendByMachine(usageWindow(usageRange).map((d) => d.key)));
   if (html === lastUsage) return;
   lastUsage = html;
   $("usageBody").innerHTML = html;

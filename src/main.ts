@@ -27,17 +27,18 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
+import { closeMdReader, mdReaderOpen } from "./mdreader";
 import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
-  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, setGhReload, refreshGhAccounts,
+  setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -120,8 +121,9 @@ import {
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
+import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
-  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
+  beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
   tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
@@ -231,7 +233,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -241,6 +243,8 @@ setSettingsHost({
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
   syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
+  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer, syncReview: openReview,
+  syncHasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -383,12 +387,15 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   if (s.run) {
     const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      s.run.tail.push(line.trimEnd());
-      // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
-      s.run.url = taskServerUrl(s.run.url, line);
+      if (line.trim()) s.run.tail.push(line.trimEnd());
     }
     if (s.run.tail.length > 40) s.run.tail.splice(0, s.run.tail.length - 40);
+    // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
+    const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
+    s.run.partial = whole.pop()!.slice(-1024);
+    const was = s.run.url;
+    for (const line of whole) s.run.url = taskServerUrl(s.run.url, line);
+    if (s.run.url !== was) renderAll(); // the pill and the task's card both name it
   }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
@@ -460,7 +467,13 @@ listen<{ up: boolean; port: number; moved?: boolean }>("telemetry-health", (e) =
 // app warns before the fallback stops matching too. No toast (the telemetry-health
 // precedent); dlog tees into episko.log, so the line itself names the directory.
 // Sync (docs/sync.md). Connecting waits for this listener: a replay emitted before it exists is lost.
-setSyncHost({ render: renderAll, log: dlog });
+setSyncHost({
+  render: renderAll, log: dlog,
+  // A teammate chose this project's channel: every checkout of it here follows.
+  share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
+  review: () => { refreshReview(); openReview(); },
+});
+setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 
 listen<BgLogHealthEvent>("bglog-health", (e) => {
@@ -700,7 +713,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -727,7 +740,9 @@ window.addEventListener("keydown", (e) => {
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
   const act = matchAction(keyPrefs, e);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
-  if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
+  if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
+  else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }

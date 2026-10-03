@@ -58,7 +58,11 @@ gate only runs on a PR onto `main`, and skipped is correct here.
 gh pr merge <n> --merge        # a merge commit, never a squash
 ```
 
-**A long-lived branch will conflict, and two conflicts recur.** Merge it locally
+**A long-lived branch will conflict, and two conflicts recur.** So will the second of any
+two PRs that both add to an empty `## Unreleased` (0.32.0: the first `gh pr merge` went in,
+the next was `CONFLICTING`, and every one after it would have been), so once one conflicts,
+merge the rest locally in order and push `dev` once — GitHub marks each PR merged when its
+head lands on the base. Merge locally
 (`git fetch origin pull/<n>/head:pr<n> && git merge --no-ff pr<n>`) and expect:
 
 - **`CLAUDE.md`'s frontend module count**, in three places. The true number is

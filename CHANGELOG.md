@@ -13,6 +13,52 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Markdown files open in a reader inside Episko.** A `.md` link clicked in a pane, a row of the
+  Context card or a file picked in ⌘P now opens in a dialog: the document rendered with its tables,
+  task lists and screenshots, its headings in a rail beside it, and links to other documents
+  followed in place with ← to go back. *Source* shows the file as written, ↗ still hands it to your
+  default app. *Settings › Reader* sets the width, the text size and whether images load, and can
+  switch the reader off. Images from the web stay unfetched unless you ask for them.
++ **See where your spend came from.** Once another of your machines has spent, the cost popover,
+  its tooltip and *Usage & spend* split the figure by machine, named the way you named them when
+  pairing.
++ **Each project's sharing channel, in one table.** Settings › Sync › Projects shows every
+  project's sync id and lets you pick Git, Sync server or Nowhere. Choosing Git or Sync server now
+  switches your teammates too, so nobody keeps committing a file the rest moved off the repo.
++ **People register themselves.** Set `EPISKO_REGISTER_CODE` on the server and a teammate pairs
+  with that code and their own name; no more inviting each person by hand. A name is claimed once,
+  so the team code cannot be used to read someone else's settings. Another machine of yours joins
+  through *Add a machine* in Settings › Sync, and `episko-server rename me YourName` retires the
+  old default name.
++ **Your spend and the project's.** On a project shared through sync, the dashboard shows what you
+  spent beside what the whole team spent, person by person.
+~ **Settings › Sync says who is who and what goes where.** It lists every machine on the server
+  under its user (yours first, teammates after, with who is online), what each stream carries and
+  whether it reaches your machines or everyone, and every preference another machine changed here
+  as a before-and-after diff. The raw log of sent keys is gone.
+~ **A work-log line knows which commits it covers.** A teammate holding commits the line missed
+  redoes it, starting from the old line, so neither machine's work drops out of the day.
+~ **Settings from another machine wait for you.** They no longer land unseen: a dialog shows each
+  one as a before-and-after and applies what you leave ticked. *Keep mine, always*, or the per-setting
+  switches in Settings › Sync, keep a setting to this machine, neither sent nor taken.
+~ *Move to the server and commit* deletes `.episko/digest.md` and commits just that, leaving
+  anything you had staged alone.
+~ **⌘T from a task opens a shell of its own** rather than tiling it beside the run's output.
+~ **Dependencies are current.** Tauri 2.12 and its plugins (the updater among them, to 2.13), with
+  every Rust and JavaScript dependency moved to its latest compatible release.
+! **The GitHub account picker no longer vanishes without a word on an older gh.** gh before
+  2.81.0 cannot list its accounts, so the picker was simply missing. The dashboard now says
+  which gh you have and how to update it, where the picker would be.
+! **"Signed in as …, which cannot see this repository" names the right account.** It named
+  whichever account was active when Episko started, even after `gh auth switch` changed it.
+! **A task's address is found when it lives under a path or a `.localhost` name.** A line like
+  `Ready: http://app.localhost:8443/ui/` now lands in the running-servers pill with its path, and a
+  running task's inspector card shows it as a link.
+! **A release tag is no longer listed as a branch, and deleting one can no longer delete the tag.** A
+  fetch refspec that mirrors tags under `refs/remotes` put every tag in Branches as a merged branch
+  `tags/vX`, and deleting it on the remote removed the real tag. Those refs are skipped now, and a
+  remote delete names `refs/heads/…` in full so it can only ever reach a branch.
+
 ## 0.32.0 — 2026-09-29
 Episko can sync through a small server you run yourself, so a second machine feels like the
 first and a team sees each other's work without a round trip through git. It is an accelerator,

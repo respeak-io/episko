@@ -85,6 +85,7 @@ pub(crate) enum SyncOut {
 enum Ctl {
     Push(u64, Vec<NewEvent>),
     Presence(serde_json::Value),
+    Invite,
     Reconnect,
 }
 
@@ -189,10 +190,11 @@ fn hear(sock: &mut Sock) -> Result<Option<ServerMsg>, String> {
     }
 }
 
-/// Trades an invite code for a token over a short-lived connection of its own.
-fn pair_with(url: &str, code: &str, label: &str, headers: &Headers) -> Result<(String, String, String), String> {
+/// Trades an invite or the team's registration code (with `user`) for a token, over a
+/// short-lived connection of its own.
+fn pair_with(url: &str, code: &str, label: &str, user: Option<String>, headers: &Headers) -> Result<(String, String, String), String> {
     let mut sock = open(url, headers)?;
-    say(&mut sock, &ClientMsg::Pair { code: code.trim().to_string(), label: label.to_string() })?;
+    say(&mut sock, &ClientMsg::Pair { code: code.trim().to_string(), label: label.to_string(), user })?;
     let deadline = Instant::now() + CONNECT_TIMEOUT;
     while Instant::now() < deadline {
         match hear(&mut sock)? {
@@ -235,6 +237,9 @@ fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<
                 }
                 Ok(Ctl::Presence(items)) => {
                     if let Err(e) = say(&mut sock, &ClientMsg::Presence { items }) { return End::Retry(e); }
+                }
+                Ok(Ctl::Invite) => {
+                    if let Err(e) = say(&mut sock, &ClientMsg::Invite {}) { return End::Retry(e); }
                 }
                 Ok(Ctl::Reconnect) => { let _ = sock.close(None); return End::Retry("reconnecting".into()); }
                 Err(RecvTimeoutError::Timeout) => break,
@@ -450,13 +455,14 @@ pub(crate) fn sync_start(app: AppHandle, state: State<'_, crate::AppState>) -> S
 }
 
 #[tauri::command]
-pub(crate) async fn sync_pair(app: AppHandle, url: String, code: String, label: String, headers: Headers) -> Result<SyncStatus, String> {
+pub(crate) async fn sync_pair(app: AppHandle, url: String, code: String, label: String, user: Option<String>, headers: Headers) -> Result<SyncStatus, String> {
+    let user = user.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
     let url = norm_url(&url)?;
     check_headers(&headers)?;
     let label = if label.trim().is_empty() { "this machine".to_string() } else { label.trim().to_string() };
     let (token, user, device) = tauri::async_runtime::spawn_blocking({
         let (url, label, headers) = (url.clone(), label.clone(), headers.clone());
-        move || pair_with(&url, &code, &label, &headers)
+        move || pair_with(&url, &code, &label, user, &headers)
     }).await.map_err(|e| e.to_string())??;
     let state = app.state::<crate::AppState>();
     let dir = lock(&state.sync.dir).clone().ok_or("no config directory")?;
@@ -498,6 +504,12 @@ pub(crate) fn sync_push(state: State<'_, crate::AppState>, id: u64, events: Vec<
 #[tauri::command]
 pub(crate) fn sync_presence(state: State<'_, crate::AppState>, items: serde_json::Value) -> bool {
     lock(&state.sync.tx).as_ref().is_some_and(|tx| tx.send(Ctl::Presence(items)).is_ok())
+}
+
+/// Asks the server for a code that pairs another machine of this user; it arrives as `invited`.
+#[tauri::command]
+pub(crate) fn sync_invite(state: State<'_, crate::AppState>) -> bool {
+    lock(&state.sync.tx).as_ref().is_some_and(|tx| tx.send(Ctl::Invite).is_ok())
 }
 
 /// The frontend applied everything up to `seq`: the next reconnect replays from there.
@@ -631,7 +643,7 @@ mod tests {
     fn a_session_says_hello_from_its_cursor_and_relays_both_ways() {
         let url = mock(|ws| {
             assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL });
-            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8 });
+            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8, devices: vec![] });
             let ev = Event { seq: 8, stream: Stream::Prefs, key: "cc-sort".into(), actor: "me".into(), device: "d2".into(), at: 1, payload: "x".into() };
             write_msg(ws, &ServerMsg::Events { events: vec![ev], more: false });
             assert!(matches!(read_msg(ws), ClientMsg::Push { .. }));
@@ -670,8 +682,8 @@ mod tests {
         let url = norm_url(&std::env::var("EPISKO_E2E_URL").expect("EPISKO_E2E_URL")).unwrap();
         let codes = std::env::var("EPISKO_E2E_CODES").expect("EPISKO_E2E_CODES");
         let (ca, cb) = codes.split_once(',').expect("two codes, comma-separated");
-        let (ta, _, da) = pair_with(&url, ca, "laptop", &vec![]).unwrap();
-        let (tb, _, db) = pair_with(&url, cb, "desk", &vec![]).unwrap();
+        let (ta, _, da) = pair_with(&url, ca, "laptop", None, &vec![]).unwrap();
+        let (tb, _, db) = pair_with(&url, cb, "desk", None, &vec![]).unwrap();
         assert_ne!(da, db);
         let heard = std::sync::Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let (h, u) = (heard.clone(), url.clone());

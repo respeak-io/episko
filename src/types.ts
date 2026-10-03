@@ -420,6 +420,7 @@ export interface Sess {
     startedAt: number; exitCode: number | null; tail: string[];
     // latched as output streams, never rescanned from the rolling tail (taskServerUrl in ./servers)
     url?: string;
+    partial?: string; // the unfinished last line, so a URL split across two chunks is read whole
     endedAt?: number; // freezes the duration at exit
     root: string; // where discovery ran; sourceFile is rooted here
     forSession?: string; // the session a run-on-stop rule was verifying; a failure goes back to it
