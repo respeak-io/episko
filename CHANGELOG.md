@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.33.0 — 2026-10-03
+Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
+its headings beside it instead of sending you to another app. Sync learns to say who is who and
+what goes where — settings from another machine wait for you rather than landing unseen, a team
+can register itself, and a shared project shows your spend beside everyone's. Underneath, Tauri
+moves to 2.12 and every dependency is current.
+
 + **Markdown files open in a reader inside Episko.** A `.md` link clicked in a pane, a row of the
   Context card or a file picked in ⌘P now opens in a dialog: the document rendered with its tables,
   task lists and screenshots, its headings in a rail beside it, and links to other documents
