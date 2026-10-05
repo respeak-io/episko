@@ -67,6 +67,34 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - `@new` reads a control's `since` against What's new's seen versions (`versionUnread`,
   through the host), so it means "since you last read What's new", not "in this release".
 
+## Project settings (`projsettings.ts`, `projsetview.ts`, `projprefs.ts`)
+
+One project's own settings, in a dialog of its own. It opens from the dashboard's ⚙ chip in
+*Set up for*, from *Project settings…* in the project menu, and from a global row's
+*decides this for itself* line. Settings is the default and a project is the exception.
+
+- **Two headed groups, *Yours* and *The team's*.** *Yours* holds overrides that stay on this
+  machine and affect nobody else: agent, permission mode, auto-fetch and its cadence, GitHub
+  account, run-on-stop. *The team's* holds the sharing channel, which switches teammates too.
+  Changing a team setting while believing it is personal is the mistake the split exists to
+  prevent, so a new row has to choose a group.
+- **Every override row offers *Settings* as its first option**, and that is the only way back:
+  no stored value means "follow". Under each label, a line says what is in force and where it
+  comes from (*Plan here; Settings says Ask*). An overridden row gets Settings' accent bar and a ⟲.
+- **A global row names the projects that ignore it** (`elsewhere`, from `overriders`). Without
+  that line, a project overriding Settings looks like a Settings switch that does nothing. Each
+  name opens that project's panel, which replaces Settings rather than stacking on top of it.
+- **Resolution is read at the use site with the project key**: `permissionModeFor(provider,
+  colorKey)` at launch, `autoFetchFor(colorKey)` in `tickAutoFetch`. Auto-fetch falls back to
+  Settings **per half**, so a project that only turns fetching off keeps the global cadence.
+- **`cc-proj-prefs` is `local`**: everything in it changes what runs or what is permitted
+  (docs/sync.md). The agent and gh pins keep their own roster-synced keys.
+- Settings › Sync › Projects is a summary grouped by channel, and its names open the panel. The
+  switch, the team's last choice, what the server holds and *Move to the server* all live in
+  the panel.
+- The committed `.episko/episko.toml` tables (branch locks, `[claim]`, `[health]`) are
+  mentioned here but not yet edited from here. They stay where they take effect.
+
 ## Contracts
 
 - `test/tour.test.ts` and `test/dispatch.test.ts` parse `id: "…", label: "…"` pairs out of

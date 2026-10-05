@@ -37,6 +37,7 @@ import {
   shareModeOf, type ShareMode,
 } from "./state";
 import { ghPickable, ghWho } from "./ghwork";
+import { overrideCount } from "./projsettings";
 
 // What a menu row does that this module does not own; one host object rather than nine
 // setters, as settings.ts does.
@@ -53,10 +54,12 @@ let host: {
   removeFavorite: (path: string) => void;
   openShellFor: (id: string) => void;
   closeSession: (id: string) => void;
+  openProjectSettings: (key: string) => void;
 } = {
   renderAll: () => {}, requestLaunch: () => {}, launchWorktree: () => {}, launchShell: () => {},
   setProjectAgent: () => {}, openProjectFolder: () => {}, addProjectPath: () => {}, removeFavorite: () => {},
   setGhAccount: () => {}, openShellFor: () => {}, closeSession: () => {}, setShareMode: () => {},
+  openProjectSettings: () => {},
 };
 export function setProjMenuHost(h: typeof host) { host = h; }
 
@@ -252,6 +255,11 @@ const ctxRowsHtml = (rows: (CtxRow | null)[]) => {
 // Where the menu was opened, so a drill-down and its ‹ Back land on the same pixels.
 let menuX = 0, menuY = 0;
 
+function projSetSub(key: string): string {
+  const n = overrideCount(key);
+  return n ? `${n} set for this project` : "everything follows Settings";
+}
+
 export function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
   wtTarget = gTarget = pickPath = brTarget = sessTarget = null; // one #ctxMenu, one target
@@ -276,6 +284,7 @@ export function openCtxMenu(key: string, x: number, y: number) {
       ? { act: "ghacct", ic: "◈", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
       : null,
     { act: "sharing", ic: "⇄", label: `Sharing · ${SHARE_LABEL[shareModeOf(key)]}`, sub: SHARE_SUB[shareModeOf(key)], chev: true },
+    { act: "projset", ic: "⚙", label: "Project settings…", sub: projSetSub(key) },
     null,
     // Dropped below unless the probe says this folder is a repo.
     { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
@@ -948,6 +957,7 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "graph": void openGraph(key, name); break;
     case "folder": host.openProjectFolder(key); break;
     case "copypath": copyPath(key); break;
+    case "projset": host.openProjectSettings(key); break;
     case "addproj": host.addProjectPath(key); break;
     case "removeproj": host.removeFavorite(key); toast(`Removed ${name}`); break;
   }

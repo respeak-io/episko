@@ -35,6 +35,7 @@ import {
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
+  setProjectPerm, setProjectFetch,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
@@ -107,6 +108,7 @@ import {
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
+import { closeProjectSettings, openProjectSettings, projSettingsOpen, setProjSetHost } from "./projsettings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -215,7 +217,12 @@ setPaletteHost({
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount, openShellFor, closeSession,
-  setShareMode: setProjectShareMode,
+  setShareMode: setProjectShareMode, openProjectSettings,
+});
+setProjSetHost({
+  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
+  setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
+  hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -243,8 +250,9 @@ setSettingsHost({
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
   syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
-  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer, syncReview: openReview,
-  syncHasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
+  syncReview: openReview,
+  // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
+  openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -292,6 +300,7 @@ setDashHost({
   // dashboard has no row to hang it off.
   openAgentPicker: (root) => openAgentPicker(chipAt('#dashHere [data-dashact="agent"]'), root),
   openGhPicker: (root) => openGhPicker(chipAt('#dashHere [data-dashact="ghpick"]'), root),
+  openProjectSettings,
   setActive,
   renderAll,
 });
@@ -713,7 +722,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -749,6 +758,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && callSheetOpen()) { e.preventDefault(); closeCallSheet(); }
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
+  else if (e.key === "Escape" && projSettingsOpen()) { e.preventDefault(); closeProjectSettings(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }

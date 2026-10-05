@@ -23,7 +23,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-custom-icons": "roster", "cc-colors": "roster",
   "cc-agent-by-project": "roster", "cc-gh-account": "roster", "cc-episko-share": "roster",
 
-  "cc-perm-modes": "local", "cc-perm-mode": "local", "cc-trusted": "local", "cc-autofetch": "local",
+  "cc-perm-modes": "local", "cc-perm-mode": "local", "cc-trusted": "local", "cc-autofetch": "local", "cc-proj-prefs": "local",
   "cc-task-prefs": "local", "cc-task-onstop": "local", "cc-task-runner": "local", "cc-task-inputs": "local",
   "cc-task-pins": "local", "cc-task-hidden": "local", "cc-digest-ok": "local", "cc-revive": "local",
   "cc-cost-base": "local", "cc-agent-token-base": "local", "cc-cmp-base": "local", "cc-restore": "local",

@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -55,9 +55,9 @@ import { providerPermissionMode } from "./providers";
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
-function launchPermission(agent: AgentCli) {
+function launchPermission(agent: AgentCli, colorKey: string) {
   if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
-  const def = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+  const def = providerPermissionMode(agent.id, permissionModeFor(agent.id, colorKey));
   return { mode: def && def.id !== "default" ? def.id : null, def };
 }
 
@@ -177,7 +177,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
   // Read here rather than passed as an opt: it is a preference, like termEngine.
-  const permission = launchPermission(agent);
+  const permission = launchPermission(agent, colorKey);
   const mode = permission.mode;
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
@@ -387,7 +387,7 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   };
   sessions.set(id, s);
   setActive(id);
-  const permission = launchPermission(agent);
+  const permission = launchPermission(agent, colorKey);
   dlog("info", `${opts.resume ? "resume" : "agent"} ${agent.id} · ${project} · ${id.slice(0, 8)}${permission.mode ? ` · ${permission.def?.label}` : ""}`);
   let spawned = true;
   try {
@@ -1003,7 +1003,7 @@ export async function tickAutoFetch(): Promise<void> {
   // Read once and found not to be a repo; an unread folder still gets its chance.
   if (dirtyByFolder.has(s.workdir) && !dirtyByFolder.get(s.workdir)) return;
   const key = s.colorKey || s.workdir;
-  if (!fetchDue(fetchedByRepo.get(key), autoFetchPrefs, Date.now())) return;
+  if (!fetchDue(fetchedByRepo.get(key), autoFetchFor(key), Date.now())) return;
   const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
   setGitBusy(s.id, "fetch");
   repaint();

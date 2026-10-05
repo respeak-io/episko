@@ -193,8 +193,8 @@ as whole values. Rules, all in `roster.ts`:
 
 ## Shared notes and the work log: where they go is per project
 
-Project menu › **Sharing** holds one choice per project (`cc-episko-share`, synced with the
-roster):
+Each project holds one choice (`cc-episko-share`, synced with the roster). It is set in the
+project's settings under *The team's* (docs/settings.md), or quickly from Project menu › **Sharing**:
 
 | Mode | Notes and work log |
 | --- | --- |
@@ -221,7 +221,7 @@ roster):
   `share|<project id>` on the notes stream, and every teammate's checkout follows it, unless they
   chose Nowhere. Without this, one teammate left on Git would keep committing the file the
   others had moved off the repo.
-- **Moving off the repo**: Settings › Sync › Projects offers *Move to the server and commit* for
+- **Moving off the repo**: the project's settings offer *Move to the server* for
   a project not on Git that still has the file. It publishes every day in the file, deletes it,
   and commits that one path (`commit_digest_removal`: `git commit --only -- .episko/digest.md`,
   so anything the user had staged stays staged and out of the commit). Pushing stays the user's.

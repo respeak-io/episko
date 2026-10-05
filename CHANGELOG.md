@@ -13,6 +13,20 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Each project has its own settings.** Open them with ⚙ on the project's dashboard or with
+  *Project settings…* in its menu. *Yours* holds what this project decides for itself on this
+  machine: its agent, its permission mode, whether and how often it auto-fetches, its GitHub
+  account and its run-on-stop task. Anything left on *Settings* follows the global choice, and
+  each row says which one is in force. *The team's* holds where notes and the work log go,
+  along with what the server already has and the move off the repo.
++ **A project can start in a different permission mode.** Plan mode in a production repo and
+  Bypass in a scratch one, without changing Settings each time. The new-session dialog and a
+  dashboard dispatch show the mode the project will actually use.
+~ **Settings names the projects that ignore it.** Agent, Permission mode and auto-fetch list
+  every project that decides for itself, and each name opens that project's settings.
+~ **Settings › Sync › Projects is a summary now.** It groups projects by where they share, and
+  each name opens that project's settings, where the choice is made.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

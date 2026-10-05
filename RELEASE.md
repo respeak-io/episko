@@ -537,6 +537,14 @@ and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
       and scrolls to it, and Esc clears the box before it closes the window. The shortcut
       sheet's quick open lands lit on *Keyboard shortcuts*; *Usage & spend* in the rail opens
       its own window; ⌘K with a setting's name offers *Setting · …* and lands on the row.
+- [ ] **Project settings.** On a project's dashboard, the ⚙ chip at the end of *Set up for*
+      opens its panel, and so does *Project settings…* in the project menu. Set the permission
+      mode to Plan: the row gets the accent bar and reads *Plan here; Settings says …*. ⌘N on
+      that project then shows the Plan chip, and a session started there opens in plan mode.
+      Settings › Launching names the project under Permission mode, and clicking the name
+      returns to its panel. ⟲ on the row clears the override and the chip goes away. Turn
+      auto-fetch Off here and confirm the git card on that project stops fetching while other
+      projects keep going.
 
 ### The title bar, which is the header (no native one behind it)
 
