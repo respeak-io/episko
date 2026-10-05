@@ -94,3 +94,34 @@ fn fail(msg: &str) -> ! {
     eprintln!("{msg}");
     std::process::exit(2);
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    // A deployment learns its settings from .env.example and `--help`, and ./update.sh announces
+    // a release's new ones by diffing the example: a variable missing there is one nobody can find.
+    fn read_by_source() -> BTreeSet<String> {
+        let needle = concat!("env::var(", "\"EPISKO_");
+        [include_str!("main.rs"), include_str!("serve.rs"), include_str!("store.rs")]
+            .iter()
+            .flat_map(|src| src.split(needle).skip(1))
+            .map(|rest| format!("EPISKO_{}", rest.split('"').next().unwrap()))
+            .collect()
+    }
+
+    fn named_in(text: &str) -> BTreeSet<String> {
+        text.split(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+            .filter(|w| w.starts_with("EPISKO_") && w.len() > 7)
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn every_variable_is_in_the_example_and_the_usage() {
+        let read = read_by_source();
+        assert!(read.contains("EPISKO_REGISTER_CODE"), "the scan found nothing: {read:?}");
+        assert_eq!(named_in(include_str!("../.env.example")), read, ".env.example vs. the source");
+        assert_eq!(named_in(super::USAGE), read, "USAGE vs. the source");
+    }
+}
