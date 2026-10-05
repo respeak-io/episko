@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, wtGroup,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, type ShareMode,
 } from "./state";
@@ -82,6 +82,7 @@ export interface SettingsHost {
   setSort: (m: SortMode, announce?: boolean) => void;
   setEngine: (id: Engine) => void;
   setTermSplit: (on: boolean) => void;
+  setDriftAuto: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -161,7 +162,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -534,6 +535,11 @@ const SET_TABS: SetTab[] = [
               : "Quietest: a count may be half an hour old",
           })),
         } },
+      { kind: "toggle", set: "driftauto", key: "cc-drift-auto", label: "Follow a session into the checkout it works in",
+        hint: "When an agent starts writing in another worktree, the header, working set and git buttons switch to that worktree. The agent keeps running where it started.",
+        more: "The session's row, header and inspector say which folder it started in. Move session here restarts it in the new folder, so its conversation lives there too; that is never done for you. Off, the inspector asks each time.",
+        aliases: ["drift", "worktree", "moved", "track", "show it here", "checkout", "branch"], since: "0.34.0",
+        on: () => driftAuto, isDefault: () => driftAuto, reset: () => host.setDriftAuto(true) },
       // Set from the project's task panel; reviewed and revoked here.
       { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
         hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
@@ -1673,6 +1679,7 @@ function scanAsks() {
 function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
   else if (set === "termsplit") host.setTermSplit(val === "1");
+  else if (set === "driftauto") host.setDriftAuto(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);

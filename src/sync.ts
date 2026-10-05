@@ -12,7 +12,7 @@ export type SyncClass = "pref" | "account" | "roster" | "local";
 // is `local` — that is why the permission modes, trust list, task rules and auto-fetch stay.
 export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-keys": "pref", "cc-sound": "pref", "cc-motion": "pref", "cc-foot": "pref",
-  "cc-title": "pref", "cc-term-engine": "pref", "cc-term-font": "pref", "cc-term-split": "pref",
+  "cc-title": "pref", "cc-term-engine": "pref", "cc-term-font": "pref", "cc-term-split": "pref", "cc-drift-auto": "pref",
   "cc-agent": "pref", "cc-diff-mode": "pref", "cc-scrollback": "pref", "cc-sort": "pref",
   "cc-fleet-sort": "pref", "cc-fleet-layout": "pref", "cc-fleet-group": "pref", "cc-fleet-range": "pref",
   "cc-peek": "pref", "cc-outline": "pref", "cc-markdown": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
@@ -391,7 +391,7 @@ export function spendSources(own: Record<string, number>, peers: Peers, days: st
 export const PREF_LABEL: Readonly<Record<string, string>> = {
   "cc-keys": "Keyboard shortcuts", "cc-sound": "Sounds", "cc-motion": "Motion and effects", "cc-foot": "Status bar",
   "cc-title": "Session titles", "cc-term-engine": "Terminal engine", "cc-term-font": "Terminal font size",
-  "cc-term-split": "Shell beside a session", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout",
+  "cc-term-split": "Shell beside a session", "cc-drift-auto": "Follow a session's checkout", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout",
   "cc-scrollback": "Scrollback", "cc-sort": "Sidebar sort", "cc-fleet-sort": "Fleet sort", "cc-fleet-layout": "Fleet layout",
   "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-peek": "Hover to reveal",
   "cc-outline": "Conversation outline", "cc-markdown": "Markdown reader", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",

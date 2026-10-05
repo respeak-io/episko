@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A session that moves to another worktree is followed there.** When an agent starts writing in a
+  different checkout, Episko now switches the header, working set and git buttons to it on its own,
+  instead of asking in the inspector while showing the old folder's numbers. The agent keeps running
+  where it started, and the session says so: its row reads *from dev*, the header shows both
+  branches and the inspector's *Started in* card still offers *Move session here*. Switch it off in
+  *Settings › On its own*.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

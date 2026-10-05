@@ -33,7 +33,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -258,6 +258,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
   localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
+}
+
+// Applies to the next drift; a card already showing stays until answered.
+export function setDriftAuto(on: boolean) {
+  setDriftAutoState(on);
+  localStorage.setItem("cc-drift-auto", on ? "1" : "0");
   renderSettings();
 }
 

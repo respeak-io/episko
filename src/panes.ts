@@ -869,7 +869,7 @@ export function renderHeader(s: Sess | null) {
   // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
-  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
+  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted", "tracked"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; setHeadPath(""); return; }
   $("hProj").textContent = s.project;
   if (!hasSessionState(s)) {
@@ -881,6 +881,13 @@ export function renderHeader(s: Sess | null) {
     hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
     hb.hidden = false; hb.classList.add("drifted");
+  }
+  // Tracked: the same pair, because the agent and a resume still live where it started.
+  else if (s.home) {
+    hb.textContent = `${s.home.branch || basename(s.home.workdir)} ⤳ ⑃ ${s.branch || basename(s.workdir)}`;
+    hb.title = `Started in ${s.home.workdir}
+Showing ${s.workdir}`;
+    hb.hidden = false; hb.classList.add("tracked");
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
