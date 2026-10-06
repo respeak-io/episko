@@ -18,6 +18,11 @@ Markers: `+` new · `~` changed · `!` fixed
   is on (checkouts, then local refs, then the remote) and the branch it just finished, and each
   row's tick turns green as it goes or amber if git kept it. The same bar runs when you remove
   checkouts.
+! **Leaving the Branches view no longer makes a cleanup look abandoned.** The delete always ran to
+  the end, but coming back from a session re-read the list halfway through, showed the Delete
+  button again and threw the result away. Now the progress bar is still there when you return, and
+  a cleanup that finishes while you're elsewhere says so with the project's name and shows its
+  result the next time you open Branches.
 
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
