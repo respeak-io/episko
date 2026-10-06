@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { runElapsed, taskStateText, type InputSpec, type Runnable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  applyInputs, applyRunner, execCmd, exitWaiters, findDepCycle, lastRunnableById,
+  applyInputs, applyRunner, defSpan, execCmd, exitWaiters, findDepCycle, lastRunnableById,
   launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps, resolveRunInputs,
   setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
@@ -690,5 +690,64 @@ describe("findDepCycle — caught before anything launches", () => {
     expect(labels()).toEqual([]);          // nothing half-started
     expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
     await expect(p).resolves.toEqual({ ok: false, id: null });
+  });
+});
+
+describe("defSpan", () => {
+  const span = (src: string, lines: string[], label: string) => defSpan(src, lines.join("\n"), label);
+
+  it("finds an npm script inside scripts, not a same-named key above it", () => {
+    const pkg = ['{', '  "name": "dev",', '  "dev": "nope",', '  "scripts": {', '    "build": "tsc",', '    "dev": "vite"', '  }', '}'];
+    expect(span("npm", pkg, "dev")).toEqual({ start: 5, end: 5 });
+    expect(span("npm", pkg, "missing")).toBeNull();
+  });
+
+  it("takes the whole tasks.json object, braces inside strings ignored", () => {
+    const tj = [
+      '{ "tasks": [',
+      '  { "label": "build", "command": "make" },',
+      '  {',
+      '    "label": "dev",',
+      '    "command": "pnpm run dev {not a brace}",',
+      '    "options": { "cwd": "web" }',
+      '  }',
+      ']}',
+    ];
+    expect(span("vscode", tj, "dev")).toEqual({ start: 2, end: 6 });
+    expect(span("vscode", tj, "build")).toEqual({ start: 1, end: 1 });
+  });
+
+  it("matches a launch config by name and a label with regex characters literally", () => {
+    const lj = ['{ "configurations": [', '  {', '    "name": "Run (x+1)",', '    "program": "a.js"', '  }', ']}'];
+    expect(span("launch", lj, "Run (x+1)")).toEqual({ start: 1, end: 4 });
+    expect(span("launch", lj, "Run (x1)")).toBeNull();
+  });
+
+  it("takes an .episko [[task]] block from its header to the next table", () => {
+    const t = ['[[task]]', 'label = "a"', 'run = "x"', '', '[[task]]', "label = 'dev'", 'run = "vite"', '', '[override."npm:x"]'];
+    expect(span("episko", t, "dev")).toEqual({ start: 4, end: 6 });
+  });
+
+  it("takes a make target with its doc line and recipe, and refuses an assignment", () => {
+    const mk = ['CC := gcc', '## build it', 'build: deps', '\tcc main.c', '\tstrip a.out', '', 'deps:', '\ttrue'];
+    expect(span("make", mk, "build")).toEqual({ start: 1, end: 4 });
+    expect(span("make", mk, "CC")).toBeNull();
+  });
+
+  it("takes a just recipe with attributes, params and a quiet marker", () => {
+    const jf = ['# serve it', '[no-cd]', '@dev port="3000":', '  vite --port {{port}}', '', 'devtools:', '  echo'];
+    expect(span("just", jf, "dev")).toEqual({ start: 0, end: 3 });
+  });
+
+  it("takes a Taskfile task by indentation and a mise task by header or key", () => {
+    const tf = ['version: 3', 'tasks:', '  dev:', '    cmds:', '      - vite', '  build:', '    cmds: [tsc]'];
+    expect(span("taskfile", tf, "dev")).toEqual({ start: 2, end: 4 });
+    const mise = ['[tasks.dev]', 'run = "vite"', '', '[tasks]', 'lint = "biome check"'];
+    expect(span("mise", mise, "dev")).toEqual({ start: 0, end: 1 });
+    expect(span("mise", mise, "lint")).toEqual({ start: 4, end: 4 });
+  });
+
+  it("answers null for a source with no text definition", () => {
+    expect(span("cargo", ["[package]"], "build")).toBeNull();
   });
 });
