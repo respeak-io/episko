@@ -821,7 +821,25 @@ pub(crate) struct SweepResult {
 /// it refuses comes back as a `-D` command; the one exception is a per-branch `force`
 /// (see `SweepPick`). A held branch or a `gone` claim git disagrees with lands in `kept`.
 #[tauri::command(async)]
-pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<SweepResult, String> {
+pub(crate) fn sweep_branches(
+    repo_dir: String,
+    picks: Vec<SweepPick>,
+    on_step: tauri::ipc::Channel<SweepStep>,
+) -> Result<SweepResult, String> {
+    // A closed channel (the view went away) only loses the animation, never the sweep.
+    sweep_local(repo_dir, picks, &|branch, deleted| {
+        let _ = on_step.send(SweepStep { branch: branch.to_string(), deleted });
+    })
+}
+
+/// One branch the sweep has finished with, sent as it happens so the view can show progress.
+#[derive(serde::Serialize, Clone, Debug)]
+pub(crate) struct SweepStep {
+    branch: String,
+    deleted: bool,
+}
+
+fn sweep_local(repo_dir: String, picks: Vec<SweepPick>, step: &dyn Fn(&str, bool)) -> Result<SweepResult, String> {
     let mut want: Vec<SweepPick> = Vec::new();
     for p in picks {
         let branch = p.branch.trim().to_string();
@@ -882,49 +900,54 @@ pub(crate) fn sweep_branches(repo_dir: String, picks: Vec<SweepPick>) -> Result<
     let mut deleted: Vec<DeletedBranch> = Vec::new();
     let mut kept: Vec<KeptBranch> = Vec::new();
     for p in want {
-        let b = p.branch;
-        // The lock first: it is the most specific refusal, and the only one no evidence lifts.
-        let by = protected_by(&protect, &b);
-        if !by.is_empty() {
-            kept.push(KeptBranch { branch: b, reason: format!("protected by {by} in .episko/episko.toml"), forceable: false });
-            continue;
-        }
-        if p.gone && !gone.contains(b.as_str()) {
-            kept.push(KeptBranch { branch: b, reason: "not gone any more — it has a remote branch again".into(), forceable: false });
-            continue;
-        }
-        if taken.contains(&b) {
-            kept.push(KeptBranch { branch: b, reason: "checked out in a worktree".into(), forceable: false });
-            continue;
-        }
-        // A spawn failure or timeout stops this branch, never the sweep.
-        let run = |flag: &str| git_run(git_cmd(&repo_dir, &["branch", flag, &b]), 15);
-        let out = match run("-d") {
-            Ok(o) => o,
-            Err(e) => { kept.push(KeptBranch { branch: b, reason: e, forceable: false }); continue; }
-        };
-        if out.status.success() {
-            let sha = was_sha(&String::from_utf8_lossy(&out.stdout));
-            deleted.push(DeletedBranch { branch: b, sha, forced: false });
-            continue;
-        }
-        if p.force {
-            match run("-D") {
-                Ok(o) if o.status.success() => {
-                    let sha = was_sha(&String::from_utf8_lossy(&o.stdout));
-                    deleted.push(DeletedBranch { branch: b, sha, forced: true });
-                    continue;
-                }
-                // Report the SAFE delete's refusal: -D failing after -d means something structural.
-                _ => {}
+        let (nd, nk) = (deleted.len(), kept.len());
+        'one: {
+            let b = p.branch;
+            // The lock first: it is the most specific refusal, and the only one no evidence lifts.
+            let by = protected_by(&protect, &b);
+            if !by.is_empty() {
+                kept.push(KeptBranch { branch: b, reason: format!("protected by {by} in .episko/episko.toml"), forceable: false });
+                break 'one;
             }
+            if p.gone && !gone.contains(b.as_str()) {
+                kept.push(KeptBranch { branch: b, reason: "not gone any more — it has a remote branch again".into(), forceable: false });
+                break 'one;
+            }
+            if taken.contains(&b) {
+                kept.push(KeptBranch { branch: b, reason: "checked out in a worktree".into(), forceable: false });
+                break 'one;
+            }
+            // A spawn failure or timeout stops this branch, never the sweep.
+            let run = |flag: &str| git_run(git_cmd(&repo_dir, &["branch", flag, &b]), 15);
+            let out = match run("-d") {
+                Ok(o) => o,
+                Err(e) => { kept.push(KeptBranch { branch: b, reason: e, forceable: false }); break 'one; }
+            };
+            if out.status.success() {
+                let sha = was_sha(&String::from_utf8_lossy(&out.stdout));
+                deleted.push(DeletedBranch { branch: b, sha, forced: false });
+                break 'one;
+            }
+            if p.force {
+                match run("-D") {
+                    Ok(o) if o.status.success() => {
+                        let sha = was_sha(&String::from_utf8_lossy(&o.stdout));
+                        deleted.push(DeletedBranch { branch: b, sha, forced: true });
+                        break 'one;
+                    }
+                    // Report the SAFE delete's refusal: -D failing after -d means something structural.
+                    _ => {}
+                }
+            }
+            let combined = [
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
+            let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
+            kept.push(KeptBranch { branch: b, reason: first, forceable: true });
         }
-        let combined = [
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n");
-        let first = combined.lines().find(|l| !l.trim().is_empty()).unwrap_or("git refused").to_string();
-        kept.push(KeptBranch { branch: b, reason: first, forceable: true });
+        if let Some(d) = deleted.get(nd) { step(&d.branch, true); }
+        if let Some(k) = kept.get(nk) { step(&k.branch, false); }
     }
 
     let force: Vec<String> = kept.iter().filter(|k| k.forceable).map(|k| format!("\"{}\"", k.branch)).collect();
@@ -3722,7 +3745,7 @@ canonicalizehostname false
         assert!(one.suggest.is_none(), "no handoff: there is no command that answers a lock");
 
         let pick = |n: &str| SweepPick { branch: n.into(), gone: false, force: true };
-        let r = sweep_branches(repo.clone(), vec![pick("keep"), pick("go")]).expect("sweep runs");
+        let r = sweep_local(repo.clone(), vec![pick("keep"), pick("go")], &|_, _| {}).expect("sweep runs");
         assert_eq!(r.deleted.iter().map(|d| d.branch.as_str()).collect::<Vec<_>>(), ["go"],
             "a force does not lift a lock: {r:?}");
         assert!(r.kept.iter().any(|k| k.branch == "keep" && k.reason.contains("protected by keep")), "{r:?}");
@@ -3816,7 +3839,13 @@ canonicalizehostname false
         let asked = ["gone-merged", "gone-ahead", "gone-held", "gone-alive", "never-pushed"];
         // The broom's own call: every pick claims `gone`, none may force.
         let pick = |n: &str| SweepPick { branch: n.into(), gone: true, force: false };
-        let r = sweep_branches(repo.clone(), asked.iter().map(|n| pick(n)).collect()).expect("sweep runs");
+        let steps = std::cell::RefCell::new(Vec::new());
+        let r = sweep_local(repo.clone(), asked.iter().map(|n| pick(n)).collect(),
+            &|b, ok| steps.borrow_mut().push((b.to_string(), ok))).expect("sweep runs");
+        // The progress the view animates: one step per branch, in the order asked, as it lands.
+        let steps = steps.into_inner();
+        assert_eq!(steps.iter().map(|(b, _)| b.as_str()).collect::<Vec<_>>(), asked, "{steps:?}");
+        assert_eq!(steps.iter().filter(|(_, ok)| *ok).map(|(b, _)| b.as_str()).collect::<Vec<_>>(), ["gone-merged"]);
 
         assert_eq!(r.deleted.iter().map(|d| d.branch.as_str()).collect::<Vec<_>>(), ["gone-merged"],
             "only the merged-and-gone branch goes: {r:?}");
@@ -3844,7 +3873,7 @@ canonicalizehostname false
         }
 
         // An empty ask is a caller bug, not a licence to sweep everything it can find.
-        assert!(sweep_branches(repo, vec![]).is_err(), "an empty list is refused");
+        assert!(sweep_local(repo, vec![], &|_, _| {}).is_err(), "an empty list is refused");
 
         let _ = std::fs::remove_dir_all(wt_root(&dir));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3871,12 +3900,12 @@ canonicalizehostname false
         let wt = dir.join("wt-held");
         git(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "held"]);
 
-        let r = sweep_branches(repo, vec![
+        let r = sweep_local(repo, vec![
             SweepPick { branch: "plain-merged".into(), gone: false, force: false },
             SweepPick { branch: "squashed".into(), gone: false, force: true },
             SweepPick { branch: "kept-back".into(), gone: false, force: false },
             SweepPick { branch: "held".into(), gone: false, force: true },
-        ]).expect("sweep runs");
+        ], &|_, _| {}).expect("sweep runs");
 
         let got = |n: &str| r.deleted.iter().find(|d| d.branch == n);
         assert!(got("plain-merged").is_some_and(|d| !d.forced),

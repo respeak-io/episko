@@ -4,6 +4,7 @@ import {
   filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows,
   removableCheckouts, remoteFor, remoteOf, remotePicks, selectable, switchable, switchOptions,
   trunkOf, trunkOptions, trunkText, whereText, midFlightText, syncText,
+  startSweep, sweepBar, sweepStep,
   type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type ProtectCtx,
   type WtInfo,
 } from "../src/branches";
@@ -471,5 +472,44 @@ describe("globMatch", () => {
     // `rest.endsWith(part)` on an empty remainder would otherwise let `ab*ab` match `abab`… twice.
     expect(globMatch("ab*ab", "ab")).toBe(false);
     expect(globMatch("ab*ab", "abab")).toBe(true);
+  });
+});
+
+describe("a delete in flight", () => {
+  it("counts one bar across every phase, never past the end", () => {
+    const p = startSweep("local", 3);
+    sweepStep(p, "a", true);
+    expect(sweepBar(p, "origin")).toMatchObject({ label: "Deleting locally", current: "a", count: "1 / 3", pct: 33, wait: false });
+    p.phase = "remote";
+    sweepStep(p, "b", true);
+    sweepStep(p, "c", true);
+    sweepStep(p, "d", true);   // a stray extra step must not read 4 / 3
+    expect(sweepBar(p, "origin")).toMatchObject({ label: "Deleting on origin", count: "3 / 3", pct: 100 });
+  });
+
+  it("waits while a batch that answers all at once is out, and while refs are pruned", () => {
+    const p = startSweep("remote", 2);
+    expect(sweepBar(p, "origin").wait).toBe(true);
+    sweepStep(p, "a", true); sweepStep(p, "b", true);
+    expect(sweepBar(p, "origin").wait).toBe(false);
+    p.phase = "fetch";
+    expect(sweepBar(p, "origin")).toMatchObject({ wait: true, current: "", label: "Pruning origin/ refs" });
+  });
+
+  it("keeps a row marked kept once either half refused", () => {
+    const p = startSweep("local", 4);
+    sweepStep(p, "x", false);
+    sweepStep(p, "x", true);   // its remote half went, but the local branch is still here
+    sweepStep(p, "y", true);
+    expect(p.marks.get("x")).toBe("kept");
+    expect(p.marks.get("y")).toBe("gone");
+  });
+
+  it("can count a step without marking a row, and reads full on an empty run", () => {
+    const p = startSweep("checkouts", 1);
+    sweepStep(p, "/wt/a", true, false);
+    expect(p.marks.size).toBe(0);
+    expect(p.done).toBe(1);
+    expect(sweepBar(startSweep("local", 0), "origin").pct).toBe(100);
   });
 });

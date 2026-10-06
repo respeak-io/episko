@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A big branch cleanup shows where it is.** Deleting dozens of branches used to sit on
+  *Working…* until it was over. Now the action bar becomes a progress bar that names the step it
+  is on (checkouts, then local refs, then the remote) and the branch it just finished, and each
+  row's tick turns green as it goes or amber if git kept it. The same bar runs when you remove
+  checkouts.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

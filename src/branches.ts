@@ -298,6 +298,44 @@ export function chosenWorktrees(rows: BranchRow[], on: ReadonlySet<string>): WtI
   return picked(rows, on).filter((r) => r.local.ok).flatMap((r) => (r.wt ? [r.wt] : []));
 }
 
+// ---------- a delete in flight ----------
+// One count across every phase, so the bar never runs to the end and starts again. The
+// remote push is one batch that answers all at once, which is why that phase waits.
+
+export type SweepPhase = "checkouts" | "local" | "remote" | "fetch";
+export type SweepMark = "gone" | "kept";
+export interface SweepProg {
+  phase: SweepPhase;
+  total: number;
+  done: number;
+  current: string;                 // the last name finished
+  marks: Map<string, SweepMark>;   // by row key: a branch name, or a checkout's path
+}
+
+export const startSweep = (phase: SweepPhase, total: number): SweepProg =>
+  ({ phase, total: Math.max(0, total), done: 0, current: "", marks: new Map() });
+
+/** One finished step. A row keeps `kept` once any half refused, or the local half's
+ *  success would paint a branch gone whose remote half was refused. */
+export function sweepStep(p: SweepProg, key: string, deleted: boolean, mark = true): void {
+  p.done = Math.min(p.total, p.done + 1);
+  p.current = key;
+  if (mark && p.marks.get(key) !== "kept") p.marks.set(key, deleted ? "gone" : "kept");
+}
+
+export interface SweepBar { label: string; current: string; count: string; pct: number; wait: boolean }
+
+export function sweepBar(p: SweepProg, remote: string): SweepBar {
+  const label = p.phase === "checkouts" ? "Removing checkouts"
+    : p.phase === "local" ? "Deleting locally"
+    : p.phase === "remote" ? `Deleting on ${remote}`
+    : `Pruning ${remote}/ refs`;
+  const pct = p.total ? Math.round((p.done / p.total) * 100) : 100;
+  // The push and the prune report nothing until they end; a still bar there reads as a hang.
+  const wait = p.phase === "fetch" || (p.phase === "remote" && p.done < p.total);
+  return { label, current: p.phase === "fetch" ? "" : p.current, count: `${p.done} / ${p.total}`, pct, wait };
+}
+
 // Offered first, then evidenced-but-blocked (their reason answers "why isn't this offered?"),
 // then everything else, each band keeping git's most-recent-first order. The bands are facts
 // about the branch rather than about the toggles, so arming a scope never makes the table jump.

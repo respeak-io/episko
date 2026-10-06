@@ -2,7 +2,7 @@
 // ./dash owns the rules, ./dashview the markup. Nothing here runs until a project is
 // clicked: no probe at startup, nothing on renderAll's path. See docs/dashboard.md.
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
@@ -41,10 +41,10 @@ import {
 import { openBranchPop } from "./bpop";
 import {
   branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
-  NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable,
-  switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo,
-  type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
-  type WtInfo,
+  NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable, startSweep,
+  sweepBar, sweepStep, switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter,
+  type BranchInfo, type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx,
+  type SweepPhase, type SweepProg, type SweepResult, type WtInfo,
 } from "./branches";
 import { openMenu } from "./menu";
 import { openBranchMenu } from "./projmenu";
@@ -276,6 +276,7 @@ let branchFilter: BranchFilter = "all";
 let branchQuery = "";
 let coSel: Pick = emptyPick();
 let branchBusy = false;
+let branchSweep: SweepProg | null = null;
 let branchResult: CleanReport | null = null;
 // The one day out at the model right now; a value, not a set, because `runSummaryQueue` is sequential.
 let writing: { key: string; scope: "me" | "project" } | null = null;
@@ -942,7 +943,7 @@ export function renderDash(): void {
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
-      busy: branchBusy, loading: branchData === null, result: branchResult,
+      busy: branchBusy, sweep: branchSweep, loading: branchData === null, result: branchResult,
     }));
   }
 
@@ -1027,7 +1028,7 @@ export function openDashboard(project: string, path: string): void {
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
     // Branch state never carries across projects: another repo's merges must not vouch for this one.
     branchData = null; branchPrs = null; branchPrsLoading = false; branchProtect = NO_PROTECT;
-    branchSel = emptyPick(); coSel = emptyPick(); branchResult = null; branchBusy = false;
+    branchSel = emptyPick(); coSel = emptyPick(); branchResult = null; branchBusy = false; branchSweep = null;
     branchTab = "branches"; branchFilter = "all"; branchQuery = "";
     // Another project's advisories must never be read under this one's name; the scan is
     // dropped with them, since it was an answer about that folder's lockfile.
@@ -1539,31 +1540,45 @@ const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, bran
 // delete that ran first would leave the evidence for the local half gone.
 async function runClean(): Promise<void> {
   const r = root();
-  const rows = branchRowsNow();
+  const rows = orderRows(branchRowsNow());   // the table's order, so the marks run down it
   const picks = branchScopes.local ? localPicks(rows, branchSel.picked) : [];
   const rpicks = branchScopes.remote ? remotePicks(rows, branchSel.picked) : [];
   if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
   const remote = remoteFor(rows);
+  const wts = picks.length ? chosenWorktrees(rows, branchSel.picked) : [];
   branchBusy = true;
+  branchSweep = startSweep(wts.length ? "checkouts" : picks.length ? "local" : "remote",
+    wts.length + picks.length + rpicks.length);
   renderDash();
+  const { step, phase } = sweepDriver(r, remote);
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
   try {
     if (picks.length) {
-      for (const w of chosenWorktrees(rows, branchSel.picked)) report.wts.push(await removeOne(r, w));
-      report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
+      // A checkout is counted but marks no row: its branch is the next phase's to answer for.
+      for (const w of wts) { const res = await removeOne(r, w); report.wts.push(res); step(w.path, res.ok, false); }
+      phase("local");
+      const onStep = new Channel<{ branch: string; deleted: boolean }>();
+      onStep.onmessage = (m) => { if (branchSweep?.phase === "local") step(m.branch, m.deleted); };
+      report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks, onStep });
       dlog("info", `branches · ${report.local.summary}`);
     }
     if (rpicks.length) {
+      phase("remote");
       const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks: rpicks });
       dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
       report.remote = { swept, remote };
+      // One push answers for the whole batch, so its rows all land together.
+      for (const d of swept.deleted) step(d.branch, true);
+      for (const k of swept.kept) step(k.branch, false);
       // A remote delete leaves refs/remotes alone until a fetch prunes them.
+      phase("fetch");
       await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
     }
     report.summary = [report.local?.summary, report.remote?.swept.summary].filter(Boolean).join(" · ");
     // Guarded on the project throughout: a sweep outlives a stage switch, and its result
     // and toast belong to the repo it ran in, not to whatever is on screen when it lands.
     if (root() !== r) return;
+    await settleSweep(remote);
     toast(report.summary);
     branchResult = report;
   } catch (e) {
@@ -1571,6 +1586,7 @@ async function runClean(): Promise<void> {
     if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
+    branchSweep = null;
     branchSel = emptyPick();
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
@@ -1588,12 +1604,16 @@ async function runCheckoutClean(): Promise<void> {
   const rows = chosenCheckouts(checkoutRowsNow(), coSel.picked);
   if (!r || branchBusy || !rows.length) return;
   branchBusy = true;
+  branchSweep = startSweep("checkouts", rows.length);
   renderDash();
+  const { step } = sweepDriver(r, "");
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
-  for (const c of rows) report.wts.push(await removeOne(r, c.wt));
+  for (const c of rows) { const res = await removeOne(r, c.wt); report.wts.push(res); step(c.wt.path, res.ok); }
   const ok = report.wts.filter((w) => w.ok).length;
   report.summary = `${ok} of ${rows.length} checkout${rows.length === 1 ? "" : "s"} removed`;
+  if (root() === r) await settleSweep("");
   branchBusy = false;
+  branchSweep = null;
   coSel = emptyPick();
   if (root() === r) {
     toast(report.summary);
@@ -1603,6 +1623,56 @@ async function runCheckoutClean(): Promise<void> {
     void loadLanded(r);   // `removeOne` deletes the branch too, so the Landed refs moved with it
   }
   renderDash();
+}
+
+// Both runs advance `branchSweep` through these. A stage switch resets it with the project,
+// which stops the painting but never the run.
+function sweepDriver(r: string, remote: string) {
+  const live = () => branchSweep !== null && root() === r;
+  return {
+    step: (key: string, deleted: boolean, mark = true) => {
+      if (!live()) return;
+      sweepStep(branchSweep!, key, deleted, mark);
+      paintSweep(remote);
+    },
+    phase: (ph: SweepPhase) => {
+      if (!live()) return;
+      branchSweep!.phase = ph;
+      paintSweep(remote);
+    },
+  };
+}
+
+// Let the fill reach the end before the result replaces the table, or the last stretch is never seen.
+async function settleSweep(remote: string): Promise<void> {
+  if (!branchSweep) return;
+  branchSweep.done = branchSweep.total;
+  if (branchSweep.phase === "fetch") branchSweep.phase = "remote";
+  paintSweep(remote);
+  await new Promise((go) => setTimeout(go, 450));
+}
+
+// A step patches the DOM the last paint left rather than repainting: a rebuilt fill has
+// nothing to transition from. A paint in between draws the same state, so they never disagree.
+function paintSweep(remote: string): void {
+  const p = branchSweep;
+  const ovl = $("dashOverlay");
+  const box = ovl.querySelector<HTMLElement>(".bvprog");
+  if (!p || !box) { renderDash(); return; }
+  const b = sweepBar(p, remote);
+  box.classList.toggle("wait", b.wait);
+  box.setAttribute("aria-valuenow", String(b.pct));
+  box.setAttribute("aria-label", b.label);
+  const text = (sel: string, t: string) => { const el = box.querySelector(sel); if (el) el.textContent = t; };
+  text(".ph", b.label); text(".cur", b.current); text(".n", b.count);
+  const fill = box.querySelector<HTMLElement>(".fill");
+  if (fill) fill.style.width = `${b.pct}%`;
+  const rowSel = branchTab === "checkouts" ? ".dbwt[data-dashco]" : ".dbbr[data-dashbr]";
+  for (const el of ovl.querySelectorAll<HTMLElement>(rowSel)) {
+    const m = p.marks.get(el.dataset.dashco ?? el.dataset.dashbr ?? "");
+    el.classList.toggle("swept", m === "gone");
+    el.classList.toggle("kept", m === "kept");
+  }
 }
 
 /** One `remove_worktree`, reported the way both runs above report it. The rail is marked for

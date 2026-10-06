@@ -19,8 +19,8 @@ import {
 import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
 import {
   anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
-  orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
-  type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
+  orderRows, remoteOf, remotePicks, sweepBar, syncText, trunkText, type BranchFilter, type BranchRow,
+  type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepProg, type SweepResult,
 } from "./branches";
 import type { PickKind, PickState } from "./pick";
 
@@ -647,6 +647,7 @@ export interface BranchesView {
   prs: MergedPrs | null;
   prsLoading: boolean;
   busy: boolean;
+  sweep: SweepProg | null;   // a delete in flight; ./dashboard patches it in place between paints
   loading: boolean;
   result: CleanReport | null;
   // What the header tick shows for each tab; ./pick decides, this only draws it.
@@ -733,7 +734,7 @@ function branchRow(r: BranchRow, o: BranchesView): string {
       + (r.local.force ? `<span class="tag warn" title="Its pull request merged, so a squash is why git branch -d refuses it and this one needs -D">-D</span>` : "");
   // The whole row is the target; the box is inside it and carries the same attribute, so
   // `closest` answers the same name whichever half of the row the pointer landed on.
-  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}" data-dashbr="${escAttr(r.name)}">
+  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}${markCls(o.sweep, r.name)}" data-dashbr="${escAttr(r.name)}">
     <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
       aria-checked="${on}" aria-disabled="${off}"
       title="${esc(off ? (r.local.block || r.remote.block) : "Pick this branch")}"></span></span>
@@ -788,6 +789,7 @@ function actionBar(o: BranchesView): string {
       + `and each deleted branch's sha comes back so it can be restored.</div>`
     : `<div class="note">Local refs only. Nothing on any remote is touched. Episko runs git's safe `
       + `<b>delete</b>, and what it refuses is kept and listed with git's own words.</div>`;
+  if (o.sweep) return `<div class="bvbar on${o.scopes.remote ? " sharing" : ""}">${sweepHtml(o.sweep, o.remoteName)}</div>`;
   return `<div class="bvbar${picked ? " on" : ""}${o.scopes.remote ? " sharing" : ""}">
     <span class="sel">${picked} selected</span>
     <span class="scopes">Delete:
@@ -799,6 +801,23 @@ function actionBar(o: BranchesView): string {
     <button class="brgo" data-dashbrrun${going && !o.busy ? "" : " disabled"}>
       ${o.busy ? "Working…" : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
     ${warn}
+  </div>`;
+}
+
+const markCls = (p: SweepProg | null, key: string) => {
+  const m = p?.marks.get(key);
+  return m === "gone" ? " swept" : m === "kept" ? " kept" : "";
+};
+
+/** The bar a running delete shows in place of the action bar. Its classes and texts are what
+ *  ./dashboard's `paintSweep` updates in place, so the fill animates instead of being rebuilt. */
+export function sweepHtml(p: SweepProg, remote: string): string {
+  const b = sweepBar(p, remote);
+  return `<div class="bvprog${b.wait ? " wait" : ""}" role="progressbar" aria-valuemin="0"
+      aria-valuemax="100" aria-valuenow="${b.pct}" aria-label="${esc(b.label)}">
+    <div class="bvprog-t"><span class="ph">${esc(b.label)}</span><span class="cur mono">${esc(b.current)}</span>
+      <span class="sp"></span><span class="n mono">${esc(b.count)}</span></div>
+    <div class="bvprog-tr"><i class="fill" style="width:${b.pct}%"></i></div>
   </div>`;
 }
 
@@ -824,7 +843,7 @@ function checkoutsBody(o: BranchesView): string {
     const menu = `data-wt="${escAttr(c.wt.path)}" data-root="${escAttr(o.root)}" `
       + `data-proj="${escAttr(o.project)}" data-branch="${escAttr(c.wt.branch)}"`
       + (c.wt.is_main ? ` data-main="1"` : "");
-    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
+    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}${markCls(o.sweep, c.wt.path)}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
       <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
         aria-checked="${on}" aria-disabled="${!c.ok}"
         title="${esc(c.block || "Pick this checkout")}"></span></span>
@@ -839,11 +858,11 @@ function checkoutsBody(o: BranchesView): string {
   const n = chosenCheckouts(o.checkouts, o.cpicked).length;
   const bar = `<div class="dbbr-note">Removing a checkout takes its folder and, when the branch is fully `
     + `merged, the branch with it. A folder git records but disk has lost is only unregistered — nothing is lost.</div>`
-    + `<div class="bvbar${n ? " on" : ""}"><span class="sel">${n} selected</span>
+    + (o.sweep ? `<div class="bvbar on">${sweepHtml(o.sweep, o.remoteName)}</div>` : `<div class="bvbar${n ? " on" : ""}"><span class="sel">${n} selected</span>
       <span class="sp"></span>
       ${pickButtons("checkouts")}
       <button class="brgo" data-dashcorun${n && !o.busy ? "" : " disabled"}>
-        ${o.busy ? "Working…" : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
+        ${o.busy ? "Working…" : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`);
   return coHead(o.coHeadState) + rows + bar;
 }
 

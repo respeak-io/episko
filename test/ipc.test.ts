@@ -19,8 +19,9 @@ const rsFiles = readdirSync(RS).filter((f) => f.endsWith(".rs"));
 
 // ---------- the Rust half ----------
 
-// Injected by Tauri by type, so they never appear in the JS argument object.
-const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Runtime|Request<|Channel<)/;
+// Injected by Tauri by type, so they never appear in the JS argument object. A `Channel<` is
+// not: the frontend constructs it and passes it by name like any other argument.
+const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Runtime|Request<)/;
 
 interface Cmd { name: string; required: string[]; optional: string[]; file: string }
 

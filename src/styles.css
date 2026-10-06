@@ -3298,6 +3298,29 @@ select.in-ctl { cursor: pointer; }
 .bvsw i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--hair-strong); display: grid; place-items: center; }
 .bvsw.on { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
 .bvsw.on i { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
+/* A delete in flight. ./dashboard patches these in place, so the transitions are what animate it;
+   no keyframe here may sit on a row, since a full repaint mid-run would replay it on every one. */
+.bvprog { flex: 1 1 100%; display: grid; gap: 7px; min-width: 0; }
+.bvprog-t { display: flex; align-items: baseline; gap: 8px; min-width: 0; font: 600 11px var(--font-ui); color: var(--text); }
+.bvprog-t .cur { min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bvprog-t .n { flex: none; font-size: 10px; color: var(--muted-2); }
+.bvprog-tr { position: relative; height: 6px; border-radius: 999px; overflow: hidden; background: var(--surface-2); }
+.bvprog .fill { display: block; height: 100%; border-radius: inherit; background: var(--st-error); transition: width .28s cubic-bezier(.2, .7, .3, 1); }
+.bvprog-tr::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 40%; opacity: 0; pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--st-error) 45%, transparent), transparent); }
+@media (prefers-reduced-motion: no-preference) {
+  .bvprog.wait .bvprog-tr::after { opacity: 1; animation: bvprog-run 1.1s linear infinite; }
+  @keyframes bvprog-run { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+}
+.dbbr.swept, .dbwt.swept { opacity: .38; background: transparent; transition: opacity .35s, background-color .35s; }
+.dbbr.swept .bn, .dbwt.swept .bn { text-decoration-color: var(--muted-2); }
+.dbbr.kept, .dbwt.kept { background: color-mix(in srgb, var(--st-working) 10%, transparent); transition: background-color .35s; }
+.swept .brck.on, .kept .brck.on { transition: border-color .25s, background-color .25s; }
+.swept .brck.on { border-color: color-mix(in srgb, var(--st-done) 55%, transparent); background: color-mix(in srgb, var(--st-done) 25%, transparent); }
+.swept .brck.on::after { color: var(--st-done); }
+.kept .brck.on { border-color: color-mix(in srgb, var(--st-working) 60%, transparent); background: color-mix(in srgb, var(--st-working) 22%, transparent); }
+.kept .brck.on::after { content: "!"; color: var(--st-working); }
+.dbbr.kept .bn, .dbwt.kept .bn { text-decoration: none; }
 .bvsw.on i::after { content: "✓"; font: 700 8.5px/1 var(--font-ui); color: var(--st-error); }
 /* The Repository card's picker and a session's branch chip: the same control, two sizes. */
 .gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
