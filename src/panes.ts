@@ -735,7 +735,7 @@ export async function refreshSessionStats(s: Sess) {
   // Repaint the inspector only when the displayed values change (a rebuild restarts the
   // heartbeat animation); renderFoot writes textContent only, so it runs unconditionally.
   const sig = (g: DiffStat | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}/${g.stash}` : "-");
   const before = sig(s.git);
   // A folder nothing has read yet would leave a new pane's git card blank until the 5s
   // dirty poll came round; asked for beside the I/O sample rather than after it, so the

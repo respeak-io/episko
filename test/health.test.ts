@@ -17,7 +17,7 @@ const file = (path: string, ...lines: DiffLine[]): DiffFile => ({
   path, oldPath: path, status: "modified", binary: false,
   added: lines.filter((l) => l.kind === "add").length,
   removed: lines.filter((l) => l.kind === "del").length,
-  hunks: [{ header: "", lines }],
+  hunks: [{ at: "", header: "", lines }],
 });
 
 const health = (over: Partial<FileHealth> = {}): FileHealth => ({

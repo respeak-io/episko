@@ -84,7 +84,7 @@ import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
-import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
+import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
@@ -112,7 +112,7 @@ import {
   setPhase,
 } from "./phase";
 import {
-  activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
+  activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
   vitalsPrefs, type BgLogHealthEvent,
@@ -306,6 +306,25 @@ setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
+// The overlay writes (commit, stash, discard): re-poll the folder at once rather than on the
+// next sweep, hand a refusal's command to a shell, and say whether an agent is mid-turn there.
+setDiffHost({
+  changed: (dir) => {
+    dirtyStale.add(dir);
+    refreshDashWorkset(true);
+    void refreshDirtyStates().then(() => {
+      const s = activeId ? sessions.get(activeId) : null;
+      if (s && !mirror) void refreshSessionStats(s);
+      renderAll();
+    });
+  },
+  handToTerminal: (dir, cmd) => {
+    const s = [...sessions.values()].find((x) => x.workdir === dir);
+    void handToTerminal(s?.project ?? basename(dir), dir, cmd, { colorKey: s?.colorKey ?? dir, from: s?.id });
+  },
+  liveAgents: (dir) => [...sessions.values()]
+    .filter((s) => isAgent(s) && s.workdir === dir && (s.phase === "working" || s.phase === "thinking")).length,
+});
 setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
@@ -583,7 +602,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.driftback) void followSessionDrift(el.dataset.driftback, "back");
   else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
-  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus);
+  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();

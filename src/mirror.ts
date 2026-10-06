@@ -137,7 +137,7 @@ export async function refreshDirtyStates(force = false) {
   dirtyStale.clear();
   if (!targets.length) return;
   // Every field the card prints, `dirty` included, or a change only it sees never repaints.
-  const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.dirty}/${g.added}/${g.removed}` : "-");
+  const sig = (g?: DiffStat | null) => (g ? `${g.files}/${g.untracked}/${g.dirty}/${g.added}/${g.removed}/${g.stash}` : "-");
   let changed = false;
   await Promise.all(targets.map(async (f) => {
     const g = await invoke<DiffStat | null>("git_diffstat", { workdir: f }).catch(() => null);

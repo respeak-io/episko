@@ -871,6 +871,39 @@ html.win .wctl { display: flex; }
 .dhh { padding: 4px 10px; font: 10.5px var(--font-mono); color: var(--muted-2); background: color-mix(in srgb, var(--accent) 6%, transparent); border-bottom: 1px solid var(--hair); }
 .dhh-at { opacity: .7; }
 .dhh-ctx { color: var(--muted); margin-left: 8px; }
+/* a hunk's discard: present but quiet until the hunk is the one under the pointer */
+.dhh { display: flex; align-items: center; }
+.dhx { margin-left: auto; height: 17px; padding: 0 7px; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--muted-2); font: 10px var(--font-mono); cursor: pointer; opacity: .45; }
+.dhunk:hover .dhx { opacity: 1; }
+.dhx:hover { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 40%, transparent); }
+
+/* the review overlay's writes: one tick per file (header and rail), the select-all, the foot */
+.dtick { width: 14px; height: 14px; flex: none; border-radius: 4px; border: 1px solid var(--hair-strong); background: var(--surface-2); display: grid; place-items: center; cursor: pointer; user-select: none; }
+.dtick:hover { border-color: var(--accent-line); }
+.dtick.on, .dtick.some { border-color: var(--accent-line); background: color-mix(in srgb, var(--accent-ink) 26%, transparent); }
+.dtick.on::after { content: "✓"; font: 700 9.5px/1 var(--font-ui); color: var(--accent-ink); }
+.dtick.some::after { content: "–"; font: 700 9.5px/1 var(--font-ui); color: var(--accent-ink); }
+.diff-foot { display: flex; align-items: center; gap: 8px; padding: 9px 13px; border-top: 1px solid var(--hair); flex: none; }
+.diff-foot[hidden] { display: none; }
+.diff-picked { font: 10.5px var(--font-mono); color: var(--muted); min-width: 52px; }
+.diff-msg { flex: 1; min-width: 0; height: 26px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--text); font: 12px var(--font-ui); outline: none; }
+.diff-msg:focus { border-color: var(--accent-line); }
+.diff-go { height: 26px; padding: 0 12px; border-radius: 7px; border: 1px solid var(--accent-line); background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); font: 600 11px var(--font-ui); cursor: pointer; flex: none; }
+.diff-go:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+.diff-go:disabled, .diff-foot .diff-fold:disabled { opacity: .45; cursor: default; }
+.diff-fold.danger:hover:not(:disabled) { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
+.diff-head .gseg { margin-right: 4px; }
+
+/* the repo's stash: a list, then one stash read-only under its own strip */
+.dstashes { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; }
+.dstash { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--bg-2); }
+.dstash.away { opacity: .62; }
+.dstash-main { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; cursor: pointer; }
+.dstash-main:hover { background: var(--surface-2); }
+.dstash-msg { font: 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dstash-meta { font: 10.5px var(--font-mono); color: var(--muted); white-space: nowrap; flex: none; }
+.dstash-bar { display: flex; align-items: center; gap: 8px; padding: 10px 0 2px; }
+.dstash-bar .dstash-msg { flex: 1; font-weight: 600; }
 
 /* --- unified rows --- */
 .dline { display: flex; font: 11.5px/1.6 var(--font-mono); }
