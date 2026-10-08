@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Ctrl+Shift+C copies, everywhere.** In a Claude pane and in any dialog with text selected it now
+  copies the selection rather than opening the web inspector, as it already did in a shell. Switch it
+  off in *Settings › Keys* to have the chord open the inspector again.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

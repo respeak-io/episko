@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, copyChord, wtGroup,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, type ShareMode,
 } from "./state";
@@ -82,6 +82,7 @@ export interface SettingsHost {
   setSort: (m: SortMode, announce?: boolean) => void;
   setEngine: (id: Engine) => void;
   setTermSplit: (on: boolean) => void;
+  setCopyChord: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -161,7 +162,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setCopyChord: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -593,7 +594,7 @@ const SET_TABS: SetTab[] = [
     id: "keys", label: "Keys", glyph: "⌨", group: "work", sub: "Every chord, rebindable",
     controls: () => [
       { kind: "keys", id: "keys", key: "cc-keys", label: "Keyboard shortcuts", hint: "Click a chord and press the one you want.",
-        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this and never change.",
+        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
         aliases: ["keybinding", "hotkey", "chord", "⌘", "rebind", "shortcut", "cmd", "keyboard"],
         summary: () => {
           if (!keyPrefs.enabled) return "off";
@@ -603,6 +604,11 @@ const SET_TABS: SetTab[] = [
         },
         lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
         isDefault: () => isDefaultKeyPrefs(keyPrefs), reset: () => applyKeySetting("resetall") },
+      { kind: "toggle", set: "copychord", key: "cc-copy-chord", label: "Ctrl+Shift+C copies the selection",
+        hint: "In every pane and anywhere else text is selected, instead of opening the web inspector.",
+        more: "Off, the chord is left to the webview, which opens its inspector. A pane never receives it as Ctrl+C either way; Settings › Diagnostics opens the inspector too.",
+        aliases: ["copy", "clipboard", "devtools", "inspector", "ctrl+shift+c", "selection"], since: "0.34.0",
+        on: () => copyChord, isDefault: () => copyChord, reset: () => host.setCopyChord(true) },
     ],
   },
   {
@@ -1673,6 +1679,7 @@ function scanAsks() {
 function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
   else if (set === "termsplit") host.setTermSplit(val === "1");
+  else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);

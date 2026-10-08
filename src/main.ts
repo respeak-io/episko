@@ -28,7 +28,7 @@ import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
 import { closeMdReader, mdReaderOpen } from "./mdreader";
-import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
@@ -38,7 +38,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setCopyChord, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -114,7 +114,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  copyChord, FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
@@ -233,7 +233,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setCopyChord, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -774,6 +774,17 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   revealActiveFolder();
 }, true);
+// Ctrl+Shift+C outside a pane copies the page's selection instead of opening the inspector.
+// A pane's own handler already took it (defaultPrevented); so did a bound app chord.
+window.addEventListener("keydown", (e) => {
+  if (!copyChord || e.defaultPrevented || keyRecording() || !isCopyChord(e)) return;
+  e.preventDefault();
+  const t = document.activeElement;
+  const field = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ? t : null;
+  const text = field ? field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0)
+    : window.getSelection()?.toString() ?? "";
+  if (text) void copyText(text);
+});
 // Debounced: every resize tick pushes a width to the PTY, and Claude's Ink renderer
 // erases its last frame by line count at the old width, leaving orphaned cells.
 // Only the observer is debounced; direct refit() callers stay immediate.

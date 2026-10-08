@@ -34,6 +34,7 @@ import {
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
   setTermSplit as setTermSplitState,
+  setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -258,6 +259,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
   localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read live by every pane's key handler and main.ts's window listener.
+export function setCopyChord(on: boolean) {
+  setCopyChordState(on);
+  localStorage.setItem("cc-copy-chord", on ? "1" : "0");
   renderSettings();
 }
 
