@@ -1,17 +1,22 @@
-// The thread reader's markup: the queue's ⤢ opened in full, inside the pane. Data in, string
-// out, like every other *view module — ./issue owns the rules, ./dashboard owns the fetch and
-// the events. See docs/dashboard.md.
+// The thread reader's markup: the list it was opened from on the left, the thread on the right.
+// Data in, string out, like every other *view module — ./issue owns the rules, ./dashboard owns
+// the fetch and the events. See docs/dashboard.md.
 
 import { overlayHtml } from "./dashview";
 import { esc, escAttr, nameHue } from "./format";
-import type { Holder } from "./ghwork";
+import type { GhThread, Holder } from "./ghwork";
 import { ago, mdHtml, stateWord, threadLine, type GhIssueRead } from "./issue";
 
 // A thread with three hundred comments is a browser's problem, not a side panel's; the tail
 // is one line saying where the rest is.
 const SHOWN_COMMENTS = 20;
 
+export type RailFrom = "queue" | "work" | "triage";
+
+export interface RailRow { t: GhThread; held: Holder | null; why?: string; triage?: boolean }
+
 export interface IssueView {
+  rail: { from: RailFrom; rows: RailRow[]; open: boolean };
   number: number;
   kind: string;
   slug: string;
@@ -49,24 +54,52 @@ function comment(who: string, when: string, body: string, mark: string): string 
     <div class="md">${md}</div></div>`;
 }
 
-export function issueOverlay(v: IssueView): string {
-  const head = `${KIND_WORD(v.kind)} #${v.number}`;
+const RAIL_LABEL: Record<RailFrom, string> = { queue: "What's next", work: "Open work", triage: "Still needed?" };
+const KIND = (t: GhThread): string => (t.kind === "pr" ? "pr" : "iss");
+
+// One row per thread, the same facts the list it came from showed, at rail width. Only a quiet
+// issue carries verbs here: deciding a backlog is the one job worth doing without leaving.
+function railRow(r: RailRow, at: number): string {
+  const { t, held } = r;
+  const claim = held ? `<span class="clm${held.mine ? " mine" : ""}${held.stale ? " stale" : ""}">◍ ${esc(held.mine ? "you" : held.who)}</span>` : "";
+  const sub = r.why ? `<span class="w">${esc(r.why)}</span>` : "";
+  const acts = r.triage
+    ? `<span class="rr-b"><button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
+      + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button></span>`
+    : "";
+  return `<div class="rr${t.number === at ? " on" : ""}" data-dashissue="${t.number}">
+    <span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>${acts}
+    <span class="ti">${esc(t.title)}</span>
+    ${claim || sub ? `<span class="rr-s">${claim}${sub}</span>` : ""}</div>`;
+}
+
+function rail(v: IssueView): string {
+  const { from, rows } = v.rail;
+  // The full table is still one click away, with the filters it had; the queue has none.
+  const table = from === "queue" ? ""
+    : `<button class="aslink" data-dashopen-view="${from}" data-tip="Back to the full table">⤢ Table</button>`;
+  return `<aside class="rd-rail" data-keep-scroll="rail">
+    <div class="rd-rh"><span class="t">${esc(RAIL_LABEL[from])}</span><span class="n">${rows.length}</span>${table}</div>
+    ${rows.length ? rows.map((r) => railRow(r, v.number)).join("")
+      : `<div class="ac-empty">Nothing else is listed here.</div>`}
+    <div class="rd-hint">↑ ↓ to move between threads</div></aside>`;
+}
+
+function reader(v: IssueView): string {
+  const toggle = `<button class="act rd-tog" data-dashrail data-tip="Show the list">☰ ${esc(RAIL_LABEL[v.rail.from])}</button>`;
   if (v.loading) {
-    return overlayHtml(head, v.slug,
-      `<div class="iss"><div class="iss-wait"><span class="u-spin"></span>Reading it from GitHub…</div></div>`, "");
+    return `<div class="iss">${toggle}<div class="iss-wait"><span class="u-spin"></span>Reading it from GitHub…</div></div>`;
   }
   const i = v.data;
   if (!i || !i.available) {
     // The shape the board's own failure takes: one quiet panel naming the reason and the
     // way out, never an error dialog over a pane you were reading.
-    return overlayHtml(head, v.slug,
-      `<div class="iss"><div class="ac-empty">${esc(i?.reason || "gh could not be reached")}</div>
+    return `<div class="iss">${toggle}<div class="ac-empty">${esc(i?.reason || "gh could not be reached")}</div>
         ${i?.url ? `<div class="iss-b"><button class="act" data-dashurl="${escAttr(i.url)}"
-          data-tip="Open it on github.com in your browser">↗ Open it on GitHub</button></div>` : ""}</div>`,
-      "");
+          data-tip="Open it on github.com in your browser">↗ Open it on GitHub</button></div>` : ""}</div>`;
   }
   const rest = i.comments.length - SHOWN_COMMENTS;
-  const body = `<div class="iss">
+  return `<div class="iss">${toggle}
     <div class="iss-t"><span class="st ${esc(stateWord(i))}">${esc(stateWord(i))}</span>
       <h3>${esc(i.title)}</h3></div>
     <div class="iss-line">${esc(threadLine(i, v.now))}</div>
@@ -79,8 +112,14 @@ export function issueOverlay(v: IssueView): string {
           <button class="aslink" data-dashurl="${escAttr(i.url)}"
             data-tip="Open the whole thread on github.com">Read the rest on GitHub ↗</button></div>`
       : ""}</div>`;
-  // The head says which thread; the line under the title says everything else about it,
-  // and saying it twice on one screen is how the two start disagreeing.
-  return overlayHtml(head, v.slug, body,
+}
+
+// The rail is on the RIGHT, where the queue is: opened from the queue, the reader covers the
+// other two columns and the queue itself is the list, so no list ever jumps across the pane.
+// The reader's scroll is keyed by thread, so the next one starts at its top.
+export function issueOverlay(v: IssueView): string {
+  return overlayHtml(`${KIND_WORD(v.kind)} #${v.number}`, v.slug,
+    `<div class="rd${v.rail.open ? " rail-open" : ""}">
+      <div class="rd-main" data-keep-scroll="main-${v.number}">${reader(v)}</div>${rail(v)}</div>`,
     `Read here, acted on here — but nothing is written to GitHub from this panel. <b>▶</b> opens the same sheet the queue does, which shows exactly what a claim would post before it posts it.`);
 }

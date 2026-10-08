@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, inlineIssue, mdHtml, stateWord, threadLine, type GhIssueRead } from "../src/issue";
+import { ago, inlineIssue, mdHtml, stateWord, stepThread, threadLine, type GhIssueRead } from "../src/issue";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
 const back = (ms: number) => new Date(NOW - ms).toISOString();
@@ -120,5 +120,20 @@ describe("mdHtml", () => {
   it("closes every block it opened", () => {
     const out = mdHtml("- one\ntext");
     expect(out).toBe("<ul><li>one</li></ul><p>text</p>");
+  });
+});
+
+describe("stepThread", () => {
+  it("walks the list in its own order and stops at either end", () => {
+    expect(stepThread([118, 117, 116], 117, 1)).toBe(116);
+    expect(stepThread([118, 117, 116], 117, -1)).toBe(118);
+    expect(stepThread([118, 117, 116], 116, 1)).toBeNull();
+    expect(stepThread([118, 117, 116], 118, -1)).toBeNull();
+  });
+  it("enters the list from the end the key points into when the thread is not on it", () => {
+    // A filter can drop the open thread from its rail; the arrows must still go somewhere.
+    expect(stepThread([5, 4, 3], 99, 1)).toBe(5);
+    expect(stepThread([5, 4, 3], 99, -1)).toBe(3);
+    expect(stepThread([], 99, 1)).toBeNull();
   });
 });

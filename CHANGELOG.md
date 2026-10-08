@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Issues and pull requests open inside Episko, beside the list you opened them from.** Clicking
+  a row in *What's next*, *Open work* or *Still needed?* reads the thread in the dashboard instead
+  of sending you to the browser, and the list stays where it was on the right: from *What's next*
+  the queue itself stays live beside the thread. ↑ and ↓ (or j and k) move to the next thread, a
+  quiet issue can be closed or kept without leaving, and ↗ on a row still opens it on GitHub.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and
