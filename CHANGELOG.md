@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Updating the sync server is one command.** `episko-server/update.sh` moves a Docker deployment
+  to the newest release tag (or the one you name): it shows what changed in the server and any
+  setting the release added, backs up the database, builds while the old server keeps running and
+  checks the new one came up. Settings now go in an untracked `.env` (every one is listed in
+  `.env.example`) and proxy wiring in `docker-compose.override.yml`, so an update never conflicts
+  with your Traefik labels.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

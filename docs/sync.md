@@ -246,7 +246,10 @@ out; the app then halts and asks to pair again rather than retrying. Every six h
 compacts: an event superseded by a newer one of the same key goes once it is older than
 `EPISKO_RETENTION_DAYS` (30). The latest per key always stays, so a device that was away for
 months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
-(`episko-server/README.md`).
+(`episko-server/README.md`), with settings in an untracked `.env` and proxy wiring in an untracked
+`docker-compose.override.yml`, so `update.sh` moves a deployment between release tags without a
+merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
+and a test in `main.rs` fails when one the source reads is missing from it or from `USAGE`.
 
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,

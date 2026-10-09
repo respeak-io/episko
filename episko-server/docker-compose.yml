@@ -1,6 +1,7 @@
 # Published on localhost only: put Tailscale or Caddy in front for other machines and TLS.
+# Don't edit this file on a server; ./update.sh refuses to update over it. Settings go in .env
+# (see .env.example), proxy wiring in docker-compose.override.yml (see README). Both are untracked.
 # Invite one person's machine:  docker compose exec episko-server episko-server invite NAME
-# Or let people join themselves with a team code (12+ characters) and their own name:
 services:
   episko-server:
     build:
@@ -9,7 +10,8 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:7878:7878"
-    # environment:
-    #   EPISKO_REGISTER_CODE: a-long-team-code
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./data:/data
