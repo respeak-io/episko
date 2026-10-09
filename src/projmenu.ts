@@ -19,7 +19,7 @@ import {
 } from "./actions";
 import { groupById, groupOf, groupPaths } from "./projgroups";
 import { dormantBusy } from "./grouping";
-import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
+import { runnableIn, pinnedIds, togglePin } from "./tasks";
 import { rerunTask, revealSource } from "./taskrun";
 import { forgetDormant, jumpExternal, resumeDormant } from "./mirror";
 import { openDiff } from "./diffview";
@@ -455,7 +455,7 @@ const closeSub = (s: Sess) => isExited(s)
 // it says *again* rather than *run*, and a definition that has gone says so instead of toasting.
 function taskRows(s: Sess): (CtxRow | null)[] {
   const r = s.run!;
-  const spec = lastRunnableById.get(r.id);
+  const spec = runnableIn(r.root, r.id);
   const running = !isExited(s);
   const again = running ? "stops it and starts it over"
     : r.groupId ? "this step only — the chain's other steps are not repeated"
