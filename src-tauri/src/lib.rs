@@ -511,6 +511,7 @@ pub fn run() {
             pty::spawn_agent,
             tasks::discover_runnables,
             tasks::rescan_runnables,
+            tasks::read_task_source,
             tasks::save_episko_task,
             tasks::delete_episko_task,
             tasks::save_task_override,

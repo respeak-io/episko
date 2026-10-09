@@ -47,11 +47,21 @@ Markers: `+` new · `~` changed · `!` fixed
   every worktree of a repo, so one made on another branch says so. When a repo has stashes, the
   inspector's git card and the dashboard's Working set card show them even with nothing uncommitted.
 
++ **See what's behind a task before you run it.** In the ▶ Run picker, → (or the row's ⓘ) opens
+  what the row actually does: the command as it will run, the folder, its environment, what it
+  waits for and what it asks, with the definition shown from its own file and the lines that
+  define it highlighted. *Open file*, *Reveal* and *Edit…* are one click from there, and a task
+  overridden in `.episko/tasks.toml` says so.
+
 ~ **Settings names the projects that ignore it.** Agent, Permission mode and auto-fetch list
   every project that decides for itself, and each name opens that project's settings.
 
 ~ **Settings › Sync › Projects is a summary now.** It groups projects by where they share, and
   each name opens that project's settings, where the choice is made.
+
+~ **Recent and pinned tasks name their source.** Two `dev` rows, one from `package.json` and one
+  from `.vscode/tasks.json`, used to look identical once they moved up into *Recent*. Each now
+  carries a small tag saying which file it came from.
 
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with

@@ -473,19 +473,15 @@ pub(crate) fn open_folder(dir: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Reveal `dir/rel` selected in the file manager (Reveal source on a task). `rel` is
-/// repo-relative so a malformed override cannot escape the project; falls back to the
-/// folder where the OS cannot select a file.
-#[tauri::command]
-pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
-    let root = std::path::Path::new(&dir);
+/// `dir/rel`, refused unless `rel` stays inside `dir`. `rel` comes from discovery data, so
+/// don't trust it: a rooted (`/x`) or drive-prefixed component makes `join` replace the
+/// whole base, and `/x` is not `is_absolute()` on Windows, so the component check is the guard.
+pub(crate) fn project_join(dir: &str, rel: &str) -> Result<std::path::PathBuf, String> {
+    let root = std::path::Path::new(dir);
     if !root.is_dir() {
         return Err(format!("not a directory: {dir}"));
     }
-    // `rel` comes from discovery data, so don't trust it. A rooted (`/x`) or
-    // drive-prefixed component makes `join` replace the whole base, and `/x` is not
-    // `is_absolute()` on Windows, so the component check is the guard.
-    let rel_path = std::path::Path::new(&rel);
+    let rel_path = std::path::Path::new(rel);
     if rel_path.is_absolute()
         || rel_path.components().any(|c| {
             matches!(
@@ -498,7 +494,16 @@ pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
     {
         return Err(format!("not a project-relative path: {rel}"));
     }
-    let target = root.join(rel_path);
+    Ok(root.join(rel_path))
+}
+
+/// Reveal `dir/rel` selected in the file manager (Reveal source on a task). `rel` is
+/// repo-relative so a malformed override cannot escape the project; falls back to the
+/// folder where the OS cannot select a file.
+#[tauri::command]
+pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
+    let root = std::path::Path::new(&dir);
+    let target = project_join(&dir, &rel)?;
     // A source since deleted: reveal the project folder rather than erroring.
     let exists = target.is_file();
     #[cfg(target_os = "macos")]
@@ -519,7 +524,7 @@ pub(crate) fn reveal_path(dir: String, rel: String) -> Result<(), String> {
             // /select, takes one argument: the file to highlight in its folder.
             c.arg(format!("/select,{}", target.display().to_string().replace('/', "\\")));
         } else {
-            c.arg(dir.replace('/', "\\"));
+            c.arg(root.display().to_string().replace('/', "\\"));
         }
         c.spawn().map_err(|e| format!("open Explorer: {e}"))?;
     }

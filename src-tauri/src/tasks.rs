@@ -1537,6 +1537,21 @@ pub fn episko_tasks_file(workdir: String) -> Result<(String, bool), String> {
     Ok((p.display().to_string(), p.exists()))
 }
 
+/// A definition file is kilobytes; anything past this is not one worth drawing.
+const TASK_SOURCE_CAP: u64 = 512 * 1024;
+
+/// The file a task came from, as text, for the picker's definition view. Project-relative
+/// only (`project_join`, the guard `reveal_path` uses): `rel` is discovery data.
+#[tauri::command]
+pub fn read_task_source(dir: String, rel: String) -> Result<String, String> {
+    let path = crate::platform::project_join(&dir, &rel)?;
+    let len = std::fs::metadata(&path).map_err(|e| format!("{rel}: {e}"))?.len();
+    if len > TASK_SOURCE_CAP {
+        return Err(format!("{rel}: {} KiB is more than the view draws", len / 1024));
+    }
+    std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))
+}
+
 /// Called by `rescan_runnables` and every write: two edits inside one mtime tick that
 /// leave the length unchanged would not change the stamp.
 fn invalidate(workdir: &str) {
@@ -1585,6 +1600,18 @@ mod tests {
             // The tagged dir sits inside a scratch dir of its own; take both.
             let _ = std::fs::remove_dir_all(self.0.parent().unwrap_or(&self.0));
         }
+    }
+
+    #[test]
+    fn read_task_source_reads_inside_the_project_and_nothing_outside() {
+        let t = Tmp::new("src");
+        t.write(".vscode/tasks.json", "{\"tasks\":[]}");
+        let dir = t.0.display().to_string();
+        assert_eq!(read_task_source(dir.clone(), ".vscode/tasks.json".into()).unwrap(), "{\"tasks\":[]}");
+        for bad in ["../outside.txt", "/etc/hosts", "C:\\Windows\\win.ini"] {
+            assert!(read_task_source(dir.clone(), bad.into()).is_err(), "{bad} must be refused");
+        }
+        assert!(read_task_source(dir, "gone.json".into()).is_err());
     }
 
     #[test]

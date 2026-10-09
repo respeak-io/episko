@@ -354,3 +354,98 @@ export async function discoverTasks(workdir: string, colorKey = workdir, include
 export async function rescanTasks(workdir: string) {
   await invoke("rescan_runnables", { workdir }).catch((e) => dlog("warn", `rescan: ${e}`));
 }
+
+// ---------- where a task is defined (the picker's ⓘ view) ----------
+// Every provider keys a task by its label verbatim, so this is a text search, not a parse.
+// It answers null rather than guess: the view then shows the file with nothing marked.
+
+export interface DefSpan { start: number; end: number }  // 0-based, inclusive line indices
+
+const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const indentOf = (l: string) => l.length - l.trimStart().length;
+const blank = (l: string) => !l.trim();
+
+// From `i` while `keep` holds, trailing blank lines given back.
+function runWhile(lines: string[], i: number, keep: (l: string) => boolean): number {
+  let end = i;
+  for (let j = i + 1; j < lines.length && keep(lines[j]); j++) end = j;
+  while (end > i && blank(lines[end])) end--;
+  return end;
+}
+
+// The JSON object enclosing column `col` of line `i`, brace-counted with strings blanked out.
+function jsonObject(lines: string[], i: number, col: number): DefSpan {
+  const braces = (l: string) => l.replace(/"(?:[^"\\]|\\.)*"/g, (m) => " ".repeat(m.length));
+  let depth = 0, start = -1, from = 0;
+  for (let j = i; j >= 0 && start < 0; j--) {
+    const l = braces(lines[j]);
+    for (let k = (j === i ? col : l.length) - 1; k >= 0; k--) {
+      if (l[k] === "}") depth++;
+      else if (l[k] === "{" && --depth < 0) { start = j; from = k; break; }
+    }
+  }
+  if (start < 0) return { start: i, end: i };
+  depth = 0;
+  for (let j = start; j < lines.length; j++) {
+    const l = braces(lines[j]);
+    for (let k = j === start ? from : 0; k < l.length; k++) {
+      if (l[k] === "{") depth++;
+      else if (l[k] === "}" && --depth === 0) return { start, end: j };
+    }
+  }
+  return { start: i, end: i };
+}
+
+export function defSpan(source: string, text: string, label: string): DefSpan | null {
+  const lines = text.split(/\r?\n/);
+  const find = (re: RegExp, from = 0) => {
+    for (let i = from; i < lines.length; i++) if (re.test(lines[i])) return i;
+    return -1;
+  };
+  const key = reEsc(label);
+  const json = reEsc(JSON.stringify(label));
+  const tomlStr = `(?:"${key}"|'${key}')`;
+  // String.raw throughout: the patterns are spliced from escaped labels.
+  const re = (s: string) => new RegExp(s);
+  switch (source) {
+    case "npm": {
+      const i = find(re(String.raw`^\s*${json}\s*:`), Math.max(0, find(/"scripts"\s*:/)));
+      return i < 0 ? null : { start: i, end: i };
+    }
+    case "vscode": case "launch": {
+      const prop = source === "vscode" ? `"(?:label|taskName)"` : `"name"`;
+      const at = re(String.raw`${prop}\s*:\s*${json}`);
+      const i = find(at);
+      return i < 0 ? null : jsonObject(lines, i, lines[i].search(at));
+    }
+    case "episko": {
+      const i = find(re(String.raw`^\s*label\s*=\s*${tomlStr}\s*(#.*)?$`));
+      if (i < 0) return null;
+      let start = i;
+      while (start > 0 && !/^\s*\[\[task\]\]/.test(lines[start])) start--;
+      return { start, end: runWhile(lines, i, (l) => !/^\s*\[/.test(l)) };
+    }
+    case "mise": {
+      const h = find(re(String.raw`^\s*\[tasks\.(?:${key}|"${key}")\]`));
+      if (h >= 0) return { start: h, end: runWhile(lines, h, (l) => !/^\s*\[/.test(l)) };
+      const i = find(re(String.raw`^\s*(?:${key}|"${key}")\s*=`), Math.max(0, find(/^\s*\[tasks\]/)));
+      return i < 0 ? null : { start: i, end: i };
+    }
+    case "taskfile": {
+      const i = find(re(String.raw`^\s+(?:${key}|"${key}"|'${key}')\s*:`), Math.max(0, find(/^tasks\s*:/)));
+      if (i < 0) return null;
+      const ind = indentOf(lines[i]);
+      return { start: i, end: runWhile(lines, i, (l) => blank(l) || indentOf(l) > ind) };
+    }
+    case "just": case "make": {
+      // A recipe line starts at column 0; `@` is just's quiet marker, and both take a doc comment above.
+      const head = source === "just" ? re(String.raw`^@?${key}(?=[\s:])`) : re(String.raw`^${key}\s*:(?!=)`);
+      const i = find(head);
+      if (i < 0) return null;
+      let start = i;
+      while (start > 0 && /^(#|\[)/.test(lines[start - 1])) start--;
+      return { start, end: runWhile(lines, i, (l) => blank(l) || /^[ \t]/.test(l)) };
+    }
+    default: return null;
+  }
+}

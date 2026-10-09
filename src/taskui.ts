@@ -12,7 +12,7 @@ import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from
 import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, forgetFrec, frecScore } from "./palette";
 import {
-  applyInputs, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
+  applyInputs, defSpan, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
   prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
   runnerFor, setRunner, stopRuleBlocked, stopRules, toggleHidden, togglePin,
   toggleStopRule, trustProject,
@@ -271,6 +271,8 @@ export async function openRunPicker() {
   runList = await discoverTasks(c.workdir, c.colorKey);
   runSel = 0;
   runSource = null;
+  runInfo = null;
+  srcCache.clear();
   // Elide the middle: with worktrees the last segment says which checkout this runs in.
   const where = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · `;
   const sub = $("runSub");
@@ -288,6 +290,7 @@ export function closeRunPicker() {
   $("runPop").classList.remove("show");
   if (!$("palette").classList.contains("show")) $("scrim").classList.remove("show");
   runCtx = null;
+  runInfo = null;
 }
 
 // Short chip labels for the jump bar; group headers use the Runnable's own sourceFile,
@@ -375,6 +378,7 @@ function cycleRunSource(dir: 1 | -1) {
 }
 
 function renderRunPicker(term: string) {
+  if (runInfo) { $("runTabs").hidden = true; renderRunInfo(); return; }
   renderRunTabs(term);
   const groups = runGroups(term);
   const flat = groups.flatMap((g) => g.items);
@@ -396,10 +400,14 @@ function renderRunPicker(term: string) {
       // with what it already knows, ⋯ asks. The tooltip shows the command as prefilled.
       const asks = !!r.inputs.length && !r.blocked;
       const ready = asks && runCtx ? prefillInputs(r, runCtx.project) : null;
+      // A lifted row has left its source group, so it carries the source itself.
+      const lifted = g.name === "recent" || g.name === "pinned";
       return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
+        ${lifted ? `<span class="run-src">${esc(sourceShort(r))}</span>` : ""}
         <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+        <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">ⓘ</button>
         ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
         ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
       </div>`;
@@ -417,7 +425,117 @@ function renderRunPicker(term: string) {
     // Without stopPropagation, forgetting a task would also launch it.
     el.addEventListener("click", (e) => { e.stopPropagation(); forgetRecent(el.dataset.forget!); });
   });
+  body.querySelectorAll<HTMLElement>("[data-info]").forEach((el) => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.info!; void openRunInfo(); });
+  });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- ⓘ: what's behind a row ----------
+// The resolved facts (what runs, where, after what) over the definition as its file
+// spells it, so a row can be checked before it is trusted. The view follows ↑/↓.
+let runInfo: { r: Runnable; text: string | null; err: string | null; overridden: boolean } | null = null;
+const srcCache = new Map<string, Promise<string>>();   // one read per file per picker opening
+const INFO_CONTEXT = 2, INFO_MAX = 40;
+
+function selectedRun(): Runnable | null {
+  return runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items)[runSel] ?? null;
+}
+
+async function openRunInfo() {
+  const r = selectedRun();
+  const ctx = runCtx;
+  if (!r || !ctx) return;
+  runInfo = { r, text: null, err: null, overridden: false };
+  renderRunPicker(($("runInput") as HTMLInputElement).value);
+  const key = r.sourceFile;
+  if (!srcCache.has(key)) srcCache.set(key, invoke<string>("read_task_source", { dir: ctx.workdir, rel: key }));
+  const [text, overrides] = await Promise.all([
+    srcCache.get(key)!.then((t) => ({ t, e: null }), (e) => ({ t: null, e: String(e) })),
+    invoke<string[]>("list_task_overrides", { workdir: ctx.workdir }).catch(() => [] as string[]),
+  ]);
+  // A later ↑/↓ or a close may have moved on while the file was read.
+  if (runInfo?.r !== r) return;
+  runInfo = { r, text: text.t, err: text.e, overridden: overrides.includes(r.id) };
+  renderRunPicker(($("runInput") as HTMLInputElement).value);
+}
+
+function closeRunInfo() {
+  runInfo = null;
+  renderRunPicker(($("runInput") as HTMLInputElement).value);
+}
+
+function relTo(root: string, p: string): string {
+  const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "");
+  const a = norm(root), b = norm(p);
+  return b === a ? "./" : b.startsWith(a + "/") ? "./" + b.slice(a.length + 1) : tilde(p);
+}
+
+function renderRunInfo() {
+  const { r, text, err, overridden } = runInfo!;
+  const project = runCtx?.project ?? "";
+  const ready = r.inputs.length && !r.blocked ? prefillInputs(r, project) : null;
+  const fact = (k: string, v: string) => `<dt>${k}</dt><dd>${v}</dd>`;
+  const env = Object.entries(r.env);
+  const facts = [
+    r.blocked ? fact("blocked", esc(r.blocked)) : "",
+    r.compound ? fact("runs", "nothing of its own — only what it depends on") : fact("runs", `<code>${esc(execCmd(ready ?? r))}</code>`),
+    fact("in", `<code>${esc(runCtx ? relTo(runCtx.workdir, r.cwd) : r.cwd)}</code>`),
+    env.length ? fact("env", env.map(([k, v]) => `<code>${esc(k)}=${esc(v)}</code>`).join(" ")) : "",
+    r.dependsOn.length ? fact("after", `${r.dependsOn.map(esc).join(", ")}<span class="dim"> · ${r.dependsOrder === "sequence" ? "in sequence" : "in parallel"}</span>`) : "",
+    r.inputs.length ? fact("asks", r.inputs.map((i) => `<code>${esc(i.id)}</code>`).join(" ")) : "",
+    r.group ? fact("group", esc(r.group) + (r.defaultFor ? `<span class="dim"> · default ${esc(r.defaultFor)} task</span>` : "")) : "",
+    fact("kind", r.background ? "long-running (server or watcher)" : "runs to completion"),
+    fact("id", `<code>${esc(r.id)}</code>`),
+  ].join("");
+
+  const span = text != null ? defSpan(r.source, text, r.label) : null;
+  let code = "";
+  if (err) code = `<div class="ri-note">Can't read ${esc(r.sourceFile)}: ${esc(err)}</div>`;
+  else if (text == null) code = `<div class="ri-note dim">Reading ${esc(r.sourceFile)}…</div>`;
+  else if (r.source === "cargo") code = `<div class="ri-note dim">Not written down anywhere: Episko offers cargo's standard commands for any <code>Cargo.toml</code>.</div>`;
+  else if (!span) code = `<div class="ri-note dim">Couldn't find “${esc(r.label)}” in ${esc(r.sourceFile)}. Open the file to look.</div>`;
+  else {
+    const lines = text.split(/\r?\n/);
+    const from = Math.max(0, span.start - INFO_CONTEXT);
+    const to = Math.min(lines.length - 1, span.end + INFO_CONTEXT, from + INFO_MAX - 1);
+    const w = String(to + 1).length;
+    code = `<pre class="ri-code">${lines.slice(from, to + 1).map((l, k) => {
+      const n = from + k;
+      return `<span class="ri-ln${n >= span.start && n <= span.end ? " hit" : ""}"><i>${String(n + 1).padStart(w)}</i>${esc(l) || " "}</span>`;
+    }).join("")}</pre>${to < span.end ? `<div class="ri-note dim">… ${span.end - to} more lines in the file</div>` : ""}`;
+  }
+  const where = span ? `:${span.start + 1}${span.end > span.start ? "–" + (span.end + 1) : ""}` : "";
+
+  $("runList").innerHTML = `<div class="run-info">
+    <div class="ri-h">
+      <button class="ri-back" type="button" data-ri="back" title="Back to the list (←)">‹</button>
+      <b>${esc(r.label)}</b><span class="run-src">${esc(sourceShort(r))}</span>${r.background ? `<span class="end">bg</span>` : ""}
+    </div>
+    ${overridden ? `<div class="ri-note warn">Overridden in <code>.episko/tasks.toml</code>: what runs below is the override, not the definition in ${esc(r.sourceFile)}.</div>` : ""}
+    <dl class="ri-facts">${facts}</dl>
+    <div class="ri-file"><span>${esc(r.sourceFile)}<span class="dim">${where}</span></span></div>
+    ${code}
+    <div class="ri-acts">
+      <button class="ri-b" type="button" data-ri="open">Open file</button>
+      <button class="ri-b" type="button" data-ri="reveal">Reveal</button>
+      ${r.blocked ? "" : `<button class="ri-b" type="button" data-ri="edit" title="${r.source === "episko" ? "Edit in .episko/tasks.toml" : `Writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}`}">Edit…</button>`}
+      ${r.blocked ? "" : `<button class="ri-b go" type="button" data-ri="run">Run ▸</button>`}
+    </div>
+  </div>`;
+  $("runList").querySelectorAll<HTMLElement>("[data-ri]").forEach((el) =>
+    el.addEventListener("click", () => runInfoAct(el.dataset.ri!)));
+}
+
+function runInfoAct(act: string) {
+  const r = runInfo?.r, ctx = runCtx;
+  if (!r || !ctx) return;
+  if (act === "back") closeRunInfo();
+  else if (act === "run") pickRun("run");
+  // `open_file`, as the task manager's ↗ does: the opener plugin refuses `file://`.
+  else if (act === "open") invoke("open_file", { path: `${ctx.workdir}/${r.sourceFile}` }).catch((e) => toast("open failed: " + e));
+  else if (act === "reveal") invoke("reveal_path", { dir: ctx.workdir, rel: r.sourceFile }).catch((e) => toast("reveal failed: " + e));
+  else if (act === "edit") { closeRunPicker(); void openTaskManager().then(() => { if (mgrCtx) startMgrEdit(r.id); }); }
 }
 
 // Take a row out of recent. It drops back to its source group, so say so: a row that
@@ -513,12 +631,19 @@ $("mgrOpen").addEventListener("click", () => {
     .catch((e) => toast("open failed: " + e));
 });
 $("mgrRescan").addEventListener("click", () => { if (mgrCtx) void rescanTasks(mgrCtx.workdir).then(() => refreshMgr()).then(() => toast("Rescanned")); });
-$("runInput").addEventListener("input", () => { runSel = 0; renderRunPicker(($("runInput") as HTMLInputElement).value); });
+// Typing is a new search, so it leaves the ⓘ view.
+$("runInput").addEventListener("input", () => { runSel = 0; runInfo = null; renderRunPicker(($("runInput") as HTMLInputElement).value); });
 $("runInput").addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
-  const flat = runGroups(($("runInput") as HTMLInputElement).value).flatMap((g) => g.items);
-  if (e.key === "ArrowDown") { e.preventDefault(); runSel = Math.min(runSel + 1, flat.length - 1); renderRunPicker(($("runInput") as HTMLInputElement).value); }
-  else if (e.key === "ArrowUp") { e.preventDefault(); runSel = Math.max(runSel - 1, 0); renderRunPicker(($("runInput") as HTMLInputElement).value); }
+  const inp = $("runInput") as HTMLInputElement;
+  const flat = runGroups(inp.value).flatMap((g) => g.items);
+  const atEnd = inp.selectionStart === inp.value.length && inp.selectionEnd === inp.value.length;
+  const mv = (to: number) => { runSel = to; if (runInfo) void openRunInfo(); else renderRunPicker(inp.value); };
+  if (e.key === "ArrowDown") { e.preventDefault(); mv(Math.min(runSel + 1, flat.length - 1)); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); mv(Math.max(runSel - 1, 0)); }
+  // → drills in only where it has no caret to move; ← and Esc back out before Esc closes.
+  else if (e.key === "ArrowRight" && !runInfo && atEnd && flat.length) { e.preventDefault(); void openRunInfo(); }
+  else if (runInfo && (e.key === "ArrowLeft" || e.key === "Escape")) { e.preventDefault(); e.stopPropagation(); closeRunInfo(); }
   else if (e.key === "Enter") { e.preventDefault(); pickRun(meta ? "pin" : e.altKey ? "params" : "run"); }
   // The chord that opened the picker is a real rescan inside it. Read from the binding,
   // so it follows a rebind in Settings › Keys.
