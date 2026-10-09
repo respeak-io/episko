@@ -1704,8 +1704,7 @@ pub(crate) struct DiffStat {
     added: u32,     // insertions in the uncommitted working tree (tracked files, vs HEAD)
     removed: u32,
     files: u32,     // tracked files with uncommitted changes
-    untracked: u32, // untracked entries; git collapses an untracked directory into one
-    new_dirs: u32,  // how many of `untracked` are directories ("1 new folder", not "1 new file")
+    untracked: u32, // untracked files, each one (`-uall`), as the diff overlay lists them
     dirty: u32,     // `git status --porcelain` line count
     upstream: Option<String>, // "origin/main"; None when the branch tracks nothing
     ahead: u32,     // as of the last fetch
@@ -1816,12 +1815,13 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
     };
     // ONE spawn for everything but the line counts: `--porcelain=v2 --branch` reports the
     // dirty entries and the upstream/ahead/behind in one walk. This is polled per folder.
-    let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--show-stash"]).ok()?;
+    // `-uall`: a new folder collapsed to `? sub/` read "1 new" beside the overlay's N files.
+    let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--show-stash", "-uall"]).ok()?;
     if !st.status.success() {
         return None; // not a repo
     }
     let text = String::from_utf8_lossy(&st.stdout);
-    let (mut untracked, mut dirty, mut new_dirs) = (0u32, 0u32, 0u32);
+    let (mut untracked, mut dirty) = (0u32, 0u32);
     let mut new_files: Vec<String> = Vec::new();
     let (mut upstream, mut ahead, mut behind, mut stash) = (None, 0u32, 0u32, 0u32);
     let mut unborn = false;
@@ -1833,11 +1833,8 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
                 dirty += 1;
                 if k == b'?' {
                     untracked += 1;
-                    // `? sub/` is a whole untracked directory collapsed into one entry: named, never read.
-                    match line.strip_prefix("? ") {
-                        Some(p) if p.ends_with('/') => new_dirs += 1,
-                        Some(p) => new_files.push(p.to_string()),
-                        None => {}
+                    if let Some(p) = line.strip_prefix("? ") {
+                        new_files.push(p.to_string());
                     }
                 }
                 if entries.len() < cap {
@@ -1912,7 +1909,7 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
         }
     }
     Some((
-        DiffStat { added, removed, files, untracked, new_dirs, dirty, upstream, ahead, behind, stash },
+        DiffStat { added, removed, files, untracked, dirty, upstream, ahead, behind, stash },
         entries,
     ))
 }
@@ -1936,13 +1933,11 @@ pub(crate) struct ChangedPath {
     status: String, // one letter from `v2_code`, so this and the dialog's list agree
 }
 
-/// Which paths are dirty and how: the marks on an explorer row. Separate from the polled
-/// `git_diffstat` because this one asks for `-uall`, once, when the overlay opens. Not a
-/// repo is an empty list, not an error; the explorer works there from a walk.
+/// Which paths are dirty and how: the marks on an explorer row, uncapped where
+/// `git_working_set` names at most 200. Not a repo is an empty list, not an error.
 #[tauri::command(async)]
 pub(crate) fn git_changed(workdir: String) -> Vec<ChangedPath> {
-    // `-uall`: the default collapses a new folder into `? sub/`, so every file inside it
-    // would reach the explorer unmarked. `working_set` keeps `-unormal` (it is polled).
+    // `-uall`: the default collapses a new folder into `? sub/`, leaving its files unmarked.
     let out = git_cmd(&workdir, &["-c", "core.quotePath=false",
         "--no-optional-locks", "status", "--porcelain=v2", "-uall"]).output();
     let Ok(out) = out else { return Vec::new() };
@@ -3366,7 +3361,7 @@ canonicalizehostname false
         let d = git_diffstat(path.clone()).unwrap();
         assert_eq!((d.added, d.removed), (3, 1), "2 tracked insertions + the new file's 1 line");
         assert_eq!(d.files, 1, "`files` stays numstat's count: tracked files only");
-        assert_eq!((d.untracked, d.dirty, d.new_dirs), (1, 2, 0), "one new file, no new folder");
+        assert_eq!((d.untracked, d.dirty), (1, 2), "one new file");
 
         git(&remote, &["init", "-q", "--bare", "-b", "main"]);
         git(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
@@ -3527,8 +3522,8 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&plain);
     }
 
-    /// The bounds that make the untracked scan safe on a 15s poll: a directory is never opened,
-    /// a binary or oversized file adds nothing, and no skip stops the files after it.
+    /// The bounds that make the untracked scan safe on a 15s poll: a binary or oversized
+    /// file adds nothing, and no skip stops the files after it.
     #[test]
     fn git_diffstat_bounds_what_it_reads_for_untracked_lines() {
         let dir = scratch_dir();
@@ -3538,13 +3533,14 @@ canonicalizehostname false
         git(&dir, &["add", "-A"]);
         commit(&dir, "init");
 
-        // A whole untracked directory is one entry, never walked.
+        // A new folder is its files, as the diff overlay lists them, not one `? sub/` entry.
         std::fs::create_dir_all(dir.join("scratch")).unwrap();
         std::fs::write(dir.join("scratch/a.txt"), "1\n2\n3\n").unwrap();
         std::fs::write(dir.join("scratch/b.txt"), "4\n").unwrap();
         let d = git_diffstat(path.clone()).unwrap();
-        assert_eq!((d.untracked, d.new_dirs), (1, 1), "a new folder is one entry, and is a folder");
-        assert_eq!(d.added, 0, "a folder's contents are not line-counted");
+        assert_eq!((d.untracked, d.dirty), (2, 2), "each file in a new folder is counted");
+        assert_eq!(d.added, 4, "and line-counted, as the overlay's header counts it");
+        std::fs::remove_dir_all(dir.join("scratch")).unwrap();
 
         // No trailing newline still has a last line, as `git diff` reports; a binary has none.
         std::fs::write(dir.join("tail.txt"), "one\ntwo").unwrap();
@@ -3552,7 +3548,7 @@ canonicalizehostname false
         std::fs::write(dir.join("empty.txt"), "").unwrap();
         let d = git_diffstat(path.clone()).unwrap();
         assert_eq!(d.added, 2, "2 lines from tail.txt, nothing from the binary or the empty file");
-        assert_eq!((d.untracked, d.new_dirs), (4, 1), "all four entries still counted");
+        assert_eq!(d.untracked, 3, "all three still counted");
 
         // Over the size cap a file contributes nothing, and the others are unaffected.
         std::fs::write(dir.join("huge.txt"), "x\n".repeat((NEW_FILE_MAX as usize / 2) + 10)).unwrap();

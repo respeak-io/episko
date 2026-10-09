@@ -78,6 +78,10 @@ Markers: `+` new · `~` changed · `!` fixed
   could come from the wrong project too. Each project now keeps its own, and a task deleted from its
   file says so instead of re-running the old definition.
 
+! **The working-set card counts a new folder's files.** A folder nobody had committed yet counted
+  as one new file, and its lines not at all, so the card could say *6 files · 1 new* while the
+  diff it opens listed 26. The card now counts each file in it, so the two agree.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and
