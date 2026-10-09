@@ -193,8 +193,8 @@ as whole values. Rules, all in `roster.ts`:
 
 ## Shared notes and the work log: where they go is per project
 
-Project menu › **Sharing** holds one choice per project (`cc-episko-share`, synced with the
-roster):
+Each project holds one choice (`cc-episko-share`, synced with the roster). It is set in the
+project's settings under *The team's* (docs/settings.md), or quickly from Project menu › **Sharing**:
 
 | Mode | Notes and work log |
 | --- | --- |
@@ -221,7 +221,7 @@ roster):
   `share|<project id>` on the notes stream, and every teammate's checkout follows it, unless they
   chose Nowhere. Without this, one teammate left on Git would keep committing the file the
   others had moved off the repo.
-- **Moving off the repo**: Settings › Sync › Projects offers *Move to the server and commit* for
+- **Moving off the repo**: the project's settings offer *Move to the server* for
   a project not on Git that still has the file. It publishes every day in the file, deletes it,
   and commits that one path (`commit_digest_removal`: `git commit --only -- .episko/digest.md`,
   so anything the user had staged stays staged and out of the commit). Pushing stays the user's.
@@ -246,7 +246,10 @@ out; the app then halts and asks to pair again rather than retrying. Every six h
 compacts: an event superseded by a newer one of the same key goes once it is older than
 `EPISKO_RETENTION_DAYS` (30). The latest per key always stays, so a device that was away for
 months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
-(`episko-server/README.md`).
+(`episko-server/README.md`), with settings in an untracked `.env` and proxy wiring in an untracked
+`docker-compose.override.yml`, so `update.sh` moves a deployment between release tags without a
+merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
+and a test in `main.rs` fails when one the source reads is missing from it or from `USAGE`.
 
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,

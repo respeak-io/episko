@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { runElapsed, taskStateText, type InputSpec, type Runnable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject import
 import {
-  applyInputs, applyRunner, execCmd, exitWaiters, findDepCycle, lastRunnableById,
+  applyInputs, applyRunner, defSpan, execCmd, exitWaiters, findDepCycle, runnableIn,
+  runnablesByRoot,
   launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps, resolveRunInputs,
   setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
@@ -28,11 +29,19 @@ const settle = async () => { for (let i = 0; i < 25; i++) await Promise.resolve(
 // Finish a started run the way the pty-exit listener does.
 const finish = (id: string, code: number) => { const w = exitWaiters.get(id); exitWaiters.delete(id); w?.(code); };
 const labels = () => launched.map((l) => l.r.label);
-const seed = (...list: Runnable[]) => { for (const r of list) lastRunnableById.set(r.id, r); };
+// Where discovery ran: tasks are looked up within one root, never across projects.
+const ROOT = "/w/epi";
+const AT: TaskLaunchOpts = { discoveredIn: ROOT };
+const seedIn = (root: string, ...list: Runnable[]) => {
+  const m = runnablesByRoot.get(root) ?? new Map<string, Runnable>();
+  for (const r of list) m.set(r.id, r);
+  runnablesByRoot.set(root, m);
+};
+const seed = (...list: Runnable[]) => seedIn(ROOT, ...list);
 
 beforeEach(() => {
   launched = []; toasts = []; logs = []; launchFails = [];
-  lastRunnableById.clear();
+  runnablesByRoot.clear();
   exitWaiters.clear();
   for (const k of Object.keys(taskRunner)) delete taskRunner[k];
   for (const k of Object.keys(taskInputs)) delete taskInputs[k];
@@ -255,54 +264,85 @@ describe("resolveDeps — VS Code names dependencies by label", () => {
   it("finds a dependency by its label", () => {
     const build = run({ id: "npm:build", label: "build" });
     seed(build);
-    expect(resolveDeps(run({ dependsOn: ["build"] }), new Set())).toEqual([build]);
+    expect(resolveDeps(run({ dependsOn: ["build"] }), new Set(), ROOT)).toEqual([build]);
   });
   it("prefers a match from the same provider", () => {
     const mine = run({ id: "npm:build", label: "build", source: "npm" });
     const theirs = run({ id: "just:build", label: "build", source: "just" });
     seed(theirs, mine); // the other provider was discovered first
-    expect(resolveDeps(run({ source: "npm", dependsOn: ["build"] }), new Set())).toEqual([mine]);
+    expect(resolveDeps(run({ source: "npm", dependsOn: ["build"] }), new Set(), ROOT)).toEqual([mine]);
   });
   it("falls back to another provider when its own has no such label", () => {
     const theirs = run({ id: "just:build", label: "build", source: "just" });
     seed(theirs);
-    expect(resolveDeps(run({ source: "npm", dependsOn: ["build"] }), new Set())).toEqual([theirs]);
+    expect(resolveDeps(run({ source: "npm", dependsOn: ["build"] }), new Set(), ROOT)).toEqual([theirs]);
   });
   it("resolves each label, in the order declared", () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set())?.map((d) => d.label)).toEqual(["b", "a"]);
+    expect(resolveDeps(run({ dependsOn: ["b", "a"] }), new Set(), ROOT)?.map((d) => d.label)).toEqual(["b", "a"]);
   });
   // null and [] are different answers: "I could not resolve these" vs "there are none".
   it("gives up on the whole list when one label matches nothing, and says so", () => {
     seed(run({ id: "npm:a", label: "a" }));
-    expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set())).toBeNull();
+    expect(resolveDeps(run({ label: "test", dependsOn: ["a", "ghost"] }), new Set(), ROOT)).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
   });
   it("says the chain will not run, as well as naming the unknown label", () => {
     seed(run({ id: "npm:a", label: "a" }));
-    resolveDeps(run({ label: "test", dependsOn: ["ghost"] }), new Set());
+    resolveDeps(run({ label: "test", dependsOn: ["ghost"] }), new Set(), ROOT);
     expect(toasts[0]).toMatch(/will not run/);
     expect(toasts[0]).toContain("ghost");
   });
   it("refuses a cycle rather than recursing until the stack gives out", () => {
     seed(run({ id: "npm:a", label: "a" }));
-    expect(resolveDeps(run({ label: "test", dependsOn: ["a"] }), new Set(["npm:a"]))).toBeNull();
+    expect(resolveDeps(run({ label: "test", dependsOn: ["a"] }), new Set(["npm:a"]), ROOT)).toBeNull();
     expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
   });
   it("returns an empty list — not null — for a task that declares no dependencies", () => {
-    expect(resolveDeps(run(), new Set())).toEqual([]);
+    expect(resolveDeps(run(), new Set(), ROOT)).toEqual([]);
     expect(toasts).toEqual([]);
+  });
+});
+
+describe("two projects, one task id — a lookup stays in its own root", () => {
+  // Every JS project has an `npm:dev`; a re-run once started another project's dev server.
+  const fab = run({ id: "npm:dev", label: "dev", cwd: "/w/fab" });
+  const putty = run({ id: "npm:dev", label: "dev", cwd: "/w/putty" });
+  it("finds each project's own task, whichever was discovered last", () => {
+    seedIn("/w/fab", fab);
+    seedIn("/w/putty", putty);
+    expect(runnableIn("/w/fab", "npm:dev")?.cwd).toBe("/w/fab");
+    expect(runnableIn("/w/putty", "npm:dev")?.cwd).toBe("/w/putty");
+  });
+  it("answers nothing for a root that never discovered the id", () => {
+    seedIn("/w/putty", putty);
+    expect(runnableIn("/w/fab", "npm:dev")).toBeUndefined();
+  });
+  it("never resolves a dependency out of another project", async () => {
+    seedIn("/w/putty", run({ id: "npm:build", label: "build", cwd: "/w/putty" }));
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "fab", { discoveredIn: "/w/fab" });
+    await settle();
+    expect(labels()).toEqual([]);
+    expect(toasts).toEqual([expect.stringContaining("no task named")]);
+    await expect(p).resolves.toEqual({ ok: false, id: null });
+  });
+  it("resolves the dependency from the launch's own root when both have one", async () => {
+    seedIn("/w/putty", run({ id: "npm:build", label: "build", cwd: "/w/putty" }));
+    seedIn("/w/fab", run({ id: "npm:build", label: "build", cwd: "/w/fab" }));
+    void launchWithDeps(run({ dependsOn: ["build"] }), "fab", { discoveredIn: "/w/fab" });
+    await settle();
+    expect(launched[0].r.cwd).toBe("/w/fab");
   });
 });
 
 describe("launchWithDeps — the chain", () => {
   it("launches straight away when there is nothing to wait for", async () => {
-    await expect(launchWithDeps(run(), "epi", {})).resolves.toEqual({ ok: true, id: "run1" });
+    await expect(launchWithDeps(run(), "epi", AT)).resolves.toEqual({ ok: true, id: "run1" });
     expect(labels()).toEqual(["test"]);
   });
   it("runs dependencies before the task itself", async () => {
     seed(run({ id: "npm:build", label: "build" }));
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["build"]); // the task itself is still waiting
     finish("run1", 0);
@@ -312,7 +352,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("starts parallel dependencies together — VS Code's default", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    const p = launchWithDeps(run({ dependsOn: ["a", "b"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["a", "b"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["a", "b"]); // both up before either has exited
     finish("run2", 0); finish("run1", 0);
@@ -322,7 +362,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("holds each sequence dependency until the previous one exits", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["a"]);
     finish("run1", 0);
@@ -334,7 +374,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("does not test a build that didn't happen", async () => {
     seed(run({ id: "npm:build", label: "build" }));
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", AT);
     await settle();
     finish("run1", 1); // the build failed
     await settle();
@@ -344,7 +384,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("stops a sequence at the first failure instead of running the rest", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", AT);
     await settle();
     finish("run1", 1);
     await settle();
@@ -353,7 +393,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("still waits for every parallel dependency before giving up", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    const p = launchWithDeps(run({ dependsOn: ["a", "b"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["a", "b"] }), "epi", AT);
     await settle();
     finish("run1", 1);
     await settle();
@@ -365,14 +405,14 @@ describe("launchWithDeps — the chain", () => {
   it("treats a dependency that would not start at all as a failure", async () => {
     seed(run({ id: "npm:build", label: "build", blocked: "needs an editor" }));
     launchFails = ["build"];
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual([]);
     await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("runs the whole chain when a dependency has dependencies of its own", async () => {
     seed(run({ id: "npm:gen", label: "gen" }), run({ id: "npm:build", label: "build", dependsOn: ["gen"] }));
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["gen"]);
     finish("run1", 0);
@@ -385,7 +425,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("does not run a task whose dependency label matches nothing", async () => {
     // A renamed build is as dangerous as a failed one: the test would run against whatever is on disk.
-    const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", AT);
     await settle();
     expect(toasts).toEqual([expect.stringContaining("no task named")]);
     expect(labels()).toEqual([]);
@@ -393,20 +433,20 @@ describe("launchWithDeps — the chain", () => {
   });
   it("launches nothing at all when the chain is a cycle", async () => {
     seed(run({ id: "npm:a", label: "a", dependsOn: ["test"] }), run({ id: "npm:test", label: "test", dependsOn: ["a"] }));
-    const p = launchWithDeps(run({ id: "npm:test", label: "test", dependsOn: ["a"] }), "epi", {});
+    const p = launchWithDeps(run({ id: "npm:test", label: "test", dependsOn: ["a"] }), "epi", AT);
     await settle();
     expect(toasts[0]).toMatch(/dependency cycle/);
     expect(labels()).toEqual([]); // neither member runs half a chain
     await expect(p).resolves.toEqual({ ok: false, id: null });
   });
   it("narrates an unresolved dependency to the debug console", async () => {
-    const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["ghost"] }), "epi", AT);
     await settle();
     await p;
     expect(logs).toContain("warn task npm:test skipped: dependency unresolved");
   });
   it("hands a dependency the stage behaviour but not the parent's identity", async () => {
-    seed(run({ id: "npm:build", label: "build" }));
+    seedIn("/w/epi/sub", run({ id: "npm:build", label: "build" }));
     void launchWithDeps(run({ dependsOn: ["build"] }), "epi",
       { focus: false, colorKey: "/w/epi", forSession: "sid", discoveredIn: "/w/epi/sub" });
     await settle();
@@ -429,7 +469,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("passes the project through to every run in the chain", async () => {
     seed(run({ id: "npm:build", label: "build" }));
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", AT);
     await settle();
     finish("run1", 0);
     await settle();
@@ -438,7 +478,7 @@ describe("launchWithDeps — the chain", () => {
   });
   it("narrates the chain to the debug console", async () => {
     seed(run({ id: "npm:a", label: "a" }), run({ id: "npm:b", label: "b" }));
-    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", {});
+    const p = launchWithDeps(run({ dependsOn: ["a", "b"], dependsOrder: "sequence" }), "epi", AT);
     await settle();
     expect(logs).toEqual(["info task npm:test · 2 deps (sequence)"]);
     finish("run1", 1);
@@ -458,7 +498,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
 
   it("starts a whole stack of servers without waiting for any of them to exit", async () => {
     seed(server("vite dev"), server("uvicorn"));
-    const p = launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", {});
+    const p = launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", AT);
     await settle();
     expect(labels()).toEqual(["vite dev", "uvicorn"]);
     await expect(p).resolves.toEqual({ ok: true, id: null });
@@ -466,14 +506,14 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
 
   it("launches no pane for the compound itself — its dependencies were the work", async () => {
     seed(server("vite dev"));
-    await launchWithDeps(compound(["vite dev"]), "epi", {});
+    await launchWithDeps(compound(["vite dev"]), "epi", AT);
     await settle();
     expect(labels()).not.toContain("Dev: Frontend + Backend");
   });
 
   it("groups the stack it started, so it folds into one sidebar row", async () => {
     seed(server("vite dev"), server("uvicorn"));
-    await launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", {});
+    await launchWithDeps(compound(["vite dev", "uvicorn"]), "epi", AT);
     await settle();
     const gids = new Set(launched.map((l) => l.opts.groupId));
     expect(gids.size).toBe(1);
@@ -484,7 +524,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
   it("still fails the chain when a dependency cannot be launched at all", async () => {
     seed(server("vite dev"));
     launchFails = ["vite dev"];
-    const p = launchWithDeps(compound(["vite dev"]), "epi", {});
+    const p = launchWithDeps(compound(["vite dev"]), "epi", AT);
     await settle();
     await expect(p).resolves.toEqual({ ok: false, id: null });
     expect(toasts).toEqual([expect.stringContaining("a dependency failed")]);
@@ -493,7 +533,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
   it("a NON-background dependency is still waited for", async () => {
     // "build then test" only means anything if the build's exit code is actually read.
     seed(run({ id: "npm:build", label: "build" }));
-    const p = launchWithDeps(run({ label: "test", dependsOn: ["build"] }), "epi", {});
+    const p = launchWithDeps(run({ label: "test", dependsOn: ["build"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["build"]);   // test has NOT started
     finish("run1", 0);
@@ -506,7 +546,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
     // A compound returns no pane id; that absence must not read as failure.
     seed(server("vite dev"), compound(["vite dev"]));
     const p = launchWithDeps(
-      run({ label: "smoke", dependsOn: ["Dev: Frontend + Backend"] }), "epi", {});
+      run({ label: "smoke", dependsOn: ["Dev: Frontend + Backend"] }), "epi", AT);
     await settle();
     expect(labels()).toEqual(["vite dev", "smoke"]);
     await expect(p).resolves.toEqual({ ok: true, id: "run2" });
@@ -520,7 +560,7 @@ describe("launchWithDeps — compound tasks and background dependencies", () => 
 describe("launchWithDeps — what a dependency inherits", () => {
   it("passes the discovery directory down, so a dep's root is its checkout", () => {
     // Falling back to the repo root clusters the pane under the wrong checkout.
-    seed(run({ id: "npm:build", label: "build" }));
+    seedIn("/w/wt-feat", run({ id: "npm:build", label: "build" }));
     void launchWithDeps(run({ dependsOn: ["build"] }), "epi", { discoveredIn: "/w/wt-feat" });
     return settle().then(() => {
       expect(launched[0].r.label).toBe("build");
@@ -529,7 +569,7 @@ describe("launchWithDeps — what a dependency inherits", () => {
   });
   it("still withholds forSession — a dep is not the run being verified", async () => {
     seed(run({ id: "npm:build", label: "build" }));
-    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", { forSession: "sess-1" });
+    const p = launchWithDeps(run({ dependsOn: ["build"] }), "epi", { ...AT, forSession: "sess-1" });
     await settle();
     expect(launched[0].opts.forSession).toBeUndefined();
     finish("run1", 0);
@@ -611,7 +651,7 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
 
   it("starts each distinct task exactly once per launch", async () => {
     seedDiamond();
-    const p = launchWithDeps(dev(), "epi", {});
+    const p = launchWithDeps(dev(), "epi", AT);
     await settle();
     expect(labels().sort()).toEqual(["pnpm install", "uv sync"]);
     await finishAll("pnpm install", "uv sync");
@@ -628,7 +668,7 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
     // exitWaiters holds one resolver per session id, so two dependents each calling
     // waitForExit on the same pane would clobber one another and one branch would hang.
     seedDiamond();
-    const p = launchWithDeps(dev(), "epi", {});
+    const p = launchWithDeps(dev(), "epi", AT);
     await settle();
     await finishAll("pnpm install", "uv sync");
     await finishAll("fe playwright", "be playwright");
@@ -640,7 +680,7 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
   it("still fails every dependent when the shared dependency fails", async () => {
     seedDiamond();
     launchFails = ["pnpm install"];
-    const p = launchWithDeps(dev(), "epi", {});
+    const p = launchWithDeps(dev(), "epi", AT);
     await settle();
     await finishAll("uv sync");          // let the other half of the fan-out finish
     await finishAll("be playwright");
@@ -650,7 +690,7 @@ describe("launchWithDeps — a DAG is walked once, not once per path", () => {
 
   it("keeps the whole chain in one run group", async () => {
     seedDiamond();
-    const p = launchWithDeps(dev(), "epi", {});
+    const p = launchWithDeps(dev(), "epi", AT);
     await settle();
     await finishAll("pnpm install", "uv sync");
     await finishAll("fe playwright", "be playwright");
@@ -663,32 +703,91 @@ describe("findDepCycle — caught before anything launches", () => {
   it("finds a cycle and names the loop", () => {
     seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
          run({ id: "b", label: "b", dependsOn: ["a"] }));
-    expect(findDepCycle(lastRunnableById.get("a")!)).toEqual(["a", "b", "a"]);
+    expect(findDepCycle(runnableIn(ROOT, "a")!, ROOT)).toEqual(["a", "b", "a"]);
   });
   it("finds a cycle that only closes further down", () => {
     seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
          run({ id: "b", label: "b", dependsOn: ["c"] }),
          run({ id: "c", label: "c", dependsOn: ["b"] }));
-    expect(findDepCycle(lastRunnableById.get("a")!)).toEqual(["b", "c", "b"]);
+    expect(findDepCycle(runnableIn(ROOT, "a")!, ROOT)).toEqual(["b", "c", "b"]);
   });
   it("does NOT mistake a diamond for a cycle", () => {
     seed(run({ id: "a", label: "a", dependsOn: ["b", "c"] }),
          run({ id: "b", label: "b", dependsOn: ["d"] }),
          run({ id: "c", label: "c", dependsOn: ["d"] }),
          run({ id: "d", label: "d" }));
-    expect(findDepCycle(lastRunnableById.get("a")!)).toBeNull();
+    expect(findDepCycle(runnableIn(ROOT, "a")!, ROOT)).toBeNull();
   });
   it("ignores a label that resolves to nothing — that is resolveDeps's error", () => {
     seed(run({ id: "a", label: "a", dependsOn: ["ghost"] }));
-    expect(findDepCycle(lastRunnableById.get("a")!)).toBeNull();
+    expect(findDepCycle(runnableIn(ROOT, "a")!, ROOT)).toBeNull();
   });
   it("stops the launch before a single pane starts", async () => {
     seed(run({ id: "a", label: "a", dependsOn: ["b"] }),
          run({ id: "b", label: "b", dependsOn: ["a"] }));
-    const p = launchWithDeps(lastRunnableById.get("a")!, "epi", {});
+    const p = launchWithDeps(runnableIn(ROOT, "a")!, "epi", AT);
     await settle();
     expect(labels()).toEqual([]);          // nothing half-started
     expect(toasts).toEqual([expect.stringContaining("dependency cycle")]);
     await expect(p).resolves.toEqual({ ok: false, id: null });
+  });
+});
+
+describe("defSpan", () => {
+  const span = (src: string, lines: string[], label: string) => defSpan(src, lines.join("\n"), label);
+
+  it("finds an npm script inside scripts, not a same-named key above it", () => {
+    const pkg = ['{', '  "name": "dev",', '  "dev": "nope",', '  "scripts": {', '    "build": "tsc",', '    "dev": "vite"', '  }', '}'];
+    expect(span("npm", pkg, "dev")).toEqual({ start: 5, end: 5 });
+    expect(span("npm", pkg, "missing")).toBeNull();
+  });
+
+  it("takes the whole tasks.json object, braces inside strings ignored", () => {
+    const tj = [
+      '{ "tasks": [',
+      '  { "label": "build", "command": "make" },',
+      '  {',
+      '    "label": "dev",',
+      '    "command": "pnpm run dev {not a brace}",',
+      '    "options": { "cwd": "web" }',
+      '  }',
+      ']}',
+    ];
+    expect(span("vscode", tj, "dev")).toEqual({ start: 2, end: 6 });
+    expect(span("vscode", tj, "build")).toEqual({ start: 1, end: 1 });
+  });
+
+  it("matches a launch config by name and a label with regex characters literally", () => {
+    const lj = ['{ "configurations": [', '  {', '    "name": "Run (x+1)",', '    "program": "a.js"', '  }', ']}'];
+    expect(span("launch", lj, "Run (x+1)")).toEqual({ start: 1, end: 4 });
+    expect(span("launch", lj, "Run (x1)")).toBeNull();
+  });
+
+  it("takes an .episko [[task]] block from its header to the next table", () => {
+    const t = ['[[task]]', 'label = "a"', 'run = "x"', '', '[[task]]', "label = 'dev'", 'run = "vite"', '', '[override."npm:x"]'];
+    expect(span("episko", t, "dev")).toEqual({ start: 4, end: 6 });
+  });
+
+  it("takes a make target with its doc line and recipe, and refuses an assignment", () => {
+    const mk = ['CC := gcc', '## build it', 'build: deps', '\tcc main.c', '\tstrip a.out', '', 'deps:', '\ttrue'];
+    expect(span("make", mk, "build")).toEqual({ start: 1, end: 4 });
+    expect(span("make", mk, "CC")).toBeNull();
+  });
+
+  it("takes a just recipe with attributes, params and a quiet marker", () => {
+    const jf = ['# serve it', '[no-cd]', '@dev port="3000":', '  vite --port {{port}}', '', 'devtools:', '  echo'];
+    expect(span("just", jf, "dev")).toEqual({ start: 0, end: 3 });
+  });
+
+  it("takes a Taskfile task by indentation and a mise task by header or key", () => {
+    const tf = ['version: 3', 'tasks:', '  dev:', '    cmds:', '      - vite', '  build:', '    cmds: [tsc]'];
+    expect(span("taskfile", tf, "dev")).toEqual({ start: 2, end: 4 });
+    const mise = ['[tasks.dev]', 'run = "vite"', '', '[tasks]', 'lint = "biome check"'];
+    expect(span("mise", mise, "dev")).toEqual({ start: 0, end: 1 });
+    expect(span("mise", mise, "lint")).toEqual({ start: 4, end: 4 });
+  });
+
+  it("answers null for a source with no text definition", () => {
+    expect(span("cargo", ["[package]"], "build")).toBeNull();
   });
 });

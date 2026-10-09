@@ -18,9 +18,9 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, copyChord, wtGroup,
   type SortMode, type WtGroup,
-  FAVORITES, projOrder, shareModeOf, type ShareMode,
+  FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs,
 } from "./state";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -69,10 +69,11 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
   activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
-  onlineDevices, pending as syncPending, prefsArrived, projectIdOf, requestInvite, serverDigest, serverNotes, setExcluded,
-  status as syncStatus, teamShare,
+  onlineDevices, pending as syncPending, prefsArrived, requestInvite, setExcluded,
+  status as syncStatus,
 } from "./synclink";
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
+import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
@@ -82,6 +83,8 @@ export interface SettingsHost {
   setSort: (m: SortMode, announce?: boolean) => void;
   setEngine: (id: Engine) => void;
   setTermSplit: (on: boolean) => void;
+  setDriftAuto: (on: boolean) => void;
+  setCopyChord: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -125,9 +128,7 @@ export interface SettingsHost {
   syncSetHeaders: (headers: [string, string][]) => Promise<void>;
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
-  syncShare: (colorKey: string, m: ShareMode) => void;
-  syncMoveLog: (colorKey: string) => Promise<void>;
-  syncHasDigest: (root: string) => Promise<boolean>;
+  openProjectSettings: (colorKey: string) => void;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -155,13 +156,14 @@ function permissionControl(): SetControl {
     more: "Stored per agent, so switching agents brings back that agent's last choice. Each value maps to a fixed CLI flag; nothing typed here reaches a command line.",
     aliases: ["bypass", "plan", "accept edits", "dangerously", "auto", "approvals", "ask"],
     active: () => active.id, isDefault: () => active.id === dflt.id, reset: () => host.setPermMode(agent.id, dflt.id),
+    elsewhere: () => overriders(projPrefs, "perm", agent.id),
     segs: () => modes.map((mode) => ({ value: mode.id, label: mode.label, sub: mode.sub, glyph: mode.glyph })),
   };
 }
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setCopyChord: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -172,8 +174,8 @@ let host: SettingsHost = {
   vitalsDrift: () => null,
   openUsage: () => {}, openWhatsNew: () => {}, versionUnread: () => false,
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
-  syncSetHeaders: () => Promise.resolve(), syncShare: () => {}, syncMoveLog: () => Promise.resolve(),
-  syncHasDigest: () => Promise.resolve(false), syncReview: () => {},
+  syncSetHeaders: () => Promise.resolve(), openProjectSettings: () => {},
+  syncReview: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -196,6 +198,7 @@ interface SetMeta {
   lines?: () => { label: string; value: string }[]; // inside a panel, for the search
   previewLabel?: string;          // the fold button of a toggle's preview
   dim?: () => boolean;            // a stored value that currently decides nothing; not disabled, so switching back restores it
+  elsewhere?: () => string[];     // the projects that answer this for themselves (./projprefs)
 }
 type SetShape =
   | { kind: "seg"; set: string; active: () => string; segs: () => SetSeg[] }
@@ -457,6 +460,7 @@ const SET_TABS: SetTab[] = [
         aliases: ["provider", "default agent", ...allAgents().map((a) => a.label)],
         // What a launch resolves, not a stale persisted id for an uninstalled agent.
         active: () => defaultAgentDef().id, isDefault: () => defaultAgentDef().id === CLAUDE_CLI.id, reset: () => host.setDefaultAgent(CLAUDE_CLI.id),
+        elsewhere: () => Object.keys(agentByProject),
         segs: () => allAgents().map((a) => ({ value: a.id, label: a.label, logo: agentLogo(a.id), sub: agentCapabilitySummary(a) })) },
       { kind: "seg", set: "engine", key: "cc-term-engine", label: "Launch engine", hint: "Where a new session's terminal opens.",
         more: "An agent with no external-terminal support stays embedded whatever is picked. A session in an external tab is mirrored into its pane.",
@@ -519,7 +523,7 @@ const SET_TABS: SetTab[] = [
         hint: "An ahead/behind count is only as fresh as your last fetch, so Episko fetches the checkout you are looking at.",
         more: "That one only: a repo nobody is reading isn't worth a round trip, and the checkouts of one repo share a fetch. The cadence is a ceiling rather than a timer — nothing is fetched while you are elsewhere, and arriving at a pane whose count is older than that is what triggers one. An unreachable remote is backed off, and the git card's tooltip says so.",
         aliases: ["auto-fetch", "behind", "ahead", "remote", "pull", "sync", "git", "origin", "interval", "how often"], since: "0.28.0",
-        on: () => autoFetchPrefs.enabled,
+        on: () => autoFetchPrefs.enabled, elsewhere: () => overriders(projPrefs, "fetch"),
         isDefault: () => autoFetchPrefs.enabled === AUTOFETCH_DEFAULTS.enabled && autoFetchPrefs.everyMs === AUTOFETCH_DEFAULTS.everyMs,
         reset: () => host.setAutoFetchPrefs({ ...AUTOFETCH_DEFAULTS }),
         cadence: {
@@ -534,6 +538,11 @@ const SET_TABS: SetTab[] = [
               : "Quietest: a count may be half an hour old",
           })),
         } },
+      { kind: "toggle", set: "driftauto", key: "cc-drift-auto", label: "Follow a session into the checkout it works in",
+        hint: "When an agent starts writing in another worktree, the header, working set and git buttons switch to that worktree. The agent keeps running where it started.",
+        more: "The session's row, header and inspector say which folder it started in. Move session here restarts it in the new folder, so its conversation lives there too; that is never done for you. Off, the inspector asks each time.",
+        aliases: ["drift", "worktree", "moved", "track", "show it here", "checkout", "branch"], since: "0.34.0",
+        on: () => driftAuto, isDefault: () => driftAuto, reset: () => host.setDriftAuto(true) },
       // Set from the project's task panel; reviewed and revoked here.
       { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
         hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
@@ -593,7 +602,7 @@ const SET_TABS: SetTab[] = [
     id: "keys", label: "Keys", glyph: "⌨", group: "work", sub: "Every chord, rebindable",
     controls: () => [
       { kind: "keys", id: "keys", key: "cc-keys", label: "Keyboard shortcuts", hint: "Click a chord and press the one you want.",
-        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this and never change.",
+        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
         aliases: ["keybinding", "hotkey", "chord", "⌘", "rebind", "shortcut", "cmd", "keyboard"],
         summary: () => {
           if (!keyPrefs.enabled) return "off";
@@ -603,6 +612,11 @@ const SET_TABS: SetTab[] = [
         },
         lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
         isDefault: () => isDefaultKeyPrefs(keyPrefs), reset: () => applyKeySetting("resetall") },
+      { kind: "toggle", set: "copychord", key: "cc-copy-chord", label: "Ctrl+Shift+C copies the selection",
+        hint: "In every pane and anywhere else text is selected, instead of opening the web inspector.",
+        more: "Off, the chord is left to the webview, which opens its inspector. A pane never receives it as Ctrl+C either way; Settings › Diagnostics opens the inspector too.",
+        aliases: ["copy", "clipboard", "devtools", "inspector", "ctrl+shift+c", "selection"], since: "0.34.0",
+        on: () => copyChord, isDefault: () => copyChord, reset: () => host.setCopyChord(true) },
     ],
   },
   {
@@ -1503,10 +1517,18 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       ${c.hint ? `<div class="set-hint">${highlight(c.hint, words)}${why}</div>` : ""}
       ${cur ? `<div class="set-cur${curOff ? " off" : ""}">${esc(cur)}</div>` : ""}
       ${note ? `<div class="set-empty">${esc(note)}</div>` : ""}
+      ${elsewhereHtml(c.elsewhere?.() ?? [])}
       ${c.more ? `<div class="set-more">${highlight(c.more, words)}</div>` : ""}
       ${matched.length ? `<div class="set-matched">matched ${matched.map((w) => `“<b>${esc(w.word)}</b>” · ${esc(w.line ?? w.field)}`).join(" · ")}</div>` : ""}
     </div><div class="set-ctl">${reset}${ctl}</div></div>
     ${showPanel ? `<div class="set-panel">${panel}</div>` : ""}</div>`;
+}
+// Without it a global change that one project ignores looks like a setting that does nothing.
+function elsewhereHtml(keys: string[]): string {
+  if (!keys.length) return "";
+  const link = (k: string) => `<button data-setproj="${escAttr(k)}" title="Open ${escAttr(basename(k))}'s settings">${esc(basename(k))}</button>`;
+  const named = keys.slice(0, 3).map(link).join(", ") + (keys.length > 3 ? ` and ${keys.length - 3} more` : "");
+  return `<div class="set-ovr">${keys.length === 1 ? `${named} decides this for itself` : `${keys.length} projects decide this for themselves: ${named}`}</div>`;
 }
 function segInline(c: { set: string; label: string }, segs: SetSeg[], active: string): string {
   return `<div class="set-seg" role="radiogroup" aria-label="${escAttr(c.label)}">${segs.map((s) =>
@@ -1619,32 +1641,11 @@ function applySyncSetting(verb: string) {
     setExcluded(key, keep === "1");
     renderSettings();
   }
-  else if (verb.startsWith("share|")) {
-    const [, m, ...rest] = verb.split("|");
-    host.syncShare(rest.join("|"), m as ShareMode);
-    renderSettings();
-  } else if (verb.startsWith("movelog|")) {
-    const key = verb.slice(8);
-    void host.syncMoveLog(key).then(() => { digestFiles.delete(key); renderSettings(); });
-  }
 }
 
-// Whether each project still has .episko/digest.md, asked once per key and kept until it moves.
-const digestFiles = new Map<string, boolean>();
 function syncProjects(): ProjectSyncRow[] {
   const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
-  for (const k of keys) {
-    if (digestFiles.has(k)) continue;
-    digestFiles.set(k, false);
-    void host.syncHasDigest(k).then((y) => { if (y) { digestFiles.set(k, true); repaintSync(); } }).catch(() => {});
-  }
-  return keys.map((key) => {
-    const id = projectIdOf(key);
-    return {
-      key, name: basename(key), id, mode: shareModeOf(key), team: teamShare(id),
-      lines: Object.keys(serverDigest(id)).length, notes: serverNotes(id).length, digestFile: digestFiles.get(key) ?? false,
-    };
-  });
+  return keys.map((key) => ({ key, name: basename(key), mode: shareModeOf(key) }));
 }
 
 /** A sync status change, repainted unless it would take a field out from under the caret. */
@@ -1673,6 +1674,8 @@ function scanAsks() {
 function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
   else if (set === "termsplit") host.setTermSplit(val === "1");
+  else if (set === "driftauto") host.setDriftAuto(val === "1");
+  else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);
@@ -1908,6 +1911,8 @@ $("setBody").addEventListener("click", (e) => {
   // Clicking a preview row is the third way to replay it; it changes no setting.
   const ad = (e.target as HTMLElement).closest<HTMLElement>("#attnDemo .srow");
   if (ad) { attnDemoReplay(ad); return; }
+  const pj = (e.target as HTMLElement).closest<HTMLElement>("[data-setproj]");
+  if (pj) { host.openProjectSettings(pj.dataset.setproj!); return; }
   const sy = (e.target as HTMLElement).closest<HTMLElement>("[data-setsync]");
   if (sy) { applySyncSetting(sy.dataset.setsync!); return; }
   const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");

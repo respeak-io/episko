@@ -170,7 +170,9 @@ export function trackedHtml(s: Sess): string {
   const h = s.home!;
   const at = esc(h.branch || basename(h.workdir));
   return `<div class="drift tracked">
-    <div class="drift-note">Showing <span class="b">${esc(s.branch || basename(s.workdir))}</span>. The agent still runs in <span class="b">${at}</span>, so its relative paths, project instructions and settings still come from ${at}.</div>
+    <div class="drift-h"><span class="drift-g">⤳</span>Started in <span class="b">${at}</span></div>
+    <div class="drift-path" title="${esc(h.workdir)}">${esc(tilde(h.workdir))}</div>
+    <div class="drift-note">Episko shows <span class="b">${esc(s.branch || basename(s.workdir))}</span>, where its work lands. The agent itself still runs in <span class="b">${at}</span>: its relative paths, project instructions and settings come from there, and resuming reopens it there.</div>
     <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">Move session here</button><button data-driftback="${esc(s.id)}">Show ${at} again</button></div>
   </div>`;
 }
@@ -235,6 +237,15 @@ export function wsetSkeleton(): string {
     <div class="gitrow">${btn("fetch")}${btn("pull")}${btn("push")}</div></div>`;
 }
 
+// The way into the repo's stash when the tree is clean and there is no peek to open; only
+// drawn when there is one, since the stack is shared by every worktree and usually empty.
+function stashBtn(s: Sess, g: DiffStat): string {
+  if (!g.stash) return "";
+  const title = s.project + (s.branch ? " · " + s.branch : "");
+  return `<button class="gitb" data-diff="${escAttr(s.workdir)}" data-difftitle="${escAttr(title)}" data-difftab="stashes"`
+    + ` title="${g.stash} stash${g.stash === 1 ? "" : "es"} in this repo, shared by every worktree">stash ${g.stash}</button>`;
+}
+
 // Fetch / pull / push. Only grey a button when there is nothing to do, never for the
 // awkward states: diverged or no-upstream keeps it live, since the backend then refuses
 // with a suggestion and hands over a prefilled terminal. "Nothing to do" needs an upstream.
@@ -253,6 +264,7 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("fetch", "fetch", "", "git fetch --prune")}
     ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
+    ${stashBtn(s, g)}
   </div>`;
 }
 

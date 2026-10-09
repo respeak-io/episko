@@ -7,7 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, stageGen, toast } from "./dom";
 import { esc, tilde } from "./format";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
-import { lastRunnableById, pinnedIds, togglePin } from "./tasks";
+import { runnableIn, pinnedIds, togglePin } from "./tasks";
 import { activeId, dirtyByFolder, outlinePrefs, revivePrefs, sessions } from "./state";
 import { reviveStatus } from "./revive";
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
@@ -207,7 +207,7 @@ function renderTaskInspector(s: Sess) {
     <div class="tacts">
       ${handoff}
       <button class="tact" data-rerun="1">⟳ Re-run</button>
-      ${lastRunnableById.get(r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">⋯ Parameters</button>` : ""}
+      ${runnableIn(r.root, r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">⋯ Parameters</button>` : ""}
       <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
       <button class="tact" data-reveal="1">↗ Reveal source</button>
       ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}

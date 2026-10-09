@@ -33,7 +33,8 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
+  setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -42,6 +43,7 @@ import {
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   titlePrefs, setTitlePrefs as setTitlePrefsState,
   shareByProject, setShareMode, shareModeOf, type ShareMode,
+  projPrefs, setProjPrefs, permissionModeFor,
   type SortMode, type WtGroup,
 } from "./state";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
@@ -49,6 +51,7 @@ import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import type { AutoFetchPrefs } from "./autofetch";
+import { withFetch, withPerm } from "./projprefs";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -258,6 +261,20 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
   localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
+}
+
+// Applies to the next drift; a card already showing stays until answered.
+export function setDriftAuto(on: boolean) {
+  setDriftAutoState(on);
+  localStorage.setItem("cc-drift-auto", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read live by every pane's key handler and main.ts's window listener.
+export function setCopyChord(on: boolean) {
+  setCopyChordState(on);
+  localStorage.setItem("cc-copy-chord", on ? "1" : "0");
   renderSettings();
 }
 
@@ -487,6 +504,30 @@ export function setPermMode(provider: string, requested: string) {
     ? `New ${label} sessions follow ${mode.label}`
     : `New ${label} sessions start in ${mode.label} mode`);
   renderSettings(); // keep the settings picker in sync if it's open
+}
+
+// A project's own permission mode; `null` follows Settings again. Announced for the reason
+// setPermMode is: a pane started in Bypass never raises a card that would show the choice.
+export function setProjectPerm(colorKey: string, provider: string, requested: string | null) {
+  const mode = requested ? providerPermissionMode(provider, requested) : null;
+  if (requested && !mode) return;
+  setProjPrefs(withPerm(projPrefs, colorKey, provider, mode?.id ?? null));
+  localStorage.setItem("cc-proj-prefs", JSON.stringify(projPrefs));
+  const now = providerPermissionMode(provider, permissionModeFor(provider, colorKey));
+  toast(mode
+    ? `New sessions in ${basename(colorKey)} start in ${mode.label} mode`
+    : `${basename(colorKey)} follows Settings again (${now?.label ?? "default"})`);
+  renderSettings();
+  renderAll();
+}
+
+// Either half of auto-fetch for one project; a `null` half follows Settings again.
+export function setProjectFetch(colorKey: string, patch: { fetch?: boolean | null; fetchEvery?: number | null }) {
+  setProjPrefs(withFetch(projPrefs, colorKey, patch));
+  localStorage.setItem("cc-proj-prefs", JSON.stringify(projPrefs));
+  renderSettings();
+  renderAll();
+  void tickAutoFetch();
 }
 
 export function setSort(m: SortMode, announce = true) {

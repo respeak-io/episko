@@ -104,7 +104,7 @@ export function verbTiles(): string {
 }
 
 /** The column's foot: what this project is set up to run as. Each chip IS its own control. */
-export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null): string {
+export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null, overrides: number): string {
   const act = (a: string, inner: string, tip: string) =>
     `<button class="pfc pfc-b" data-dashact="${a}" data-tip="${escAttr(tip)}">${inner}</button>`;
   // Claims are the one fact here with no picker of its own: the preference is Settings', and the
@@ -119,6 +119,8 @@ export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: 
         : gh ? `<span class="pfc mono" data-tip="${escAttr(`Reads GitHub as ${gh}`)}">gh: ${esc(gh)}</span>` : ""}
       ${ghOld ? oldGhChip(ghOld) : ""}
       <span class="pfc" data-tip="${escAttr(claimTip)}">${claims ? "claims on" : "claims off"}</span>
+      ${act("prefs", overrides ? `⚙ ${overrides} set here` : "⚙ settings",
+        overrides ? "This project's own settings: what it decides for itself, and what its team shares" : "Everything here follows Settings · decide anything for this project alone")}
     </div></div>`;
 }
 
@@ -347,9 +349,18 @@ export function worksetCard(
 ): string {
   if (!known || !dir) return "";
   if (g === undefined) return cardSkeleton(2);   // in flight: pending is not clean
-  if (!g || !g.dirty) return "";                 // a card with nothing to say is absent, not empty
+  if (!g || (!g.dirty && !g.stash)) return "";   // a card with nothing to say is absent, not empty
   const door = (f: StatusFile) =>
     ` data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difffocus="${escAttr(f.path)}"`;
+  // A clean tree with stashes still earns the card: it is the only way to them from here.
+  const stash = g.stash
+    ? `<button class="aslink" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difftab="stashes"`
+      + ` title="The repo's stash, shared by every worktree">${g.stash} stash${g.stash === 1 ? "" : "es"}</button>`
+    : "";
+  if (!g.dirty) {
+    return `<div class="ac"><div class="ac-h"><span class="t">Working set</span>`
+      + `<span class="n" title="${escAttr(tilde(dir))}">${esc(title)} · clean</span>${stash}</div></div>`;
+  }
   const body = `<div class="wsb">${wpeekHtml(dir, title, g)}`
     + `${fileSetHtml(g.entries, DASH_FILES_SHOWN, g.dirty, door)}</div>`;
   const n = g.dirty === 1 ? "1 file" : `${g.dirty} files`;
@@ -358,7 +369,7 @@ export function worksetCard(
   return `<div class="ac"><div class="ac-h"><span class="t">Working set</span>`
     + `<span class="n" title="${escAttr(tilde(dir))}">${esc(title)} · uncommitted</span>`
     + `<button class="aslink" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}"`
-    + ` title="Review every uncommitted change">Review ${esc(n)} ⤢</button></div>`
+    + ` title="Review every uncommitted change">Review ${esc(n)} ⤢</button>${stash}</div>`
     + `<div class="ac-b">${body}</div></div>`;
 }
 
@@ -430,23 +441,22 @@ const qacts = (html: string): string => (html ? `<span class="qacts">${html}</sp
 
 // A claimed row turns its ▶ into a ◍ in the same slot; a name in the row made the column
 // ragged. The enlarged view says who and for how long.
-function qWorkRow(i: QueueItem): string {
+function qWorkRow(i: QueueItem, reading: number | null): string {
   const t = i.thread!;
   const h = i.held ?? null;
   const go = h
     ? `<button class="go held${h.stale ? " stale" : ""}" data-dashwork="${t.number}"
         data-tip="${escAttr(`${h.who}${h.mine ? " (you)" : ""} ${h.stale ? "claimed a while ago, probably stale" : "is on this"}. Start one anyway?`)}">◍</button>`
     : `<button class="go" data-dashwork="${t.number}" data-tip="Start an agent on this">▶</button>`;
-  // The row's own ⤢ reads the thread HERE rather than opening a list of its neighbours; the
-  // header's enlarge link is what still opens Still needed? (the Quiet chip picks it).
-  const read = `<button class="tb" data-dashissue="${t.number}" data-tip="Read the whole thread here">⤢</button>`;
+  // The row reads the thread HERE; the browser is the second verb, never the click.
+  const web = `<button class="tb" data-dashurl="${escAttr(t.url)}" data-tip="Open it on GitHub">↗</button>`;
   const triage = i.triage
     ? `<button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
       + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button>`
     : "";
-  return qrow(`q-work${h ? " claimed" : ""}`, ` data-dashurl="${escAttr(t.url)}"`,
+  return qrow(`q-work${h ? " claimed" : ""}${t.number === reading ? " reading" : ""}`, ` data-dashissue="${t.number}"`,
     `<span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>`, i,
-    qacts(`${triage}${read}`) + go);
+    qacts(`${triage}${web}`) + go, `${t.title} — read it here`);
 }
 
 // An advisory's whole row opens GitHub, as the Dependencies card's did. A bot PR cannot: its
@@ -483,8 +493,8 @@ function qNoteRow(i: QueueItem): string {
     + `<button class="nb" data-dashdispatch="${escAttr(n.id)}" data-tip="Start an agent on this note">▶</button>`);
 }
 
-const qRow = (i: QueueItem): string =>
-  i.kind === "work" ? qWorkRow(i) : i.kind === "deps" ? qDepsRow(i) : qNoteRow(i);
+const qRow = (i: QueueItem, reading: number | null): string =>
+  i.kind === "work" ? qWorkRow(i, reading) : i.kind === "deps" ? qDepsRow(i) : qNoteRow(i);
 
 // The whole row toggles, so the chevron says the state rather than being a second control
 // beside it. An open fold keeps its head: that head is how you close it again.
@@ -499,13 +509,13 @@ function qFoldRow(f: QueueFold): string {
 
 // One box for an open fold's rows, so the indent and the rule down their left are one rule
 // rather than a class every child has to remember to carry.
-const drawRow = (r: QueueRow): string =>
-  r.kind === "item" ? qRow(r.item)
-  : qFoldRow(r.fold) + (r.fold.open ? `<div class="qkids">${r.fold.items.map(qRow).join("")}</div>` : "");
+const drawRow = (r: QueueRow, reading: number | null): string =>
+  r.kind === "item" ? qRow(r.item, reading)
+  : qFoldRow(r.fold) + (r.fold.open ? `<div class="qkids">${r.fold.items.map((i) => qRow(i, reading)).join("")}</div>` : "");
 
 export function queueCard(
   rows: QueueRow[], tally: Record<QueueFilter, number>, filter: QueueFilter, query: string,
-  ghKnown: boolean, depKnown: boolean,
+  ghKnown: boolean, depKnown: boolean, reading: number | null = null,
 ): string {
   // A count of nought is not a filter worth arming: the chip stays, greyed, so the list's
   // shape is still readable — "no PRs open" is an answer.
@@ -528,7 +538,7 @@ export function queueCard(
     || (!depKnown && filter !== "iss" && filter !== "note");
   // Every row, because the column is a scroller with a sticky head and a pinned foot: a cap
   // plus "…and 14 more" made a list that ended in an apology where there was room to read.
-  const html = rows.map(drawRow).join("") + (waiting ? cardSkeleton(2) : "");
+  const html = rows.map((r) => drawRow(r, reading)).join("") + (waiting ? cardSkeleton(2) : "");
   // A search that matches nothing says so against the words you typed; the empty queue
   // says the other thing, and the two must not be one sentence.
   const body = html
@@ -970,13 +980,14 @@ function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>):
   const claim = h
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
   const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
-  return `<div class="br" data-dashurl="${esc(t.url)}">
+  return `<div class="br" data-dashissue="${t.number}" title="Read it here">
     <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
     <span class="num">${t.number}</span>
     <span class="mid"><span class="ti">${esc(t.title)}</span>
       ${labels || claim ? `<span class="sub">${labels}${claim}</span>` : ""}</span>
     <span class="age">${esc(shortAge(t.updated_at))}</span>
-    <span class="go-slot"><button class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
+    <span class="go-slot"><button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">↗</button><button
+      class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
   </div>`;
 }
 
@@ -1032,7 +1043,7 @@ export function triageOverlay(
 ): string {
   const body = `<div class="lst-hd"><span class="r">#</span><span>Title &amp; why it's suggested</span><span class="r">Decide</span></div>`
     + `<div class="bk"><div class="bk-h"><span class="t">Suggested for closing</span><span class="n">${rows.length}</span></div>`
-    + (rows.length ? rows.map(({ t, why }) => `<div class="tg" data-dashurl="${esc(t.url)}">
+    + (rows.length ? rows.map(({ t, why }) => `<div class="tg" data-dashissue="${t.number}" title="Read it here">
         <span class="num">${t.number}</span>
         <span class="mid"><span class="ti">${esc(t.title)}</span><span class="sub"><span>${esc(why)}</span></span></span>
         <span class="tg-b"><button class="act go-close" data-dashclose="${t.number}">✓ Close</button>

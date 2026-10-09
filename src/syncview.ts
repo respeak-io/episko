@@ -11,11 +11,7 @@ import type { ShareMode } from "./state";
 export interface SyncDraft { url: string; code: string; user: string; label: string; headers: string }
 
 /** One project as Settings › Sync lists it. `id` absent: not in git, so nothing of it syncs. */
-export interface ProjectSyncRow {
-  key: string; name: string; id: string | undefined; mode: ShareMode;
-  team: { mode: "git" | "server"; by: string } | null;
-  lines: number; notes: number; digestFile: boolean;
-}
+export interface ProjectSyncRow { key: string; name: string; mode: ShareMode }
 export interface SyncPanel {
   st: SyncStatus; h: SyncHealth; draft: SyncDraft; busy: boolean; err: string | null; prefsArrived: number;
   users: UserDevices[]; online: Set<string>; activity: Partial<Record<Stream, Activity>>;
@@ -141,25 +137,18 @@ export function reviewHtml(items: PendingPref[], off: ReadonlySet<string>, nameO
 
 const MODE_TEXT: Record<ShareMode, string> = { git: "Git", server: "Sync server", off: "Nowhere" };
 
+// A summary, not the place it is chosen: that is each project's own settings, where the
+// team's last choice and what the server holds sit beside the switch (./projsettings).
 function projects(p: SyncPanel): string {
   if (!p.projects.length) return "";
-  const rows = p.projects.map((r) => {
-    const modes = (["git", "server", "off"] as ShareMode[]).map((m) =>
-      `<button class="sync-seg${m === r.mode ? " on" : ""}" data-setsync="share|${m}|${escAttr(r.key)}"${!r.id && m === "server" ? " disabled" : ""}>${MODE_TEXT[m]}</button>`).join("");
-    const team = r.team && r.team.mode !== r.mode && r.mode !== "off"
-      ? `<div class="sync-dim">the team last chose ${MODE_TEXT[r.team.mode]}${r.team.by ? ` (${esc(r.team.by)})` : ""}</div>` : "";
-    const facts = [r.lines ? `${r.lines} work-log day${r.lines === 1 ? "" : "s"}` : "", r.notes ? `${r.notes} note${r.notes === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
-    const move = r.digestFile && r.mode !== "git" && r.id
-      ? `<button class="set-freset" data-setsync="movelog|${escAttr(r.key)}" title="Send .episko/digest.md's days to the server, then delete the file and commit the deletion">Move to the server and commit</button>` : "";
-    return `<tr><td>${esc(r.name)}<div class="sync-dim mono">${r.id ? esc(r.id.slice(0, 16)) : "not in git: stays on this machine"}</div></td>
-      <td><div class="sync-segs">${modes}</div>${team}</td>
-      <td>${facts ? `<span class="sync-dim">on the server: ${facts}</span>` : ""}${r.digestFile ? `<div class="sync-dim">.episko/digest.md in the repo</div>` : ""}${move}</td></tr>`;
-  }).join("");
-  return sect("Projects",
-    `<table class="sv-tbl sync-tbl sync-proj"><thead><tr><th>Project</th><th>Notes and work log</th><th></th></tr></thead><tbody>${rows}</tbody></table>`,
-    `A project syncs by its first commit, so every clone of it is the same project. <b>Git</b> commits notes and the work
-    log in <span class="mono">.episko/</span>; <b>Sync server</b> keeps them off the repo; <b>Nowhere</b> shares nothing.
-    Choosing Git or Sync server switches your teammates too; Nowhere is yours alone.`);
+  const group = (m: ShareMode) => {
+    const rows = p.projects.filter((r) => r.mode === m);
+    return rows.length ? `<div class="sync-pgrp"><span class="sync-pk">${MODE_TEXT[m]} <b>${rows.length}</b></span>${rows.map((r) =>
+      `<button class="sync-pchip" data-setproj="${escAttr(r.key)}" title="Open ${escAttr(r.name)}'s settings">${esc(r.name)}</button>`).join("")}</div>` : "";
+  };
+  return sect("Projects", group("server") + group("off") + group("git"),
+    `Where each project's notes and work log go. Each project chooses in its own settings: ⚙ on its dashboard, or
+    Project settings in its menu. Click a name to open it.`);
 }
 
 export function syncPanelHtml(p: SyncPanel): string {

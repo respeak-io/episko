@@ -3,3 +3,7 @@
 *.db
 *.db-*
 /data
+/data.bak-*
+# A deployment's own settings and proxy wiring, so an update never merges over them
+/.env
+/docker-compose.override.yml

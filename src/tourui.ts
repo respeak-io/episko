@@ -83,7 +83,7 @@ function world(): TourWorld {
         : activeId ? "session" : "none";
   const provider = stage === "session" && act?.kind === "agent" ? act.provider ?? "" : "";
   const permission = provider
-    ? providerPermissionMode(provider, permissionModeFor(provider))
+    ? providerPermissionMode(provider, permissionModeFor(provider, act?.colorKey ?? ""))
     : null;
 
   return {

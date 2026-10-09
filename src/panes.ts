@@ -39,10 +39,10 @@ import { openWt, refreshWtDialog } from "./worktree";
 import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
-import { execCmd, exitWaiters, lastRunnableById, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchPrefs, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -55,9 +55,9 @@ import { providerPermissionMode } from "./providers";
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
 
-function launchPermission(agent: AgentCli) {
+function launchPermission(agent: AgentCli, colorKey: string) {
   if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
-  const def = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+  const def = providerPermissionMode(agent.id, permissionModeFor(agent.id, colorKey));
   return { mode: def && def.id !== "default" ? def.id : null, def };
 }
 
@@ -177,7 +177,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
   // Read here rather than passed as an opt: it is a preference, like termEngine.
-  const permission = launchPermission(agent);
+  const permission = launchPermission(agent, colorKey);
   const mode = permission.mode;
   dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
 
@@ -387,7 +387,7 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
   };
   sessions.set(id, s);
   setActive(id);
-  const permission = launchPermission(agent);
+  const permission = launchPermission(agent, colorKey);
   dlog("info", `${opts.resume ? "resume" : "agent"} ${agent.id} · ${project} · ${id.slice(0, 8)}${permission.mode ? ` · ${permission.def?.label}` : ""}`);
   let spawned = true;
   try {
@@ -570,7 +570,7 @@ export async function rerunRunGroup(gid: string) {
   const members = groupMembers(gid);
   const head = members[0]?.run;
   if (!head) return;
-  const root = head.groupRoot ? lastRunnableById.get(head.groupRoot) : undefined;
+  const root = head.groupRoot ? runnableIn(head.root, head.groupRoot) : undefined;
   if (!root) { toast("Task definition is gone. Rescan"); return; }
   if (root.blocked) { toast(`${root.label}: ${root.blocked}`); return; }
   const live = members.filter((m) => m.run?.exitCode == null);
@@ -735,7 +735,7 @@ export async function refreshSessionStats(s: Sess) {
   // Repaint the inspector only when the displayed values change (a rebuild restarts the
   // heartbeat animation); renderFoot writes textContent only, so it runs unconditionally.
   const sig = (g: DiffStat | null) =>
-    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}` : "-");
+    (g ? `${g.added}/${g.removed}/${g.files}/${g.untracked}/${g.dirty}/${g.ahead}/${g.behind}/${g.upstream}/${g.stash}` : "-");
   const before = sig(s.git);
   // A folder nothing has read yet would leave a new pane's git card blank until the 5s
   // dirty poll came round; asked for beside the I/O sample rather than after it, so the
@@ -869,7 +869,7 @@ export function renderHeader(s: Sess | null) {
   // canShelve is the one place that decides, so the header, palette and sign-off sheet agree.
   ($("btnShelve") as HTMLButtonElement).hidden = !s || !canShelve(s);
   // Reset the shared chip: the drift arm sets `title` and the other arms would not clear it.
-  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted"); hb.title = "";
+  const hb = $("hBranch"); hb.classList.remove("ext-chip", "drifted", "tracked"); hb.title = "";
   if (!s) { $("hProj").textContent = "no session"; hb.hidden = true; $("hTitle").textContent = ""; setHeadPath(""); return; }
   $("hProj").textContent = s.project;
   if (!hasSessionState(s)) {
@@ -881,6 +881,13 @@ export function renderHeader(s: Sess | null) {
     hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
     hb.hidden = false; hb.classList.add("drifted");
+  }
+  // Tracked: the same pair, because the agent and a resume still live where it started.
+  else if (s.home) {
+    hb.textContent = `${s.home.branch || basename(s.home.workdir)} ⤳ ⑃ ${s.branch || basename(s.workdir)}`;
+    hb.title = `Started in ${s.home.workdir}
+Showing ${s.workdir}`;
+    hb.hidden = false; hb.classList.add("tracked");
   }
   else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
@@ -1003,7 +1010,7 @@ export async function tickAutoFetch(): Promise<void> {
   // Read once and found not to be a repo; an unread folder still gets its chance.
   if (dirtyByFolder.has(s.workdir) && !dirtyByFolder.get(s.workdir)) return;
   const key = s.colorKey || s.workdir;
-  if (!fetchDue(fetchedByRepo.get(key), autoFetchPrefs, Date.now())) return;
+  if (!fetchDue(fetchedByRepo.get(key), autoFetchFor(key), Date.now())) return;
   const repaint = () => { if (activeId === s.id && !extMirrorId()) renderInspector(s); };
   setGitBusy(s.id, "fetch");
   repaint();

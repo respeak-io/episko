@@ -2,7 +2,8 @@
 // per-file records, then what a reader needs from a hunk. No DOM; tested in test/diff.test.ts.
 
 export interface DiffLine { kind: "ctx" | "add" | "del"; text: string; oldNo: number | null; newNo: number | null; }
-export interface DiffHunk { header: string; lines: DiffLine[]; }
+// `at` is git's own `@@ -a,b +c,d @@`: what `git_discard_hunk` matches a hunk by.
+export interface DiffHunk { at: string; header: string; lines: DiffLine[]; }
 export type DiffMode = "unified" | "split"; // ./state persists it and must not import a view
 export interface DiffFile { path: string; oldPath: string | null; status: "modified" | "added" | "deleted" | "renamed"; binary: boolean; added: number; removed: number; hunks: DiffHunk[]; }
 
@@ -35,10 +36,10 @@ export function parsePatch(patch: string): DiffFile[] {
     if (!hunk && line.startsWith("--- ")) { const p = line.slice(4); if (p !== "/dev/null") cur.oldPath = strip(p); continue; }
     if (!hunk && line.startsWith("+++ ")) { const p = line.slice(4); if (p !== "/dev/null") cur.path = strip(p); continue; }
     if (line.startsWith("@@")) {
-      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
-      oldNo = m ? +m[1] : 0;
-      newNo = m ? +m[2] : 0;
-      hunk = { header: m ? m[3].trim() : "", lines: [] };
+      const m = line.match(/^(@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@)(.*)$/);
+      oldNo = m ? +m[2] : 0;
+      newNo = m ? +m[3] : 0;
+      hunk = { at: m ? m[1] : "", header: m ? m[4].trim() : "", lines: [] };
       cur.hunks.push(hunk);
       continue;
     }
@@ -50,6 +51,11 @@ export function parsePatch(patch: string): DiffFile[] {
     // "\ No newline at end of file" and trailing blank lines fall through, ignored.
   }
   return files;
+}
+
+/** A hunk's lines as git printed them, which is how the backend recognises it in a fresh diff. */
+export function hunkBody(h: DiffHunk): string[] {
+  return h.lines.map((l) => (l.kind === "add" ? "+" : l.kind === "del" ? "-" : " ") + l.text);
 }
 
 // ---------- aligning a hunk, and the word diff inside a changed line ----------

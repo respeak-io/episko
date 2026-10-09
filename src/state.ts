@@ -10,6 +10,7 @@ import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
+import { clampProjPrefs, fetchFor, permOverride, type ProjPrefStore } from "./projprefs";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { clampOutlinePrefs, type OutlinePrefs } from "./outline";
 import { clampMdPrefs, type MdPrefs } from "./markdown";
@@ -89,6 +90,11 @@ export function setRevivePrefs(p: RevivePrefs) { revivePrefs = clampRevivePrefs(
 // --- auto-fetch ------------------------------------------------------------------
 export let autoFetchPrefs: AutoFetchPrefs = clampAutoFetchPrefs(safeParse(localStorage.getItem("cc-autofetch")));
 export function setAutoFetchPrefs(p: AutoFetchPrefs) { autoFetchPrefs = clampAutoFetchPrefs(p); }
+// --- a project's own answers to global settings (./projprefs) ----------------------
+// Keyed by `colorKey`, like the agent pin; local-only, since each field changes what runs.
+export let projPrefs: ProjPrefStore = clampProjPrefs(safeParse(localStorage.getItem("cc-proj-prefs")));
+export function setProjPrefs(p: ProjPrefStore) { projPrefs = p; }
+export const autoFetchFor = (colorKey: string): AutoFetchPrefs => fetchFor(autoFetchPrefs, projPrefs, colorKey);
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 
@@ -252,6 +258,11 @@ export function setTermEngine(e: Engine) { termEngine = e; }
 // ⌘T beside the session on stage (on) or in a pane of its own (off); only ever read as "0" or not.
 export let termSplit: boolean = localStorage.getItem("cc-term-split") !== "0";
 export function setTermSplit(on: boolean) { termSplit = on; }
+export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
+export function setDriftAuto(on: boolean) { driftAuto = on; }
+// Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.
+export let copyChord: boolean = localStorage.getItem("cc-copy-chord") !== "0";
+export function setCopyChord(on: boolean) { copyChord = on; }
 // --- how each provider starts -------------------------------------------------
 // Keyed by provider; definitions and validation are ./providers'. The old Claude-only key migrates one way.
 function loadPermissionModes(): Record<string, string> {
@@ -265,8 +276,9 @@ const storedPermissionModes = loadPermissionModes();
 const legacyPermMode = localStorage.getItem("cc-perm-mode") || "default";
 if (!storedPermissionModes[CLAUDE_CLI.id]) storedPermissionModes[CLAUDE_CLI.id] = legacyPermMode;
 export const permissionModes = storedPermissionModes;
-export function permissionModeFor(provider: string): string {
-  return permissionModes[provider] || "default";
+// With no `colorKey` this is the global choice, which is what Settings shows and edits.
+export function permissionModeFor(provider: string, colorKey = ""): string {
+  return (colorKey && permOverride(projPrefs, colorKey, provider)) || permissionModes[provider] || "default";
 }
 export function setProviderPermissionMode(provider: string, mode: string) {
   permissionModes[provider] = mode;

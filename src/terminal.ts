@@ -12,7 +12,7 @@ import { openFileOrRead } from "./mdreader";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
-import { activeId, keyPrefs, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { activeId, copyChord, keyPrefs, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 import { matchAction } from "./keys";
 import { inStageGroup } from "./grouping";
 
@@ -94,21 +94,30 @@ export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boo
 export function clipboardKeys(term: Terminal): (e: KeyboardEvent) => boolean {
   return (e) => {
     if (appChord(e)) return false;
+    const copy = copyKey(term, e);
+    if (copy !== null) return copy;
     if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return true;
-    const k = e.key.toLowerCase();
-    if (k !== "c" && k !== "v") return true;
-    // Returning false only stops xterm; the WebView's own Ctrl+Shift+C (devtools) needs this too.
+    if (e.key.toLowerCase() !== "v") return true;
     e.preventDefault();
-    if (k === "c") void copySelection(term);
-    else void pasteClipboard(term);
+    void pasteClipboard(term);
     return false;
   };
 }
 
-async function copySelection(term: Terminal) {
-  const sel = term.getSelection();
-  if (!sel) return;
-  try { await writeText(sel); toast("Copied"); }
+export const isCopyChord = (e: KeyboardEvent) => e.type === "keydown"
+  && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "c";
+
+// Never into xterm, which would send ^C. Returning false only stops xterm: copying must also
+// preventDefault, or the webview opens its inspector; switched off (`cc-copy-chord`), it may.
+function copyKey(term: Terminal, e: KeyboardEvent): boolean | null {
+  if (!isCopyChord(e)) return null;
+  if (copyChord) { e.preventDefault(); void copySelection(term.getSelection()); }
+  return false;
+}
+
+async function copySelection(text: string) {
+  if (!text) return;
+  try { await writeText(text); toast("Copied"); }
   catch (e) { dlog("error", `clipboard write failed: ${e}`); toast("Couldn't copy: clipboard unavailable"); }
 }
 
@@ -164,12 +173,12 @@ export function claudeInput(id: string): (d: string) => void {
   };
 }
 
-// A claude pane's one key handler: app chords, plus Windows image paste. Claude binds chat:imagePaste
+// A claude pane's one key handler: app chords, Ctrl+Shift+C, plus Windows image paste. Claude binds chat:imagePaste
 // to alt+v on native Windows and xterm makes Ctrl+V a dead key, so Ctrl+V is left to the browser and
 // the paste event sends ESC v when an image is aboard; text falls through to xterm's own paste.
 export function claudeKeys(id: string, term: Terminal, pane: HTMLElement) {
-  term.attachCustomKeyEventHandler((e) => !appChord(e) && !(IS_WIN && e.type === "keydown"
-    && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v"));
+  term.attachCustomKeyEventHandler((e) => !appChord(e) && (copyKey(term, e) ?? !(IS_WIN && e.type === "keydown"
+    && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === "v")));
   if (!IS_WIN) return;
   // Capture phase: beats xterm's textarea paste handler, so an image paste never double-fires as text.
   pane.addEventListener("paste", (e) => {

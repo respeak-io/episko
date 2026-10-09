@@ -28,17 +28,19 @@ import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
 import { closeMdReader, mdReaderOpen } from "./mdreader";
-import { applyFontSize, bumpFont, markPrompt, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
+  setProjectPerm, setProjectFetch,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -85,13 +87,13 @@ import { basename, setHome } from "./format";
 import { rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
-import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus } from "./diffview";
+import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } from "./diffview";
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, openDashboard,
   refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
@@ -107,17 +109,19 @@ import {
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
+import { closeProjectSettings, openProjectSettings, projSettingsOpen, setProjSetHost } from "./projsettings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
   setPhase,
 } from "./phase";
 import {
-  activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
-  FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
+  activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
+  copyChord, FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
+import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
@@ -184,6 +188,8 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
+  const repair = driftRepair(s.drift, driftAuto);
+  if (repair) void followSessionDrift(s.id, repair);
 });
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
@@ -215,7 +221,12 @@ setPaletteHost({
 setProjMenuHost({
   renderAll, requestLaunch, launchWorktree, launchShell, setProjectAgent, openProjectFolder,
   addProjectPath, removeFavorite, setGhAccount: setProjectGhAccount, openShellFor, closeSession,
-  setShareMode: setProjectShareMode,
+  setShareMode: setProjectShareMode, openProjectSettings,
+});
+setProjSetHost({
+  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
+  setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
+  hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -233,7 +244,8 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -243,8 +255,9 @@ setSettingsHost({
   resetAppDataPrompts: () => invoke("reset_app_data_prompts"),
   privacyAsks: () => invoke<PrivacyAsk[]>("privacy_asks"),
   syncPair: pairSync, syncForget: forgetSync, syncReconnect: reconnectSync, syncSetHeaders: setSyncHeaders,
-  syncShare: setProjectShareMode, syncMoveLog: moveWorkLogToServer, syncReview: openReview,
-  syncHasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
+  syncReview: openReview,
+  // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
+  openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -292,6 +305,7 @@ setDashHost({
   // dashboard has no row to hang it off.
   openAgentPicker: (root) => openAgentPicker(chipAt('#dashHere [data-dashact="agent"]'), root),
   openGhPicker: (root) => openGhPicker(chipAt('#dashHere [data-dashact="ghpick"]'), root),
+  openProjectSettings,
   setActive,
   renderAll,
 });
@@ -310,6 +324,25 @@ setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
+// The overlay writes (commit, stash, discard): re-poll the folder at once rather than on the
+// next sweep, hand a refusal's command to a shell, and say whether an agent is mid-turn there.
+setDiffHost({
+  changed: (dir) => {
+    dirtyStale.add(dir);
+    refreshDashWorkset(true);
+    void refreshDirtyStates().then(() => {
+      const s = activeId ? sessions.get(activeId) : null;
+      if (s && !mirror) void refreshSessionStats(s);
+      renderAll();
+    });
+  },
+  handToTerminal: (dir, cmd) => {
+    const s = [...sessions.values()].find((x) => x.workdir === dir);
+    void handToTerminal(s?.project ?? basename(dir), dir, cmd, { colorKey: s?.colorKey ?? dir, from: s?.id });
+  },
+  liveAgents: (dir) => [...sessions.values()]
+    .filter((s) => isAgent(s) && s.workdir === dir && (s.phase === "working" || s.phase === "thinking")).length,
+});
 setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
@@ -596,7 +629,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.driftback) void followSessionDrift(el.dataset.driftback, "back");
   else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
-  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus);
+  else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
   else if (el.dataset.close) closeSession(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
@@ -713,7 +746,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -749,6 +782,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && callSheetOpen()) { e.preventDefault(); closeCallSheet(); }
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
+  else if (e.key === "Escape" && projSettingsOpen()) { e.preventDefault(); closeProjectSettings(); }
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
@@ -759,6 +793,7 @@ window.addEventListener("keydown", (e) => {
   // their ✕, or the two would disagree about where leaving a mirror lands.
   else if (e.key === "Escape" && mirror) { e.preventDefault(); leaveMirror(); renderAll(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
+  else if (dashKey(e)) e.preventDefault();
 });
 // ⌘⇧⏎ reveal: a capture-phase listener, because the palette's Enter drops the scrim
 // before a bubble listener runs, so "is a dialog up?" must be asked ahead of them. It
@@ -774,6 +809,17 @@ window.addEventListener("keydown", (e) => {
   e.preventDefault();
   revealActiveFolder();
 }, true);
+// Ctrl+Shift+C outside a pane copies the page's selection instead of opening the inspector.
+// A pane's own handler already took it (defaultPrevented); so did a bound app chord.
+window.addEventListener("keydown", (e) => {
+  if (!copyChord || e.defaultPrevented || keyRecording() || !isCopyChord(e)) return;
+  e.preventDefault();
+  const t = document.activeElement;
+  const field = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ? t : null;
+  const text = field ? field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0)
+    : window.getSelection()?.toString() ?? "";
+  if (text) void copyText(text);
+});
 // Debounced: every resize tick pushes a width to the PTY, and Claude's Ink renderer
 // erases its last frame by line count at the old width, leaving orphaned cells.
 // Only the observer is debounced; direct refit() callers stay immediate.

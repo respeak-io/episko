@@ -104,7 +104,10 @@ export function resolveRunInputs(r: Runnable, project: string, withParams = fals
   return withParams && r.inputs.length ? null : prefillInputs(r, project);
 }
 
-export const lastRunnableById = new Map<string, Runnable>(); // last discovery; a re-run needs no picker
+// Discovery root → its last discovery, so a re-run needs no picker. Keyed by root because an id is
+// only unique inside one: every JS project has an `npm:dev`, and an unscoped lookup ran another's.
+export const runnablesByRoot = new Map<string, Map<string, Runnable>>();
+export const runnableIn = (root: string, id: string): Runnable | undefined => runnablesByRoot.get(root)?.get(id);
 
 // ---------- dependsOn ----------
 
@@ -114,16 +117,17 @@ export function waitForExit(sessionId: string): Promise<number> {
 }
 
 // VS Code names dependencies by label, which can collide across providers: same provider wins.
-export function findDep(label: string, source: string): Runnable | undefined {
-  return [...lastRunnableById.values()].find((x) => x.label === label && x.source === source)
-    ?? [...lastRunnableById.values()].find((x) => x.label === label);
+// Only the dependant's own root is searched; another project's `build` is never a dependency.
+export function findDep(label: string, source: string, root: string): Runnable | undefined {
+  const all = [...runnablesByRoot.get(root)?.values() ?? []];
+  return all.find((x) => x.label === label && x.source === source) ?? all.find((x) => x.label === label);
 }
 
 // `null` (a dependency is unresolvable) must stay distinct from `[]` (none declared).
-export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
+export function resolveDeps(r: Runnable, seen: Set<string>, root: string): Runnable[] | null {
   const out: Runnable[] = [];
   for (const label of r.dependsOn) {
-    const dep = findDep(label, r.source);
+    const dep = findDep(label, r.source, root);
     if (!dep) { taskToast(`${r.label}: no task named “${label}”, so it will not run`); return null; }
     if (seen.has(dep.id)) { taskToast(`${r.label}: dependency cycle at “${label}”, so it will not run`); return null; }
     out.push(dep);
@@ -134,7 +138,7 @@ export function resolveDeps(r: Runnable, seen: Set<string>): Runnable[] | null {
 // The first cycle reachable from `r`, as the labels around it. Walked before anything
 // launches: the per-path check fires with half the stack running, and with memoised
 // dependencies two branches awaiting each other would deadlock instead of erroring.
-export function findDepCycle(r: Runnable): string[] | null {
+export function findDepCycle(r: Runnable, root: string): string[] | null {
   const stack: Runnable[] = [];
   const clean = new Set<string>();          // fully explored, provably cycle-free
   const walk = (t: Runnable): string[] | null => {
@@ -143,7 +147,7 @@ export function findDepCycle(r: Runnable): string[] | null {
     if (clean.has(t.id)) return null;       // a diamond, not a cycle — don't re-walk it
     stack.push(t);
     for (const label of t.dependsOn) {
-      const dep = findDep(label, t.source); // unresolvable is resolveDeps's error to report
+      const dep = findDep(label, t.source, root); // unresolvable is resolveDeps's error to report
       const cyc = dep && walk(dep);
       if (cyc) return cyc;
     }
@@ -178,16 +182,18 @@ export async function launchWithDeps(
   r: Runnable, project: string, opts: TaskLaunchOpts,
   seen = new Set<string>(), started: DepRuns = new Map(),
 ): Promise<LaunchResult> {
+  // The same fallback as the pane's `run.root`, so a re-run looks where this launch looked.
+  const root = opts.discoveredIn ?? opts.colorKey ?? "";
   // Outermost call only: check the whole graph before a single pane starts.
   if (!seen.size) {
-    const cyc = findDepCycle(r);
+    const cyc = findDepCycle(r, root);
     if (cyc) {
       taskToast(`${r.label}: dependency cycle · ${cyc.join(" → ")}`);
       taskLog("warn", `task ${r.id} skipped: cycle ${cyc.join(" -> ")}`);
       return FAILED;
     }
   }
-  const deps = resolveDeps(r, seen);
+  const deps = resolveDeps(r, seen, root);
   // Unresolved is failed, not absent; resolveDeps has already said which label and why.
   if (!deps) { taskLog("warn", `task ${r.id} skipped: dependency unresolved`); return FAILED; }
   if (!deps.length) return own(r, project, opts);
@@ -334,7 +340,8 @@ export async function discoverTasks(workdir: string, colorKey = workdir, include
       .filter((r) => taskPrefs.providers.includes(r.source as Provider));
     // The runner override goes in before the result is cached, so a re-run gets what the picker showed.
     const all = applyRunner(raw, colorKey);
-    for (const r of all) lastRunnableById.set(r.id, r); // hidden or not: hiding must not break a dependant
+    // Replaced whole, so a task deleted from its file is gone here too; hidden ones stay for their dependants.
+    runnablesByRoot.set(workdir, new Map(all.map((r) => [r.id, r])));
     const hid = hiddenIds(colorKey);
     return includeHidden ? all : all.filter((r) => !hid.includes(r.id));
   } catch (e) {
@@ -346,4 +353,99 @@ export async function discoverTasks(workdir: string, colorKey = workdir, include
 // Drop the backend's cached parse; the stamp misses a file an introspector imports itself.
 export async function rescanTasks(workdir: string) {
   await invoke("rescan_runnables", { workdir }).catch((e) => dlog("warn", `rescan: ${e}`));
+}
+
+// ---------- where a task is defined (the picker's ⓘ view) ----------
+// Every provider keys a task by its label verbatim, so this is a text search, not a parse.
+// It answers null rather than guess: the view then shows the file with nothing marked.
+
+export interface DefSpan { start: number; end: number }  // 0-based, inclusive line indices
+
+const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const indentOf = (l: string) => l.length - l.trimStart().length;
+const blank = (l: string) => !l.trim();
+
+// From `i` while `keep` holds, trailing blank lines given back.
+function runWhile(lines: string[], i: number, keep: (l: string) => boolean): number {
+  let end = i;
+  for (let j = i + 1; j < lines.length && keep(lines[j]); j++) end = j;
+  while (end > i && blank(lines[end])) end--;
+  return end;
+}
+
+// The JSON object enclosing column `col` of line `i`, brace-counted with strings blanked out.
+function jsonObject(lines: string[], i: number, col: number): DefSpan {
+  const braces = (l: string) => l.replace(/"(?:[^"\\]|\\.)*"/g, (m) => " ".repeat(m.length));
+  let depth = 0, start = -1, from = 0;
+  for (let j = i; j >= 0 && start < 0; j--) {
+    const l = braces(lines[j]);
+    for (let k = (j === i ? col : l.length) - 1; k >= 0; k--) {
+      if (l[k] === "}") depth++;
+      else if (l[k] === "{" && --depth < 0) { start = j; from = k; break; }
+    }
+  }
+  if (start < 0) return { start: i, end: i };
+  depth = 0;
+  for (let j = start; j < lines.length; j++) {
+    const l = braces(lines[j]);
+    for (let k = j === start ? from : 0; k < l.length; k++) {
+      if (l[k] === "{") depth++;
+      else if (l[k] === "}" && --depth === 0) return { start, end: j };
+    }
+  }
+  return { start: i, end: i };
+}
+
+export function defSpan(source: string, text: string, label: string): DefSpan | null {
+  const lines = text.split(/\r?\n/);
+  const find = (re: RegExp, from = 0) => {
+    for (let i = from; i < lines.length; i++) if (re.test(lines[i])) return i;
+    return -1;
+  };
+  const key = reEsc(label);
+  const json = reEsc(JSON.stringify(label));
+  const tomlStr = `(?:"${key}"|'${key}')`;
+  // String.raw throughout: the patterns are spliced from escaped labels.
+  const re = (s: string) => new RegExp(s);
+  switch (source) {
+    case "npm": {
+      const i = find(re(String.raw`^\s*${json}\s*:`), Math.max(0, find(/"scripts"\s*:/)));
+      return i < 0 ? null : { start: i, end: i };
+    }
+    case "vscode": case "launch": {
+      const prop = source === "vscode" ? `"(?:label|taskName)"` : `"name"`;
+      const at = re(String.raw`${prop}\s*:\s*${json}`);
+      const i = find(at);
+      return i < 0 ? null : jsonObject(lines, i, lines[i].search(at));
+    }
+    case "episko": {
+      const i = find(re(String.raw`^\s*label\s*=\s*${tomlStr}\s*(#.*)?$`));
+      if (i < 0) return null;
+      let start = i;
+      while (start > 0 && !/^\s*\[\[task\]\]/.test(lines[start])) start--;
+      return { start, end: runWhile(lines, i, (l) => !/^\s*\[/.test(l)) };
+    }
+    case "mise": {
+      const h = find(re(String.raw`^\s*\[tasks\.(?:${key}|"${key}")\]`));
+      if (h >= 0) return { start: h, end: runWhile(lines, h, (l) => !/^\s*\[/.test(l)) };
+      const i = find(re(String.raw`^\s*(?:${key}|"${key}")\s*=`), Math.max(0, find(/^\s*\[tasks\]/)));
+      return i < 0 ? null : { start: i, end: i };
+    }
+    case "taskfile": {
+      const i = find(re(String.raw`^\s+(?:${key}|"${key}"|'${key}')\s*:`), Math.max(0, find(/^tasks\s*:/)));
+      if (i < 0) return null;
+      const ind = indentOf(lines[i]);
+      return { start: i, end: runWhile(lines, i, (l) => blank(l) || indentOf(l) > ind) };
+    }
+    case "just": case "make": {
+      // A recipe line starts at column 0; `@` is just's quiet marker, and both take a doc comment above.
+      const head = source === "just" ? re(String.raw`^@?${key}(?=[\s:])`) : re(String.raw`^${key}\s*:(?!=)`);
+      const i = find(head);
+      if (i < 0) return null;
+      let start = i;
+      while (start > 0 && /^(#|\[)/.test(lines[start - 1])) start--;
+      return { start, end: runWhile(lines, i, (l) => blank(l) || /^[ \t]/.test(l)) };
+    }
+    default: return null;
+  }
 }

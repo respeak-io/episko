@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkoutDir, driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
+import { checkoutDir, driftRepair, driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
 import type { Drift } from "../src/types";
 
 describe("gitMutates", () => {
@@ -464,5 +464,19 @@ describe("checkoutDir", () => {
   it("ignores a registered checkout whose folder is gone", () => {
     const stale = [{ path: WT, branch: "feat", exists: false, is_main: false }];
     expect(checkoutDir(`${WT}/00_scripts`, stale)).toBe(`${WT}/00_scripts`);
+  });
+});
+
+describe("driftRepair", () => {
+  const write: Drift = { dir: "/r/.wt/x", branch: "x", via: "write" };
+  const cwd: Drift = { dir: "/r/.claude/worktrees/y", branch: "y", via: "cwd" };
+  it("shows a write drift in place and follows a cwd one, when on", () => {
+    expect(driftRepair(write, true)).toBe("track");
+    expect(driftRepair(cwd, true)).toBe("follow");
+  });
+  it("never restarts a session for you, and does nothing when off or settled", () => {
+    expect(driftRepair(write, false)).toBeNull();
+    expect(driftRepair(cwd, false)).toBeNull();
+    expect(driftRepair(null, true)).toBeNull();
   });
 });

@@ -13,6 +13,75 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Updating the sync server is one command.** `episko-server/update.sh` moves a Docker deployment
+  to the newest release tag (or the one you name): it shows what changed in the server and any
+  setting the release added, backs up the database, builds while the old server keeps running and
+  checks the new one came up. Settings now go in an untracked `.env` (every one is listed in
+  `.env.example`) and proxy wiring in `docker-compose.override.yml`, so an update never conflicts
+  with your Traefik labels.
+
++ **A session that moves to another worktree is followed there.** When an agent starts writing in a
+  different checkout, Episko now switches the header, working set and git buttons to it on its own,
+  instead of asking in the inspector while showing the old folder's numbers. The agent keeps running
+  where it started, and the session says so: its row reads *from dev*, the header shows both
+  branches and the inspector's *Started in* card still offers *Move session here*. Switch it off in
+  *Settings › On its own*.
+
++ **Each project has its own settings.** Open them with ⚙ on the project's dashboard or with
+  *Project settings…* in its menu. *Yours* holds what this project decides for itself on this
+  machine: its agent, its permission mode, whether and how often it auto-fetches, its GitHub
+  account and its run-on-stop task. Anything left on *Settings* follows the global choice, and
+  each row says which one is in force. *The team's* holds where notes and the work log go,
+  along with what the server already has and the move off the repo.
+
++ **A project can start in a different permission mode.** Plan mode in a production repo and
+  Bypass in a scratch one, without changing Settings each time. The new-session dialog and a
+  dashboard dispatch show the mode the project will actually use.
+
++ **Commit, stash and discard from the review overlay.** Every file in the working-set diff has a
+  tick; commit the ticked ones with a message, stash them (untracked files included), or discard
+  them back to the last commit. A file's ↶ discards just that file, and a hunk's *discard hunk*
+  just that hunk. Discarding always asks first, and says when an agent is working in that folder.
+
++ **A Stashes tab.** See what each stash holds, then apply, pop or drop it. The stash is shared by
+  every worktree of a repo, so one made on another branch says so. When a repo has stashes, the
+  inspector's git card and the dashboard's Working set card show them even with nothing uncommitted.
+
++ **See what's behind a task before you run it.** In the ▶ Run picker, → (or the row's ⓘ) opens
+  what the row actually does: the command as it will run, the folder, its environment, what it
+  waits for and what it asks, with the definition shown from its own file and the lines that
+  define it highlighted. *Open file*, *Reveal* and *Edit…* are one click from there, and a task
+  overridden in `.episko/tasks.toml` says so.
+
++ **Ctrl+Shift+C copies, everywhere.** In a Claude pane and in any dialog with text selected it now
+  copies the selection rather than opening the web inspector, as it already did in a shell. Switch it
+  off in *Settings › Keys* to have the chord open the inspector again.
+
+~ **Settings names the projects that ignore it.** Agent, Permission mode and auto-fetch list
+  every project that decides for itself, and each name opens that project's settings.
+
+~ **Settings › Sync › Projects is a summary now.** It groups projects by where they share, and
+  each name opens that project's settings, where the choice is made.
+
+~ **Recent and pinned tasks name their source.** Two `dev` rows, one from `package.json` and one
+  from `.vscode/tasks.json`, used to look identical once they moved up into *Recent*. Each now
+  carries a small tag saying which file it came from.
+
+~ **Issues and pull requests open inside Episko, beside the list you opened them from.** Clicking
+  a row in *What's next*, *Open work* or *Still needed?* reads the thread in the dashboard instead
+  of sending you to the browser, and the list stays where it was on the right: from *What's next*
+  the queue itself stays live beside the thread. ↑ and ↓ (or j and k) move to the next thread, a
+  quiet issue can be closed or kept without leaving, and ↗ on a row still opens it on GitHub.
+
+! **Re-running a task runs that project's task.** Task ids are only unique within a project, so
+  ⟳ on a `dev` pane could start another project's `dev` in that project's folder, and a dependency
+  could come from the wrong project too. Each project now keeps its own, and a task deleted from its
+  file says so instead of re-running the old definition.
+
+! **The working-set card counts a new folder's files.** A folder nobody had committed yet counted
+  as one new file, and its lines not at all, so the card could say *6 files · 1 new* while the
+  diff it opens listed 26. The card now counts each file in it, so the two agree.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and

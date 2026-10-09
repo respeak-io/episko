@@ -98,7 +98,7 @@ Easy to get wrong:
   opposite of narrowing.
 - **A row's SECOND verbs are collapsed until the row is under the pointer** (`qacts`/`.qacts`,
   opened by `:hover` and by `:focus-within`, so Tab never lands on a button nobody can see): ✓ / ✕
-  on a quiet issue, ⤢ into the reader, ↗ to GitHub, ✕ on a note. **▶ is never in that box** — it is
+  on a quiet issue, ↗ to GitHub, ✕ on a note. **▶ is never in that box** — it is
   what the row is *for*, and a list whose one verb appears only on hover is a list you have to hunt
   across to find out what you can do with it. An **age is not a verb** either and stays put.
 - **The list is every row, because the column is a scroller** with a sticky head and a pinned foot.
@@ -130,8 +130,25 @@ Easy to get wrong:
   swallows the pointer events `wireTips` listens for, so the tip saying *why* the chip is empty
   would never appear — and the pane's listener refuses the inert half instead. And a tip is a
   sentence rather than a label: the glyph is already on the button.
-- **⤢ on a row pulls the thread INTO Episko** (`gh_issue` → ./issue → ./issueview, the `"issue"`
-  overlay): the description and every comment, rendered by ./issue's own markdown — enough for a
+- **Clicking an issue or PR row pulls the thread INTO Episko** — in the queue, in *Open work* and
+  in *Still needed?* alike (`data-dashissue` on the row; `gh_issue` → ./issue → ./issueview, the
+  `"issue"` overlay). The browser is the row's ↗, never the click, and that ↗ is a `data-dashurl`
+  *inside* the row, so the dispatcher probes the row after every verb nested in it.
+  **The reader is a split, not a page, and the list is always on the RIGHT**, where the queue
+  lives, so the list you were reading never jumps across the pane. Opened from the queue, the
+  overlay covers columns A and B only (`.ovl.beside`) and the live queue *is* the list, its row
+  marked `.reading`; opened from *Open work* or *Still needed?* the rail takes the queue column's
+  width (`readFrom`; the table's buckets under its filters, or the quiet issues with their ✓/✕).
+  Below 1320px, or with the queue folded away, `beside` falls back to the rail. Entrances (the
+  thread settling in, the drawer) play **once**, from `enter` in ./dashboard adding a class after
+  the paint — never in the markup, which is rebuilt whenever a claim or an age moves. ↑/↓ or j/k walk the list (`stepThread` in ./issue, `dashKey` from main.ts's
+  keydown, never while anything is typed into or a sheet is up). Reading is a loop of *open, decide,
+  next*, and a full-screen thread put a Close and a hunt between every step. Rail and reader scroll
+  independently, so `paintOverlay` keeps every `[data-keep-scroll]` box by key, and the reader's key
+  carries the thread number, which is what starts the next thread at its top. Below ~820px of pane
+  (a container query, since the pane is narrower than the window) the rail becomes a drawer behind
+  ☰, sliding in from the right. Close and Esc shut the whole view; the rail's *⤢ Table* goes back to the full list where it was
+  scrolled. The reader itself: the description and every comment, rendered by ./issue's own markdown — enough for a
   thread and no more, so what it does not know renders as the paragraph it looks like, where
   half-parsing would quietly drop somebody's words. Three rules hold it. A link is **http(s) only**
   and opens through the pane's own `data-dashurl`, never by navigating the webview; an **image is
@@ -140,8 +157,8 @@ Easy to get wrong:
   the row's does, so a claim is still shown before it is posted. The read is cached on the board's
   own TTL (dropped with it by `gh_invalidate`, by key prefix since it is keyed by root AND thread —
   which is also why it is the one cache here with a size cap: every other is bounded by the projects
-  you open, this one grows with every ⤢) and is guarded on the project **and** the thread:
-  a second ⤢ while the first is in flight must not paint the wrong body under the title. Past twenty
+  you open, this one grows with every read) and is guarded on the project **and** the thread:
+  a second read while the first is in flight must not paint the wrong body under the title. Past twenty
   comments the panel says where the rest is rather than growing without end.
 - **A bot run in *Landed* is folded, never filtered.** The section is one page of `git_graph` at
   `scope: "all"` — every ref, because the question is what the branch you are *not* on has been
@@ -234,6 +251,7 @@ Easy to get wrong:
 - **A pin gh has forgotten is an error, not a fall-back.** `account_token` fails loudly rather than letting the call run as the active account — falling back is precisely what the pin was set to prevent, and it would put a *different* account's issues under this project's name. `ghWho`'s `known: false` is how every surface shows that state instead of quietly ticking nothing.
 - **The pin is passed as an argument, never pushed to the backend as a map.** Every `gh` command takes `account: Option<String>`, read at the call site with `ghAccountFor(root)` — one copy of the preference, and `ipc.test.ts` fails if a call site forgets it. (A backend-held mirror of a frontend preference is the "second copy that can go stale" the agent override is written to avoid.)
 - **Switching accounts drops every cache for that repo** (`gh_invalidate` plus `dep_invalidate`), because the board, the day's activity and the merged-PR evidence were all answered by the identity you have just stopped using. A board that repaints as the new account beside a triage list that is still the old one is worse than either alone.
+- **The ⚙ chip at the end of *Set up for* opens the project's settings** (docs/settings.md): the chips beside it are quick pickers for single facts, and the panel holds all of them along with the overrides that have no chip.
 - **The picker is offered in two places and only where it can change an answer** (`ghPickable`: more than one account). In the project menu beside the agent picker, which is where per-project preferences live; and *inside the GitHub card that failed*, because that card is where you find out the setting exists. One account is not a choice.
 
 **Three committed files, one rule**: `.episko/digest.md`, `.episko/episko.toml` (`[triage] keep`, `[claim]`), `.episko/notes.toml`. All are project facts, all `toml_edit` read-modify-write, all refusing to create themselves without an explicit yes, all needing **git rather than GitHub**.
