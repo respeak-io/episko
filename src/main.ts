@@ -38,7 +38,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -115,9 +115,10 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dormants, externals, extMirrorId,
   FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine,
+  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
+import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
@@ -184,6 +185,8 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
+  const repair = driftRepair(s.drift, driftAuto);
+  if (repair) void followSessionDrift(s.id, repair);
 });
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
@@ -233,7 +236,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, openDevtools, reloadUi,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,

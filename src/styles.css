@@ -585,10 +585,13 @@ html.win .wctl { display: flex; }
 .drift-btns { display: flex; gap: 6px; }
 .drift-btns button + button { font-weight: 600; color: var(--muted); border-color: var(--hair-strong); }
 .drift.tracked { padding: 9px 11px; background: none; }
+.drift.tracked .drift-h { color: var(--text); }
+.sdrift.tracked { color: var(--muted); font-weight: 500; }
 .drift-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
 .drift-btns button:hover { background: color-mix(in srgb, var(--st-working) 14%, var(--surface)); border-color: var(--st-working); }
 
 /* The stage header's branch chip, when the two branches disagree. */
+#hBranch.tracked { border-style: dashed; }
 #hBranch.drifted { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 34%, transparent); background: color-mix(in srgb, var(--st-working) 10%, transparent); }
 .attn-btns button:hover { filter: brightness(1.06); }
 

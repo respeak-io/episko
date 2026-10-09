@@ -140,6 +140,12 @@ function writeSite(tool: string, input: unknown, cwd: string | null): string | n
   return tool === "Bash" ? bashWroteIn(field(input, "command"), cwd) : null;
 }
 
+// What a fresh drift gets without asking (Settings › On its own): a cwd drift is followed, a
+// write drift is shown in place. Moving a write drift restarts the agent, so it is never automatic.
+export function driftRepair(d: Drift | null, auto: boolean): "follow" | "track" | null {
+  return !auto || !d ? null : d.via === "cwd" ? "follow" : "track";
+}
+
 export function driftTarget(
   workdir: string, tool: string, input: unknown, cwd: unknown, roster: readonly Checkout[],
 ): Drift | null {

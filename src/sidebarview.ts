@@ -86,11 +86,12 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
     ? `${label} · ${apiErrText(s.apiErr)}`
     : fan ? `${label} · ${s.fanout?.name || "background agents"}: ${fan.done} of ${fan.total} done, ${liveCount(s)} running${carried ? ` (${carried} from an earlier run)` : ""}`
       : jobs ? `${label} · your turn — ${jobs} background shell${jobs === 1 ? "" : "s"} still running`
-        : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}` : label;
+        : s.drift ? `${label} · writing to ${s.drift.branch} instead of ${s.branch || "this checkout"}`
+          : s.home ? `${label} · started in ${s.home.branch || s.home.workdir}, showing ${s.branch || s.workdir}` : label;
   // The row stays under the checkout it was launched in: its identity, and where --resume goes.
   const drift = s.drift
     ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
-    : "";
+    : s.home ? `<span class="sdrift tracked" title="${esc(`Started in ${s.home.workdir}`)}">from ${esc(s.home.branch || basename(s.home.workdir))}</span>` : "";
   const fanHtml = fan ? `<span class="sfan" title="${esc(`${fan.done} of ${fan.total} background agents done`)}">${fan.done}/${fan.total}</span>` : "";
   // One cell for every tag: `.srow`'s columns are fixed by CSS (`.o3` adds the fourth).
   const tags = drift + fanHtml + chipHtml;
