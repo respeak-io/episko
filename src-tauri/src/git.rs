@@ -1710,6 +1710,7 @@ pub(crate) struct DiffStat {
     upstream: Option<String>, // "origin/main"; None when the branch tracks nothing
     ahead: u32,     // as of the last fetch
     behind: u32,
+    stash: u32,     // the repo's stash, shared by every worktree; from `--show-stash`, no extra spawn
 }
 
 /// One dirty entry, as the new-session dialog lists it under "Working tree".
@@ -1815,14 +1816,14 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
     };
     // ONE spawn for everything but the line counts: `--porcelain=v2 --branch` reports the
     // dirty entries and the upstream/ahead/behind in one walk. This is polled per folder.
-    let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch"]).ok()?;
+    let st = git(&["--no-optional-locks", "status", "--porcelain=v2", "--branch", "--show-stash"]).ok()?;
     if !st.status.success() {
         return None; // not a repo
     }
     let text = String::from_utf8_lossy(&st.stdout);
     let (mut untracked, mut dirty, mut new_dirs) = (0u32, 0u32, 0u32);
     let mut new_files: Vec<String> = Vec::new();
-    let (mut upstream, mut ahead, mut behind) = (None, 0u32, 0u32);
+    let (mut upstream, mut ahead, mut behind, mut stash) = (None, 0u32, 0u32, 0u32);
     let mut unborn = false;
     let mut entries: Vec<StatusFile> = Vec::new();
     for line in text.lines() {
@@ -1860,6 +1861,8 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
                     let mut it = v.split_whitespace();
                     ahead = it.next().and_then(|s| s.trim_start_matches('+').parse().ok()).unwrap_or(0);
                     behind = it.next().and_then(|s| s.trim_start_matches('-').parse().ok()).unwrap_or(0);
+                } else if let Some(v) = line.strip_prefix("# stash ") {
+                    stash = v.trim().parse().unwrap_or(0);
                 } else if line.starts_with("# branch.oid (initial)") {
                     unborn = true;
                 }
@@ -1909,7 +1912,7 @@ fn working_set(workdir: &str, cap: usize) -> Option<(DiffStat, Vec<StatusFile>)>
         }
     }
     Some((
-        DiffStat { added, removed, files, untracked, new_dirs, dirty, upstream, ahead, behind },
+        DiffStat { added, removed, files, untracked, new_dirs, dirty, upstream, ahead, behind, stash },
         entries,
     ))
 }
@@ -2256,6 +2259,308 @@ pub(crate) fn git_action(workdir: String, op: String) -> Result<GitActionResult,
         suggest: Some(format!("git {}", args.join(" "))),
         ..Default::default()
     })
+}
+
+// ---------- the review overlay's write verbs: discard, stash, commit (docs/worktrees.md) ----------
+
+/// The repo root of `workdir`. Every path a diff names is relative to it, whatever subfolder
+/// a session was started in, so every verb below runs there.
+fn repo_top(workdir: &str) -> Result<String, String> {
+    let out = git_cmd(workdir, &["rev-parse", "--show-toplevel"]).output().map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("not a git repository: {workdir}"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `git --literal-pathspecs <args> -- <paths>`: a file named `*` must mean that file.
+fn git_paths(top: &str, args: &[&str], paths: &[String]) -> std::process::Command {
+    let mut all = vec!["--literal-pathspecs", "-c", "core.quotePath=false"];
+    all.extend_from_slice(args);
+    all.push("--");
+    all.extend(paths.iter().map(String::as_str));
+    git_cmd(top, &all)
+}
+
+/// The NUL-separated listing a `-z` command printed, as a set.
+fn z_set(out: &std::process::Output) -> std::collections::HashSet<String> {
+    String::from_utf8_lossy(&out.stdout).split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect()
+}
+
+/// git's first non-empty line, stderr first: a refusal there outranks progress on stdout.
+fn git_says(out: &std::process::Output) -> String {
+    let err = String::from_utf8_lossy(&out.stderr);
+    let std = String::from_utf8_lossy(&out.stdout);
+    err.lines().chain(std.lines()).find(|l| !l.trim().is_empty()).unwrap_or("git failed").trim().to_string()
+}
+
+fn done(summary: String) -> Result<GitActionResult, String> {
+    Ok(GitActionResult { ok: true, summary, ..Default::default() })
+}
+
+fn refused(summary: String, suggest: Option<&str>) -> Result<GitActionResult, String> {
+    Ok(GitActionResult { ok: false, summary, suggest: suggest.map(str::to_string), ..Default::default() })
+}
+
+fn files_word(n: usize) -> String {
+    format!("{n} file{}", if n == 1 { "" } else { "s" })
+}
+
+/// Puts files back as HEAD has them: index and worktree both, since the overlay diffs against
+/// HEAD and a half-discarded file would still be listed. An untracked file is deleted, but only
+/// one git itself calls untracked, so nothing ignored and nothing outside the repo can go.
+#[tauri::command(async)]
+pub(crate) fn git_discard(workdir: String, paths: Vec<String>) -> Result<GitActionResult, String> {
+    if paths.is_empty() {
+        return Err("no files to discard".into());
+    }
+    let top = repo_top(&workdir)?;
+    let untracked = git_paths(&top, &["ls-files", "-z", "--others", "--exclude-standard"], &paths)
+        .output().map(|o| z_set(&o)).unwrap_or_default();
+    // Known to HEAD or the index; anything else (gone already, ignored) is skipped, since
+    // `restore` refuses the whole call over one pathspec it cannot match.
+    let mut known = git_paths(&top, &["ls-files", "-z", "--cached"], &paths).output().map(|o| z_set(&o)).unwrap_or_default();
+    known.extend(git_paths(&top, &["ls-tree", "-r", "-z", "--name-only", "HEAD"], &paths).output().map(|o| z_set(&o)).unwrap_or_default());
+    let tracked: Vec<String> = paths.iter().filter(|p| known.contains(*p)).cloned().collect();
+    if !tracked.is_empty() {
+        let out = git_paths(&top, &["restore", "--source=HEAD", "--staged", "--worktree"], &tracked)
+            .output().map_err(|e| format!("git: {e}"))?;
+        if !out.status.success() {
+            return refused(git_says(&out), None);
+        }
+    }
+    let mut removed = 0;
+    for rel in paths.iter().filter(|p| untracked.contains(*p)) {
+        if std::fs::remove_file(std::path::Path::new(&top).join(rel)).is_ok() {
+            removed += 1;
+        }
+    }
+    if tracked.is_empty() && removed == 0 {
+        return done("nothing left to discard".into());
+    }
+    done("discarded".into())
+}
+
+/// One hunk of `git diff HEAD -- path`: its `@@ … @@` range and its lines, `\ No newline`
+/// markers included, since `git apply` needs them and a comparison must skip them.
+struct RawHunk { at: String, lines: Vec<String> }
+
+/// The file header (`diff --git` through `+++`) and the hunks, out of a one-file patch.
+fn split_hunks(patch: &str) -> (Vec<String>, Vec<RawHunk>) {
+    let mut head = Vec::new();
+    let mut hunks: Vec<RawHunk> = Vec::new();
+    for line in patch.split('\n') {
+        if line.starts_with("@@") {
+            let at = line.find(" @@").map(|i| &line[..i + 3]).unwrap_or(line).to_string();
+            hunks.push(RawHunk { at, lines: Vec::new() });
+        } else if let Some(h) = hunks.last_mut() {
+            if !line.is_empty() {
+                h.lines.push(line.to_string());
+            }
+        } else if !line.starts_with("old mode") && !line.starts_with("new mode") {
+            // A mode change would ride along with every hunk reversed; only content goes back.
+            head.push(line.to_string());
+        }
+    }
+    (head, hunks)
+}
+
+/// Reverts ONE hunk in the working tree. The hunk is matched by its range AND its lines
+/// against a fresh diff: the overlay is one read old, and an agent may have edited since.
+#[tauri::command(async)]
+pub(crate) fn git_discard_hunk(workdir: String, path: String, at: String, body: Vec<String>) -> Result<GitActionResult, String> {
+    let top = repo_top(&workdir)?;
+    let out = git_paths(&top, &["--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "HEAD"], std::slice::from_ref(&path))
+        .output().map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return refused(git_says(&out), None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (head, hunks) = split_hunks(&text);
+    let norm = |l: &str| l.trim_end_matches('\r').to_string();
+    let want: Vec<String> = body.iter().map(|l| norm(l)).collect();
+    let Some(h) = hunks.iter().find(|h| {
+        h.at == at && h.lines.iter().filter(|l| !l.starts_with('\\')).map(|l| norm(l)).eq(want.iter().cloned())
+    }) else {
+        return refused("the file changed since the diff was read — nothing was discarded".into(), None);
+    };
+    let patch = format!("{}\n{}\n{}\n", head.join("\n"), h.at, h.lines.join("\n"));
+    let mut child = git_cmd(&top, &["apply", "-R", "--whitespace=nowarn", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin.write_all(patch.as_bytes()).map_err(|e| format!("git apply: {e}"))?;
+    }
+    let out = child.wait_with_output().map_err(|e| format!("git apply: {e}"))?;
+    if !out.status.success() {
+        return refused(git_says(&out), None);
+    }
+    done("discarded 1 hunk".into())
+}
+
+/// One entry of the repo's stash. The stack is shared by every worktree of the repo, so
+/// `branch` is where it was made, and the overlay says when that is not here.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct StashEntry {
+    sha: String,     // what every verb is addressed by; `stash@{n}` shifts under a concurrent push
+    branch: String,  // "" when git's subject names none (a detached HEAD's stash)
+    message: String,
+    unix: i64,
+    rel: String,
+}
+
+/// `On main: msg` / `WIP on main: abc subject` → (`main`, `msg`).
+fn stash_subject(gs: &str) -> (String, String) {
+    let rest = gs.strip_prefix("WIP on ").or_else(|| gs.strip_prefix("On ")).unwrap_or("");
+    match rest.split_once(": ") {
+        Some((b, m)) if !b.contains(' ') || b == "(no branch)" => {
+            (if b == "(no branch)" { String::new() } else { b.to_string() }, m.to_string())
+        }
+        _ => (String::new(), gs.to_string()),
+    }
+}
+
+#[tauri::command(async)]
+pub(crate) fn git_stash_list(workdir: String) -> Result<Vec<StashEntry>, String> {
+    let out = git_cmd(&workdir, &["--no-optional-locks", "stash", "list", "--format=%H%x00%gs%x00%ct%x00%cr"])
+        .output().map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(git_says(&out));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| {
+        let mut f = l.split('\0');
+        let sha = f.next()?.trim().to_string();
+        let (branch, message) = stash_subject(f.next().unwrap_or(""));
+        let unix = f.next().unwrap_or("").trim().parse().unwrap_or(0);
+        let rel = f.next().unwrap_or("").to_string();
+        Some(StashEntry { sha, branch, message, unix, rel })
+    }).collect())
+}
+
+/// `stash@{n}` for a sha, read now: `drop` and `pop` take nothing else, and the index of a
+/// given stash moves whenever any worktree of the repo pushes or drops one.
+fn stash_ref(workdir: &str, sha: &str) -> Option<String> {
+    let out = git_cmd(workdir, &["stash", "list", "--format=%H"]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().position(|l| l.trim() == sha).map(|n| format!("stash@{{{n}}}"))
+}
+
+fn is_sha(s: &str) -> bool {
+    s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Stash work away (`push`, untracked files included, optionally only `paths`) or bring a
+/// stash back (`apply`, `pop`, `drop`, addressed by sha). An apply that conflicts keeps the
+/// stash and hands over `git status`: the app has no conflict surface (see `git_action`).
+#[tauri::command(async)]
+pub(crate) fn git_stash(
+    workdir: String, op: String, sha: Option<String>, message: Option<String>, paths: Vec<String>,
+) -> Result<GitActionResult, String> {
+    let top = repo_top(&workdir)?;
+    if op == "push" {
+        let before = stash_ref_top(&top);
+        let msg = message.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+        let mut args = vec!["stash", "push", "--include-untracked"];
+        if let Some(m) = msg.as_deref() {
+            args.extend(["-m", m]);
+        }
+        let cmd = if paths.is_empty() { git_cmd(&top, &args) } else { git_paths(&top, &args, &paths) };
+        let out = git_run(cmd, 60)?;
+        if !out.status.success() {
+            return refused(git_says(&out), None);
+        }
+        if stash_ref_top(&top) == before {
+            return done("nothing to stash".into());
+        }
+        return done("stashed — it is under Stashes".into());
+    }
+    let sha = sha.filter(|s| is_sha(s)).ok_or("a stash is addressed by its sha")?;
+    let Some(at) = stash_ref(&top, &sha) else {
+        return refused("that stash is gone — another session popped or dropped it".into(), None);
+    };
+    let args: Vec<&str> = match op.as_str() {
+        "apply" => vec!["stash", "apply", &at],
+        "pop" => vec!["stash", "pop", &at],
+        "drop" => vec!["stash", "drop", &at],
+        _ => return Err(format!("unknown stash op: {op}")),
+    };
+    let out = git_run(git_cmd(&top, &args), 60)?;
+    if out.status.success() {
+        return done(match op.as_str() {
+            "apply" => "applied — the stash is kept".into(),
+            "pop" => "applied and dropped".into(),
+            _ => "dropped".into(),
+        });
+    }
+    let conflicted = git_cmd(&top, &["diff", "--name-only", "-z", "--diff-filter=U"]).output().map(|o| z_set(&o).len()).unwrap_or(0);
+    if conflicted > 0 {
+        return refused(format!("applied with conflicts in {} — the stash is kept", files_word(conflicted)), Some("git status"));
+    }
+    refused(git_says(&out), None)
+}
+
+fn stash_ref_top(top: &str) -> String {
+    git_cmd(top, &["rev-parse", "--quiet", "--verify", "refs/stash"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+/// A stash's changes as one patch, untracked files included, for the overlay's read-only view.
+#[tauri::command(async)]
+pub(crate) fn git_stash_diff(workdir: String, sha: String) -> Result<GitDiff, String> {
+    const CAP: usize = 800_000; // git_diff's
+    if !is_sha(&sha) {
+        return Err("a stash is addressed by its sha".into());
+    }
+    let run = |extra: &[&str]| {
+        let mut args = vec!["-c", "core.quotePath=false", "--no-optional-locks", "stash", "show", "-p", "--no-color"];
+        args.extend_from_slice(extra);
+        args.push(&sha);
+        git_cmd(&workdir, &args).output()
+    };
+    // `--include-untracked` is git 2.32+; older gits show the tracked half rather than nothing.
+    let out = match run(&["--include-untracked"]) {
+        Ok(o) if o.status.success() => o,
+        _ => run(&[]).map_err(|e| format!("git: {e}"))?,
+    };
+    if !out.status.success() {
+        return Err(git_says(&out));
+    }
+    let mut patch = String::from_utf8_lossy(&out.stdout).into_owned();
+    let truncated = patch.len() > CAP;
+    if truncated {
+        let cut = patch.char_indices().map(|(i, _)| i).take_while(|i| *i <= CAP).last().unwrap_or(0);
+        patch.truncate(cut);
+    }
+    Ok(GitDiff { patch, truncated })
+}
+
+/// Commits exactly `paths` as they are on disk (`add -A` first, so a new or deleted file
+/// counts), leaving anything else already staged where it was. Hooks run; a failure hands
+/// over `git commit` in a terminal, where a hook or a signing key can ask its questions.
+#[tauri::command(async)]
+pub(crate) fn git_commit(workdir: String, message: String, paths: Vec<String>) -> Result<GitActionResult, String> {
+    let msg = message.trim();
+    if msg.is_empty() || paths.is_empty() {
+        return Err("a commit needs a message and at least one file".into());
+    }
+    let top = repo_top(&workdir)?;
+    if git_cmd(&top, &["symbolic-ref", "--quiet", "HEAD"]).output().map(|o| !o.status.success()).unwrap_or(true) {
+        return refused("detached HEAD — a commit here belongs to no branch".into(), Some("git switch -c "));
+    }
+    let add = git_paths(&top, &["add", "-A"], &paths).output().map_err(|e| format!("git: {e}"))?;
+    if !add.status.success() {
+        return refused(git_says(&add), None);
+    }
+    let out = git_run(git_paths(&top, &["commit", "-q", "-m", msg], &paths), 120)?;
+    if !out.status.success() {
+        return refused(git_says(&out), Some("git commit"));
+    }
+    let short = git_cmd(&top, &["rev-parse", "--short", "HEAD"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    done(format!("committed {short}"))
 }
 
 /// One commit on the Trail. `when` is the author date in UNIX seconds, like `HistorySession.mtime`.
@@ -3352,6 +3657,175 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A repo with an identity of its own, so stash and commit work on a CI box with none.
+    fn ops_repo() -> (PathBuf, String) {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@example.com"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        let path = dir.to_str().unwrap().to_string();
+        (dir, path)
+    }
+
+    fn read(p: &Path) -> String {
+        std::fs::read_to_string(p).unwrap_or_default().replace("\r\n", "\n")
+    }
+
+    /// Discard puts a file back as HEAD has it, staged half included, and deletes only what
+    /// git itself calls untracked: an ignored file and a path outside the repo survive.
+    #[test]
+    fn git_discard_restores_head_and_deletes_only_untracked() {
+        let (dir, path) = ops_repo();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "keep me\n").unwrap();
+        std::fs::write(dir.join(".gitignore"), "ignored.txt\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        git(&dir, &["add", "a.txt"]); // staged, then edited again: both halves must go
+        std::fs::write(dir.join("a.txt"), "three\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("staged-new.txt"), "x\n").unwrap();
+        git(&dir, &["add", "staged-new.txt"]);
+        std::fs::write(dir.join("loose.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("ignored.txt"), "x\n").unwrap();
+
+        let all: Vec<String> = ["a.txt", "gone.txt", "staged-new.txt", "loose.txt", "ignored.txt", "never.txt"]
+            .iter().map(|s| s.to_string()).collect();
+        let r = git_discard(path.clone(), all).unwrap();
+        assert!(r.ok, "{}", r.summary);
+        assert_eq!(read(&dir.join("a.txt")), "one\n");
+        assert_eq!(read(&dir.join("gone.txt")), "keep me\n", "a deletion is undone");
+        assert!(!dir.join("staged-new.txt").exists() && !dir.join("loose.txt").exists());
+        assert!(dir.join("ignored.txt").exists(), "an ignored file is not the working set's to delete");
+        assert_eq!(git_diffstat(path.clone()).unwrap().dirty, 0, "nothing left for the overlay to list");
+
+        let r = git_discard(path.clone(), vec!["never.txt".into()]).unwrap();
+        assert_eq!(r.summary, "nothing left to discard");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One hunk goes back and its neighbour stays; a hunk the file no longer has is refused.
+    #[test]
+    fn git_discard_hunk_reverts_one_hunk_and_refuses_a_stale_one() {
+        let (dir, path) = ops_repo();
+        let base: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &base).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+        std::fs::write(dir.join("f.txt"), base.replace("line 2\n", "line TWO\n").replace("line 28\n", "line 28b\n")).unwrap();
+
+        let patch = git_diff(path.clone()).unwrap().patch;
+        let (_, hunks) = split_hunks(&patch);
+        assert_eq!(hunks.len(), 2, "{patch}");
+        let body = |h: &RawHunk| h.lines.iter().filter(|l| !l.starts_with('\\')).cloned().collect::<Vec<_>>();
+
+        let stale = git_discard_hunk(path.clone(), "f.txt".into(), hunks[0].at.clone(), vec!["+not this".into()]).unwrap();
+        assert!(!stale.ok && stale.summary.starts_with("the file changed"), "{}", stale.summary);
+
+        let r = git_discard_hunk(path.clone(), "f.txt".into(), hunks[0].at.clone(), body(&hunks[0])).unwrap();
+        assert!(r.ok, "{}", r.summary);
+        let now = read(&dir.join("f.txt"));
+        assert!(now.contains("line 2\n") && now.contains("line 28b\n"), "{now}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stash_subject_names_the_branch_it_was_made_on() {
+        assert_eq!(stash_subject("On main: try this"), ("main".into(), "try this".into()));
+        assert_eq!(stash_subject("WIP on feat/x: abc123 subject: with colon"), ("feat/x".into(), "abc123 subject: with colon".into()));
+        assert_eq!(stash_subject("On (no branch): m"), ("".into(), "m".into()));
+        assert_eq!(stash_subject("odd"), ("".into(), "odd".into()));
+    }
+
+    /// Push (untracked included, or just some paths), list, count, apply, pop and drop, all by
+    /// sha; a sha the stack no longer holds and a conflicting apply are refusals, not errors.
+    #[test]
+    fn git_stash_round_trips_by_sha() {
+        let (dir, path) = ops_repo();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "one\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+
+        let r = git_stash(path.clone(), "push".into(), None, None, vec![]).unwrap();
+        assert_eq!(r.summary, "nothing to stash");
+
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+        let r = git_stash(path.clone(), "push".into(), None, Some("just a".into()), vec!["a.txt".into(), "new.txt".into()]).unwrap();
+        assert!(r.ok, "{}", r.summary);
+        assert_eq!(read(&dir.join("a.txt")), "one\n");
+        assert!(!dir.join("new.txt").exists(), "untracked files go with the stash");
+        assert_eq!(read(&dir.join("b.txt")), "two\n", "a path stash leaves the rest alone");
+
+        let list = git_stash_list(path.clone()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].branch.as_str(), list[0].message.as_str()), ("main", "just a"));
+        assert_eq!(git_diffstat(path.clone()).unwrap().stash, 1, "the poll counts it for free");
+        let sha = list[0].sha.clone();
+        let shown = git_stash_diff(path.clone(), sha.clone()).unwrap().patch;
+        assert!(shown.contains("+two") && shown.contains("new.txt"), "{shown}");
+
+        let r = git_stash(path.clone(), "apply".into(), Some(sha.clone()), None, vec![]).unwrap();
+        assert!(r.ok && r.summary.contains("kept"), "{}", r.summary);
+        assert_eq!(read(&dir.join("a.txt")), "two\n");
+        assert_eq!(git_stash_list(path.clone()).unwrap().len(), 1);
+
+        // Conflict: the same line changed both ways. The stash survives; a terminal is offered.
+        git(&dir, &["checkout", "-q", "--", "a.txt", "b.txt"]);
+        std::fs::remove_file(dir.join("new.txt")).unwrap();
+        std::fs::write(dir.join("a.txt"), "three\n").unwrap();
+        git(&dir, &["commit", "-q", "-am", "moved on"]);
+        let r = git_stash(path.clone(), "pop".into(), Some(sha.clone()), None, vec![]).unwrap();
+        assert!(!r.ok && r.summary.contains("conflict"), "{}", r.summary);
+        assert_eq!(r.suggest.as_deref(), Some("git status"));
+        assert_eq!(git_stash_list(path.clone()).unwrap().len(), 1, "a conflicted pop keeps the stash");
+        git(&dir, &["reset", "-q", "--hard"]);
+        let _ = std::fs::remove_file(dir.join("new.txt"));
+
+        let r = git_stash(path.clone(), "drop".into(), Some(sha.clone()), None, vec![]).unwrap();
+        assert!(r.ok, "{}", r.summary);
+        let r = git_stash(path.clone(), "drop".into(), Some(sha), None, vec![]).unwrap();
+        assert!(!r.ok && r.summary.starts_with("that stash is gone"), "{}", r.summary);
+        assert!(git_stash(path.clone(), "apply".into(), Some("--all".into()), None, vec![]).is_err(), "a sha, never a flag");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A commit takes exactly the files named, new and deleted ones included, and leaves
+    /// whatever else was staged staged. A detached HEAD is refused with a branch to make.
+    #[test]
+    fn git_commit_takes_only_the_named_files() {
+        let (dir, path) = ops_repo();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("old.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("other.txt"), "one\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "base"]);
+
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        std::fs::remove_file(dir.join("old.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+        std::fs::write(dir.join("other.txt"), "two\n").unwrap();
+        git(&dir, &["add", "other.txt"]);
+
+        assert!(git_commit(path.clone(), "  ".into(), vec!["a.txt".into()]).is_err(), "no message");
+        let r = git_commit(path.clone(), "take three".into(), vec!["a.txt".into(), "old.txt".into(), "new.txt".into()]).unwrap();
+        assert!(r.ok && r.summary.starts_with("committed "), "{}", r.summary);
+        let st = git_working_set(path.clone()).unwrap();
+        let left: Vec<_> = st.entries.iter().map(|e| (e.path.as_str(), e.code)).collect();
+        assert_eq!(left, vec![("other.txt", 'M')], "only the unnamed file is still dirty, and still staged");
+
+        git(&dir, &["checkout", "-q", "--detach"]);
+        std::fs::write(dir.join("a.txt"), "three\n").unwrap();
+        let r = git_commit(path.clone(), "m".into(), vec!["a.txt".into()]).unwrap();
+        assert!(!r.ok && r.summary.starts_with("detached HEAD"), "{}", r.summary);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The command exists to page: `more` is an observation, the page stops at `limit`, and

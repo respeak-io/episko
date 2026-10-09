@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { alignHunk, parsePatch, tokenize, wordDiff, type DiffHunk, type DiffLine, type Span } from "../src/diff";
+import { alignHunk, hunkBody, parsePatch, tokenize, wordDiff, type DiffHunk, type DiffLine, type Span } from "../src/diff";
 
 // Real `git` output shapes, joined line by line: diff bodies contain backticks and ${…}.
 const patch = (...lines: string[]) => lines.join("\n");
@@ -37,6 +37,23 @@ describe("parsePatch", () => {
       { kind: "ctx", text: "line3", oldNo: 3, newNo: 3 },
       { kind: "add", text: "line4", oldNo: null, newNo: 4 },
     ]);
+  });
+
+  // The backend re-diffs and finds the hunk by these two; a body that drifted is refused there.
+  it("keeps git's range and the body as printed, for discarding one hunk", () => {
+    const [f] = parsePatch(patch(
+      "diff --git a/t.txt b/t.txt",
+      "--- a/t.txt",
+      "+++ b/t.txt",
+      "@@ -10,3 +10,3 @@ fn main() {",
+      " a",
+      "-b",
+      "+B",
+      "\\ No newline at end of file",
+    ));
+    expect(f.hunks[0].at).toBe("@@ -10,3 +10,3 @@");
+    expect(f.hunks[0].header).toBe("fn main() {");
+    expect(hunkBody(f.hunks[0])).toEqual([" a", "-b", "+B"]);
   });
 
   it("keeps a `-- `/`++ ` line inside a hunk as content, not as a path header", () => {
@@ -251,7 +268,7 @@ describe("parsePatch", () => {
 
 const line = (kind: "ctx" | "add" | "del", text: string): DiffLine =>
   ({ kind, text, oldNo: kind === "add" ? null : 1, newNo: kind === "del" ? null : 1 });
-const hunk = (...lines: DiffLine[]): DiffHunk => ({ header: "", lines });
+const hunk = (...lines: DiffLine[]): DiffHunk => ({ at: "", header: "", lines });
 // The marked text of one side, which is what the reader sees.
 const marks = (spans: Span[] | null) => (spans ?? []).filter((s) => s.changed).map((s) => s.text);
 

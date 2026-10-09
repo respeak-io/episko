@@ -237,6 +237,15 @@ export function wsetSkeleton(): string {
     <div class="gitrow">${btn("fetch")}${btn("pull")}${btn("push")}</div></div>`;
 }
 
+// The way into the repo's stash when the tree is clean and there is no peek to open; only
+// drawn when there is one, since the stack is shared by every worktree and usually empty.
+function stashBtn(s: Sess, g: DiffStat): string {
+  if (!g.stash) return "";
+  const title = s.project + (s.branch ? " · " + s.branch : "");
+  return `<button class="gitb" data-diff="${escAttr(s.workdir)}" data-difftitle="${escAttr(title)}" data-difftab="stashes"`
+    + ` title="${g.stash} stash${g.stash === 1 ? "" : "es"} in this repo, shared by every worktree">stash ${g.stash}</button>`;
+}
+
 // Fetch / pull / push. Only grey a button when there is nothing to do, never for the
 // awkward states: diverged or no-upstream keeps it live, since the backend then refuses
 // with a suggestion and hands over a prefilled terminal. "Nothing to do" needs an upstream.
@@ -255,6 +264,7 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
     ${btn("fetch", "fetch", "", "git fetch --prune")}
     ${btn("pull", "pull", up && !g.behind ? "Nothing to pull" : "", pullHint)}
     ${btn("push", "push", up && !g.ahead ? "Nothing to push" : "", pushHint)}
+    ${stashBtn(s, g)}
   </div>`;
 }
 

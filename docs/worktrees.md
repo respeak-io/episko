@@ -83,6 +83,16 @@ Every ahead/behind figure in the app is `upstream_state`'s, which reads `refs/re
 
 **The card must be on screen before the fetch matters.** `s.git` comes from the dirty poll's map, so a new pane used to show no git card at all until that poll came round — up to five seconds of the panel silently reflowing when it landed. `refreshSessionStats` now asks for a never-read folder itself, alongside the I/O sample rather than after it, and `wsetSkeleton` holds the space meanwhile. `dirtyByFolder.has(dir)` is what separates *still reading* from *not a repo*: the `null` it stores is an answer, an absent key is not one yet.
 
+## Writing from the review overlay: commit, stash, discard
+
+The working-set overlay (`diffview.ts`) is where you read what an agent did, so it is also where you act on it. The rules live in `gitops.ts` (tested); the commands are `git_commit`, `git_stash`, `git_stash_list`, `git_stash_diff`, `git_discard` and `git_discard_hunk` in `git.rs`.
+
+- **Every verb takes the ticked files and names them to git.** Nothing runs over "the whole tree": a diff truncated at 25 untracked files must never commit or stash the files it did not show. A rename is two paths (`filePaths`), or committing it commits a copy. A file that appears on a re-read arrives **unticked**, because an agent may have written it while you were reading.
+- **Commit is `add -A -- paths` then `commit -- paths`**, so whatever else was staged stays staged. Hooks run; a failure hands `git commit` to a terminal, where a hook or a signing key can ask its questions. A detached HEAD is refused.
+- **Discard goes back to HEAD, index and worktree both**, since the overlay diffs against HEAD and a half-discarded file would still be listed. A file is deleted only when git itself lists it as untracked, so an ignored file and anything outside the repo cannot go. It always asks first, and says when an agent is mid-turn in that folder.
+- **A hunk is matched by its range AND its lines against a fresh diff** (`git_discard_hunk`), then reversed with `git apply -R` on the worktree only. The overlay is one read old; a hunk the file no longer has is refused rather than guessed at. Only a plain modification offers it (`canDiscardHunk`): for an added or deleted file the hunk is the file, and reversing a rename's hunk would move the file back.
+- **The stash is the repo's, shared by every worktree.** It is addressed by **sha**, resolved to `stash@{n}` at the moment of the call, because the index moves whenever any checkout pushes or drops one. A stash made on another branch is shown dimmer rather than hidden. An apply that conflicts keeps the stash and hands over `git status`; the app has no conflict surface. The count rides the dirty poll for free (`status --show-stash`), which is how the inspector's *stash N* button and the dashboard's clean Working set card get you to the list when there is no diff to open.
+
 ## Branch cleanup: the rules, and the room they need
 
 **`branches.ts` owns the rules** (pure, tested) and **the dashboard's full-screen Branches view runs them**, in two tabs over one table shape. Three evidence bases feed it (`gone`, meaning its remote branch was deleted; `merged`, meaning already in the trunk; and a merged pull request) and `sweep_branches` / `delete_remote_branches` are the only things that delete.

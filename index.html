@@ -338,6 +338,8 @@
         <div class="diff-title-wrap"><b id="diffTitle"></b><span class="diff-sub" id="diffSub"></span>
           <!-- findings about the change as a whole, said once here rather than on every source row -->
           <span class="diff-sethealth" id="diffSetHealth" hidden></span></div>
+        <!-- the working set, or the repo's stash (shared by every worktree); diffview.ts -->
+        <div class="gseg" id="diffTabs"><button class="gseg-b on" data-dtab="work">Changes</button><button class="gseg-b" data-dtab="stashes" id="diffTabStashes">Stashes</button></div>
         <!-- the findings as text, for handing to a session that can act on them -->
         <button class="diff-fold" id="diffCopy" hidden>copy findings</button>
         <button class="diff-fold" id="diffMode" hidden>side by side</button>
@@ -348,6 +350,15 @@
       <div class="diff-main">
         <nav class="diff-rail" id="diffRail" hidden aria-label="Changed files"></nav>
         <div class="diff-body" id="diffBody"></div>
+      </div>
+      <!-- The writes, over the ticked files. The message names a commit, or a stash when it has one. -->
+      <div class="diff-foot" id="diffFoot" hidden>
+        <span class="dtick" id="diffPickAll" role="checkbox" aria-checked="true" title="Tick or clear every file"></span>
+        <span class="diff-picked" id="diffPicked"></span>
+        <input class="diff-msg" id="diffMsg" type="text" placeholder="Commit message" spellcheck="false" autocomplete="off">
+        <button class="diff-go" id="diffCommit">Commit</button>
+        <button class="diff-fold" id="diffStash" title="Set the ticked files aside, untracked ones included; the message names the stash">Stash</button>
+        <button class="diff-fold danger" id="diffDiscard" title="Put the ticked files back as the last commit has them">Discard</button>
       </div>
     </div>
 

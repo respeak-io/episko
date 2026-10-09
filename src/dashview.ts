@@ -349,9 +349,18 @@ export function worksetCard(
 ): string {
   if (!known || !dir) return "";
   if (g === undefined) return cardSkeleton(2);   // in flight: pending is not clean
-  if (!g || !g.dirty) return "";                 // a card with nothing to say is absent, not empty
+  if (!g || (!g.dirty && !g.stash)) return "";   // a card with nothing to say is absent, not empty
   const door = (f: StatusFile) =>
     ` data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difffocus="${escAttr(f.path)}"`;
+  // A clean tree with stashes still earns the card: it is the only way to them from here.
+  const stash = g.stash
+    ? `<button class="aslink" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" data-difftab="stashes"`
+      + ` title="The repo's stash, shared by every worktree">${g.stash} stash${g.stash === 1 ? "" : "es"}</button>`
+    : "";
+  if (!g.dirty) {
+    return `<div class="ac"><div class="ac-h"><span class="t">Working set</span>`
+      + `<span class="n" title="${escAttr(tilde(dir))}">${esc(title)} · clean</span>${stash}</div></div>`;
+  }
   const body = `<div class="wsb">${wpeekHtml(dir, title, g)}`
     + `${fileSetHtml(g.entries, DASH_FILES_SHOWN, g.dirty, door)}</div>`;
   const n = g.dirty === 1 ? "1 file" : `${g.dirty} files`;
@@ -360,7 +369,7 @@ export function worksetCard(
   return `<div class="ac"><div class="ac-h"><span class="t">Working set</span>`
     + `<span class="n" title="${escAttr(tilde(dir))}">${esc(title)} · uncommitted</span>`
     + `<button class="aslink" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}"`
-    + ` title="Review every uncommitted change">Review ${esc(n)} ⤢</button></div>`
+    + ` title="Review every uncommitted change">Review ${esc(n)} ⤢</button>${stash}</div>`
     + `<div class="ac-b">${body}</div></div>`;
 }
 

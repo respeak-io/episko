@@ -460,10 +460,10 @@ async function loadLanded(r: string): Promise<void> {
 // sweep, only while a dashboard is up, and never across a git op that is mid-flight.
 const WORKSET_SWEEP_MS = 15_000;
 let worksetSweptAt = 0;
-export function refreshDashWorkset(): void {
+export function refreshDashWorkset(force = false): void {
   const r = root();
   if (!r || !factsKnown || tier === "none" || syncing) return;
-  if (Date.now() - worksetSweptAt < WORKSET_SWEEP_MS) return;
+  if (!force && Date.now() - worksetSweptAt < WORKSET_SWEEP_MS) return;
   void loadSync(r);
 }
 

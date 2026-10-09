@@ -67,7 +67,9 @@ export interface Prompt {
 export interface DiffStat {
   added: number; removed: number; files: number; untracked: number; dirty: number;
   upstream: string | null; ahead: number; behind: number; // as of the last fetch (upstream_state in git.rs)
+  stash?: number; // the repo's stash, shared by every worktree; fixtures may leave it out
 }
+export interface StashEntry { sha: string; branch: string; message: string; unix: number; rel: string } // addressed by sha, never stash@{n}
 export interface StatusFile {
   // 0/0 for a binary or an untracked file too large to read
   path: string; code: string; from: string | null; added: number; removed: number;

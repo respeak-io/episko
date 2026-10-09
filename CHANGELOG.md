@@ -38,6 +38,15 @@ Markers: `+` new · `~` changed · `!` fixed
   Bypass in a scratch one, without changing Settings each time. The new-session dialog and a
   dashboard dispatch show the mode the project will actually use.
 
++ **Commit, stash and discard from the review overlay.** Every file in the working-set diff has a
+  tick; commit the ticked ones with a message, stash them (untracked files included), or discard
+  them back to the last commit. A file's ↶ discards just that file, and a hunk's *discard hunk*
+  just that hunk. Discarding always asks first, and says when an agent is working in that folder.
+
++ **A Stashes tab.** See what each stash holds, then apply, pop or drop it. The stash is shared by
+  every worktree of a repo, so one made on another branch says so. When a repo has stashes, the
+  inspector's git card and the dashboard's Working set card show them even with nothing uncommitted.
+
 ~ **Settings names the projects that ignore it.** Agent, Permission mode and auto-fetch list
   every project that decides for itself, and each name opens that project's settings.
 
