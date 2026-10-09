@@ -73,6 +73,11 @@ Markers: `+` new · `~` changed · `!` fixed
   the queue itself stays live beside the thread. ↑ and ↓ (or j and k) move to the next thread, a
   quiet issue can be closed or kept without leaving, and ↗ on a row still opens it on GitHub.
 
+! **Re-running a task runs that project's task.** Task ids are only unique within a project, so
+  ⟳ on a `dev` pane could start another project's `dev` in that project's folder, and a dependency
+  could come from the wrong project too. Each project now keeps its own, and a task deleted from its
+  file says so instead of re-running the old definition.
+
 ## 0.33.0 — 2026-10-03
 Markdown opens inside Episko: a README, or a plan an agent just wrote, reads as a document with
 its headings beside it instead of sending you to another app. Sync learns to say who is who and
