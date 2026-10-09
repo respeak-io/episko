@@ -8,6 +8,7 @@ import { $, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { basename, esc, escAttr, fmtDayLong } from "./format";
 import { iconFor } from "./icons";
+import { overrideCount } from "./projsettings";
 import { extWorking } from "./sidebarview";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
@@ -104,6 +105,7 @@ export interface DashHost {
   // also offers Appearance, Group and Remove and answers none of what those chips say.
   openAgentPicker: (root: string) => void;
   openGhPicker: (root: string) => void;
+  openProjectSettings: (root: string) => void;
   setActive: (id: string) => void;
   renderAll: () => void;
   // ---- what the Branches view needs and this module doesn't own ----
@@ -118,7 +120,7 @@ let host: DashHost = {
   switchBranch: async () => false,
   openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, copyText: () => {},
-  openAgentPicker: () => {}, openGhPicker: () => {}, setActive: () => {}, renderAll: () => {},
+  openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
 };
@@ -817,7 +819,7 @@ export function renderDash(): void {
     + (loading ? cardSkeleton(2) : checkoutCard(syncNow(), factsKnown, heads, liveIn, statFor))
     + projectFoot(effectiveAgent(root()).label,
       tier === "github" ? ghWho(ghAccountFor(root()), ghLogins).login ?? "" : "", claimsOn(),
-      ghPickable(ghLogins), tier === "github" ? ghOutdated : null));
+      ghPickable(ghLogins), tier === "github" ? ghOutdated : null, overrideCount(root())));
 
   // ---- column B: what moved since you were last here, the working set, what landed ----
   const f = bandFacts(days, sinceAt, now, isBotAuthor);
@@ -951,11 +953,11 @@ export function renderDash(): void {
   if (sheet?.kind === "close") paint("dashSheet", closeSheet(sheet.t, closeComment(sheet.t, now), facts?.slug ?? name()));
   else if (sheet?.kind === "dispatch") {
     const agent = effectiveAgent(root());
-    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
     paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
   } else if (sheet?.kind === "deps") {
     const agent = effectiveAgent(root());
-    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id));
+    const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
     paint("dashSheet", depSheet(sheet.title, sheet.brief,
       `${agent.label} · ${mode?.label ?? "terminal config"}`, sheet.brief.split("\n").length));
   }
@@ -1398,6 +1400,7 @@ function dashAction(act: string): void {
   else if (act === "copypath") host.copyPath(r);
   else if (act === "agent") host.openAgentPicker(r);
   else if (act === "ghpick") host.openGhPicker(r);
+  else if (act === "prefs") host.openProjectSettings(r);
   // `ghacctclear` is its own verb, so a truncated `ghacct:` can never read as "clear the pin".
   else if (act === "ghacctclear") host.setGhAccount(r, null);
   else if (act.startsWith("ghacct:")) host.setGhAccount(r, act.slice(7));

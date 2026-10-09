@@ -104,7 +104,7 @@ export function verbTiles(): string {
 }
 
 /** The column's foot: what this project is set up to run as. Each chip IS its own control. */
-export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null): string {
+export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: boolean, ghOld: string | null, overrides: number): string {
   const act = (a: string, inner: string, tip: string) =>
     `<button class="pfc pfc-b" data-dashact="${a}" data-tip="${escAttr(tip)}">${inner}</button>`;
   // Claims are the one fact here with no picker of its own: the preference is Settings', and the
@@ -119,6 +119,8 @@ export function projectFoot(agent: string, gh: string, claims: boolean, ghPick: 
         : gh ? `<span class="pfc mono" data-tip="${escAttr(`Reads GitHub as ${gh}`)}">gh: ${esc(gh)}</span>` : ""}
       ${ghOld ? oldGhChip(ghOld) : ""}
       <span class="pfc" data-tip="${escAttr(claimTip)}">${claims ? "claims on" : "claims off"}</span>
+      ${act("prefs", overrides ? `⚙ ${overrides} set here` : "⚙ settings",
+        overrides ? "This project's own settings: what it decides for itself, and what its team shares" : "Everything here follows Settings · decide anything for this project alone")}
     </div></div>`;
 }
 

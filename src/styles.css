@@ -1836,6 +1836,27 @@ select.in-ctl { cursor: pointer; }
    the heatmap is 53 weeks across and the panel is six cards deep. */
 .usagedlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(1120px, 96vw); height: min(884px, 92vh); z-index: 42; display: flex; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
 .usagedlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+/* Project settings: Settings' rows under a project's own header (./projsetview). */
+.projdlg { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(.98); width: min(780px, 94vw); max-height: min(760px, 90vh); z-index: 42; display: flex; opacity: 0; pointer-events: none; transition: opacity .16s, transform .16s; border-radius: var(--radius-lg); overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%), color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px) saturate(1.4); border: 1px solid var(--hair-strong); box-shadow: 0 40px 100px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.08); }
+.projdlg.show { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.ps-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.ps-head { display: flex; align-items: center; gap: 10px; padding: 16px 52px 12px 20px; border-bottom: 1px solid var(--hair); }
+.ps-sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.ps-ht { min-width: 0; }
+.ps-ht h2 { margin: 0; font-size: 15px; font-weight: 750; letter-spacing: -.01em; }
+.ps-path { font-size: 10.5px; color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-body { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 0 18px 20px 20px; }
+.ps-sec + .ps-sec { margin-top: 14px; }
+.ps-sec .set-sech { margin: 0 -18px 4px -20px; }
+.ps-sub { font-size: 11px; color: var(--muted-2); }
+.ps-lead, .ps-foot { font-size: 11px; color: var(--muted); padding: 4px 12px 6px; }
+.ps-foot { color: var(--muted-2); }
+.set-segb:disabled { opacity: .4; cursor: default; }
+.set-segb:disabled:hover { color: var(--muted-2); }
+/* A global row's projects that answer for themselves; each name opens that project's panel. */
+.set-ovr { font-size: 10.5px; color: var(--muted-2); margin-top: 3px; }
+.set-ovr button { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; color: var(--accent-ink); }
+.set-ovr button:hover { text-decoration: underline; }
 .u-body { flex: 1; min-width: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 18px 18px 20px; }
 .u-body::-webkit-scrollbar { width: 10px; }
 .u-body::-webkit-scrollbar-thumb { background: var(--hair-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
@@ -2025,7 +2046,12 @@ select.in-ctl { cursor: pointer; }
 .syncbox .sync-seg + .sync-seg { border-left: 1px solid var(--hair); }
 .syncbox .sync-seg.on { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); font-weight: 650; }
 .syncbox .sync-seg:disabled { opacity: .4; cursor: default; }
-.syncbox .sync-proj .set-freset { margin-top: 5px; }
+.syncbox .sync-pgrp { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; padding: 5px 0; }
+.syncbox .sync-pgrp + .sync-pgrp { border-top: 1px solid var(--hair); }
+.syncbox .sync-pk { flex: 0 0 104px; font-size: 11px; color: var(--muted); }
+.syncbox .sync-pk b { color: var(--text); font-weight: 650; }
+.syncbox .sync-pchip { padding: 1px 7px; border-radius: 6px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--text); font: 600 10.5px var(--font-ui); cursor: pointer; }
+.syncbox .sync-pchip:hover { border-color: var(--accent-line); color: var(--accent-ink); }
 .syncbox .sync-prefs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 16px; }
 .syncbox .sync-pref { display: flex; align-items: center; gap: 0; font-size: 11.5px; }
 .syncbox .sync-pref > span { flex: 1; min-width: 0; }
@@ -3696,7 +3722,7 @@ select.in-ctl { cursor: pointer; }
    on a transparent layer still keeps a blur surface alive. Gated on :not(.show), not visibility: hidden. */
 .expdlg:not(.show), .diffdlg:not(.show), .calldlg:not(.show), .mddlg:not(.show), .graphdlg:not(.show),
 .scrim:not(.show), .palette:not(.show), .runpop:not(.show), .indlg:not(.show),
-.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .cfm-scrim:not(.show),
+.mgrdlg:not(.show), .wtdlg:not(.show), .setdlg:not(.show), .usagedlg:not(.show), .projdlg:not(.show), .cfm-scrim:not(.show),
 .cfm:not(.show), .ovl:not(.show), .dsh-scrim:not(.show), .dsh:not(.show),
 .cl-dlg:not(.show) {
   backdrop-filter: none;
@@ -3712,7 +3738,7 @@ select.in-ctl { cursor: pointer; }
 :root.fx-flat .expdlg, :root.fx-flat .diffdlg, :root.fx-flat .calldlg, :root.fx-flat .mddlg,
 :root.fx-flat .graphdlg, :root.fx-flat .palette, :root.fx-flat .runpop,
 :root.fx-flat .indlg, :root.fx-flat .mgrdlg, :root.fx-flat .wtdlg,
-:root.fx-flat .setdlg, :root.fx-flat .usagedlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
+:root.fx-flat .setdlg, :root.fx-flat .usagedlg, :root.fx-flat .projdlg, :root.fx-flat .cfm, :root.fx-flat .ovl,
 :root.fx-flat .dsh, :root.fx-flat .cl-dlg, :root.fx-flat .tour-card,
 :root.fx-flat .colorpop, :root.fx-flat .menupop, :root.fx-flat .dbg-panel,
 :root.fx-flat .gcommit, :root.fx-flat .run-grp, :root.fx-flat .bk-h {

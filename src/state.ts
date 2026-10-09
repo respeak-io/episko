@@ -10,6 +10,7 @@ import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
+import { clampProjPrefs, fetchFor, permOverride, type ProjPrefStore } from "./projprefs";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { clampOutlinePrefs, type OutlinePrefs } from "./outline";
 import { clampMdPrefs, type MdPrefs } from "./markdown";
@@ -89,6 +90,11 @@ export function setRevivePrefs(p: RevivePrefs) { revivePrefs = clampRevivePrefs(
 // --- auto-fetch ------------------------------------------------------------------
 export let autoFetchPrefs: AutoFetchPrefs = clampAutoFetchPrefs(safeParse(localStorage.getItem("cc-autofetch")));
 export function setAutoFetchPrefs(p: AutoFetchPrefs) { autoFetchPrefs = clampAutoFetchPrefs(p); }
+// --- a project's own answers to global settings (./projprefs) ----------------------
+// Keyed by `colorKey`, like the agent pin; local-only, since each field changes what runs.
+export let projPrefs: ProjPrefStore = clampProjPrefs(safeParse(localStorage.getItem("cc-proj-prefs")));
+export function setProjPrefs(p: ProjPrefStore) { projPrefs = p; }
+export const autoFetchFor = (colorKey: string): AutoFetchPrefs => fetchFor(autoFetchPrefs, projPrefs, colorKey);
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 
@@ -267,8 +273,9 @@ const storedPermissionModes = loadPermissionModes();
 const legacyPermMode = localStorage.getItem("cc-perm-mode") || "default";
 if (!storedPermissionModes[CLAUDE_CLI.id]) storedPermissionModes[CLAUDE_CLI.id] = legacyPermMode;
 export const permissionModes = storedPermissionModes;
-export function permissionModeFor(provider: string): string {
-  return permissionModes[provider] || "default";
+// With no `colorKey` this is the global choice, which is what Settings shows and edits.
+export function permissionModeFor(provider: string, colorKey = ""): string {
+  return (colorKey && permOverride(projPrefs, colorKey, provider)) || permissionModes[provider] || "default";
 }
 export function setProviderPermissionMode(provider: string, mode: string) {
   permissionModes[provider] = mode;
