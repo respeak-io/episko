@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.34.0 — 2026-10-09
+A session that wanders into another worktree is followed there now, and still says where it
+started. Each project gets its own settings, permission mode and auto-fetch included. The review
+overlay learns to commit, stash and discard, down to a single hunk, and keeps a Stashes tab. Issues
+open inside Episko beside the list you came from, the Run picker shows what a task actually runs,
+and Ctrl+Shift+C copies wherever you are.
+
 + **Updating the sync server is one command.** `episko-server/update.sh` moves a Docker deployment
   to the newest release tag (or the one you name): it shows what changed in the server and any
   setting the release added, backs up the database, builds while the old server keeps running and
