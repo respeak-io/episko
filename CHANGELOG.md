@@ -53,6 +53,10 @@ Markers: `+` new · `~` changed · `!` fixed
   define it highlighted. *Open file*, *Reveal* and *Edit…* are one click from there, and a task
   overridden in `.episko/tasks.toml` says so.
 
++ **Ctrl+Shift+C copies, everywhere.** In a Claude pane and in any dialog with text selected it now
+  copies the selection rather than opening the web inspector, as it already did in a shell. Switch it
+  off in *Settings › Keys* to have the chord open the inspector again.
+
 ~ **Settings names the projects that ignore it.** Agent, Permission mode and auto-fetch list
   every project that decides for itself, and each name opens that project's settings.
 

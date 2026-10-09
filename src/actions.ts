@@ -34,6 +34,7 @@ import {
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
   setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
+  setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -267,6 +268,13 @@ export function setTermSplit(on: boolean) {
 export function setDriftAuto(on: boolean) {
   setDriftAutoState(on);
   localStorage.setItem("cc-drift-auto", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read live by every pane's key handler and main.ts's window listener.
+export function setCopyChord(on: boolean) {
+  setCopyChordState(on);
+  localStorage.setItem("cc-copy-chord", on ? "1" : "0");
   renderSettings();
 }
 

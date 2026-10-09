@@ -260,6 +260,9 @@ export let termSplit: boolean = localStorage.getItem("cc-term-split") !== "0";
 export function setTermSplit(on: boolean) { termSplit = on; }
 export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
 export function setDriftAuto(on: boolean) { driftAuto = on; }
+// Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.
+export let copyChord: boolean = localStorage.getItem("cc-copy-chord") !== "0";
+export function setCopyChord(on: boolean) { copyChord = on; }
 // --- how each provider starts -------------------------------------------------
 // Keyed by provider; definitions and validation are ./providers'. The old Claude-only key migrates one way.
 function loadPermissionModes(): Record<string, string> {
