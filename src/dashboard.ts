@@ -24,8 +24,8 @@ import {
   type BandLine, type CleanReport, type DashSync,
 } from "./dashview";
 import { landedCard } from "./landedview";
-import { issueOverlay } from "./issueview";
-import type { GhIssueRead } from "./issue";
+import { issueOverlay, type RailFrom, type RailRow } from "./issueview";
+import { stepThread, type GhIssueRead } from "./issue";
 import { filterQueue, foldQueue, plainRows, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
 import { foldBots, layoutGraph, parseRefs, ROW_H, type GraphCommit, type GraphMark, type LiteRow } from "./graph";
 import {
@@ -213,7 +213,8 @@ const teamSummaries = new Map<string, string>();
 // can be redone, once a run, when this checkout holds commits the line never saw.
 const fromServer = new Set<string>();
 const redone = new Set<string>();
-let openView: "notes" | "work" | "triage" | "branches" | "deps" | "issue" | null = null;
+type DashView = "notes" | "work" | "triage" | "branches" | "deps" | "issue";
+let openView: DashView | null = null;
 // When you last opened each project, machine-wide and capped; the band measures from it.
 let seen = readSeen();
 // This project's stamp as it was BEFORE this visit wrote a new one (see `openDashboard`).
@@ -231,11 +232,22 @@ let workLabels = new Set<string>();
 let workFree = false;
 let workQuery = "";
 /// ---- the thread reader ----
-// Which thread the ⤢ opened, kept apart from `openView` so a failed read still knows what it
+// Which thread a row opened, kept apart from `openView` so a failed read still knows what it
 // was reading, and `null` data means "not answered yet" rather than "nothing there".
 let issueAt: { number: number; kind: string } | null = null;
 let issueData: GhIssueRead | null = null;
 let issueLoading = false;
+// The list a thread was read from is the reader's rail. `railNums` is that rail as last painted,
+// which is what ↑/↓ walk; `listScroll` puts the full table back where it was left.
+let readFrom: RailFrom = "queue";
+let railNums: number[] = [];
+let railOpen = false;        // a narrow pane hides the rail until asked
+let revealRail = false;      // a keyboard step must keep the lit row on screen
+// An entrance plays once, on the paint that asked for it: the markup is rebuilt on every change,
+// so an animation in it would replay each time a claim or an age moved.
+let enter: "main" | "rail" | null = null;
+let listScroll = 0;
+let restoreScroll = 0;
 let botFold = true;                  // runs of bot commits folded in the Landed card
 // One page of `git_graph`, kept in module state: a render never fetches.
 let landed: GraphPage | null = null;
@@ -699,19 +711,27 @@ function paintOverlay(view: string, html: string): void {
   const ovl = $("dashOverlay");
   if (!wouldPaint("dashOverlay", html)) { ovl.dataset.view = view; return; }
   const same = ovl.dataset.view === view;
-  const keep = same ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : 0;
+  const keep = same ? ovl.querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0 : restoreScroll;
+  restoreScroll = 0;
   ovl.dataset.view = view;
+  // A view with its own scrollers names them; a key that changed (another thread) starts at 0.
+  const inner = same ? new Map([...ovl.querySelectorAll<HTMLElement>("[data-keep-scroll]")]
+    .map((el) => [el.dataset.keepScroll!, el.scrollTop] as const)) : null;
   keepCaret(ovl, ".bvq", () => { paint("dashOverlay", html); });
   if (keep) {
     const b = ovl.querySelector<HTMLElement>(".ovl-b");
     if (b) b.scrollTop = keep;
   }
+  for (const el of inner ? ovl.querySelectorAll<HTMLElement>("[data-keep-scroll]") : []) {
+    const top = inner!.get(el.dataset.keepScroll!);
+    if (top) el.scrollTop = top;
+  }
 }
 
 // ---------- the thread reader ----------
-// The queue's ⤢ reads one thread in full. `gh_issue` caches on the same TTL as the board it
+// A row reads one thread in full. `gh_issue` caches on the same TTL as the board it
 // was opened from, so closing a thread and opening it again is free. Guarded on the project
-// AND the thread: a second ⤢ while the first is in flight must not paint the wrong body.
+// AND the thread: a second read while the first is in flight must not paint the wrong body.
 async function loadIssue(number: number, kind: string): Promise<void> {
   const r = root();
   issueAt = { number, kind };
@@ -727,7 +747,34 @@ async function loadIssue(number: number, kind: string): Promise<void> {
   if (root() !== r || issueAt?.number !== number) return;
   issueLoading = false;
   issueData = res;
+  enter = "main";
   renderDash();
+}
+
+// Opening a thread from a list makes that list the rail; a rail row or a key moves within it.
+function openThread(n: number, from?: RailFrom): void {
+  if (from) {
+    if (from !== "queue") listScroll = $("dashOverlay").querySelector<HTMLElement>(".ovl-b")?.scrollTop ?? 0;
+    readFrom = from;
+  }
+  railOpen = false;   // a narrow pane's rail is a drawer, and picking from it closes it
+  enter = "main";
+  const th = gh.threads.find((x) => x.number === n);
+  openView = "issue";
+  void loadIssue(n, th?.kind === "pr" ? "pr" : "issue");
+}
+
+// ↑/↓ (and j/k) between the rail's threads, while the reader is up and nothing is typed into.
+export function dashKey(e: KeyboardEvent): boolean {
+  if (!dashMirror() || openView !== "issue" || !issueAt || sheet) return false;
+  if (e.metaKey || e.ctrlKey || e.altKey || $("scrim").classList.contains("show")) return false;
+  const el = e.target as HTMLElement | null;
+  if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return false;
+  const dir = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+  if (!dir) return false;
+  const n = stepThread(railNums, issueAt.number, dir);
+  if (n !== null) { revealRail = true; openThread(n); }
+  return true;
 }
 
 // One derivation for the card and the overlay: grouping and the verdict are the same work,
@@ -884,14 +931,18 @@ export function renderDash(): void {
   const found = searchQueue(items, queueQuery);
   // A search folds nothing: its result is the pool you asked for (docs/dashboard.md).
   const shown = filterQueue(found, queueFilter);
+  // Read from the queue, the queue IS the list: the reader covers the other two columns only.
+  const beside = openView === "issue" && readFrom === "queue" && issueAt !== null;
   paintNext(queueCard(queueQuery.trim() ? plainRows(shown) : foldQueue(shown, queueOpen),
-      queueTally(found), queueFilter, queueQuery, gh.available || !ghLoading, !depLoading)
+      queueTally(found), queueFilter, queueQuery, gh.available || !ghLoading, !depLoading,
+      beside ? issueAt!.number : null)
     + (tier === "github" && !gh.available && gh.reason
       ? ghUnavailable(gh.reason, ghLogins, ghWho(ghAccountFor(root()), ghLogins), ghOutdated) : "")
     + missingCard(tier, facts));
 
   const ovl = $("dashOverlay");
   ovl.classList.toggle("show", openView !== null);
+  ovl.classList.toggle("beside", beside);
   if (openView === null) ovl.dataset.view = "";
   else if (openView === "notes") {
     const mineShared = new Set(sharedNow().map((n) => n.id));
@@ -909,10 +960,28 @@ export function renderDash(): void {
   else if (openView === "triage") paintOverlay(openView, triageOverlay(stale, kept, canShare(tier)));
   else if (openView === "issue" && issueAt) {
     const t = gh.threads.find((x) => x.number === issueAt!.number);
+    // The rail is the list in the order it was on screen: the table's buckets, the queue's rank.
+    const rows: RailRow[] = readFrom === "work"
+      ? bucketed(filterWork(gh.threads, { kind: workKind, labels: workLabels, free: workFree, query: workQuery },
+        (x) => holder(x) !== null), now).flatMap((g) => g.rows).map((x) => ({ t: x, held: holder(x) }))
+      : readFrom === "triage"
+        ? stale.map(({ t: x, why }) => ({ t: x, held: holder(x), why, triage: true }))
+        : shown.flatMap((i) => i.kind === "work" && i.thread ? [{ t: i.thread, held: holder(i.thread), triage: !!i.triage }] : []);
+    railNums = rows.map((r) => r.t.number);
     paintOverlay(openView, issueOverlay({
+      rail: { from: readFrom, rows, open: railOpen },
       number: issueAt.number, kind: issueAt.kind, slug: facts?.slug ?? name(),
       data: issueData, loading: issueLoading, held: t ? holder(t) : null, now,
     }));
+    if (revealRail) {
+      revealRail = false;
+      ovl.querySelector<HTMLElement>(".rd-rail .rr.on")?.scrollIntoView({ block: "nearest" });
+      if (beside) document.querySelector<HTMLElement>("#dashNext .qrow.reading")?.scrollIntoView({ block: "nearest" });
+    }
+    if (enter) {
+      ovl.querySelector<HTMLElement>(enter === "main" ? ".rd-main > .iss" : ".rd-rail")?.classList.add("enter");
+      enter = null;
+    }
   }
   else if (openView === "deps") {
     paintOverlay(openView, depsOverlay({
@@ -1023,7 +1092,7 @@ export function openDashboard(project: string, path: string): void {
     queueFilter = "all"; queueQuery = ""; queueOpen.clear(); botFold = true;
     workKind = "all"; workLabels = new Set(); workFree = false; workQuery = "";
     landed = null; landedLoading = false;
-    issueAt = null; issueData = null; issueLoading = false;
+    issueAt = null; issueData = null; issueLoading = false; railNums = []; railOpen = false;
     tier = "none"; factsKnown = false; loading = true; ghLoading = false;
     gh = { available: false, reason: null, threads: [], viewer: null };
     kept = []; shared = []; hasDigest = false; sheet = null; writing = null;
@@ -1158,6 +1227,7 @@ export function wireDashboard(): void {
     if (view) {
       // Checkouts is a tab of the Branches view, not a view: one table, one selection model.
       const v = view.dataset.dashopenView!;
+      const was = openView;
       const branchy = v === "branches" || v === "checkouts";
       if (branchy) branchTab = v === "checkouts" ? "checkouts" : "branches";
       openView = branchy ? "branches" : (v as typeof openView);
@@ -1165,12 +1235,16 @@ export function wireDashboard(): void {
       // only half of this view a non-GitHub project has.
       if (openView === "deps" && tier !== "github") depTab = "stale";
       // Opened from a narrowed queue, the view starts on the same kind.
-      if (openView === "work") workKind = queueFilter === "iss" || queueFilter === "pr" ? queueFilter : "all";
+      if (openView === "work" && was === null) workKind = queueFilter === "iss" || queueFilter === "pr" ? queueFilter : "all";
+      if (was === "issue" && openView === readFrom) restoreScroll = listScroll;
       renderDash();
       if (branchy) void loadBranches();
       return;
     }
     if (t.closest("[data-dashclose-view]")) { openView = null; branchResult = null; renderDash(); return; }
+    if (t.closest("[data-dashrail]")) { railOpen = !railOpen; enter = railOpen ? "rail" : null; renderDash(); return; }
+    // The drawer covers its own ☰, so the dimmed reader beside it is what closes it.
+    if (railOpen && t.closest(".rd-main")) { railOpen = false; renderDash(); return; }
 
     // ---- the Open work view ----
     // A row's label sits inside the row's `data-dashurl`, so it is probed long before that.
@@ -1299,16 +1373,6 @@ export function wireDashboard(): void {
       if (th) { sheet = { kind: "dispatch", t: th }; renderDash(); }
       return;
     }
-    // Before `data-dashurl`, which is the whole row: ⤢ reads the thread here rather than
-    // handing it to a browser.
-    const iss = t.closest<HTMLElement>("[data-dashissue]");
-    if (iss) {
-      const n = +iss.dataset.dashissue!;
-      const th = gh.threads.find((x) => x.number === n);
-      openView = "issue";
-      void loadIssue(n, th?.kind === "pr" ? "pr" : "issue");
-      return;
-    }
     const close = t.closest<HTMLElement>("[data-dashclose]");
     if (close) {
       const th = gh.threads.find((x) => x.number === +close.dataset.dashclose!);
@@ -1325,7 +1389,17 @@ export function wireDashboard(): void {
     if (dtext) { void dispatchText(dtext.dataset.dashdispatchtext!); return; }
     const claimSw = t.closest<HTMLElement>("[data-dashclaim]");
     if (claimSw) { togglePolicy(claimSw.dataset.dashclaim!); return; }
+    // `data-dashissue` is a whole row, so it is probed after every verb nested in one; its
+    // ↗ is a `data-dashurl` INSIDE the row and has to win over it.
     const url = t.closest<HTMLElement>("[data-dashurl]");
+    const iss = t.closest<HTMLElement>("[data-dashissue]");
+    if (iss && !(url && iss.contains(url))) {
+      // A row in a list opens the reader with that list as its rail; a rail row stays in it.
+      const from: RailFrom | undefined = openView === "issue" ? undefined
+        : openView === "work" || openView === "triage" ? openView : "queue";
+      openThread(+iss.dataset.dashissue!, from);
+      return;
+    }
     if (url?.dataset.dashurl) { void openUrl(url.dataset.dashurl).catch(() => {}); return; }
   });
 

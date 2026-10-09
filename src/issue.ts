@@ -160,3 +160,13 @@ export function mdHtml(src: string): string {
   closeAll();
   return out.join("");
 }
+
+// ↑/↓ in the reader walks the rail it was opened from. A thread the list no longer holds (a
+// filter dropped it, or it closed) steps to the list's own end rather than going nowhere.
+export function stepThread(list: readonly number[], at: number, dir: 1 | -1): number | null {
+  if (!list.length) return null;
+  const i = list.indexOf(at);
+  if (i < 0) return dir > 0 ? list[0] : list[list.length - 1];
+  const next = list[i + dir];
+  return next === undefined ? null : next;
+}

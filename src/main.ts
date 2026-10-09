@@ -93,7 +93,7 @@ import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from ".
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashLaunchHint, openDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, openDashboard,
   refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
@@ -793,6 +793,7 @@ window.addEventListener("keydown", (e) => {
   // their ✕, or the two would disagree about where leaving a mirror lands.
   else if (e.key === "Escape" && mirror) { e.preventDefault(); leaveMirror(); renderAll(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
+  else if (dashKey(e)) e.preventDefault();
 });
 // ⌘⇧⏎ reveal: a capture-phase listener, because the palette's Enter drops the scrim
 // before a bubble listener runs, so "is a dialog up?" must be asked ahead of them. It
