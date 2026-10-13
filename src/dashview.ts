@@ -639,6 +639,25 @@ export interface CleanReport {
   summary: string;
 }
 
+export interface RowProg { st: "queued" | "working" | "done" | "failed"; note?: string }
+
+// The row's last cell while a delete runs: where this one is, in place of the hover buttons.
+function progMark(p: RowProg): string {
+  const [glyph, title] = p.st === "working" ? [`<span class="u-spin"></span>`, "deleting…"]
+    : p.st === "done" ? ["✓", "deleted"]
+    : p.st === "failed" ? ["✕", p.note || "kept"]
+    : ["·", "waiting its turn"];
+  return `<span class="prog ${p.st}" title="${esc(title)}">${glyph}</span>`;
+}
+
+// "Deleting 4 of 13…": the row in hand, counting the ones that finished either way.
+function busyLabel(prog: ReadonlyMap<string, RowProg>, verb: string): string {
+  const all = [...prog.values()];
+  if (!all.length) return "Working…";
+  const ended = all.filter((p) => p.st === "done" || p.st === "failed").length;
+  return `${verb} ${Math.min(ended + 1, all.length)} of ${all.length}…`;
+}
+
 export interface BranchesView {
   tab: "branches" | "checkouts";
   root: string;     // the project's own folder
@@ -657,6 +676,8 @@ export interface BranchesView {
   prs: MergedPrs | null;
   prsLoading: boolean;
   busy: boolean;
+  // A delete's progress per row (branch name, or checkout path); empty when nothing runs.
+  prog: ReadonlyMap<string, RowProg>;
   loading: boolean;
   result: CleanReport | null;
   // What the header tick shows for each tab; ./pick decides, this only draws it.
@@ -743,7 +764,8 @@ function branchRow(r: BranchRow, o: BranchesView): string {
       + (r.local.force ? `<span class="tag warn" title="Its pull request merged, so a squash is why git branch -d refuses it and this one needs -D">-D</span>` : "");
   // The whole row is the target; the box is inside it and carries the same attribute, so
   // `closest` answers the same name whichever half of the row the pointer landed on.
-  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}" data-dashbr="${escAttr(r.name)}">
+  const p = o.prog.get(r.name);
+  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}${p ? ` p-${p.st}` : ""}" data-dashbr="${escAttr(r.name)}">
     <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
       aria-checked="${on}" aria-disabled="${off}"
       title="${esc(off ? (r.local.block || r.remote.block) : "Pick this branch")}"></span></span>
@@ -753,9 +775,9 @@ function branchRow(r: BranchRow, o: BranchesView): string {
     <span class="st mono" title="${esc(b.base ? `versus ${b.base}` : "no trunk to compare against")}">${esc(trunkText(b))}</span>
     <span class="au mono">${esc(b.author)}</span>
     <span class="ag mono">${esc(b.rel)}</span>
-    <span class="ra"><button class="act" data-dashbrsw="${esc(r.name)}"
+    <span class="ra">${p ? progMark(p) : `<button class="act" data-dashbrsw="${esc(r.name)}"
       title="Switch ${esc(basename(o.root))}/ — the project's own folder — to ${esc(r.name)}">⇄</button><button class="act"
-      data-dashbrmenu="${escAttr(r.name)}" title="Start a session, protect it, more…">⋯</button></span>
+      data-dashbrmenu="${escAttr(r.name)}" title="Start a session, protect it, more…">⋯</button>`}</span>
   </div>`;
 }
 
@@ -807,7 +829,7 @@ function actionBar(o: BranchesView): string {
     <span class="what">${what}</span>
     ${pickButtons("branches")}
     <button class="brgo" data-dashbrrun${going && !o.busy ? "" : " disabled"}>
-      ${o.busy ? "Working…" : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
+      ${o.busy ? busyLabel(o.prog, "Deleting") : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
     ${warn}
   </div>`;
 }
@@ -829,12 +851,13 @@ function checkoutsBody(o: BranchesView): string {
   if (!o.checkouts.length) return `<div class="ac-empty">No checkouts here.</div>`;
   const rows = o.checkouts.map((c) => {
     const on = o.cpicked.has(c.wt.path);
+    const p = o.prog.get(c.wt.path);
     // `data-wt` and its four companions are ./projmenu's contract for the ⑃ cluster menu: the
     // row a checkout has here is the same checkout the rail's header opens a menu on.
     const menu = `data-wt="${escAttr(c.wt.path)}" data-root="${escAttr(o.root)}" `
       + `data-proj="${escAttr(o.project)}" data-branch="${escAttr(c.wt.branch)}"`
       + (c.wt.is_main ? ` data-main="1"` : "");
-    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
+    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}${p ? ` p-${p.st}` : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
       <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
         aria-checked="${on}" aria-disabled="${!c.ok}"
         title="${esc(c.block || "Pick this checkout")}"></span></span>
@@ -842,8 +865,8 @@ function checkoutsBody(o: BranchesView): string {
       <span class="pt mono" title="${esc(c.wt.path)}">${esc(twoDeep(c.wt.path))}</span>
       <span class="tags">${c.block ? `<span class="warn">${esc(c.block)}</span>` : `<span class="dim">${esc(c.note)}</span>`}</span>
       <span class="tags">${c.live ? `<span class="tag acc">${c.live} live</span>` : ""}</span>
-      <span class="acts"><button class="act" data-dashwtadd="${escAttr(c.wt.path)}" title="New session here">＋</button>
-        <button class="act" data-dashwtterm="${escAttr(c.wt.path)}" title="Open a terminal here">❯</button></span>
+      <span class="acts">${p ? progMark(p) : `<button class="act" data-dashwtadd="${escAttr(c.wt.path)}" title="New session here">＋</button>
+        <button class="act" data-dashwtterm="${escAttr(c.wt.path)}" title="Open a terminal here">❯</button>`}</span>
     </div>`;
   }).join("");
   const n = chosenCheckouts(o.checkouts, o.cpicked).length;
@@ -853,7 +876,7 @@ function checkoutsBody(o: BranchesView): string {
       <span class="sp"></span>
       ${pickButtons("checkouts")}
       <button class="brgo" data-dashcorun${n && !o.busy ? "" : " disabled"}>
-        ${o.busy ? "Working…" : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
+        ${o.busy ? busyLabel(o.prog, "Removing") : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
   return coHead(o.coHeadState) + rows + bar;
 }
 
