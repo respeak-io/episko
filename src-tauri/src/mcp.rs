@@ -12,9 +12,10 @@ const PROTOCOL: &str = "2025-06-18";
 
 /// Read into the agent's system prompt by Claude Code; the one steering lever that costs nothing.
 const INSTRUCTIONS: &str = "You are running inside Episko, a desktop app that hosts several coding-agent \
-sessions side by side. This project's own scripts (tests, builds, lint, type checks) run through \
-`run_task` rather than Bash: the run gets its own pane the user can watch, with their PATH, \
-their task overrides and their inputs. Call `list_runnables` to see what exists.";
+sessions side by side. Run this project's tests, builds, lint and type checks through `run_task` \
+rather than Bash: the run gets its own pane the user can watch and stop, with their PATH, their \
+task overrides and their inputs. Use Bash freely for one-off commands no task covers. Ids are \
+`<source>:<name>` (npm:test, just:lint, episko:typecheck); guess one, and a miss lists them all.";
 
 /// 128 bits from the OS, hex. A tool call can launch processes, so the endpoint is not open
 /// to whatever else on the machine (or a rebinding web page) can reach 127.0.0.1.
@@ -66,9 +67,10 @@ folder, with the id run_task takes and the command each runs.",
             "name": "run_task",
             "description": "Run one of the project's tasks in its own Episko pane, which the user can \
 watch, and wait for it to finish. Returns the exit code and the tail of its output. Prefer this \
-over Bash for anything list_runnables names. One-shot tasks only; a dev server is refused.",
+over Bash for tests, builds and checks. An unknown id is answered with the full list, so there is \
+no need to list first. One-shot tasks only; a dev server is refused.",
             "inputSchema": { "type": "object", "properties": {
-                "id": { "type": "string", "description": "A task id from list_runnables, e.g. npm:test." },
+                "id": { "type": "string", "description": "`<source>:<name>`: an npm script is npm:<script>, a .episko/tasks.toml task episko:<label>, a just recipe just:<recipe>." },
                 "inputs": { "type": "object", "additionalProperties": { "type": "string" },
                     "description": "Values for the task's declared inputs, by input id." },
                 "wait_seconds": wait,

@@ -12,7 +12,8 @@ An agent running in Episko knows nothing about Episko, so it starts the project'
 - **It shares the telemetry listener.** `/mcp` is routed in `run_telemetry_server` before any telemetry parsing, so it gets the supervisor's re-bind for free and an instrument file's port is also the MCP port.
 - **The backend speaks the protocol; the frontend answers the tools.** `initialize`, `tools/list`, `ping` and notifications are answered in `mcp.rs`. A `tools/call` is held open (the PermissionRequest shape: `mcp_pending`, `mcp-call` event, `resolve_mcp`), because task discovery, inputs, `dependsOn` and the pane itself all live in the frontend. A tool that launched its own process from Rust would be a second launch path, which is exactly what this exists to remove.
 - **The request is parked before the event is emitted**, or an answer faster than the server thread finds nothing to answer (a test caught it).
-- **Steering is the server's `instructions`.** Claude Code puts them in the system prompt, so no `--append-system-prompt` is needed. Whether that is enough to beat the agent's habit of typing `pnpm test` is the open question this spike exists to answer.
+- **Steering is the server's `instructions`.** Claude Code puts them in the system prompt, so no `--append-system-prompt` is needed. It was: asked to "run the typecheck", an agent went to `run_task` unprompted. The instructions name what belongs there (tests, builds, checks) and leave one-off commands to Bash, since an agent cannot tell a quick run from a slow one before it runs it.
+- **No listing first.** The instructions and `run_task` spell the id shape, and an unknown id is answered with the whole list, so a guess costs at most one extra call. The list is not put in the instructions themselves: `initialize` is answered before the frontend has discovered anything, and a list frozen at launch goes stale when `tasks.toml` changes.
 
 ## Rules
 

@@ -77,8 +77,9 @@ async function runTask(call: McpCall) {
   const s = sessions.get(call.sessionId)!;
   const taskId = typeof call.args.id === "string" ? call.args.id : "";
   // The session's own workdir, as run-on-stop does: the checkout this agent is editing.
-  const spec = (await discoverTasks(s.workdir, s.colorKey, true)).find((r) => r.id === taskId);
-  if (!spec) return answer(call.id, `No task "${taskId}" in ${s.workdir}. list_runnables names them.`, true);
+  const all = await discoverTasks(s.workdir, s.colorKey, true);
+  const spec = all.find((r) => r.id === taskId);
+  if (!spec) return answer(call.id, `No task "${taskId}" in ${s.workdir}.\n\n${runnablesText(all)}`, true);
   const why = refuseRun(spec);
   if (why) return answer(call.id, why, true);
   const filled = fillInputs(spec, call.args.inputs, (inp) => rememberedInput(s.project, spec.id, inp));
