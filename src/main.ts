@@ -35,7 +35,7 @@ import {
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
-  setProjectPerm, setProjectFetch,
+  setProjectPerm, setProjectFetch, setProjectTools, setAgentTools,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
@@ -67,6 +67,7 @@ import {
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
+import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
 import "./update"; // side-effect import: it owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
@@ -224,7 +225,7 @@ setProjMenuHost({
   setShareMode: setProjectShareMode, openProjectSettings,
 });
 setProjSetHost({
-  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
+  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setTools: setProjectTools, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
@@ -240,7 +241,7 @@ setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
   setSort, setEngine, bumpFont, applyFontSize,
-  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs, setAgentTools,
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
@@ -418,7 +419,9 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   s.term.write(bytes);
   // A task keeps a bounded tail so a failure can be handed to an agent: a hint, not a transcript.
   if (s.run) {
-    const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    const raw = new TextDecoder().decode(bytes);
+    mcpOutput(s.id, raw); // an agent's run_task gets the whole output, not this tail
+    const text = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
       if (line.trim()) s.run.tail.push(line.trimEnd());
     }
@@ -436,6 +439,7 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   // Before the early return: a dependency chain must never deadlock on a vanished session.
   const waiter = exitWaiters.get(e.payload.sessionId);
   if (waiter) { exitWaiters.delete(e.payload.sessionId); waiter(e.payload.code); }
+  mcpExit(e.payload.sessionId, e.payload.code);
   releaseClaimFor(e.payload.sessionId); // also before the early return: no dead claims linger
   const s = sessions.get(e.payload.sessionId); if (!s) return;
   const code = e.payload.code;
@@ -583,6 +587,7 @@ listen<ProviderEvent>("agent-event", (e) => {
   ) !== null)) playSound("limit");
   renderAll();
 });
+listen<Parameters<typeof onMcpCall>[0]>("mcp-call", (e) => void onMcpCall(e.payload));
 listen<string>("tray-select", (e) => { const id = e.payload; if (sessions.has(id)) setActive(id); });
 // Blocking permission request: Claude waits until resolve_permission answers.
 listen<{ id: string; data: any }>("permission", (e) => {

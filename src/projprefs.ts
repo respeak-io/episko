@@ -9,6 +9,7 @@ export interface ProjPref {
   perm?: Record<string, string>;   // provider → permission mode id
   fetch?: boolean;
   fetchEvery?: number;
+  tools?: boolean;                 // the Episko MCP tools in a new Claude session (docs/mcp.md)
 }
 export type ProjPrefStore = Record<string, ProjPref>;
 
@@ -24,6 +25,7 @@ function clampOne(v: unknown): ProjPref | null {
   }
   if (typeof o.fetch === "boolean") out.fetch = o.fetch;
   if (isEvery(o.fetchEvery)) out.fetchEvery = o.fetchEvery;
+  if (typeof o.tools === "boolean") out.tools = o.tools;
   return Object.keys(out).length ? out : null;
 }
 
@@ -47,6 +49,8 @@ export function fetchFor(global: AutoFetchPrefs, s: ProjPrefStore, key: string):
   return { enabled: p?.fetch ?? global.enabled, everyMs: p?.fetchEvery ?? global.everyMs };
 }
 
+export const toolsFor = (global: boolean, s: ProjPrefStore, key: string): boolean => s[key]?.tools ?? global;
+
 // Mutations return a new store, so state.ts's setter stays an assignment.
 function put(s: ProjPrefStore, key: string, next: ProjPref): ProjPrefStore {
   const out = { ...s };
@@ -69,12 +73,18 @@ export function withFetch(s: ProjPrefStore, key: string, patch: { fetch?: boolea
   return put(s, key, next);
 }
 
-export type OverrideKind = "perm" | "fetch";
+export function withTools(s: ProjPrefStore, key: string, on: boolean | null): ProjPrefStore {
+  const next: ProjPref = { ...s[key] };
+  if (on === null) delete next.tools; else next.tools = on;
+  return put(s, key, next);
+}
+
+export type OverrideKind = "perm" | "fetch" | "tools";
 
 /** The projects that answer this one themselves, so a global row can say who ignores it. */
 export function overriders(s: ProjPrefStore, kind: OverrideKind, provider = ""): string[] {
-  return Object.entries(s).filter(([, p]) => kind === "perm"
-    ? !!p.perm?.[provider]
+  return Object.entries(s).filter(([, p]) => kind === "perm" ? !!p.perm?.[provider]
+    : kind === "tools" ? p.tools !== undefined
     : p.fetch !== undefined || p.fetchEvery !== undefined).map(([k]) => k);
 }
 

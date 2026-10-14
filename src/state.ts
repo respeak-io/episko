@@ -10,7 +10,7 @@ import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
-import { clampProjPrefs, fetchFor, permOverride, type ProjPrefStore } from "./projprefs";
+import { clampProjPrefs, fetchFor, permOverride, toolsFor, type ProjPrefStore } from "./projprefs";
 import { clampSoundPrefs, type SoundPrefs } from "./sound";
 import { clampOutlinePrefs, type OutlinePrefs } from "./outline";
 import { clampMdPrefs, type MdPrefs } from "./markdown";
@@ -95,6 +95,10 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) { autoFetchPrefs = clampAut
 export let projPrefs: ProjPrefStore = clampProjPrefs(safeParse(localStorage.getItem("cc-proj-prefs")));
 export function setProjPrefs(p: ProjPrefStore) { projPrefs = p; }
 export const autoFetchFor = (colorKey: string): AutoFetchPrefs => fetchFor(autoFetchPrefs, projPrefs, colorKey);
+// Off until switched on: the tools' instructions change how every agent works (docs/mcp.md).
+export let agentTools: boolean = localStorage.getItem("cc-agent-tools") === "1";
+export function setAgentTools(on: boolean) { agentTools = on; }
+export const agentToolsFor = (colorKey: string): boolean => toolsFor(agentTools, projPrefs, colorKey);
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 

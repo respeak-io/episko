@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A Claude session can run your project's tasks through Episko.** Every Claude pane now starts
+  with a small Episko tool server: `list_runnables` shows the agent the same tasks ▶ Run does,
+  and `run_task` starts one in its own pane beside the session, with your PATH, overrides and
+  remembered inputs, then hands the exit code and output back to the agent. You see the run
+  as it happens instead of a Bash call scrolling past, and approving the tool goes through the
+  usual permission prompt. One-shot tasks only for now (tests, builds, lint); a dev server is
+  still yours to start. Off until you turn it on in Settings › Launching, or for one project in
+  its settings.
+
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it
 started. Each project gets its own settings, permission mode and auto-fetch included. The review
