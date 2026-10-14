@@ -13,6 +13,15 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A dev environment is one block in the servers popover.** Start `just dev` or a compound
+  task like *Dev: Frontend + Backend*, and the popover groups its panes with the Docker Compose
+  containers of the repo: each pane's port or URL, each container's health and ports, and one
+  state for the whole stack. *Starting* names what it is waiting for, *failed* names the step
+  or container that broke (a crash-looping container included), and *ready* means every prep
+  step passed, every server listens and every health check is green. Containers that outlive
+  their panes stay listed, with ⏹ to stop them. An optional `[stack]` table in
+  `.episko/episko.toml` names the project's own `down` task.
+
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it
 started. Each project gets its own settings, permission mode and auto-fetch included. The review

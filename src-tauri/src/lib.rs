@@ -13,6 +13,7 @@ mod icons;
 mod notes;
 mod platform;
 mod pty;
+mod stack;
 mod summarize;
 mod sync;
 mod tasks;
@@ -490,6 +491,9 @@ pub fn run() {
             deps::dep_manifests,
             deps::dep_tools,
             deps::dep_outdated,
+            stack::compose_containers,
+            stack::compose_stop,
+            stack::stack_config,
             github::gh_threads,
             github::gh_issue,
             github::gh_accounts,
