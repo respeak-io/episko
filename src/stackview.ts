@@ -35,6 +35,16 @@ function boxHtml(b: Box): string {
     + `<span class="sv-meta${b.state === "failing" ? " sv-bad" : ""}">${esc(bits.join(" · "))}</span><span class="sv-none"></span></div>`;
 }
 
+// The dot and the edge: a leftover has no dev task to sum, so it wears its containers' worst state.
+function tone(s: Stack): Exclude<Stack["state"], "leftover"> {
+  if (s.state !== "leftover") return s.state;
+  if (s.boxes.some((b) => b.state === "failing")) return "failed";
+  return s.boxes.some((b) => b.state === "starting") ? "starting" : "ready";
+}
+const TONE_TITLE: Record<ReturnType<typeof tone>, string> = {
+  ready: "Everything here is up", starting: "Still coming up", failed: "Something here has failed",
+};
+
 /** One stack. `downLabel` names where ⏹ sends its containers: `[stack] down`, or a compose stop. */
 export function stackHtml(s: Stack, downLabel: string): string {
   const running = s.boxes.some((b) => b.state === "up" || b.state === "starting" || b.state === "failing");
@@ -47,6 +57,6 @@ export function stackHtml(s: Stack, downLabel: string): string {
   const stop = s.members.length
     ? `<button class="sv-stop" data-svstack="${escAttr(s.key)}" title="Close this stack's ${s.members.length} pane${s.members.length === 1 ? "" : "s"} (containers keep running)">✕</button>`
     : `<span class="sv-none"></span>`;
-  return `<div class="sv-stack st-${s.state}"><div class="sv-sh"><span class="sv-sdot"></span>${head}${down}${stop}</div>`
+  return `<div class="sv-stack st-${tone(s)}"><div class="sv-sh"><span class="sv-sdot" title="${escAttr(TONE_TITLE[tone(s)])}"></span>${head}${down}${stop}</div>`
     + s.members.map(memberHtml).join("") + s.boxes.map(boxHtml).join("") + `</div>`;
 }
