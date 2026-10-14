@@ -115,7 +115,7 @@ export function renderServers() {
   el.classList.toggle("jobs-only", servers === 0);
   // One line per row, jobs prefixed, so the hover list and the number agree.
   el.title = [
-    ...stacks.map((st) => `stack · ${st.project} · ${st.label}: ${st.state}${st.why ? ` (${st.why})` : ""}`),
+    ...stacks.map((st) => `stack · ${st.project}${st.label ? ` · ${st.label}` : ""}: ${st.why || st.state}`),
     ...shown.map((r) => `${isServerRow(r) ? "" : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
   ].join("\n");
   el.classList.toggle("serving", serving > 0 && !failed); // failure wins the colour

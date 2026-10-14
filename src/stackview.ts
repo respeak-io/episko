@@ -5,8 +5,9 @@
 import { esc, escAttr } from "./format";
 import type { Box, Member, Stack } from "./stack";
 
+// A leftover's `why` already says what it is; its state word would only repeat it.
 const STATE_TEXT: Record<Stack["state"], string> = {
-  starting: "starting", ready: "ready", failed: "failed", leftover: "containers only",
+  starting: "starting", ready: "ready", failed: "failed", leftover: "",
 };
 
 const M_DOT: Record<Member["state"], string> = { running: "", serving: " up", done: " done", failed: " down" };
@@ -37,8 +38,9 @@ function boxHtml(b: Box): string {
 /** One stack. `downLabel` names where ⏹ sends its containers: `[stack] down`, or a compose stop. */
 export function stackHtml(s: Stack, downLabel: string): string {
   const running = s.boxes.some((b) => b.state === "up" || b.state === "starting" || b.state === "failing");
-  const head = `<span class="sv-main"><span class="sv-proj">${esc(s.project)} · ${esc(s.label)}</span>`
-    + `<span class="sv-cmd">${STATE_TEXT[s.state]}${s.why ? ` · ${esc(s.why)}` : ""}</span></span>`;
+  const sub = [STATE_TEXT[s.state], s.why].filter(Boolean).join(" · ");
+  const head = `<span class="sv-main"><span class="sv-proj">${esc(s.project)}${s.label ? ` · ${esc(s.label)}` : ""}</span>`
+    + `<span class="sv-cmd">${esc(sub)}</span></span>`;
   const down = running
     ? `<button class="sv-stop" data-svdown="${escAttr(s.key)}" title="${escAttr(downLabel)}">⏹</button>`
     : `<span class="sv-none"></span>`;

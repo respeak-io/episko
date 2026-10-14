@@ -134,7 +134,9 @@ describe("buildStacks", () => {
       ],
     }));
     expect(left).toHaveLength(1);
-    expect(left[0]).toMatchObject({ state: "leftover", project: "docex", why: "2 containers still up, no pane" });
+    expect(left[0]).toMatchObject({ state: "leftover", project: "docex", label: "", why: "2 containers up · no dev task running" });
+    // Only the worktree is named: the repo's own checkout is where a container is expected to come from.
+    expect(left[0].boxes.map((b) => b.from)).toEqual(["", "refactor"]);
     expect(stackTally(left)).toEqual({ serving: 2, failed: false });
   });
 });

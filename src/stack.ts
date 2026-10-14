@@ -202,15 +202,17 @@ export function buildStacks(inp: StackInput): Stack[] {
     if (!at) continue;
     const state = containerState(c, Infinity, inp.now);
     if (state !== "up" && state !== "starting" && state !== "failing") continue; // only what is still running
-    left.set(at.repo, [...(left.get(at.repo) ?? []), { c, state, health: containerHealth(c.status), hostPorts: hostPorts(c.ports), from: at.name }]);
+    // Only a worktree is worth naming; the repo's own checkout is where a container is expected to come from.
+    const from = trim(at.path) === trim(at.repo) ? "" : at.name;
+    left.set(at.repo, [...(left.get(at.repo) ?? []), { c, state, health: containerHealth(c.status), hostPorts: hostPorts(c.ports), from }]);
   }
   for (const [repo, boxes] of left) {
     const home = inp.checkouts.find((c) => trim(c.path) === trim(repo)) ?? checkoutOf(boxes[0].c.workingDir, inp.checkouts)!;
     boxes.sort(boxOrder);
     stacks.push({
-      key: `left:${repo}`, project: home.name, checkout: home.path, label: "containers",
+      key: `left:${repo}`, project: home.name, checkout: home.path, label: "",
       members: [], boxes, composeProjects: [...new Set(boxes.map((b) => b.c.project))],
-      state: "leftover", why: `${boxes.length} container${boxes.length === 1 ? "" : "s"} still up, no pane`,
+      state: "leftover", why: `${boxes.length} container${boxes.length === 1 ? "" : "s"} up · no dev task running`,
       startedAt: 0,
     });
   }
