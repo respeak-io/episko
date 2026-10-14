@@ -6,6 +6,7 @@ import { safeParse } from "./store";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
+import type { RailLayout } from "./review";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
@@ -148,6 +149,7 @@ export let mirror:
   | { kind: "past"; id: string }
   | { kind: "dash"; root: string; name: string }
   | { kind: "fleet" }
+  | { kind: "review"; root: string; name: string; number: number }
   | null = null;
 export function setMirror(m: typeof mirror) { mirror = m; }
 export const extMirrorId = (): string | null => (mirror?.kind === "ext" ? mirror.id : null);
@@ -155,6 +157,7 @@ export const extMirrorPid = (): number | null => (mirror?.kind === "ext" ? mirro
 export const pastMirrorId = (): string | null => (mirror?.kind === "past" ? mirror.id : null);
 export const dashMirror = () => (mirror?.kind === "dash" ? mirror : null);
 export const fleetMirror = () => (mirror?.kind === "fleet" ? mirror : null);
+export const reviewMirror = () => (mirror?.kind === "review" ? mirror : null);
 // A run group tiled beside the focused pane; `activeId` still names that pane. Exclusive with `mirror`.
 export let stageGroup: string | null = null;
 export function setStageGroup(g: string | null) { stageGroup = g; }
@@ -192,6 +195,9 @@ export function engineDef(id: Engine): EngineDef { return ALL_ENGINES.find((e) =
 export let availEngines: Engine[] = ["embedded"];
 export let diffMode: DiffMode = localStorage.getItem("cc-diff-mode") === "split" ? "split" : "unified";
 export function setDiffMode(m: DiffMode) { diffMode = m; }
+// Both file rails (the working-set viewer's and a review's) share it: one preference, one look.
+export let railLayout: RailLayout = localStorage.getItem("cc-diff-tree") === "flat" ? "flat" : "tree";
+export function setRailLayout(l: RailLayout) { railLayout = l; }
 export const TERM_FONT_DEFAULT = 12.5;
 export let termFontSize = parseFloat(localStorage.getItem("cc-term-font") || "") || TERM_FONT_DEFAULT;
 export function setTermFontSize(v: number) { termFontSize = v; }

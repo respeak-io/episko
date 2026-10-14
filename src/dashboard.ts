@@ -110,6 +110,7 @@ export interface DashHost {
   renderAll: () => void;
   // ---- what the Branches view needs and this module doesn't own ----
   refreshGit: () => Promise<void>;   // re-read the ⑃ roster; renderAll only paints it
+  openReview: (project: string, root: string, number: number) => void;   // ./reviewui's stage
   saveTrunk: (repoDir: string, ref: string) => void;   // a stored preference, so the write is actions.ts's
   // Pin the project to a GitHub account (`null` follows gh's active one). A stored
   // preference like `saveTrunk`; the write also drops the previous account's cached reads.
@@ -121,7 +122,7 @@ let host: DashHost = {
   openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
-  refreshGit: async () => {}, handToTerminal: () => {}, saveTrunk: () => {},
+  refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
@@ -1366,6 +1367,8 @@ export function wireDashboard(): void {
     if (dep) { pickRow("advisories", dep.dataset.dashdep!, e.shiftKey); return; }
 
     // ---- the GitHub half ----
+    const rev = t.closest<HTMLElement>("[data-dashreview]");
+    if (rev) { host.openReview(name(), root(), +rev.dataset.dashreview!); return; }
     const work = t.closest<HTMLElement>("[data-dashwork]");
     if (work) {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);

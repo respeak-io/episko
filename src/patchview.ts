@@ -1,10 +1,12 @@
 // The markup half of the working-set diff viewer: `DiffFile[]` in, HTML strings out; ./diffview
 // keeps the DOM, listeners and scroll spy. Shaped like a pull request: a visible index, sticky headers.
 
-import { alignHunk, type DiffCell, type DiffFile, type DiffHunk, type DiffMode, type Span } from "./diff";
+import { alignHunk, type DiffCell, type DiffFile, type DiffHunk, type DiffLine, type DiffMode, type Span } from "./diff";
 import { esc, escAttr } from "./format";
 import type { Chip } from "./health";
 import { stashElsewhere } from "./gitops";
+import type { RailLayout, TreeRow } from "./review";
+import { icon } from "./svgicons";
 import type { StashEntry, StatusFile } from "./types";
 
 // One letter, one colour, wherever a changed file is named: these headers, the index rail,
@@ -67,29 +69,37 @@ function hunkHead(h: DiffHunk, act: string): string {
   return `<div class="dhh"><span class="dhh-at">⋯</span>${h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : ""}${act}</div>`;
 }
 
+/** What a review hangs on a line: a control in its gutter, and blocks (threads) after its row. */
+export interface LineHooks { gutter: (l: DiffLine) => string; after: (l: DiffLine) => string }
+const NO_HOOKS: LineHooks = { gutter: () => "", after: () => "" };
+
 /** One hunk, unified: git's own order, one line per row, two number columns. */
-export function hunkHtml(h: DiffHunk, act = ""): string {
+export function hunkHtml(h: DiffHunk, act = "", hooks: LineHooks = NO_HOOKS): string {
   const rows = alignHunk(h).unified.map((c) => {
     const sign = c.line.kind === "add" ? "+" : c.line.kind === "del" ? "−" : "";
     // `data-ln` is what a health chip scrolls to; only a line that still exists carries one.
     const anchor = c.line.newNo ? ` data-ln="${c.line.newNo}"` : "";
-    return `<div class="dline ${c.line.kind}"${anchor}><span class="ln">${c.line.oldNo ?? ""}</span><span class="ln">${c.line.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${cellText(c)}</span></div>`;
+    return `<div class="dline ${c.line.kind}"${anchor}>${hooks.gutter(c.line)}<span class="ln">${c.line.oldNo ?? ""}</span><span class="ln">${c.line.newNo ?? ""}</span><span class="dsign">${sign}</span><span class="lc">${cellText(c)}</span></div>`
+      + hooks.after(c.line);
   }).join("");
   return `<div class="dhunk">${hunkHead(h, act)}${rows}</div>`;
 }
 
 // Side by side. Cells are grid children, not rows, so a long left line cannot misalign the right.
-export function splitHunkHtml(h: DiffHunk, act = ""): string {
+export function splitHunkHtml(h: DiffHunk, act = "", hooks: LineHooks = NO_HOOKS): string {
   // `lft` marks the left column for the divider border; `nth-child` cannot (the band makes every index odd).
   const cell = (c: DiffCell | null, side: "del" | "add") => {
     const l = side === "del" ? " lft" : "";
     return c
-      ? `<span class="sn ${c.line.kind}"${side === "add" && c.line.newNo ? ` data-ln="${c.line.newNo}"` : ""}>${(side === "del" ? c.line.oldNo : c.line.newNo) ?? ""}</span>`
+      ? `<span class="sn ${c.line.kind}"${side === "add" && c.line.newNo ? ` data-ln="${c.line.newNo}"` : ""}>${hooks.gutter(c.line)}${(side === "del" ? c.line.oldNo : c.line.newNo) ?? ""}</span>`
         + `<span class="sc${l} ${c.line.kind}">${cellText(c)}</span>`
       : `<span class="sn nil"></span><span class="sc${l} nil"></span>`;
   };
+  // A context row is one line drawn on both sides: what hangs off it is drawn once.
   const rows = alignHunk(h).rows
-    .map((r) => cell(r.left, "del") + cell(r.right, "add"))
+    .map((r) => cell(r.left, "del") + cell(r.right, "add")
+      + (r.left && r.left.line !== r.right?.line ? hooks.after(r.left.line) : "")
+      + (r.right ? hooks.after(r.right.line) : ""))
     .join("");
   return `<div class="dhunk split">${hunkHead(h, act)}${rows}</div>`;
 }
@@ -117,8 +127,12 @@ export function tickHtml(i: number, on: boolean | null): string {
   return `<span class="dtick${on ? " on" : ""}" data-dpick="${i}" role="checkbox" aria-checked="${on}" title="Include in commit, stash and discard"></span>`;
 }
 
-/** What ./diffview adds to a file: its buttons, its tick, and a hunk's button by index. */
-export interface FileActs { btns: string; tick: boolean | null; hunk: (hi: number) => string }
+/** What a host adds to a file: its buttons, its tick, a hunk's button by index, and (a review)
+ *  per-line hooks, blocks under the header and a control after the last hunk. */
+export interface FileActs {
+  btns: string; tick: boolean | null; hunk: (hi: number) => string;
+  lines?: LineHooks; top?: string; tail?: string; cls?: string;
+}
 
 // `acts` comes from ./diffview, the only place that knows the absolute path the buttons need.
 export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, acts: FileActs, chips: Chip[] = []): string {
@@ -132,31 +146,57 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
   const draw = mode === "split" ? splitHunkHtml : hunkHtml;
   const body = f.binary
     ? `<div class="d-binbody">Binary file, no textual diff.</div>`
-    : f.hunks.map((h, hi) => draw(h, acts.hunk(hi))).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
+    : f.hunks.map((h, hi) => draw(h, acts.hunk(hi), acts.lines)).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
   // Head and chips share one sticky box: a chip walks between marks far apart and must stay reachable.
-  return `<section class="dfile ${cls}${open ? "" : " collapsed"}" data-fi="${i}">
+  return `<section class="dfile ${cls}${open ? "" : " collapsed"}${acts.cls ?? ""}" data-fi="${i}">
       <div class="dftop">
         <div class="dfhead" data-dtoggle="${i}">${tickHtml(i, acts.tick)}<span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${acts.btns}</div>
         ${chipsHtml(chips, i)}
       </div>
-      <div class="dfbody">${body}</div></section>`;
+      <div class="dfbody">${acts.top ?? ""}${body}${acts.tail ?? ""}</div></section>`;
+}
+
+/** The rail's own head: what it lists, and the switch between a folder tree and a flat list. */
+export function railHeadHtml(layout: RailLayout, n: number): string {
+  const b = (v: RailLayout, label: string, tip: string) =>
+    `<button class="gseg-b${layout === v ? " on" : ""}" data-drlayout="${v}" title="${tip}">${label}</button>`;
+  return `<div class="dr-head"><span class="dr-ht">${n} file${n === 1 ? "" : "s"}</span><div class="gseg">`
+    + b("tree", `${icon("tree")}tree`, "Nest the files in their folders") + b("flat", `${icon("list")}list`, "One list, each folder named once") + `</div></div>`;
+}
+
+// One file's row in either layout. `mark` is the host's extra (a review's viewed tick and thread count).
+function railRow(f: DiffFile, i: number, active: number, chips: Chip[], tick: boolean | null, mark: string, depth = -1): string {
+  const glyph = DSTAT[f.status], cls = fcls(glyph);
+  const [, name] = splitPath(f.path);
+  const n = f.binary ? `<i class="d-bin">bin</i>`
+    : `<i class="add">+${f.added}</i><i class="del">−${f.removed}</i>`;
+  const indent = depth >= 0 ? ` style="--d:${depth}"` : "";
+  return `<button class="dr-row${depth >= 0 ? " tree" : ""}${i === active ? " on" : ""}" data-drow="${i}" title="${escAttr(f.path)}"${indent}>`
+    + `${tickHtml(i, tick)}<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span>${mark}${pipsHtml(chips)}<span class="dr-n">${n}</span></button>`;
 }
 
 // The index rail, grouped under folders (free: files arrive sorted by path).
-export function railHtml(files: DiffFile[], active: number, chips: Chip[][] = [], tick: (i: number) => boolean | null = () => null): string {
+export function railHtml(
+  files: DiffFile[], active: number, chips: Chip[][] = [], tick: (i: number) => boolean | null = () => null,
+  mark: (i: number) => string = () => "",
+): string {
   let dir: string | null = null;
-  const rows = files.map((f, i) => {
+  return files.map((f, i) => {
     const d = dirOf(f.path);
     const head = d === dir ? "" : `<div class="dr-dir" title="${escAttr(d || "the project root")}">${esc(d || "/")}</div>`;
     dir = d;
-    const glyph = DSTAT[f.status], cls = fcls(glyph);
-    const [, name] = splitPath(f.path);
-    const n = f.binary ? `<i class="d-bin">bin</i>`
-      : `<i class="add">+${f.added}</i><i class="del">−${f.removed}</i>`;
-    return `${head}<button class="dr-row${i === active ? " on" : ""}" data-drow="${i}" title="${escAttr(f.path)}">`
-      + `${tickHtml(i, tick(i))}<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span>${pipsHtml(chips[i] ?? [])}<span class="dr-n">${n}</span></button>`;
+    return head + railRow(f, i, active, chips[i] ?? [], tick(i), mark(i));
   }).join("");
-  return rows;
+}
+
+/** The same rail as a tree: `rows` from ./review's `treeRows` over these files, in their order. */
+export function treeRailHtml(
+  files: DiffFile[], rows: TreeRow[], folded: ReadonlySet<string>, active: number, chips: Chip[][] = [],
+  tick: (i: number) => boolean | null = () => null, mark: (i: number) => string = () => "",
+): string {
+  return rows.map((r) => r.kind === "dir"
+    ? `<button class="dr-fold${folded.has(r.path) ? " shut" : ""}" data-drdir="${escAttr(r.path)}" style="--d:${r.depth}" title="${escAttr(r.path)}"><span class="dchev">▾</span>${esc(r.name)}</button>`
+    : railRow(files[r.index], r.index, active, chips[r.index] ?? [], tick(r.index), mark(r.index), r.depth)).join("");
 }
 
 // The repo's stash, newest first. Every worktree shares it, so a stash made on another

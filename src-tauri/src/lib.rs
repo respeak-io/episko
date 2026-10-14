@@ -13,6 +13,7 @@ mod icons;
 mod notes;
 mod platform;
 mod pty;
+mod review;
 mod summarize;
 mod sync;
 mod tasks;
@@ -503,6 +504,15 @@ pub fn run() {
             github::claim_policy,
             github::list_kept,
             github::set_kept,
+            review::pr_review,
+            review::pr_diff,
+            review::pr_blob,
+            review::pr_submit_review,
+            review::pr_reply,
+            review::pr_resolve,
+            review::pr_comment,
+            review::pr_merge,
+            review::pr_ready,
             notes::list_shared_notes,
             notes::set_shared_note,
             pty::spawn_ghostty,

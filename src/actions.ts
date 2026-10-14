@@ -17,7 +17,7 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
-  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, footPrefs, keyPrefs,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, reviewMirror, footPrefs, keyPrefs,
   markWorkdirStale, worktreesByRepo,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
@@ -574,7 +574,7 @@ export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // The fleet has neither: CSS already hides that column, so flipping `insp-off` there
 // changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
-  if (fleetMirror()) return;
+  if (fleetMirror() || reviewMirror()) return;
   const app = $("app");
   if (dashMirror()) {
     const folded = foldDashNext();

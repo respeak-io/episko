@@ -337,3 +337,51 @@ describe("the fleet dashboard's own dispatcher", () => {
     ).toBe(probed.length - 1);
   });
 });
+
+// The review stage is the fleet's shape again: `reviewview.ts` writes `data-rv*`, `reviewui.ts`
+// owns the one `#reviewPane` listener. A thread's head is its whole background, so it goes last
+// among the thread's controls or Reply/Resolve/→ agent would fold the thread instead.
+
+const REVIEWVIEW = readFileSync(new URL("../src/reviewview.ts", import.meta.url), "utf8");
+const REVIEWUI = readFileSync(new URL("../src/reviewui.ts", import.meta.url), "utf8");
+
+describe("the review stage's own dispatcher", () => {
+  // Read off an element that already matched, or typed into rather than clicked.
+  const PAYLOAD = new Set(["t", "d", "replytext"]);
+  const emitted = [...new Set([...REVIEWVIEW.matchAll(/data-rv([a-z]+)[=\s>"$]/g)].map((m) => m[1]))];
+  const probed = [...REVIEWUI.matchAll(/closest<HTMLElement>\("\[data-rv([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves", () => {
+    expect(emitted.length).toBeGreaterThan(15);
+    expect(probed.length).toBeGreaterThan(15);
+  });
+
+  it("keeps the dashboard's and the fleet's prefixes out of its markup", () => {
+    expect(REVIEWVIEW).not.toContain("data-dash");
+    expect(REVIEWVIEW).not.toContain("data-fl");
+  });
+
+  it("emits no attribute it never probes for — that is a button that does nothing", () => {
+    const dead = emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k));
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-rv${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-rv${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a thread's buttons BEFORE the thread head that contains them", () => {
+    for (const inner of ["reply", "resolve", "thagent"]) {
+      expect(probed.indexOf(inner), `data-rv${inner} must be probed before data-rvthfold`)
+        .toBeLessThan(probed.indexOf("thfold"));
+    }
+  });
+
+  it("probes a file header's buttons BEFORE the fold the header is", () => {
+    const fold = REVIEWUI.indexOf('closest<HTMLElement>("[data-dtoggle]")');
+    for (const inner of ["viewed", "filec", "add"]) {
+      expect(REVIEWUI.indexOf(`closest<HTMLElement>("[data-rv${inner}]")`)).toBeLessThan(fold);
+    }
+  });
+});

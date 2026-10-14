@@ -10,10 +10,11 @@ import { $, dropScrim, FILE_MANAGER, MOD, toast } from "./dom";
 import { basename, esc, escAttr } from "./format";
 import { hunkBody, parsePatch, type DiffFile, type DiffMode } from "./diff";
 import { canDiscardHunk, commitBlock, discardQuestion, filePaths } from "./gitops";
-import { chipsHtml, fileHtml, railHtml, stashBarHtml, stashListHtml, type FileActs } from "./patchview";
+import { chipsHtml, fileHtml, railHeadHtml, railHtml, stashBarHtml, stashListHtml, treeRailHtml, type FileActs } from "./patchview";
 import { clampHealth, fileChips, findingsText, setChips, type Chip } from "./health";
 import { applyPick, emptyPick, pickState, togglePickAll, type Pick, type PickCtx } from "./pick";
-import { diffMode, setDiffMode } from "./state";
+import { treeOrder, treeRows, type RailLayout } from "./review";
+import { diffMode, railLayout, setDiffMode, setRailLayout } from "./state";
 import type { GitActionResult, HealthReport, StashEntry } from "./types";
 
 // The footer/overlay menus are exclusive; opening this closes the rest.
@@ -47,6 +48,7 @@ let files: DiffFile[] = []; // kept so a layout switch repaints from memory, not
 let allOpen = false; // the bulk toggle's state; per-file twisties own themselves
 let focusPath = ""; // the file to open on (the explorer's ↵); cleared by the next open
 let activeFile = -1; // which file the rail marks; lets the spy skip unchanged frames
+const railFolded = new Set<string>(); // folders shut in the tree rail, by path; kept across reads
 // Per file, positionally matching `files`. The diff never waits for this: chips land on a
 // second pass, and empty means "no claim", which is what unmeasured must look like too.
 let chips: Chip[][] = [];
@@ -187,19 +189,10 @@ function acts(f: DiffFile, i: number): FileActs {
 
 const tickFor = (i: number) => (view === "work" && files[i] ? pick.picked.has(files[i].path) : null);
 
-// The sort key below, and the same split ./patchview draws.
-function dirName(p: string): [string, string] {
-  const i = p.lastIndexOf("/");
-  return i < 0 ? ["", p] : [p.slice(0, i), p.slice(i + 1)];
-}
-
 function renderDiffBody(parsed: DiffFile[], truncated: boolean) {
-  // Folder, then name, so the rail prints each folder once: plain path order interleaves
-  // `src/x` with `src/legacy/y`, and git's order appends untracked files as a second alphabet.
-  files = parsed.slice().sort((a, b) => {
-    const [da, na] = dirName(a.path), [db, nb] = dirName(b.path);
-    return da === db ? na.localeCompare(nb) : da.localeCompare(db);
-  });
+  // The tree's order in both layouts, so each folder's files are contiguous: git's own order
+  // interleaves `src/x` with `src/legacy/y` and appends untracked files as a second alphabet.
+  files = treeOrder(parsed);
   const tot = files.reduce((a, f) => ({ add: a.add + f.added, rem: a.rem + f.removed }), { add: 0, rem: 0 });
   $("diffSub").innerHTML = files.length
     ? `<span class="add">+${tot.add}</span> <span class="del">−${tot.rem}</span> · ${files.length} file${files.length === 1 ? "" : "s"}`
@@ -275,10 +268,16 @@ function applyChips() {
     else if (!had) host.insertAdjacentHTML("beforeend", html);
     else if (had.outerHTML !== html) had.outerHTML = html;
   }
-  // The rail holds no fold state, but it scrolls; keep that.
+  paintRail();
+}
+
+// The rail's folds live in `railFolded`, not the DOM, so a repaint keeps them; its scroll is kept by hand.
+function paintRail() {
   const rail = $("diffRail");
   const keep = rail.scrollTop;
-  rail.innerHTML = railHtml(files, activeFile, chips, tickFor);
+  rail.innerHTML = railHeadHtml(railLayout, files.length) + (railLayout === "tree"
+    ? treeRailHtml(files, treeRows(files.map((f) => f.path), railFolded), railFolded, activeFile, chips, tickFor)
+    : railHtml(files, activeFile, chips, tickFor));
   rail.scrollTop = keep;
 }
 
@@ -297,8 +296,8 @@ function paint(truncated: boolean) {
   const note = truncated ? `<div class="diff-trunc">Diff truncated: too large to show in full. Open a terminal for the complete diff.</div>` : "";
   const bar = view === "stash" && shownStash ? stashBarHtml(shownStash) : "";
   $("diffBody").innerHTML = bar + files.map((f, i) => fileHtml(f, i, diffMode, allOpen, acts(f, i), chips[i] ?? [])).join("") + note;
-  $("diffRail").innerHTML = railHtml(files, -1, chips, tickFor);
   activeFile = -1;
+  paintRail();
   activeFinding = "";
   spy();
 }
@@ -582,8 +581,23 @@ $("diffCopy").addEventListener("click", () => {
     .catch(() => toast("Couldn't reach the clipboard"));
 });
 $("diffRail").addEventListener("click", (e) => {
-  if (onWriteClick(e, e.target as HTMLElement)) return;
-  const row = (e.target as HTMLElement).closest<HTMLElement>("[data-drow]");
+  const t = e.target as HTMLElement;
+  if (onWriteClick(e, t)) return;
+  const lay = t.closest<HTMLElement>("[data-drlayout]");
+  if (lay) {
+    setRailLayout(lay.dataset.drlayout as RailLayout);
+    localStorage.setItem("cc-diff-tree", railLayout);
+    paintRail();
+    return;
+  }
+  const dir = t.closest<HTMLElement>("[data-drdir]");
+  if (dir) {
+    const p = dir.dataset.drdir!;
+    if (!railFolded.delete(p)) railFolded.add(p);
+    paintRail();
+    return;
+  }
+  const row = t.closest<HTMLElement>("[data-drow]");
   if (row) revealFile(+row.dataset.drow!);
 });
 $("diffBody").addEventListener("scroll", spy, { passive: true });

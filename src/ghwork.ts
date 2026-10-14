@@ -15,6 +15,7 @@ export interface GhThread {
   author: string | null;
   draft: boolean;
   updated_at: string;
+  review_requested?: boolean; // a PR somebody asked you to review
 }
 
 export interface GhResult {

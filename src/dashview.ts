@@ -1,6 +1,7 @@
 // The project dashboard's markup: data in, string out, like every other *view module.
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
+import { icon } from "./svgicons";
 import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
@@ -450,13 +451,15 @@ function qWorkRow(i: QueueItem, reading: number | null): string {
     : `<button class="go" data-dashwork="${t.number}" data-tip="Start an agent on this">▶</button>`;
   // The row reads the thread HERE; the browser is the second verb, never the click.
   const web = `<button class="tb" data-dashurl="${escAttr(t.url)}" data-tip="Open it on GitHub">↗</button>`;
+  const review = t.kind === "pr"
+    ? `<button class="tb${t.review_requested ? " ask" : ""}" data-dashreview="${t.number}" data-tip="${t.review_requested ? "Your review was requested. " : ""}Review its changes here">${icon("files", "solo")}</button>` : "";
   const triage = i.triage
     ? `<button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
       + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button>`
     : "";
   return qrow(`q-work${h ? " claimed" : ""}${t.number === reading ? " reading" : ""}`, ` data-dashissue="${t.number}"`,
     `<span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>`, i,
-    qacts(`${triage}${web}`) + go, `${t.title} — read it here`);
+    qacts(`${triage}${review}${web}`) + go, `${t.title} — read it here`);
 }
 
 // An advisory's whole row opens GitHub, as the Dependencies card's did. A bot PR cannot: its
@@ -979,14 +982,14 @@ function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>):
     + ` title="${escAttr(picked.has(l) ? `Stop filtering by ${l}` : `Only show ${l}`)}">${esc(l)}</span>`).join("");
   const claim = h
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
-  const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
+  const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Agent" : "▶ Start";
   return `<div class="br" data-dashissue="${t.number}" title="Read it here">
     <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
     <span class="num">${t.number}</span>
     <span class="mid"><span class="ti">${esc(t.title)}</span>
       ${labels || claim ? `<span class="sub">${labels}${claim}</span>` : ""}</span>
     <span class="age">${esc(shortAge(t.updated_at))}</span>
-    <span class="go-slot"><button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">↗</button><button
+    <span class="go-slot">${t.kind === "pr" ? `<button class="web" data-dashreview="${t.number}" title="Review its changes here">${icon("files", "solo")}</button>` : ""}<button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">↗</button><button
       class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
   </div>`;
 }

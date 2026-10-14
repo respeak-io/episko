@@ -13,6 +13,20 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Review a pull request without leaving Episko.** ⊞ on a PR in the project's queue, or *Review
+  changes* in its reader, opens it on a stage of its own: the diff against the merge base, each
+  file's review threads on the lines they belong to, and a `+` on every line GitHub will take a
+  comment on (shift-click for a range, ± to write a suggestion). Comments collect as a pending
+  review and go to GitHub in one Submit, as Comment, Approve or Request changes. Reply to and
+  resolve threads, tick files Viewed (the tick clears itself when the file changes again), see
+  only what changed since your last review or one commit at a time, hide whitespace, reveal more
+  context, read the conversation and the checks, mark it ready, and merge it, pinned to the head
+  you reviewed. *→ agent* prefills a thread, or your whole pending review, into a session on the
+  PR's branch, in its own worktree.
+
+~ **The changed-files rail is a folder tree.** Both the review and the working-set viewer nest
+  files in their folders now; the switch at the top of the rail puts the flat list back.
+
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it
 started. Each project gets its own settings, permission mode and auto-fetch included. The review
