@@ -21,7 +21,7 @@ import {
   bandSkeleton, branchesOverlay, cardSkeleton, checkoutCard, closeSheet, dispatchSheet,
   ghUnavailable, liveHereCard, type LiveRow, missingCard, notesOverlay, projectFoot, queueCard, sinceBand,
   triageOverlay, verbTiles, worksetCard, workOverlay,
-  type BandLine, type CleanReport, type DashSync,
+  type BandLine, type CleanReport, type DashSync, type WhereView,
 } from "./dashview";
 import { landedCard } from "./landedview";
 import { issueOverlay, type RailFrom, type RailRow } from "./issueview";
@@ -50,8 +50,9 @@ import {
 import { openMenu } from "./menu";
 import { openBranchMenu } from "./projmenu";
 import {
-  ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
-  resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
+  ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, defaultBase, defaultWhere, dispatchBases,
+  dispatchBranch, dropClaim, recordClaim, resolveClaim, whereProblem,
+  type ClaimAllow, type ClaimOutcome, type ClaimPolicy, type DispatchWhere,
 } from "./claim";
 import {
   bucketed, claimComment, closeComment, filterWork, ghPickable, ghWho, holderOf, isoDay, quietFor,
@@ -204,6 +205,11 @@ type Sheet =
 let sheet: Sheet | null = null;
 /// What this dispatch would write, editable in the sheet before it is sent.
 let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: running" };
+// Where it runs. The kind picked last is remembered for the run, never persisted, like `policy`.
+let where: DispatchWhere = { kind: "here" };
+let whereLast: "here" | "new" = "here";
+let dispBranches: BranchInfo[] | null = null;   // the base list; `branchData`'s when that is loaded
+let baseTouched = false;
 // Generated summaries, keyed by day and kept apart from `days` so a reload keeps what was
 // paid for. `summaries` is your day (your sessions and spend; never reaches a file);
 // `teamSummaries` is the project's (commits and PRs; the half `.episko/digest.md` holds).
@@ -1023,7 +1029,8 @@ export function renderDash(): void {
   else if (sheet?.kind === "dispatch") {
     const agent = effectiveAgent(root());
     const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
-    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
+    const html = dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t), whereView());
+    keepCaret($("dashSheet"), "#dashDispBranch", () => { paint("dashSheet", html); });
   } else if (sheet?.kind === "deps") {
     const agent = effectiveAgent(root());
     const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
@@ -1088,7 +1095,7 @@ export function openDashboard(project: string, path: string): void {
     sinceAt = seenAt(seen, path);
     seen = stampSeen(seen, path, Date.now());
     saveSeen(seen);
-    days = []; heads = []; facts = null; openView = null;
+    days = []; heads = []; facts = null; openView = null; dispBranches = null;
     queueFilter = "all"; queueQuery = ""; queueOpen.clear(); botFold = true;
     workKind = "all"; workLabels = new Set(); workFree = false; workQuery = "";
     landed = null; landedLoading = false;
@@ -1370,7 +1377,7 @@ export function wireDashboard(): void {
     if (work) {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
       // Never straight to a dispatch: it sends a prompt AND writes to a public repo.
-      if (th) { sheet = { kind: "dispatch", t: th }; renderDash(); }
+      if (th) openDispatch(th);
       return;
     }
     const close = t.closest<HTMLElement>("[data-dashclose]");
@@ -1424,6 +1431,16 @@ export function wireDashboard(): void {
     if (act === "close") { void doClose(); return; }
     if (act === "dispatch") { void doDispatch(); return; }
     if (act === "deps") { void doDepDispatch(); return; }
+  });
+  $("dashSheet").addEventListener("change", (e) => {
+    const el = e.target as HTMLSelectElement;
+    if (sheet?.kind !== "dispatch") return;
+    if (el.id === "dashDispWhere") pickWhere(sheet.t, el.value);
+    else if (el.id === "dashDispBase" && where.kind === "new") { where = { ...where, base: el.value }; baseTouched = true; renderDash(); }
+  });
+  $("dashSheet").addEventListener("input", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.id === "dashDispBranch" && where.kind === "new") { where = { ...where, branch: el.value }; renderDash(); }
   });
   // A branch row's menu. Checkout rows carry `data-wt` instead and are answered by ./projmenu's
   // document-level handler, which is the same menu a ⑃ cluster header opens.
@@ -1972,11 +1989,14 @@ async function setKept(number: number, keep: boolean): Promise<void> {
 // reading. The claim is written after the session exists, never before.
 async function doDispatch(): Promise<void> {
   if (sheet?.kind !== "dispatch") return;
-  const t = sheet.t, r = root(), n = name();
+  const t = sheet.t, r = root(), n = name(), w = where;
+  if (whereView()?.problem) return;
   sheet = null;
   renderDash();
+  const dir = await dispatchDir(r, w);
+  if (!dir) return;
   // Follows the project provider preference; claim release rides the provider-neutral `pty-exit`.
-  const sid = await host.launch(n, r, { colorKey: r });
+  const sid = await host.launch(n, dir.path, { colorKey: r, worktree: dir.branch, ...(dir.branch ? { branch: dir.branch } : {}) });
   if (typeof sid !== "string") return;   // launch already toasted the spawn error; no claim either
   // The server's lease goes whatever the GitHub policy writes: it is the fast path, gh the floor.
   const p = pid();
@@ -2017,6 +2037,59 @@ async function doDispatch(): Promise<void> {
       .catch(() => {});
   }, 1400);
   toast(`Started on #${t.number}`);
+}
+
+function openDispatch(t: GhThread): void {
+  baseTouched = false;
+  const bases = dispatchBases(branchData?.branches ?? dispBranches ?? []);
+  where = defaultWhere(t, heads, whereLast, defaultBase(t, bases));
+  sheet = { kind: "dispatch", t };
+  renderDash();
+  const r = root();
+  if (branchData || tier === "none") return;
+  // The base list only: `loadBranches` would also ask GitHub twice for a menu of names.
+  void invoke<BranchInfo[]>("git_branch_list", { repoDir: r, base: cmpBase[r] ?? null }).catch(() => [] as BranchInfo[])
+    .then((list) => {
+      if (root() !== r) return;
+      dispBranches = list;
+      if (sheet?.kind === "dispatch" && where.kind === "new" && !baseTouched) where = { ...where, base: defaultBase(sheet.t, dispatchBases(list)) };
+      renderDash();
+    });
+}
+
+function pickWhere(t: GhThread, v: string): void {
+  if (v === "here") { where = { kind: "here" }; whereLast = "here"; }
+  else if (v === "new") {
+    where = { kind: "new", branch: dispatchBranch(t), base: defaultBase(t, dispatchBases(branchData?.branches ?? dispBranches ?? [])) };
+    whereLast = "new";
+    baseTouched = false;
+  } else if (v.startsWith("wt:")) where = { kind: "wt", path: v.slice(3) };
+  renderDash();
+}
+
+/** The Where block, or `null` off a repository, where there is nowhere else to run. */
+function whereView(): WhereView | null {
+  if (tier === "none") return null;
+  const branches = branchData?.branches ?? dispBranches ?? [];
+  const exists = where.kind === "new" && branches.some((b) => !b.remote && b.name === (where as { branch: string }).branch.trim());
+  return { where, heads, bases: dispatchBases(branches), exists, problem: whereProblem(where, heads) };
+}
+
+/** The folder a dispatch launches in, cutting its worktree first when it asked for one. */
+async function dispatchDir(r: string, w: DispatchWhere): Promise<{ path: string; branch: string | null } | null> {
+  if (w.kind === "here") return { path: r, branch: null };
+  if (w.kind === "wt") return { path: w.path, branch: heads.find((h) => h.path === w.path)?.branch || null };
+  const branch = w.branch.trim();
+  try {
+    const path = await invoke<string>("create_worktree", { repoDir: r, branch, base: w.base || null });
+    if (root() === r) heads = [...heads, { path, branch, is_main: false, exists: true }];
+    void host.refreshGit();
+    return { path, branch };
+  } catch (e) {
+    dlog("error", `dispatch · worktree ${branch}: ${e}`);
+    toast("worktree: " + e);
+    return null;
+  }
 }
 
 export function releaseClaimFor(sessionId: string): void {

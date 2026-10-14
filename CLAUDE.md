@@ -160,7 +160,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `deps.ts` | dependency work: a narrow semver that answers `null` rather than guessing, the verdict a fix earns (lockfile bump / widen the range / major / via a parent), one row per advisory however many packages it hit, which bot PR already covers it, and the brief an agent is sent (see docs/dependencies.md) |
 | `markdown.ts` | the markdown reader's rules: which paths it takes, `marked` with every token that could carry author markup overridden (no raw HTML, no `href` but `#`, no `src` it did not write), link targets resolved against the document, GitHub's heading slugs, `cc-markdown`'s prefs (docs/markdown.md) |
 | `changelog.ts` | CHANGELOG.md → releases, `inlineMd`'s bold/italic/code, and the one moment *What's new* opens by itself |
-| `claim.ts` | what Episko writes when you dispatch at shared work, and who decides |
+| `claim.ts` | what Episko writes when you dispatch at shared work, and who decides; where the dispatched agent runs (this folder, a checkout, a new worktree) |
 | `sound.ts` | which moments are worth hearing, the tones as data, and (the hard part) what stops a fleet becoming a fruit machine |
 | `keys.ts` | the bindable actions, a chord's parse/format/match, what happens when a rebind takes a chord somebody else had, and what the master switch turns off |
 | `footprefs.ts` | which segments the status bar shows: the table, the store, its repair, and why three of them have no switch |

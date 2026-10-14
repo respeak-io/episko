@@ -3619,6 +3619,11 @@ select.in-ctl { cursor: pointer; }
 /* a switch the project turned off is greyed, never hidden: "why can't I assign?" needs an answer */
 .dsw.off { opacity: .4; cursor: not-allowed; }
 .dsh code { font: 10px var(--font-mono); color: var(--accent-ink); }
+.dsh .dw-f { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+.dsh .dw-f select, .dsh .dw-f input { min-width: 0; padding: 4px 7px; border-radius: 6px; font: 11px var(--font-mono); color: var(--text); background: var(--bg); border: 1px solid var(--hair); }
+.dsh .dw-f :is(select, input):focus { outline: none; border-color: var(--accent-line); }
+.dsh .dw-f select:disabled { opacity: .5; }
+.dsh .foot .act:disabled { opacity: .45; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .dsw i, .dsw i::after { transition: none; } }
 
 /* ═══ What's new: CHANGELOG.md bundled at build time; ./changelog parses it, ./changelogui owns the

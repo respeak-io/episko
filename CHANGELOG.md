@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Starting an agent on an issue asks where it should run.** The dispatch sheet gains a *Where*
+  picker: this folder, a worktree that already exists, or a new worktree on a branch it names for
+  you (`issue-<n>-<title>`, or a pull request's own head) and cuts from the branch you choose, the
+  trunk by default. Dispatching the same issue again lands beside the earlier work.
+
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it
 started. Each project gets its own settings, permission mode and auto-fetch included. The review
