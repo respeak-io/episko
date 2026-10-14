@@ -75,7 +75,7 @@ One project's own settings, in a dialog of its own. It opens from the dashboard'
 
 - **Two headed groups, *Yours* and *The team's*.** *Yours* holds overrides that stay on this
   machine and affect nobody else: agent, permission mode, auto-fetch and its cadence, GitHub
-  account, run-on-stop. *The team's* holds the sharing channel, which switches teammates too.
+  account, run-on-stop. *The team's* holds the sharing channel, which switches teammates too, and the dev stack's `[stack]` table, which is committed: its row shows what is set and starts an agent to write it (docs/stack.md).
   Changing a team setting while believing it is personal is the mistake the split exists to
   prevent, so a new row has to choose a group.
 - **Every override row offers *Settings* as its first option**, and that is the only way back:

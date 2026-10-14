@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, stackTally,
+  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, stackBrief, stackSummary, stackTally,
   type Checkout, type Container, type PaneIn, type StackInput,
 } from "../src/stack";
 
@@ -138,5 +138,21 @@ describe("buildStacks", () => {
     // Only the worktree is named: the repo's own checkout is where a container is expected to come from.
     expect(left[0].boxes.map((b) => b.from)).toEqual(["", "refactor"]);
     expect(stackTally(left)).toEqual({ serving: 2, failed: false });
+  });
+});
+
+describe("the [stack] table", () => {
+  it("summarises what is set, and nothing when nothing is", () => {
+    expect(stackSummary({ up: "just:dev", down: "just:down", compose: ["infra"] })).toBe("starts with just:dev · stops with just:down · compose infra");
+    expect(stackSummary({})).toBe("");
+  });
+
+  it("briefs an agent in one line that reads, never runs, and spells ids the way tasks.rs does", () => {
+    const b = stackBrief(false);
+    expect(b).not.toContain("\n"); // a newline in a prefilled REPL would send it
+    expect(b).toMatch(/Do not run any of them/);
+    expect(b).toContain("vscode:dev-frontend-backend");
+    expect(b).toMatch(/do not commit/);
+    expect(stackBrief(true)).toMatch(/^Check the \[stack\] table/);
   });
 });

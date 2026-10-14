@@ -14,6 +14,8 @@ import { activeBind, comboKeys } from "./keys";
 import { clearStopRule, stopRules } from "./tasks";
 import { projectIdOf, serverDigest, serverNotes, status as syncStatus, teamShare } from "./synclink";
 import { btnCtl, nilCtl, projSettingsHtml, segCtl, type PsRow, type PsSeg } from "./projsetview";
+import { stackSummary, type StackCfg } from "./stack";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface ProjSetHost {
   setAgent: (key: string, id: string | null) => void;
@@ -24,15 +26,19 @@ export interface ProjSetHost {
   moveLog: (key: string) => Promise<void>;
   hasDigest: (key: string) => Promise<boolean>;
   refreshGh: () => Promise<unknown>;
+  setupStack: (key: string, hasTable: boolean) => void;
+  openStackFile: (key: string) => void;
 }
 let host: ProjSetHost = {
   setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
+  setupStack: () => {}, openStackFile: () => {},
 };
 export function setProjSetHost(h: ProjSetHost) { host = h; }
 
 let key: string | null = null;
 let digestFile = false;
+let stackCfg: StackCfg = {};
 let last = "";
 
 export const projSettingsOpen = () => $("projDlg").classList.contains("show");
@@ -40,6 +46,7 @@ export const projSettingsOpen = () => $("projDlg").classList.contains("show");
 export function openProjectSettings(k: string) {
   key = k;
   digestFile = false;
+  stackCfg = {};
   last = "";
   $("scrim").classList.add("show");
   $("projDlg").classList.add("show");
@@ -47,6 +54,7 @@ export function openProjectSettings(k: string) {
   // Both answers arrive after the first paint; neither is worth holding the dialog for.
   void host.refreshGh().then(renderProjSettings);
   void host.hasDigest(k).then((y) => { if (key === k) { digestFile = y; renderProjSettings(); } }).catch(() => {});
+  void invoke<StackCfg>("stack_config", { dir: k }).then((c) => { if (key === k) { stackCfg = c; renderProjSettings(); } }).catch(() => {});
 }
 export function closeProjectSettings() {
   if (!projSettingsOpen()) return;
@@ -162,6 +170,19 @@ function shareRow(k: string): PsRow {
   };
 }
 
+// Committed, so the team's; the agent proposes and the human commits (docs/stack.md).
+function stackRow(): PsRow {
+  const cur = stackSummary(stackCfg);
+  return {
+    id: "stack", label: "Dev stack", hint: "How this project's dev environment starts and stops, so Episko can show it as one stack. [stack] in .episko/episko.toml.",
+    cur: cur || undefined,
+    note: cur ? undefined : "Not set: Episko infers the stack from what runs (panes, ports and the repo's Compose containers).",
+    ctl: (cur ? btnCtl("stackfile", "Open file", "Open .episko/episko.toml") : "")
+      + btnCtl("stacksetup", cur ? "Check with an agent" : "Set up with an agent",
+        "Start an agent with a prefilled brief: it reads the justfile, tasks.json and compose files, writes [stack], and shows you the diff. Nothing is sent until you press Enter."),
+  };
+}
+
 const mineRows = (k: string): PsRow[] => [agentRow(k), permRow(k), ...fetchRows(k), ghRow(k), stopRow(k)];
 /** How many of this project's own rows answer for themselves: the panel's lead and the menu's sub. */
 export const overrideCount = (k: string): number => mineRows(k).filter((r) => r.overridden).length;
@@ -172,8 +193,8 @@ export function renderProjSettings() {
   const html = projSettingsHtml({
     name: basename(k), path: tilde(k), accent: accentFor(k),
     mine: mineRows(k),
-    team: [shareRow(k)],
-    teamNote: "Branch locks, claims and health thresholds are committed in .episko/episko.toml and edited where they act.",
+    team: [shareRow(k), stackRow()],
+    teamNote: "Branch locks, claims, health thresholds and the dev stack are committed in .episko/episko.toml and edited where they act.",
   });
   if (html === last) return;
   last = html;
@@ -191,6 +212,8 @@ function act(verb: string, val: string) {
   else if (verb === "gh") host.setGh(k, val || null);
   else if (verb === "unstop") clearStopRule(k);
   else if (verb === "share") host.setShare(k, val as ShareMode);
+  else if (verb === "stacksetup") { host.setupStack(k, !!stackSummary(stackCfg)); closeProjectSettings(); return; }
+  else if (verb === "stackfile") { host.openStackFile(k); return; }
   else if (verb === "movelog") { void host.moveLog(k).then(() => { digestFile = false; renderProjSettings(); }); return; }
   else if (verb === "reset") {
     if (val === "stop") clearStopRule(k);

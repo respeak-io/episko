@@ -11,6 +11,7 @@ import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
+import { stackBrief } from "./stack";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   phaseText, providerCapabilities, providerSessionKey, resumeAgent,
@@ -127,6 +128,16 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
 
 // ---------- launch ----------
 // Returns the session id, or null when the spawn failed; the dashboard's dispatch depends on it.
+// An agent that writes `[stack]` (docs/stack.md). Prefilled, not sent: the dashboard's dispatch
+// contract, since the human should read what the agent is being asked to do to their repo.
+export async function setupStack(root: string, hasTable: boolean): Promise<void> {
+  const sid = await launch(basename(root), root, { colorKey: root });
+  if (typeof sid !== "string") return;
+  // Claude's REPL needs a moment before it accepts input; failing to type is harmless.
+  setTimeout(() => { void invoke("write_pty", { sessionId: sid, data: stackBrief(hasTable) }).catch(() => {}); }, 1400);
+  toast("Brief prefilled. Read it, then press Enter to send");
+}
+
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();

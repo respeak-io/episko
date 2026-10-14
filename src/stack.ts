@@ -229,3 +229,32 @@ export function stackTally(stacks: readonly Stack[]): { serving: number; failed:
   }
   return { serving, failed };
 }
+
+// ---------- the [stack] table ----------
+
+/** One line for the project settings row; empty when there is no table. */
+export function stackSummary(cfg: StackCfg): string {
+  return [
+    cfg.up && `starts with ${cfg.up}`, cfg.down && `stops with ${cfg.down}`,
+    cfg.compose?.length && `compose ${cfg.compose.join(", ")}`,
+  ].filter(Boolean).join(" · ");
+}
+
+/**
+ * What the setup agent is told: one line, since a newline would send it from the REPL before the
+ * human has read it. It reads and never runs (`just dev` would start the thing it describes), and
+ * the id rules are tasks.rs's, so whatever it writes resolves to a real task.
+ */
+export function stackBrief(hasTable: boolean): string {
+  return [
+    hasTable
+      ? "Check the [stack] table in .episko/episko.toml against how this project's dev environment actually starts, and fix what is wrong or missing."
+      : "Write a [stack] table into .episko/episko.toml describing how this project's dev environment starts and stops.",
+    "Episko (the app this session runs in) reads it to group a dev run's panes with the project's Docker Compose containers.",
+    "Read the justfile, .vscode/tasks.json, package.json scripts, Makefile, .episko/tasks.toml, docker-compose files and the scripts they call. Do not run any of them, and do not start or stop anything.",
+    "The table has three optional keys: up = the task that brings the whole dev environment up; down = the task that stops it, especially its containers; compose = a list of Compose project names that belong to it but are started from outside this repo (leave it out when the compose files live in the repo).",
+    "Values are Episko task ids: just:<recipe>, npm:<script>, make:<target>, vscode:<label> and episko:<label>, where a vscode or episko label is lowercased with every run of other characters turned into one dash (\"Dev: Frontend + Backend\" is vscode:dev-frontend-backend).",
+    "If the project has no task that stops its containers, add one to .episko/tasks.toml ([[task]] with label and run) and point down at it.",
+    "Edit the file in place and keep every other table and comment in it. When done, show me the diff and what each value is based on; do not commit.",
+  ].join(" ");
+}

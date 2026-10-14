@@ -31,6 +31,12 @@ compose = ["shared-infra"]  # Compose projects that belong here wherever they we
 
 Ids are task ids as `list_runnables` and the Run picker spell them. Everything is optional, and a broken file reads as no table.
 
+## Setting it up with an agent
+
+Project settings › *The team's* › **Dev stack** shows what `[stack]` holds, or says the stack is inferred. **Set up with an agent** starts a session in the project with `stackBrief` prefilled, the dashboard dispatch's contract: Episko types the brief and you press Enter, because it asks an agent to edit your repo. The brief tells the agent to read the justfile, `tasks.json`, compose files and scripts **without running any of them**, to spell ids the way `tasks.rs` does, to add a stop task to `.episko/tasks.toml` when the project has none, and to show the diff rather than commit. It is one line because a newline would send it.
+
+**It never syncs.** `up` and `down` name tasks Episko runs, the same class as `tasks.toml`, which docs/sync.md keeps in git: a value that arrived through the server would change what ⏹ runs with no commit anyone reviewed.
+
 ## Not yet
 
 Closing a stack's pane is still the single SIGHUP every pane gets, so a recipe's own `trap` cleanup may not run; sending Ctrl+C to the foreground group first is the next step. Container logs are not shown yet. Agents cannot see stacks until the MCP tools grow `stack_status` and `ensure_stack`.

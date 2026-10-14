@@ -27,7 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
-import { closeMdReader, mdReaderOpen } from "./mdreader";
+import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
@@ -52,7 +52,7 @@ import {
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
-  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
+  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift, setupStack,
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
@@ -227,6 +227,7 @@ setProjSetHost({
   setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
+  setupStack: (root, hasTable) => void setupStack(root, hasTable), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
