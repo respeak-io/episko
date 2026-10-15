@@ -317,7 +317,7 @@ function stackInput(): PaneIn[] {
     out.push({
       sid: s2.id, root: r.root, project: s2.project, taskId: r.id, label: r.label, background: r.background,
       exit: r.exitCode, url: r.url, startedAt: r.startedAt, groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot,
-      pages: r.pages,
+      pages: r.pages, kind: r.kind, readyAt: r.readyAt, describedPages: r.describedPages, stops: r.stops,
     });
   }
   return out;
@@ -359,7 +359,7 @@ async function refreshContainers(): Promise<boolean> {
 }
 
 function downLabel(st: Stack): string {
-  const down = configs.get(st.checkout)?.cfg.down;
+  const down = configs.get(st.checkout)?.cfg.down ?? st.stops;
   return down ? `Run ${down} to stop the containers` : `Stop the containers (docker compose -p ${st.composeProjects.join(", ")} stop)`;
 }
 
@@ -377,7 +377,7 @@ function closeStack(key: string) {
 async function stackDown(key: string) {
   const st = currentStacks().find((x) => x.key === key);
   if (!st) return;
-  const down = configs.get(st.checkout)?.cfg.down;
+  const down = configs.get(st.checkout)?.cfg.down ?? st.stops;
   if (down) {
     const repo = checkouts().find((c) => c.path === st.checkout)?.repo ?? st.checkout;
     const task = (await discoverTasks(st.checkout, repo, true)).find((r) => r.id === down);

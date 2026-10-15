@@ -40,6 +40,25 @@ pages = { App = "https://app.localhost:8443/ui/" }  # addresses nothing announce
 
 Ids are task ids as `list_runnables` and the Run picker spell them. Everything is optional, and a broken file reads as no table.
 
+## What each task is
+
+tasks.rs guesses a long-running task from its name (`dev`, `start`, `serve`, `watch`), which makes `just app` a quick check and a GUI window something that never "finishes". The describer replaces the guess with a reading: every task gets a `[run."<id>"]` entry in `.episko/episko.toml`, written by the same headless, read-only agent as `[stack]` and reviewed the same way.
+
+```toml
+[run."just:dev"]
+kind = "server"      # check test build server app watch infra-up infra-down deploy script
+pages = { Frontend = "http://wirksam.localhost:47300", Backend = "http://wirksam.localhost:47301" }
+ready = "Ctrl+C to stop"   # a line its output prints once it is up
+stops = "episko:stop-dev-containers"
+brings_up = ["db", "adminer"]
+hash = "1f3a9c0e"    # cmdHash of the command it described
+```
+
+- **Pinned to the command it read.** `hash` is `cmdHash` of the command (a compound task: the tasks it runs). When the recipe changes, the entry is **stale**: the picker says *changed?* and the description changes nothing until it is re-checked. A description of a command that no longer exists is not a fact.
+- **It can only add.** A fresh `server`/`app`/`watch` turns `background` on; nothing turns a declared `isBackground` or a tasks.toml `background = true` off.
+- **What reads it:** the picker's end column (the kind, a `deploy` in red with its note as the tooltip), a stack member's readiness (`ready` latched off its output; an `app` is up while its window runs), the stack's page chips (`described`, after `[stack] pages`), and ⏹ (`stops`, when `[stack] down` is unset).
+- **Measured:** wirksam, 37 tasks, 24 seconds. It followed `just dev` into `scripts/dev.mjs` for the real ports and host, and took the stop command from that script's own comment.
+
 ## Setting it up with an agent
 
 Two doors, one agent. The **▶ Run picker** carries a *Dev stack* strip, since that is where you go to start one: it shows the table, offers **▶ Start stack** when `up` names a task this checkout has (that row is tagged *stack*), and otherwise offers the agent. Project settings › *The team's* › **Dev stack** shows the same and adds *Open file*.

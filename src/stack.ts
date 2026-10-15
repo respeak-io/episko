@@ -22,10 +22,11 @@ export interface PaneIn {
   background: boolean; exit: number | null; url?: string; startedAt: number;
   groupId?: string; groupLabel?: string; groupRoot?: string;
   pages?: { label: string; url: string }[];
+  kind?: string; readyAt?: number; describedPages?: Record<string, string>; stops?: string;
 }
 
 /** One address worth opening, and who said so: `[stack]`, a pane's own banner, or a proxy rule. */
-export interface StackPage { name: string; url: string; from: "declared" | "pane" | "proxy" }
+export interface StackPage { name: string; url: string; from: "declared" | "described" | "pane" | "proxy" }
 
 export type Health = "healthy" | "unhealthy" | "starting" | "none";
 export type CState = "up" | "starting" | "failing" | "done" | "stopped";
@@ -41,6 +42,7 @@ export interface Stack {
   key: string; project: string; checkout: string; label: string;
   members: Member[]; boxes: Box[]; composeProjects: string[];
   pages: StackPage[];
+  stops?: string; // what the stack's own tasks say stops them, when [stack] down does not
   state: StackState; why: string; startedAt: number;
 }
 
@@ -127,7 +129,8 @@ function memberOf(p: PaneIn, ports: readonly number[]): Member {
   const useful = ports.filter(usefulPort);
   const state: MState = p.exit != null
     ? (p.exit === 0 && !p.background ? "done" : "failed") // a server that exits, even 0, is down
-    : p.background && (p.url || useful.length) ? "serving" : "running";
+    // An app is a window, not a port: up once it runs, unless its description names a ready line.
+    : p.background && (p.url || useful.length || p.readyAt || (p.kind === "app" && !p.describedPages)) ? "serving" : "running";
   return { sid: p.sid, label: p.label, background: p.background, state, url: p.url, ports: useful, exit: p.exit };
 }
 
@@ -152,6 +155,7 @@ function stackPages(cfg: StackCfg | undefined, group: readonly PaneIn[], boxes: 
     if (/^https?:\/\//i.test(url) && !out.some((p) => p.url.replace(/\/$/, "") === url.replace(/\/$/, ""))) out.push({ name, url, from });
   };
   for (const [name, url] of Object.entries(cfg?.pages ?? {})) add(name, url, "declared");
+  for (const p of group) if (p.exit == null) for (const [name, url] of Object.entries(p.describedPages ?? {})) add(name, url, "described");
   for (const p of group) {
     if (p.exit != null) continue;
     for (const pg of p.pages ?? []) add(pg.label && !GENERIC.has(pg.label.toLowerCase()) ? pg.label : bare(pg.url), pg.url, "pane");
@@ -217,6 +221,7 @@ export function buildStacks(inp: StackInput): Stack[] {
       label: group[0].groupLabel ?? (members.length === 1 ? members[0].label : group[0].label),
       members, boxes, composeProjects: [...new Set(boxes.map((b) => b.c.project))],
       pages: stackPages(cfg, group, boxes),
+      stops: cfg?.down ?? group.find((p) => p.stops)?.stops,
       ...sumUp(members, boxes), startedAt,
     });
   }
@@ -275,35 +280,11 @@ export function taskSlug(label: string): string {
 }
 
 /** What `propose_stack` hands back: the table, the tasks it adds, one reason per value. */
-export interface StackProposal { stack: StackCfg; tasks: { label: string; run: string }[]; why: string[] }
-export interface TaskRef { id: string; cmd: string; background: boolean }
-
-/**
- * The headless agent's prompt (stack.rs runs it read-only). It is handed the ids discovery found,
- * so it never has to guess a slug, and asked for one fenced block plus a reason per value.
- */
-export function stackPrompt(current: StackCfg, tasks: readonly TaskRef[]): string {
-  const now = stackSummary(current);
-  return [
-    "Read this software project and work out how its development environment starts and stops.",
-    "Episko, a desktop app, will use your answer to show a dev run's terminal panes and the project's Docker Compose containers as one stack.",
-    "You can only read files. Look at the justfile, .vscode/tasks.json, package.json scripts, Makefile, .episko/tasks.toml, docker-compose files and the scripts they call.",
-    "",
-    "These are the task ids Episko found here. Use them exactly as written:",
-    ...(tasks.length ? tasks.map((t) => `- ${t.id} · ${t.cmd}${t.background ? " [long-running]" : ""}`) : ["(none)"]),
-    "",
-    now ? `The current [stack] table: ${now}. Keep what is right and fix what is not.` : "There is no [stack] table yet.",
-    "",
-    "Answer with exactly one fenced ```toml block holding a [stack] table:",
-    "- up: the task that brings the whole dev environment up (servers and containers), usually the default build task or a dev recipe.",
-    "- down: the task that stops it, especially its containers.",
-    "- compose: only Compose project names started from outside this repository; usually leave it out.",
-    "- pages: an inline table of the addresses a developer opens while it runs, name = URL, exactly as the scripts, env files or proxy config define them (a named host like app.localhost matters: never rewrite it to localhost). Leave it out when the dev servers print their own addresses.",
-    "Leave out any key the files do not support.",
-    "If no listed task stops the containers, add a [[task]] with label and run (a shell command run from the project root, using docker compose stop rather than down) to the same block, and set down to episko:<the label lowercased, every run of other characters turned into one dash>.",
-    "After the block write a line containing only WHY, then one line per value starting with \"- up:\", \"- down:\", \"- compose:\", \"- pages:\" or \"- task:\" saying which file and lines it is based on. Write nothing else.",
-  ].join("\n");
+export interface StackProposal {
+  stack: StackCfg; tasks: { label: string; run: string }[]; why: string[];
+  run?: Record<string, { kind: string; pages?: Record<string, string>; ready?: string | null; stops?: string | null; brings_up?: string[]; note?: string | null; hash?: string }>;
 }
+export interface TaskRef { id: string; cmd: string; background: boolean }
 
 /** Values pointing at no task this project has (or will have) are dropped, and said so. */
 export function checkProposal(p: StackProposal, tasks: readonly TaskRef[]): { stack: StackCfg; dropped: string[] } {

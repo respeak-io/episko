@@ -41,7 +41,10 @@ Markers: `+` new · `~` changed · `!` fixed
   settings show it (with *Start stack* when it names an `up` task), and *Set up with an
   agent* has Claude read your justfile, tasks.json and compose files in the background,
   read-only, and propose the table, each value with the file and lines it is based on, for
-  you to apply or discard. Each stack lists every page worth opening: what its panes
+  you to apply or discard. It describes every task too: whether it is a check, a test, a
+  server, a desktop app or a deploy, what it serves, which line means it is up and what
+  stops it, so Episko stops guessing from names like `dev` and `start`; the ▶ Run picker
+  shows each task's kind and marks a deploy. Each stack lists every page worth opening: what its panes
   announce, its containers' Traefik routes, and any `pages` the table declares.
 
 ## 0.34.0 — 2026-10-09

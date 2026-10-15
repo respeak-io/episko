@@ -6,7 +6,7 @@ import { esc, escAttr } from "./format";
 import type { Box, Member, Stack, StackPage } from "./stack";
 
 const FROM: Record<StackPage["from"], string> = {
-  declared: "from [stack] pages", pane: "announced by its pane", proxy: "a reverse-proxy route",
+  declared: "from [stack] pages", described: "from the task's description", pane: "announced by its pane", proxy: "a reverse-proxy route",
 };
 
 // Every address the stack offers, as chips under its head: the ones to open, by name.

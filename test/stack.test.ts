@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, checkProposal, proposalText, stackPrompt, stackSummary, stackTally, taskSlug,
+  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, checkProposal, proposalText, stackSummary, stackTally, taskSlug,
   type Checkout, type Container, type PaneIn, type StackInput,
 } from "../src/stack";
 
@@ -126,6 +126,15 @@ describe("buildStacks", () => {
     ]);
   });
 
+  it("waits on a described ready line, takes an app's window as up, and stops with what the tasks say", () => {
+    const [waiting] = buildStacks(input({ panes: [pane({ kind: "server", describedPages: { App: "https://app.localhost:8443/ui/" }, stops: "just:down" })] }));
+    expect(waiting.state).toBe("starting");
+    expect(waiting.pages).toEqual([{ name: "App", url: "https://app.localhost:8443/ui/", from: "described" }]);
+    expect(waiting.stops).toBe("just:down");
+    expect(buildStacks(input({ panes: [pane({ kind: "server", readyAt: NOW })] }))[0].state).toBe("ready");
+    expect(buildStacks(input({ panes: [pane({ kind: "app" })] }))[0].state).toBe("ready");
+  });
+
   it("takes a compose project [stack] names even from outside the repo", () => {
     const [s] = buildStacks(input({
       panes: [pane()], containers: [box({ id: "c3", project: "shared-infra", workingDir: "/x/infra" })],
@@ -161,13 +170,6 @@ describe("the [stack] table", () => {
     expect(stackSummary({})).toBe("");
   });
 
-  it("hands the agent the ids discovery found, and the table it is fixing", () => {
-    const p = stackPrompt({ up: "just:dev" }, [{ id: "just:dev", cmd: "just dev", background: true }]);
-    expect(p).toContain("- just:dev · just dev [long-running]");
-    expect(p).toContain("The current [stack] table: starts with just:dev");
-    expect(p).toMatch(/docker compose stop rather than down/);
-    expect(stackPrompt({}, [])).toContain("There is no [stack] table yet.");
-  });
 
   it("slugs a label the way tasks.rs does", () => {
     expect(taskSlug("Dev: Frontend + Backend")).toBe("dev-frontend-backend");

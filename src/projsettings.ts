@@ -179,8 +179,8 @@ function stackRow(): PsRow {
     cur: cur || undefined,
     note: cur ? undefined : "Not set: Episko infers the stack from what runs (panes, ports and the repo's Compose containers).",
     ctl: (cur ? btnCtl("stackfile", "Open file", "Open .episko/episko.toml") : "")
-      + btnCtl("stacksetup", cur ? "Check with an agent" : "Set up with an agent",
-        "Claude reads the justfile, tasks.json and compose files in the background, read-only, and proposes [stack] for you to apply or discard."),
+      + btnCtl("stacksetup", cur ? "Re-check tasks…" : "Describe tasks…",
+        "Claude reads the justfile, tasks.json, scripts and compose files in the background, read-only, and describes every task plus the dev stack, for you to apply or discard."),
   };
 }
 

@@ -1463,6 +1463,7 @@ html.win .wctl { display: flex; }
 .run-trust { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--st-working) 50%, transparent); background: color-mix(in srgb, var(--st-working) 14%, transparent); color: var(--st-working); font: 600 11px var(--font-ui); cursor: pointer; }
 .run-trust:hover { background: color-mix(in srgb, var(--st-working) 24%, transparent); }
 .run-row.blocked .end { color: var(--st-working); }
+.run-row .end.risky { color: var(--st-error); }
 .run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
 .run-empty .dim { color: var(--muted-2); font-size: 10.5px; }
 .run-empty code { font: 10px var(--font-mono); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }

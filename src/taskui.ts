@@ -12,6 +12,7 @@ import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from
 import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, forgetFrec, frecScore } from "./palette";
 import { stackSummary, type StackCfg } from "./stack";
+import { describedTally } from "./runinfo";
 import {
   applyInputs, defSpan, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
   prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
@@ -426,7 +427,7 @@ function renderRunPicker(term: string) {
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         ${lifted ? `<span class="run-src">${esc(sourceShort(r))}</span>` : ""}
-        <span class="end">${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.background ? "bg" : pinned ? "★" : ""}</span>
+        <span class="end${r.kind === "deploy" ? " risky" : ""}"${r.note ? ` title="${esc(r.note)}"` : ""}>${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.kind ?? (r.described === "stale" ? "changed?" : r.background ? "bg" : "")}${pinned && !r.blocked ? " ★" : ""}</span>
         <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">ⓘ</button>
         ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
         ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
@@ -462,11 +463,14 @@ function renderRunStack() {
   const sum = stackSummary(runStackCfg);
   const up = runStackCfg.up ? runList.find((r) => r.id === runStackCfg.up && !r.blocked) : undefined;
   const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">▶ Start stack</button>` : "";
-  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Claude reads this project's task and compose files in the background, read-only, and proposes [stack] for you to apply or discard">${sum ? "Check…" : "Set up with an agent"}</button>`;
-  const what = sum
-    ? `<span class="run-stack-t" title="${esc(sum)}">${esc(sum)}</span>`
-    : `<span class="run-stack-t dim">not set up: inferred from what runs</span>`;
-  el.innerHTML = `<span class="run-stack-l">Dev stack</span>${what}${start}${setup}`;
+  const t = describedTally(runList);
+  const todo = t.stale + t.missing;
+  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Claude reads this project's task, script and compose files in the background, read-only, and describes every task (what it is, what it serves, how it stops) plus the dev stack, for you to apply or discard">${t.fresh && !todo ? "Re-check…" : "Describe tasks…"}</button>`;
+  const described = t.fresh || t.stale
+    ? `${t.fresh} described${t.stale ? ` · ${t.stale} changed since` : ""}${t.missing ? ` · ${t.missing} new` : ""}`
+    : "tasks not described: guessed from their names";
+  const what = `<span class="run-stack-t${sum ? "" : " dim"}" title="${esc([sum, described].filter(Boolean).join(" · "))}">${esc([sum, described].filter(Boolean).join(" · "))}</span>`;
+  el.innerHTML = `<span class="run-stack-l">Tasks</span>${what}${start}${setup}`;
   el.hidden = false;
   el.querySelector<HTMLElement>("[data-stackgo]")?.addEventListener("click", () => {
     if (!up || !runCtx) return;

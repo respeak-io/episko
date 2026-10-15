@@ -123,14 +123,47 @@ pub(crate) struct StackConfig {
     pages: std::collections::BTreeMap<String, String>,
 }
 
+/// What one task is, as the describer read it (`[run."<task id>"]`). Facts for the UI and for
+/// agents; only `stops` names something Episko runs. `hash` is the frontend's hash of the
+/// command it described, so an entry for a command since edited reads as stale, not as true.
+#[derive(serde::Serialize, serde::Deserialize, Default, Debug, PartialEq, Clone)]
+pub(crate) struct RunInfo {
+    #[serde(default)]
+    kind: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pages: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ready: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stops: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    brings_up: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default)]
+    hash: String,
+}
+
 #[derive(serde::Deserialize, Default)]
 struct RawFile {
     stack: Option<StackConfig>,
+    #[serde(default)]
+    run: std::collections::BTreeMap<String, RunInfo>,
 }
 
 /// Forgiving like `[health]`: a broken file means "no table", never an error a stack cannot show.
 fn parse_stack(text: &str) -> StackConfig {
     toml::from_str::<RawFile>(text).ok().and_then(|f| f.stack).unwrap_or_default()
+}
+
+/// Every `[run."<id>"]` entry, or none: forgiving on read like `[stack]`.
+#[tauri::command]
+pub(crate) fn run_infos(dir: String) -> std::collections::BTreeMap<String, RunInfo> {
+    std::fs::read_to_string(std::path::Path::new(&dir).join(".episko").join("episko.toml"))
+        .ok()
+        .and_then(|t| toml::from_str::<RawFile>(&t).ok())
+        .map(|f| f.run)
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -150,6 +183,7 @@ pub(crate) struct ProposedTask {
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub(crate) struct StackProposal {
     stack: StackConfig,
+    run: std::collections::BTreeMap<String, RunInfo>,
     tasks: Vec<ProposedTask>,
     why: Vec<String>, // one line per value, what it is based on: the dialog shows these
 }
@@ -159,6 +193,8 @@ struct RawProposal {
     stack: Option<StackConfig>,
     #[serde(default)]
     task: Vec<ProposedTask>,
+    #[serde(default)]
+    run: std::collections::BTreeMap<String, RunInfo>,
 }
 
 /// The answer is a fenced `toml` block, then `WHY` and one `- ` line per value; anything around
@@ -173,7 +209,7 @@ fn parse_proposal(out: &str) -> Result<StackProposal, String> {
         .skip_while(|l| l.trim() != "WHY")
         .filter_map(|l| l.trim().strip_prefix("- ").map(str::to_string))
         .collect();
-    Ok(StackProposal { stack: raw.stack.unwrap_or_default(), tasks: raw.task, why })
+    Ok(StackProposal { stack: raw.stack.unwrap_or_default(), run: raw.run, tasks: raw.task, why })
 }
 
 const PROPOSE_SECS: u64 = 300;
@@ -204,15 +240,44 @@ pub(crate) async fn propose_stack(dir: String, prompt: String) -> Result<StackPr
 /// Write `[stack]` as accepted, through `toml_edit` so every other table and comment survives.
 /// Creating the file is fine here: the dialog that showed the proposal was the question.
 #[tauri::command]
-pub(crate) fn write_stack(dir: String, stack: StackConfig) -> Result<(), String> {
+pub(crate) fn write_stack(
+    dir: String, stack: StackConfig, run: std::collections::BTreeMap<String, RunInfo>,
+) -> Result<(), String> {
     let path = std::path::Path::new(&dir).join(".episko").join("episko.toml");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
     set_stack(&mut doc, &stack);
+    set_run(&mut doc, &run)?;
     std::fs::create_dir_all(path.parent().ok_or("bad project dir")?).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, doc.to_string()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+}
+
+/// Each described task as its own `[run."<id>"]` table, replaced whole; an id the description
+/// did not cover keeps its entry (a task it was not asked about is not a task that went away).
+fn set_run(doc: &mut toml_edit::DocumentMut, run: &std::collections::BTreeMap<String, RunInfo>) -> Result<(), String> {
+    if run.is_empty() {
+        return Ok(());
+    }
+    if doc.get("run").and_then(|i| i.as_table()).is_none() {
+        let mut t = toml_edit::Table::new();
+        t.set_implicit(true); // no bare `[run]` header above the entries
+        doc["run"] = toml_edit::Item::Table(t);
+    }
+    let parent = doc["run"].as_table_mut().ok_or("run is not a table")?;
+    for (id, info) in run {
+        let text = toml::to_string(info).map_err(|e| e.to_string())?;
+        let entry = text.parse::<toml_edit::DocumentMut>().map_err(|e| e.to_string())?;
+        let mut t = entry.as_table().clone();
+        // Inline, so a task's pages stay on its own line rather than becoming a sub-table.
+        if let Some(p) = t.remove("pages").and_then(|i| i.into_table().ok()) {
+            t.insert("pages", toml_edit::value(p.into_inline_table()));
+        }
+        t.set_implicit(false);
+        parent.insert(id, toml_edit::Item::Table(t));
+    }
+    Ok(())
 }
 
 fn set_stack(doc: &mut toml_edit::DocumentMut, s: &StackConfig) {
@@ -239,6 +304,9 @@ fn set_stack(doc: &mut toml_edit::DocumentMut, s: &StackConfig) {
             pages.insert(k, v.as_str().into());
         }
         t["pages"] = toml_edit::value(pages);
+    }
+    if t.is_empty() {
+        doc.remove("stack"); // a description with no stack in it must not leave a bare header
     }
 }
 
@@ -297,6 +365,25 @@ mod tests {
         assert!(!text.contains("compose"), "{text}");
         assert_eq!(parse_stack(&text).up.as_deref(), Some("just:dev"));
         assert_eq!(parse_stack(&text).pages.get("Frontend").map(String::as_str), Some("http://wirksam.localhost:5174"));
+    }
+
+    #[test]
+    fn task_descriptions_round_trip_beside_the_stack() {
+        let mut doc = "[branches]\nprotect = [\"dev\"]\n".parse::<toml_edit::DocumentMut>().unwrap();
+        let mut run = std::collections::BTreeMap::new();
+        run.insert("just:dev".to_string(), RunInfo {
+            kind: "server".into(), pages: [("App".to_string(), "https://app.localhost:8443/ui/".to_string())].into_iter().collect(),
+            ready: Some("Ready: ".into()), stops: Some("just:down".into()), brings_up: vec!["db".into()], note: None, hash: "abc123".into(),
+        });
+        run.insert("just:lint".to_string(), RunInfo { kind: "check".into(), hash: "def456".into(), ..Default::default() });
+        set_run(&mut doc, &run).unwrap();
+        let text = doc.to_string();
+        assert!(text.contains("[run.\"just:dev\"]") && !text.contains("\n[run]\n"), "{text}");
+        assert!(text.contains("pages = { App = \"https://app.localhost:8443/ui/\" }"), "{text}");
+        let back = toml::from_str::<RawFile>(&text).unwrap().run;
+        assert_eq!(back, run);
+        let p = parse_proposal("```toml\n[run.\"npm:test\"]\nkind = \"test\"\n```\nWHY\n").unwrap();
+        assert_eq!(p.run["npm:test"].kind, "test");
     }
 
     #[test]

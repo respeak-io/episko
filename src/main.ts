@@ -429,6 +429,8 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
     // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
     const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
     s.run.partial = whole.pop()!.slice(-1024);
+    // The description's ready text, latched once: a stack waits on it, MCP reports on it.
+    if (s.run.ready && !s.run.readyAt && whole.some((l) => l.includes(s.run!.ready!))) { s.run.readyAt = Date.now(); renderAll(); }
     const was = s.run.pages ?? [];
     const now = whole.reduce(foldPages, was);
     if (now !== was) { // foldPages hands back the same array when a chunk announced nothing
