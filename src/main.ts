@@ -40,7 +40,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
-  openDevtools, reloadUi,
+  openDevtools, proposeStack, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -52,7 +52,7 @@ import {
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
 import {
   activeCwd, activeProjectCtx, closeRunGroup, closeSession, focusInGroup, handToTerminal,
-  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift, setupStack,
+  adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
@@ -227,7 +227,7 @@ setProjSetHost({
   setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
-  setupStack: (root, hasTable) => void setupStack(root, hasTable), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
+  setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -348,7 +348,7 @@ setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
-  setupStack: (root, hasTable) => void setupStack(root, hasTable),
+  setupStack: (root) => void proposeStack(root),
 });
 setWtLaunch(launch);
 setWtCloseSession(closeSession);

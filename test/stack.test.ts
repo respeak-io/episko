@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, stackBrief, stackSummary, stackTally,
+  agoMs, buildStacks, checkoutOf, containerHealth, containerState, exitOf, hostPorts, checkProposal, proposalText, stackPrompt, stackSummary, stackTally, taskSlug,
   type Checkout, type Container, type PaneIn, type StackInput,
 } from "../src/stack";
 
@@ -147,12 +147,33 @@ describe("the [stack] table", () => {
     expect(stackSummary({})).toBe("");
   });
 
-  it("briefs an agent in one line that reads, never runs, and spells ids the way tasks.rs does", () => {
-    const b = stackBrief(false);
-    expect(b).not.toContain("\n"); // a newline in a prefilled REPL would send it
-    expect(b).toMatch(/Do not run any of them/);
-    expect(b).toContain("vscode:dev-frontend-backend");
-    expect(b).toMatch(/do not commit/);
-    expect(stackBrief(true)).toMatch(/^Check the \[stack\] table/);
+  it("hands the agent the ids discovery found, and the table it is fixing", () => {
+    const p = stackPrompt({ up: "just:dev" }, [{ id: "just:dev", cmd: "just dev", background: true }]);
+    expect(p).toContain("- just:dev · just dev [long-running]");
+    expect(p).toContain("The current [stack] table: starts with just:dev");
+    expect(p).toMatch(/docker compose stop rather than down/);
+    expect(stackPrompt({}, [])).toContain("There is no [stack] table yet.");
+  });
+
+  it("slugs a label the way tasks.rs does", () => {
+    expect(taskSlug("Dev: Frontend + Backend")).toBe("dev-frontend-backend");
+    expect(taskSlug("  Stop containers! ")).toBe("stop-containers");
+  });
+
+  it("keeps ids that exist or that the proposal adds, and drops the rest out loud", () => {
+    const tasks = [{ id: "vscode:dev-frontend-backend", cmd: "", background: false }];
+    const p = {
+      stack: { up: "vscode:dev-frontend-backend", down: "episko:stop-containers" },
+      tasks: [{ label: "Stop containers", run: "docker compose stop" }],
+      why: ["up: the default build task", "down: nothing stopped the containers"],
+    };
+    expect(checkProposal(p, tasks).dropped).toEqual([]);
+    const bad = checkProposal({ ...p, tasks: [] }, tasks);
+    expect(bad.stack.down).toBeUndefined();
+    expect(bad.dropped).toEqual(['down = "episko:stop-containers" names no task in this project']);
+    const text = proposalText(p, checkProposal(p, tasks));
+    expect(text).toContain('- `up = "vscode:dev-frontend-backend"`: the default build task');
+    expect(text).toContain("- Stop containers: `docker compose stop`");
+    expect(proposalText({ stack: {}, tasks: [], why: [] }, { stack: {}, dropped: [] })).toMatch(/found nothing/);
   });
 });

@@ -381,8 +381,10 @@ Needs Docker and a project whose dev task brings up Compose containers (docs/sta
       errors, and the poll backs off (the 🐞 log shows no `compose_containers` storm).
 - [ ] **The Run picker's Dev stack strip.** ▶ Run shows it under the list: *not set up* with
       *Set up with an agent*, or the table's summary with *▶ Start stack* and the `up` row
-      tagged *stack*. *Set up with an agent* opens a session with the brief typed and NOT
-      sent; the agent reads files, runs nothing, and shows a diff without committing.
+      tagged *stack*. *Set up with an agent* opens no session: a toast, then (seconds to a
+      minute later) a dialog with each proposed value and the file it came from. *Discard*
+      writes nothing; *Apply* writes `[stack]` (and any proposed stop task) and keeps every
+      other table and comment in the file. No pane appears and nothing is committed.
 - [ ] **Project settings › The team's › Dev stack** shows the same table, and *Open file*
       opens `.episko/episko.toml`.
 ### Identity across rotations

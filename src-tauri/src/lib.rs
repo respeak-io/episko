@@ -494,6 +494,8 @@ pub fn run() {
             stack::compose_containers,
             stack::compose_stop,
             stack::stack_config,
+            stack::propose_stack,
+            stack::write_stack,
             github::gh_threads,
             github::gh_issue,
             github::gh_accounts,

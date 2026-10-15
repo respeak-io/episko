@@ -26,7 +26,7 @@ export interface ProjSetHost {
   moveLog: (key: string) => Promise<void>;
   hasDigest: (key: string) => Promise<boolean>;
   refreshGh: () => Promise<unknown>;
-  setupStack: (key: string, hasTable: boolean) => void;
+  setupStack: (key: string) => void;
   openStackFile: (key: string) => void;
 }
 let host: ProjSetHost = {
@@ -179,7 +179,7 @@ function stackRow(): PsRow {
     note: cur ? undefined : "Not set: Episko infers the stack from what runs (panes, ports and the repo's Compose containers).",
     ctl: (cur ? btnCtl("stackfile", "Open file", "Open .episko/episko.toml") : "")
       + btnCtl("stacksetup", cur ? "Check with an agent" : "Set up with an agent",
-        "Start an agent with a prefilled brief: it reads the justfile, tasks.json and compose files, writes [stack], and shows you the diff. Nothing is sent until you press Enter."),
+        "Claude reads the justfile, tasks.json and compose files in the background, read-only, and proposes [stack] for you to apply or discard."),
   };
 }
 
@@ -212,7 +212,7 @@ function act(verb: string, val: string) {
   else if (verb === "gh") host.setGh(k, val || null);
   else if (verb === "unstop") clearStopRule(k);
   else if (verb === "share") host.setShare(k, val as ShareMode);
-  else if (verb === "stacksetup") { host.setupStack(k, !!stackSummary(stackCfg)); closeProjectSettings(); return; }
+  else if (verb === "stacksetup") { host.setupStack(k); return; }
   else if (verb === "stackfile") { host.openStackFile(k); return; }
   else if (verb === "movelog") { void host.moveLog(k).then(() => { digestFile = false; renderProjSettings(); }); return; }
   else if (verb === "reset") {

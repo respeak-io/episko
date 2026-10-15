@@ -240,21 +240,68 @@ export function stackSummary(cfg: StackCfg): string {
   ].filter(Boolean).join(" · ");
 }
 
+// tasks.rs's `slugify`, so a proposed task's id is the one discovery will give it.
+export function taskSlug(label: string): string {
+  return label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/** What `propose_stack` hands back: the table, the tasks it adds, one reason per value. */
+export interface StackProposal { stack: StackCfg; tasks: { label: string; run: string }[]; why: string[] }
+export interface TaskRef { id: string; cmd: string; background: boolean }
+
 /**
- * What the setup agent is told: one line, since a newline would send it from the REPL before the
- * human has read it. It reads and never runs (`just dev` would start the thing it describes), and
- * the id rules are tasks.rs's, so whatever it writes resolves to a real task.
+ * The headless agent's prompt (stack.rs runs it read-only). It is handed the ids discovery found,
+ * so it never has to guess a slug, and asked for one fenced block plus a reason per value.
  */
-export function stackBrief(hasTable: boolean): string {
+export function stackPrompt(current: StackCfg, tasks: readonly TaskRef[]): string {
+  const now = stackSummary(current);
   return [
-    hasTable
-      ? "Check the [stack] table in .episko/episko.toml against how this project's dev environment actually starts, and fix what is wrong or missing."
-      : "Write a [stack] table into .episko/episko.toml describing how this project's dev environment starts and stops.",
-    "Episko (the app this session runs in) reads it to group a dev run's panes with the project's Docker Compose containers.",
-    "Read the justfile, .vscode/tasks.json, package.json scripts, Makefile, .episko/tasks.toml, docker-compose files and the scripts they call. Do not run any of them, and do not start or stop anything.",
-    "The table has three optional keys: up = the task that brings the whole dev environment up; down = the task that stops it, especially its containers; compose = a list of Compose project names that belong to it but are started from outside this repo (leave it out when the compose files live in the repo).",
-    "Values are Episko task ids: just:<recipe>, npm:<script>, make:<target>, vscode:<label> and episko:<label>, where a vscode or episko label is lowercased with every run of other characters turned into one dash (\"Dev: Frontend + Backend\" is vscode:dev-frontend-backend).",
-    "If the project has no task that stops its containers, add one to .episko/tasks.toml ([[task]] with label and run) and point down at it.",
-    "Edit the file in place and keep every other table and comment in it. When done, show me the diff and what each value is based on; do not commit.",
-  ].join(" ");
+    "Read this software project and work out how its development environment starts and stops.",
+    "Episko, a desktop app, will use your answer to show a dev run's terminal panes and the project's Docker Compose containers as one stack.",
+    "You can only read files. Look at the justfile, .vscode/tasks.json, package.json scripts, Makefile, .episko/tasks.toml, docker-compose files and the scripts they call.",
+    "",
+    "These are the task ids Episko found here. Use them exactly as written:",
+    ...(tasks.length ? tasks.map((t) => `- ${t.id} · ${t.cmd}${t.background ? " [long-running]" : ""}`) : ["(none)"]),
+    "",
+    now ? `The current [stack] table: ${now}. Keep what is right and fix what is not.` : "There is no [stack] table yet.",
+    "",
+    "Answer with exactly one fenced ```toml block holding a [stack] table:",
+    "- up: the task that brings the whole dev environment up (servers and containers), usually the default build task or a dev recipe.",
+    "- down: the task that stops it, especially its containers.",
+    "- compose: only Compose project names started from outside this repository; usually leave it out.",
+    "Leave out any key the files do not support.",
+    "If no listed task stops the containers, add a [[task]] with label and run (a shell command run from the project root, using docker compose stop rather than down) to the same block, and set down to episko:<the label lowercased, every run of other characters turned into one dash>.",
+    "After the block write a line containing only WHY, then one line per value starting with \"- up:\", \"- down:\", \"- compose:\" or \"- task:\" saying which file and lines it is based on. Write nothing else.",
+  ].join("\n");
+}
+
+/** Values pointing at no task this project has (or will have) are dropped, and said so. */
+export function checkProposal(p: StackProposal, tasks: readonly TaskRef[]): { stack: StackCfg; dropped: string[] } {
+  const known = new Set([...tasks.map((t) => t.id), ...p.tasks.map((t) => `episko:${taskSlug(t.label)}`)]);
+  const stack: StackCfg = { ...p.stack };
+  const dropped: string[] = [];
+  for (const k of ["up", "down"] as const) {
+    const v = stack[k];
+    if (v && !known.has(v)) { dropped.push(`${k} = "${v}" names no task in this project`); stack[k] = undefined; }
+  }
+  return { stack, dropped };
+}
+
+const why = (p: StackProposal, key: string) => p.why.find((w) => w.toLowerCase().startsWith(key + ":"))?.slice(key.length + 1).trim();
+
+/** The review dialog's text, in ./format's `dialogBody` dialect: blank lines, bullets, backticks. */
+export function proposalText(p: StackProposal, checked: { stack: StackCfg; dropped: string[] }): string {
+  const lines: string[] = [];
+  const s = checked.stack;
+  for (const k of ["up", "down"] as const) {
+    if (s[k]) lines.push(`- \`${k} = "${s[k]}"\`${why(p, k) ? `: ${why(p, k)}` : ""}`);
+  }
+  if (s.compose?.length) lines.push(`- \`compose = [${s.compose.map((c) => `"${c}"`).join(", ")}]\`${why(p, "compose") ? `: ${why(p, "compose")}` : ""}`);
+  const out = [lines.length ? `For \`.episko/episko.toml\`:\n\n${lines.join("\n")}` : "Claude found nothing it could support for `[stack]`."];
+  if (p.tasks.length) {
+    out.push(`New in \`.episko/tasks.toml\`:\n\n${p.tasks.map((t) => `- ${t.label}: \`${t.run}\``).join("\n")}${why(p, "task") ? `\n\n${why(p, "task")}` : ""}`);
+  }
+  if (checked.dropped.length) out.push(`Left out:\n\n${checked.dropped.map((d) => `- ${d}`).join("\n")}`);
+  out.push("Nothing is committed. Review it in git like any other change.");
+  return out.join("\n\n");
 }

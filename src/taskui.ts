@@ -29,7 +29,7 @@ export interface TaskUiHost {
   setActive: (id: string) => void;
   renderAll: () => void;
   closePalette: () => void;
-  setupStack: (root: string, hasTable: boolean) => void;
+  setupStack: (root: string) => void;
 }
 let host: TaskUiHost = {
   launchTask: async () => null, handToTerminal: async () => {},
@@ -451,7 +451,7 @@ function renderRunStack() {
   const sum = stackSummary(runStackCfg);
   const up = runStackCfg.up ? runList.find((r) => r.id === runStackCfg.up && !r.blocked) : undefined;
   const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">▶ Start stack</button>` : "";
-  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Start an agent with a prefilled brief that reads this project's task and compose files and writes [stack] for you to review">${sum ? "Check…" : "Set up with an agent"}</button>`;
+  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Claude reads this project's task and compose files in the background, read-only, and proposes [stack] for you to apply or discard">${sum ? "Check…" : "Set up with an agent"}</button>`;
   const what = sum
     ? `<span class="run-stack-t" title="${esc(sum)}">${esc(sum)}</span>`
     : `<span class="run-stack-t dim">not set up: inferred from what runs</span>`;
@@ -467,7 +467,7 @@ function renderRunStack() {
     if (!runCtx) return;
     const root = runCtx.workdir;
     closeRunPicker();
-    host.setupStack(root, !!sum);
+    host.setupStack(root);
   });
 }
 

@@ -89,7 +89,7 @@ Three hard constraints shape this code:
 | `icons.rs` | project favicon/logo probing, including what a page's `<link rel="icon">` declares (which may be the whole icon, inline) + the tray menu's status glyphs (`glyph_rgba`) |
 | `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else; `index_of` is the in-crate half, so `health.rs` measures exactly the files the explorer lists |
 | `health.rs` | what a change did to the shape of the code: code lines with comments stripped, function spans, nesting, approximate cognitive complexity, and the cross-file duplicate index. Facts only — which of them earn a chip is `health.ts`'s |
-| `stack.rs` | a dev stack's other half: every Compose container on the machine (`compose_containers`, labels read by name since `config_files` has commas in it), `compose_stop` (stop, never down), and the `[stack]` table of `.episko/episko.toml`. Facts only; `stack.ts` decides (docs/stack.md) |
+| `stack.rs` | a dev stack's other half: every Compose container on the machine (`compose_containers`, labels read by name since `config_files` has commas in it), `compose_stop` (stop, never down), the `[stack]` table of `.episko/episko.toml` read and written (`write_stack`, through `toml_edit`), and `propose_stack`: a headless `claude -p` in the project with `--restricted --tools Read,Glob,Grep`, the day summary's shape with read access. Facts only; `stack.ts` decides (docs/stack.md) |
 | `sync.rs` | the sync server connection (docs/sync.md): one WebSocket held from Rust with its backoff, pairing, the token sealed per OS (DPAPI, the keychain, a 0600 file), the persisted cursor, and `sync-event`. Decides nothing about what syncs |
 | `testutil.rs` | `git`, `scratch_dir`, `cfg(test)` only |
 

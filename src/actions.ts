@@ -13,7 +13,8 @@ import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
-import { waitForExit } from "./tasks";
+import { discoverTasks, execCmd, waitForExit } from "./tasks";
+import { checkProposal, proposalText, stackPrompt, stackSummary, type StackCfg, type StackProposal } from "./stack";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -679,4 +680,42 @@ export async function followSessionDrift(id: string, mode: "follow" | "track" | 
     resume: resumeId,
   });
   if (moved) toast(`Session moved to ${branch}`);
+}
+
+// ---------- the dev stack proposal ----------
+
+const proposing = new Set<string>();
+
+// Headless and read-only, like the day summary: `propose_stack` runs `claude -p` in the project
+// with nothing but Read/Glob/Grep. Nothing is written until the dialog's Apply (docs/stack.md).
+export async function proposeStack(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project to propose a dev stack. This can take a minute or two");
+  try {
+    const [cfg, found] = await Promise.all([
+      invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg),
+      discoverTasks(root, root, true),
+    ]);
+    const tasks = found.filter((r) => !r.blocked)
+      .map((r) => ({ id: r.id, cmd: r.compound ? r.dependsOn.join(" + ") : execCmd(r), background: r.background }));
+    const p = await invoke<StackProposal>("propose_stack", { dir: root, prompt: stackPrompt(cfg, tasks) });
+    const checked = checkProposal(p, tasks);
+    if (!stackSummary(checked.stack) && !p.tasks.length) {
+      await ask(proposalText(p, checked), { title: "No dev stack proposal", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    const ok = await ask(proposalText(p, checked), { title: `Dev stack for ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" });
+    if (!ok) return;
+    // Tasks first: `down` may name one of them, and a table pointing at nothing is worse than none.
+    for (const t of p.tasks) {
+      await invoke("save_episko_task", { workdir: root, id: null, task: { label: t.label, run: t.run, group: null, background: false, cwd: null } });
+    }
+    await invoke("write_stack", { dir: root, stack: { up: checked.stack.up ?? null, down: checked.stack.down ?? null, compose: checked.stack.compose ?? [] } });
+    toast(`Wrote [stack]${p.tasks.length ? ` and ${p.tasks.length} task${p.tasks.length === 1 ? "" : "s"}` : ""}. Commit .episko/ to share it`);
+  } catch (e) {
+    toast(`No dev stack proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
 }

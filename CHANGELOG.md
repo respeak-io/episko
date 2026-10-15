@@ -27,9 +27,10 @@ Markers: `+` new · `~` changed · `!` fixed
   step passed, every server listens and every health check is green. Containers that outlive
   their panes stay listed, with ⏹ to stop them. An optional `[stack]` table in
   `.episko/episko.toml` names the project's own `down` task; the ▶ Run picker and project
-  settings show it (with *Start stack* when it names an `up` task), and
-  *Set up with an agent* prefills a brief for an agent that reads your justfile, tasks.json
-  and compose files and writes the table for you to review.
+  settings show it (with *Start stack* when it names an `up` task), and *Set up with an
+  agent* has Claude read your justfile, tasks.json and compose files in the background,
+  read-only, and propose the table, each value with the file and lines it is based on, for
+  you to apply or discard.
 
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it

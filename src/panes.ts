@@ -11,7 +11,6 @@ import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
-import { stackBrief } from "./stack";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   phaseText, providerCapabilities, providerSessionKey, resumeAgent,
@@ -137,16 +136,6 @@ export async function typeInto(sid: string, text: string, size = 240, gapMs = 50
     await invoke("write_pty", { sessionId: sid, data: chars.slice(i, i + size).join("") });
     await new Promise((r) => setTimeout(r, gapMs));
   }
-}
-
-// An agent that writes `[stack]` (docs/stack.md). Prefilled, not sent: the dashboard's dispatch
-// contract, since the human should read what the agent is being asked to do to their repo.
-export async function setupStack(root: string, hasTable: boolean): Promise<void> {
-  const sid = await launch(basename(root), root, { colorKey: root });
-  if (typeof sid !== "string") return;
-  // Claude's REPL needs a moment before it accepts input; failing to type is harmless.
-  setTimeout(() => { void typeInto(sid, stackBrief(hasTable)).catch(() => {}); }, 1400);
-  toast("Brief prefilled. Read it, then press Enter to send");
 }
 
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
