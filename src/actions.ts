@@ -17,7 +17,7 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
-  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, footPrefs, keyPrefs,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, reviewMirror, footPrefs, keyPrefs,
   markWorkdirStale, worktreesByRepo,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
@@ -33,7 +33,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -275,6 +275,13 @@ export function setTermSplit(on: boolean) {
 export function setDriftAuto(on: boolean) {
   setDriftAutoState(on);
   localStorage.setItem("cc-drift-auto", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read at click time by ./terminal's link handler; nothing on screen depends on it.
+export function setPrLinks(on: boolean) {
+  setPrLinksInAppState(on);
+  localStorage.setItem("cc-pr-links", on ? "1" : "0");
   renderSettings();
 }
 
@@ -588,7 +595,7 @@ export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // The fleet has neither: CSS already hides that column, so flipping `insp-off` there
 // changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
-  if (fleetMirror()) return;
+  if (fleetMirror() || reviewMirror()) return;
   const app = $("app");
   if (dashMirror()) {
     const folded = foldDashNext();

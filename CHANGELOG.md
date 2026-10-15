@@ -13,17 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-! **Esc closes the dialog, not the dashboard under it.** Pressing Esc in the new-session dialog,
-  the run picker, a task's input prompt, the palette or a project's right-click menu also closed
-  the project dashboard behind it; the task manager's Esc closed the dashboard instead of itself.
-! **Deleting branches shows where it is.** Each ticked row waits, spins while it goes, then turns
-  ✓ or ✕ (hover for git's reason), and the button counts "Deleting 4 of 13…"; removing checkouts
-  does the same. A branch that had a checkout is now deleted by the sweep rather than by the
-  checkout's removal, so it is reported as deleted, with its sha, instead of kept as "not found".
 + **Starting an agent on an issue asks where it should run.** The dispatch sheet gains a *Where*
   picker: this folder, a worktree that already exists, or a new worktree on a branch it names for
   you (`issue-<n>-<title>`, or a pull request's own head) and cuts from the branch you choose, the
   trunk by default. Dispatching the same issue again lands beside the earlier work.
+
 + **A Claude session can run your project's tasks through Episko.** Every Claude pane now starts
   with a small Episko tool server: `list_runnables` shows the agent the same tasks ▶ Run does,
   and `run_task` starts one in its own pane beside the session, with your PATH, overrides and
@@ -32,6 +26,33 @@ Markers: `+` new · `~` changed · `!` fixed
   usual permission prompt. One-shot tasks only for now (tests, builds, lint); a dev server is
   still yours to start. Off until you turn it on in Settings › Launching, or for one project in
   its settings.
+
++ **Review a pull request without leaving Episko.** ⊞ on a PR in the project's queue, or *Review
+  changes* in its reader, opens it on a stage of its own: the diff against the merge base, each
+  file's review threads on the lines they belong to, and a `+` on every line GitHub will take a
+  comment on (shift-click for a range, ± to write a suggestion). Comments collect as a pending
+  review and go to GitHub in one Submit, as Comment, Approve or Request changes. Reply to and
+  resolve threads, tick files Viewed (the tick clears itself when the file changes again), see
+  only what changed since your last review or one commit at a time, hide whitespace, reveal more
+  context, read the conversation and the checks, mark it ready, and merge it, pinned to the head
+  you reviewed. *→ agent* prefills a thread, or your whole pending review, into a session on the
+  PR's branch, in its own worktree.
+
++ **A pull request link in a pane opens that review too.** ⌘-click a github.com PR link and,
+  when one of your projects is that repository, it opens on the review stage rather than in
+  your browser. Any other link still goes to the browser; *Settings › Reader* turns it off.
+
+~ **The changed-files rail is a folder tree.** Both the review and the working-set viewer nest
+  files in their folders now; the switch at the top of the rail puts the flat list back.
+
+! **Esc closes the dialog, not the dashboard under it.** Pressing Esc in the new-session dialog,
+  the run picker, a task's input prompt, the palette or a project's right-click menu also closed
+  the project dashboard behind it; the task manager's Esc closed the dashboard instead of itself.
+
+! **Deleting branches shows where it is.** Each ticked row waits, spins while it goes, then turns
+  ✓ or ✕ (hover for git's reason), and the button counts "Deleting 4 of 13…"; removing checkouts
+  does the same. A branch that had a checkout is now deleted by the sweep rather than by the
+  checkout's removal, so it is reported as deleted, with its sha, instead of kept as "not found".
 
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it

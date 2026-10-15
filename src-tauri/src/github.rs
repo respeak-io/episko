@@ -23,6 +23,7 @@ pub(crate) struct GhThread {
     pub author: Option<String>,
     pub draft: bool,
     pub updated_at: String, // ISO-8601 as gh gives it; the frontend parses
+    pub review_requested: bool, // a PR asking for YOUR review; always false for an issue
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -76,6 +77,53 @@ fn fresh_viewer() -> Option<Option<String>> {
 /// per-call account selector gh has (`gh auth switch` is global), so the pinned account's
 /// own token is handed to this one child and nothing else changes.
 pub(crate) fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+    let out = gh_command(root, account, args)?.output().map_err(|e| format!("gh not available: {e}"))?;
+    if !out.status.success() {
+        return Err(first_line(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// [`gh`] with `stdin` piped in, for `gh api --input -`: a JSON body never rides on argv.
+/// A failed API call prints GitHub's own `errors` on stdout, and that half is the actionable one.
+pub(crate) fn gh_input(root: &str, account: Option<&str>, args: &[&str], stdin: &str) -> Result<String, String> {
+    use std::io::Write;
+    let mut child = gh_command(root, account, args)?
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("gh not available: {e}"))?;
+    let mut pipe = child.stdin.take().ok_or("gh: no stdin")?;
+    let body = stdin.to_string();
+    // Written from a thread so a large answer cannot fill stdout while we are still writing.
+    let writer = std::thread::spawn(move || pipe.write_all(body.as_bytes()));
+    let out = child.wait_with_output().map_err(|e| format!("gh: {e}"))?;
+    let _ = writer.join();
+    if !out.status.success() {
+        let head = first_line(&String::from_utf8_lossy(&out.stderr));
+        return Err(match api_detail(&String::from_utf8_lossy(&out.stdout)) {
+            Some(d) => format!("{head}: {d}"),
+            None => head,
+        });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn first_line(err: &str) -> String {
+    err.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed").trim().to_string()
+}
+
+/// The `errors` of a GitHub error body, which arrive as strings or as `{message}` objects.
+pub(crate) fn api_detail(stdout: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    let msgs: Vec<String> = v.get("errors")?.as_array()?.iter()
+        .filter_map(|e| e.as_str().or_else(|| e.get("message").and_then(|m| m.as_str())).map(str::to_string))
+        .collect();
+    (!msgs.is_empty()).then(|| msgs.join("; "))
+}
+
+fn gh_command(root: &str, account: Option<&str>, args: &[&str]) -> Result<std::process::Command, String> {
     let mut cmd = sys_command("gh");
     cmd.env("PATH", augmented_path())
         .current_dir(root) // gh has no -C; it infers the repo from cwd
@@ -85,13 +133,7 @@ pub(crate) fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<Str
     if let Some(login) = account {
         cmd.env("GH_TOKEN", account_token(login)?);
     }
-    let out = cmd.output().map_err(|e| format!("gh not available: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr);
-        let first = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("gh failed");
-        return Err(first.trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(cmd)
 }
 
 /// The token gh holds for one account, read from gh's own keyring. Never cached (gh
@@ -280,9 +322,20 @@ fn parse_list(json: &str, kind: &str) -> Vec<GhThread> {
                 author: o.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).map(String::from),
                 draft: o.get("isDraft").and_then(|x| x.as_bool()).unwrap_or(false),
                 updated_at: o.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                review_requested: false,
             })
         })
         .collect()
+}
+
+/// Flag the PRs a `review-requested:@me` search named (`[{"number":…}]`); output it cannot
+/// read flags nothing, since the flag is a hint and its absence is the quiet answer.
+pub(crate) fn mark_review_requested(threads: &mut [GhThread], json: &str) {
+    let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(json) else { return };
+    let asked: std::collections::HashSet<i64> = a.iter().filter_map(|o| o.get("number")?.as_i64()).collect();
+    for t in threads.iter_mut().filter(|t| t.kind == "pr") {
+        t.review_requested = asked.contains(&t.number);
+    }
 }
 
 // ---------- reads ----------
@@ -302,11 +355,11 @@ pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String
             }
         }
 
-        // The three reads are independent and each is a process plus a round trip, so they
+        // The four reads are independent and each is a process plus a round trip, so they
         // run concurrently. A thread scope because this is already inside `spawn_blocking`
         // with no runtime to hand work to; a panicking probe folds into its own failure only.
         let acct = account.as_deref();
-        let (issues, prs, viewer) = std::thread::scope(|s| {
+        let (issues, prs, asked, viewer) = std::thread::scope(|s| {
             let i = s.spawn(|| gh(&root, acct, &[
                 "issue", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt",
@@ -315,10 +368,15 @@ pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String
                 "pr", "list", "--state", "open", "--limit", "60",
                 "--json", "number,title,url,assignees,labels,updatedAt,headRefName,author,isDraft",
             ]));
+            let r = s.spawn(|| gh(&root, acct, &[
+                "pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "60",
+                "--json", "number",
+            ]));
             let v = s.spawn(|| viewer_login(&root, acct));
             (
                 i.join().unwrap_or_else(|_| Err("gh issue list panicked".into())),
                 p.join().unwrap_or_else(|_| Err("gh pr list panicked".into())),
+                r.join().unwrap_or_else(|_| Err("gh pr list panicked".into())),
                 v.join().unwrap_or(None),
             )
         });
@@ -329,6 +387,9 @@ pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String
                 // A PR failure is not fatal: issues alone are still a useful board.
                 if let Ok(pr_json) = prs {
                     threads.extend(parse_prs(&pr_json));
+                }
+                if let Ok(asked) = asked {
+                    mark_review_requested(&mut threads, &asked);
                 }
                 GhResult { available: true, reason: None, threads, viewer }
             }
@@ -1230,6 +1291,26 @@ mod tests {
         for bad in ["", "not json", "{}", "null", "<html>"] {
             assert!(parse_merged_prs(bad).is_empty(), "should be empty for {bad:?}");
         }
+    }
+
+    #[test]
+    fn a_review_request_marks_only_that_pr_and_never_an_issue() {
+        let mut t = parse_issues(ISSUES);
+        t.extend(parse_prs(PRS));
+        assert!(t.iter().all(|x| !x.review_requested), "parsed threads start unflagged");
+        mark_review_requested(&mut t, r#"[{"number":42},{"number":33}]"#);
+        let flagged: Vec<(i64, &str)> = t.iter().filter(|x| x.review_requested).map(|x| (x.number, x.kind.as_str())).collect();
+        assert_eq!(flagged, vec![(42, "pr")], "issue #33 shares a number space with nothing it could be asked for");
+        mark_review_requested(&mut t, "not json");
+        assert!(t.iter().any(|x| x.review_requested), "unreadable output changes nothing");
+    }
+
+    #[test]
+    fn a_github_error_body_yields_its_messages() {
+        let d = api_detail(r#"{"message":"Validation Failed","errors":["Line could not be resolved",{"message":"other"}]}"#);
+        assert_eq!(d.as_deref(), Some("Line could not be resolved; other"));
+        assert_eq!(api_detail(r#"{"message":"Not Found"}"#), None);
+        assert_eq!(api_detail("<html>"), None);
     }
 
     #[test]

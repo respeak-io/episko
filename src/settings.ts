@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, copyChord, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
 } from "./state";
@@ -84,6 +84,7 @@ export interface SettingsHost {
   setEngine: (id: Engine) => void;
   setTermSplit: (on: boolean) => void;
   setDriftAuto: (on: boolean) => void;
+  setPrLinks: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
@@ -164,7 +165,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setCopyChord: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setCopyChord: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -405,7 +406,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "reader", label: "Reader", glyph: "¶", group: "look", sub: "Markdown files, read in the app",
+    id: "reader", label: "Reader", glyph: "¶", group: "look", sub: "Markdown files and pull requests, read in the app",
     controls: () => {
       const off = () => !mdPrefs.enabled;
       const put = (p: Partial<MdPrefs>) => () => host.setMdPrefs({ ...mdPrefs, ...p });
@@ -436,6 +437,11 @@ const SET_TABS: SetTab[] = [
           more: "Off by default: drawing one fetches it, which tells that server you opened the file. Off, each is a link you can open in your browser.",
           aliases: ["badges", "shields", "network", "privacy", "tracking", "remote"], dim: off,
           on: () => mdPrefs.remote, isDefault: () => mdPrefs.remote === MD_DEFAULTS.remote, reset: put({ remote: MD_DEFAULTS.remote }) },
+        { kind: "toggle", set: "prlinks", key: "cc-pr-links", label: "Open pull request links in Episko",
+          hint: "A github.com pull request link in a pane opens on the review stage instead of your browser.",
+          more: "Only when one of your projects is that repository; any other link still goes to the browser. The review's GitHub button still opens it in the browser.",
+          aliases: ["github", "pr", "pull request", "review", "browser", "link", "url"], since: "0.35.0",
+          on: () => prLinksInApp, isDefault: () => prLinksInApp, reset: () => host.setPrLinks(true) },
       ];
     },
   },
@@ -1683,6 +1689,7 @@ function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
   else if (set === "termsplit") host.setTermSplit(val === "1");
   else if (set === "driftauto") host.setDriftAuto(val === "1");
+  else if (set === "prlinks") host.setPrLinks(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);

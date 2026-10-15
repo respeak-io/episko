@@ -4,6 +4,7 @@
 
 import { overlayHtml } from "./dashview";
 import { esc, escAttr, nameHue } from "./format";
+import { icon } from "./svgicons";
 import type { GhThread, Holder } from "./ghwork";
 import { ago, mdHtml, stateWord, threadLine, type GhIssueRead } from "./issue";
 
@@ -36,12 +37,15 @@ const labels = (names: string[]): string =>
 function verbs(i: GhIssueRead, held: Holder | null): string {
   const go = held
     ? `▶ Start anyway${held.mine ? "" : ` · ${esc(held.who)} is on it`}`
-    : i.kind === "pr" ? "▶ Review it" : "▶ Start an agent";
+    : i.kind === "pr" ? "▶ Agent on it" : "▶ Start an agent";
   const tip = held
     ? `${held.who}${held.mine ? " (you)" : ""} already has this. A claim is a hint, so you can start anyway.`
     : "Start an agent on this, through the sheet that shows what would be claimed";
-  return `<div class="iss-b">
-    <button class="act primary" data-dashwork="${i.number}" data-tip="${escAttr(tip)}">${go}</button>
+  // A pull request is read for its changes first; the agent is the second verb there.
+  const review = i.kind === "pr"
+    ? `<button class="act primary" data-dashreview="${i.number}" data-tip="Its diff, its review threads and your review, on a stage of their own">${icon("files")}Review changes</button>` : "";
+  return `<div class="iss-b">${review}
+    <button class="act${review ? "" : " primary"}" data-dashwork="${i.number}" data-tip="${escAttr(tip)}">${go}</button>
     ${i.url ? `<button class="act" data-dashurl="${escAttr(i.url)}"
       data-tip="Open it on github.com in your browser">↗ On GitHub</button>` : ""}</div>`;
 }

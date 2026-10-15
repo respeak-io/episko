@@ -28,7 +28,7 @@ import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
 import { closeMdReader, mdReaderOpen } from "./mdreader";
-import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
@@ -39,7 +39,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
@@ -101,6 +101,7 @@ import {
 import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
+import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -118,7 +119,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
-  copyChord, FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
@@ -245,7 +246,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -296,6 +297,7 @@ setDashHost({
   openGraph: (root, mark) => { void openGraphFor(root, dashMirror()?.name ?? basename(root), mark ?? null); },
   openDiff: (workdir, title, focus) => { void openDiff(workdir, title, focus); },
   refreshGit: () => refreshGitViews(),
+  openReview: (project, root, number) => { openPrReview(project, root, number); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
   openHistory: () => { void openHistory(true); },
@@ -318,6 +320,13 @@ setFleetHost({
   refreshUsage: () => { void refreshTokens().then(renderAll); },
 });
 wireFleet();
+// The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
+setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
+setReviewHost({
+  launch: (project, workdir, opts) => launch(project, workdir, opts),
+  setActive, openDashboard, renderAll, refreshGit: () => refreshGitViews(),
+});
+wireReview();
 // The stage's home: whatever steps off it lands here, so "no sessions running" is not a
 // screen the app has any more. Wired before anything can close a pane.
 setStageHome(() => openFleet());
@@ -391,6 +400,8 @@ function renderAllNow() {
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (fleetMirror()) {
     renderFleetHeader(); renderFleet();
+  } else if (reviewMirror()) {
+    renderReviewHeader();
   } else if (dashMirror()) {
     renderDashHeader(); renderDash();
   } else if (pastMirrorId()) {
@@ -744,6 +755,7 @@ $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https
 $("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessionAsked(activeId); });
 $("btnClose").addEventListener("click", () => {
   if (fleetMirror()) { closeFleet(); renderAll(); return; }
+  if (reviewMirror()) { closePrReview(); renderAll(); return; }
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
   // Anything left on `mirror` is a read-only one (external or shelved): stepping out of it
   // is `leaveMirror`, never `closeSession` — the session it shows is not ours to close.
@@ -796,6 +808,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
   else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
+  // prReviewEscape, not closePrReview: a comment being written goes first.
+  else if (e.key === "Escape" && reviewMirror()) { e.preventDefault(); prReviewEscape(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   // The read-only mirrors, which had no way out but a click on something else. Same verb as
