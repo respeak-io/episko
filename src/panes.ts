@@ -439,7 +439,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it

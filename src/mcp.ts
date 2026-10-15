@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import { sessions } from "./state";
+import type { Sess, WtHead } from "./types";
 import { discoverTasks, execCmd, launchWithDeps, rememberedInput } from "./tasks";
 import {
   appendOutput, fillInputs, missingText, refuseRun, reportText, runnablesText, waitSeconds,
@@ -21,7 +22,8 @@ interface Watch {
 // Task pane id → what its caller is told. Kept after the exit so a late task_status still answers.
 const runs = new Map<string, Watch>();
 const KEEP_MS = 60 * 60_000;
-// caller + task id → the launch in flight, so output that beats launchTask's return is not lost.
+// Call tag → the launch in flight, so output that beats launchTask's return is not lost. Keyed
+// per call, not per task: fifty agents may run the same task at once, and each gets its own.
 const launching = new Map<string, Watch>();
 
 function answer(id: string, text: string, isError = false) {
@@ -35,8 +37,8 @@ function prune(now = Date.now()) {
 function watchFor(paneId: string): Watch | undefined {
   const known = runs.get(paneId);
   if (known) return known;
-  const r = sessions.get(paneId)?.run;
-  const w = r?.forSession ? launching.get(`${r.forSession}\0${r.id}`) : undefined;
+  const tag = sessions.get(paneId)?.run?.tag;
+  const w = tag ? launching.get(tag) : undefined;
   if (w) runs.set(paneId, w);
   return w;
 }
@@ -73,35 +75,43 @@ async function report(call: McpCall, handle: string, w: Watch, secs: number) {
   }), w.exit != null && w.exit !== 0);
 }
 
+// Where a call runs. Subagents share their parent's MCP connection, so a worktree-isolated one
+// names its checkout in `cwd`; only a checkout of this repo is accepted (docs/mcp.md).
+async function placeOf(s: Sess, cwd: unknown): Promise<{ dir: string; worktree: string | null; branch: string } | string> {
+  if (typeof cwd !== "string" || !cwd.trim()) return { dir: s.workdir, worktree: s.worktree, branch: s.branch };
+  const want = cwd.trim().replace(/[\\/]+$/, "");
+  const heads = await invoke<WtHead[]>("worktree_heads", { dir: s.workdir }).catch(() => [] as WtHead[]);
+  const inside = (root: string) => want === root || want.startsWith(root + "/") || want.startsWith(root + "\\");
+  const h = heads.filter((x) => x.exists && inside(x.path)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (!h) return `${cwd} is not a checkout of this session's repository, so Episko will not run tasks there.`;
+  return { dir: h.path, worktree: h.is_main ? null : h.branch, branch: h.branch };
+}
+
 async function runTask(call: McpCall) {
   const s = sessions.get(call.sessionId)!;
   const taskId = typeof call.args.id === "string" ? call.args.id : "";
-  // The session's own workdir, as run-on-stop does: the checkout this agent is editing.
-  const all = await discoverTasks(s.workdir, s.colorKey, true);
+  const place = await placeOf(s, call.args.cwd);
+  if (typeof place === "string") return answer(call.id, place, true);
+  const all = await discoverTasks(place.dir, s.colorKey, true);
   const spec = all.find((r) => r.id === taskId);
-  if (!spec) return answer(call.id, `No task "${taskId}" in ${s.workdir}.\n\n${runnablesText(all)}`, true);
+  if (!spec) return answer(call.id, `No task "${taskId}" in ${place.dir}.\n\n${runnablesText(all)}`, true);
   const why = refuseRun(spec);
   if (why) return answer(call.id, why, true);
   const filled = fillInputs(spec, call.args.inputs, (inp) => rememberedInput(s.project, spec.id, inp));
   if ("missing" in filled) return answer(call.id, missingText(spec, filled.missing), true);
 
-  const key = `${s.id}\0${spec.id}`;
-  const busy = [...runs].find(([, w]) => w.caller === s.id && w.taskId === spec.id && w.exit == null);
-  if (busy || launching.has(key)) {
-    const handle = busy?.[0] ?? "";
-    return answer(call.id, `${spec.id} is already running for this session${handle ? `; task_status with handle "${handle}" follows it` : ""}.`, true);
-  }
   prune();
+  const tag = call.id; // unique per tools/call, minted by the backend
   const w: Watch = {
     caller: s.id, taskId: spec.id, cmd: execCmd(filled.ready), startedAt: Date.now(),
     output: "", cut: false, exit: null, endedAt: 0, waiters: new Set(),
   };
-  launching.set(key, w);
+  launching.set(tag, w);
   dlog("info", `mcp run_task ${spec.id} · for ${s.id.slice(0, 8)}`);
   try {
     const res = await launchWithDeps(filled.ready, s.project, {
-      colorKey: s.colorKey, worktree: s.worktree, branch: s.branch,
-      discoveredIn: s.workdir, forSession: s.id, focus: false,
+      colorKey: s.colorKey, worktree: place.worktree, branch: place.branch,
+      discoveredIn: place.dir, forSession: s.id, tag, focus: false,
     });
     if (!res.ok || !res.id) {
       return answer(call.id, `${spec.id} did not start${spec.dependsOn.length ? " (a dependency failed; its pane says why)" : ""}.`, true);
@@ -109,7 +119,7 @@ async function runTask(call: McpCall) {
     runs.set(res.id, w);
     await report(call, res.id, w, waitSeconds(call.args.wait_seconds));
   } finally {
-    launching.delete(key);
+    launching.delete(tag);
   }
 }
 
@@ -125,7 +135,9 @@ export async function onMcpCall(call: McpCall) {
   if (!s) return answer(call.id, "This session is not open in Episko any more.", true);
   try {
     if (call.tool === "list_runnables") {
-      return answer(call.id, runnablesText(await discoverTasks(s.workdir, s.colorKey, true)));
+      const place = await placeOf(s, call.args.cwd);
+      if (typeof place === "string") return answer(call.id, place, true);
+      return answer(call.id, runnablesText(await discoverTasks(place.dir, s.colorKey, true)));
     }
     if (call.tool === "run_task") return await runTask(call);
     if (call.tool === "task_status") return await taskStatus(call);

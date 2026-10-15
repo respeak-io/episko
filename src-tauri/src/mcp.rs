@@ -15,7 +15,9 @@ const INSTRUCTIONS: &str = "You are running inside Episko, a desktop app that ho
 sessions side by side. Run this project's tests, builds, lint and type checks through `run_task` \
 rather than Bash: the run gets its own pane the user can watch and stop, with their PATH, their \
 task overrides and their inputs. Use Bash freely for one-off commands no task covers. Ids are \
-`<source>:<name>` (npm:test, just:lint, episko:typecheck); guess one, and a miss lists them all.";
+`<source>:<name>` (npm:test, just:lint, episko:typecheck); guess one, and a miss lists them all. \
+Every call is its own run, so parallel calls run in parallel. If you work in a git worktree of \
+your own, pass its path as `cwd`, or the task runs in this session's folder instead.";
 
 /// 128 bits from the OS, hex. A tool call can launch processes, so the endpoint is not open
 /// to whatever else on the machine (or a rebinding web page) can reach 127.0.0.1.
@@ -55,13 +57,15 @@ pub(crate) fn forget_session(state: &AppState, session_id: &str) {
 fn tools() -> Value {
     let wait = json!({ "type": "integer", "minimum": 0, "maximum": 1800,
         "description": "Seconds to wait for the run to exit before returning a handle (default 600)." });
+    let cwd = json!({ "type": "string",
+        "description": "A checkout of this repository to run in, such as your own git worktree. Defaults to the session's folder." });
     json!([
         {
             "name": "list_runnables",
             "description": "List the tasks this project defines (package.json scripts, justfile recipes, \
 VS Code tasks, Makefile targets, .episko/tasks.toml, ...) as Episko discovers them for this session's \
 folder, with the id run_task takes and the command each runs.",
-            "inputSchema": { "type": "object", "properties": {} },
+            "inputSchema": { "type": "object", "properties": { "cwd": cwd } },
         },
         {
             "name": "run_task",
@@ -74,6 +78,7 @@ no need to list first. One-shot tasks only; a dev server is refused.",
                 "inputs": { "type": "object", "additionalProperties": { "type": "string" },
                     "description": "Values for the task's declared inputs, by input id." },
                 "wait_seconds": wait,
+                "cwd": cwd,
             }, "required": ["id"] },
         },
         {
