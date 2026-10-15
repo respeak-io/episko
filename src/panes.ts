@@ -128,13 +128,24 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
 
 // ---------- launch ----------
 // Returns the session id, or null when the spawn failed; the dashboard's dispatch depends on it.
+// One line of text into a fresh agent prompt, as a person would type it. Claude Code reads a
+// burst as a paste: under 1KB it collapses to "[Pasted text]", which nobody can read before
+// Enter, and past 1KB it drops the first 1024-byte read outright. Small beats arrive whole.
+export async function typeInto(sid: string, text: string, size = 240, gapMs = 50): Promise<void> {
+  const chars = Array.from(text.replace(/[\r\n]+/g, " ")); // by code point: never split an emoji
+  for (let i = 0; i < chars.length; i += size) {
+    await invoke("write_pty", { sessionId: sid, data: chars.slice(i, i + size).join("") });
+    await new Promise((r) => setTimeout(r, gapMs));
+  }
+}
+
 // An agent that writes `[stack]` (docs/stack.md). Prefilled, not sent: the dashboard's dispatch
 // contract, since the human should read what the agent is being asked to do to their repo.
 export async function setupStack(root: string, hasTable: boolean): Promise<void> {
   const sid = await launch(basename(root), root, { colorKey: root });
   if (typeof sid !== "string") return;
   // Claude's REPL needs a moment before it accepts input; failing to type is harmless.
-  setTimeout(() => { void invoke("write_pty", { sessionId: sid, data: stackBrief(hasTable) }).catch(() => {}); }, 1400);
+  setTimeout(() => { void typeInto(sid, stackBrief(hasTable)).catch(() => {}); }, 1400);
   toast("Brief prefilled. Read it, then press Enter to send");
 }
 

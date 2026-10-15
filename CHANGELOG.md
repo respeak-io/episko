@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A long prefilled prompt arrives whole.** Claude Code reads text typed into a fresh session
+  in one burst as a paste: under 1 KB it collapsed to `[Pasted text]` before you could read it,
+  and past 1 KB it lost the first 1,024 characters. A dispatched note or issue, and the stack
+  setup brief, are now typed in small beats, so the whole sentence is there to read before
+  you press Enter.
+
 + **A dev environment is one block in the servers popover.** Start `just dev` or a compound
   task like *Dev: Frontend + Backend*, and the popover groups its panes with the Docker Compose
   containers of the repo: each pane's port or URL, each container's health and ports, and one
