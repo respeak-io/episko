@@ -16,6 +16,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ! **Esc closes the dialog, not the dashboard under it.** Pressing Esc in the new-session dialog,
   the run picker, a task's input prompt, the palette or a project's right-click menu also closed
   the project dashboard behind it; the task manager's Esc closed the dashboard instead of itself.
+! **Deleting branches shows where it is.** Each ticked row waits, spins while it goes, then turns
+  ✓ or ✕ (hover for git's reason), and the button counts "Deleting 4 of 13…"; removing checkouts
+  does the same. A branch that had a checkout is now deleted by the sweep rather than by the
+  checkout's removal, so it is reported as deleted, with its sha, instead of kept as "not found".
 
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it

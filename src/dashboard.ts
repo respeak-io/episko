@@ -21,7 +21,7 @@ import {
   bandSkeleton, branchesOverlay, cardSkeleton, checkoutCard, closeSheet, dispatchSheet,
   ghUnavailable, liveHereCard, type LiveRow, missingCard, notesOverlay, projectFoot, queueCard, sinceBand,
   triageOverlay, verbTiles, worksetCard, workOverlay,
-  type BandLine, type CleanReport, type DashSync,
+  type BandLine, type CleanReport, type DashSync, type RowProg,
 } from "./dashview";
 import { landedCard } from "./landedview";
 import { issueOverlay, type RailFrom, type RailRow } from "./issueview";
@@ -291,6 +291,12 @@ let branchQuery = "";
 let coSel: Pick = emptyPick();
 let branchBusy = false;
 let branchResult: CleanReport | null = null;
+// Each row's place in a running delete, so a batch of thirteen checkouts is not one "Working…".
+const rowProg = new Map<string, RowProg>();
+function setProg(keys: Iterable<string>, st: RowProg["st"], note?: string): void {
+  for (const k of keys) if (rowProg.get(k)?.st !== "failed") rowProg.set(k, { st, note });
+  renderDash();
+}
 // The one day out at the model right now; a value, not a set, because `runSummaryQueue` is sequential.
 let writing: { key: string; scope: "me" | "project" } | null = null;
 // Which half of a pass is running; lets a shared box be drawn before its sentence exists.
@@ -1013,7 +1019,7 @@ export function renderDash(): void {
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
-      busy: branchBusy, loading: branchData === null, result: branchResult,
+      busy: branchBusy, prog: rowProg, loading: branchData === null, result: branchResult,
     }));
   }
 
@@ -1622,17 +1628,33 @@ async function runClean(): Promise<void> {
   if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
   const remote = remoteFor(rows);
   branchBusy = true;
-  renderDash();
+  rowProg.clear();
+  setProg(new Set([...picks, ...rpicks].map((p) => p.branch)), "queued");
+  // A row is done only once every half it was ticked for has gone.
+  const settle = (s: SweepResult, pending: ReadonlySet<string>) => {
+    for (const d of s.deleted) setProg([d.branch], pending.has(d.branch) ? "queued" : "done");
+    for (const k of s.kept) setProg([k.branch], "failed", k.reason);
+  };
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
   try {
     if (picks.length) {
-      for (const w of chosenWorktrees(rows, branchSel.picked)) report.wts.push(await removeOne(r, w));
+      for (const w of chosenWorktrees(rows, branchSel.picked)) {
+        setProg([w.branch], "working");
+        // The branch stays for the sweep, which reports its sha and forces where the row earned it.
+        const res = await removeOne(r, w, false);
+        report.wts.push(res);
+        if (!res.ok) setProg([w.branch], "failed", res.note);
+      }
+      setProg(picks.map((p) => p.branch), "working");
       report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
       dlog("info", `branches · ${report.local.summary}`);
+      settle(report.local, new Set(rpicks.map((p) => p.branch)));
     }
     if (rpicks.length) {
+      setProg(rpicks.map((p) => p.branch), "working");
       const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks: rpicks });
       dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
+      settle(swept, new Set());
       report.remote = { swept, remote };
       // A remote delete leaves refs/remotes alone until a fetch prunes them.
       await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
@@ -1648,6 +1670,7 @@ async function runClean(): Promise<void> {
     if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
+    rowProg.clear();
     branchSel = emptyPick();
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
@@ -1665,12 +1688,19 @@ async function runCheckoutClean(): Promise<void> {
   const rows = chosenCheckouts(checkoutRowsNow(), coSel.picked);
   if (!r || branchBusy || !rows.length) return;
   branchBusy = true;
-  renderDash();
+  rowProg.clear();
+  setProg(rows.map((c) => c.wt.path), "queued");
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
-  for (const c of rows) report.wts.push(await removeOne(r, c.wt));
+  for (const c of rows) {
+    setProg([c.wt.path], "working");
+    const res = await removeOne(r, c.wt);
+    report.wts.push(res);
+    setProg([c.wt.path], res.ok ? "done" : "failed", res.note);
+  }
   const ok = report.wts.filter((w) => w.ok).length;
   report.summary = `${ok} of ${rows.length} checkout${rows.length === 1 ? "" : "s"} removed`;
   branchBusy = false;
+  rowProg.clear();
   coSel = emptyPick();
   if (root() === r) {
     toast(report.summary);
@@ -1684,13 +1714,13 @@ async function runCheckoutClean(): Promise<void> {
 
 /** One `remove_worktree`, reported the way both runs above report it. The rail is marked for
  *  the whole call, so a batch spins each folder where it lives rather than dropping it. */
-async function removeOne(repoDir: string, w: WtInfo): Promise<{ label: string; ok: boolean; note: string }> {
+async function removeOne(repoDir: string, w: WtInfo, deleteBranch = true): Promise<{ label: string; ok: boolean; note: string }> {
   const label = w.path.split(/[/\\]/).filter(Boolean).pop() ?? w.path;
   removingWt.set(w.path, repoDir);
   host.renderAll();
   try {
     const res = await invoke<{ ok: boolean; summary: string; stranded?: unknown }>(
-      "remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch: true });
+      "remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch });
     dlog(res.ok ? "info" : "warn", `branches · worktree ${label} · ${res.summary}`);
     // A stranded removal is `ok: true`: the worktree is unregistered, so the branch is deletable.
     return { label, ok: res.ok, note: res.stranded ? "removed; folder still on disk" : res.summary };

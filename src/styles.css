@@ -3413,6 +3413,13 @@ select.in-ctl { cursor: pointer; }
 .dbbr .ra .act { width: 20px; padding: 0; justify-content: center; opacity: 0; }
 .dbbr:hover .ra .act { opacity: .75; }
 .dbbr .ra .act:hover { opacity: 1; }
+.prog { display: inline-flex; width: 20px; justify-content: center; font: 11px var(--font-mono); color: var(--muted-2); }
+.prog .u-spin { margin: 0; }
+.prog.done { color: var(--st-done); }
+.prog.failed { color: var(--st-working); }
+/* A delete in flight: the row in hand is lit, finished ones fade, refused ones keep their ink. */
+.dbbr.p-working, .dbwt.p-working { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.dbbr.p-done, .dbwt.p-done { opacity: .45; }
 /* The action bar: what is ticked, where a delete lands, and what that actually runs. */
 .bvbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 10px; padding: 10px 9px; border-radius: 10px; border: 1px solid var(--hair-strong);
