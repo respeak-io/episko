@@ -323,7 +323,7 @@ function stackInput(): PaneIn[] {
   return out;
 }
 
-function currentStacks(): Stack[] {
+export function currentStacks(): Stack[] {
   const cfg = new Map([...configs].map(([k, v]) => [k, v.cfg]));
   return buildStacks({ panes: stackInput(), ports: portsBySid, containers, checkouts: checkouts(), configs: cfg, now: Date.now() });
 }
@@ -356,6 +356,13 @@ async function refreshContainers(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** A fresh reading for an agent asking now: ports and Docker re-read, not the last poll's. */
+export async function refreshStacksNow(): Promise<Stack[]> {
+  dockerAt = 0;
+  await pollServers();
+  return currentStacks();
 }
 
 function downLabel(st: Stack): string {

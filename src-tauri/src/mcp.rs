@@ -17,7 +17,12 @@ rather than Bash: the run gets its own pane the user can watch and stop, with th
 task overrides and their inputs. Use Bash freely for one-off commands no task covers. Ids are \
 `<source>:<name>` (npm:test, just:lint, episko:typecheck); guess one, and a miss lists them all. \
 Every call is its own run, so parallel calls run in parallel. If you work in a git worktree of \
-your own, pass its path as `cwd`, or the task runs in this session's folder instead.";
+your own, pass its path as `cwd`, or the task runs in this session's folder instead. \
+To bring up a dev server, a desktop app or the whole dev environment, use `run_task` too, never \
+Bash with run_in_background: it answers once the thing is up, with its addresses, and it keeps \
+running in its pane. Call `stack_status` first to see what of this repository is already running \
+across its worktrees (panes, containers, ports, pages); the project's own scripts reuse a shared \
+database or container, so starting the dev task in your checkout is usually right.";
 
 /// 128 bits from the OS, hex. A tool call can launch processes, so the endpoint is not open
 /// to whatever else on the machine (or a rebinding web page) can reach 127.0.0.1.
@@ -56,7 +61,7 @@ pub(crate) fn forget_session(state: &AppState, session_id: &str) {
 
 fn tools() -> Value {
     let wait = json!({ "type": "integer", "minimum": 0, "maximum": 1800,
-        "description": "Seconds to wait for the run to exit before returning a handle (default 600)." });
+        "description": "Seconds to wait before returning a handle: for the exit of a check or test (default 600), for a server or app to come up (default 60)." });
     let cwd = json!({ "type": "string",
         "description": "A checkout of this repository to run in, such as your own git worktree. Defaults to the session's folder." });
     json!([
@@ -70,16 +75,25 @@ folder, with the id run_task takes and the command each runs.",
         {
             "name": "run_task",
             "description": "Run one of the project's tasks in its own Episko pane, which the user can \
-watch, and wait for it to finish. Returns the exit code and the tail of its output. Prefer this \
-over Bash for tests, builds and checks. An unknown id is answered with the full list, so there is \
-no need to list first. One-shot tasks only; a dev server is refused.",
+watch. A check, test or build is waited for and answered with its exit code and output. A server, \
+app, watcher or compound dev task is answered once it is up, with its addresses, and keeps running; \
+one already running in that checkout is reported rather than started twice. An unknown id is \
+answered with the full list, so there is no need to list first.",
             "inputSchema": { "type": "object", "properties": {
                 "id": { "type": "string", "description": "`<source>:<name>`: an npm script is npm:<script>, a .episko/tasks.toml task episko:<label>, a just recipe just:<recipe>." },
                 "inputs": { "type": "object", "additionalProperties": { "type": "string" },
                     "description": "Values for the task's declared inputs, by input id." },
                 "wait_seconds": wait,
                 "cwd": cwd,
+                "again": { "type": "boolean", "description": "Start a second copy of a server or app even though one is already running in this checkout." },
             }, "required": ["id"] },
+        },
+        {
+            "name": "stack_status",
+            "description": "What of this repository's dev environment is running right now, across every \
+checkout of it: each dev task's panes and their state, the Docker Compose containers with their health, \
+ports and which checkout started them, and the addresses worth opening. Read-only.",
+            "inputSchema": { "type": "object", "properties": {} },
         },
         {
             "name": "task_status",

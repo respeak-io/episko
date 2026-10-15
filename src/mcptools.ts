@@ -4,23 +4,25 @@
 
 import { applyInputs, execCmd } from "./tasks";
 import type { InputSpec, Runnable } from "./types";
+import type { Stack } from "./stack";
 
 /** Output kept per run, from the end: a test failure's summary is at the bottom. */
 export const OUTPUT_CAP = 16_000;
 export const WAIT_DEFAULT_S = 600;
+export const WAIT_UP_S = 60; // a server or app answers once it is up, so its wait is for coming up, not exiting
 export const WAIT_MAX_S = 1800;
 
-export function waitSeconds(v: unknown): number {
-  const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : WAIT_DEFAULT_S;
+export function waitSeconds(v: unknown, long = false): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : long ? WAIT_UP_S : WAIT_DEFAULT_S;
   return Math.min(WAIT_MAX_S, Math.max(0, n));
 }
 
-/** Why an agent may not start this one, or "" if it may. */
+// Answered once it is up rather than once it exits: what never exits, and a compound (its servers).
+export const runsOn = (r: Runnable): boolean => r.background || r.compound;
+
+/** Why an agent may not start this one, or "" if it may. Only what cannot run at all. */
 export function refuseRun(r: Runnable): string {
-  if (r.blocked) return `${r.id} can't run: ${r.blocked}`;
-  if (r.background) return `${r.id} is a long-running task (a server or watcher), which run_task doesn't start yet. Ask the user to start it from Episko's Run menu.`;
-  if (r.compound) return `${r.id} only runs other tasks; run those by id instead: ${r.dependsOn.join(", ")}`;
-  return "";
+  return r.blocked ? `${r.id} can't run: ${r.blocked}` : "";
 }
 
 /** Fill a task's inputs: the agent's value, else what the user typed last, else the default. */
@@ -48,7 +50,8 @@ export function runnablesText(rs: Runnable[]): string {
   if (!rs.length) return "This project defines no runnable tasks Episko can see.";
   const rows = rs.map((r) => {
     const tags = [
-      r.group, r.background && "long-running", r.compound && "runs other tasks",
+      r.kind ?? (r.background ? "long-running" : r.group), r.compound && "runs other tasks",
+      r.described === "stale" && "description out of date", r.note,
       r.inputs.length && `inputs: ${r.inputs.map((i) => i.id).join(", ")}`,
       r.blocked && `blocked: ${r.blocked}`,
     ].filter(Boolean);
@@ -82,6 +85,32 @@ export function appendOutput(prev: string, chunk: string, cap = OUTPUT_CAP): { t
 export interface RunReport {
   id: string; cmd: string; handle: string; exit: number | null;
   elapsedMs: number; output: string; cut: boolean;
+}
+
+/** A server or app's answer: up (with where), still coming up, or down before it ever was. */
+export function upText(id: string, cmd: string, handle: string, elapsedMs: number, st: Stack | undefined, output: string): string {
+  const secs = Math.round(elapsedMs / 1000);
+  const pages = st?.pages.map((p) => `- ${p.name}: ${p.url}`) ?? [];
+  const head = st?.state === "ready"
+    ? `${id} is up after ${secs}s (\`${cmd}\`). It keeps running in its own Episko pane; the user stops it.`
+    : st?.state === "failed"
+      ? `${id} failed to come up after ${secs}s (\`${cmd}\`): ${st.why}.`
+      : `${id} is still coming up after ${secs}s (\`${cmd}\`)${st?.why ? `: ${st.why}` : ""}. Call task_status with handle "${handle}" to keep waiting.`;
+  const tail = output.trim().split("\n").slice(-30).join("\n");
+  return [head, pages.length ? `Pages:\n${pages.join("\n")}` : "", tail ? `Output so far (the end):\n${tail}` : ""].filter(Boolean).join("\n\n");
+}
+
+/** stack_status: every stack of this repo, across its checkouts, as an agent would want it. */
+export function stacksText(stacks: readonly Stack[], here: string): string {
+  if (!stacks.length) return "Nothing of this repository's dev environment is running: no dev task panes, no Compose containers.";
+  return stacks.map((s) => {
+    const where = s.checkout === here ? "this checkout" : `checkout ${s.checkout}`;
+    const lines = [`${s.project}${s.label ? ` · ${s.label}` : ""} (${where}): ${s.state}${s.why ? `, ${s.why}` : ""}`];
+    for (const m of s.members) lines.push(`  pane ${m.label}: ${m.state}${m.url ? ` at ${m.url}` : m.ports.length ? ` on :${m.ports.join(", :")}` : ""}${m.exit != null ? ` (exit ${m.exit})` : ""}`);
+    for (const b of s.boxes) lines.push(`  container ${b.c.service} (${b.c.name}): ${b.state}${b.health !== "none" ? `, ${b.health}` : ""}${b.hostPorts.length ? `, ports :${b.hostPorts.join(", :")}` : ""}${b.from ? `, started from ${b.from}` : ""}`);
+    for (const p of s.pages) lines.push(`  page ${p.name}: ${p.url}`);
+    return lines.join("\n");
+  }).join("\n\n");
 }
 
 export function reportText(r: RunReport): string {

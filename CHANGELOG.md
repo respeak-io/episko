@@ -18,9 +18,11 @@ Markers: `+` new · `~` changed · `!` fixed
   and `run_task` starts one in its own pane beside the session, with your PATH, overrides and
   remembered inputs, then hands the exit code and output back to the agent. You see the run
   as it happens instead of a Bash call scrolling past, and approving the tool goes through the
-  usual permission prompt. One-shot tasks only for now (tests, builds, lint); a dev server is
-  still yours to start. Off until you turn it on in Settings › Launching, or for one project in
-  its settings.
+  usual permission prompt. A dev server, a desktop app or a whole compound dev task is
+  answered once it is up, with its addresses, and keeps running in its pane; `stack_status`
+  tells the agent what of the repository already runs across its worktrees, so it stops
+  probing ports. Off until you turn it on in Settings › Launching, or for one project in its
+  settings.
 
 ~ **Trusting a project is a button, not a hidden click.** A justfile, Taskfile or mise config
   is listed by running it, so Episko asks first, but the only way to answer was clicking a
