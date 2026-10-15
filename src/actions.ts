@@ -17,7 +17,7 @@ import { waitForExit } from "./tasks";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
-  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, footPrefs, keyPrefs,
+  activeId, attnPrefs, autoFetchPrefs, dashMirror, FAVORITES, fleetMirror, reviewMirror, footPrefs, keyPrefs,
   markWorkdirStale, worktreesByRepo,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
@@ -33,7 +33,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -51,7 +51,7 @@ import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import type { AutoFetchPrefs } from "./autofetch";
-import { withFetch, withPerm } from "./projprefs";
+import { withFetch, withPerm, withTools } from "./projprefs";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -257,6 +257,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
   void tickAutoFetch();
 }
 
+// Read at the next launch; a running session keeps the tools it started with.
+export function setAgentTools(on: boolean) {
+  setAgentToolsState(on);
+  localStorage.setItem("cc-agent-tools", on ? "1" : "0");
+  renderSettings();
+}
+
 // Read at the next ⌘T; nothing on stage moves.
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
@@ -268,6 +275,13 @@ export function setTermSplit(on: boolean) {
 export function setDriftAuto(on: boolean) {
   setDriftAutoState(on);
   localStorage.setItem("cc-drift-auto", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read at click time by ./terminal's link handler; nothing on screen depends on it.
+export function setPrLinks(on: boolean) {
+  setPrLinksInAppState(on);
+  localStorage.setItem("cc-pr-links", on ? "1" : "0");
   renderSettings();
 }
 
@@ -530,6 +544,13 @@ export function setProjectFetch(colorKey: string, patch: { fetch?: boolean | nul
   void tickAutoFetch();
 }
 
+export function setProjectTools(colorKey: string, on: boolean | null) {
+  setProjPrefs(withTools(projPrefs, colorKey, on));
+  localStorage.setItem("cc-proj-prefs", JSON.stringify(projPrefs));
+  renderSettings();
+  renderAll();
+}
+
 export function setSort(m: SortMode, announce = true) {
   setSortMode(m);
   localStorage.setItem("cc-sort", m);
@@ -574,7 +595,7 @@ export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // The fleet has neither: CSS already hides that column, so flipping `insp-off` there
 // changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
-  if (fleetMirror()) return;
+  if (fleetMirror() || reviewMirror()) return;
   const app = $("app");
   if (dashMirror()) {
     const folded = foldDashNext();

@@ -10,9 +10,11 @@ mod git;
 mod health;
 mod github;
 mod icons;
+mod mcp;
 mod notes;
 mod platform;
 mod pty;
+mod review;
 mod summarize;
 mod sync;
 mod tasks;
@@ -78,6 +80,10 @@ pub(crate) struct AppState {
     /// Held-open PermissionRequest HTTP requests, answered by `resolve_permission`.
     pending: Mutex<HashMap<String, tiny_http::Request>>,
     next_perm: std::sync::atomic::AtomicU64,
+    /// Pane id → the bearer token its `--mcp-config` carries (mcp.rs).
+    mcp_tokens: Mutex<HashMap<String, String>>,
+    /// Held-open MCP `tools/call` requests and their JSON-RPC ids, answered by `resolve_mcp`.
+    mcp_pending: Mutex<HashMap<String, (tiny_http::Request, serde_json::Value)>>,
     /// The `caffeinate` child; started with `-w <our pid>` so it dies with Episko.
     #[cfg(not(windows))]
     caffeinate: Mutex<Option<std::process::Child>>,
@@ -297,6 +303,8 @@ pub fn run() {
                 bg_root: Mutex::new(pty::BgRootState::default()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
+                mcp_tokens: Mutex::new(HashMap::new()),
+                mcp_pending: Mutex::new(HashMap::new()),
                 caffeinate: Mutex::new(None),
                 sync: Default::default(),
             });
@@ -467,6 +475,7 @@ pub fn run() {
             git::create_worktree,
             platform::set_caffeinate,
             telemetry::resolve_permission,
+            mcp::resolve_mcp,
             agent::resolve_agent_request,
             agent::refresh_agent_state,
             agent::agent_history,
@@ -503,6 +512,15 @@ pub fn run() {
             github::claim_policy,
             github::list_kept,
             github::set_kept,
+            review::pr_review,
+            review::pr_diff,
+            review::pr_blob,
+            review::pr_submit_review,
+            review::pr_reply,
+            review::pr_resolve,
+            review::pr_comment,
+            review::pr_merge,
+            review::pr_ready,
             notes::list_shared_notes,
             notes::set_shared_note,
             pty::spawn_ghostty,

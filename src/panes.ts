@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -185,7 +185,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey) });
   } catch (e) {
     spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
@@ -257,7 +257,7 @@ export async function adoptOrphans(): Promise<number> {
     dlog("warn", `adopted ${orphans.length} orphaned pane${orphans.length === 1 ? "" : "s"} after a webview reload`);
     toast(`Reattached ${orphans.length} running session${orphans.length === 1 ? "" : "s"} after a reload`);
     // Give the stage to the freshest orphan, unless the user has already picked something.
-    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror() && !fleetMirror()) {
+    if (!activeId && !pastMirrorId() && !extMirrorId() && !dashMirror() && !fleetMirror() && !reviewMirror()) {
       const front = [...sessions.values()].sort((a, b) => b.lastActivity - a.lastActivity)[0];
       if (front) setActive(front.id);
     }
@@ -439,7 +439,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
@@ -898,7 +898,7 @@ Showing ${s.workdir}`;
 // ＋ Session, ❯ Terminal, ▶ Run and ◷ History act on it rather than greying out.
 export function activeProjectCtx(): { project: string; path: string } | null {
   // Checked first: the three mirror kinds share one pointer, and a dashboard's root is the repo key.
-  const dm = dashMirror();
+  const dm = dashMirror() ?? reviewMirror();
   if (dm) return { project: dm.name, path: dm.root };
   // An external's repo root, not its worktree cwd, so a launch from it groups under the repo.
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) { const root = e.repo_root || e.cwd; return { project: basename(root), path: root }; } }
@@ -908,7 +908,7 @@ export function activeProjectCtx(): { project: string; path: string } | null {
 }
 // The actual cwd (a worktree's dir, not the grouping key), for opening a terminal there.
 export function activeCwd(): string | null {
-  const dm = dashMirror();
+  const dm = dashMirror() ?? reviewMirror();
   if (dm) return dm.root;
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); return e ? e.cwd : null; }
   if (pastMirrorId()) { const d = dormants.find((x) => x.id === pastMirrorId()); return d ? d.workdir : null; }
@@ -982,7 +982,7 @@ export function syncStageButtons() {
   // The project pane offers Terminal / Run / History as tiles in its own first column, so the
   // header's copies are hidden there rather than sitting a hand's width from the originals.
   // The fleet has no one project for them to act on at all.
-  const bare = !!dashMirror() || !!fleetMirror();
+  const bare = !!dashMirror() || !!fleetMirror() || !!reviewMirror();
   for (const id of ["btnRun", "btnTerm", "btnHist"]) ($(id) as HTMLButtonElement).hidden = bare;
   // ◨ stays on every stage: on the dashboard it folds the Next column, a verb this pane has
   // and no other surface offers, so hiding it there would leave ⌘I with nothing to find. Only
@@ -990,7 +990,7 @@ export function syncStageButtons() {
   // VISIBLE or the reason it gives is a tooltip nobody can reach. Here rather than in each
   // header writer, because this runs on every pass and so is also what turns it back on.
   const ib = $("inspBtn") as HTMLButtonElement;
-  ib.disabled = !!fleetMirror();
+  ib.disabled = !!fleetMirror() || !!reviewMirror();
   ib.title = ib.disabled ? "Nothing to fold on this screen" : "Toggle inspector (⌘I)";
   // Lit from the truth for whichever stage is up, never left over from the last one: the
   // dashboard's fold and the inspector's own switch are different classes on different

@@ -28,18 +28,18 @@ import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
 import { closeMdReader, mdReaderOpen } from "./mdreader";
-import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
   revealTouchedFile,
   copyPath, copyText, openTerminalIn, setActionsRenderAll, setAttnPrefs, setAutoFetchPrefs, setDefaultAgent, setKeyPrefs,
   setPeekPrefs, setPermMode, setProjectAgent, setProjectGhAccount, setProjectShareMode, moveWorkLogToServer, setGhReload, refreshGhAccounts,
-  setProjectPerm, setProjectFetch,
+  setProjectPerm, setProjectFetch, setProjectTools, setAgentTools,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
@@ -67,6 +67,7 @@ import {
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
+import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
 import "./update"; // side-effect import: it owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
@@ -100,6 +101,7 @@ import {
 import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
+import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -117,7 +119,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
-  copyChord, FAVORITES, fleetMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
@@ -224,7 +226,7 @@ setProjMenuHost({
   setShareMode: setProjectShareMode, openProjectSettings,
 });
 setProjSetHost({
-  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setGh: setProjectGhAccount,
+  setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setTools: setProjectTools, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
 });
@@ -240,11 +242,11 @@ setMirrorLaunch(launch);
 setMirrorRenderAll(renderAll);
 setSettingsHost({
   setSort, setEngine, bumpFont, applyFontSize,
-  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs,
+  setWtGroup, setPermMode, setDefaultAgent, setPeekPrefs, setTitlePrefs, setSoundPrefs, setKeyPrefs, setAttnPrefs, setAutoFetchPrefs, setAgentTools,
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -295,6 +297,7 @@ setDashHost({
   openGraph: (root, mark) => { void openGraphFor(root, dashMirror()?.name ?? basename(root), mark ?? null); },
   openDiff: (workdir, title, focus) => { void openDiff(workdir, title, focus); },
   refreshGit: () => refreshGitViews(),
+  openReview: (project, root, number) => { openPrReview(project, root, number); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
   openHistory: () => { void openHistory(true); },
@@ -317,6 +320,13 @@ setFleetHost({
   refreshUsage: () => { void refreshTokens().then(renderAll); },
 });
 wireFleet();
+// The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
+setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
+setReviewHost({
+  launch: (project, workdir, opts) => launch(project, workdir, opts),
+  setActive, openDashboard, renderAll, refreshGit: () => refreshGitViews(),
+});
+wireReview();
 // The stage's home: whatever steps off it lands here, so "no sessions running" is not a
 // screen the app has any more. Wired before anything can close a pane.
 setStageHome(() => openFleet());
@@ -390,6 +400,8 @@ function renderAllNow() {
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (fleetMirror()) {
     renderFleetHeader(); renderFleet();
+  } else if (reviewMirror()) {
+    renderReviewHeader();
   } else if (dashMirror()) {
     renderDashHeader(); renderDash();
   } else if (pastMirrorId()) {
@@ -418,7 +430,9 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   s.term.write(bytes);
   // A task keeps a bounded tail so a failure can be handed to an agent: a hint, not a transcript.
   if (s.run) {
-    const text = new TextDecoder().decode(bytes).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    const raw = new TextDecoder().decode(bytes);
+    mcpOutput(s.id, raw); // an agent's run_task gets the whole output, not this tail
+    const text = raw.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
     for (const line of text.split(/\r?\n/)) {
       if (line.trim()) s.run.tail.push(line.trimEnd());
     }
@@ -436,6 +450,7 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   // Before the early return: a dependency chain must never deadlock on a vanished session.
   const waiter = exitWaiters.get(e.payload.sessionId);
   if (waiter) { exitWaiters.delete(e.payload.sessionId); waiter(e.payload.code); }
+  mcpExit(e.payload.sessionId, e.payload.code);
   releaseClaimFor(e.payload.sessionId); // also before the early return: no dead claims linger
   const s = sessions.get(e.payload.sessionId); if (!s) return;
   const code = e.payload.code;
@@ -583,6 +598,7 @@ listen<ProviderEvent>("agent-event", (e) => {
   ) !== null)) playSound("limit");
   renderAll();
 });
+listen<Parameters<typeof onMcpCall>[0]>("mcp-call", (e) => void onMcpCall(e.payload));
 listen<string>("tray-select", (e) => { const id = e.payload; if (sessions.has(id)) setActive(id); });
 // Blocking permission request: Claude waits until resolve_permission answers.
 listen<{ id: string; data: any }>("permission", (e) => {
@@ -739,6 +755,7 @@ $("fRepo").addEventListener("click", (e) => { e.preventDefault(); openUrl("https
 $("btnShelve").addEventListener("click", () => { if (activeId) void shelveSessionAsked(activeId); });
 $("btnClose").addEventListener("click", () => {
   if (fleetMirror()) { closeFleet(); renderAll(); return; }
+  if (reviewMirror()) { closePrReview(); renderAll(); return; }
   if (dashMirror()) { closeDashboard(); renderAll(); return; }
   // Anything left on `mirror` is a read-only one (external or shelved): stepping out of it
   // is `leaveMirror`, never `closeSession` — the session it shows is not ours to close.
@@ -773,6 +790,9 @@ window.addEventListener("keydown", (e) => {
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
   const act = matchAction(keyPrefs, e);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
+  // A dialog's own listener already spent this Esc on itself; falling through would also
+  // close the pane under it (the dashboard, a mirror).
+  if (e.key === "Escape" && e.defaultPrevented) return;
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
@@ -786,13 +806,15 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
+  else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
   else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
+  // prReviewEscape, not closePrReview: a comment being written goes first.
+  else if (e.key === "Escape" && reviewMirror()) { e.preventDefault(); prReviewEscape(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   // The read-only mirrors, which had no way out but a click on something else. Same verb as
   // their ✕, or the two would disagree about where leaving a mirror lands.
   else if (e.key === "Escape" && mirror) { e.preventDefault(); leaveMirror(); renderAll(); }
-  else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
   else if (dashKey(e)) e.preventDefault();
 });
 // ⌘⇧⏎ reveal: a capture-phase listener, because the palette's Enter drops the scrim

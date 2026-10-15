@@ -21,7 +21,7 @@ import {
   bandSkeleton, branchesOverlay, cardSkeleton, checkoutCard, closeSheet, dispatchSheet,
   ghUnavailable, liveHereCard, type LiveRow, missingCard, notesOverlay, projectFoot, queueCard, sinceBand,
   triageOverlay, verbTiles, worksetCard, workOverlay,
-  type BandLine, type CleanReport, type DashSync,
+  type BandLine, type CleanReport, type DashSync, type RowProg, type WhereView,
 } from "./dashview";
 import { landedCard } from "./landedview";
 import { issueOverlay, type RailFrom, type RailRow } from "./issueview";
@@ -50,8 +50,9 @@ import {
 import { openMenu } from "./menu";
 import { openBranchMenu } from "./projmenu";
 import {
-  ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, dropClaim, recordClaim,
-  resolveClaim, type ClaimAllow, type ClaimOutcome, type ClaimPolicy,
+  ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, defaultBase, defaultWhere, dispatchBases,
+  dispatchBranch, dropClaim, recordClaim, resolveClaim, whereProblem,
+  type ClaimAllow, type ClaimOutcome, type ClaimPolicy, type DispatchWhere,
 } from "./claim";
 import {
   bucketed, claimComment, closeComment, filterWork, ghPickable, ghWho, holderOf, isoDay, quietFor,
@@ -110,6 +111,7 @@ export interface DashHost {
   renderAll: () => void;
   // ---- what the Branches view needs and this module doesn't own ----
   refreshGit: () => Promise<void>;   // re-read the ⑃ roster; renderAll only paints it
+  openReview: (project: string, root: string, number: number) => void;   // ./reviewui's stage
   saveTrunk: (repoDir: string, ref: string) => void;   // a stored preference, so the write is actions.ts's
   // Pin the project to a GitHub account (`null` follows gh's active one). A stored
   // preference like `saveTrunk`; the write also drops the previous account's cached reads.
@@ -121,7 +123,7 @@ let host: DashHost = {
   openRun: () => {}, openGraph: () => {}, openDiff: () => {}, openHistory: () => {}, openFolder: () => {},
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
-  refreshGit: async () => {}, handToTerminal: () => {}, saveTrunk: () => {},
+  refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
@@ -204,6 +206,11 @@ type Sheet =
 let sheet: Sheet | null = null;
 /// What this dispatch would write, editable in the sheet before it is sent.
 let policy: ClaimPolicy = { ...DEFAULT_POLICY, comment: true, label: "agent: running" };
+// Where it runs. The kind picked last is remembered for the run, never persisted, like `policy`.
+let where: DispatchWhere = { kind: "here" };
+let whereLast: "here" | "new" = "here";
+let dispBranches: BranchInfo[] | null = null;   // the base list; `branchData`'s when that is loaded
+let baseTouched = false;
 // Generated summaries, keyed by day and kept apart from `days` so a reload keeps what was
 // paid for. `summaries` is your day (your sessions and spend; never reaches a file);
 // `teamSummaries` is the project's (commits and PRs; the half `.episko/digest.md` holds).
@@ -291,6 +298,12 @@ let branchQuery = "";
 let coSel: Pick = emptyPick();
 let branchBusy = false;
 let branchResult: CleanReport | null = null;
+// Each row's place in a running delete, so a batch of thirteen checkouts is not one "Working…".
+const rowProg = new Map<string, RowProg>();
+function setProg(keys: Iterable<string>, st: RowProg["st"], note?: string): void {
+  for (const k of keys) if (rowProg.get(k)?.st !== "failed") rowProg.set(k, { st, note });
+  renderDash();
+}
 // The one day out at the model right now; a value, not a set, because `runSummaryQueue` is sequential.
 let writing: { key: string; scope: "me" | "project" } | null = null;
 // Which half of a pass is running; lets a shared box be drawn before its sentence exists.
@@ -1013,7 +1026,7 @@ export function renderDash(): void {
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
-      busy: branchBusy, loading: branchData === null, result: branchResult,
+      busy: branchBusy, prog: rowProg, loading: branchData === null, result: branchResult,
     }));
   }
 
@@ -1023,7 +1036,8 @@ export function renderDash(): void {
   else if (sheet?.kind === "dispatch") {
     const agent = effectiveAgent(root());
     const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
-    paint("dashSheet", dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t)));
+    const html = dispatchSheet(sheet.t, policy, allow, `${agent.label} · ${mode?.label ?? "terminal config"}`, holder(sheet.t), whereView());
+    keepCaret($("dashSheet"), "#dashDispBranch", () => { paint("dashSheet", html); });
   } else if (sheet?.kind === "deps") {
     const agent = effectiveAgent(root());
     const mode = providerPermissionMode(agent.id, permissionModeFor(agent.id, root()));
@@ -1088,7 +1102,7 @@ export function openDashboard(project: string, path: string): void {
     sinceAt = seenAt(seen, path);
     seen = stampSeen(seen, path, Date.now());
     saveSeen(seen);
-    days = []; heads = []; facts = null; openView = null;
+    days = []; heads = []; facts = null; openView = null; dispBranches = null;
     queueFilter = "all"; queueQuery = ""; queueOpen.clear(); botFold = true;
     workKind = "all"; workLabels = new Set(); workFree = false; workQuery = "";
     landed = null; landedLoading = false;
@@ -1366,11 +1380,13 @@ export function wireDashboard(): void {
     if (dep) { pickRow("advisories", dep.dataset.dashdep!, e.shiftKey); return; }
 
     // ---- the GitHub half ----
+    const rev = t.closest<HTMLElement>("[data-dashreview]");
+    if (rev) { host.openReview(name(), root(), +rev.dataset.dashreview!); return; }
     const work = t.closest<HTMLElement>("[data-dashwork]");
     if (work) {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
       // Never straight to a dispatch: it sends a prompt AND writes to a public repo.
-      if (th) { sheet = { kind: "dispatch", t: th }; renderDash(); }
+      if (th) openDispatch(th);
       return;
     }
     const close = t.closest<HTMLElement>("[data-dashclose]");
@@ -1424,6 +1440,16 @@ export function wireDashboard(): void {
     if (act === "close") { void doClose(); return; }
     if (act === "dispatch") { void doDispatch(); return; }
     if (act === "deps") { void doDepDispatch(); return; }
+  });
+  $("dashSheet").addEventListener("change", (e) => {
+    const el = e.target as HTMLSelectElement;
+    if (sheet?.kind !== "dispatch") return;
+    if (el.id === "dashDispWhere") pickWhere(sheet.t, el.value);
+    else if (el.id === "dashDispBase" && where.kind === "new") { where = { ...where, base: el.value }; baseTouched = true; renderDash(); }
+  });
+  $("dashSheet").addEventListener("input", (e) => {
+    const el = e.target as HTMLInputElement;
+    if (el.id === "dashDispBranch" && where.kind === "new") { where = { ...where, branch: el.value }; renderDash(); }
   });
   // A branch row's menu. Checkout rows carry `data-wt` instead and are answered by ./projmenu's
   // document-level handler, which is the same menu a ⑃ cluster header opens.
@@ -1622,17 +1648,33 @@ async function runClean(): Promise<void> {
   if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
   const remote = remoteFor(rows);
   branchBusy = true;
-  renderDash();
+  rowProg.clear();
+  setProg(new Set([...picks, ...rpicks].map((p) => p.branch)), "queued");
+  // A row is done only once every half it was ticked for has gone.
+  const settle = (s: SweepResult, pending: ReadonlySet<string>) => {
+    for (const d of s.deleted) setProg([d.branch], pending.has(d.branch) ? "queued" : "done");
+    for (const k of s.kept) setProg([k.branch], "failed", k.reason);
+  };
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
   try {
     if (picks.length) {
-      for (const w of chosenWorktrees(rows, branchSel.picked)) report.wts.push(await removeOne(r, w));
+      for (const w of chosenWorktrees(rows, branchSel.picked)) {
+        setProg([w.branch], "working");
+        // The branch stays for the sweep, which reports its sha and forces where the row earned it.
+        const res = await removeOne(r, w, false);
+        report.wts.push(res);
+        if (!res.ok) setProg([w.branch], "failed", res.note);
+      }
+      setProg(picks.map((p) => p.branch), "working");
       report.local = await invoke<SweepResult>("sweep_branches", { repoDir: r, picks });
       dlog("info", `branches · ${report.local.summary}`);
+      settle(report.local, new Set(rpicks.map((p) => p.branch)));
     }
     if (rpicks.length) {
+      setProg(rpicks.map((p) => p.branch), "working");
       const swept = await invoke<SweepResult>("delete_remote_branches", { repoDir: r, remote, picks: rpicks });
       dlog(swept.deleted.length ? "info" : "warn", `branches · ${remote} · ${swept.summary}`);
+      settle(swept, new Set());
       report.remote = { swept, remote };
       // A remote delete leaves refs/remotes alone until a fetch prunes them.
       await invoke("git_action", { workdir: r, op: "fetch" }).catch(() => {});
@@ -1648,6 +1690,7 @@ async function runClean(): Promise<void> {
     if (root() === r) toast("branches: " + e);
   } finally {
     branchBusy = false;
+    rowProg.clear();
     branchSel = emptyPick();
     if (root() === r) {
       await loadBranches(true);        // re-read: the roster and the branch list both moved
@@ -1665,12 +1708,19 @@ async function runCheckoutClean(): Promise<void> {
   const rows = chosenCheckouts(checkoutRowsNow(), coSel.picked);
   if (!r || branchBusy || !rows.length) return;
   branchBusy = true;
-  renderDash();
+  rowProg.clear();
+  setProg(rows.map((c) => c.wt.path), "queued");
   const report: CleanReport = { wts: [], local: null, remote: null, summary: "" };
-  for (const c of rows) report.wts.push(await removeOne(r, c.wt));
+  for (const c of rows) {
+    setProg([c.wt.path], "working");
+    const res = await removeOne(r, c.wt);
+    report.wts.push(res);
+    setProg([c.wt.path], res.ok ? "done" : "failed", res.note);
+  }
   const ok = report.wts.filter((w) => w.ok).length;
   report.summary = `${ok} of ${rows.length} checkout${rows.length === 1 ? "" : "s"} removed`;
   branchBusy = false;
+  rowProg.clear();
   coSel = emptyPick();
   if (root() === r) {
     toast(report.summary);
@@ -1684,13 +1734,13 @@ async function runCheckoutClean(): Promise<void> {
 
 /** One `remove_worktree`, reported the way both runs above report it. The rail is marked for
  *  the whole call, so a batch spins each folder where it lives rather than dropping it. */
-async function removeOne(repoDir: string, w: WtInfo): Promise<{ label: string; ok: boolean; note: string }> {
+async function removeOne(repoDir: string, w: WtInfo, deleteBranch = true): Promise<{ label: string; ok: boolean; note: string }> {
   const label = w.path.split(/[/\\]/).filter(Boolean).pop() ?? w.path;
   removingWt.set(w.path, repoDir);
   host.renderAll();
   try {
     const res = await invoke<{ ok: boolean; summary: string; stranded?: unknown }>(
-      "remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch: true });
+      "remove_worktree", { repoDir, path: w.path, branch: w.branch, deleteBranch });
     dlog(res.ok ? "info" : "warn", `branches · worktree ${label} · ${res.summary}`);
     // A stranded removal is `ok: true`: the worktree is unregistered, so the branch is deletable.
     return { label, ok: res.ok, note: res.stranded ? "removed; folder still on disk" : res.summary };
@@ -1972,11 +2022,14 @@ async function setKept(number: number, keep: boolean): Promise<void> {
 // reading. The claim is written after the session exists, never before.
 async function doDispatch(): Promise<void> {
   if (sheet?.kind !== "dispatch") return;
-  const t = sheet.t, r = root(), n = name();
+  const t = sheet.t, r = root(), n = name(), w = where;
+  if (whereView()?.problem) return;
   sheet = null;
   renderDash();
+  const dir = await dispatchDir(r, w);
+  if (!dir) return;
   // Follows the project provider preference; claim release rides the provider-neutral `pty-exit`.
-  const sid = await host.launch(n, r, { colorKey: r });
+  const sid = await host.launch(n, dir.path, { colorKey: r, worktree: dir.branch, ...(dir.branch ? { branch: dir.branch } : {}) });
   if (typeof sid !== "string") return;   // launch already toasted the spawn error; no claim either
   // The server's lease goes whatever the GitHub policy writes: it is the fast path, gh the floor.
   const p = pid();
@@ -2017,6 +2070,59 @@ async function doDispatch(): Promise<void> {
       .catch(() => {});
   }, 1400);
   toast(`Started on #${t.number}`);
+}
+
+function openDispatch(t: GhThread): void {
+  baseTouched = false;
+  const bases = dispatchBases(branchData?.branches ?? dispBranches ?? []);
+  where = defaultWhere(t, heads, whereLast, defaultBase(t, bases));
+  sheet = { kind: "dispatch", t };
+  renderDash();
+  const r = root();
+  if (branchData || tier === "none") return;
+  // The base list only: `loadBranches` would also ask GitHub twice for a menu of names.
+  void invoke<BranchInfo[]>("git_branch_list", { repoDir: r, base: cmpBase[r] ?? null }).catch(() => [] as BranchInfo[])
+    .then((list) => {
+      if (root() !== r) return;
+      dispBranches = list;
+      if (sheet?.kind === "dispatch" && where.kind === "new" && !baseTouched) where = { ...where, base: defaultBase(sheet.t, dispatchBases(list)) };
+      renderDash();
+    });
+}
+
+function pickWhere(t: GhThread, v: string): void {
+  if (v === "here") { where = { kind: "here" }; whereLast = "here"; }
+  else if (v === "new") {
+    where = { kind: "new", branch: dispatchBranch(t), base: defaultBase(t, dispatchBases(branchData?.branches ?? dispBranches ?? [])) };
+    whereLast = "new";
+    baseTouched = false;
+  } else if (v.startsWith("wt:")) where = { kind: "wt", path: v.slice(3) };
+  renderDash();
+}
+
+/** The Where block, or `null` off a repository, where there is nowhere else to run. */
+function whereView(): WhereView | null {
+  if (tier === "none") return null;
+  const branches = branchData?.branches ?? dispBranches ?? [];
+  const exists = where.kind === "new" && branches.some((b) => !b.remote && b.name === (where as { branch: string }).branch.trim());
+  return { where, heads, bases: dispatchBases(branches), exists, problem: whereProblem(where, heads) };
+}
+
+/** The folder a dispatch launches in, cutting its worktree first when it asked for one. */
+async function dispatchDir(r: string, w: DispatchWhere): Promise<{ path: string; branch: string | null } | null> {
+  if (w.kind === "here") return { path: r, branch: null };
+  if (w.kind === "wt") return { path: w.path, branch: heads.find((h) => h.path === w.path)?.branch || null };
+  const branch = w.branch.trim();
+  try {
+    const path = await invoke<string>("create_worktree", { repoDir: r, branch, base: w.base || null });
+    if (root() === r) heads = [...heads, { path, branch, is_main: false, exists: true }];
+    void host.refreshGit();
+    return { path, branch };
+  } catch (e) {
+    dlog("error", `dispatch · worktree ${branch}: ${e}`);
+    toast("worktree: " + e);
+    return null;
+  }
 }
 
 export function releaseClaimFor(sessionId: string): void {

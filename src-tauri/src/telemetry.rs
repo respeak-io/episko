@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::AppState;
 
-fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
+pub(crate) fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
     req.headers()
         .iter()
         .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name))
@@ -14,7 +14,7 @@ fn header_value(req: &tiny_http::Request, name: &str) -> Option<String> {
 }
 
 /// No percent-decoding: the only value read this way is a uuid.
-fn query_param(url: &str, key: &str) -> Option<String> {
+pub(crate) fn query_param(url: &str, key: &str) -> Option<String> {
     let q = url.split('?').nth(1)?;
     q.split('&').find_map(|pair| {
         let mut it = pair.splitn(2, '=');
@@ -93,6 +93,10 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
         let stable_sid = header_value(&request, "X-CC-Session").or_else(|| query_param(&url, "sid"));
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
+        if url.starts_with("/mcp") {
+            crate::mcp::handle(request, &url, &body, &app);
+            continue;
+        }
         // Loud on purpose (a dropped payload blanks the pane), but never log the body:
         // it can carry prompts.
         let mut data: serde_json::Value = match serde_json::from_str(&body) {
@@ -346,6 +350,8 @@ mod tests {
             bg_root: Mutex::new(crate::pty::BgRootState::default()),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
+            mcp_tokens: Mutex::new(HashMap::new()),
+            mcp_pending: Mutex::new(HashMap::new()),
             caffeinate: Mutex::new(None),
             sync: Default::default(),
         });
@@ -657,6 +663,58 @@ mod tests {
         resolve_permission(app.state(), id, "allow".to_string());
     }
 
+    /// The `/mcp` endpoint shares this listener: a wrong token is refused before anything is
+    /// parsed, the handshake is answered here, and a tool call is held for the frontend.
+    #[test]
+    fn mcp_refuses_strangers_and_holds_a_tool_call_for_the_ui() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let cfg = crate::mcp::write_mcp_config(&app.state::<AppState>(), port, "pane-1").expect("write mcp config");
+        let path = cfg;
+        let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let auth = cfg["mcpServers"]["episko"]["headers"]["Authorization"].as_str().unwrap().to_string();
+        assert_eq!(cfg["mcpServers"]["episko"]["url"], format!("http://127.0.0.1:{port}/mcp?sid=pane-1"));
+        let wait = std::time::Duration::from_secs(10);
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+
+        for headers in [vec![], vec![("Authorization", "Bearer 00000000000000000000000000000000")]] {
+            let resp = read_response(open_post(port, "/mcp?sid=pane-1", &headers, init), wait);
+            assert!(resp.starts_with("HTTP/1.1 401"), "{resp}");
+        }
+        // Another pane's token is not this pane's.
+        let resp = read_response(open_post(port, "/mcp?sid=pane-2", &[("Authorization", &auth)], init), wait);
+        assert!(resp.starts_with("HTTP/1.1 401"), "{resp}");
+
+        let resp = read_response(open_post(port, "/mcp?sid=pane-1", &[("Authorization", &auth)], init), wait);
+        assert!(resp.starts_with("HTTP/1.1 200") && resp.contains(r#""name":"episko""#), "{resp}");
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        let resp = read_response(open_post(port, "/mcp?sid=pane-1", &[("Authorization", &auth)], note), wait);
+        assert!(resp.starts_with("HTTP/1.1 202"), "{resp}");
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let resp = read_response(open_post(port, "/mcp?sid=pane-1", &[("Authorization", &auth)], list), wait);
+        assert!(resp.contains(r#""run_task""#), "{resp}");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("mcp-call", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+        let call = r#"{"jsonrpc":"2.0","id":"c-7","method":"tools/call","params":{"name":"run_task","arguments":{"id":"npm:test"}}}"#;
+        let conn = open_post(port, "/mcp?sid=pane-1", &[("Authorization", &auth)], call);
+        let ev: serde_json::Value = serde_json::from_str(&rx.recv_timeout(wait).expect("no mcp-call event")).unwrap();
+        assert_eq!(ev["sessionId"], "pane-1");
+        assert_eq!(ev["tool"], "run_task");
+        assert_eq!(ev["args"]["id"], "npm:test");
+
+        crate::mcp::resolve_mcp(app.state(), ev["id"].as_str().unwrap().to_string(), "exit 0".into(), false);
+        let resp = read_response(conn, wait);
+        assert!(resp.contains(r#""id":"c-7""#) && resp.contains(r#""text":"exit 0""#), "{resp}");
+
+        crate::mcp::forget_session(&app.state::<AppState>(), "pane-1");
+        let resp = read_response(open_post(port, "/mcp?sid=pane-1", &[("Authorization", &auth)], init), wait);
+        assert!(resp.starts_with("HTTP/1.1 401"), "a closed pane's token must stop working:\n{resp}");
+    }
+
     // ---------- surviving a dead listener ----------
 
     /// Driven through `rebind_telemetry` because the wait is part of the answer (tiny_http's
@@ -715,6 +773,43 @@ mod tests {
         let h = format!("{mix:032x}");
         // Set the version (4) and variant (8) nibbles so it is a well-formed v4.
         format!("{}-{}-4{}-8{}-{}", &h[0..8], &h[8..12], &h[13..16], &h[17..20], &h[20..32])
+    }
+
+    #[test]
+    #[ignore = "runs the real `claude` binary and spends tokens — `cargo test -- --ignored`"]
+    fn claude_cli_reaches_our_mcp_tools() {
+        use crate::platform::{augmented_path, resolve_claude};
+        use tauri::Listener;
+
+        let cwd = crate::testutil::scratch_dir();
+        let sid = throwaway_uuid();
+        let (app, port) = mock_telemetry_app();
+        let mcp = crate::mcp::write_mcp_config(&app.state::<AppState>(), port, &sid).expect("write mcp config");
+        // Stands in for the frontend: answer every call with a word the model cannot guess.
+        let handle = app.handle().clone();
+        app.listen("mcp-call", move |e| {
+            let ev: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
+            let text = format!("tool {} says: zanzibar-{}", ev["tool"].as_str().unwrap_or(""), ev["sessionId"].as_str().unwrap_or(""));
+            crate::mcp::resolve_mcp(handle.state(), ev["id"].as_str().unwrap().to_string(), text, false);
+        });
+
+        let out = std::process::Command::new(resolve_claude())
+            .args(["-p", "Call the list_runnables tool once and reply with its output verbatim, nothing else."])
+            .args(["--model", "haiku", "--allowedTools", "mcp__episko__list_runnables", "--session-id", &sid])
+            .arg("--mcp-config")
+            .arg(&mcp)
+            .current_dir(&cwd)
+            .env("PATH", augmented_path())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run claude");
+        let _ = std::fs::remove_file(&mcp);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains(&format!("zanzibar-{sid}")),
+            "Claude never reached our MCP tool, or not as this pane.\nstdout:\n{stdout}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]

@@ -18,9 +18,9 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, copyChord, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup,
   type SortMode, type WtGroup,
-  FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs,
+  FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
 } from "./state";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -84,6 +84,7 @@ export interface SettingsHost {
   setEngine: (id: Engine) => void;
   setTermSplit: (on: boolean) => void;
   setDriftAuto: (on: boolean) => void;
+  setPrLinks: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
@@ -101,6 +102,7 @@ export interface SettingsHost {
   setKeyPrefs: (p: KeyPrefs) => void;
   setAttnPrefs: (p: AttnPrefs) => void;
   setAutoFetchPrefs: (p: AutoFetchPrefs) => void;
+  setAgentTools: (on: boolean) => void;
   setFootSeg: (id: FootSeg) => void;
   setFx: (id: VisualFx) => void;
   setRevivePrefs: (p: RevivePrefs) => void;
@@ -163,11 +165,11 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setCopyChord: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setCopyChord: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setAgentTools: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
   setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
@@ -404,7 +406,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "reader", label: "Reader", glyph: "¶", group: "look", sub: "Markdown files, read in the app",
+    id: "reader", label: "Reader", glyph: "¶", group: "look", sub: "Markdown files and pull requests, read in the app",
     controls: () => {
       const off = () => !mdPrefs.enabled;
       const put = (p: Partial<MdPrefs>) => () => host.setMdPrefs({ ...mdPrefs, ...p });
@@ -435,6 +437,11 @@ const SET_TABS: SetTab[] = [
           more: "Off by default: drawing one fetches it, which tells that server you opened the file. Off, each is a link you can open in your browser.",
           aliases: ["badges", "shields", "network", "privacy", "tracking", "remote"], dim: off,
           on: () => mdPrefs.remote, isDefault: () => mdPrefs.remote === MD_DEFAULTS.remote, reset: put({ remote: MD_DEFAULTS.remote }) },
+        { kind: "toggle", set: "prlinks", key: "cc-pr-links", label: "Open pull request links in Episko",
+          hint: "A github.com pull request link in a pane opens on the review stage instead of your browser.",
+          more: "Only when one of your projects is that repository; any other link still goes to the browser. The review's GitHub button still opens it in the browser.",
+          aliases: ["github", "pr", "pull request", "review", "browser", "link", "url"], since: "0.35.0",
+          on: () => prLinksInApp, isDefault: () => prLinksInApp, reset: () => host.setPrLinks(true) },
       ];
     },
   },
@@ -474,6 +481,13 @@ const SET_TABS: SetTab[] = [
         dim: () => termEngine !== "embedded",
         on: () => termSplit, isDefault: () => termSplit, reset: () => host.setTermSplit(true) },
       permissionControl(),
+      { kind: "toggle", set: "agenttools", key: "cc-agent-tools", label: "Let agents run tasks through Episko",
+        hint: "A new Claude session can list this project's tasks and run one in its own pane, rather than in Bash.",
+        more: "It starts with a small tool server of Episko's: the run gets a pane you can watch, your PATH, overrides and remembered inputs, and the agent gets its exit code and output back. Each run still asks through the usual permission prompt. A session already running keeps what it started with. Embedded Claude sessions only, and only one-shot tasks; a dev server is still yours to start.",
+        aliases: ["mcp", "tools", "run_task", "tasks", "runnables", "agent", "scripts", "tool server"], since: "0.35.0",
+        dim: () => termEngine !== "embedded",
+        on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
+        isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
     ],
   },
   {
@@ -1675,6 +1689,7 @@ function applySetting(set: string, val: string) {
   if (set === "engine") host.setEngine(val as Engine);
   else if (set === "termsplit") host.setTermSplit(val === "1");
   else if (set === "driftauto") host.setDriftAuto(val === "1");
+  else if (set === "prlinks") host.setPrLinks(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
@@ -1705,6 +1720,7 @@ function applySetting(set: string, val: string) {
   else if (set === "md:outline") host.setMdPrefs({ ...mdPrefs, outline: val === "1" });
   else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
+  else if (set === "agenttools") host.setAgentTools(val === "1");
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });

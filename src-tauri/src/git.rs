@@ -1969,12 +1969,24 @@ pub(crate) struct GitDiff {
     truncated: bool, // stopped at the size/file cap; the viewer shows a note
 }
 
+/// Every patch the app reads is cut here (~0.8 MB, ample for a review), on a char boundary.
+pub(crate) const PATCH_CAP: usize = 800_000;
+
+/// Cut `patch` to [`PATCH_CAP`]; true when it was cut. `String::truncate` panics mid-char.
+pub(crate) fn cap_patch(patch: &mut String) -> bool {
+    if patch.len() <= PATCH_CAP {
+        return false;
+    }
+    let cut = patch.char_indices().map(|(i, _)| i).take_while(|i| *i <= PATCH_CAP).last().unwrap_or(0);
+    patch.truncate(cut);
+    true
+}
+
 /// The full uncommitted diff behind the working-set card. Tracked changes from `diff HEAD`;
 /// untracked files appended via `diff --no-index` against `/dev/null`, which unlike `add -N`
 /// never touches the index while a live session may be staging.
 #[tauri::command]
 pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
-    const CAP: usize = 800_000; // ~0.8 MB of patch text — ample for a peek
     // Each untracked file costs a whole git process (`--no-index` is one pair at a time), so
     // this bounds a process storm, not output size; 300 once meant ~600 spawns on one click.
     const MAX_UNTRACKED: usize = 25;
@@ -1986,11 +1998,7 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
         return None; // not a repo, or an unborn HEAD (no commits)
     }
     let mut patch = String::from_utf8_lossy(&tracked.stdout).into_owned();
-    let mut truncated = false;
-    if patch.len() > CAP {
-        patch.truncate(CAP);
-        truncated = true;
-    }
+    let mut truncated = cap_patch(&mut patch);
 
     // `--no-index` exits 1 whenever the files differ, so stdout is read regardless of status.
     if !truncated {
@@ -2001,7 +2009,7 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
                 truncated = true;
             }
             for f in others.into_iter().take(MAX_UNTRACKED) {
-                if patch.len() >= CAP {
+                if patch.len() >= PATCH_CAP {
                     truncated = true;
                     break;
                 }
@@ -2009,8 +2017,7 @@ pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
                     patch.push_str(&String::from_utf8_lossy(&d.stdout));
                 }
             }
-            if patch.len() > CAP {
-                patch.truncate(CAP);
+            if cap_patch(&mut patch) {
                 truncated = true;
             }
         }
@@ -2505,7 +2512,6 @@ fn stash_ref_top(top: &str) -> String {
 /// A stash's changes as one patch, untracked files included, for the overlay's read-only view.
 #[tauri::command(async)]
 pub(crate) fn git_stash_diff(workdir: String, sha: String) -> Result<GitDiff, String> {
-    const CAP: usize = 800_000; // git_diff's
     if !is_sha(&sha) {
         return Err("a stash is addressed by its sha".into());
     }
@@ -2524,11 +2530,7 @@ pub(crate) fn git_stash_diff(workdir: String, sha: String) -> Result<GitDiff, St
         return Err(git_says(&out));
     }
     let mut patch = String::from_utf8_lossy(&out.stdout).into_owned();
-    let truncated = patch.len() > CAP;
-    if truncated {
-        let cut = patch.char_indices().map(|(i, _)| i).take_while(|i| *i <= CAP).last().unwrap_or(0);
-        patch.truncate(cut);
-    }
+    let truncated = cap_patch(&mut patch);
     Ok(GitDiff { patch, truncated })
 }
 
@@ -2650,7 +2652,7 @@ pub(crate) struct ProjectFacts {
 
 /// Host and `owner/repo` out of a git remote URL. Pure: `git@host:owner/repo.git` has no
 /// scheme and a colon where a slash belongs, while ssh:// and https:// are ordinary URLs.
-fn split_remote(url: &str) -> (Option<String>, Option<String>) {
+pub(crate) fn split_remote(url: &str) -> (Option<String>, Option<String>) {
     let u = url.trim();
     if u.is_empty() {
         return (None, None);

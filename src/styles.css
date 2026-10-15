@@ -65,9 +65,9 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .app.rail-mini { grid-template-columns: 54px minmax(0,1fr) 296px; }
 .app.rail-mini.insp-off { grid-template-columns: 54px minmax(0,1fr) 0; }
 /* The dashboard and the fleet own the whole width: no session, so nothing for the inspector to hold */
-.app.stage-dash, .app.stage-fleet { grid-template-columns: 232px minmax(0,1fr) 0; }
-.app.rail-mini.stage-dash, .app.rail-mini.stage-fleet { grid-template-columns: 54px minmax(0,1fr) 0; }
-.app.stage-dash .insp, .app.stage-fleet .insp { display: none; }
+.app.stage-dash, .app.stage-fleet, .app.stage-review { grid-template-columns: 232px minmax(0,1fr) 0; }
+.app.rail-mini.stage-dash, .app.rail-mini.stage-fleet, .app.rail-mini.stage-review { grid-template-columns: 54px minmax(0,1fr) 0; }
+.app.stage-dash .insp, .app.stage-fleet .insp, .app.stage-review .insp { display: none; }
 
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .label { font-size: 9px; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); font-weight: 700; }
@@ -2663,7 +2663,7 @@ select.in-ctl { cursor: pointer; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted-2); }
 ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
 
-@media (max-width: 1080px) { .app, .app.insp-off, .app.stage-dash, .app.stage-fleet { grid-template-columns: 224px minmax(0,1fr); } .insp { display: none; } }
+@media (max-width: 1080px) { .app, .app.insp-off, .app.stage-dash, .app.stage-fleet, .app.stage-review { grid-template-columns: 224px minmax(0,1fr); } .insp { display: none; } }
 
 /* ---------- Usage-limit forecast ---------- */
 /* ID+class so it beats `.foot .fseg b` (0,2,1) and the hover accent; a bare class never took */
@@ -3309,21 +3309,21 @@ select.in-ctl { cursor: pointer; }
 
 /* Markdown as ./issue renders it. Nothing else in this app draws somebody else's prose, so
    this vocabulary is the reader's own and stays scoped to it. */
-.iss .md { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
-.iss .md p { margin: 8px 0; }
-.iss .md-h { margin: 12px 0 6px; font-size: 13px; font-weight: 700; color: var(--text); }
-.iss .md-h.sm { font-size: 12px; }
-.iss .md ul, .iss .md ol { margin: 8px 0; padding-left: 20px; }
-.iss .md li { margin: 3px 0; }
-.iss .md li.in { margin-left: 18px; }
-.iss .md-tk { color: var(--accent-ink); }
-.iss .md code { padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); color: var(--accent-ink); background: var(--bg-2); }
-.iss .md pre { margin: 9px 0; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--hair); background: var(--bg-2); overflow-x: auto; }
-.iss .md pre code { padding: 0; font-size: 10.5px; line-height: 1.5; color: var(--text); background: none; }
-.iss .md blockquote { margin: 9px 0; padding: 2px 0 2px 11px; border-left: 2px solid var(--hair-strong); color: var(--muted-2); }
-.iss .md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--hair); }
-.iss .md-a { color: var(--accent-ink); text-decoration: none; cursor: pointer; }
-.iss .md-a:hover { text-decoration: underline; }
+:is(.iss, .review-view) .md { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+:is(.iss, .review-view) .md p { margin: 8px 0; }
+:is(.iss, .review-view) .md-h { margin: 12px 0 6px; font-size: 13px; font-weight: 700; color: var(--text); }
+:is(.iss, .review-view) .md-h.sm { font-size: 12px; }
+:is(.iss, .review-view) .md ul, :is(.iss, .review-view) .md ol { margin: 8px 0; padding-left: 20px; }
+:is(.iss, .review-view) .md li { margin: 3px 0; }
+:is(.iss, .review-view) .md li.in { margin-left: 18px; }
+:is(.iss, .review-view) .md-tk { color: var(--accent-ink); }
+:is(.iss, .review-view) .md code { padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); color: var(--accent-ink); background: var(--bg-2); }
+:is(.iss, .review-view) .md pre { margin: 9px 0; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--hair); background: var(--bg-2); overflow-x: auto; }
+:is(.iss, .review-view) .md pre code { padding: 0; font-size: 10.5px; line-height: 1.5; color: var(--text); background: none; }
+:is(.iss, .review-view) .md blockquote { margin: 9px 0; padding: 2px 0 2px 11px; border-left: 2px solid var(--hair-strong); color: var(--muted-2); }
+:is(.iss, .review-view) .md hr { margin: 12px 0; border: 0; border-top: 1px solid var(--hair); }
+:is(.iss, .review-view) .md-a { color: var(--accent-ink); text-decoration: none; cursor: pointer; }
+:is(.iss, .review-view) .md-a:hover { text-decoration: underline; }
 
 /* ---- the Branches view: the cleanup at the size the decision is, every column with room ----
    The right-hand columns have a known ceiling and are fixed; `auto` would stagger them. */
@@ -3413,6 +3413,13 @@ select.in-ctl { cursor: pointer; }
 .dbbr .ra .act { width: 20px; padding: 0; justify-content: center; opacity: 0; }
 .dbbr:hover .ra .act { opacity: .75; }
 .dbbr .ra .act:hover { opacity: 1; }
+.prog { display: inline-flex; width: 20px; justify-content: center; font: 11px var(--font-mono); color: var(--muted-2); }
+.prog .u-spin { margin: 0; }
+.prog.done { color: var(--st-done); }
+.prog.failed { color: var(--st-working); }
+/* A delete in flight: the row in hand is lit, finished ones fade, refused ones keep their ink. */
+.dbbr.p-working, .dbwt.p-working { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.dbbr.p-done, .dbwt.p-done { opacity: .45; }
 /* The action bar: what is ticked, where a delete lands, and what that actually runs. */
 .bvbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 10px; padding: 10px 9px; border-radius: 10px; border: 1px solid var(--hair-strong);
@@ -3619,6 +3626,11 @@ select.in-ctl { cursor: pointer; }
 /* a switch the project turned off is greyed, never hidden: "why can't I assign?" needs an answer */
 .dsw.off { opacity: .4; cursor: not-allowed; }
 .dsh code { font: 10px var(--font-mono); color: var(--accent-ink); }
+.dsh .dw-f { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; font: 10.5px var(--font-mono); color: var(--muted-2); }
+.dsh .dw-f select, .dsh .dw-f input { min-width: 0; padding: 4px 7px; border-radius: 6px; font: 11px var(--font-mono); color: var(--text); background: var(--bg); border: 1px solid var(--hair); }
+.dsh .dw-f :is(select, input):focus { outline: none; border-color: var(--accent-line); }
+.dsh .dw-f select:disabled { opacity: .5; }
+.dsh .foot .act:disabled { opacity: .45; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .dsw i, .dsw i::after { transition: none; } }
 
 /* ═══ What's new: CHANGELOG.md bundled at build time; ./changelog parses it, ./changelogui owns the
@@ -3901,3 +3913,142 @@ select.in-ctl { cursor: pointer; }
 .mn-b { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .mn-l { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mn-s2 { font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ═══ the pull-request review stage (reviewui.ts): the working-set viewer's rail and stream, a
+   head and a bar above them, and the pending review pinned to the foot. docs/review.md */
+.review-view { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; background: var(--bg); }
+.review-view[hidden] { display: none; }
+.review-view .diff-main { min-height: 0; }
+.rv-head { flex: none; padding: 12px 16px 8px; border-bottom: 1px solid var(--hair); }
+.rv-head:empty { display: none; }
+.rv-h1 { display: flex; align-items: center; gap: 10px; }
+.rv-h1 h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 650; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-num { color: var(--muted-2); font-weight: 500; }
+.rv-verbs { display: flex; align-items: center; gap: 6px; flex: none; }
+.rv-busy { font: 10.5px var(--font-mono); color: var(--muted); }
+.rv-st { flex: none; padding: 2px 8px; border-radius: 99px; font: 700 10px var(--font-ui); text-transform: uppercase; letter-spacing: .06em; border: 1px solid var(--hair); color: var(--muted); }
+.rv-st.open { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 45%, transparent); background: color-mix(in srgb, var(--st-done) 10%, transparent); }
+.rv-st.merged { color: var(--st-bg); border-color: color-mix(in srgb, var(--st-bg) 45%, transparent); background: color-mix(in srgb, var(--st-bg) 10%, transparent); }
+.rv-st.closed { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
+.rv-h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 7px; font-size: 11.5px; color: var(--muted); }
+.rv-who { color: var(--text); font-weight: 600; }
+.rv-chip { padding: 1px 7px; border-radius: 99px; border: 1px solid var(--hair); background: var(--surface); color: var(--muted); font: 10.5px var(--font-ui); cursor: default; }
+button.rv-chip { cursor: pointer; }
+.rv-chip.ok { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 40%, transparent); }
+.rv-chip.bad { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 40%, transparent); }
+.rv-chip.wait { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 40%, transparent); }
+.rv-bar { flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 16px; border-bottom: 1px solid var(--hair); background: color-mix(in srgb, var(--bg-2) 55%, transparent); }
+.rv-bar:empty { display: none; }
+.rv-tabs .n { margin-left: 3px; color: var(--muted-2); font-weight: 500; }
+.rv-sp { flex: 1; }
+.rv-sum { font: 10.5px var(--font-mono); color: var(--muted-2); }
+.rv-sum .add { color: var(--st-done); } .rv-sum .del { color: var(--st-attention); }
+.diff-fold.on { color: var(--accent-ink); border-color: var(--accent-line); }
+.rv-since { border: 1px dashed var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); border-radius: 7px; padding: 3px 9px; font: 600 10.5px var(--font-ui); cursor: pointer; }
+.rv-body { padding-bottom: 24px; }
+.rv-body .diff-empty { padding: 40px 0; text-align: center; color: var(--muted); }
+
+/* the file rail: its head with the tree/list switch, folders as rows of their own */
+.dr-head { position: sticky; top: -4px; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 4px 4px 6px; margin: -4px -6px 2px; padding-left: 10px; background: var(--bg-2); border-bottom: 1px solid var(--hair); }
+.dr-ht { flex: 1; font: 10px var(--font-mono); color: var(--muted-2); }
+.dr-head .gseg-b { padding: 2px 7px; font-size: 10px; }
+.dr-fold { display: flex; align-items: center; gap: 5px; width: 100%; padding: 4px 7px 2px calc(7px + var(--d, 0) * 12px); border: 0; background: none; cursor: pointer; text-align: left; color: var(--muted-2); font: 10.5px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dr-fold:hover { color: var(--text); }
+.dr-fold .dchev { font-size: 9px; transition: transform .12s; }
+.dr-fold.shut .dchev { transform: rotate(-90deg); }
+.dr-row.tree { padding-left: calc(7px + var(--d, 0) * 12px + 6px); }
+.rv-vw { flex: none; color: var(--st-done); font-size: 10px; }
+.rv-tc { flex: none; min-width: 15px; padding: 0 4px; border-radius: 99px; text-align: center; font: 700 9.5px var(--font-mono); color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
+
+/* a file in review: its header's controls, and a viewed file dimmed and folded */
+.rv-fx { display: flex; align-items: center; gap: 5px; }
+.rv-fx button { width: auto; height: 21px; padding: 0 7px; white-space: nowrap; border-radius: 6px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--muted); font: 10.5px var(--font-ui); cursor: pointer; }
+.rv-fx button:hover { color: var(--text); border-color: var(--hair-strong); }
+.rv-viewed.on { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 40%, transparent); }
+.dfile.rv-isviewed .dfhead { opacity: .62; }
+.rv-top { padding: 8px 10px 2px; border-bottom: 1px solid var(--hair); }
+
+/* the line's "+": in the gutter, shown on hover; a line in the selected range stays lit */
+.rv-body .dline { position: relative; }
+.rv-body .sn { position: relative; }
+.rv-add { position: absolute; left: 1px; top: 2px; width: 16px; height: 16px; padding: 0; border-radius: 4px; border: 0; background: var(--accent); color: var(--bg); font: 700 12px/16px var(--font-ui); cursor: pointer; opacity: 0; z-index: 1; }
+.dline:hover .rv-add, .sn:hover .rv-add, .rv-add.on { opacity: 1; }
+.dline:has(.rv-add.on), .sn:has(.rv-add.on), .sn:has(.rv-add.on) + .sc { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* A range is a + at each end and a rail between them, not a + on every line: the ends are what
+   you dragged, the rail is what the comment covers. The rail runs through the rows' full height. */
+.rv-add.mid { top: 0; bottom: 0; left: 8px; width: 2px; height: auto; border-radius: 0; font-size: 0; cursor: default; }
+.rv-add.first::after, .rv-add.last::before { content: ""; position: absolute; left: 7px; width: 2px; height: 6px; background: var(--accent); }
+.rv-add.first::after { top: 100%; }
+.rv-add.last::before { bottom: 100%; }
+
+/* threads, drafts and the comment being written: blocks under a row, full width in either layout */
+.dhunk.split > .rv-thread, .dhunk.split > .rv-draft, .dhunk.split > .rv-compose { grid-column: 1 / -1; }
+.rv-thread, .rv-draft, .rv-compose { margin: 6px 10px 8px 48px; border: 1px solid var(--hair-strong); border-radius: var(--radius-sm); background: var(--surface); font: 12px/1.5 var(--font-ui); white-space: normal; }
+.rv-top .rv-thread, .rv-top .rv-draft, .rv-top .rv-compose, .rv-else .rv-thread { margin-left: 0; margin-right: 0; }
+.rv-thread.resolved { border-color: var(--hair); }
+.rv-thread.outdated { border-style: dashed; }
+.rv-th-h { display: flex; align-items: center; gap: 7px; padding: 6px 9px; cursor: pointer; user-select: none; border-bottom: 1px solid var(--hair); }
+.rv-thread.folded .rv-th-h { border-bottom: 0; }
+.rv-thread.folded .dchev { transform: rotate(-90deg); }
+.rv-th-h .dchev { font-size: 9px; color: var(--muted-2); }
+.rv-gist { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); font-size: 11px; }
+.rv-loc { font: 10.5px var(--font-mono); color: var(--muted); }
+.rv-tag { padding: 0 6px; border-radius: 99px; font: 700 9.5px var(--font-ui); text-transform: uppercase; letter-spacing: .05em; color: var(--muted-2); border: 1px solid var(--hair); }
+.rv-tag.ok { color: var(--st-done); border-color: color-mix(in srgb, var(--st-done) 40%, transparent); }
+.rv-tag.bad { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 40%, transparent); }
+.rv-tag.wait { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 40%, transparent); }
+.rv-mini { height: 20px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--muted); font: 10.5px var(--font-ui); cursor: pointer; flex: none; }
+.rv-mini:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
+.rv-mini.danger:hover { color: var(--st-error); }
+.rv-mini:disabled { opacity: .5; cursor: default; }
+.rv-hunk { margin: 8px 10px 0; padding: 6px 8px; border-radius: 6px; background: var(--bg-2); font: 10.5px/1.5 var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-c { padding: 8px 11px 2px; }
+.rv-c + .rv-c { border-top: 1px solid var(--hair); }
+.rv-ch { display: flex; align-items: center; gap: 8px; font: 10px var(--font-mono); color: var(--muted-2); }
+.rv-ch .who { font-weight: 700; color: var(--text); }
+.rv-ch .aslink { margin-left: auto; }
+.review-view .md { font-size: 12.5px; line-height: 1.6; color: var(--text); }
+.rv-reply { display: flex; gap: 7px; align-items: flex-end; padding: 7px 10px 9px; border-top: 1px solid var(--hair); }
+.rv-reply textarea, .rv-compose textarea, #rvSummary { flex: 1; min-width: 0; resize: vertical; min-height: 28px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--hair); background: var(--bg-2); color: var(--text); font: 12px/1.45 var(--font-ui); outline: none; }
+.rv-reply textarea:focus, .rv-compose textarea:focus, #rvSummary:focus { border-color: var(--accent-line); }
+.rv-draft { border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
+.rv-draft .rv-ch { padding: 6px 9px 0; }
+.rv-draft .md { padding: 2px 11px 6px; }
+.rv-compose { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-wash); }
+.rv-compose .rv-ch { padding: 6px 9px; font: 11px var(--font-ui); color: var(--text); }
+.rv-compose textarea { display: block; width: calc(100% - 18px); margin: 0 9px; min-height: 64px; font-family: var(--font-mono); font-size: 11.5px; }
+.rv-prev { margin: 0 9px; padding: 4px 9px; min-height: 64px; border-radius: 7px; border: 1px dashed var(--hair); }
+.rv-cb { display: flex; align-items: center; gap: 7px; padding: 7px 9px 9px; }
+.rv-exp { margin-left: auto; }
+.rv-tailx { padding: 3px 10px; border-top: 1px solid var(--hair); background: color-mix(in srgb, var(--accent) 4%, transparent); display: flex; }
+.rv-tailx .dhx { opacity: 1; }
+.dhunk .rv-exp { opacity: 1; }
+.rv-else { margin: 18px 0; }
+.rv-else-h { margin-bottom: 8px; font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+
+/* the other two tabs */
+.rv-conv { max-width: 860px; margin: 14px auto; display: flex; flex-direction: column; gap: 8px; }
+.rv-conv > .rv-c { border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--surface); padding-bottom: 6px; }
+.rv-conv > .rv-c:first-child { border-color: var(--accent-line); }
+.rv-tl { padding: 2px 12px; font-size: 11.5px; color: var(--muted); }
+.rv-tl.commit { font-size: 11px; }
+.rv-reply.conv { border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--surface); }
+.rv-checks { max-width: 860px; margin: 14px auto; border: 1px solid var(--hair); border-radius: var(--radius-sm); background: var(--surface); }
+.rv-ck { display: flex; align-items: center; gap: 9px; padding: 7px 12px; font-size: 12px; }
+.rv-ck + .rv-ck { border-top: 1px solid var(--hair); }
+.rv-ck .g { width: 14px; text-align: center; font-weight: 700; color: var(--muted-2); }
+.rv-ck.pass .g { color: var(--st-done); } .rv-ck.fail .g { color: var(--st-error); } .rv-ck.pending .g { color: var(--st-working); }
+.rv-ck .nm { color: var(--text); }
+
+/* the pending review, always in reach */
+.rv-foot { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--hair); background: color-mix(in srgb, var(--bg-2) 70%, transparent); }
+.rv-pending { align-self: center; font: 10.5px var(--font-mono); color: var(--st-working); white-space: nowrap; }
+#rvSummary { max-height: 160px; }
+.rv-foot .gseg { align-self: center; }
+.rv-foot .diff-go:disabled, .rv-foot .diff-fold:disabled { opacity: .45; cursor: default; }
+.qrow .tb.ask { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
+/* ./svgicons: a line icon sits before its label at the label's size, in the label's colour */
+.ic { width: 1.1em; height: 1.1em; flex: none; vertical-align: -0.2em; margin-right: 0.4em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ic.solo { margin-right: 0; }
+.mn-mk .ic { width: 14px; height: 14px; margin: 0; color: var(--muted); }
+.review-view :is(.gseg-b, .diff-fold, .diff-go, .rv-mini, .act, .rv-since, .rv-fx button), .dr-head .gseg-b { display: inline-flex; align-items: center; justify-content: center; }

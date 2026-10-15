@@ -13,6 +13,7 @@ export interface TaskLaunchOpts {
   colorKey?: string; worktree?: string | null; branch?: string; discoveredIn?: string;
   focus?: boolean;     // false for a run nobody clicked: it must not take the stage
   forSession?: string; // the session whose turn this run verifies (run-on-stop)
+  tag?: string;        // one caller's own run, so two identical runs never share output (./mcp)
   groupId?: string;    // one dependsOn chain's sidebar group; set only by launchWithDeps
   groupLabel?: string;
   groupRoot?: string;
@@ -209,7 +210,7 @@ export async function launchWithDeps(
 
   // A dependency keeps `focus`, the group and `discoveredIn` (it came out of that same
   // discovery, and `declaredOwnCwd` compares against it), not the rule pane's `forSession`.
-  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, groupId, groupLabel, groupRoot };
+  const depOpts: TaskLaunchOpts = { ...opts, forSession: undefined, tag: undefined, groupId, groupLabel, groupRoot };
   opts = { ...opts, groupId, groupLabel, groupRoot }; // the chain's own pane joins the group too
   // The memo is claimed synchronously, before the first await, so racing branches can't both start it.
   const runDep = (d: Runnable): Promise<boolean> => {

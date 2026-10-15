@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  clampProjPrefs, fetchFor, overriders, permOverride, withFetch, withPerm, type ProjPrefStore,
+  clampProjPrefs, fetchFor, overriders, permOverride, toolsFor, withFetch, withPerm, withTools, type ProjPrefStore,
 } from "../src/projprefs";
 
 const G = { enabled: true, everyMs: 300_000 };
@@ -72,5 +72,23 @@ describe("who overrides a global row", () => {
   });
   it("counts either half of auto-fetch", () => {
     expect(overriders(s, "fetch")).toEqual(["/b", "/c"]);
+  });
+});
+
+describe("the agent tools switch", () => {
+  it("keeps only a boolean", () => {
+    expect(clampProjPrefs({ "/a": { tools: true }, "/b": { tools: "yes" } })).toEqual({ "/a": { tools: true } });
+  });
+  it("follows Settings until a project answers, either way", () => {
+    expect(toolsFor(false, {}, "/a")).toBe(false);
+    expect(toolsFor(false, { "/a": { tools: true } }, "/a")).toBe(true);
+    expect(toolsFor(true, { "/a": { tools: false } }, "/a")).toBe(false);
+  });
+  it("clears back to following Settings, dropping a project left with nothing", () => {
+    const s = withTools({}, "/a", false);
+    expect(s).toEqual({ "/a": { tools: false } });
+    expect(overriders(s, "tools")).toEqual(["/a"]);
+    expect(withTools(s, "/a", null)).toEqual({});
+    expect(withTools({ "/a": { fetch: false, tools: true } }, "/a", null)).toEqual({ "/a": { fetch: false } });
   });
 });

@@ -1,6 +1,7 @@
 // The project dashboard's markup: data in, string out, like every other *view module.
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
+import { icon } from "./svgicons";
 import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
@@ -11,7 +12,7 @@ import type { Note, SharedNote } from "./notes";
 import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
 import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
-import type { ClaimAllow, ClaimPolicy } from "./claim";
+import type { ClaimAllow, ClaimPolicy, DispatchWhere } from "./claim";
 import {
   ghOutdatedText, ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
   type WorkKind, type WorkTally,
@@ -450,13 +451,15 @@ function qWorkRow(i: QueueItem, reading: number | null): string {
     : `<button class="go" data-dashwork="${t.number}" data-tip="Start an agent on this">▶</button>`;
   // The row reads the thread HERE; the browser is the second verb, never the click.
   const web = `<button class="tb" data-dashurl="${escAttr(t.url)}" data-tip="Open it on GitHub">↗</button>`;
+  const review = t.kind === "pr"
+    ? `<button class="tb${t.review_requested ? " ask" : ""}" data-dashreview="${t.number}" data-tip="${t.review_requested ? "Your review was requested. " : ""}Review its changes here">${icon("files", "solo")}</button>` : "";
   const triage = i.triage
     ? `<button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
       + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button>`
     : "";
   return qrow(`q-work${h ? " claimed" : ""}${t.number === reading ? " reading" : ""}`, ` data-dashissue="${t.number}"`,
     `<span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>`, i,
-    qacts(`${triage}${web}`) + go, `${t.title} — read it here`);
+    qacts(`${triage}${review}${web}`) + go, `${t.title} — read it here`);
 }
 
 // An advisory's whole row opens GitHub, as the Dependencies card's did. A bot PR cannot: its
@@ -639,6 +642,25 @@ export interface CleanReport {
   summary: string;
 }
 
+export interface RowProg { st: "queued" | "working" | "done" | "failed"; note?: string }
+
+// The row's last cell while a delete runs: where this one is, in place of the hover buttons.
+function progMark(p: RowProg): string {
+  const [glyph, title] = p.st === "working" ? [`<span class="u-spin"></span>`, "deleting…"]
+    : p.st === "done" ? ["✓", "deleted"]
+    : p.st === "failed" ? ["✕", p.note || "kept"]
+    : ["·", "waiting its turn"];
+  return `<span class="prog ${p.st}" title="${esc(title)}">${glyph}</span>`;
+}
+
+// "Deleting 4 of 13…": the row in hand, counting the ones that finished either way.
+function busyLabel(prog: ReadonlyMap<string, RowProg>, verb: string): string {
+  const all = [...prog.values()];
+  if (!all.length) return "Working…";
+  const ended = all.filter((p) => p.st === "done" || p.st === "failed").length;
+  return `${verb} ${Math.min(ended + 1, all.length)} of ${all.length}…`;
+}
+
 export interface BranchesView {
   tab: "branches" | "checkouts";
   root: string;     // the project's own folder
@@ -657,6 +679,8 @@ export interface BranchesView {
   prs: MergedPrs | null;
   prsLoading: boolean;
   busy: boolean;
+  // A delete's progress per row (branch name, or checkout path); empty when nothing runs.
+  prog: ReadonlyMap<string, RowProg>;
   loading: boolean;
   result: CleanReport | null;
   // What the header tick shows for each tab; ./pick decides, this only draws it.
@@ -743,7 +767,8 @@ function branchRow(r: BranchRow, o: BranchesView): string {
       + (r.local.force ? `<span class="tag warn" title="Its pull request merged, so a squash is why git branch -d refuses it and this one needs -D">-D</span>` : "");
   // The whole row is the target; the box is inside it and carries the same attribute, so
   // `closest` answers the same name whichever half of the row the pointer landed on.
-  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}" data-dashbr="${escAttr(r.name)}">
+  const p = o.prog.get(r.name);
+  return `<div class="dbbr${off ? " off" : ""}${on ? " on" : ""}${p ? ` p-${p.st}` : ""}" data-dashbr="${escAttr(r.name)}">
     <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
       aria-checked="${on}" aria-disabled="${off}"
       title="${esc(off ? (r.local.block || r.remote.block) : "Pick this branch")}"></span></span>
@@ -753,9 +778,9 @@ function branchRow(r: BranchRow, o: BranchesView): string {
     <span class="st mono" title="${esc(b.base ? `versus ${b.base}` : "no trunk to compare against")}">${esc(trunkText(b))}</span>
     <span class="au mono">${esc(b.author)}</span>
     <span class="ag mono">${esc(b.rel)}</span>
-    <span class="ra"><button class="act" data-dashbrsw="${esc(r.name)}"
+    <span class="ra">${p ? progMark(p) : `<button class="act" data-dashbrsw="${esc(r.name)}"
       title="Switch ${esc(basename(o.root))}/ — the project's own folder — to ${esc(r.name)}">⇄</button><button class="act"
-      data-dashbrmenu="${escAttr(r.name)}" title="Start a session, protect it, more…">⋯</button></span>
+      data-dashbrmenu="${escAttr(r.name)}" title="Start a session, protect it, more…">⋯</button>`}</span>
   </div>`;
 }
 
@@ -807,7 +832,7 @@ function actionBar(o: BranchesView): string {
     <span class="what">${what}</span>
     ${pickButtons("branches")}
     <button class="brgo" data-dashbrrun${going && !o.busy ? "" : " disabled"}>
-      ${o.busy ? "Working…" : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
+      ${o.busy ? busyLabel(o.prog, "Deleting") : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
     ${warn}
   </div>`;
 }
@@ -829,12 +854,13 @@ function checkoutsBody(o: BranchesView): string {
   if (!o.checkouts.length) return `<div class="ac-empty">No checkouts here.</div>`;
   const rows = o.checkouts.map((c) => {
     const on = o.cpicked.has(c.wt.path);
+    const p = o.prog.get(c.wt.path);
     // `data-wt` and its four companions are ./projmenu's contract for the ⑃ cluster menu: the
     // row a checkout has here is the same checkout the rail's header opens a menu on.
     const menu = `data-wt="${escAttr(c.wt.path)}" data-root="${escAttr(o.root)}" `
       + `data-proj="${escAttr(o.project)}" data-branch="${escAttr(c.wt.branch)}"`
       + (c.wt.is_main ? ` data-main="1"` : "");
-    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
+    return `<div class="dbwt${c.ok ? "" : " off"}${on ? " on" : ""}${p ? ` p-${p.st}` : ""}" data-dashco="${escAttr(c.wt.path)}" ${menu}>
       <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
         aria-checked="${on}" aria-disabled="${!c.ok}"
         title="${esc(c.block || "Pick this checkout")}"></span></span>
@@ -842,8 +868,8 @@ function checkoutsBody(o: BranchesView): string {
       <span class="pt mono" title="${esc(c.wt.path)}">${esc(twoDeep(c.wt.path))}</span>
       <span class="tags">${c.block ? `<span class="warn">${esc(c.block)}</span>` : `<span class="dim">${esc(c.note)}</span>`}</span>
       <span class="tags">${c.live ? `<span class="tag acc">${c.live} live</span>` : ""}</span>
-      <span class="acts"><button class="act" data-dashwtadd="${escAttr(c.wt.path)}" title="New session here">＋</button>
-        <button class="act" data-dashwtterm="${escAttr(c.wt.path)}" title="Open a terminal here">❯</button></span>
+      <span class="acts">${p ? progMark(p) : `<button class="act" data-dashwtadd="${escAttr(c.wt.path)}" title="New session here">＋</button>
+        <button class="act" data-dashwtterm="${escAttr(c.wt.path)}" title="Open a terminal here">❯</button>`}</span>
     </div>`;
   }).join("");
   const n = chosenCheckouts(o.checkouts, o.cpicked).length;
@@ -853,7 +879,7 @@ function checkoutsBody(o: BranchesView): string {
       <span class="sp"></span>
       ${pickButtons("checkouts")}
       <button class="brgo" data-dashcorun${n && !o.busy ? "" : " disabled"}>
-        ${o.busy ? "Working…" : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
+        ${o.busy ? busyLabel(o.prog, "Removing") : n ? `Remove ${n} checkout${n === 1 ? "" : "s"}` : "Remove"}</button></div>`;
   return coHead(o.coHeadState) + rows + bar;
 }
 
@@ -979,14 +1005,14 @@ function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>):
     + ` title="${escAttr(picked.has(l) ? `Stop filtering by ${l}` : `Only show ${l}`)}">${esc(l)}</span>`).join("");
   const claim = h
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">◍ ${esc(h.mine ? "you" : h.who)}</span>` : "";
-  const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Review" : "▶ Start";
+  const verb = h ? (h.mine ? "◍ Yours" : "▶ Anyway") : t.kind === "pr" ? "▶ Agent" : "▶ Start";
   return `<div class="br" data-dashissue="${t.number}" title="Read it here">
     <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
     <span class="num">${t.number}</span>
     <span class="mid"><span class="ti">${esc(t.title)}</span>
       ${labels || claim ? `<span class="sub">${labels}${claim}</span>` : ""}</span>
     <span class="age">${esc(shortAge(t.updated_at))}</span>
-    <span class="go-slot"><button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">↗</button><button
+    <span class="go-slot">${t.kind === "pr" ? `<button class="web" data-dashreview="${t.number}" title="Review its changes here">${icon("files", "solo")}</button>` : ""}<button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">↗</button><button
       class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
   </div>`;
 }
@@ -1078,7 +1104,39 @@ export function closeSheet(t: GhThread, comment: string, slug: string): string {
       <button class="act primary" data-dashsheet="close">✓ Comment &amp; close</button></div>`;
 }
 
-export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null): string {
+/** The dispatch sheet's Where block: what it is set to and everything it may be set to. */
+export interface WhereView {
+  where: DispatchWhere;
+  heads: WtHead[];                        // the repo's checkouts; `is_main` is this folder
+  bases: { name: string; note: string }[];
+  exists: boolean;                        // the new branch is already a local one, so it is attached
+  problem: string | null;
+}
+
+function whereBlock(w: WhereView): string {
+  const main = w.heads.find((h) => h.is_main);
+  const val = w.where.kind === "here" ? "here" : w.where.kind === "new" ? "new" : `wt:${w.where.path}`;
+  const opt = (v: string, label: string) => `<option value="${escAttr(v)}"${v === val ? " selected" : ""}>${esc(label)}</option>`;
+  const opts = [opt("here", `This folder${main?.branch ? ` · ${main.branch}` : ""}`)]
+    .concat(w.heads.filter((h) => !h.is_main && h.exists).map((h) => opt(`wt:${h.path}`, `Worktree · ${h.branch || basename(h.path)}`)))
+    .concat(opt("new", "New worktree…"));
+  let fields = "";
+  if (w.where.kind === "new") {
+    const base = w.where.base;
+    const bases = w.bases.some((b) => b.name === base) ? w.bases : [{ name: base, note: "" }, ...w.bases];
+    fields = `<label class="dw-f"><span>Branch</span><input id="dashDispBranch" spellcheck="false" autocomplete="off" value="${escAttr(w.where.branch)}"></label>
+      <label class="dw-f"><span>From</span><select id="dashDispBase"${w.exists ? " disabled" : ""}>${bases.map((b) =>
+        `<option value="${escAttr(b.name)}"${b.name === base ? " selected" : ""}>${esc(b.name || "this folder's HEAD")}${b.note ? ` · ${esc(b.note)}` : ""}</option>`).join("")}</select></label>
+      ${w.exists && !w.problem ? `<p class="dim-line">${esc(w.where.branch)} already exists, so its worktree checks it out as it is.</p>` : ""}`;
+  }
+  return `<div class="opts dw">
+      <label class="dw-f"><span>Where</span><select id="dashDispWhere">${opts.join("")}</select></label>
+      ${fields}
+      ${w.problem ? `<p class="warn-line">${esc(w.problem)}</p>` : ""}
+    </div>`;
+}
+
+export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null, w: WhereView | null): string {
   const sw = (k: string, on: boolean, permitted: boolean, label: string) =>
     `<span class="dsw${on && permitted ? " on" : ""}${permitted ? "" : " off"}" data-dashclaim="${k}"
       ${permitted ? "" : `title="This project's .episko/episko.toml switches it off for everyone"`}><i></i>${label}</span>`;
@@ -1087,6 +1145,7 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
       <p class="sheet-ti">${esc(t.title)}</p>
       ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago, probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is only ever a hint.</p>` : ""}
       <p>A session in this project, and <b>the prompt is sent</b>, so the agent starts working without waiting for you.</p>
+      ${w ? whereBlock(w) : ""}
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
         ${sw("comment", p.comment, allow.comment, "comment that my agent is on it")}
@@ -1095,5 +1154,5 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
       <p class="dim-line">Permission mode: <b>${esc(mode)}</b>. Anything that doesn't ask before acting will act unattended.</p>
     </div>
     <div class="foot"><button class="act" data-dashsheet="cancel">Cancel</button><span class="sp"></span>
-      <button class="act primary" data-dashsheet="dispatch">▶ Claim &amp; start</button></div>`;
+      <button class="act primary" data-dashsheet="dispatch"${w?.problem ? " disabled" : ""}>▶ Claim &amp; start</button></div>`;
 }

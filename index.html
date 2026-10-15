@@ -140,6 +140,27 @@
             <div class="fl-head" id="fleetHead"></div>
             <div class="fl-body" id="fleetBody"></div>
           </div>
+          <!-- A pull request under review (reviewui.ts). The foot is static so the summary you are
+               typing survives every repaint of the stream above it. -->
+          <div class="review-view" id="reviewPane" hidden>
+            <div class="rv-head" id="rvHead"></div>
+            <div class="rv-bar" id="rvBar"></div>
+            <div class="diff-main">
+              <nav class="diff-rail" id="rvRail" hidden aria-label="Changed files"></nav>
+              <div class="diff-body rv-body" id="rvBody"></div>
+            </div>
+            <div class="rv-foot" id="rvFoot" hidden>
+              <span class="rv-pending" id="rvPending"></span>
+              <textarea id="rvSummary" rows="1" placeholder="Summary of your review (optional) · ⌘↵ submits" spellcheck="true"></textarea>
+              <div class="gseg" id="rvEvent">
+                <button class="gseg-b on" data-ev="COMMENT" title="Feedback without a verdict"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 14a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Comment</button>
+                <button class="gseg-b" data-ev="APPROVE" title="Approve merging these changes"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m8 12.5 3 3 5-6.5"/></svg>Approve</button>
+                <button class="gseg-b" data-ev="REQUEST_CHANGES" title="Feedback that must be addressed before merging"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.5h.01"/></svg>Request changes</button>
+              </div>
+              <button class="diff-fold" id="rvAgentDraft" title="Prefill your pending comments into a session on the PR's branch, instead of (or before) sending them"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V5"/><circle cx="12" cy="3.5" r="1.2"/><path d="M9 13v2M15 13v2"/></svg>agent</button>
+              <button class="diff-go" id="rvSubmit"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.5 2.5-6.5 19-4-8.5-8.5-4z"/><path d="M21.5 2.5 11 13"/></svg><span id="rvSubmitTxt">Submit review</span></button>
+            </div>
+          </div>
         </div>
       </main>
 

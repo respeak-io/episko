@@ -4,7 +4,10 @@ import {
   ALLOW_ALL, CLAIM_STALE_MS, claimForSession, claimIsStale, claims, claimText,
   DEFAULT_POLICY, dropClaim, policyWritesAnything, recordClaim, reloadClaims,
   resolveClaim, type ClaimAllow, type ClaimPolicy,
+  defaultBase, defaultWhere, dispatchBases, dispatchBranch, whereProblem,
 } from "../src/claim";
+import type { BranchInfo } from "../src/branches";
+import type { WtHead } from "../src/types";
 
 const policy = (over: Partial<ClaimPolicy> = {}): ClaimPolicy => ({ ...DEFAULT_POLICY, ...over });
 const allow = (over: Partial<ClaimAllow> = {}): ClaimAllow => ({ ...ALLOW_ALL, ...over });
@@ -133,5 +136,64 @@ describe("leases", () => {
     expect(leaseDue({ who: "a", until: 1000 + LEASE_MS }, 1000)).toBe(false);
     expect(leaseDue({ who: "a", until: 1000 + LEASE_MS / 2 - 1 }, 1000)).toBe(true);
     expect(leaseKey("git:1", "pr", 7)).toBe("git:1|pr#7");
+  });
+});
+
+describe("where a dispatched agent runs", () => {
+  const issue = (title: string, number = 42) => ({ kind: "issue", number, title, branch: null });
+  const pr = (branch: string | null, number = 7) => ({ kind: "pr", number, title: "x", branch });
+  const head = (branch: string, path = `/wt/${branch}`, is_main = false): WtHead => ({ path, branch, is_main, exists: true });
+  const br = (over: Partial<BranchInfo>): BranchInfo => ({
+    name: "", current: false, checked_out: false, upstream: "", ahead: 0, behind: 0, gone: false, merged: false,
+    remote: false, base: "", author: "", sha: "", rel: "", unix: 0, remote_ref: "", remote_sha: "",
+    t_ahead: 0, t_behind: 0, is_default: false, ...over,
+  });
+
+  it("names an issue's branch from its number and the start of its title", () => {
+    expect(dispatchBranch(issue("Crash when the sidebar is empty!"))).toBe("issue-42-crash-when-the-sidebar-is-empty");
+    expect(dispatchBranch(issue("A very long title that goes on and on well past any sensible branch length")).length).toBeLessThanOrEqual(42);
+    expect(dispatchBranch(issue("🚀🚀"))).toBe("issue-42");
+  });
+
+  it("gives a PR its own head branch", () => {
+    expect(dispatchBranch(pr("fix/thing"))).toBe("fix/thing");
+    expect(dispatchBranch(pr(null))).toBe("pr-7");
+  });
+
+  it("offers the trunk first, then remote refs, then locals, once each", () => {
+    const bases = dispatchBases([
+      br({ name: "feat", current: true, upstream: "origin/feat", base: "origin/main" }),
+      br({ name: "main", upstream: "origin/main", base: "origin/main" }),
+    ]);
+    expect(bases.map((b) => b.name)).toEqual(["origin/main", "origin/feat", "feat", "main"]);
+    expect(dispatchBases([])).toEqual([{ name: "", note: "" }]);
+  });
+
+  it("starts a PR from its remote head when the clone has it, else the trunk", () => {
+    const bases = [{ name: "origin/main" }, { name: "origin/fix/thing" }];
+    expect(defaultBase(pr("fix/thing"), bases)).toBe("origin/fix/thing");
+    expect(defaultBase(pr("gone"), bases)).toBe("origin/main");
+    expect(defaultBase(issue("x"), bases)).toBe("origin/main");
+  });
+
+  it("lands a re-dispatch in the checkout already on its branch", () => {
+    const heads = [head("main", "/repo", true), head("issue-42-x")];
+    expect(defaultWhere(issue("x"), heads, "here", "origin/main")).toEqual({ kind: "wt", path: "/wt/issue-42-x" });
+    expect(defaultWhere(pr("main"), heads, "new", "")).toEqual({ kind: "here" });
+    expect(defaultWhere(issue("y"), heads, "new", "origin/main")).toEqual({ kind: "new", branch: "issue-42-y", base: "origin/main" });
+    expect(defaultWhere(issue("y"), heads, "here", "origin/main")).toEqual({ kind: "here" });
+  });
+
+  it("refuses a new branch git would refuse, or one already checked out", () => {
+    const heads = [head("main", "/repo", true), head("busy")];
+    const nw = (branch: string) => ({ kind: "new" as const, branch, base: "" });
+    expect(whereProblem({ kind: "here" }, heads)).toBeNull();
+    expect(whereProblem(nw("issue-1-ok"), heads)).toBeNull();
+    expect(whereProblem(nw("  "), heads)).toMatch(/Name the branch/);
+    expect(whereProblem(nw("a b"), heads)).toMatch(/not a branch name/);
+    expect(whereProblem(nw("a..b"), heads)).toMatch(/not a branch name/);
+    expect(whereProblem(nw("busy"), heads)).toMatch(/in a worktree/);
+    expect(whereProblem(nw("main"), heads)).toMatch(/in this folder/);
+    expect(whereProblem({ kind: "wt", path: "/nowhere" }, heads)).toMatch(/gone/);
   });
 });
