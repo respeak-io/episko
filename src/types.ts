@@ -420,8 +420,9 @@ export interface Sess {
   run?: { // task panes only
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
-    // latched as output streams, never rescanned from the rolling tail (taskServerUrl in ./servers)
-    url?: string;
+    // latched as output streams, never rescanned from the rolling tail (foldPages in ./servers)
+    url?: string; // pages[0]: what the row, the pill and ◨ open
+    pages?: { label: string; url: string }[]; // every address it announced, the named host kept
     partial?: string; // the unfinished last line, so a URL split across two chunks is read whole
     endedAt?: number; // freezes the duration at exit
     root: string; // where discovery ran; sourceFile is rooted here

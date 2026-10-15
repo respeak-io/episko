@@ -12,6 +12,14 @@ A project's dev environment is rarely one server. `just dev` in one repo brings 
 - **The summed state needs no config.** `failed`: a member exited non-zero (or a server exited at all), or a container is restarting, unhealthy, or exited non-zero during this stack's life. `starting`: a prep step still runs, a server has not listened yet, or a health check is starting. `ready`: none of those. The block names the member or container behind the state.
 - **An exit counts only if it happened during the stack's life.** Docker reports an exit only as "Exited (1) 3 weeks ago"; `agoMs` reads that back, and an exit older than the stack's first pane is hidden rather than blamed. Without this every later run of a repo with one stale failed container starts red.
 
+## Pages
+
+A stack lists every address worth opening as chips under its head (`stackPages`), from three sources, one row per URL:
+
+1. **`[stack] pages`**, declared by the team: for what nothing announces, such as a Caddyfile's routes. First, and a declared name wins over an announced one.
+2. **What its panes announced** (`run.pages`, folded by `foldPages` in ./servers): every labelled address in a dev script's banner, not just the last. When two share a port, the named host is kept: `wirksam.localhost` is chosen for its cookies and CORS, while `127.0.0.1` is only where vite bound.
+3. **Reverse-proxy routes on its containers**: Traefik's `Host(...)` router rules, read from the container labels (`traefik_pages`). Caddy keeps its routes in a file, which is what `pages` is for.
+
 ## Rules
 
 - **Facts in Rust, rules in TypeScript.** `stack.rs` lists containers and reads `[stack]`; `stack.ts` decides. Labels are read by name in the `docker ps` template, never from `{{.Labels}}`, which is comma-joined while `config_files` holds commas.
@@ -27,6 +35,7 @@ A project's dev environment is rarely one server. `just dev` in one repo brings 
 up = "just:dev"        # the task that starts it: marks a run as a stack even when nothing in it is background
 down = "just:down"     # what ⏹ runs instead of `docker compose stop`
 compose = ["shared-infra"]  # Compose projects that belong here wherever they were started
+pages = { App = "https://app.localhost:8443/ui/" }  # addresses nothing announces
 ```
 
 Ids are task ids as `list_runnables` and the Run picker spell them. Everything is optional, and a broken file reads as no table.

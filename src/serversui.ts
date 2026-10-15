@@ -317,6 +317,7 @@ function stackInput(): PaneIn[] {
     out.push({
       sid: s2.id, root: r.root, project: s2.project, taskId: r.id, label: r.label, background: r.background,
       exit: r.exitCode, url: r.url, startedAt: r.startedAt, groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot,
+      pages: r.pages,
     });
   }
   return out;

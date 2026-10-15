@@ -625,10 +625,14 @@ And the things that hold however the files are arranged:
 - **A task's server URL is latched as its output streams, never rescanned from `tail`.**
   `run.tail` is a rolling 40 lines, so a dev server's banner is gone from it seconds
   after the first HMR line — a URL read back off the tail would appear and then silently
-  vanish. `taskServerUrl` folds it per line in main.ts's `pty-output` handler, and is
-  **stricter than `serverUrl`**: it latches only on an announcement line, because its
-  answer sticks and a stray `curl http://localhost:9999` in the output would otherwise
-  put a wrong address on the row permanently.
+  vanish. `foldPages` folds **every** address per line in main.ts's `pty-output` handler
+  into `run.pages` (`run.url` is the first), and is **stricter than `serverUrl`**: a URL
+  counts only on an announcing word or a label (`▶ Frontend http://…`, `docs: http://…`),
+  never on a command echo or request log, because its answer sticks and a stray
+  `curl http://localhost:9999` would otherwise put a wrong address on the row permanently.
+  **On one port the named host wins** over `localhost`/`127.0.0.1`: a project serving on
+  `wirksam.localhost` does it for its cookies and CORS, and vite's `Local: 127.0.0.1` line
+  opened the frontend on the wrong origin.
 - **A server that died on its own keeps its row; one that was asked to stop does not.**
   A dev server exiting on `EADDRINUSE` two seconds in is the commonest way this goes
   wrong, and dropping the count 1 → 0 would be the exact silence the feature exists to

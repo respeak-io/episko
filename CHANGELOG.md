@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A task opens on the host its project chose.** A dev script that serves on
+  `wirksam.localhost` (so its cookie and CORS work) showed `127.0.0.1` instead, because only
+  vite's own `Local:` line was read; the frontend then opened on the wrong origin. Every
+  labelled address a task prints is kept now, the named host wins on a shared port, and the
+  task's inspector lists them all.
+
 ! **A long prefilled prompt arrives whole.** Claude Code reads text typed into a fresh session
   in one burst as a paste: under 1 KB it collapsed to `[Pasted text]` before you could read it,
   and past 1 KB it lost the first 1,024 characters. A dispatched note or issue, and the stack
@@ -30,7 +36,8 @@ Markers: `+` new · `~` changed · `!` fixed
   settings show it (with *Start stack* when it names an `up` task), and *Set up with an
   agent* has Claude read your justfile, tasks.json and compose files in the background,
   read-only, and propose the table, each value with the file and lines it is based on, for
-  you to apply or discard.
+  you to apply or discard. Each stack lists every page worth opening: what its panes
+  announce, its containers' Traefik routes, and any `pages` the table declares.
 
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it

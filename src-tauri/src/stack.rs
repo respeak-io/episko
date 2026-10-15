@@ -17,6 +17,7 @@ pub(crate) struct Container {
     project: String,
     service: String,
     working_dir: String,
+    pages: Vec<String>, // what a reverse proxy publishes it as: Traefik's `Host(...)` router rules
 }
 
 #[derive(serde::Serialize, Debug, Default)]
@@ -30,22 +31,43 @@ pub(crate) struct Containers {
 // Labels by name rather than `{{.Labels}}`: that one is comma-joined, and `config_files` has commas in it.
 const PS_FORMAT: &str = "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}\t\
 {{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}\t\
-{{.Label \"com.docker.compose.project.working_dir\"}}";
+{{.Label \"com.docker.compose.project.working_dir\"}}\t{{.Labels}}";
 
 fn parse_ps(out: &str) -> Vec<Container> {
     out.lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            if f.len() != 8 || f[5].is_empty() || f[7].is_empty() {
+            if f.len() != 9 || f[5].is_empty() || f[7].is_empty() {
                 return None; // not made by Compose, so no checkout can own it
             }
             let s = |i: usize| f[i].trim().to_string();
             Some(Container {
                 id: s(0), name: s(1), state: s(2), status: s(3), ports: s(4),
                 project: s(5), service: s(6), working_dir: crate::platform::norm_path(f[7].trim()),
+                pages: traefik_pages(f[8]),
             })
         })
         .collect()
+}
+
+/// `Host(\`a\`)` in a `traefik.http.routers.*.rule` label, as `http://a`. The comma-joined label
+/// string is only scanned for that shape, never split, since a rule can hold commas itself.
+fn traefik_pages(labels: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in labels.split("traefik.http.routers.").skip(1) {
+        let Some(rule) = part.split_once(".rule=").map(|(_, r)| r) else { continue };
+        let mut rest = rule;
+        while let Some(i) = rest.find("Host(`") {
+            rest = &rest[i + 6..];
+            let Some(end) = rest.find('`') else { break };
+            let url = format!("http://{}", &rest[..end]);
+            if !rest[..end].is_empty() && !out.contains(&url) {
+                out.push(url);
+            }
+            rest = &rest[end..];
+        }
+    }
+    out
 }
 
 fn docker(args: &[&str]) -> std::process::Command {
@@ -96,6 +118,9 @@ pub(crate) struct StackConfig {
     down: Option<String>,
     #[serde(default)]
     compose: Vec<String>,
+    /// Name → address a developer opens, for what nothing announces (a Caddyfile's routes).
+    #[serde(default)]
+    pages: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -206,6 +231,15 @@ fn set_stack(doc: &mut toml_edit::DocumentMut, s: &StackConfig) {
     } else {
         t["compose"] = toml_edit::value(s.compose.iter().map(String::as_str).collect::<toml_edit::Array>());
     }
+    if s.pages.is_empty() {
+        t.remove("pages");
+    } else {
+        let mut pages = toml_edit::InlineTable::new();
+        for (k, v) in &s.pages {
+            pages.insert(k, v.as_str().into());
+        }
+        t["pages"] = toml_edit::value(pages);
+    }
 }
 
 #[cfg(test)]
@@ -214,14 +248,21 @@ mod tests {
 
     #[test]
     fn ps_lines_become_containers_and_strangers_are_dropped() {
-        let out = "fba89\tpii-db-1\trunning\tUp 3 hours (healthy)\t127.0.0.1:5432->5432/tcp\tschwaerzwerk-platform\tdb\t/w/pii/apps/platform/deploy\n\
-                   aa11\tloner\trunning\tUp 1 hour\t\t\t\t\n\
+        let out = "fba89\tpii-db-1\trunning\tUp 3 hours (healthy)\t127.0.0.1:5432->5432/tcp\tschwaerzwerk-platform\tdb\t/w/pii/apps/platform/deploy\tcom.docker.compose.project=schwaerzwerk-platform\n\
+                   aa11\tloner\trunning\tUp 1 hour\t\t\t\t\t\n\
                    bb22\tbroken line\n";
         let got = parse_ps(out);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].service, "db");
         assert_eq!(got[0].status, "Up 3 hours (healthy)");
         assert_eq!(got[0].working_dir, crate::platform::norm_path("/w/pii/apps/platform/deploy"));
+    }
+
+    #[test]
+    fn traefik_router_rules_become_pages_once_each() {
+        let labels = "com.docker.compose.service=adminer,traefik.enable=true,traefik.http.routers.wirk-sam-adminer-http.rule=Host(`adminer.localhost`),traefik.http.routers.wirk-sam-adminer-http.entrypoints=web,traefik.http.routers.wirk-sam-adminer-https.rule=Host(`adminer.localhost`) || Host(`db.localhost`),traefik.http.services.x.loadbalancer.server.port=8080";
+        assert_eq!(traefik_pages(labels), vec!["http://adminer.localhost", "http://db.localhost"]);
+        assert!(traefik_pages("com.docker.compose.service=db").is_empty());
     }
 
     #[test]
@@ -248,12 +289,14 @@ mod tests {
     #[test]
     fn writing_stack_keeps_every_other_table_and_comment() {
         let mut doc = "# team settings\n[branches]\nprotect = [\"dev\"]\n\n[stack]\nup = \"old\"\ncompose = [\"x\"]\n".parse::<toml_edit::DocumentMut>().unwrap();
-        set_stack(&mut doc, &StackConfig { up: Some("just:dev".into()), down: Some("just:down".into()), compose: vec![] });
+        let pages = [("Frontend".to_string(), "http://wirksam.localhost:5174".to_string())].into_iter().collect();
+        set_stack(&mut doc, &StackConfig { up: Some("just:dev".into()), down: Some("just:down".into()), compose: vec![], pages });
         let text = doc.to_string();
         assert!(text.starts_with("# team settings\n[branches]\nprotect = [\"dev\"]"), "{text}");
         assert!(text.contains("up = \"just:dev\"") && text.contains("down = \"just:down\""), "{text}");
         assert!(!text.contains("compose"), "{text}");
         assert_eq!(parse_stack(&text).up.as_deref(), Some("just:dev"));
+        assert_eq!(parse_stack(&text).pages.get("Frontend").map(String::as_str), Some("http://wirksam.localhost:5174"));
     }
 
     #[test]

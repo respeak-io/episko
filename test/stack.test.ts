@@ -112,6 +112,20 @@ describe("buildStacks", () => {
     expect(s.composeProjects).toEqual(["02_backend"]);
   });
 
+  it("lists every page once: declared, then announced, then proxy routes", () => {
+    const [s] = buildStacks(input({
+      panes: [
+        pane({ sid: "fe", groupId: "g", pages: [{ label: "Frontend", url: "http://wirksam.localhost:5174" }, { label: "Local", url: "http://localhost:5175" }] }),
+        pane({ sid: "be", groupId: "g", label: "Backend", pages: [{ label: "docs", url: "http://wirksam.localhost:8788/docs" }] }),
+      ],
+      containers: [box({ service: "adminer", pages: ["http://adminer.localhost"] })],
+      configs: new Map([["/w/docex", { pages: { App: "http://wirksam.localhost:5174/" } }]]),
+    }));
+    expect(s.pages.map((p) => [p.name, p.from])).toEqual([
+      ["App", "declared"], ["localhost:5175", "pane"], ["docs", "pane"], ["adminer · adminer.localhost", "proxy"],
+    ]);
+  });
+
   it("takes a compose project [stack] names even from outside the repo", () => {
     const [s] = buildStacks(input({
       panes: [pane()], containers: [box({ id: "c3", project: "shared-infra", workingDir: "/x/infra" })],
@@ -168,6 +182,9 @@ describe("the [stack] table", () => {
       why: ["up: the default build task", "down: nothing stopped the containers"],
     };
     expect(checkProposal(p, tasks).dropped).toEqual([]);
+    const withPages = checkProposal({ ...p, stack: { ...p.stack, pages: { App: "http://app.localhost:8443/ui/", Bad: "app.localhost" } } }, tasks);
+    expect(withPages.stack.pages).toEqual({ App: "http://app.localhost:8443/ui/" });
+    expect(withPages.dropped).toEqual(['page Bad = "app.localhost" is not an http(s) address']);
     const bad = checkProposal({ ...p, tasks: [] }, tasks);
     expect(bad.stack.down).toBeUndefined();
     expect(bad.dropped).toEqual(['down = "episko:stop-containers" names no task in this project']);

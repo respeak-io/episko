@@ -9,8 +9,9 @@ import { usefulPort } from "./servers";
 export interface Container {
   id: string; name: string; state: string; status: string; ports: string;
   project: string; service: string; workingDir: string;
+  pages?: string[]; // Traefik's Host(...) rules, as URLs
 }
-export interface StackCfg { up?: string | null; down?: string | null; compose?: string[] }
+export interface StackCfg { up?: string | null; down?: string | null; compose?: string[]; pages?: Record<string, string> }
 
 /** Where a path lives: the checkout holding it and the repo that checkout belongs to. */
 export interface Checkout { repo: string; path: string; name: string }
@@ -20,7 +21,11 @@ export interface PaneIn {
   sid: string; root: string; project: string; taskId: string; label: string;
   background: boolean; exit: number | null; url?: string; startedAt: number;
   groupId?: string; groupLabel?: string; groupRoot?: string;
+  pages?: { label: string; url: string }[];
 }
+
+/** One address worth opening, and who said so: `[stack]`, a pane's own banner, or a proxy rule. */
+export interface StackPage { name: string; url: string; from: "declared" | "pane" | "proxy" }
 
 export type Health = "healthy" | "unhealthy" | "starting" | "none";
 export type CState = "up" | "starting" | "failing" | "done" | "stopped";
@@ -35,6 +40,7 @@ export interface Box {
 export interface Stack {
   key: string; project: string; checkout: string; label: string;
   members: Member[]; boxes: Box[]; composeProjects: string[];
+  pages: StackPage[];
   state: StackState; why: string; startedAt: number;
 }
 
@@ -134,6 +140,26 @@ function isStack(group: readonly PaneIn[], cfg: StackCfg | undefined): boolean {
 
 const boxOrder = (a: Box, b: Box) => a.c.service.localeCompare(b.c.service);
 
+// Generic banner words name nothing; the address is the better name then (./servers' pageName).
+const GENERIC = new Set(["local", "ready", "running", "listening", "serving", "server", "started", "available", "network", "url", "at", "on", "open"]);
+const bare = (u: string) => u.replace(/^https?:\/\//, "");
+
+// Declared first (the team wrote them down on purpose), then what panes announced, then proxy
+// routes; one row per URL, so a page both declared and announced keeps its declared name.
+function stackPages(cfg: StackCfg | undefined, group: readonly PaneIn[], boxes: readonly Box[]): StackPage[] {
+  const out: StackPage[] = [];
+  const add = (name: string, url: string, from: StackPage["from"]) => {
+    if (/^https?:\/\//i.test(url) && !out.some((p) => p.url.replace(/\/$/, "") === url.replace(/\/$/, ""))) out.push({ name, url, from });
+  };
+  for (const [name, url] of Object.entries(cfg?.pages ?? {})) add(name, url, "declared");
+  for (const p of group) {
+    if (p.exit != null) continue;
+    for (const pg of p.pages ?? []) add(pg.label && !GENERIC.has(pg.label.toLowerCase()) ? pg.label : bare(pg.url), pg.url, "pane");
+  }
+  for (const b of boxes) if (b.state === "up" || b.state === "starting") for (const u of b.c.pages ?? []) add(`${b.c.service} · ${bare(u)}`, u, "proxy");
+  return out;
+}
+
 function sumUp(members: Member[], boxes: Box[]): { state: StackState; why: string } {
   const bad = members.find((m) => m.state === "failed");
   if (bad) return { state: "failed", why: bad.exit != null && bad.exit !== 0 ? `${bad.label} exited ${bad.exit}` : `${bad.label} stopped` };
@@ -190,6 +216,7 @@ export function buildStacks(inp: StackInput): Stack[] {
       key, project: group[0].project, checkout: root,
       label: group[0].groupLabel ?? (members.length === 1 ? members[0].label : group[0].label),
       members, boxes, composeProjects: [...new Set(boxes.map((b) => b.c.project))],
+      pages: stackPages(cfg, group, boxes),
       ...sumUp(members, boxes), startedAt,
     });
   }
@@ -212,6 +239,7 @@ export function buildStacks(inp: StackInput): Stack[] {
     stacks.push({
       key: `left:${repo}`, project: home.name, checkout: home.path, label: "",
       members: [], boxes, composeProjects: [...new Set(boxes.map((b) => b.c.project))],
+      pages: stackPages(undefined, [], boxes),
       state: "leftover", why: `${boxes.length} container${boxes.length === 1 ? "" : "s"} up · no dev task running`,
       startedAt: 0,
     });
@@ -237,6 +265,7 @@ export function stackSummary(cfg: StackCfg): string {
   return [
     cfg.up && `starts with ${cfg.up}`, cfg.down && `stops with ${cfg.down}`,
     cfg.compose?.length && `compose ${cfg.compose.join(", ")}`,
+    Object.keys(cfg.pages ?? {}).length && `pages ${Object.keys(cfg.pages ?? {}).join(", ")}`,
   ].filter(Boolean).join(" · ");
 }
 
@@ -269,9 +298,10 @@ export function stackPrompt(current: StackCfg, tasks: readonly TaskRef[]): strin
     "- up: the task that brings the whole dev environment up (servers and containers), usually the default build task or a dev recipe.",
     "- down: the task that stops it, especially its containers.",
     "- compose: only Compose project names started from outside this repository; usually leave it out.",
+    "- pages: an inline table of the addresses a developer opens while it runs, name = URL, exactly as the scripts, env files or proxy config define them (a named host like app.localhost matters: never rewrite it to localhost). Leave it out when the dev servers print their own addresses.",
     "Leave out any key the files do not support.",
     "If no listed task stops the containers, add a [[task]] with label and run (a shell command run from the project root, using docker compose stop rather than down) to the same block, and set down to episko:<the label lowercased, every run of other characters turned into one dash>.",
-    "After the block write a line containing only WHY, then one line per value starting with \"- up:\", \"- down:\", \"- compose:\" or \"- task:\" saying which file and lines it is based on. Write nothing else.",
+    "After the block write a line containing only WHY, then one line per value starting with \"- up:\", \"- down:\", \"- compose:\", \"- pages:\" or \"- task:\" saying which file and lines it is based on. Write nothing else.",
   ].join("\n");
 }
 
@@ -284,6 +314,12 @@ export function checkProposal(p: StackProposal, tasks: readonly TaskRef[]): { st
     const v = stack[k];
     if (v && !known.has(v)) { dropped.push(`${k} = "${v}" names no task in this project`); stack[k] = undefined; }
   }
+  const pages = Object.entries(stack.pages ?? {}).filter(([n, u]) => {
+    const ok = /^https?:\/\/\S+$/i.test(u);
+    if (!ok) dropped.push(`page ${n} = "${u}" is not an http(s) address`);
+    return ok;
+  });
+  stack.pages = Object.fromEntries(pages);
   return { stack, dropped };
 }
 
@@ -296,6 +332,8 @@ export function proposalText(p: StackProposal, checked: { stack: StackCfg; dropp
   for (const k of ["up", "down"] as const) {
     if (s[k]) lines.push(`- \`${k} = "${s[k]}"\`${why(p, k) ? `: ${why(p, k)}` : ""}`);
   }
+  for (const [n, u] of Object.entries(s.pages ?? {})) lines.push(`- page ${n}: \`${u}\``);
+  if (Object.keys(s.pages ?? {}).length && why(p, "pages")) lines.push(`  ${why(p, "pages")}`);
   if (s.compose?.length) lines.push(`- \`compose = [${s.compose.map((c) => `"${c}"`).join(", ")}]\`${why(p, "compose") ? `: ${why(p, "compose")}` : ""}`);
   const out = [lines.length ? `For \`.episko/episko.toml\`:\n\n${lines.join("\n")}` : "Claude found nothing it could support for `[stack]`."];
   if (p.tasks.length) {

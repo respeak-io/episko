@@ -711,7 +711,7 @@ export async function proposeStack(root: string): Promise<void> {
     for (const t of p.tasks) {
       await invoke("save_episko_task", { workdir: root, id: null, task: { label: t.label, run: t.run, group: null, background: false, cwd: null } });
     }
-    await invoke("write_stack", { dir: root, stack: { up: checked.stack.up ?? null, down: checked.stack.down ?? null, compose: checked.stack.compose ?? [] } });
+    await invoke("write_stack", { dir: root, stack: { up: checked.stack.up ?? null, down: checked.stack.down ?? null, compose: checked.stack.compose ?? [], pages: checked.stack.pages ?? {} } });
     toast(`Wrote [stack]${p.tasks.length ? ` and ${p.tasks.length} task${p.tasks.length === 1 ? "" : "s"}` : ""}. Commit .episko/ to share it`);
   } catch (e) {
     toast(`No dev stack proposal: ${e}`);

@@ -44,7 +44,7 @@ import {
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
-import { endBg, liveServers, taskServerUrl } from "./servers";
+import { endBg, foldPages, liveServers } from "./servers";
 import {
   closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
@@ -428,9 +428,13 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
     // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
     const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
     s.run.partial = whole.pop()!.slice(-1024);
-    const was = s.run.url;
-    for (const line of whole) s.run.url = taskServerUrl(s.run.url, line);
-    if (s.run.url !== was) renderAll(); // the pill and the task's card both name it
+    const was = s.run.pages ?? [];
+    const now = whole.reduce(foldPages, was);
+    if (now !== was) { // foldPages hands back the same array when a chunk announced nothing
+      s.run.pages = now;
+      s.run.url = now[0]?.url;
+      renderAll(); // the pill, the task's card and its stack all name them
+    }
   }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {

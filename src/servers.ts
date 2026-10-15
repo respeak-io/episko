@@ -119,14 +119,68 @@ export function serverUrl(text: string): string {
   return pick.length ? pick[pick.length - 1] : "";
 }
 
-// No any-URL fallback, unlike `serverUrl`: this answer latches, so a stray URL would stick to a row.
-function announcedOn(line: string): string {
-  return ANNOUNCE.test(line) ? (localUrls(line, true).pop() ?? "") : "";
+/** One address a task announced, named by the word before it (`Frontend`, `docs`, `Local`). */
+export interface Page { label: string; url: string }
+
+// Lines that MENTION a URL rather than announce one: a command echo, a request log, a fetch.
+const MENTION = /^\s*[$>#]\s|\b(?:curl|wget|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/;
+// A label is a capitalised word (`▶ Frontend http://…`) or any word with a colon (`docs: http://…`).
+const LABEL = /(?<![\w-])([A-Za-z][\w-]{1,24})(:?)\s*$/;
+function labelOf(before: string): string | undefined {
+  const m = LABEL.exec(before);
+  return m && (m[2] || /^[A-Z]/.test(m[1])) ? m[1] : undefined;
+}
+const BULLET = /^\s*[→➜▶•*-]\s*$/; // `→ http://…`: a banner that names nothing still announces
+
+// Every URL a line announces. No any-URL fallback, unlike `serverUrl`: these latch, so a stray
+// URL would stick to a row. A URL counts on an announcing word or when something labels it.
+export function announcedPages(line: string): Page[] {
+  if (MENTION.test(line)) return [];
+  const said = ANNOUNCE.test(line);
+  const out: Page[] = [];
+  const re = /\bhttps?:\/\/((?:[a-z0-9-]+\.)*localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|\[::\])(?![\w.-])(?::(\d{1,5}))?(\/[^\s"'<>`]*)?/gi;
+  for (const m of line.matchAll(re)) {
+    const before = line.slice(0, m.index);
+    const label = labelOf(before);
+    if (!said && !label && !BULLET.test(before)) continue;
+    const url = localUrls(m[0], true)[0];
+    if (url) out.push({ label: label ?? "", url });
+  }
+  return out;
 }
 
-// Folded per line as it streams (`run.tail` is a rolling 40 lines); a later announcement wins.
-export function taskServerUrl(prev: string | undefined, line: string): string | undefined {
-  return announcedOn(line) || prev;
+const urlPort = (u: string) => portOf(u);
+const plainHost = (u: string) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1?\])(?=[:/]|$)/i.test(u);
+
+/**
+ * Fold one line's announcements into what a task has said so far. A label said again is a
+ * restart, replaced in place. On one port the NAMED host wins: a project serving on
+ * `wirksam.localhost` means it (cookies and CORS are per host); `127.0.0.1` is only the bind.
+ */
+export function foldPages(prev: readonly Page[], line: string): Page[] {
+  const said = announcedPages(line);
+  if (!said.length) return prev as Page[];
+  const out = [...prev];
+  for (const p of said) {
+    const same = out.findIndex((x) => x.url === p.url);
+    if (same >= 0) { if (!out[same].label && p.label) out[same] = p; continue; }
+    const relabel = p.label ? out.findIndex((x) => x.label === p.label) : -1;
+    if (relabel >= 0) { out[relabel] = p; continue; }
+    // Only a plain-loopback pair is one server twice; `/docs` beside `/` on one port is two pages.
+    const twin = out.findIndex((x) => urlPort(x.url) === urlPort(p.url) && plainHost(x.url) !== plainHost(p.url));
+    if (twin >= 0) {
+      if (plainHost(out[twin].url) && !plainHost(p.url)) out[twin] = { label: out[twin].label || p.label, url: p.url };
+      continue; // a plain-loopback twin of a named host adds nothing but the wrong origin
+    }
+    if (out.length < 8) out.push(p);
+  }
+  return out;
+}
+
+// Generic banner words name nothing; the address itself is the better name then.
+const GENERIC = new Set(["local", "ready", "running", "listening", "serving", "server", "started", "available", "network", "url", "at", "on", "open"]);
+export function pageName(p: Page): string {
+  return p.label && !GENERIC.has(p.label.toLowerCase()) ? p.label : p.url.replace(/^https?:\/\//, "");
 }
 
 export function logTail(text: string, n = 12): string[] {

@@ -3,7 +3,18 @@
 // there (test/dispatch.test.ts reads both files).
 
 import { esc, escAttr } from "./format";
-import type { Box, Member, Stack } from "./stack";
+import type { Box, Member, Stack, StackPage } from "./stack";
+
+const FROM: Record<StackPage["from"], string> = {
+  declared: "from [stack] pages", pane: "announced by its pane", proxy: "a reverse-proxy route",
+};
+
+// Every address the stack offers, as chips under its head: the ones to open, by name.
+function pagesHtml(pages: readonly StackPage[]): string {
+  return pages.length
+    ? `<div class="sv-pages">${pages.map((p) => `<button class="sv-page" data-svopen="${escAttr(p.url)}" title="${escAttr(`Open ${p.url} · ${FROM[p.from]}`)}">${esc(p.name)}</button>`).join("")}</div>`
+    : "";
+}
 
 // A leftover's `why` already says what it is; its state word would only repeat it.
 const STATE_TEXT: Record<Stack["state"], string> = {
@@ -57,6 +68,6 @@ export function stackHtml(s: Stack, downLabel: string): string {
   const stop = s.members.length
     ? `<button class="sv-stop" data-svstack="${escAttr(s.key)}" title="Close this stack's ${s.members.length} pane${s.members.length === 1 ? "" : "s"} (containers keep running)">✕</button>`
     : `<span class="sv-none"></span>`;
-  return `<div class="sv-stack st-${tone(s)}"><div class="sv-sh"><span class="sv-sdot" title="${escAttr(TONE_TITLE[tone(s)])}"></span>${head}${down}${stop}</div>`
+  return `<div class="sv-stack st-${tone(s)}"><div class="sv-sh"><span class="sv-sdot" title="${escAttr(TONE_TITLE[tone(s)])}"></span>${head}${down}${stop}</div>${pagesHtml(s.pages)}`
     + s.members.map(memberHtml).join("") + s.boxes.map(boxHtml).join("") + `</div>`;
 }

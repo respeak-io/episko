@@ -5,7 +5,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, stageGen, toast } from "./dom";
-import { esc, tilde } from "./format";
+import { esc, escAttr, tilde } from "./format";
+import { pageName } from "./servers";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { runnableIn, pinnedIds, togglePin } from "./tasks";
 import { activeId, dirtyByFolder, outlinePrefs, revivePrefs, sessions } from "./state";
@@ -200,7 +201,7 @@ function renderTaskInspector(s: Sess) {
       <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
       <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      ${running && r.url ? `<div class="ext-meta"><span class="label">Address</span><button class="ext-link mono ell" data-taskurl="1" title="Open ${esc(r.url)}">${esc(r.url.replace(/^https?:\/\//, ""))}</button></div>` : ""}
+      ${running ? (r.pages ?? []).map((p, i) => `<div class="ext-meta"><span class="label">${i ? esc(pageName(p)) : "Address"}</span><button class="ext-link mono ell" data-taskurl="${escAttr(p.url)}" title="Open ${esc(p.url)}${i ? "" : ` (${esc(pageName(p))})`}">${esc(p.url.replace(/^https?:\/\//, ""))}</button></div>`).join("") : ""}
       <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(runElapsed(r))}</span></div>
       ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
     </div>
@@ -214,9 +215,9 @@ function renderTaskInspector(s: Sess) {
     </div>`;
 
   const insp = $("inspector");
-  insp.querySelector("[data-taskurl]")?.addEventListener("click", () => {
-    if (r.url) void openUrl(r.url).catch((err) => toast("open failed: " + err));
-  });
+  insp.querySelectorAll<HTMLElement>("[data-taskurl]").forEach((el) => el.addEventListener("click", () => {
+    void openUrl(el.dataset.taskurl!).catch((err) => toast("open failed: " + err));
+  }));
   insp.querySelector("[data-rerun]")?.addEventListener("click", () => rerunTask(s));
   insp.querySelector("[data-reparams]")?.addEventListener("click", () => rerunTask(s, true));
   insp.querySelector("[data-pin]")?.addEventListener("click", () => togglePin(s.colorKey, r.id));
