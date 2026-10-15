@@ -2,11 +2,14 @@
 // decides. A claim is a hint, never a lock; it expires; and the project's
 // `.episko/episko.toml` is a ceiling over personal prefs (docs/dashboard.md).
 
+import type { BranchInfo } from "./branches";
+import type { WtHead } from "./types";
+
 /** What Episko can write when you dispatch; each is independent. */
 export interface ClaimPolicy {
   assign: boolean;  // gh issue edit N --add-assignee @me
   comment: boolean; // one comment per thread, edited in place, never appended
-  // No `pushBranch`: dispatch creates no branch to push, so the switch could never act.
+  // No `pushBranch`: a dispatch may cut a branch, but nothing is on it to push until the agent works.
   // Unlike `assign` (a human owns this), a label says a machine is on it now. Empty is off.
   label: string;
 }
@@ -57,6 +60,68 @@ export interface ClaimOutcome {
   commented: boolean;
   labeled: boolean;
   problems: string[]; // in the user's words, not gh's
+}
+
+// ---------- where the agent runs ----------
+
+/** The project's own folder, a checkout that already exists, or a worktree made for this. */
+export type DispatchWhere =
+  | { kind: "here" }
+  | { kind: "wt"; path: string }
+  | { kind: "new"; branch: string; base: string };
+
+interface Thread { kind: string; number: number; title: string; branch: string | null }
+
+/** A PR's own head branch; for an issue, `issue-<n>-` and the title's first few words. */
+export function dispatchBranch(t: Thread): string {
+  if (t.kind === "pr") return t.branch?.trim() || `pr-${t.number}`;
+  const words = t.title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
+  let slug = "";
+  for (const w of words) {
+    if ((slug + "-" + w).length > 32) break;
+    slug = slug ? `${slug}-${w}` : w;
+  }
+  return slug ? `issue-${t.number}-${slug}` : `issue-${t.number}`;
+}
+
+/** Start-points for a new branch: the trunk, then remote refs, then locals that drift. */
+export function dispatchBases(branches: BranchInfo[]): { name: string; note: string }[] {
+  const out: { name: string; note: string }[] = [];
+  const seen = new Set<string>();
+  const add = (name: string, note: string) => { if (name && !seen.has(name)) { seen.add(name); out.push({ name, note }); } };
+  add(branches.find((b) => b.base)?.base ?? "", "trunk");
+  for (const b of branches) add(b.remote_ref || b.upstream, "remote");
+  for (const b of branches) if (!b.remote) add(b.name, b.current ? "local · checked out here" : "local");
+  // Empty asks `create_worktree` for the folder's HEAD, the one base that needs no branch list.
+  if (!out.length) out.push({ name: "", note: "" });
+  return out;
+}
+
+/** A PR starts from its own remote head when this clone has it; anything else from the trunk. */
+export function defaultBase(t: Thread, bases: { name: string }[]): string {
+  const head = t.kind === "pr" && t.branch ? bases.find((b) => b.name.endsWith(`/${t.branch}`)) : undefined;
+  return (head ?? bases[0])?.name ?? "";
+}
+
+/** A checkout already on the branch this thread would get wins, so a re-dispatch lands beside
+ *  its own earlier work; otherwise whatever kind of destination was picked last. */
+export function defaultWhere(t: Thread, heads: WtHead[], last: "here" | "new", base: string): DispatchWhere {
+  const branch = dispatchBranch(t);
+  const on = heads.find((h) => h.exists && h.branch === branch);
+  if (on) return on.is_main ? { kind: "here" } : { kind: "wt", path: on.path };
+  return last === "new" ? { kind: "new", branch, base } : { kind: "here" };
+}
+
+/** Why `where` cannot be launched as it stands, in the user's words; `null` when it can. */
+export function whereProblem(where: DispatchWhere, heads: WtHead[]): string | null {
+  if (where.kind === "here") return null;
+  if (where.kind === "wt") return heads.some((h) => h.path === where.path && h.exists) ? null : "That checkout is gone";
+  const b = where.branch.trim();
+  if (!b) return "Name the branch";
+  if (/\s|\.\.|^[-/]|[/.]$|[~^:?*[\\]/.test(b)) return `${b} is not a branch name git accepts`;
+  // git refuses a second checkout of one branch, and the existing one is the better answer anyway.
+  const on = heads.find((h) => h.exists && h.branch === b);
+  return on ? `${b} is already checked out${on.is_main ? " in this folder" : " in a worktree"}; pick that instead` : null;
 }
 
 // ---------- staleness ----------

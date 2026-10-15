@@ -11,7 +11,7 @@ import type { Note, SharedNote } from "./notes";
 import type { DiffStat, StatusFile, WorkingSet, WtHead } from "./types";
 import { wpeekHtml } from "./inspectorview";
 import { fileSetHtml } from "./patchview";
-import type { ClaimAllow, ClaimPolicy } from "./claim";
+import type { ClaimAllow, ClaimPolicy, DispatchWhere } from "./claim";
 import {
   ghOutdatedText, ghPickable, type GhAccount, type GhThread, type GhWho, type Holder, type KeptIssue, type WorkFilter,
   type WorkKind, type WorkTally,
@@ -1101,7 +1101,39 @@ export function closeSheet(t: GhThread, comment: string, slug: string): string {
       <button class="act primary" data-dashsheet="close">✓ Comment &amp; close</button></div>`;
 }
 
-export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null): string {
+/** The dispatch sheet's Where block: what it is set to and everything it may be set to. */
+export interface WhereView {
+  where: DispatchWhere;
+  heads: WtHead[];                        // the repo's checkouts; `is_main` is this folder
+  bases: { name: string; note: string }[];
+  exists: boolean;                        // the new branch is already a local one, so it is attached
+  problem: string | null;
+}
+
+function whereBlock(w: WhereView): string {
+  const main = w.heads.find((h) => h.is_main);
+  const val = w.where.kind === "here" ? "here" : w.where.kind === "new" ? "new" : `wt:${w.where.path}`;
+  const opt = (v: string, label: string) => `<option value="${escAttr(v)}"${v === val ? " selected" : ""}>${esc(label)}</option>`;
+  const opts = [opt("here", `This folder${main?.branch ? ` · ${main.branch}` : ""}`)]
+    .concat(w.heads.filter((h) => !h.is_main && h.exists).map((h) => opt(`wt:${h.path}`, `Worktree · ${h.branch || basename(h.path)}`)))
+    .concat(opt("new", "New worktree…"));
+  let fields = "";
+  if (w.where.kind === "new") {
+    const base = w.where.base;
+    const bases = w.bases.some((b) => b.name === base) ? w.bases : [{ name: base, note: "" }, ...w.bases];
+    fields = `<label class="dw-f"><span>Branch</span><input id="dashDispBranch" spellcheck="false" autocomplete="off" value="${escAttr(w.where.branch)}"></label>
+      <label class="dw-f"><span>From</span><select id="dashDispBase"${w.exists ? " disabled" : ""}>${bases.map((b) =>
+        `<option value="${escAttr(b.name)}"${b.name === base ? " selected" : ""}>${esc(b.name || "this folder's HEAD")}${b.note ? ` · ${esc(b.note)}` : ""}</option>`).join("")}</select></label>
+      ${w.exists && !w.problem ? `<p class="dim-line">${esc(w.where.branch)} already exists, so its worktree checks it out as it is.</p>` : ""}`;
+  }
+  return `<div class="opts dw">
+      <label class="dw-f"><span>Where</span><select id="dashDispWhere">${opts.join("")}</select></label>
+      ${fields}
+      ${w.problem ? `<p class="warn-line">${esc(w.problem)}</p>` : ""}
+    </div>`;
+}
+
+export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mode: string, holder: Holder | null, w: WhereView | null): string {
   const sw = (k: string, on: boolean, permitted: boolean, label: string) =>
     `<span class="dsw${on && permitted ? " on" : ""}${permitted ? "" : " off"}" data-dashclaim="${k}"
       ${permitted ? "" : `title="This project's .episko/episko.toml switches it off for everyone"`}><i></i>${label}</span>`;
@@ -1110,6 +1142,7 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
       <p class="sheet-ti">${esc(t.title)}</p>
       ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago, probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is only ever a hint.</p>` : ""}
       <p>A session in this project, and <b>the prompt is sent</b>, so the agent starts working without waiting for you.</p>
+      ${w ? whereBlock(w) : ""}
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
         ${sw("comment", p.comment, allow.comment, "comment that my agent is on it")}
@@ -1118,5 +1151,5 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
       <p class="dim-line">Permission mode: <b>${esc(mode)}</b>. Anything that doesn't ask before acting will act unattended.</p>
     </div>
     <div class="foot"><button class="act" data-dashsheet="cancel">Cancel</button><span class="sp"></span>
-      <button class="act primary" data-dashsheet="dispatch">▶ Claim &amp; start</button></div>`;
+      <button class="act primary" data-dashsheet="dispatch"${w?.problem ? " disabled" : ""}>▶ Claim &amp; start</button></div>`;
 }
