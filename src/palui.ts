@@ -149,7 +149,7 @@ function buildPalGroups(raw: string): PalGroup[] {
     run: () => {
       const c = runTargetCtx(); if (!c) return;
       const o = { colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, discoveredIn: c.workdir };
-      if (r.id === "just:__untrusted") { void askTrust(c.colorKey, c.project); return; }
+      if (r.id.endsWith(":__untrusted")) { void askTrust(c.colorKey, c.project, r.source); return; }
       runRunnable(r, c.project, o);
     },
   }));

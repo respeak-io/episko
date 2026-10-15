@@ -101,7 +101,7 @@ import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
 import {
-  closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
+  askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
@@ -109,7 +109,7 @@ import {
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
-import { closeProjectSettings, openProjectSettings, projSettingsOpen, setProjSetHost } from "./projsettings";
+import { closeProjectSettings, openProjectSettings, projSettingsOpen, renderProjSettings, setProjSetHost } from "./projsettings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -228,6 +228,7 @@ setProjSetHost({
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
   setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
+  trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });

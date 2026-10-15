@@ -414,6 +414,14 @@ function renderRunPicker(term: string) {
       const ready = asks && runCtx ? prefillInputs(r, runCtx.project) : null;
       // A lifted row has left its source group, so it carries the source itself.
       const lifted = g.name === "recent" || g.name === "pinned";
+      // The one blocked row you can act on, so it must not look disabled (docs/tasks.md).
+      if (r.id.endsWith(":__untrusted") && runCtx) {
+        return `<div class="run-row trustrow${on}" data-i="${idx}" title="Listing these runs ${esc(INTROSPECT_CMD[r.source] ?? r.source)} inside the folder">
+        <span class="ic">🔒</span>
+        <span class="txt"><b>${esc(PROVIDER_LABEL[r.source as Provider] ?? r.source)} tasks are hidden</b><small>Listing them runs code from this folder, so Episko asks first.</small></span>
+        <button class="run-trust" type="button" data-trust="${idx}">Trust ${esc(runCtx.project)}…</button>
+      </div>`;
+      }
       return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
@@ -436,6 +444,9 @@ function renderRunPicker(term: string) {
   body.querySelectorAll<HTMLElement>("[data-forget]").forEach((el) => {
     // Without stopPropagation, forgetting a task would also launch it.
     el.addEventListener("click", (e) => { e.stopPropagation(); forgetRecent(el.dataset.forget!); });
+  });
+  body.querySelectorAll<HTMLElement>("[data-trust]").forEach((el) => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.trust!; pickRun("run"); });
   });
   body.querySelectorAll<HTMLElement>("[data-info]").forEach((el) => {
     el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.info!; void openRunInfo(); });
@@ -604,7 +615,7 @@ function pickRun(how: "run" | "pin" | "params") {
   if (!r || !runCtx) return;
   if (how === "pin") { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
   // The trust gate is the one blocked row you can act on.
-  if (r.id === "just:__untrusted") { void askTrust(runCtx.colorKey, runCtx.project); return; }
+  if (r.id.endsWith(":__untrusted")) { void askTrust(runCtx.colorKey, runCtx.project, r.source); return; }
   if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return; }
   const ctx = runCtx;
   closeRunPicker();
@@ -646,16 +657,22 @@ export async function runDefaultTask(kind: "build" | "test") {
   if (runRunnable(pick, c.project, o)) toast(`▶ ${pick.label}`);
 }
 
+// What each introspecting provider runs to list itself; the question names the real command.
+const INTROSPECT_CMD: Record<string, string> = { just: "just --dump", taskfile: "task --list-all", mise: "mise tasks" };
+
 // Trust lets Episko run code from the folder to enumerate tasks: asked plainly, and once.
-export async function askTrust(path: string, project: string) {
+// `after` is where the asker returns to: the picker by default, project settings from there.
+export async function askTrust(path: string, project: string, source = "just", after: () => unknown = openRunPicker) {
+  const cmd = INTROSPECT_CMD[source] ?? INTROSPECT_CMD.just;
   const ok = await ask(
-    `Episko will run \`just --dump\` inside ${project} to list its recipes.\n\n`
-    + `That evaluates the justfile, which can execute code from this folder. Only do this for projects you trust.`,
+    `Episko will run \`${cmd}\` inside ${project} to list its tasks.\n\n`
+    + `That evaluates the project's own files (a justfile's backticks and imports), which can execute code from this folder. Only do this for projects you trust.\n\n`
+    + `Adding the folder as a project trusts it too, and Settings › Tasks lists what you trusted by hand.`,
     { title: `Trust ${project}?`, kind: "warning", okLabel: "Trust and rescan", cancelLabel: "Cancel" });
   if (!ok) return;
   trustProject(path);
   dlog("info", `trusted ${path}`);
-  await openRunPicker();
+  await after();
 }
 
 // ---------- the panels' own event wiring ----------

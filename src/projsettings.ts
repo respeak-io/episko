@@ -11,7 +11,7 @@ import { AUTOFETCH_EVERY } from "./autofetch";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ghWho } from "./ghwork";
 import { activeBind, comboKeys } from "./keys";
-import { clearStopRule, stopRules } from "./tasks";
+import { clearStopRule, stopRules, trustOf, untrustProject } from "./tasks";
 import { projectIdOf, serverDigest, serverNotes, status as syncStatus, teamShare } from "./synclink";
 import { btnCtl, nilCtl, projSettingsHtml, segCtl, type PsRow, type PsSeg } from "./projsetview";
 import { stackSummary, type StackCfg } from "./stack";
@@ -28,11 +28,12 @@ export interface ProjSetHost {
   refreshGh: () => Promise<unknown>;
   setupStack: (key: string) => void;
   openStackFile: (key: string) => void;
+  trust: (key: string) => void;
 }
 let host: ProjSetHost = {
   setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
-  setupStack: () => {}, openStackFile: () => {},
+  setupStack: () => {}, openStackFile: () => {}, trust: () => {},
 };
 export function setProjSetHost(h: ProjSetHost) { host = h; }
 
@@ -183,7 +184,18 @@ function stackRow(): PsRow {
   };
 }
 
-const mineRows = (k: string): PsRow[] => [agentRow(k), permRow(k), ...fetchRows(k), ghRow(k), stopRow(k)];
+// Personal: whether YOU let Episko run this folder's justfile, Taskfile or mise to list them.
+function trustRow(k: string): PsRow {
+  const t = trustOf(k);
+  return {
+    id: "trust", label: "Task files that run code", hint: "A justfile, Taskfile or mise config is listed by running it, so Episko asks before reading one.",
+    cur: t === "project" ? "trusted: it is one of your projects" : t === "trusted" ? "trusted by you" : "not trusted: their tasks stay hidden",
+    overridden: t === "trusted",
+    ctl: t === "no" ? btnCtl("trust", "Trust…") : t === "trusted" ? btnCtl("untrust", "Revoke") : nilCtl("trusted"),
+  };
+}
+
+const mineRows = (k: string): PsRow[] => [agentRow(k), permRow(k), ...fetchRows(k), ghRow(k), stopRow(k), trustRow(k)];
 /** How many of this project's own rows answer for themselves: the panel's lead and the menu's sub. */
 export const overrideCount = (k: string): number => mineRows(k).filter((r) => r.overridden).length;
 
@@ -214,6 +226,8 @@ function act(verb: string, val: string) {
   else if (verb === "share") host.setShare(k, val as ShareMode);
   else if (verb === "stacksetup") { host.setupStack(k); return; }
   else if (verb === "stackfile") { host.openStackFile(k); return; }
+  else if (verb === "trust") { host.trust(k); return; }
+  else if (verb === "untrust" || (verb === "reset" && val === "trust")) untrustProject(k);
   else if (verb === "movelog") { void host.moveLog(k).then(() => { digestFile = false; renderProjSettings(); }); return; }
   else if (verb === "reset") {
     if (val === "stop") clearStopRule(k);

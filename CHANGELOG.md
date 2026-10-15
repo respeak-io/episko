@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Trusting a project is a button, not a hidden click.** A justfile, Taskfile or mise config
+  is listed by running it, so Episko asks first, but the only way to answer was clicking a
+  greyed-out row. The ▶ Run picker now says why those tasks are hidden and offers
+  **Trust <project>…**, and project settings carry the same switch, with *Revoke*.
+
 ! **A task opens on the host its project chose.** A dev script that serves on
   `wirksam.localhost` (so its cookie and CORS work) showed `127.0.0.1` instead, because only
   vite's own `Local:` line was read; the frontend then opened on the wrong origin. Every

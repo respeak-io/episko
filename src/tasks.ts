@@ -287,6 +287,11 @@ export function untrustProject(path: string) {
   if (i >= 0) { trustedPaths.splice(i, 1); saveTrusted(); }
   taskRepaint();
 }
+/** Why a folder may (or may not) be introspected: a project is trusted by being one. */
+export function trustOf(path: string): "project" | "trusted" | "no" {
+  return FAVORITES.some((f) => f.path === path) ? "project" : trustedPaths.includes(path) ? "trusted" : "no";
+}
+
 // Only hand-trusted projects can be revoked here; a favourite is trusted by being one.
 export function explicitlyTrusted(): string[] { return [...trustedPaths]; }
 
