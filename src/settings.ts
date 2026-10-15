@@ -20,7 +20,7 @@ import {
   setTermFontSize, TERM_FONT_DEFAULT,
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, copyChord, wtGroup,
   type SortMode, type WtGroup,
-  FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs,
+  FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
 } from "./state";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -101,6 +101,7 @@ export interface SettingsHost {
   setKeyPrefs: (p: KeyPrefs) => void;
   setAttnPrefs: (p: AttnPrefs) => void;
   setAutoFetchPrefs: (p: AutoFetchPrefs) => void;
+  setAgentTools: (on: boolean) => void;
   setFootSeg: (id: FootSeg) => void;
   setFx: (id: VisualFx) => void;
   setRevivePrefs: (p: RevivePrefs) => void;
@@ -167,7 +168,7 @@ let host: SettingsHost = {
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
-  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
+  setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setAgentTools: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
   setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
@@ -474,6 +475,13 @@ const SET_TABS: SetTab[] = [
         dim: () => termEngine !== "embedded",
         on: () => termSplit, isDefault: () => termSplit, reset: () => host.setTermSplit(true) },
       permissionControl(),
+      { kind: "toggle", set: "agenttools", key: "cc-agent-tools", label: "Let agents run tasks through Episko",
+        hint: "A new Claude session can list this project's tasks and run one in its own pane, rather than in Bash.",
+        more: "It starts with a small tool server of Episko's: the run gets a pane you can watch, your PATH, overrides and remembered inputs, and the agent gets its exit code and output back. Each run still asks through the usual permission prompt. A session already running keeps what it started with. Embedded Claude sessions only, and only one-shot tasks; a dev server is still yours to start.",
+        aliases: ["mcp", "tools", "run_task", "tasks", "runnables", "agent", "scripts", "tool server"], since: "0.35.0",
+        dim: () => termEngine !== "embedded",
+        on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
+        isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
     ],
   },
   {
@@ -1705,6 +1713,7 @@ function applySetting(set: string, val: string) {
   else if (set === "md:outline") host.setMdPrefs({ ...mdPrefs, outline: val === "1" });
   else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
+  else if (set === "agenttools") host.setAgentTools(val === "1");
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });

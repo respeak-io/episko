@@ -88,6 +88,7 @@ pub(crate) fn spawn_claude(
     cols: u16,
     resume: Option<String>,
     mode: Option<String>,
+    tools: bool,
 ) -> Result<(), String> {
     let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
     // A resume must land in its ORIGINAL cwd: Claude looks the id up under
@@ -98,6 +99,11 @@ pub(crate) fn spawn_claude(
     std::fs::create_dir_all(&workdir).map_err(|e| format!("create workdir: {e}"))?;
     let settings_path =
         write_instrument_settings(port, &session_id).map_err(|e| format!("write settings: {e}"))?;
+    // Settings › Launching, off by default: no file, no token, no flag (docs/mcp.md).
+    let mcp_path = tools
+        .then(|| crate::mcp::write_mcp_config(&state, port, &session_id))
+        .transpose()
+        .map_err(|e| format!("write mcp config: {e}"))?;
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -125,6 +131,10 @@ pub(crate) fn spawn_claude(
     }
     cmd.arg("--settings");
     cmd.arg(&settings_path);
+    if let Some(p) = &mcp_path {
+        cmd.arg("--mcp-config");
+        cmd.arg(p);
+    }
     let perm = permission_mode_arg(mode.as_deref());
     if let Some(m) = perm {
         cmd.arg("--permission-mode");
@@ -1264,6 +1274,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
         log::info!("kill session · {session_id}");
         let _ = s.killer.kill();
         agent::stop_runtime(&state, &session_id);
+        crate::mcp::forget_session(&state, &session_id);
         if let Some(p) = s.pid {
             state.owned_pids.lock().unwrap().remove(&p);
         }

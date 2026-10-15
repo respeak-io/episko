@@ -426,6 +426,7 @@ export interface Sess {
     endedAt?: number; // freezes the duration at exit
     root: string; // where discovery ran; sourceFile is rooted here
     forSession?: string; // the session a run-on-stop rule was verifying; a failure goes back to it
+    tag?: string; // the MCP call that launched it, so its output reaches that caller alone
     groupId?: string; // one dependsOn chain, minted per launch so two runs compare; absent on a lone task
     groupLabel?: string; // the root task's label; not derivable once all are panes
     groupRoot?: string; // the root task's id, so the group's ⟳ can launch the chain again

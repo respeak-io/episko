@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -185,7 +185,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey) });
   } catch (e) {
     spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
@@ -439,7 +439,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
