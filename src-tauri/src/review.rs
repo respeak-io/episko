@@ -990,7 +990,7 @@ mod tests {
         assert!(e.contains("1111111"), "{e}");
         assert_eq!(refs(&c), before, "a failed fetch and its refs/pull retry write nothing either");
 
-        assert_eq!(std::fs::read_to_string(c.join("f.txt")).unwrap(), "one\n", "the working tree is untouched");
+        assert_eq!(std::fs::read_to_string(c.join("f.txt")).unwrap().replace("\r\n", "\n"), "one\n", "the working tree is untouched");
         let _ = std::fs::remove_dir_all(&up);
         let _ = std::fs::remove_dir_all(&clone_parent);
     }
