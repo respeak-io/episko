@@ -64,7 +64,7 @@ cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Four checks against Claude Code's real state, in one pass:
+Five checks against Claude Code's real state, in one pass:
 
 - `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
   throwaway session in a temp dir and asserts our hooks reach our server, that routing
@@ -72,6 +72,11 @@ Four checks against Claude Code's real state, in one pass:
   ledger reads. **It needs `claude` on PATH and an authenticated account, and it spends
   tokens** — which is exactly why it is `#[ignore]`d and lives here rather than in the
   PR gate.
+- `claude_cli_reaches_our_mcp_tools` runs one short `claude -p` on Haiku with our
+  `--mcp-config` and asserts the model's tool call arrives as this pane and that our answer
+  reaches its reply. The token header, the Streamable HTTP handshake and the
+  `mcp__episko__*` names are all Claude Code's to change, and a break there is silent:
+  the tools simply never appear. **It spends tokens** (a few) and needs auth.
 - `claude_cli_still_accepts_every_permission_mode_we_offer` runs `claude
   --permission-mode <m> --version` for each mode Settings offers. Claude Code validates
   the flag against its own choice list, so a mode renamed or dropped upstream turns

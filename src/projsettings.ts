@@ -4,7 +4,7 @@
 import { $, dropScrim, IS_MAC } from "./dom";
 import { basename, tilde } from "./format";
 import {
-  accentFor, agentByProject, allAgents, autoFetchPrefs, defaultAgentDef, effectiveAgent, ghAccountFor,
+  accentFor, agentByProject, agentTools, allAgents, autoFetchPrefs, defaultAgentDef, effectiveAgent, ghAccountFor,
   ghLogins, keyPrefs, permissionModeFor, projPrefs, shareModeOf, type ShareMode,
 } from "./state";
 import { AUTOFETCH_EVERY } from "./autofetch";
@@ -21,6 +21,7 @@ export interface ProjSetHost {
   setAgent: (key: string, id: string | null) => void;
   setPerm: (key: string, provider: string, mode: string | null) => void;
   setFetch: (key: string, patch: { fetch?: boolean | null; fetchEvery?: number | null }) => void;
+  setTools: (key: string, on: boolean | null) => void;
   setGh: (key: string, login: string | null) => void;
   setShare: (key: string, m: ShareMode) => void;
   moveLog: (key: string) => Promise<void>;
@@ -31,7 +32,7 @@ export interface ProjSetHost {
   trust: (key: string) => void;
 }
 let host: ProjSetHost = {
-  setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setGh: () => {}, setShare: () => {},
+  setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setTools: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
   setupStack: () => {}, openStackFile: () => {}, trust: () => {},
 };
@@ -117,6 +118,18 @@ function fetchRows(k: string): PsRow[] {
   }];
 }
 
+function toolsRow(k: string): PsRow {
+  const own = projPrefs[k]?.tools;
+  const on = own ?? agentTools;
+  const opts: PsSeg[] = [{ value: "", label: "Settings", sub: `Follow Settings › Launching (${agentTools ? "on" : "off"})` },
+    { value: "on", label: "On" }, { value: "off", label: "Off" }];
+  return {
+    id: "tools", label: "Let agents run tasks through Episko", hint: "A new Claude session here can run this project's tasks in their own panes.",
+    cur: own !== undefined ? `${on ? "On" : "Off"} here; Settings says ${agentTools ? "on" : "off"}` : `${on ? "On" : "Off"}, from Settings`,
+    overridden: own !== undefined, ctl: segCtl("tools", "Agent tools", opts, own === undefined ? "" : own ? "on" : "off"),
+  };
+}
+
 function ghRow(k: string): PsRow {
   const pin = ghAccountFor(k);
   const who = ghWho(pin, ghLogins);
@@ -195,7 +208,7 @@ function trustRow(k: string): PsRow {
   };
 }
 
-const mineRows = (k: string): PsRow[] => [agentRow(k), permRow(k), ...fetchRows(k), ghRow(k), stopRow(k), trustRow(k)];
+const mineRows = (k: string): PsRow[] => [agentRow(k), permRow(k), toolsRow(k), ...fetchRows(k), ghRow(k), stopRow(k), trustRow(k)];
 /** How many of this project's own rows answer for themselves: the panel's lead and the menu's sub. */
 export const overrideCount = (k: string): number => mineRows(k).filter((r) => r.overridden).length;
 
@@ -221,6 +234,7 @@ function act(verb: string, val: string) {
   else if (verb === "perm") host.setPerm(k, provider, val || null);
   else if (verb === "fetch") host.setFetch(k, { fetch: val === "" ? null : val === "on" });
   else if (verb === "every") host.setFetch(k, { fetchEvery: val ? Number(val) : null });
+  else if (verb === "tools") host.setTools(k, val === "" ? null : val === "on");
   else if (verb === "gh") host.setGh(k, val || null);
   else if (verb === "unstop") clearStopRule(k);
   else if (verb === "share") host.setShare(k, val as ShareMode);

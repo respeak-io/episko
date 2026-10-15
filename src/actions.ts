@@ -35,7 +35,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -53,7 +53,7 @@ import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
 import { vitalsPrefsJson, type VitalsPrefs } from "./perf";
 import type { AutoFetchPrefs } from "./autofetch";
-import { withFetch, withPerm } from "./projprefs";
+import { withFetch, withPerm, withTools } from "./projprefs";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
@@ -257,6 +257,13 @@ export function setAutoFetchPrefs(p: AutoFetchPrefs) {
   localStorage.setItem("cc-autofetch", JSON.stringify(autoFetchPrefs));
   renderSettings();
   void tickAutoFetch();
+}
+
+// Read at the next launch; a running session keeps the tools it started with.
+export function setAgentTools(on: boolean) {
+  setAgentToolsState(on);
+  localStorage.setItem("cc-agent-tools", on ? "1" : "0");
+  renderSettings();
 }
 
 // Read at the next ⌘T; nothing on stage moves.
@@ -530,6 +537,13 @@ export function setProjectFetch(colorKey: string, patch: { fetch?: boolean | nul
   renderSettings();
   renderAll();
   void tickAutoFetch();
+}
+
+export function setProjectTools(colorKey: string, on: boolean | null) {
+  setProjPrefs(withTools(projPrefs, colorKey, on));
+  localStorage.setItem("cc-proj-prefs", JSON.stringify(projPrefs));
+  renderSettings();
+  renderAll();
 }
 
 export function setSort(m: SortMode, announce = true) {

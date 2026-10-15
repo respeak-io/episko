@@ -1041,6 +1041,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "episko-proto",
+ "getrandom 0.3.4",
  "jsonc-parser",
  "listeners",
  "log",
