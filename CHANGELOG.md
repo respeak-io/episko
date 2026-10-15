@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Esc closes the dialog, not the dashboard under it.** Pressing Esc in the new-session dialog,
+  the run picker, a task's input prompt, the palette or a project's right-click menu also closed
+  the project dashboard behind it; the task manager's Esc closed the dashboard instead of itself.
+
 ## 0.34.0 — 2026-10-09
 A session that wanders into another worktree is followed there now, and still says where it
 started. Each project gets its own settings, permission mode and auto-fetch included. The review

@@ -239,5 +239,5 @@ $("palInput").addEventListener("keydown", (e) => {
     if (palPage === "root" && it?.session) openPalActions(it.session);
   }
   else if (e.key === "Backspace" && !val && palPage === "actions") { e.preventDefault(); popPalPage(); }
-  else if (e.key === "Escape") { if (palPage === "actions") { e.preventDefault(); popPalPage(); } else closePalette(); }
+  else if (e.key === "Escape") { e.preventDefault(); if (palPage === "actions") popPalPage(); else closePalette(); }
 });

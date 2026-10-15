@@ -773,6 +773,9 @@ window.addEventListener("keydown", (e) => {
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
   const act = matchAction(keyPrefs, e);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
+  // A dialog's own listener already spent this Esc on itself; falling through would also
+  // close the pane under it (the dashboard, a mirror).
+  if (e.key === "Escape" && e.defaultPrevented) return;
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
@@ -786,13 +789,13 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && settingsOpen()) { e.preventDefault(); closeSettings(); }
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
+  else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
   else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
   else if (e.key === "Escape" && dashMirror()) { e.preventDefault(); dashEscape(); }
   // The read-only mirrors, which had no way out but a click on something else. Same verb as
   // their ✕, or the two would disagree about where leaving a mirror lands.
   else if (e.key === "Escape" && mirror) { e.preventDefault(); leaveMirror(); renderAll(); }
-  else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
   else if (dashKey(e)) e.preventDefault();
 });
 // ⌘⇧⏎ reveal: a capture-phase listener, because the palette's Enter drops the scrim
