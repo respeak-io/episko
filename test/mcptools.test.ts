@@ -3,7 +3,7 @@ import type { InputSpec, Runnable } from "../src/types";
 import "./localstorage"; // must precede the subject import: ./tasks reads its prefs at load
 import {
   OUTPUT_CAP, WAIT_DEFAULT_S, WAIT_MAX_S, WAIT_UP_S, appendOutput, fillInputs, missingText, refuseRun,
-  reportText, runnablesText, runsOn, stacksText, upText, waitSeconds,
+  otherRunsText, reportText, runnablesText, runsOn, stacksText, upText, waitSeconds,
 } from "../src/mcptools";
 
 const run = (o: Partial<Runnable> = {}): Runnable => ({
@@ -109,6 +109,7 @@ describe("waitSeconds", () => {
     expect(waitSeconds(12.7)).toBe(12);
     expect(waitSeconds(-5)).toBe(0);
     expect(waitSeconds(99_999)).toBe(WAIT_MAX_S);
+    expect(waitSeconds(90)).toBe(45); // the client cuts a call off at ~60s, answer or not
   });
 });
 
@@ -119,6 +120,7 @@ describe("reportText", () => {
   });
   it("hands back the handle while still running", () => {
     expect(reportText({ ...base, exit: null })).toContain('task_status with handle "h1"');
+    expect(reportText({ ...base, exit: null, ports: [38418] })).toContain("listening on 127.0.0.1:38418");
   });
   it("says when the output was cut or empty", () => {
     expect(reportText({ ...base, exit: 0, cut: true })).toContain("the end of it");
@@ -139,7 +141,8 @@ describe("a server's answer and stack_status", () => {
     expect(upText("just:dev", "just dev", "p1", 9000, stack(), "")).toMatch(/^just:dev is up after 9s .*keeps running/s);
     expect(upText("just:dev", "just dev", "p1", 9000, stack(), "")).toContain("- Frontend: http://wirksam.localhost:47300");
     expect(upText("just:dev", "just dev", "p1", 9000, stack({ state: "starting", why: "db health check starting" }), ""))
-      .toContain('still coming up after 9s (`just dev`): db health check starting. Call task_status with handle "p1"');
+      .toContain('not yet known to be up (`just dev`): db health check starting. It keeps running in its pane; call task_status with handle "p1"');
+    expect(upText("just:app", "just app", "p1", 45000, undefined, "", [38418])).toContain("- listening: http://127.0.0.1:38418");
     expect(upText("just:dev", "just dev", "p1", 9000, stack({ state: "failed", why: "db is restarting" }), "")).toContain("failed to come up after 9s");
   });
 
@@ -150,5 +153,7 @@ describe("a server's answer and stack_status", () => {
     expect(text).toContain("  container db (wirksam-db-1): up, healthy, ports :8432");
     expect(text).toContain("wirksam (checkout /w/wt/feat): leftover, 1 container up");
     expect(stacksText([], "/w")).toMatch(/Nothing of this repository/);
+    expect(otherRunsText([{ handle: "p9", id: "just:app", label: "app", checkout: "/w/wt/zoom", startedAt: 0, ports: [] }], "/w", 30_000))
+      .toBe('Other running tasks:\n  just:app (app) in checkout /w/wt/zoom: running 30s, handle "p9", no listening port');
   });
 });

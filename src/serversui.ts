@@ -12,7 +12,7 @@ import { FAVORITES, sessions, activeId, worktreesByRepo } from "./state";
 import {
   applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
   failedServers, forgetServer, liveServers, markKilled, portOf,
-  reconcilePorts, servingUrls, shownServers, type BgRead, type SessionPort,
+  reconcilePorts, servingUrls, shownServers, usefulPort, type BgRead, type SessionPort,
 } from "./servers";
 import { isClaude, type BgServer, type Sess } from "./types";
 import { buildStacks, stackTally, type Checkout, type Container, type PaneIn, type Stack, type StackCfg } from "./stack";
@@ -321,6 +321,11 @@ function stackInput(): PaneIn[] {
     });
   }
   return out;
+}
+
+/** Useful ports a pane's process tree listens on, as of the last poll. */
+export function portsOf(sid: string): number[] {
+  return (portsBySid.get(sid) ?? []).filter(usefulPort);
 }
 
 export function currentStacks(): Stack[] {

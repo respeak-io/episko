@@ -29,6 +29,10 @@ Markers: `+` new · `~` changed · `!` fixed
   greyed-out row. The ▶ Run picker now says why those tasks are hidden and offers
   **Trust <project>…**, and project settings carry the same switch, with *Revoke*.
 
+! **A task whose program is not installed says so.** A VS Code task that runs `pwsh` on a Mac
+  without it was offered like any other and failed at launch; it is now a greyed row reading
+  *pwsh is not installed*, in the ▶ Run picker and for agents alike.
+
 ! **A task opens on the host its project chose.** A dev script that serves on
   `wirksam.localhost` (so its cookie and CORS work) showed `127.0.0.1` instead, because only
   vite's own `Local:` line was read; the frontend then opened on the wrong origin. Every

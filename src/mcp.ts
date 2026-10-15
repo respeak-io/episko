@@ -5,12 +5,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import { sessions, worktreesByRepo } from "./state";
-import { currentStacks, refreshStacksNow } from "./serversui";
+import { currentStacks, pollServers, portsOf, refreshStacksNow } from "./serversui";
 import type { Stack } from "./stack";
 import type { Sess, WtHead } from "./types";
 import { discoverTasks, execCmd, launchWithDeps, rememberedInput } from "./tasks";
 import {
-  appendOutput, fillInputs, missingText, refuseRun, reportText, runnablesText, runsOn, stacksText, upText, waitSeconds,
+  appendOutput, fillInputs, missingText, otherRunsText, refuseRun, reportText, runnablesText, runsOn, stacksText, upText, waitSeconds,
 } from "./mcptools";
 
 interface McpCall { id: string; sessionId: string; tool: string; args: Record<string, unknown> }
@@ -78,7 +78,7 @@ async function reportUp(call: McpCall, handle: string, key: string, w: Watch, se
     st = stackOf(key, handle);
   }
   if (w.exit != null && !st) return report(call, handle, w, 0); // it exited: a plain report says how
-  answer(call.id, upText(w.taskId, w.cmd, handle, Date.now() - w.startedAt, st, w.output), st?.state === "failed");
+  answer(call.id, upText(w.taskId, w.cmd, handle, Date.now() - w.startedAt, st, w.output, portsOf(handle)), st?.state === "failed");
 }
 
 async function report(call: McpCall, handle: string, w: Watch, secs: number) {
@@ -89,8 +89,9 @@ async function report(call: McpCall, handle: string, w: Watch, secs: number) {
       w.waiters.add(wake);
     });
   }
+  if (w.exit == null) await pollServers(); // a fresh port reading: the address of whatever it started
   answer(call.id, reportText({
-    id: w.taskId, cmd: w.cmd, handle, exit: w.exit, output: w.output, cut: w.cut,
+    id: w.taskId, cmd: w.cmd, handle, exit: w.exit, output: w.output, cut: w.cut, ports: portsOf(handle),
     elapsedMs: (w.exit == null ? Date.now() : w.endedAt) - w.startedAt,
   }), w.exit != null && w.exit !== 0);
 }
@@ -177,8 +178,14 @@ export async function onMcpCall(call: McpCall) {
     if (call.tool === "stack_status") {
       // This repository only, across every checkout of it: what the user would see in the popover.
       const repo = new Set([s.colorKey, ...(worktreesByRepo.get(s.colorKey) ?? []).map((h) => h.path)]);
-      const mine = (await refreshStacksNow()).filter((st) => repo.has(st.checkout) || st.checkout.startsWith(s.colorKey + "/"));
-      return answer(call.id, stacksText(mine, s.workdir));
+      const inRepo = (dir: string) => repo.has(dir) || dir.startsWith(s.colorKey + "/");
+      const mine = (await refreshStacksNow()).filter((st) => inRepo(st.checkout));
+      const shown = new Set(mine.flatMap((st) => st.members.map((m) => m.sid)));
+      const others = [...sessions.values()]
+        .filter((x) => x.kind === "task" && x.run && x.run.exitCode == null && !shown.has(x.id) && inRepo(x.run.root))
+        .map((x) => ({ handle: x.id, id: x.run!.id, label: x.run!.label, checkout: x.run!.root, startedAt: x.run!.startedAt, ports: portsOf(x.id) }));
+      const stacks = mine.length || !others.length ? stacksText(mine, s.workdir) : ""; // never "nothing runs" above a list
+      return answer(call.id, [stacks, otherRunsText(others, s.workdir, Date.now())].filter(Boolean).join("\n\n"));
     }
     if (call.tool === "task_status") return await taskStatus(call);
     answer(call.id, `Unknown tool "${call.tool}".`, true);

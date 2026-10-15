@@ -94,6 +94,12 @@ describe("buildStacks", () => {
     expect(stackTally(crashLoop).failed).toBe(true);
   });
 
+  it("is a stack when a pane listens on a port, whatever its name made discovery guess", () => {
+    const [s] = buildStacks(input({ panes: [pane({ taskId: "just:app", label: "app", background: false })], ports: new Map([["p1", [38418]]]) }));
+    expect(s).toMatchObject({ label: "app", state: "ready" });
+    expect(s.members[0]).toMatchObject({ state: "serving", ports: [38418] });
+  });
+
   it("is not a stack when nothing in it serves, unless [stack] up names it", () => {
     const check = pane({ taskId: "just:test", label: "test", background: false });
     expect(buildStacks(input({ panes: [check] }))).toEqual([]);

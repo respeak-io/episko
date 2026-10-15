@@ -60,8 +60,8 @@ pub(crate) fn forget_session(state: &AppState, session_id: &str) {
 }
 
 fn tools() -> Value {
-    let wait = json!({ "type": "integer", "minimum": 0, "maximum": 1800,
-        "description": "Seconds to wait before returning a handle: for the exit of a check or test (default 600), for a server or app to come up (default 60)." });
+    let wait = json!({ "type": "integer", "minimum": 0, "maximum": 45,
+        "description": "Seconds to wait before answering with a handle (default and most 45: a call held longer is cut off by the client). A run still going after that keeps running; task_status waits again." });
     let cwd = json!({ "type": "string",
         "description": "A checkout of this repository to run in, such as your own git worktree. Defaults to the session's folder." });
     json!([

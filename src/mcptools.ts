@@ -8,9 +8,12 @@ import type { Stack } from "./stack";
 
 /** Output kept per run, from the end: a test failure's summary is at the bottom. */
 export const OUTPUT_CAP = 16_000;
-export const WAIT_DEFAULT_S = 600;
-export const WAIT_UP_S = 60; // a server or app answers once it is up, so its wait is for coming up, not exiting
-export const WAIT_MAX_S = 1800;
+// Claude Code cuts an HTTP tool call off at ~60s with a bare "The operation timed out." (measured),
+// and then the agent learns nothing: no handle, no output. So no call is held past 45s; a longer
+// run comes back as "still running" with its handle, and task_status waits in the same slices.
+export const WAIT_DEFAULT_S = 45;
+export const WAIT_UP_S = 45;
+export const WAIT_MAX_S = 45;
 
 export function waitSeconds(v: unknown, long = false): number {
   const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : long ? WAIT_UP_S : WAIT_DEFAULT_S;
@@ -85,19 +88,32 @@ export function appendOutput(prev: string, chunk: string, cap = OUTPUT_CAP): { t
 export interface RunReport {
   id: string; cmd: string; handle: string; exit: number | null;
   elapsedMs: number; output: string; cut: boolean;
+  ports?: readonly number[]; // what its process tree listens on, from the kernel: an address nobody printed
 }
 
 /** A server or app's answer: up (with where), still coming up, or down before it ever was. */
-export function upText(id: string, cmd: string, handle: string, elapsedMs: number, st: Stack | undefined, output: string): string {
+export function upText(id: string, cmd: string, handle: string, elapsedMs: number, st: Stack | undefined, output: string, ports: readonly number[] = []): string {
   const secs = Math.round(elapsedMs / 1000);
   const pages = st?.pages.map((p) => `- ${p.name}: ${p.url}`) ?? [];
+  // A port nobody announced is still an address: the kernel's word, for an app that prints no URL.
+  for (const p of ports) if (!pages.some((x) => x.includes(`:${p}`))) pages.push(`- listening: http://127.0.0.1:${p}`);
   const head = st?.state === "ready"
     ? `${id} is up after ${secs}s (\`${cmd}\`). It keeps running in its own Episko pane; the user stops it.`
     : st?.state === "failed"
       ? `${id} failed to come up after ${secs}s (\`${cmd}\`): ${st.why}.`
-      : `${id} is still coming up after ${secs}s (\`${cmd}\`)${st?.why ? `: ${st.why}` : ""}. Call task_status with handle "${handle}" to keep waiting.`;
+      : `${id} is running after ${secs}s but not yet known to be up (\`${cmd}\`)${st?.why ? `: ${st.why}` : ""}. It keeps running in its pane; call task_status with handle "${handle}" to keep waiting.`;
   const tail = output.trim().split("\n").slice(-30).join("\n");
   return [head, pages.length ? `Pages:\n${pages.join("\n")}` : "", tail ? `Output so far (the end):\n${tail}` : ""].filter(Boolean).join("\n\n");
+}
+
+export interface LiveRun { handle: string; id: string; label: string; checkout: string; startedAt: number; ports: readonly number[] }
+
+/** The task panes no stack accounts for: still running, and so still something an agent asked about. */
+export function otherRunsText(runs: readonly LiveRun[], here: string, now: number): string {
+  if (!runs.length) return "";
+  return "Other running tasks:\n" + runs.map((r) =>
+    `  ${r.id} (${r.label}) in ${r.checkout === here ? "this checkout" : `checkout ${r.checkout}`}: running ${Math.round((now - r.startedAt) / 1000)}s, handle "${r.handle}"${r.ports.length ? `, listening on :${r.ports.join(", :")}` : ", no listening port"}`,
+  ).join("\n");
 }
 
 /** stack_status: every stack of this repo, across its checkouts, as an agent would want it. */
@@ -116,7 +132,7 @@ export function stacksText(stacks: readonly Stack[], here: string): string {
 export function reportText(r: RunReport): string {
   const secs = Math.round(r.elapsedMs / 1000);
   const head = r.exit == null
-    ? `${r.id} is still running after ${secs}s (\`${r.cmd}\`). Call task_status with handle "${r.handle}" to keep waiting.`
+    ? `${r.id} is still running after ${secs}s (\`${r.cmd}\`) in its Episko pane${r.ports?.length ? `, listening on ${r.ports.map((p) => `127.0.0.1:${p}`).join(", ")}` : ""}. Call task_status with handle "${r.handle}" to keep waiting.`
     : `${r.id} exited ${r.exit} after ${secs}s (\`${r.cmd}\`).`;
   const out = r.output.trim();
   if (!out) return `${head}\n\n(no output)`;

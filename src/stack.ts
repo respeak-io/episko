@@ -130,13 +130,16 @@ function memberOf(p: PaneIn, ports: readonly number[]): Member {
   const state: MState = p.exit != null
     ? (p.exit === 0 && !p.background ? "done" : "failed") // a server that exits, even 0, is down
     // An app is a window, not a port: up once it runs, unless its description names a ready line.
-    : p.background && (p.url || useful.length || p.readyAt || (p.kind === "app" && !p.describedPages)) ? "serving" : "running";
+    : (p.background || useful.length) && (p.url || useful.length || p.readyAt || (p.kind === "app" && !p.describedPages)) ? "serving" : "running";
   return { sid: p.sid, label: p.label, background: p.background, state, url: p.url, ports: useful, exit: p.exit };
 }
 
-// A group (or a lone pane) is a stack when it holds a server, or when `[stack] up` names it.
-function isStack(group: readonly PaneIn[], cfg: StackCfg | undefined): boolean {
+// A group (or a lone pane) is a stack when it holds a server, when `[stack] up` names it, or when
+// a live pane in it is listening on a port: evidence beats classification, so an undescribed
+// `just app` that serves 127.0.0.1:38418 is a stack whatever its name made tasks.rs guess.
+function isStack(group: readonly PaneIn[], cfg: StackCfg | undefined, ports: StackInput["ports"]): boolean {
   if (group.some((p) => p.background)) return true;
+  if (group.some((p) => p.exit == null && (ports.get(p.sid) ?? []).some(usefulPort))) return true;
   const up = cfg?.up;
   return !!up && group.some((p) => p.taskId === up || p.groupRoot === up);
 }
@@ -196,7 +199,7 @@ export function buildStacks(inp: StackInput): Stack[] {
   for (const [key, group] of groups) {
     const root = group[0].root;
     const cfg = inp.configs.get(root);
-    if (!isStack(group, cfg)) continue;
+    if (!isStack(group, cfg, inp.ports)) continue;
     const members = group
       .slice().sort((a, b) => a.startedAt - b.startedAt)
       .map((p) => memberOf(p, inp.ports.get(p.sid) ?? []));
