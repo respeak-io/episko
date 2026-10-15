@@ -24,6 +24,10 @@ Markers: `+` new · `~` changed · `!` fixed
   you reviewed. *→ agent* prefills a thread, or your whole pending review, into a session on the
   PR's branch, in its own worktree.
 
++ **A pull request link in a pane opens that review too.** ⌘-click a github.com PR link and,
+  when one of your projects is that repository, it opens on the review stage rather than in
+  your browser. Any other link still goes to the browser; *Settings › Reader* turns it off.
+
 ~ **The changed-files rail is a folder tree.** Both the review and the working-set viewer nest
   files in their folders now; the switch at the top of the rail puts the flat list back.
 

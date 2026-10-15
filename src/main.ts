@@ -28,7 +28,7 @@ import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
 import { closeMdReader, mdReaderOpen } from "./mdreader";
-import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, trimScrollback } from "./terminal";
+import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
   followSessionDrift, openTouchedFile, removeFavorite, resolvePermission, revealActiveFolder,
@@ -39,7 +39,7 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
@@ -100,7 +100,7 @@ import {
 import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
-import { closePrReview, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
+import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -245,7 +245,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -320,6 +320,7 @@ setFleetHost({
 });
 wireFleet();
 // The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
+setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
 setReviewHost({
   launch: (project, workdir, opts) => launch(project, workdir, opts),
   setActive, openDashboard, renderAll, refreshGit: () => refreshGitViews(),

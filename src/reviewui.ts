@@ -14,7 +14,7 @@ import { icon, type IconName } from "./svgicons";
 import { fileHtml, railHeadHtml, railHtml, treeRailHtml, type LineHooks } from "./patchview";
 import {
   agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsSince, draftBrief,
-  expandGap, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prKey, rangeArgs,
+  expandGap, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey, rangeArgs,
   reviewComments, setViewed, submitBlock, suggestion, threadBrief, threadPin, treeOrder, treeRows, withDraft,
   type Anchor, type Commentable, type DraftComment, type DraftStore, type PrDiff, type PrReview, type PrThread,
   type RailLayout, type Range, type ReviewEvent, type Side, type ViewedStore,
@@ -24,7 +24,7 @@ import {
   railMark, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, type RvTab,
 } from "./reviewview";
 import {
-  accentFor, diffMode, ghAccountFor, railLayout, reviewMirror, sessions, setActiveId, setDiffMode, setMirror,
+  accentFor, diffMode, FAVORITES, ghAccountFor, railLayout, reviewMirror, sessions, setActiveId, setDiffMode, setMirror,
   setRailLayout, worktreesByRepo,
 } from "./state";
 import { readObj } from "./store";
@@ -112,6 +112,37 @@ export function openPrReview(project: string, path: string, number: number): voi
   host.renderAll();
   paintAll();
   void load(!same);
+}
+
+// A repo's slug never changes under a project, so one `project_facts` per root per run.
+const slugOf = new Map<string, Promise<string | null>>();
+const rootSlug = (root: string) => {
+  let p = slugOf.get(root);
+  if (!p) {
+    p = invoke<{ slug: string | null }>("project_facts", { dir: root }).then((f) => f.slug?.toLowerCase() ?? null, () => null);
+    slugOf.set(root, p);
+  }
+  return p;
+};
+
+/** A PR link clicked in a pane: open it here when a known project is that repo (the clicking
+ *  pane's own first). False hands it back to the browser. */
+export async function openPrLink(url: string, near?: { project: string; root: string }): Promise<boolean> {
+  const hit = prFromUrl(url);
+  if (!hit) return false;
+  const want = hit.slug.toLowerCase();
+  const cands = new Map<string, string>(); // root → project name, in the order asked
+  if (near?.root) cands.set(near.root, near.project);
+  for (const s of sessions.values()) if (s.colorKey && !cands.has(s.colorKey)) cands.set(s.colorKey, s.project);
+  for (const f of FAVORITES) if (!cands.has(f.path)) cands.set(f.path, f.name);
+  for (const [root, project] of cands) {
+    if ((await rootSlug(root)) !== want) continue;
+    dlog("info", `link: ${hit.slug}#${hit.number} → review in ${root}`);
+    openPrReview(project, root, hit.number);
+    return true;
+  }
+  dlog("info", `link: ${hit.slug}#${hit.number} · no project here is that repo, opening the browser`);
+  return false;
 }
 
 export function closePrReview(): void {

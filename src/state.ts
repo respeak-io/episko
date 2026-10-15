@@ -264,6 +264,9 @@ export function setTermEngine(e: Engine) { termEngine = e; }
 // ⌘T beside the session on stage (on) or in a pane of its own (off); only ever read as "0" or not.
 export let termSplit: boolean = localStorage.getItem("cc-term-split") !== "0";
 export function setTermSplit(on: boolean) { termSplit = on; }
+// A github.com PR link in a pane opens the review stage when a project here is that repo.
+export let prLinksInApp: boolean = localStorage.getItem("cc-pr-links") !== "0";
+export function setPrLinksInApp(on: boolean) { prLinksInApp = on; }
 export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
 export function setDriftAuto(on: boolean) { driftAuto = on; }
 // Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.

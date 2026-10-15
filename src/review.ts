@@ -34,6 +34,14 @@ export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
 export const prKey = (slug: string, n: number) => `${slug}#${n}`;
 
+/** A github.com pull request URL (any tab of it) → its repo and number; anything else is null. */
+export function prFromUrl(url: string): { slug: string; number: number } | null {
+  const m = /^https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#]|$)/i.exec(url.trim());
+  if (!m) return null;
+  const number = Number(m[3]);
+  return number > 0 ? { slug: `${m[1]}/${m[2].replace(/\.git$/i, "")}`, number } : null;
+}
+
 // ---------- which diff a view shows ----------
 
 // `all` is GitHub's own diff (merge base → head), the only one every comment is anchored to.

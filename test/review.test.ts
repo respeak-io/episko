@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parsePatch } from "../src/diff";
 import {
   agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampViewed, commentableIn, commitsSince, draftBrief,
-  expandGap, fileSig, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, place, rangeArgs,
+  expandGap, fileSig, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, place, prFromUrl, rangeArgs,
   reviewComments, setViewed, sortChecks, submitBlock, threadBrief, threadPin, timeline, treeOrder, treeRows,
   withDraft, type PrReview, type PrThread, type ReviewDraft,
 } from "../src/review";
@@ -288,5 +288,20 @@ describe("the brief an agent is handed", () => {
   it("points an outdated thread at the line it was written against", () => {
     const b = threadBrief(thread({ outdated: true, line: null, original_line: 9 }));
     expect(b.line).toBe(9);
+  });
+});
+
+describe("prFromUrl", () => {
+  it("reads the repo and number off any tab of a pull request", () => {
+    expect(prFromUrl("https://github.com/respeak-io/pii-reduction/pull/390")).toEqual({ slug: "respeak-io/pii-reduction", number: 390 });
+    expect(prFromUrl("https://github.com/o/r/pull/7/files#diff-abc")).toEqual({ slug: "o/r", number: 7 });
+    expect(prFromUrl("http://www.github.com/o/r.js/pull/12?w=1")).toEqual({ slug: "o/r.js", number: 12 });
+  });
+  it("is null for anything that is not a github.com pull request", () => {
+    expect(prFromUrl("https://github.com/o/r/issues/7")).toBeNull();
+    expect(prFromUrl("https://github.com/o/r/pull/7x")).toBeNull();
+    expect(prFromUrl("https://github.com/o/r/pull/0")).toBeNull();
+    expect(prFromUrl("https://github.example.com/o/r/pull/7")).toBeNull();
+    expect(prFromUrl("https://evil.com/github.com/o/r/pull/7")).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ import { openFileOrRead } from "./mdreader";
 import type { Prompt, Sess } from "./types";
 import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type PromptKey } from "./outline";
 import { findLinks, linkBases, type PathCand } from "./termlinks";
-import { activeId, copyChord, keyPrefs, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
+import { activeId, copyChord, keyPrefs, prLinksInApp, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 import { matchAction } from "./keys";
 import { inStageGroup } from "./grouping";
 
@@ -552,9 +552,14 @@ function modClick(e: MouseEvent | undefined): boolean {
   return false;
 }
 
-async function openHref(url: string) {
+// ./reviewui's `openPrLink`, set from main.ts: true means it took the link onto the review stage.
+let prOpener: (url: string, s: Sess | undefined) => Promise<boolean> = async () => false;
+export function setPrLinkOpener(f: typeof prOpener) { prOpener = f; }
+
+async function openHref(url: string, s?: Sess) {
   // OSC 8 payloads are program-chosen; http(s)-only here as well as via `allowNonHttpProtocols`.
   if (!/^https?:\/\//i.test(url)) { dlog("warn", `link ignored · not http(s) · ${url.slice(0, 80)}`); return; }
+  if (prLinksInApp && await prOpener(url, s).catch(() => false)) return;
   try { await openUrl(url); }
   catch (e) { toast("Couldn't open the link: " + e); }
 }
@@ -587,7 +592,7 @@ async function provide(id: string, term: Terminal, y: number, cb: (links: TermLi
   for (const h of hits) {
     if (h.kind === "url") {
       const range = claim(h.start, h.end) ? mkRange(row, h.start, h.end) : null;
-      if (range) out.push({ range, text: h.text, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openHref(h.text); } });
+      if (range) out.push({ range, text: h.text, ...hoverOf(term), activate: (e) => { if (modClick(e)) void openHref(h.text, s); } });
       continue;
     }
     const won = await resolvePath(s, h.cands);
@@ -600,7 +605,7 @@ async function provide(id: string, term: Terminal, y: number, cb: (links: TermLi
 
 // Called by every spawner after `term.open`; xterm keeps every link provider, so this composes.
 export function wireLinks(id: string, term: Terminal) {
-  term.options.linkHandler = { ...hoverOf(term), activate: (e, text) => { if (modClick(e)) void openHref(text); } };
+  term.options.linkHandler = { ...hoverOf(term), activate: (e, text) => { if (modClick(e)) void openHref(text, sessions.get(id)); } };
   term.registerLinkProvider({ provideLinks: (y, cb) => { void provide(id, term, y, cb); } });
   // A MOD+click on a link is ours alone. Under mouse tracking xterm also reports it to the app, and
   // Claude's fullscreen TUI opens a Ctrl+clicked link itself: two browser tabs on Windows (Cmd has no

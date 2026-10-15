@@ -33,7 +33,7 @@ import {
   soundPrefs, setSoundPrefs as setSoundPrefsState,
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
-  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState,
+  setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setPrLinksInApp as setPrLinksInAppState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -268,6 +268,13 @@ export function setTermSplit(on: boolean) {
 export function setDriftAuto(on: boolean) {
   setDriftAutoState(on);
   localStorage.setItem("cc-drift-auto", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read at click time by ./terminal's link handler; nothing on screen depends on it.
+export function setPrLinks(on: boolean) {
+  setPrLinksInAppState(on);
+  localStorage.setItem("cc-pr-links", on ? "1" : "0");
   renderSettings();
 }
 
