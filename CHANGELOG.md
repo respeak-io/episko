@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.35.0 — 2026-10-15
+Review a pull request inside Episko: the diff against its merge base, threads on their lines,
+one pending review sent as Comment, Approve or Request changes, and a PR link in a pane opens it
+there. A Claude session can run your project's tasks through Episko, and the dispatch sheet asks
+where the agent should work.
+
 + **Starting an agent on an issue asks where it should run.** The dispatch sheet gains a *Where*
   picker: this folder, a worktree that already exists, or a new worktree on a branch it names for
   you (`issue-<n>-<title>`, or a pull request's own head) and cuts from the branch you choose, the
