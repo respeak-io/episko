@@ -20,7 +20,8 @@ Markers: `+` new · `~` changed · `!` fixed
   or container that broke (a crash-looping container included), and *ready* means every prep
   step passed, every server listens and every health check is green. Containers that outlive
   their panes stay listed, with ⏹ to stop them. An optional `[stack]` table in
-  `.episko/episko.toml` names the project's own `down` task; project settings show it, and
+  `.episko/episko.toml` names the project's own `down` task; the ▶ Run picker and project
+  settings show it (with *Start stack* when it names an `up` task), and
   *Set up with an agent* prefills a brief for an agent that reads your justfile, tasks.json
   and compose files and writes the table for you to review.
 

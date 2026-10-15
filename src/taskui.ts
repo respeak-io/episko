@@ -11,6 +11,7 @@ import { paneDir, type Runnable } from "./types";
 import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
 import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, forgetFrec, frecScore } from "./palette";
+import { stackSummary, type StackCfg } from "./stack";
 import {
   applyInputs, defSpan, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
   prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
@@ -28,11 +29,12 @@ export interface TaskUiHost {
   setActive: (id: string) => void;
   renderAll: () => void;
   closePalette: () => void;
+  setupStack: (root: string, hasTable: boolean) => void;
 }
 let host: TaskUiHost = {
   launchTask: async () => null, handToTerminal: async () => {},
   activeProjectCtx: () => null, activeCwd: () => null, setActive: () => {},
-  renderAll: () => {}, closePalette: () => {},
+  renderAll: () => {}, closePalette: () => {}, setupStack: () => {},
 };
 export function setTaskUiHost(h: TaskUiHost) { host = h; }
 
@@ -244,6 +246,7 @@ async function deleteMgrTask(id: string) {
 let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string; workdir: string } | null = null;
 let runList: Runnable[] = [];
 let runSel = 0;
+let runStackCfg: StackCfg = {}; // this checkout's [stack]; the strip under the list reads it
 let runSource: string | null = null;   // jump-bar filter; null = every source
 
 export function runTargetCtx() {
@@ -270,6 +273,15 @@ export async function openRunPicker() {
   runCtx = { project: c.project, colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, workdir: c.workdir };
   runList = await discoverTasks(c.workdir, c.colorKey);
   runSel = 0;
+  runStackCfg = {};
+  renderRunStack();
+  const asked = c.workdir;
+  void invoke<StackCfg>("stack_config", { dir: asked }).then((cfg) => {
+    if (runCtx?.workdir !== asked) return; // the picker closed or moved on
+    runStackCfg = cfg;
+    renderRunStack();
+    renderRunPicker(($("runInput") as HTMLInputElement).value);
+  }).catch(() => {});
   runSource = null;
   runInfo = null;
   srcCache.clear();
@@ -406,7 +418,7 @@ function renderRunPicker(term: string) {
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         ${lifted ? `<span class="run-src">${esc(sourceShort(r))}</span>` : ""}
-        <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+        <span class="end">${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.background ? "bg" : pinned ? "★" : ""}</span>
         <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">ⓘ</button>
         ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
         ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
@@ -429,6 +441,34 @@ function renderRunPicker(term: string) {
     el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.info!; void openRunInfo(); });
   });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- the dev stack strip ----------
+// Where you start a dev environment is where you learn Episko can describe it (docs/stack.md).
+function renderRunStack() {
+  const el = $("runStack");
+  if (!runCtx) { el.hidden = true; return; }
+  const sum = stackSummary(runStackCfg);
+  const up = runStackCfg.up ? runList.find((r) => r.id === runStackCfg.up && !r.blocked) : undefined;
+  const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">▶ Start stack</button>` : "";
+  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Start an agent with a prefilled brief that reads this project's task and compose files and writes [stack] for you to review">${sum ? "Check…" : "Set up with an agent"}</button>`;
+  const what = sum
+    ? `<span class="run-stack-t" title="${esc(sum)}">${esc(sum)}</span>`
+    : `<span class="run-stack-t dim">not set up: inferred from what runs</span>`;
+  el.innerHTML = `<span class="run-stack-l">Dev stack</span>${what}${start}${setup}`;
+  el.hidden = false;
+  el.querySelector<HTMLElement>("[data-stackgo]")?.addEventListener("click", () => {
+    if (!up || !runCtx) return;
+    const ctx = runCtx;
+    closeRunPicker();
+    runRunnable(up, ctx.project, { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir });
+  });
+  el.querySelector<HTMLElement>("[data-stackai]")?.addEventListener("click", () => {
+    if (!runCtx) return;
+    const root = runCtx.workdir;
+    closeRunPicker();
+    host.setupStack(root, !!sum);
+  });
 }
 
 // ---------- ⓘ: what's behind a row ----------

@@ -348,6 +348,7 @@ setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
+  setupStack: (root, hasTable) => void setupStack(root, hasTable),
 });
 setWtLaunch(launch);
 setWtCloseSession(closeSession);
