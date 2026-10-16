@@ -494,6 +494,8 @@ pub fn run() {
             git::git_log_days,
             git::project_facts,
             git::project_id,
+            git::handoff_git_state,
+            git::handoff_git_cleanup,
             deps::dep_report,
             deps::dep_invalidate,
             deps::dep_manifests,

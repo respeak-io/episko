@@ -214,3 +214,12 @@ Display is the same either way and **the row does not move**: a `⤳ branch` mar
 `move_session_transcript` is the only thing Episko ever writes inside `~/.claude`; everything else it writes in a user's repo is under `.episko/` (see App-wide rules in CLAUDE.md).
 
 Known wart: a moved transcript's first user record still names the old cwd, so `transcript_origin` grafts its History row onto the old project. Defensible, and not worth rewriting records.
+
+## Handing a session's code to another machine
+
+The git half of a handoff (`handoff_*` in `git.rs`; the channel itself is docs/handoff.md). `handoff_git_state` fetches the primary remote first (45s, a failure reads `fetched: false`) and classifies the checkout as `clean`, `unpushed`, `dirty`, `detached`, `unborn` or `norepo`; "pushed" means *some* ref of that remote holds HEAD, not that the branch tracks one, and `ahead`/`est_bytes` count exactly what a bundle would carry (`--not --remotes=<remote>`).
+
+- **A snapshot never touches the checkout's own index.** Uncommitted work, untracked files included, is committed onto HEAD through a *copy* of the per-worktree index (`GIT_INDEX_FILE`), so `git status` reads the same before and after, and the temp index is removed whichever way it ends. The commit lives at `refs/episko/handoff/<id>`, never on a branch.
+- **Secrets stay behind, and are named.** A dirty `.env`, `.env.*`, `*.pem`, `id_rsa*`, `*.tfvars`, `*.p12` or `*.key` is reset to HEAD's version in the temp index rather than dropped from it: dropping a *tracked* one would ship its deletion. Matched on the file name at any depth; the list comes back as `left_behind`.
+- **Two transports.** A branch push to `<remote>/handoff/<id>`, or a bundle of what the remote lacks. A bundle's prerequisites are checked against the recipient's clone **after** a tolerated fetch, so a stale clone succeeds and a clone that cannot reach the remote is told which commit it lacks rather than handed git's error.
+- **The recipient gets a new worktree**, on the sender's branch name unless this clone already has a branch so named (then `handoff/<id8>`), and a snapshot is unwound with `reset --mixed HEAD~1` so the work arrives uncommitted, as it left. A snapshot whose parent is not the sender's recorded HEAD is refused. Both handoff refs are deleted afterwards; a remote branch that will not delete comes back as `leftover` instead of failing the install.

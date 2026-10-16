@@ -22,7 +22,9 @@ Markers: `+` new · `~` changed · `!` fixed
   `EPISKO_HANDOFF_MAX_MB`), and it is off by default; only an app that says it speaks handoff is
   ever sent one. A proxy in front must pass WebSocket messages of at least 1 MiB. The app can
   now copy a session's transcript out of `~/.claude` and file one back in under another
-  checkout, never overwriting a conversation already there; nothing calls it yet.
+  checkout, never overwriting a conversation already there; nothing calls it yet. It can also
+  package a checkout's unpushed commits and uncommitted work (secrets left behind) as a branch or a
+  bundle and unpack them into a fresh worktree elsewhere; nothing calls that yet either.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

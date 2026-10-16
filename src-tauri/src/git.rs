@@ -2787,6 +2787,355 @@ pub(crate) fn project_facts(dir: String) -> ProjectFacts {
     ProjectFacts { is_repo: true, root: Some(root), origin, host, slug }
 }
 
+// ---------- a session's code handed to another machine (docs/handoff.md) ----------
+
+/// What a handoff can carry of a checkout. `kind` decides the offered transports; `ahead`
+/// counts commits no ref of `remote` holds, and `est_bytes` is what a bundle would weigh.
+#[derive(serde::Serialize, Debug, Default, Clone, PartialEq)]
+pub(crate) struct HandoffGit {
+    kind: String, // clean | unpushed | dirty | detached | unborn | norepo
+    branch: Option<String>,
+    upstream: Option<String>,
+    head: Option<String>,
+    ahead: u32,
+    dirty: u32,
+    untracked: u32,
+    remote: Option<String>,
+    project_id: Option<String>,
+    fetched: bool,
+    est_bytes: u64,
+}
+
+/// How the code travelled, as the recipient's `handoff_apply` reads it from the blob's meta.
+#[cfg_attr(not(test), allow(dead_code))] // read by handoff.rs from a later slice
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
+pub(crate) struct HandoffGitMeta {
+    pub(crate) via: String, // none | branch | bundle
+    #[serde(default)]
+    pub(crate) branch: Option<String>,
+    pub(crate) head: String,
+    #[serde(default)]
+    pub(crate) snap: bool, // the shipped ref is a snapshot commit on top of `head`
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub(crate) struct Applied {
+    pub(crate) worktree: String,
+    pub(crate) branch: String,
+    pub(crate) leftover: Option<String>, // a remote `handoff/<id>` the cleanup could not delete
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum HandoffSrc {
+    Remote,
+    Bundle(std::path::PathBuf),
+}
+
+/// Never shipped in a snapshot even when dirty; matched on the file name.
+#[cfg_attr(not(test), allow(dead_code))]
+const SECRET_NAMES: [&str; 7] = [".env", ".env.*", "*.pem", "id_rsa*", "*.tfvars", "*.p12", "*.key"];
+const BUNDLE_SCAN_MAX: usize = 2000;
+
+fn handoff_ref(id: &str) -> String {
+    format!("refs/episko/handoff/{id}")
+}
+
+fn check_handoff_id(id: &str) -> Result<(), String> {
+    let uuidish = id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    if uuidish { Ok(()) } else { Err(format!("not a handoff id: {id}")) }
+}
+
+/// stdout of a git call that must succeed, trimmed; git's own first line otherwise.
+fn git_out(dir: &str, args: &[&str]) -> Result<String, String> {
+    let o = git_cmd(dir, args).output().map_err(|e| format!("git: {e}"))?;
+    if !o.status.success() {
+        return Err(git_says(&o));
+    }
+    Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+fn remotes_of(top: &str) -> Vec<String> {
+    git_out(top, &["remote"]).map(|s| s.lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+fn handoff_classify(top: &str) -> HandoffGit {
+    let Ok(top) = repo_top(top) else {
+        return HandoffGit { kind: "norepo".into(), ..Default::default() };
+    };
+    let remotes = remotes_of(&top);
+    let remote = (!remotes.is_empty()).then(|| primary_remote(&remotes).to_string());
+    let fetched = remote.as_deref().is_some_and(|r| {
+        git_run(git_cmd(&top, &["fetch", "--prune", r]), 45).is_ok_and(|o| o.status.success())
+    });
+    let mut g = HandoffGit { remote: remote.clone(), project_id: project_id(top.clone()), fetched, ..Default::default() };
+    g.head = git_out(&top, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok().filter(|s| !s.is_empty());
+    if g.head.is_none() {
+        g.kind = "unborn".into();
+        return g;
+    }
+    g.branch = git_out(&top, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok().filter(|s| !s.is_empty());
+    let mut bytes = 0u64;
+    if let Some((stat, entries)) = working_set(&top, BUNDLE_SCAN_MAX) {
+        (g.dirty, g.untracked, g.upstream) = (stat.dirty, stat.untracked, stat.upstream);
+        bytes += entries.iter().filter_map(|e| std::fs::metadata(std::path::Path::new(&top).join(&e.path)).ok()).map(|m| m.len()).sum::<u64>();
+    }
+    let not = remote.as_ref().map(|r| format!("--remotes={r}"));
+    let mut range = vec!["HEAD"];
+    if let Some(n) = not.as_deref() {
+        range.extend_from_slice(&["--not", n]);
+    }
+    let count = [&["rev-list", "--count"][..], &range[..]].concat();
+    g.ahead = git_out(&top, &count).ok().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let disk = [&["rev-list", "--objects", "--disk-usage"][..], &range[..]].concat();
+    bytes += git_out(&top, &disk).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    g.est_bytes = bytes;
+    g.kind = if g.branch.is_none() {
+        "detached"
+    } else if g.dirty > 0 {
+        "dirty"
+    } else if g.ahead > 0 {
+        "unpushed"
+    } else {
+        "clean"
+    }
+    .into();
+    g
+}
+
+/// Removes the temporary index whichever way the snapshot ends.
+#[cfg_attr(not(test), allow(dead_code))]
+struct TempIndex(std::path::PathBuf);
+impl Drop for TempIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Commit the working tree, untracked files included, onto HEAD under `refs/episko/handoff/<id>`
+/// through a copied index, so the checkout's own index and status are untouched. Secrets stay
+/// behind and are named. None when nothing but a secret is dirty.
+#[cfg_attr(not(test), allow(dead_code))]
+fn handoff_snapshot(top: &str, id: &str) -> Result<(Option<String>, Vec<String>), String> {
+    check_handoff_id(id)?;
+    let head = git_out(top, &["rev-parse", "--verify", "HEAD"]).map_err(|_| "no commit to build a snapshot on".to_string())?;
+    let index = git_out(top, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?;
+    let gitdir = git_out(top, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
+    let tmp = TempIndex(std::path::Path::new(&gitdir).join(format!("episko-handoff-{id}.index")));
+    std::fs::copy(&index, &tmp.0).map_err(|e| format!("copy the index: {e}"))?;
+    let with_index = |args: &[&str]| {
+        let mut c = git_cmd(top, args);
+        c.env("GIT_INDEX_FILE", &tmp.0);
+        c
+    };
+    let add = git_run(with_index(&["add", "-A"]), 60)?;
+    if !add.status.success() {
+        return Err(git_says(&add));
+    }
+    let staged = with_index(&["-c", "core.quotePath=false", "diff", "--cached", "--name-only", "-z", "HEAD"])
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    let mut left: Vec<String> = z_set(&staged)
+        .into_iter()
+        .filter(|p| SECRET_NAMES.iter().any(|pat| glob_match(pat, p.rsplit('/').next().unwrap_or(p))))
+        .collect();
+    left.sort();
+    // Back to HEAD's version, which for a new file means out of the index.
+    if !left.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "reset", "-q", "HEAD", "--"];
+        args.extend(left.iter().map(String::as_str));
+        let o = with_index(&args).output().map_err(|e| format!("git: {e}"))?;
+        if !o.status.success() {
+            return Err(git_says(&o));
+        }
+    }
+    let tree = with_index(&["write-tree"]).output().map_err(|e| format!("git: {e}"))?;
+    if !tree.status.success() {
+        return Err(git_says(&tree));
+    }
+    let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+    if git_out(top, &["rev-parse", "HEAD^{tree}"])? == tree {
+        return Ok((None, left));
+    }
+    let msg = format!("episko handoff {id}");
+    let commit = |who: &[&str]| {
+        let mut args = vec!["-c", "commit.gpgsign=false"];
+        args.extend_from_slice(who);
+        args.extend_from_slice(&["commit-tree", &tree, "-p", &head, "-m", &msg]);
+        git_out(top, &args)
+    };
+    let sha = commit(&[]).or_else(|_| commit(&["-c", "user.name=Episko", "-c", "user.email=episko@localhost"]))?;
+    git_out(top, &["update-ref", &handoff_ref(id), &sha])?;
+    Ok((Some(sha), left))
+}
+
+/// Push `rev` to `<remote>/handoff/<id>`; the remote it went to.
+#[cfg_attr(not(test), allow(dead_code))]
+fn handoff_push_wip(top: &str, id: &str, rev: &str) -> Result<String, String> {
+    check_handoff_id(id)?;
+    let remotes = remotes_of(top);
+    if remotes.is_empty() {
+        return Err("no remote to push the handoff branch to".into());
+    }
+    let remote = primary_remote(&remotes).to_string();
+    let o = git_run(git_cmd(top, &["push", "-q", &remote, &format!("{rev}:refs/heads/handoff/{id}")]), 45)?;
+    if !o.status.success() {
+        return Err(git_says(&o));
+    }
+    Ok(remote)
+}
+
+/// The prerequisite commits a bundle file's header names (`-<sha> <subject>` lines).
+#[cfg_attr(not(test), allow(dead_code))]
+fn bundle_prereqs(path: &std::path::Path) -> Result<Vec<String>, String> {
+    use std::io::BufRead;
+    let f = std::fs::File::open(path).map_err(|e| format!("read the bundle: {e}"))?;
+    let mut out = Vec::new();
+    for line in std::io::BufReader::new(f).split(b'\n').skip(1) {
+        let line = line.map_err(|e| format!("read the bundle: {e}"))?;
+        if line.is_empty() {
+            break;
+        }
+        if let Some(rest) = line.strip_prefix(b"-") {
+            let sha: String = String::from_utf8_lossy(rest).chars().take_while(char::is_ascii_hexdigit).collect();
+            out.push(sha);
+        }
+    }
+    Ok(out)
+}
+
+/// Bundle `rev` minus everything the remote already holds (the whole history without one).
+/// None for an empty bundle; else the commits the recipient must already have.
+#[cfg_attr(not(test), allow(dead_code))]
+fn handoff_bundle(top: &str, id: &str, rev: &str, out: &std::path::Path) -> Result<Option<Vec<String>>, String> {
+    check_handoff_id(id)?;
+    let r = handoff_ref(id);
+    git_out(top, &["update-ref", &r, rev])?;
+    let remotes = remotes_of(top);
+    let file = out.to_string_lossy().to_string();
+    let mut args = vec!["bundle", "create", "-q", &file, &r];
+    let not = (!remotes.is_empty()).then(|| format!("--remotes={}", primary_remote(&remotes)));
+    if let Some(n) = not.as_deref() {
+        args.extend_from_slice(&["--not", n]);
+    }
+    let o = git_run(git_cmd(top, &args), 60)?;
+    if !o.status.success() {
+        // An unpushed-nothing bundle is refused by git; it is the clean case, not an error.
+        let empty = String::from_utf8_lossy(&o.stderr).contains("empty bundle");
+        let _ = std::fs::remove_file(out);
+        return if empty { Ok(None) } else { Err(git_says(&o)) };
+    }
+    bundle_prereqs(out).map(Some)
+}
+
+/// Fetch the sender's ref into `refs/episko/handoff/<id>`; its sha.
+#[cfg_attr(not(test), allow(dead_code))]
+fn handoff_receive(repo: &str, id: &str, src: &HandoffSrc) -> Result<String, String> {
+    check_handoff_id(id)?;
+    let r = handoff_ref(id);
+    let remotes = remotes_of(repo);
+    let remote = (!remotes.is_empty()).then(|| primary_remote(&remotes).to_string());
+    match src {
+        HandoffSrc::Remote => {
+            let Some(remote) = remote else { return Err("this clone has no remote to fetch the handoff from".into()) };
+            let o = git_run(git_cmd(repo, &["fetch", "-q", &remote, &format!("refs/heads/handoff/{id}:{r}")]), 45)?;
+            if !o.status.success() {
+                return Err(git_says(&o));
+            }
+        }
+        HandoffSrc::Bundle(path) => {
+            // A stale clone may only lack what a fetch brings; a failed fetch is not fatal.
+            if let Some(remote) = remote.as_deref() {
+                let _ = git_run(git_cmd(repo, &["fetch", "-q", "--prune", remote]), 45);
+            }
+            for sha in bundle_prereqs(path)? {
+                if git_out(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_err() {
+                    return Err(format!("your clone lacks {sha}, which this handoff builds on; fetch, then retry"));
+                }
+            }
+            let file = path.to_string_lossy().to_string();
+            git_out(repo, &["bundle", "verify", "-q", &file])?;
+            let o = git_run(git_cmd(repo, &["fetch", "-q", &file, &format!("{r}:{r}")]), 60)?;
+            if !o.status.success() {
+                return Err(git_says(&o));
+            }
+        }
+    }
+    git_out(repo, &["rev-parse", "--verify", &r])
+}
+
+/// A worktree on what was received: the sender's branch name unless this clone already has
+/// one, a snapshot unwound into uncommitted changes, then both handoff refs deleted.
+#[cfg_attr(not(test), allow(dead_code))]
+fn handoff_apply(repo: &str, id: &str, meta: &HandoffGitMeta) -> Result<Applied, String> {
+    check_handoff_id(id)?;
+    let r = handoff_ref(id);
+    let base = if meta.via == "none" { meta.head.clone() } else { r.clone() };
+    let tip = git_out(repo, &["rev-parse", "--verify", &format!("{base}^{{commit}}")])
+        .map_err(|_| format!("nothing received for {}", &id[..8]))?;
+    if meta.snap {
+        let parent = git_out(repo, &["rev-parse", "--verify", &format!("{tip}^")]).unwrap_or_default();
+        if parent != meta.head {
+            return Err(format!("the snapshot does not sit on {}", meta.head.get(..8).unwrap_or(&meta.head)));
+        }
+    } else if meta.via != "none" && tip != meta.head {
+        return Err(format!("received {} where {} was sent", &tip[..8], meta.head.get(..8).unwrap_or(&meta.head)));
+    }
+    let taken = |b: &str| git_out(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{b}")]).is_ok();
+    let branch = match meta.branch.as_deref().filter(|b| !b.is_empty()) {
+        Some(b) if !taken(b) => b.to_string(),
+        _ => format!("handoff/{}", &id[..8]),
+    };
+    let worktree = create_worktree(repo.to_string(), branch.clone(), Some(tip))?;
+    if meta.snap {
+        git_out(&worktree, &["reset", "-q", "--mixed", "HEAD~1"])?;
+    }
+    let remotes = remotes_of(repo);
+    if let (Some(sent), false) = (meta.branch.as_deref(), remotes.is_empty()) {
+        let up = format!("{}/{sent}", primary_remote(&remotes));
+        if git_out(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{up}")]).is_ok() {
+            let _ = git_out(&worktree, &["branch", "--set-upstream-to", &up, &branch]);
+        }
+    }
+    let leftover = handoff_cleanup(repo, id, meta.via == "branch").err();
+    Ok(Applied { worktree, branch, leftover })
+}
+
+/// Delete the local handoff ref and, when asked, the remote `handoff/<id>` branch (best effort).
+fn handoff_cleanup(top: &str, id: &str, remote_branch: bool) -> Result<(), String> {
+    check_handoff_id(id)?;
+    let _ = git_out(top, &["update-ref", "-d", &handoff_ref(id)]);
+    let remotes = remotes_of(top);
+    if !remote_branch || remotes.is_empty() {
+        return Ok(());
+    }
+    let remote = primary_remote(&remotes);
+    let o = git_run(git_cmd(top, &["push", "-q", remote, "--delete", &format!("refs/heads/handoff/{id}")]), 90)?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(format!("{remote}/handoff/{id} is still there: {}", git_says(&o)))
+    }
+}
+
+/// What the send sheet offers for this checkout's code. Fetches first, so "pushed" is current.
+#[tauri::command(async)]
+pub(crate) fn handoff_git_state(workdir: String) -> HandoffGit {
+    handoff_classify(&workdir)
+}
+
+#[tauri::command(async)]
+pub(crate) fn handoff_git_cleanup(workdir: String, id: String, remote_branch: bool) -> Result<GitActionResult, String> {
+    let top = repo_top(&workdir)?;
+    match handoff_cleanup(&top, &id, remote_branch) {
+        Ok(()) => done("handoff refs removed".into()),
+        Err(e) => {
+            let remote = remotes_of(&top).first().cloned().unwrap_or_else(|| "origin".into());
+            refused(e, Some(&format!("git push {remote} --delete handoff/{id}")))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4826,4 +5175,181 @@ canonicalizehostname false
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---------- handoff transport: a bare remote and two clones ----------
+
+    const HID: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+    fn said(dir: &Path, args: &[&str]) -> String {
+        let o = Command::new("git").current_dir(dir).args(args).output().expect("git runs");
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    fn ci(dir: &Path, file: &str, text: &str, msg: &str) {
+        std::fs::write(dir.join(file), text).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", msg]);
+    }
+
+    /// `(root, sender, recipient)`: both clones of `root/remote.git`, one pushed commit on main.
+    fn trio() -> (PathBuf, PathBuf, PathBuf) {
+        let root = scratch_dir();
+        git(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        git(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        git(&a, &["checkout", "-q", "-B", "main"]);
+        ci(&a, "README", "one\n", "init");
+        git(&a, &["push", "-q", "-u", "origin", "main"]);
+        git(&root, &["clone", "-q", "remote.git", "b"]);
+        (root.clone(), a, root.join("b"))
+    }
+
+    fn st(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    fn meta(via: &str, branch: Option<&str>, head: &str, snap: bool) -> HandoffGitMeta {
+        HandoffGitMeta { via: via.into(), branch: branch.map(str::to_string), head: head.into(), snap }
+    }
+
+    #[test]
+    fn handoff_classify_names_every_state() {
+        assert_eq!(handoff_git_state(st(&scratch_dir())).kind, "norepo");
+        let fresh = scratch_dir();
+        git(&fresh, &["init", "-q"]);
+        assert_eq!(handoff_git_state(st(&fresh)).kind, "unborn");
+
+        let (_root, a, _b) = trio();
+        let g = handoff_git_state(st(&a));
+        assert_eq!((g.kind.as_str(), g.ahead, g.fetched), ("clean", 0, true), "{g:?}");
+        assert_eq!(g.branch.as_deref(), Some("main"));
+        assert_eq!(g.remote.as_deref(), Some("origin"));
+        assert_eq!(g.head, Some(said(&a, &["rev-parse", "HEAD"])));
+        assert!(g.project_id.is_some());
+
+        std::fs::write(a.join("new.txt"), "n\n").unwrap();
+        let g = handoff_git_state(st(&a));
+        assert_eq!((g.kind.as_str(), g.untracked), ("dirty", 1), "{g:?}");
+
+        ci(&a, "more.txt", "m\n", "local");
+        let g = handoff_git_state(st(&a));
+        assert_eq!((g.kind.as_str(), g.ahead), ("unpushed", 1), "{g:?}");
+        assert!(g.est_bytes > 0);
+
+        git(&a, &["checkout", "-q", "--detach"]);
+        assert_eq!(handoff_git_state(st(&a)).kind, "detached");
+    }
+
+    #[test]
+    fn a_snapshot_leaves_status_alone_and_secrets_behind() {
+        let (_root, a, _b) = trio();
+        std::fs::write(a.join("README"), "two\n").unwrap();
+        std::fs::write(a.join("new.txt"), "n\n").unwrap();
+        std::fs::write(a.join(".env"), "TOKEN=x\n").unwrap();
+        std::fs::create_dir_all(a.join("sub")).unwrap();
+        std::fs::write(a.join("sub/key.pem"), "k\n").unwrap();
+        let status = || said(&a, &["status", "--porcelain=v2", "--branch"]);
+        let before = status();
+
+        let (sha, left) = handoff_snapshot(&st(&a), HID).expect("snapshot");
+        let sha = sha.expect("there is something to snapshot");
+        assert_eq!(status(), before, "the checkout's own index is untouched");
+        assert_eq!(left, vec![".env".to_string(), "sub/key.pem".to_string()]);
+        let files = said(&a, &["ls-tree", "-r", "--name-only", &sha]);
+        assert!(files.lines().any(|l| l == "new.txt"), "{files}");
+        assert!(!files.contains(".env") && !files.contains("key.pem"), "{files}");
+        assert_eq!(said(&a, &["show", &format!("{sha}:README")]), "two");
+        assert_eq!(said(&a, &["rev-parse", &format!("{sha}^")]), said(&a, &["rev-parse", "HEAD"]));
+        assert_eq!(said(&a, &["rev-parse", &handoff_ref(HID)]), sha);
+        let gitdir = said(&a, &["rev-parse", "--absolute-git-dir"]);
+        assert!(!Path::new(&gitdir).join(format!("episko-handoff-{HID}.index")).exists());
+
+        let (_root, a2, _b) = trio();
+        std::fs::write(a2.join(".env"), "TOKEN=x\n").unwrap();
+        assert_eq!(handoff_snapshot(&st(&a2), HID), Ok((None, vec![".env".to_string()])), "only a secret moved");
+        assert!(handoff_snapshot(&st(&a2), "../x").is_err());
+    }
+
+    #[test]
+    fn a_bundle_carries_the_unpushed_commit_and_the_snapshot_onto_a_fresh_branch() {
+        let (root, a, b) = trio();
+        let pushed = said(&a, &["rev-parse", "HEAD"]);
+        ci(&a, "local.txt", "l\n", "unpushed");
+        let head = said(&a, &["rev-parse", "HEAD"]);
+        std::fs::write(a.join("README"), "dirty\n").unwrap();
+        let sha = handoff_snapshot(&st(&a), HID).unwrap().0.unwrap();
+        let file = root.join("h.bundle");
+        assert_eq!(handoff_bundle(&st(&a), HID, &sha, &file), Ok(Some(vec![pushed])));
+
+        assert_eq!(handoff_receive(&st(&b), HID, &HandoffSrc::Bundle(file)), Ok(sha));
+        let done = handoff_apply(&st(&b), HID, &meta("bundle", Some("main"), &head, true)).expect("applied");
+        assert_eq!(done.branch, "handoff/0f1e2d3c", "main is taken here, so the branch is renamed");
+        let wt = Path::new(&done.worktree);
+        assert_eq!(said(wt, &["rev-parse", "HEAD"]), head, "the unpushed commit came along");
+        assert_eq!(said(wt, &["status", "--porcelain"]), "M README", "the snapshot is uncommitted again");
+        assert_eq!(said(&b, &["for-each-ref", "refs/episko"]), "", "the local ref is gone");
+    }
+
+    #[test]
+    fn nothing_unpushed_is_an_empty_bundle() {
+        let (root, a, _b) = trio();
+        let file = root.join("h.bundle");
+        assert_eq!(handoff_bundle(&st(&a), HID, &said(&a, &["rev-parse", "HEAD"]), &file), Ok(None));
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_stale_recipient_fetches_what_the_bundle_needs_and_a_cut_off_one_is_refused() {
+        let (root, a, b) = trio();
+        ci(&a, "x.txt", "x\n", "pushed later");
+        git(&a, &["push", "-q"]);
+        ci(&a, "y.txt", "y\n", "unpushed");
+        let file = root.join("h.bundle");
+        let head = said(&a, &["rev-parse", "HEAD"]);
+        assert!(handoff_bundle(&st(&a), HID, &head, &file).unwrap().is_some());
+
+        // A clone that never saw the pushed commit and cannot reach the remote any more.
+        let cut = root.join("c");
+        git(&root, &["init", "-q", "c"]);
+        git(&cut, &["fetch", "-q", &st(&b), "main:main"]);
+        git(&cut, &["remote", "add", "origin", &st(&root.join("gone.git"))]);
+        let refused = handoff_receive(&st(&cut), HID, &HandoffSrc::Bundle(file.clone()));
+        assert!(refused.as_ref().is_err_and(|e| e.contains("lacks")), "{refused:?}");
+
+        assert_eq!(handoff_receive(&st(&b), HID, &HandoffSrc::Bundle(file)), Ok(head), "the fetch brought the prerequisite");
+    }
+
+    #[test]
+    fn a_wip_branch_round_trip_leaves_a_dirty_worktree_and_no_handoff_refs() {
+        let (_root, a, b) = trio();
+        git(&a, &["checkout", "-q", "-b", "feat"]);
+        ci(&a, "f.txt", "f\n", "feat work");
+        let head = said(&a, &["rev-parse", "HEAD"]);
+        std::fs::write(a.join("README"), "edited\n").unwrap();
+        std::fs::write(a.join("new.txt"), "n\n").unwrap();
+        let sha = handoff_snapshot(&st(&a), HID).unwrap().0.unwrap();
+        assert_eq!(handoff_push_wip(&st(&a), HID, &sha), Ok("origin".to_string()));
+
+        assert_eq!(handoff_receive(&st(&b), HID, &HandoffSrc::Remote), Ok(sha));
+        let done = handoff_apply(&st(&b), HID, &meta("branch", Some("feat"), &head, true)).expect("applied");
+        assert_eq!((done.branch.as_str(), done.leftover.as_deref()), ("feat", None));
+        let wt = Path::new(&done.worktree);
+        assert_eq!(said(wt, &["rev-parse", "HEAD"]), head);
+        let dirty = said(wt, &["status", "--porcelain"]);
+        assert!(dirty.contains("M README") && dirty.contains("?? new.txt"), "{dirty}");
+        assert_eq!(said(&b, &["ls-remote", "origin", &format!("refs/heads/handoff/{HID}")]), "", "the remote branch is deleted");
+        assert_eq!(said(&b, &["for-each-ref", "refs/episko"]), "");
+    }
+
+    #[test]
+    fn a_snapshot_on_another_parent_is_refused() {
+        let (_root, a, b) = trio();
+        let pushed = said(&a, &["rev-parse", "HEAD"]);
+        ci(&a, "z.txt", "z\n", "not what the meta says");
+        std::fs::write(a.join("README"), "dirty\n").unwrap();
+        let sha = handoff_snapshot(&st(&a), HID).unwrap().0.unwrap();
+        handoff_push_wip(&st(&a), HID, &sha).unwrap();
+        handoff_receive(&st(&b), HID, &HandoffSrc::Remote).unwrap();
+        let err = handoff_apply(&st(&b), HID, &meta("branch", Some("feat"), &pushed, true));
+        assert!(err.as_ref().is_err_and(|e| e.contains("does not sit on")), "{err:?}");
+    }
 }
