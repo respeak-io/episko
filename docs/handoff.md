@@ -63,6 +63,12 @@ blobs die on schedule after the switch is turned off.
 The local verdicts `returned` and `refused` are final: a later word from the server cannot
 reopen them, because the session may already have been resumed here (`applyInfo`).
 
+Cancel is local only until `handoff_send` puts the offer on the socket. From then on the sheet
+cannot be closed and ↶ sends a recall, settled by the server's `recalled`; settling locally
+would delete staging an upload still reads, and the next `info` would rebuild the record. A
+settle deletes the remote `handoff/<id>` branch only when the staged meta says one was
+pushed, and a confirmed *returned* keeps it, since the recipient may have claimed it.
+
 ### Recipient (`dir: "in"`)
 
 `offered` arrives → *Resume here* claims → the app downloads and checks the sha256 (one

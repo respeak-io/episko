@@ -868,6 +868,11 @@ fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[S
     Ok(Installed { workdir, resume_id: man.resume_id, branch, worktree })
 }
 
+/// Whether the staged send pushed a `handoff/<id>` branch; only then is a remote delete worth a push.
+fn pushed_branch(stage: &Path, id: &str) -> bool {
+    read_json::<OutRec>(&staged(stage, "out", id, "json")).is_some_and(|r| r.meta.pointer("/git/via").and_then(Value::as_str) == Some("branch"))
+}
+
 #[allow(clippy::too_many_arguments)] // the command's own arguments, plus where to read and write
 fn settle_in(stage: &Path, archive: &Path, base: &Path, id: &str, dir: &str, workdir: Option<&str>, resume_id: Option<&str>, keep: bool) -> Result<(), String> {
     if !uuid_shaped(id) {
@@ -881,7 +886,7 @@ fn settle_in(stage: &Path, archive: &Path, base: &Path, id: &str, dir: &str, wor
             }
             // Taken back or refused: nobody will fetch the pushed branch, so it goes too.
             if let Some(wd) = workdir {
-                if let Err(e) = git::handoff_forget(wd, id, !keep) {
+                if let Err(e) = git::handoff_forget(wd, id, !keep && pushed_branch(stage, id)) {
                     log::warn!("handoff {id}: {e}");
                 }
             }
@@ -1349,6 +1354,12 @@ mod tests {
     fn settling_clears_staging_and_old_archives_go() {
         let stage = scratch_dir();
         stage_out(&stage, ID, b"abc", "ben");
+        assert!(!pushed_branch(&stage, ID), "no git meta: nothing was pushed");
+        let jp = staged(&stage, "out", ID, "json");
+        let mut rec: OutRec = read_json(&jp).unwrap();
+        rec.meta = json!({"v": 1, "git": {"via": "branch"}});
+        write_json(&jp, &rec).unwrap();
+        assert!(pushed_branch(&stage, ID));
         settle_in(&stage, &stage.join("handed"), &stage, ID, "out", None, None, false).unwrap();
         assert!(!staged(&stage, "out", ID, "json").exists() && !staged(&stage, "out", ID, "epkh").exists());
         assert!(settle_in(&stage, &stage, &stage, ID, "out", None, None, true).is_err(), "an archive needs a session");

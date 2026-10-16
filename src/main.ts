@@ -523,7 +523,7 @@ setSyncHost({
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
   review: () => { refreshReview(); openReview(); },
 });
-setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); settleDue(); }, caps: applyHandoffCaps });
+setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); settleDue(ev); }, caps: applyHandoffCaps });
 setHandoffHost({ stopForTranscript, shelve: shelveSession, forgetDormant, saveHandoffs, renderAll });
 applyHandoffCaps(); // no server heard yet: a persisted open offer starts locked
 setReviewReload(reloadUi);
@@ -987,7 +987,7 @@ setInterval(refreshExternals, 3000);
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
 // After the roster: an outcome heard just before the last quit removes the row it settles.
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(settleDue));
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 

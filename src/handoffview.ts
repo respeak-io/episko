@@ -29,37 +29,42 @@ export function sendSheetHtml(v: SendView): string {
     ${foot("esc cancel", btn("close", "Cancel", "ghost") + btn("go", v.live ? "Stop and continue" : "Continue", "go", v.pick === null ? "Choose who takes it" : ""))}`;
 }
 
-export function briefingHtml(who: string): string {
-  return `<p class="hand-note"><span class="hand-spin" aria-hidden="true"></span>Writing a brief for ${esc(who)} from the conversation…</p>
-    ${foot("nothing is typed into the session", btn("cancel", "Cancel", "ghost") + btn("skip", "Skip the brief", "ghost"))}`;
+/** While the session stops there is nothing to skip yet; the brief is only asked for after. */
+export function briefingHtml(who: string, stopping: boolean): string {
+  const what = stopping ? "Stopping the session…" : `Writing a brief for ${esc(who)} from the conversation…`;
+  return `<p class="hand-note"><span class="hand-spin" aria-hidden="true"></span>${what}</p>
+    ${foot("nothing is typed into the session", btn("cancel", "Cancel", "ghost") + (stopping ? "" : btn("skip", "Skip the brief", "ghost")))}`;
 }
 
 export interface ReviewView {
-  who: string; brief: Brief; briefNote: string; options: GitOption[] | null; pick: string | null; gitNote: string;
-  ttlHours: number; maxBytes: number; err: string; busy: boolean;
+  who: string; options: GitOption[] | null; pick: string | null; gitNote: string;
+  ttlHours: number; maxBytes: number; err: string; busy: boolean; offering: boolean;
 }
 const lines = (xs: string[]) => esc(xs.join("\n"));
-/** Step 2: the brief to edit, how the code travels, and the warning nobody can dismiss. */
-export function reviewSheetHtml(v: ReviewView): string {
+/** Step 2's brief, painted once per sheet: a repaint would replace the field being typed into. */
+export function reviewBriefHtml(who: string, brief: Brief, note: string): string {
   const field = (k: keyof Brief, label: string, value: string, rows: number) =>
     `<label class="hand-f"><span>${esc(label)}</span><textarea data-hbrief="${k}" rows="${rows}" spellcheck="false">${value}</textarea></label>`;
+  return `<div class="hand-sec"><span class="label">Brief for ${esc(who)}</span>${note ? `<span class="sync-dim">${esc(note)}</span>` : ""}</div>
+    ${field("summary", "What it was doing", esc(brief.summary), 3)}
+    ${field("state", "Where it stands", esc(brief.state), 2)}
+    ${field("next_steps", "Next steps, one per line", lines(brief.next_steps), 3)}
+    ${field("open_questions", "Open questions, one per line", lines(brief.open_questions), 2)}`;
+}
+/** The rest of step 2: how the code travels, and the warning nobody can dismiss. */
+export function reviewRestHtml(v: ReviewView): string {
   const git = v.options === null
     ? `<div class="sync-dim"><span class="hand-spin" aria-hidden="true"></span>Reading the checkout…</div>`
     : v.options.map((o) => `<label class="hand-g${o.disabled ? " dis" : ""}"${o.disabled ? ` title="${escAttr(o.disabled)}"` : ""}>
-        <input type="radio" name="handgit" data-hand="git|${o.id}"${v.pick === o.id ? " checked" : ""}${o.disabled ? " disabled" : ""}>
+        <input type="radio" name="handgit" data-hand="git|${o.id}"${v.pick === o.id ? " checked" : ""}${o.disabled || v.busy ? " disabled" : ""}>
         <span>${esc(o.label)}${o.disabled ? ` <span class="sync-dim">· ${esc(o.disabled)}</span>` : ""}</span></label>`).join("");
   const blocked = v.busy ? "Sending…" : v.options === null ? "Still reading the checkout" : v.pick === null ? "Choose how the code travels" : "";
-  return `<div class="hand-sec"><span class="label">Brief for ${esc(v.who)}</span>${v.briefNote ? `<span class="sync-dim">${esc(v.briefNote)}</span>` : ""}</div>
-    ${field("summary", "What it was doing", esc(v.brief.summary), 3)}
-    ${field("state", "Where it stands", esc(v.brief.state), 2)}
-    ${field("next_steps", "Next steps, one per line", lines(v.brief.next_steps), 3)}
-    ${field("open_questions", "Open questions, one per line", lines(v.brief.open_questions), 2)}
-    <div class="hand-sec"><span class="label">Code</span>${v.gitNote ? `<span class="sync-dim">${esc(v.gitNote)}</span>` : ""}</div>
+  return `<div class="hand-sec"><span class="label">Code</span>${v.gitNote ? `<span class="sync-dim">${esc(v.gitNote)}</span>` : ""}</div>
     <div class="hand-gs">${git}</div>
     <div class="hand-priv">${esc(PRIVACY(v.ttlHours))}</div>
     <div class="sync-dim">This server takes up to ${esc(mib(v.maxBytes))}. Files like <span class="mono">.env</span> and keys are left out of a snapshot.</div>
     ${v.err ? `<div class="sync-err">${esc(v.err)}</div>` : ""}
-    ${foot(`to ${v.who}`, btn("cancel", "Cancel", "ghost") + btn("send", v.busy ? "Sending…" : "Send", "go", blocked))}`;
+    ${foot(`to ${v.who}`, btn("cancel", "Cancel", "ghost", v.offering ? "It is already on its way; take it back from its row" : "") + btn("send", v.busy ? "Sending…" : "Send", "go", blocked))}`;
 }
 
 /** A sent session whose handover finished: the shelved row's shape, cleared with ✕. */

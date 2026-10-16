@@ -91,7 +91,7 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
     // discovered via an external session or a shelved one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
-      : `<span class="pcount ext">${p.dormants.length} shelved</span>`;
+      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : "handed"}</span>`;
     head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
   }
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;

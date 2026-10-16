@@ -7,9 +7,9 @@ import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
   clampBrief, gitChoices, handoffBusy, lostOnHandoff, peerName, rowText, sendGate, targets,
-  type Brief, type HandoffGit, type HandoffRec, type Peer, type Target,
+  type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Peer, type Target,
 } from "./handoff";
-import { briefingHtml, reviewSheetHtml, sendSheetHtml } from "./handoffview";
+import { briefingHtml, reviewBriefHtml, reviewRestHtml, sendSheetHtml } from "./handoffview";
 import { dormants, handoffs, sessions } from "./state";
 import { devices, handoffDevices, onlineDevices, serverHandoff, status as syncStatus } from "./synclink";
 import { dormantBusy } from "./grouping";
@@ -26,17 +26,23 @@ let host: {
 export function setHandoffHost(h: typeof host) { host = h; }
 
 interface Packed { size: number; parts: number; sha256: string; left_behind: string[] }
-type Step = "pick" | "brief" | "review" | "sending";
+type Step = "pick" | "stopping" | "brief" | "review" | "sending";
 interface Sheet {
   src: string; live: boolean; title: string; project: string; workdir: string; colorKey: string; resumeId: string;
   step: Step; targets: Target[]; pick: number | null; warnings: string[];
   git: HandoffGit | null; gitErr: string; gitPick: string | null;
   hid: string | null; brief: Brief; briefNote: string; err: string; gen: number;
+  /** `handoff_send` was called: closing can no longer stop it, only a recall can. */
+  offering: boolean;
 }
 let sheet: Sheet | null = null;
 let gen = 0;
 let painted = "";
+let paintedRest = "";
 const settling = new Set<string>();
+// Ids whose offer went to the socket this run: their ↶ is a server recall, never a local settle.
+const offered = new Set<string>();
+const heldSeen = new Set<string>();
 
 const me = () => ({ user: syncStatus.user, device: syncStatus.device });
 const currentTargets = () => targets(devices, handoffDevices, me(), onlineDevices());
@@ -78,7 +84,7 @@ export function openSend(id: string) {
     src: id, live: !!s, title: (s ? s.title : d!.title) || (s ? s.project : d!.project), project: s ? s.project : d!.project,
     workdir: at.workdir, colorKey: s ? s.colorKey : d!.colorKey, resumeId: s ? s.resumeId || s.id : d!.resumeId,
     step: "pick", targets: list, pick: ready.length === 1 ? list.indexOf(ready[0]) : null, warnings,
-    git: null, gitErr: "", gitPick: null, hid: null, brief: clampBrief({}), briefNote: "", err: "", gen: ++gen,
+    git: null, gitErr: "", gitPick: null, hid: null, brief: clampBrief({}), briefNote: "", err: "", gen: ++gen, offering: false,
   };
   const mine = sheet.gen;
   invoke<HandoffGit>("handoff_git_state", { workdir: sheet.workdir }).then((g) => {
@@ -101,26 +107,36 @@ function paint() {
   if (!sheet) return;
   const who = sheet.pick === null ? "" : sheet.targets[sheet.pick]?.label ?? "";
   $("handTitle").textContent = sheet.step === "pick" ? "Send to…" : `Send to ${who}`;
-  let html: string;
-  if (sheet.step === "pick") html = sendSheetHtml({ title: sheet.title, project: sheet.project, targets: sheet.targets, pick: sheet.pick, warnings: sheet.warnings, live: sheet.live });
-  else if (sheet.step === "brief") html = briefingHtml(who);
-  else {
-    const ch = sheet.git ? gitChoices(sheet.git, serverHandoff?.max_bytes ?? 0) : null;
-    const options = sheet.gitErr ? [{ id: "none" as const, label: "Send only the conversation" }] : ch?.options ?? null;
-    html = reviewSheetHtml({
-      who, brief: sheet.brief, briefNote: sheet.briefNote, options, pick: sheet.gitErr ? "none" : sheet.gitPick,
-      gitNote: sheet.gitErr ? `Couldn't read the checkout: ${sheet.gitErr}` : ch?.note ?? "",
-      ttlHours: Math.round((serverHandoff?.ttl_ms ?? 72 * 3_600_000) / 3_600_000), maxBytes: serverHandoff?.max_bytes ?? 0,
-      err: sheet.err, busy: sheet.step === "sending",
-    });
-  }
+  if (sheet.step === "review" || sheet.step === "sending") { paintReview(sheet, who); return; }
+  const html = sheet.step === "pick"
+    ? sendSheetHtml({ title: sheet.title, project: sheet.project, targets: sheet.targets, pick: sheet.pick, warnings: sheet.warnings, live: sheet.live })
+    : briefingHtml(who, sheet.step === "stopping");
   if (html !== painted) { painted = html; $("handBody").innerHTML = html; }
 }
 
+// The brief is painted once per sheet; everything after it repaints on its own guard.
+function paintReview(sh: Sheet, who: string) {
+  const frame = `review|${sh.gen}`;
+  if (painted !== frame) {
+    painted = frame;
+    paintedRest = "";
+    $("handBody").innerHTML = `${reviewBriefHtml(who, sh.brief, sh.briefNote)}<div id="handRest"></div>`;
+  }
+  const ch = sh.git ? gitChoices(sh.git, serverHandoff?.max_bytes ?? 0) : null;
+  const options = sh.gitErr ? [{ id: "none" as const, label: "Send only the conversation" }] : ch?.options ?? null;
+  const rest = reviewRestHtml({
+    who, options, pick: sh.gitErr ? "none" : sh.gitPick,
+    gitNote: sh.gitErr ? `Couldn't read the checkout: ${sh.gitErr}` : ch?.note ?? "",
+    ttlHours: Math.round((serverHandoff?.ttl_ms ?? 72 * 3_600_000) / 3_600_000), maxBytes: serverHandoff?.max_bytes ?? 0,
+    err: sh.err, busy: sh.step === "sending", offering: sh.offering,
+  });
+  if (rest !== paintedRest) { paintedRest = rest; $("handRest").innerHTML = rest; }
+}
+
 export function closeHandoff() {
-  if (!sheet) return;
+  if (!sheet || sheet.offering) return; // on its way: only the row's ↶ can stop it now
   // Once the session is stopped, closing is Cancel: the record goes and the row stays shelved.
-  if (sheet.hid && (sheet.step === "brief" || sheet.step === "review")) void cancelPacking(sheet.hid, true);
+  if (sheet.hid && sheet.step !== "pick") void cancelPacking(sheet.hid, sheet.step !== "sending");
   sheet = null;
   $("handoffDlg").classList.remove("show");
   dropScrim();
@@ -133,7 +149,7 @@ async function proceed() {
   if (sh.live) {
     const s = sessions.get(sh.src);
     if (!s) { toast("That session is gone"); closeHandoff(); return; }
-    sh.step = "brief";
+    sh.step = "stopping";
     paint();
     await host.stopForTranscript(sh.src);
     if (!host.shelve(sh.src) || sheet !== sh) { if (sheet === sh) closeHandoff(); return; }
@@ -174,12 +190,24 @@ async function send() {
       meta: { title: sh.title, project: sh.project, ...(empty ? {} : { brief }) },
     });
     // Cancelled from its row while packing: what was just staged must not be offered later.
-    if (!recOf(hid)) { void settleOut(hid, sh.workdir, sh.resumeId, false); return; }
-    const sent = await invoke<boolean>("handoff_send", { id: hid, toUser: t.user, toDevice: t.mine ? t.device ?? null : null });
+    if (!recOf(hid)) { void settleOut(hid, sh.workdir, sh.resumeId, false).catch(() => {}); return; }
+    sh.offering = true;
+    offered.add(hid);
+    if (sheet === sh) paint();
+    let sent: boolean;
+    try {
+      sent = await invoke<boolean>("handoff_send", { id: hid, toUser: t.user, toDevice: t.mine ? t.device ?? null : null });
+    } catch (e) {
+      offered.delete(hid);
+      sh.offering = false;
+      throw e;
+    }
+    if (!sent) offered.delete(hid); // nothing reached the socket: a cancel may still settle it here
     if (sheet === sh) { sheet = null; $("handoffDlg").classList.remove("show"); dropScrim(); }
     const left = packed.left_behind.length ? ` · left behind: ${packed.left_behind.slice(0, 3).join(", ")}${packed.left_behind.length > 3 ? "…" : ""}` : "";
     toast((sent ? `Sending to ${t.label}` : `Packed · it goes to ${t.label} when sync reconnects`) + left);
   } catch (e) {
+    if (!recOf(hid)) return; // cancelled meanwhile, and already said so
     if (sheet !== sh) { toast(`Not sent: ${errText(e)}`); return; }
     sh.step = "review";
     sh.err = errText(e);
@@ -195,8 +223,11 @@ function settleOut(id: string, workdir: string | undefined, resumeId: string | n
 async function cancelPacking(id: string, quiet = false) {
   const r = recOf(id);
   if (!r) return;
+  if (offered.has(id)) {
+    // The offer is on the socket ahead of this recall; the server's `recalled` settles it.
+    try { await invoke("handoff_recall", { id }); toast("Taking it back…"); return; } catch { offered.delete(id); }
+  }
   save(handoffs.filter((x) => x.id !== id));
-  await invoke("handoff_recall", { id }).catch(() => {});
   await settleOut(id, r.checkout, null, false).catch((e) => dlog("warn", `handoff ${id.slice(0, 8)}: ${errText(e)}`));
   if (!quiet) toast("Cancelled · the session stays on your shelf");
 }
@@ -234,7 +265,9 @@ export async function confirmReturned(resumeId: string): Promise<boolean> {
   );
   if (!ok) return false;
   save(handoffs.filter((x) => x.id !== r.id));
-  void settleOut(r.id, r.checkout, null, false).catch(() => {});
+  // The recipient may have claimed it, so its pushed branch stays; only this machine's refs go.
+  if (r.checkout) void invoke("handoff_git_cleanup", { workdir: r.checkout, id: r.id, remoteBranch: false }).catch(() => {});
+  void settleOut(r.id, undefined, null, false).catch(() => {});
   return true;
 }
 
@@ -246,13 +279,22 @@ const BACK_TEXT: Record<string, (who: string, r: HandoffRec) => string> = {
 };
 
 /** Acts on every sent record whose outcome is in: after each event, and once at boot. */
-export function settleDue() {
+export function settleDue(ev?: HandoffEv) {
+  if (ev?.kind === "refused") noteHeld(ev.id, ev.message);
   for (const r of handoffs) {
     if (r.dir !== "out" || settling.has(r.id)) continue;
     if (r.state === "done" && !r.settled) void settleDone(r);
     else if (r.state === "done") dropShelved(r); // a roster read after the settle brought it back
     else if (BACK_TEXT[r.state]) void settleBack(r);
   }
+}
+
+// A refusal that leaves the send open (quota) says so once; a final one gets settleBack's toast.
+function noteHeld(id: string, message: string) {
+  const r = recOf(id);
+  if (!r || r.dir !== "out" || (r.state !== "packing" && r.state !== "uploading") || heldSeen.has(`${id}|${message}`)) return;
+  heldSeen.add(`${id}|${message}`);
+  toast(`Held by the server: ${message} · ↶ on its row cancels`);
 }
 
 function dropShelved(r: HandoffRec) {
@@ -295,7 +337,7 @@ $("handBody").addEventListener("click", (e) => {
   if (verb === "pick") { sheet.pick = Number(arg); paint(); }
   else if (verb === "git") { sheet.gitPick = arg; paint(); }
   else if (verb === "go") void proceed();
-  else if (verb === "skip" && sheet.step === "brief") { sheet.step = "review"; paint(); }
+  else if (verb === "skip" && sheet.step === "brief" && sheet.hid) { sheet.step = "review"; paint(); }
   else if (verb === "send") void send();
   else if (verb === "close" || verb === "cancel") closeHandoff();
 });

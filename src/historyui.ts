@@ -16,6 +16,7 @@ import {
   type HistEntry,
 } from "./history";
 import { askedHtml } from "./inspectorview";
+import { confirmReturned } from "./handoffui";
 
 let histAll: HistEntry[] = [];
 let histRows: HistEntry[] = [];   // what's on screen, after scope + search
@@ -205,8 +206,12 @@ export function histResume(h: HistEntry | undefined) {
   if (histBusy(h)) { toast("That session is running right now"); return; }
   if (!h.exists) { toast(`${basename(h.cwd)} no longer exists`); return; }
   const p = histProject(h);
-  closeHistory();
-  void launch(p.project, h.cwd, { colorKey: p.colorKey, worktree: p.worktree, branch: h.branch, resume: h.session_id, resumeProvider: h.provider });
+  // A session handed out with no word back asks first, here as on its shelved row.
+  void confirmReturned(h.session_id).then((ok) => {
+    if (!ok) return;
+    closeHistory();
+    void launch(p.project, h.cwd, { colorKey: p.colorKey, worktree: p.worktree, branch: h.branch, resume: h.session_id, resumeProvider: h.provider });
+  });
 }
 
 // ---------- the dialog's own events ----------

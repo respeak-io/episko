@@ -376,8 +376,9 @@ export function rowText(r: HandoffRec, now: number, name: (device: string) => st
   if (r.dir === "out") {
     if (r.unknownSince && OPEN.includes(r.state)) return { tag: `→ ${who} · outcome unknown`, title, actions: [] };
     switch (r.state) {
-      case "packing": return { tag: `preparing for ${who}…`, title, actions: ["cancel"] };
-      case "uploading": return { tag: `→ ${who} · sending${pct(r.progress)}`, title, actions: ["takeback"] };
+      // A refusal the server may yet take back (quota) holds the send; the row says why.
+      case "packing": return { tag: r.reason ? `→ ${who} · held: ${r.reason}` : `preparing for ${who}…`, title, actions: ["cancel"] };
+      case "uploading": return { tag: r.reason ? `→ ${who} · held: ${r.reason}` : `→ ${who} · sending${pct(r.progress)}`, title, actions: ["takeback"] };
       case "offered": return { tag: `→ ${who} · waiting${left > 0 ? `, ${left}h left` : ""}`, title, actions: ["takeback"] };
       case "claimed": return { tag: `${who} is picking it up`, title, actions: [] };
       case "done": return { tag: `handed to ${who}`, title, actions: ["dismiss"] };

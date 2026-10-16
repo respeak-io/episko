@@ -322,4 +322,8 @@ describe("rowText", () => {
     expect(rowText(out({ state: "done" }), NOW).actions).toEqual(["dismiss"]);
     expect(rowText(out({ state: "offered", unknownSince: NOW }), NOW).tag).toBe("→ ben · outcome unknown");
   });
+  it("names a refusal that only holds the send", () => {
+    expect(rowText(out({ state: "uploading", reason: "over quota" }), NOW)).toMatchObject({ tag: "→ ben · held: over quota", actions: ["takeback"] });
+    expect(rowText(out({ reason: "over quota" }), NOW)).toMatchObject({ tag: "→ ben · held: over quota", actions: ["cancel"] });
+  });
 });
