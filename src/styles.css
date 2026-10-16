@@ -2018,7 +2018,7 @@ select.in-ctl { cursor: pointer; }
 @keyframes u-spin { to { transform: rotate(360deg); } }
 @keyframes u-shimmer { 0% { background-position: 200px 0; } 100% { background-position: -200px 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .u-spin { animation: none; border-top-color: var(--accent); }
+  .u-spin { animation: none; border: 1.5px dotted var(--accent); } /* a still arc reads as frozen */
   .u-skel, .u-skelbar, .db-sk { animation: none; }
 }
 
@@ -3880,7 +3880,7 @@ select.in-ctl { cursor: pointer; }
 :root.fx-still .srow.lit { background: color-mix(in srgb, var(--lit-c, var(--st-done)) 18%, transparent); }
 :root.fx-still .pgroup.arming .parm { opacity: 0; }
 :root.fx-still .wt-sk i { opacity: .6; }
-:root.fx-still .u-spin { border-top-color: var(--accent); }
+:root.fx-still .u-spin { border: 1.5px dotted var(--accent); }
 
 /* ---- fx-idle: paused while the window is in the background. animation-play-state, not cancellation:
    a pulse must come back mid-cycle. Transitions are left alone; pausing one would strand a fade. ---- */
