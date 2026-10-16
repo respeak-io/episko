@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
   id TEXT PRIMARY KEY, ws TEXT NOT NULL, from_user TEXT NOT NULL, from_device TEXT NOT NULL,
   to_user TEXT NOT NULL, to_device TEXT, state TEXT NOT NULL, taker TEXT, meta TEXT NOT NULL,
   size INTEGER NOT NULL, parts INTEGER NOT NULL, sha256 TEXT NOT NULL, created INTEGER NOT NULL,
-  expires INTEGER NOT NULL, updated INTEGER NOT NULL, closed INTEGER);
+  expires INTEGER NOT NULL, updated INTEGER NOT NULL, closed INTEGER, offered INTEGER);
 CREATE INDEX IF NOT EXISTS handoffs_to ON handoffs (ws, to_user);
 CREATE INDEX IF NOT EXISTS handoffs_from ON handoffs (ws, from_user);
 CREATE TABLE IF NOT EXISTS handoff_parts (id TEXT NOT NULL, part INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (id, part));
@@ -127,6 +127,11 @@ impl Store {
         let tokens_exist = conn.prepare("SELECT 1 FROM tokens LIMIT 0").is_ok();
         if tokens_exist && conn.prepare("SELECT features FROM tokens LIMIT 0").is_err() {
             conn.execute_batch("ALTER TABLE tokens ADD COLUMN features TEXT NOT NULL DEFAULT ''")?;
+        }
+        // `offered` stamps the seal, so a recipient never hears of an upload that never finished.
+        let handoffs_exist = conn.prepare("SELECT 1 FROM handoffs LIMIT 0").is_ok();
+        if handoffs_exist && conn.prepare("SELECT offered FROM handoffs LIMIT 0").is_err() {
+            conn.execute_batch("ALTER TABLE handoffs ADD COLUMN offered INTEGER")?;
         }
         conn.execute_batch(SCHEMA)?;
         Ok(Store { conn: Mutex::new(conn) })
@@ -566,7 +571,7 @@ impl Store {
                 tx.commit()?;
                 return refused(HandoffErr::Checksum, "the parts do not hash to the offered sha256; send them again");
             }
-            tx.execute("UPDATE handoffs SET state = 'offered' WHERE id = ?1 AND state = 'uploading'", params![id])?;
+            tx.execute("UPDATE handoffs SET state = 'offered', offered = ?2 WHERE id = ?1 AND state = 'uploading'", params![id, now])?;
         }
         let h = mine(&tx, who, id)?;
         tx.commit()?;
@@ -651,12 +656,12 @@ impl Store {
     }
 
     /// Every handoff a person sends or receives, oldest first, closed ones included. A recipient
-    /// never sees one still uploading, and only the sending machine sees `have`.
+    /// sees only what was once offered to it, and only the sending machine sees `have`.
     pub fn handoffs_for(&self, who: &Identity) -> rusqlite::Result<Vec<HandoffInfo>> {
         let db = self.db();
         let mut q = db.prepare(&format!(
             "SELECT {COLS} FROM handoffs WHERE ws = ?1 AND (lower(from_user) = lower(?2)
-               OR (lower(to_user) = lower(?2) AND state != 'uploading')) ORDER BY created, id"
+               OR (lower(to_user) = lower(?2) AND offered IS NOT NULL)) ORDER BY created, id"
         ))?;
         let rows = q.query_map(params![who.ws, who.user], row_info)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::with_capacity(rows.len());
@@ -665,6 +670,15 @@ impl Store {
             out.push(h);
         }
         Ok(out)
+    }
+
+    /// Whether the recipient may hear of this record: only once it was sealed and offered.
+    pub fn handoff_reached_recipient(&self, h: &HandoffInfo) -> rusqlite::Result<bool> {
+        match h.state {
+            HandoffState::Uploading => Ok(false),
+            HandoffState::Offered | HandoffState::Claimed | HandoffState::Done | HandoffState::Declined => Ok(true),
+            _ => self.db().query_row("SELECT offered IS NOT NULL FROM handoffs WHERE id = ?1", params![h.id], |r| r.get(0)).optional().map(|o| o.unwrap_or(false)),
+        }
     }
 
     /// Open handoffs past their TTL expire and lose their parts; closed rows past the keep go.
@@ -1085,6 +1099,20 @@ mod tests {
         assert!(t.s.handoffs_for(&t.ana).unwrap().is_empty());
         t.s.handoff_put(&t.lap, &uid(1), 1, &data[HANDOFF_PART..], 2).unwrap();
         assert_eq!(t.s.handoffs_for(&t.ana).unwrap()[0].state, HandoffState::Offered);
+    }
+
+    #[test]
+    fn an_upload_that_never_sealed_never_reaches_the_recipient_even_once_closed() {
+        let t = team();
+        let data = blob(HANDOFF_PART + 10);
+        t.s.handoff_offer(&t.lap, &offer(1, "Ana", &data), &CFG, 0).unwrap();
+        let unsent = t.s.handoff_recall(&t.lap, &uid(1), 1).unwrap();
+        assert!(!t.s.handoff_reached_recipient(&unsent).unwrap());
+        assert!(t.s.handoffs_for(&t.ana).unwrap().is_empty(), "no phantom notice of a recall");
+        let (id, _) = offered(&t, 2);
+        let taken_back = t.s.handoff_recall(&t.lap, &id, 20).unwrap();
+        assert!(t.s.handoff_reached_recipient(&taken_back).unwrap());
+        assert_eq!(t.s.handoffs_for(&t.ana).unwrap()[0].state, HandoffState::Recalled);
     }
 
     #[test]

@@ -90,12 +90,11 @@ impl Hub {
         (id, rx)
     }
     /// A handoff changed: both people hear it, but only on connections that said they speak it.
-    /// A recipient never sees an upload in progress, and only the sending machine sees `have`.
-    fn handoff(&self, ws: &str, info: &HandoffInfo) {
+    /// The recipient hears only what was once offered to it; only the sending machine sees `have`.
+    fn handoff(&self, ws: &str, info: &HandoffInfo, offered: bool) {
         for s in guard(&self.subs).iter().filter(|s| s.who.ws == ws && s.speaks(FEATURE_HANDOFF)) {
             let sender = s.who.user.eq_ignore_ascii_case(&info.from_user);
-            if !sender && !s.who.user.eq_ignore_ascii_case(&info.to_user) { continue; }
-            if !sender && info.state == HandoffState::Uploading { continue; }
+            if !sender && (!offered || !s.who.user.eq_ignore_ascii_case(&info.to_user)) { continue; }
             let mut info = info.clone();
             if s.who.device != info.from_device { info.have.clear(); }
             let _ = s.tx.send(Out::Msg(ServerMsg::Handoff { info: Box::new(info) }));
@@ -179,11 +178,19 @@ fn sweep_handoffs(store: &Store, hub: &Hub, now: i64) {
         Ok(moved) => {
             for (ws, info) in moved {
                 eprintln!("[episko-server] handoff {} from {} to {} expired", info.id, info.from_user, info.to_user);
-                hub.handoff(&ws, &info);
+                hub.handoff(&ws, &info, reached(store, &info));
             }
         }
         Err(e) => eprintln!("[episko-server] handoff sweep failed: {e}"),
     }
+}
+
+// A lookup that fails tells the recipient nothing: a missed notice heals at the next hello.
+fn reached(store: &Store, info: &HandoffInfo) -> bool {
+    store.handoff_reached_recipient(info).unwrap_or_else(|e| {
+        eprintln!("[episko-server] handoff {}: {e}", info.id);
+        false
+    })
 }
 
 fn send(sock: &mut Sock, msg: &ServerMsg) -> tungstenite::Result<()> {
@@ -292,6 +299,15 @@ fn state_rank(s: HandoffState) -> u8 {
     }
 }
 
+/// Whether to forward a record change, given the newest this connection already sent. States only
+/// move forward, so rank leads and a clock stepping back can only hide a same-state progress note.
+fn fresh(last: &mut HashMap<String, (u8, i64)>, info: &HandoffInfo) -> bool {
+    let key = (state_rank(info.state), info.updated);
+    if last.get(&info.id).is_some_and(|&l| key < l) { return false; }
+    last.insert(info.id.clone(), key);
+    true
+}
+
 fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<(), String> {
     let (store, who) = (cx.store, cx.who);
     let err = |e: tungstenite::Error| e.to_string();
@@ -309,11 +325,11 @@ fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<
         send(sock, &ServerMsg::Events { events: page, more }).map_err(err)?;
         if !more { break; }
     }
-    // The whole set heals anything missed while away; a change queued before it is not replayed over it.
-    let mut listed: HashMap<String, (i64, u8)> = HashMap::new();
+    // Two threads may publish one record's changes out of commit order; nothing older is forwarded.
+    let mut last: HashMap<String, (u8, i64)> = HashMap::new();
     if cx.handoff {
         let records = store.handoffs_for(who).map_err(|e| e.to_string())?;
-        listed = records.iter().map(|h| (h.id.clone(), (h.updated, state_rank(h.state)))).collect();
+        for h in &records { fresh(&mut last, h); }
         send(sock, &ServerMsg::HandoffList { records }).map_err(err)?;
     }
     sock.get_mut().set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
@@ -334,7 +350,7 @@ fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<
                     if let Some(last) = fresh.last() { sent = last.seq; }
                     if !fresh.is_empty() { send(sock, &ServerMsg::Events { events: fresh, more: false }).map_err(err)?; }
                 }
-                Out::Msg(ServerMsg::Handoff { info }) if listed.get(&info.id).is_some_and(|&l| (info.updated, state_rank(info.state)) < l) => {}
+                Out::Msg(ServerMsg::Handoff { info }) if !fresh(&mut last, &info) => {}
                 Out::Msg(msg) => send(sock, &msg).map_err(err)?,
             }
         }
@@ -439,7 +455,7 @@ fn handoff(sock: &mut Sock, cx: &Ctx, msg: ClientMsg) -> tungstenite::Result<()>
     };
     match done {
         Ok(info) => {
-            cx.hub.handoff(&who.ws, &info);
+            cx.hub.handoff(&who.ws, &info, reached(store, &info));
             Ok(())
         }
         Err(e) => handoff_refused(sock, id, e),
@@ -828,23 +844,48 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_tells_both_people_an_offer_expired() {
+    fn the_sweep_tells_both_people_an_offer_expired_and_the_recipient_nothing_of_an_upload() {
         let (store, hub) = (Store::open_in_memory().unwrap(), Hub::default());
         let mut people = Vec::new();
         for user in ["ana", "bob"] {
             let code = store.create_invite("w", user, 0).unwrap();
             people.push(store.redeem(&code, "lap", 0).unwrap().unwrap().1);
         }
-        let b = blob();
-        let req = Offer { id: ID.into(), to_user: "bob".into(), to_device: None, size: b.len() as u64, parts: 2, sha256: sha_hex(&b), meta: json!({}) };
-        store.handoff_offer(&people[0], &req, &HandoffCfg { ttl_ms: 1000, ..ON }, 0).unwrap();
+        let (b, cfg) = (blob(), HandoffCfg { ttl_ms: 1000, ..ON });
+        let req = |id: &str| Offer { id: id.into(), to_user: "bob".into(), to_device: None, size: b.len() as u64, parts: 2, sha256: sha_hex(&b), meta: json!({}) };
+        const UNSENT: &str = "1f8fad5b-d9cb-469f-a165-70867728950e";
+        store.handoff_offer(&people[0], &req(ID), &cfg, 0).unwrap();
+        for (part, chunk) in b.chunks(HANDOFF_PART).enumerate() { store.handoff_put(&people[0], ID, part as u32, chunk, 1).unwrap(); }
+        store.handoff_offer(&people[0], &req(UNSENT), &cfg, 0).unwrap();
+        let speaks = [FEATURE_HANDOFF.to_string()];
         let (_, deaf) = hub.join(&people[1], &[]);
-        let (_, rx) = hub.join(&people[0], &[FEATURE_HANDOFF.to_string()]);
+        let (_, ana) = hub.join(&people[0], &speaks);
+        let (_, bob) = hub.join(&people[1], &speaks);
         sweep_handoffs(&store, &hub, 5000);
-        match rx.try_recv() {
-            Ok(Out::Msg(ServerMsg::Handoff { info })) => assert_eq!(info.state, HandoffState::Expired),
-            _ => panic!("the sender was not told"),
-        }
+        let (ana, bob): (Vec<Out>, Vec<Out>) = (ana.try_iter().collect(), bob.try_iter().collect());
+        let told = |got: &[Out], id: &str| got.iter().any(|o| matches!(o, Out::Msg(ServerMsg::Handoff { info }) if info.id == id && info.state == HandoffState::Expired));
+        assert!(told(&ana, ID) && told(&ana, UNSENT), "the sender hears both");
+        assert!(told(&bob, ID), "the recipient hears the offer expired");
+        assert!(!told(&bob, UNSENT), "but nothing of an upload it was never offered");
         assert!(deaf.try_recv().is_err(), "a connection without the feature hears nothing");
+    }
+
+    fn rec(state: HandoffState, updated: i64) -> HandoffInfo {
+        HandoffInfo {
+            id: ID.into(), from_user: "ana".into(), from_device: "a".into(), to_user: "bob".into(), to_device: None, state, taker: None,
+            meta: json!({}), size: 1, parts: 1, sha256: String::new(), have: vec![], created: 0, expires: 0, updated,
+        }
+    }
+
+    #[test]
+    fn a_change_published_out_of_order_is_dropped_and_nothing_newer_is() {
+        let mut last = HashMap::new();
+        assert!(fresh(&mut last, &rec(HandoffState::Offered, 10)));
+        assert!(fresh(&mut last, &rec(HandoffState::Offered, 10)), "an equal one is kept");
+        assert!(fresh(&mut last, &rec(HandoffState::Claimed, 10)), "same millisecond, later state");
+        assert!(!fresh(&mut last, &rec(HandoffState::Offered, 10)), "claimed then offered: the offer is stale");
+        assert!(!fresh(&mut last, &rec(HandoffState::Claimed, 9)));
+        assert!(fresh(&mut last, &rec(HandoffState::Done, 5)), "a clock that stepped back cannot hide a transition");
+        assert!(fresh(&mut last, &rec(HandoffState::Done, 6)));
     }
 }

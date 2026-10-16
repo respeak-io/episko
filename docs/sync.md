@@ -44,7 +44,8 @@ like preferences:
 `tasks.toml`, `[branches] protect` and `[health]` stay git-only for the same reason.
 
 **The privacy floor.** Nothing conversational goes over the wire: no transcripts, prompts, tool
-payloads, diffs, file contents or health measurements. `sync.ts` never touches storage itself.
+payloads, diffs, file contents or health measurements, except a session you explicitly hand off
+on a server with `EPISKO_HANDOFF` on (see below). `sync.ts` never touches storage itself.
 Callers pass it a getter, and the contract test fails if it imports anything but `./store` or
 reaches `localStorage`, `fetch` or Tauri.
 
