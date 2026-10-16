@@ -202,7 +202,7 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Resu
                 }
                 Err(e) => return Err(e.to_string()),
             },
-            Ok(ClientMsg::Push { .. } | ClientMsg::Presence { .. } | ClientMsg::Invite {}) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
+            Ok(_) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
             Err(e) => refuse(&mut sock, ErrorCode::BadMessage, e.to_string()).map_err(|e| e.to_string())?,
         }
     };
@@ -217,7 +217,8 @@ fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out
     let err = |e: tungstenite::Error| e.to_string();
     let head = store.head(&who.ws).map_err(|e| e.to_string())?;
     let devices = store.devices_in(&who.ws).map_err(|e| e.to_string())?;
-    send(sock, &ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices }).map_err(err)?;
+    let welcome = ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices, handoff: None, memory: false };
+    send(sock, &welcome).map_err(err)?;
     let mut sent = since;
     loop {
         let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1).map_err(|e| e.to_string())?;
@@ -271,6 +272,15 @@ fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text
                 Err(e) => refuse(sock, ErrorCode::Internal, e.to_string()),
             };
         }
+        Ok(
+            ClientMsg::HandoffOffer { .. }
+            | ClientMsg::HandoffPut { .. }
+            | ClientMsg::HandoffClaim { .. }
+            | ClientMsg::HandoffFetch { .. }
+            | ClientMsg::HandoffComplete { .. }
+            | ClientMsg::HandoffRecall { .. }
+            | ClientMsg::HandoffDecline { .. },
+        ) => return refuse(sock, ErrorCode::BadMessage, "this server does not speak handoff yet"),
         Ok(_) => return refuse(sock, ErrorCode::BadMessage, "already said hello; only push from here"),
         Err(e) => return refuse(sock, ErrorCode::BadMessage, e.to_string()),
     };
@@ -335,7 +345,7 @@ mod tests {
 
     fn hello(addr: SocketAddr, token: &str, since: u64) -> (Client, Vec<Event>) {
         let mut c = connect(addr);
-        say(&mut c, &ClientMsg::Hello { token: token.into(), since, protocol: PROTOCOL });
+        say(&mut c, &ClientMsg::Hello { token: token.into(), since, protocol: PROTOCOL, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Welcome { .. }));
         let mut got = Vec::new();
         loop {
@@ -450,7 +460,7 @@ mod tests {
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::NotReady, .. }));
         say(&mut c, &ClientMsg::Pair { code: "EPSK-0000-0000".into(), label: "x".into(), user: None });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadInvite, .. }));
-        say(&mut c, &ClientMsg::Hello { token: "nope".into(), since: 0, protocol: PROTOCOL });
+        say(&mut c, &ClientMsg::Hello { token: "nope".into(), since: 0, protocol: PROTOCOL, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadToken, .. }));
     }
 
@@ -459,7 +469,19 @@ mod tests {
         let (addr, store) = start();
         let (token, _) = pair(addr, &store, "laptop");
         let mut c = connect(addr);
-        say(&mut c, &ClientMsg::Hello { token, since: 0, protocol: PROTOCOL + 1 });
+        say(&mut c, &ClientMsg::Hello { token, since: 0, protocol: PROTOCOL + 1, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::Protocol, .. }));
+    }
+
+    #[test]
+    fn handoff_is_refused_until_the_server_speaks_it() {
+        let (addr, store) = start();
+        let mut c = connect(addr);
+        say(&mut c, &ClientMsg::HandoffClaim { id: "h1".into() });
+        assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::NotReady, .. }));
+        let (token, _) = pair(addr, &store, "laptop");
+        let (mut c, _) = hello(addr, &token, 0);
+        say(&mut c, &ClientMsg::HandoffRecall { id: "h1".into() });
+        assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
     }
 }

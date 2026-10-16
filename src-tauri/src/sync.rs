@@ -214,7 +214,7 @@ enum End { Retry(String), Halt(String), Stopped }
 #[allow(clippy::too_many_arguments)] // one connection's whole context; a struct would only rename it
 fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn()) -> End {
     let mut sock = match open(url, headers) { Ok(s) => s, Err(e) => return End::Retry(e) };
-    if let Err(e) = say(&mut sock, &ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL }) { return End::Retry(e); }
+    if let Err(e) = say(&mut sock, &ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL, features: vec![] }) { return End::Retry(e); }
     if let Err(e) = tcp_of(&sock).set_read_timeout(Some(POLL)) { return End::Retry(e.to_string()); }
     let mut inflight: std::collections::VecDeque<u64> = Default::default();
     loop {
@@ -642,8 +642,8 @@ mod tests {
     #[test]
     fn a_session_says_hello_from_its_cursor_and_relays_both_ways() {
         let url = mock(|ws| {
-            assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL });
-            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8, devices: vec![] });
+            assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL, features: vec![] });
+            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8, devices: vec![], handoff: None, memory: false });
             let ev = Event { seq: 8, stream: Stream::Prefs, key: "cc-sort".into(), actor: "me".into(), device: "d2".into(), at: 1, payload: "x".into() };
             write_msg(ws, &ServerMsg::Events { events: vec![ev], more: false });
             assert!(matches!(read_msg(ws), ClientMsg::Push { .. }));

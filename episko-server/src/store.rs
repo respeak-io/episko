@@ -136,7 +136,7 @@ impl Store {
     pub fn devices_in(&self, ws: &str) -> rusqlite::Result<Vec<DeviceInfo>> {
         let db = self.db();
         let mut q = db.prepare("SELECT user, device, label FROM tokens WHERE ws = ?1 ORDER BY created")?;
-        let rows = q.query_map(params![ws], |r| Ok(DeviceInfo { user: r.get(0)?, device: r.get(1)?, label: r.get(2)? }))?;
+        let rows = q.query_map(params![ws], |r| Ok(DeviceInfo { user: r.get(0)?, device: r.get(1)?, label: r.get(2)?, handoff: false }))?;
         rows.collect()
     }
 
