@@ -32,6 +32,10 @@ Markers: `+` new · `~` changed · `!` fixed
   is done; nothing in the interface starts one yet. The interface now keeps a record of each
   handoff and follows the server's word on it, and a session being handed over cannot be resumed
   here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
+  A session's menu, its ⌘K page and the shelved card now have *Send to…*: it stops the session,
+  drafts a brief, asks how the code should travel, warns that a transcript carries whatever the
+  agent read, and sends it; its row says where it stands and ↶ takes it back. The receiving side
+  is not there yet, so for now it is only worth trying against a test server.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

@@ -8,7 +8,8 @@ import { setEngine } from "./footer";
 import { runGit } from "./panes";
 import { verbFor } from "./inspectorview";
 import { bumpFrec, frecScore, parsePal, scoreItem, type PalItem } from "./palette";
-import { canShelve, hasSessionState, isAgent, taskStateText, type Runnable, type Sess } from "./types";
+import { canShelve, hasSessionState, isAgent, isClaude, taskStateText, type Runnable, type Sess } from "./types";
+import { openSend } from "./handoffui";
 import { allProjects, attnPending, orderedSessions, urgencyRank } from "./grouping";
 import { openWt, removeWorktreeSession } from "./worktree";
 import { openHistory } from "./historyui";
@@ -83,6 +84,8 @@ function sessionActions(s: Sess): PalItem[] {
   a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
   // Shelve above Close, and only where a resume exists (`canShelve` in ./types).
   if (canShelve(s)) a.push(mk("Shelve session · stop it, keep the row", "⇩", () => host.shelveSession(s.id)));
+  // The sheet says why when it cannot open; a palette row has no greyed state to say it with.
+  if (isClaude(s) && canShelve(s)) a.push(mk("Send to… · hand it to another machine", "⇢", () => openSend(s.id)));
   a.push(mk("Close session", "✕", () => host.closeSession(s.id)));
   return a;
 }

@@ -84,10 +84,11 @@ reaches `localStorage`, `fetch` or Tauri.
 | 1. Personal sync | event log, prefs, usage partitioning, limits; one user, one token | built |
 | 2. Identity and roster | root-commit ids, the path-keyed stores, the `cc-usage-detail` re-key, shared notes, presence | built |
 | 3. Coordination | claims as leases, shown on the shared queue | built |
+| 4. Handoff | send a stopped session to another of your machines or a teammate (docs/handoff.md) | sender built; the recipient's sheet is next |
 
-Not built yet: the *shelved on another device* row, which is a non-goal's honest half. It needs
-a roster of dormant sessions that carries no title, since a title is written from the
-conversation. Also not built: `episko-server` workspaces beyond the one default. A team runs
+The *shelved on another device* row is not a roster that syncs: a session moves between
+machines only when somebody sends it, and then the sending row says where it went until the
+recipient's machine takes it (docs/handoff.md). Not built: `episko-server` workspaces beyond the one default. A team runs
 one server, which is the per-team answer.
 
 ## Where the code lives

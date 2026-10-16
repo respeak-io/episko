@@ -26,18 +26,20 @@ import { openDiff } from "./diffview";
 import { dirtyCount } from "./inspectorview";
 import { extWorking, GCLASS, GLYPH, pastLabel, rowGlyph, rowLabel } from "./sidebarview";
 import {
-  agentCapabilitySummary, canShelve, isAgent, isExited, midFlight, midWork, paneDir,
+  agentCapabilitySummary, canShelve, isAgent, isClaude, isClaudeRow, isExited, midFlight, midWork, paneDir,
   type ExtSession, type Restorable, type Sess,
 } from "./types";
 import { agentLogo } from "./providers/logos";
 import {
   accentFor, activeId, agentByProject, allAgents, colorOverrides, defaultAgentDef, dirtyByFolder,
-  dormants, effectiveAgent, engineDef, externals, FAVORITES, ghAccountFor, ghLogins, isDirty,
+  dormants, effectiveAgent, engineDef, externals, FAVORITES, ghAccountFor, ghLogins, handoffs, isDirty,
   missingAgents, projGroups, sessions, termEngine,
   shareModeOf, type ShareMode,
 } from "./state";
 import { ghPickable, ghWho } from "./ghwork";
 import { overrideCount } from "./projsettings";
+import { handoffBusy } from "./handoff";
+import { openSend, recallable, sendGateFor, takeBack } from "./handoffui";
 
 // What a menu row does that this module does not own; one host object rather than nine
 // setters, as settings.ts does.
@@ -513,14 +515,26 @@ function liveRows(s: Sess): (CtxRow | null)[] {
     copyRow,
     null,
     ...(canShelve(s) ? [{ act: "sshelve", ic: "⇩", label: "Shelve session", sub: "stops it now; the row stays, and resumes" }] : []),
+    ...(isClaude(s) && canShelve(s) ? [handoffRow(s.id, "stops it now and hands the conversation over")] : []),
     { act: "sclose", ic: "✕", label: "Close session", sub: closeSub(s), cls: "mp-danger" },
   ];
 }
+// Greyed with ./handoff's reason rather than dropped, the way wsetRow is.
+function handoffRow(id: string, sub: string): CtxRow {
+  const why = sendGateFor(id);
+  return why ? { act: "", ic: "⇢", label: "Send to…", sub: why, cls: "dis" } : { act: "shandoff", ic: "⇢", label: "Send to…", sub };
+}
 function pastRows(d: Restorable): (CtxRow | null)[] {
+  const sent = handoffBusy(handoffs, d.resumeId);
+  const open = recallable(d.resumeId);
   return [
-    dormantBusy(d)
-      ? { act: "", ic: "⟲", label: "Resume session", sub: "already running — it cannot be resumed twice", cls: "dis" }
-      : { act: "sresume", ic: "⟲", label: "Resume session", sub: `picks the conversation up · last active ${relTime(d.lastActivity)}` },
+    sent
+      ? { act: "", ic: "⟲", label: "Resume session", sub: sent, cls: "dis" }
+      : dormantBusy(d)
+        ? { act: "", ic: "⟲", label: "Resume session", sub: "already running — it cannot be resumed twice", cls: "dis" }
+        : { act: "sresume", ic: "⟲", label: "Resume session", sub: `picks the conversation up · last active ${relTime(d.lastActivity)}` },
+    ...(open ? [{ act: "srecall", ic: "↶", label: "Take back", sub: "nobody has picked it up yet" }] : []),
+    ...(isClaudeRow(d) && !sent ? [handoffRow(d.id, "hands the conversation to another machine")] : []),
     termRow(),
     null,
     folderRow,
@@ -605,6 +619,8 @@ $("ctxMenu").addEventListener("click", (ev) => {
     case "sclose": if (s) host.closeSession(s.id); break;
     case "sresume": if (d) resumeDormant(d.id); break;
     case "sforget": if (d) forgetDormant(d.id); break;
+    case "shandoff": if (s || d) openSend((s ?? d)!.id); break;
+    case "srecall": { const r = d && recallable(d.resumeId); if (r) takeBack(r.id); break; }
     case "sjump": if (e) jumpExternal(e.pid); break;
   }
 });

@@ -69,7 +69,7 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
   activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
-  onlineDevices, pending as syncPending, prefsArrived, requestInvite, setExcluded,
+  onlineDevices, pending as syncPending, prefsArrived, requestInvite, serverHandoff, setExcluded,
   status as syncStatus,
 } from "./synclink";
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
@@ -1467,7 +1467,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
         users: devicesByUser(syncDevices, syncStatus.user, syncStatus.device), online: onlineDevices(),
         activity: syncActivity, pending: Object.values(syncPending), excluded: syncExcluded, invite: syncInvite,
         nameOf: (d) => deviceName(syncDevices, d, syncStatus.device),
-        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(),
+        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(), handoff: serverHandoff,
       });
       always = true;
       break;

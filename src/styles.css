@@ -2621,6 +2621,37 @@ select.in-ctl { cursor: pointer; }
 .srow.pastrow:hover .past-tag { opacity: 0; }          /* the ✕ takes this slot on hover */
 .srow.pastrow.busy .sglyph { color: var(--st-attention); }
 .srow.pastrow.busy .past-tag { color: var(--st-attention); }
+.srow.pastrow.handed .sglyph { color: var(--st-done); }
+.srow.pastrow.out .sglyph, .srow.pastrow.out .past-tag { color: var(--accent-ink); }
+.srow.pastrow.out:not(:has(.sclose)):hover .past-tag { opacity: 1; } /* nothing to take its slot */
+
+/* ---------- the handoff sheet (./handoffui): on the shared #scrim, so below ./confirm's own ---------- */
+.cfm.hand { width: min(560px, 94vw); z-index: 44; }
+.hand-body { max-height: 74vh; display: flex; flex-direction: column; gap: 7px; }
+.hand-body .sync-dim { color: var(--muted-2); font-size: 10.5px; }
+.hand-body .sync-err { font-size: 11.5px; color: var(--st-error); }
+.hand-body .cfm-foot { position: sticky; bottom: 0; margin-top: 8px; padding-top: 8px; background: color-mix(in srgb, var(--panel) 96%, transparent); }
+.hand-what { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.hand-what b { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hand-ts { display: flex; flex-direction: column; gap: 4px; }
+.hand-t { display: grid; grid-template-columns: 10px auto 1fr; align-items: baseline; gap: 8px; text-align: left; padding: 7px 10px; border-radius: 8px; cursor: pointer; font: 11.5px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--hair); }
+.hand-t:hover:not(:disabled) { border-color: var(--hair-strong); }
+.hand-t.on { border-color: var(--accent-line); background: var(--accent-wash); }
+.hand-t:disabled { opacity: .5; cursor: default; }
+.hand-t .sync-dim { justify-self: end; }
+.hand-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted-2); }
+.hand-dot.live { background: var(--st-done); }
+.hand-warn { color: var(--st-attention); font-size: 11px; }
+.hand-note { margin: 2px 0 0; }
+.hand-spin::before { content: "◌"; margin-right: 6px; color: var(--accent-ink); }
+.hand-sec { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+.hand-f { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--muted); }
+.hand-f textarea { resize: vertical; font: 11.5px/1.45 var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--hair); border-radius: 7px; padding: 6px 8px; }
+.hand-f textarea:focus { outline: none; border-color: var(--accent-line); }
+.hand-gs { display: flex; flex-direction: column; gap: 3px; }
+.hand-g { display: flex; align-items: baseline; gap: 7px; font-size: 11.5px; color: var(--text); cursor: pointer; }
+.hand-g.dis { color: var(--muted-2); cursor: default; }
+.hand-priv { margin-top: 6px; padding: 7px 9px; border-radius: 8px; font-size: 11px; color: var(--text); background: color-mix(in srgb, var(--st-attention) 10%, transparent); border: 1px solid color-mix(in srgb, var(--st-attention) 35%, transparent); }
 
 /* ---------- debug console ---------- */
 .dbg-btn { position: relative; flex: none; width: 22px; height: 19px; display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); opacity: .7; transition: opacity .15s, border-color .15s; }

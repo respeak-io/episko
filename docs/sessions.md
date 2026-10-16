@@ -187,6 +187,31 @@ Two seams are load-bearing. ./signoff reaches `shelveSession`/`closeSession` thr
 written per opener (`renderExtHeader` / `renderPastHeader`), since one pane now serves a
 session running in another terminal *and* one running nowhere at all.
 
+## Send to… (handing a session to another machine)
+
+A Claude session can be sent to another of your machines or to a teammate through the sync
+server (docs/handoff.md has the protocol, the ownership argument and the failure table). The
+verb sits beside ⇩ everywhere shelving does: a live row's menu, a shelved row's menu, the ⌘K
+action page and the shelved mirror's card. Each is greyed with `sendGate`'s reason rather than
+dropped, so a server with handoff off says so where you looked for the button.
+
+- **It is a shelve first.** A live pane goes through `stopForTranscript` (./actions) and then
+  `shelveSession`, so the dormant row exists before anything is packed and *Cancel* at any
+  step leaves exactly a shelved session behind. `stopForTranscript` is the drift move's
+  kill-and-wait, extracted so both callers wait for `pty-exit` rather than for the signal:
+  a transcript packed while Claude still holds it open is a torn read.
+- **A sent row is locked, not gone.** `handoffBusy` feeds `dormantBusy` and `histBusy`, so
+  neither ⟲ nor History can resume a conversation another machine may own. The row's tag says
+  where it stands (`rowText`); ↶ takes it back until the recipient claims it.
+- **The outcome decides the row, and only the server's outcome does.** `done` archives the
+  transcript here and removes the row (a *handed to …* row stays until ✕); a decline, recall
+  or expiry puts it back on the shelf with a toast. A server that cannot be heard leaves it
+  locked; only an explicit `enabled: false`, a list without it, or expiry plus an hour returns
+  it, and then ⟲ asks first (`confirmReturned`), because nobody can rule out that the other
+  machine already carried on.
+- **Nothing is typed.** The brief is a headless, forked, unpersisted `claude -p` after the
+  pane is gone (`handoff_brief`); the Enter rule's two places are unchanged.
+
 ## History (`◷`, ⌘⇧H)
 
 Answers "reopen the one I closed", which the roster cannot. It joins Claude's transcript scan (including IDE/terminal sessions) with Codex `thread/list`; selecting a Codex row uses `thread/read`, and resume carries the provider id. `history.ts` owns provider-neutral rules, `historyui.ts` the dialog, and each provider adapter maps its public history shape.
