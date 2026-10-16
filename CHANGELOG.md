@@ -26,7 +26,7 @@ Markers: `+` new · `~` changed · `!` fixed
   package a checkout's unpushed commits and uncommitted work (secrets left behind) as a branch or a
   bundle and unpack them into a fresh worktree elsewhere; nothing calls that yet either. And it
   can ask Claude for a short brief of a stopped session for whoever picks it up, run on a
-  throwaway fork with no tools or hooks that leaves no second transcript behind; unused so far.
+  throwaway, unpersisted fork with no tools or hooks; unused so far.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

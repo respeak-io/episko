@@ -828,6 +828,13 @@ fn check_session_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 8-4-4-4-12 hex: the only shape a session id passed to `--resume` or deleted by name may take.
+pub(crate) fn uuid_shaped(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 // ---------- a transcript handed to another machine (docs/handoff.md) ----------
 
 /// The sidecar folders that travel; anything else under `<dir>/<id>/` stays behind.
@@ -1202,7 +1209,7 @@ pub(crate) fn discard_fork(cwd: &str, source: &str, fork: &str) -> Result<bool, 
 }
 
 fn discard_fork_in(base: &Path, cwd: &str, source: &str, fork: &str) -> Result<bool, String> {
-    if fork.eq_ignore_ascii_case(source) || !crate::summarize::uuid_shaped(fork) {
+    if fork.eq_ignore_ascii_case(source) || !uuid_shaped(fork) {
         return Ok(false);
     }
     let dir = project_transcript_dir(base, cwd);

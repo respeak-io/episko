@@ -5,7 +5,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager};
@@ -113,9 +113,17 @@ fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
     run_headless(&cwd, &args, TIMEOUT)
 }
 
-/// Run `claude` with `args` in `cwd`, bounded; returns the trimmed stdout. A reader thread
-/// drains stdout, since a `wait()` that only reads afterwards deadlocks past one pipe buffer.
+/// Run `claude` with `args` in `cwd`, bounded; returns the trimmed stdout of a clean exit.
 fn run_headless(cwd: &Path, args: &[String], timeout: Duration) -> Result<String, String> {
+    match run_bounded(cwd, args, timeout)? {
+        (status, _) if !status.success() => Err(format!("claude exited {status}")),
+        (_, text) => Ok(text.trim().to_string()),
+    }
+}
+
+/// The exit status with whatever stdout said, on any exit: print mode reports a failed turn on
+/// stdout. A reader thread drains it, since a `wait()` that only reads afterwards deadlocks.
+fn run_bounded(cwd: &Path, args: &[String], timeout: Duration) -> Result<(ExitStatus, String), String> {
     let mut child = sys_command(resolve_claude())
         .env("PATH", augmented_path())
         .current_dir(cwd)
@@ -136,13 +144,7 @@ fn run_headless(cwd: &Path, args: &[String], timeout: Duration) -> Result<String
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let text = reader.join().unwrap_or_default();
-                if !status.success() {
-                    return Err(format!("claude exited {status}"));
-                }
-                return Ok(text.trim().to_string());
-            }
+            Ok(Some(status)) => return Ok((status, reader.join().unwrap_or_default())),
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
@@ -204,13 +206,6 @@ impl Brief {
     }
 }
 
-/// 8-4-4-4-12 hex: the only shape a session id passed to `--resume` or deleted by name may take.
-pub(crate) fn uuid_shaped(id: &str) -> bool {
-    let groups: Vec<&str> = id.split('-').collect();
-    groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
 /// A model alias or id, never something the CLI could read as a flag.
 fn model_or(model: Option<&str>, fallback: &str) -> String {
     match model.map(str::trim) {
@@ -236,7 +231,8 @@ fn brief_args(resume_id: &str, model: &str, prompt: &str) -> Vec<String> {
 fn parse_brief(stdout: &str) -> Result<Brief, String> {
     let v: serde_json::Value = serde_json::from_str(stdout).map_err(|e| format!("not a JSON answer: {e}"))?;
     if v.get("is_error").and_then(|b| b.as_bool()) == Some(true) {
-        return Err("claude reported an error".into());
+        let why: String = v.get("result").and_then(|r| r.as_str()).unwrap_or("no reason given").chars().take(200).collect();
+        return Err(format!("claude reported an error: {why}"));
     }
     let body = match v.get("structured_output") {
         Some(o) if o.is_object() => o.clone(),
@@ -250,37 +246,54 @@ fn parse_brief(stdout: &str) -> Result<Brief, String> {
     Ok(brief.clamped())
 }
 
-/// The fork's session id is read even off a failed answer, so a leaked transcript still goes.
+/// Read off any answer, failed ones included; a run killed at its timeout leaves none to read.
 fn fork_id(stdout: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(stdout).ok()?;
     v.get("session_id").and_then(|s| s.as_str()).map(String::from)
 }
 
-fn brief_once(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, String> {
-    let out = run_headless(cwd, &brief_args(resume_id, model, BRIEF_PROMPT), BRIEF_TIMEOUT)?;
+/// `Retry` is an answer that came back unusable; `Stop` is one another model cannot fix.
+#[derive(Debug, PartialEq)]
+enum BriefErr {
+    Retry(String),
+    Stop(String),
+}
+
+fn brief_once(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, BriefErr> {
+    let (status, out) = run_bounded(cwd, &brief_args(resume_id, model, BRIEF_PROMPT), BRIEF_TIMEOUT).map_err(BriefErr::Stop)?;
     if let Some(fork) = fork_id(&out) {
         if let Err(e) = crate::usage::discard_fork(&cwd.to_string_lossy(), resume_id, &fork) {
             log::warn!("handoff brief: {e}");
         }
     }
-    parse_brief(&out)
+    judge(status.success(), out.trim())
 }
 
-/// One retry on Sonnet; an `Err` leaves the sheet an empty brief to write by hand.
+/// A non-zero exit with no JSON envelope is a refused invocation (a missing transcript, say).
+fn judge(ok: bool, out: &str) -> Result<Brief, BriefErr> {
+    if !ok && serde_json::from_str::<serde_json::Value>(out).is_err() {
+        return Err(BriefErr::Stop("claude exited without an answer".into()));
+    }
+    parse_brief(out).map_err(BriefErr::Retry)
+}
+
+/// One retry on Sonnet, for an unusable answer only; an `Err` leaves the sheet an empty brief.
 fn brief_blocking(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, String> {
-    brief_once(cwd, resume_id, model).or_else(|e| {
-        if model == "sonnet" {
-            return Err(e);
+    match brief_once(cwd, resume_id, model) {
+        Ok(b) => Ok(b),
+        Err(BriefErr::Stop(e)) => Err(e),
+        Err(BriefErr::Retry(e)) if model == "sonnet" => Err(e),
+        Err(BriefErr::Retry(e)) => {
+            log::warn!("handoff brief on {model}: {e}; retrying on sonnet");
+            brief_once(cwd, resume_id, "sonnet").map_err(|(BriefErr::Retry(e) | BriefErr::Stop(e))| e)
         }
-        log::warn!("handoff brief on {model}: {e}; retrying on sonnet");
-        brief_once(cwd, resume_id, "sonnet")
-    })
+    }
 }
 
 /// The brief for `resume_id`, asked in `workdir`, the folder its transcript is filed under.
 #[tauri::command]
 pub(crate) async fn handoff_brief(workdir: String, resume_id: String, model: Option<String>) -> Result<Brief, String> {
-    if !uuid_shaped(&resume_id) {
+    if !crate::usage::uuid_shaped(&resume_id) {
         return Err(format!("not a session id: {resume_id}"));
     }
     let cwd = PathBuf::from(&workdir);
@@ -501,10 +514,21 @@ fn first_sentence(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{cache_key, commit_digest_removal, first_sentence, parse_digest, prompt_for, remove_digest, render_digest, write_digest, Scope};
-    use super::{brief_args, fork_id, model_or, parse_brief, uuid_shaped, Brief, BRIEF_SCHEMA};
+    use super::{brief_args, fork_id, judge, model_or, parse_brief, Brief, BriefErr, BRIEF_SCHEMA};
+    use crate::usage::uuid_shaped;
     use crate::testutil::scratch_dir;
 
     const SRC: &str = "11111111-2222-3333-4444-555555555555";
+
+    #[test]
+    fn only_an_unusable_answer_earns_the_sonnet_retry() {
+        let refused = judge(false, "Error: no conversation found");
+        assert!(matches!(refused, Err(BriefErr::Stop(_))), "{refused:?}");
+        let failed_turn = judge(false, r#"{"is_error":true,"result":"Prompt is too long"}"#);
+        assert!(matches!(&failed_turn, Err(BriefErr::Retry(e)) if e.contains("Prompt is too long")), "{failed_turn:?}");
+        assert!(matches!(judge(true, r#"{"result":"just prose"}"#), Err(BriefErr::Retry(_))));
+        assert!(judge(true, r#"{"structured_output":{"summary":"x"}}"#).is_ok());
+    }
 
     #[test]
     fn the_brief_runs_forked_toolless_hookless_and_unpersisted() {
