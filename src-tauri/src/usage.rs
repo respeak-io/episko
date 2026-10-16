@@ -785,15 +785,7 @@ fn move_session_transcript_in(
     from_workdir: &str,
     to_workdir: &str,
 ) -> Result<String, String> {
-    // The id is pasted into a filename: uuid characters only, so no `..` or separator can
-    // escape the projects tree. Rejected, not sanitised: a sanitised id names the wrong file.
-    if session_id.is_empty()
-        || !session_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
-    {
-        return Err(format!("not a valid session id: {session_id}"));
-    }
+    check_session_id(session_id)?;
     let from_dir = project_transcript_dir(base, from_workdir);
     let to_dir = project_transcript_dir(base, to_workdir);
     if from_dir == to_dir {
@@ -825,6 +817,278 @@ fn move_session_transcript_in(
         }
     }
     Ok(dst.display().to_string())
+}
+
+/// The id is pasted into a filename: uuid characters only, so no `..` or separator can escape
+/// the projects tree. Rejected, not sanitised: a sanitised id names the wrong file.
+fn check_session_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(format!("not a valid session id: {id}"));
+    }
+    Ok(())
+}
+
+// ---------- a transcript handed to another machine (docs/handoff.md) ----------
+
+/// The sidecar folders that travel; anything else under `<dir>/<id>/` stays behind.
+const SIDECAR_KINDS: [&str; 2] = ["tool-results", "subagents"];
+/// Claude shortens a longer folder name with a hash we cannot reproduce yet.
+const SLUG_MAX: usize = 200;
+
+/// One flat file name inside a sidecar folder, the same rule the container enforces.
+fn valid_part_name(n: &str) -> bool {
+    !n.is_empty()
+        && !n.chars().all(|c| c == '.')
+        && n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// What leaves this machine for one session: `(container name, file)` pairs, and the
+/// sidecar's absolute path here, which the recipient rewrites to its own.
+#[cfg_attr(not(test), allow(dead_code))] // read by handoff.rs from a later slice
+pub(crate) struct TranscriptExport {
+    pub(crate) files: Vec<(String, PathBuf)>,
+    pub(crate) prefix: String,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn transcript_export_in(base: &Path, cwd: &str, id: &str) -> Result<TranscriptExport, String> {
+    check_session_id(id)?;
+    let dir = project_transcript_dir(base, cwd);
+    let jsonl = dir.join(format!("{id}.jsonl"));
+    if !jsonl.is_file() {
+        return Err(format!("no transcript for this session in {}", dir.display()));
+    }
+    let mut files = vec![("transcript.jsonl".to_string(), jsonl)];
+    let side = dir.join(id);
+    for kind in SIDECAR_KINDS {
+        let Ok(rd) = std::fs::read_dir(side.join(kind)) else { continue };
+        let mut found: Vec<(String, PathBuf)> = rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+            .collect();
+        found.sort();
+        for (name, path) in found {
+            if valid_part_name(&name) {
+                files.push((format!("sidecar/{kind}/{name}"), path));
+            } else {
+                log::warn!("handoff leaves behind sidecar file {}", path.display());
+            }
+        }
+    }
+    Ok(TranscriptExport { files, prefix: side.to_string_lossy().into_owned() })
+}
+
+/// The folder an import lands in: an existing case variant wins where the filesystem
+/// ignores case (`E--` beside `e--`), and an over-long slug only resolves to the one
+/// existing folder Claude already shortened it to.
+fn import_dir(base: &Path, cwd: &str, ci: bool) -> Result<PathBuf, String> {
+    let want = project_transcript_dir(base, cwd);
+    let name = want.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let names: Vec<String> = std::fs::read_dir(base.join("projects"))
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let same = |a: &str, b: &str| if ci { a.eq_ignore_ascii_case(b) } else { a == b };
+    if name.len() > SLUG_MAX {
+        let head = &name[..SLUG_MAX];
+        let hits: Vec<&String> = names
+            .iter()
+            .filter(|n| n.get(..SLUG_MAX).is_some_and(|h| same(h, head)))
+            .collect();
+        return match hits.as_slice() {
+            [one] => Ok(base.join("projects").join(one)),
+            _ => Err("this checkout's path is too long for Episko to place the conversation; \
+                      start one Claude session in it first, then try again"
+                .to_string()),
+        };
+    }
+    Ok(match names.iter().find(|n| same(n, &name)) {
+        Some(n) if ci => base.join("projects").join(n),
+        _ => want,
+    })
+}
+
+/// Every spelling of the sender's sidecar path a transcript may hold (JSON-escaped or raw,
+/// either slash), longest first, each mapped to the local path as JSON text.
+fn prefix_rules(from: &[String], local: &str) -> Vec<(String, String)> {
+    let esc = |s: &str| {
+        let q = serde_json::to_string(s).unwrap_or_default();
+        q.get(1..q.len().saturating_sub(1)).unwrap_or_default().to_string()
+    };
+    let to = esc(local);
+    let mut rules: Vec<(String, String)> = Vec::new();
+    for p in from {
+        let p = p.trim_end_matches(['/', '\\']);
+        if p.is_empty() {
+            continue;
+        }
+        for v in [p.to_string(), p.replace('\\', "/"), p.replace('/', "\\")] {
+            for needle in [esc(&v), v] {
+                if !rules.iter().any(|(n, _)| *n == needle) {
+                    rules.push((needle, to.clone()));
+                }
+            }
+        }
+    }
+    rules.sort_by_key(|r| std::cmp::Reverse(r.0.len()));
+    rules
+}
+
+/// A hit must end where a path segment does, or `<dir>/abc` would rewrite `<dir>/abcdef`.
+fn rewrite_prefixes(text: &str, rules: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let hit = rules
+            .iter()
+            .filter_map(|(n, t)| rest.find(n.as_str()).map(|at| (at, n, t)))
+            .min_by_key(|(at, n, _)| (*at, std::cmp::Reverse(n.len())));
+        let Some((at, needle, to)) = hit else { break };
+        let end = at + needle.len();
+        let bounded = rest[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')));
+        if bounded {
+            out.push_str(&rest[..at]);
+            out.push_str(to);
+            rest = &rest[end..];
+        } else {
+            let step = at + rest[at..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&rest[..step]);
+            rest = &rest[step..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Never overwrite: identical bytes already there are success, anything else a conflict.
+/// Written beside the target and renamed, so a crash never leaves half a file under its name.
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if path.exists() {
+        return match std::fs::read(path) {
+            Ok(have) if have == bytes => Ok(()),
+            _ => Err(format!("conflict: {} already holds something else", path.display())),
+        };
+    }
+    let parent = path.parent().ok_or_else(|| format!("no folder for {}", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".episko-tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not place {}: {e}", path.display())
+    })
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn transcript_import_in(
+    base: &Path,
+    cwd: &str,
+    id: &str,
+    jsonl: &Path,
+    sidecar: &[(String, PathBuf)],
+    from_prefixes: &[String],
+) -> Result<PathBuf, String> {
+    transcript_import_with(base, cwd, id, jsonl, sidecar, from_prefixes, cfg!(windows))
+}
+
+/// `ci` is split out so a test can pin either filesystem's answer on any OS.
+fn transcript_import_with(
+    base: &Path,
+    cwd: &str,
+    id: &str,
+    jsonl: &Path,
+    sidecar: &[(String, PathBuf)],
+    from_prefixes: &[String],
+    ci: bool,
+) -> Result<PathBuf, String> {
+    check_session_id(id)?;
+    let dir = import_dir(base, cwd, ci)?;
+    // Claude's `--resume` searches every project folder, and a second copy breaks it.
+    let file = format!("{id}.jsonl");
+    for e in std::fs::read_dir(base.join("projects")).into_iter().flatten().flatten() {
+        if e.path() != dir && e.path().join(&file).exists() {
+            return Err(format!("this conversation is already on this machine, in {}", e.path().display()));
+        }
+    }
+    let local = dir.join(id);
+    let rules = prefix_rules(from_prefixes, &local.to_string_lossy());
+    let text = std::fs::read_to_string(jsonl).map_err(|e| format!("could not read the transcript: {e}"))?;
+    let body = rewrite_prefixes(&text, &rules);
+    let dst = dir.join(&file);
+    if dst.exists() {
+        write_new(&dst, body.as_bytes())?;
+        return Ok(dst);
+    }
+    // The sidecar first: the transcript is what History and `--resume` see, so it lands last.
+    for (name, src) in sidecar {
+        let part = name.strip_prefix("sidecar/").and_then(|r| r.split_once('/'));
+        let Some((kind, n)) = part.filter(|(k, n)| SIDECAR_KINDS.contains(k) && valid_part_name(n)) else {
+            return Err(format!("not a sidecar file: {name}"));
+        };
+        let raw = std::fs::read(src).map_err(|e| format!("could not read {name}: {e}"))?;
+        let bytes = match (n.ends_with(".jsonl"), String::from_utf8(raw)) {
+            (true, Ok(t)) => rewrite_prefixes(&t, &rules).into_bytes(),
+            (_, Ok(t)) => t.into_bytes(),
+            (_, Err(e)) => e.into_bytes(),
+        };
+        write_new(&local.join(kind).join(n), &bytes)?;
+    }
+    write_new(&dst, body.as_bytes())?;
+    Ok(dst)
+}
+
+/// A rename where it can, else copy then delete (the archive may sit on another volume).
+fn move_path(from: &Path, to: &Path) -> Result<(), String> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    copy_tree(from, to).map_err(|e| format!("could not archive {}: {e}", from.display()))?;
+    let gone = if from.is_dir() { std::fs::remove_dir_all(from) } else { std::fs::remove_file(from) };
+    gone.map_err(|e| format!("archived but could not remove {}: {e}", from.display()))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.is_dir() {
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    std::fs::create_dir_all(to)?;
+    for e in std::fs::read_dir(from)?.flatten() {
+        copy_tree(&e.path(), &to.join(e.file_name()))?;
+    }
+    Ok(())
+}
+
+/// The sender's copy leaves `~/.claude` for `archive` once the handoff is done; a file
+/// already gone is success, so a retry after a crash finishes what the first call began.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn transcript_archive_in(base: &Path, cwd: &str, id: &str, archive: &Path) -> Result<(), String> {
+    check_session_id(id)?;
+    let dir = project_transcript_dir(base, cwd);
+    let moves = [
+        (dir.join(format!("{id}.jsonl")), archive.join("transcript.jsonl")),
+        (dir.join(id), archive.join("sidecar")),
+    ];
+    for (from, to) in moves {
+        if !from.exists() {
+            continue;
+        }
+        if to.exists() {
+            return Err(format!("{} is already archived", to.display()));
+        }
+        std::fs::create_dir_all(archive).map_err(|e| format!("could not create {}: {e}", archive.display()))?;
+        move_path(&from, &to)?;
+    }
+    Ok(())
 }
 
 // ---------- the account's per-model plan limits ----------
@@ -1137,6 +1401,194 @@ mod tests {
             "{\"other\":true}\n",
             "the destination must be left exactly as it was",
         );
+    }
+
+    const HID: &str = "acdc250f-a7af-4655-bb87-8ee83731b586";
+
+    /// A sender with a transcript whose lines name its sidecar the way Claude writes them.
+    fn handoff_sender(root: &Path) -> (PathBuf, PathBuf, String) {
+        let (base, cwd) = (root.join("sender-claude"), root.join("sender"));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let side = project_transcript_dir(&base, &cwd.to_string_lossy()).join(HID);
+        let at = format!("{}/tool-results/out.txt", side.display());
+        let line = serde_json::json!({ "type": "user", "cwd": cwd, "toolUseResult": { "path": at } });
+        let body = format!("{line}\n");
+        seed_transcript(&base, &cwd, HID, &body, true);
+        let sub = side.join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("agent-1.jsonl"), &body).unwrap();
+        std::fs::create_dir_all(side.join("tool-results").join("nested")).unwrap();
+        (base, cwd, body)
+    }
+
+    fn files_of(x: &TranscriptExport) -> (PathBuf, Vec<(String, PathBuf)>) {
+        let jsonl = x.files[0].1.clone();
+        (jsonl, x.files[1..].to_vec())
+    }
+
+    #[test]
+    fn a_transcript_exports_and_imports_with_its_sidecar_rehomed() {
+        let root = scratch_dir();
+        let (base, cwd, _) = handoff_sender(&root);
+        let x = transcript_export_in(&base, &cwd.to_string_lossy(), HID).unwrap();
+        let names: Vec<&str> = x.files.iter().map(|f| f.0.as_str()).collect();
+        assert_eq!(
+            names,
+            ["transcript.jsonl", "sidecar/tool-results/artifact.html", "sidecar/subagents/agent-1.jsonl"],
+            "a nested folder is not a flat sidecar file and stays behind",
+        );
+
+        let (rbase, rcwd) = (root.join("recipient-claude"), root.join("recipient"));
+        std::fs::create_dir_all(&rcwd).unwrap();
+        let (jsonl, side) = files_of(&x);
+        let got = transcript_import_in(&rbase, &rcwd.to_string_lossy(), HID, &jsonl, &side, std::slice::from_ref(&x.prefix))
+            .expect("the import should succeed");
+        let dir = project_transcript_dir(&rbase, &rcwd.to_string_lossy());
+        assert_eq!(got, dir.join(format!("{HID}.jsonl")));
+
+        let local = format!("{}/tool-results/out.txt", dir.join(HID).display());
+        for f in [got.clone(), dir.join(HID).join("subagents").join("agent-1.jsonl")] {
+            let line: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&f).unwrap().trim()).unwrap();
+            assert_eq!(line["toolUseResult"]["path"], local.as_str(), "{} still names the sender", f.display());
+        }
+        let art = dir.join(HID).join("tool-results").join("artifact.html");
+        assert_eq!(std::fs::read_to_string(art).unwrap(), "<p>kept</p>");
+        assert!(!dir.join(format!("{HID}.jsonl.episko-tmp")).exists(), "no temp file is left behind");
+    }
+
+    #[test]
+    fn an_import_never_overwrites_a_different_conversation() {
+        let root = scratch_dir();
+        let (base, cwd, _) = handoff_sender(&root);
+        let x = transcript_export_in(&base, &cwd.to_string_lossy(), HID).unwrap();
+        let (jsonl, side) = files_of(&x);
+        let (rbase, rcwd) = (root.join("r-claude"), root.join("r"));
+        std::fs::create_dir_all(&rcwd).unwrap();
+        let rc = rcwd.to_string_lossy();
+        let prefixes = [x.prefix.clone()];
+
+        let first = transcript_import_in(&rbase, &rc, HID, &jsonl, &side, &prefixes).unwrap();
+        let again = transcript_import_in(&rbase, &rc, HID, &jsonl, &side, &prefixes);
+        assert_eq!(again, Ok(first.clone()), "the same conversation again is a no-op");
+
+        std::fs::write(&first, "{\"other\":true}\n").unwrap();
+        let err = transcript_import_in(&rbase, &rc, HID, &jsonl, &side, &prefixes).unwrap_err();
+        assert!(err.starts_with("conflict"), "{err}");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "{\"other\":true}\n");
+    }
+
+    #[test]
+    fn an_import_refuses_a_conversation_already_filed_under_another_project() {
+        let root = scratch_dir();
+        let (base, cwd, _) = handoff_sender(&root);
+        let x = transcript_export_in(&base, &cwd.to_string_lossy(), HID).unwrap();
+        let (jsonl, side) = files_of(&x);
+        let (rbase, rcwd, elsewhere) = (root.join("r-claude"), root.join("r"), root.join("other"));
+        std::fs::create_dir_all(&rcwd).unwrap();
+        seed_transcript(&rbase, &elsewhere, HID, "{}\n", false);
+
+        let err = transcript_import_in(&rbase, &rcwd.to_string_lossy(), HID, &jsonl, &side, &[x.prefix]);
+        assert!(err.is_err_and(|e| e.contains("already on this machine")));
+        let dir = project_transcript_dir(&rbase, &rcwd.to_string_lossy());
+        assert!(!dir.join(HID).exists(), "nothing is written before the refusal");
+    }
+
+    #[test]
+    fn the_handoff_transcript_calls_reject_a_bad_id() {
+        let root = scratch_dir();
+        let (base, cwd) = (root.join("c"), root.join("w").to_string_lossy().into_owned());
+        let jsonl = root.join("t.jsonl");
+        std::fs::write(&jsonl, "{}\n").unwrap();
+        for bad in ["../../etc/passwd", "a/b", r"a\b", "", "id with space"] {
+            assert!(transcript_export_in(&base, &cwd, bad).is_err(), "export took {bad:?}");
+            assert!(transcript_import_in(&base, &cwd, bad, &jsonl, &[], &[]).is_err(), "import took {bad:?}");
+            assert!(transcript_archive_in(&base, &cwd, bad, &root.join("a")).is_err(), "archive took {bad:?}");
+        }
+        let jsonl_name = |n: &str| vec![(n.to_string(), jsonl.clone())];
+        for bad in ["sidecar/tool-results/..", "sidecar/other/x", "sidecar/tool-results/a/b", "transcript.jsonl"] {
+            let r = transcript_import_in(&base, &cwd, HID, &jsonl, &jsonl_name(bad), &[]);
+            assert!(r.is_err(), "took sidecar name {bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_sidecar_rewrite_takes_every_spelling_and_only_whole_paths() {
+        let win = r"C:\Users\a\.claude\projects\E--x\abc";
+        let rules = prefix_rules(&[win.to_string()], "/home/b/.claude/projects/-x/abc");
+        let text = concat!(
+            r#"{"p":"C:\\Users\\a\\.claude\\projects\\E--x\\abc\\tool-results\\1.txt","#,
+            r#""q":"C:/Users/a/.claude/projects/E--x/abc/subagents/a.jsonl","#,
+            r#""r":"C:\\Users\\a\\.claude\\projects\\E--x\\abcdef\\1.txt","s":"C:/Users/a/.claude/projects/E--x/abc"}"#,
+        );
+        let v: serde_json::Value = serde_json::from_str(&rewrite_prefixes(text, &rules)).unwrap();
+        assert_eq!(v["p"], r"/home/b/.claude/projects/-x/abc\tool-results\1.txt");
+        assert_eq!(v["q"], "/home/b/.claude/projects/-x/abc/subagents/a.jsonl");
+        assert_eq!(v["r"], r"C:\Users\a\.claude\projects\E--x\abcdef\1.txt", "a longer name is not a hit");
+        assert_eq!(v["s"], "/home/b/.claude/projects/-x/abc");
+
+        // The other way, a forward-slash sender into a backslash home stays valid JSON.
+        let rules = prefix_rules(&["/Users/a/p/abc/".to_string()], win);
+        let out = rewrite_prefixes(r#"{"p":"/Users/a/p/abc/x.txt","q":"/Users/a/p/abc-2/x"}"#, &rules);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["p"], format!("{win}/x.txt"));
+        assert_eq!(v["q"], "/Users/a/p/abc-2/x");
+    }
+
+    #[test]
+    fn archiving_moves_the_sender_copy_out_and_tolerates_a_retry() {
+        let root = scratch_dir();
+        let (base, cwd, body) = handoff_sender(&root);
+        let c = cwd.to_string_lossy();
+        let dir = project_transcript_dir(&base, &c);
+        let archive = root.join("handed").join(HID);
+
+        transcript_archive_in(&base, &c, HID, &archive).unwrap();
+        assert!(!dir.join(format!("{HID}.jsonl")).exists() && !dir.join(HID).exists());
+        assert_eq!(std::fs::read_to_string(archive.join("transcript.jsonl")).unwrap(), body);
+        assert!(archive.join("sidecar").join("tool-results").join("artifact.html").is_file());
+        assert_eq!(transcript_archive_in(&base, &c, HID, &archive), Ok(()), "already gone is success");
+
+        // A crash between the two moves: the retry finishes the sidecar.
+        let (base2, cwd2, _) = handoff_sender(&root.join("second"));
+        let c2 = cwd2.to_string_lossy();
+        let archive2 = root.join("handed2");
+        std::fs::create_dir_all(&archive2).unwrap();
+        let dir2 = project_transcript_dir(&base2, &c2);
+        std::fs::rename(dir2.join(format!("{HID}.jsonl")), archive2.join("transcript.jsonl")).unwrap();
+        transcript_archive_in(&base2, &c2, HID, &archive2).unwrap();
+        assert!(!dir2.join(HID).exists() && archive2.join("sidecar").is_dir());
+    }
+
+    #[test]
+    fn an_over_long_slug_resolves_only_to_the_one_folder_claude_already_made() {
+        let base = scratch_dir();
+        let cwd = format!("/deep/{}", "x".repeat(240));
+        let slug = transcript_slug(&cwd);
+        assert!(slug.len() > SLUG_MAX);
+        assert!(import_dir(&base, &cwd, false).is_err(), "no folder yet: refused, never guessed");
+
+        let made = base.join("projects").join(format!("{}-1a2b3c", &slug[..SLUG_MAX]));
+        std::fs::create_dir_all(&made).unwrap();
+        assert_eq!(import_dir(&base, &cwd, false), Ok(made));
+
+        std::fs::create_dir_all(base.join("projects").join(format!("{}-9f9f9f", &slug[..SLUG_MAX]))).unwrap();
+        assert!(import_dir(&base, &cwd, false).is_err(), "two candidates: refused");
+    }
+
+    #[test]
+    fn an_existing_case_variant_wins_where_the_filesystem_ignores_case() {
+        let base = scratch_dir();
+        let cwd = r"E:\Work\x";
+        let lower = base.join("projects").join("e--Work-x");
+        std::fs::create_dir_all(&lower).unwrap();
+        assert_eq!(import_dir(&base, cwd, true), Ok(lower.clone()));
+        assert_eq!(import_dir(&base, cwd, false), Ok(base.join("projects").join("E--Work-x")));
+
+        // Its own folder found by case is not "another project" holding a duplicate.
+        let jsonl = base.join("t.jsonl");
+        std::fs::write(&jsonl, "{}\n").unwrap();
+        let got = transcript_import_with(&base, cwd, HID, &jsonl, &[], &[], true).unwrap();
+        assert_eq!(got, lower.join(format!("{HID}.jsonl")));
     }
 
     /// The two-step tail read must never change an answer, only its cost. A 64KB window
