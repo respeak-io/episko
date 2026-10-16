@@ -176,7 +176,9 @@ version numbers.
 ## What it never holds
 
 It holds no transcripts, prompts, tool output, diffs, file contents or session titles, and no
-repository access. The one exception is opt-in: with `EPISKO_HANDOFF` on, a session someone
-explicitly sends is held until it is picked up or expires (see *Handing a session to another
-machine*). Permission modes, trusted projects, task definitions and branch protection
+repository access. There are two exceptions, both opt-in: with `EPISKO_HANDOFF` on, a session
+someone explicitly sends is held until it is picked up or expires (see *Handing a session to
+another machine*); with `EPISKO_MEMORY` on, the text of Claude's project memory files from
+machines that switched it on is kept, the latest per file and person, for as long as the file
+exists. Permission modes, trusted projects, task definitions and branch protection
 never reach it either, because they change what runs or what is permitted.

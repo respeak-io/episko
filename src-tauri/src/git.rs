@@ -2826,7 +2826,6 @@ pub(crate) struct HandoffGitMeta {
 pub(crate) struct Applied {
     pub(crate) worktree: String,
     pub(crate) branch: String,
-    pub(crate) leftover: Option<String>, // a remote `handoff/<id>` the cleanup could not delete
 }
 
 pub(crate) enum HandoffSrc {
@@ -3093,7 +3092,7 @@ fn handoff_receive(repo: &str, id: &str, src: &HandoffSrc) -> Result<String, Str
 }
 
 /// A worktree on what was received: the sender's branch name unless this clone already has
-/// one, a snapshot unwound into uncommitted changes, then both handoff refs deleted.
+/// one, a snapshot unwound into uncommitted changes. The refs stay until `handoff_landed`.
 fn handoff_apply(repo: &str, id: &str, meta: &HandoffGitMeta) -> Result<Applied, String> {
     check_handoff_id(id)?;
     if !full_sha(&meta.head) {
@@ -3153,8 +3152,14 @@ fn handoff_apply(repo: &str, id: &str, meta: &HandoffGitMeta) -> Result<Applied,
             let _ = git_out(&worktree, &["branch", "--set-upstream-to", &up, &branch]);
         }
     }
-    let leftover = handoff_cleanup(repo, id, meta.via == "branch").err();
-    Ok(Applied { worktree, branch, leftover })
+    Ok(Applied { worktree, branch })
+}
+
+/// After the install recorded its worktree: the handoff refs go, the remote branch too. Never
+/// before, or a retry after a lost record could no longer fetch what it lands. The error is a
+/// remote `handoff/<id>` that is still there.
+pub(crate) fn handoff_landed(repo: &str, id: &str, via: &str) -> Result<(), String> {
+    handoff_cleanup(repo, id, via == "branch")
 }
 
 /// Delete the local handoff ref and, when asked, the remote `handoff/<id>` branch (best effort).
@@ -5412,6 +5417,7 @@ canonicalizehostname false
 
         assert_eq!(handoff_receive(&st(&b), HID, &HandoffSrc::Bundle(file)), Ok(sha));
         let done = handoff_apply(&st(&b), HID, &meta("bundle", Some("main"), &head, true)).expect("applied");
+        handoff_landed(&st(&b), HID, "bundle").unwrap();
         assert_eq!(done.branch, "handoff/0f1e2d3c", "main is taken here, so the branch is renamed");
         let wt = Path::new(&done.worktree);
         assert_eq!(said(wt, &["rev-parse", "HEAD"]), head, "the unpushed commit came along");
@@ -5516,7 +5522,9 @@ canonicalizehostname false
 
         assert_eq!(handoff_receive(&st(&b), HID, &HandoffSrc::Remote), Ok(sha));
         let done = handoff_apply(&st(&b), HID, &meta("branch", Some("feat"), &head, true)).expect("applied");
-        assert_eq!((done.branch.as_str(), done.leftover.as_deref()), ("feat", None));
+        assert_eq!(done.branch, "feat");
+        assert_ne!(said(&b, &["ls-remote", "origin", &format!("refs/heads/handoff/{HID}")]), "", "kept until the install is recorded");
+        assert_eq!(handoff_landed(&st(&b), HID, "branch"), Ok(()));
         let wt = Path::new(&done.worktree);
         assert_eq!(said(wt, &["rev-parse", "HEAD"]), head);
         let dirty = said(wt, &["status", "--porcelain"]);

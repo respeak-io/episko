@@ -221,11 +221,22 @@ inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usag
 - **Case never folds a name.** `memory.md` is the index on macOS and Windows, so no case of it
   travels, and a name that differs only in case from a file already here is refused.
 - **Its own batch.** The server refuses a whole push carrying memory while the stream is off, so
-  memory never rides with prefs. A push is about half a MiB at most.
+  memory never rides with prefs. A push is about half a MiB and 900 events at most, and a key or
+  payload the server would refuse (`KEY_MAX`, `PAYLOAD_MAX` once JSON-escaped) never goes. A
+  refused push comes back as `error` with `push: true`, which `sync.rs` turns into `pushFailed`
+  for that push's id: nothing of it is agreed, and the next `pushed` lands on the next push.
 - **Always heard, gated on what it does.** The app names `"memory"` in every hello, opted in or
-  not: an arrival is **held** in `cc-sync-memory` (2 MiB at most) until this machine has both the
-  switch on and a checkout of the project, so switching it on later, or cloning later, loses
-  nothing. Advertising only when opted in would leave everything sent before behind the cursor.
+  not: an arrival is **held** in `cc-sync-memory` until this machine has both the switch on and
+  a checkout of the project. Advertising only when opted in would leave everything sent before
+  behind the cursor.
+- **A cursor can still pass memory it was never sent**: an older client acked past it, or the
+  server's gate was off. So the first welcome that says `memory` sends `memory_replay`, and the
+  server answers with this user's whole (compacted) memory stream in pages that never move the
+  cursor; `cc-sync-memory`'s `caught` records that it happened, and a welcome without `memory`
+  clears it. The first catch-up waits for the replay before any first discovery is stamped.
+- **Held is capped at 2 MiB.** Past it the oldest arrivals for projects not cloned here go first,
+  their stamps with them; when anything is let go or dropped, `caught` is cleared, so the next
+  connection replays and nothing is lost for good, only late.
 - **Driven on focus, on a Claude session's exit and every ten minutes**: apply what is held,
   then scan each project with an id and push what changed. Where auto memory is off
   (`autoMemoryEnabled: false`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, or a moved

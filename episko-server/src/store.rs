@@ -205,7 +205,30 @@ impl Store {
                 moved.extend(load(&tx, &id)?);
             }
         }
+        let gone: Option<(String, String)> = tx
+            .query_row("SELECT ws, user FROM tokens WHERE device = ?1", params![device], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
         let n = tx.execute("DELETE FROM tokens WHERE device = ?1", params![device])?;
+        // Their last machine: an offer to "any of theirs" has nobody left to take it.
+        if let Some((ws, user)) = gone {
+            let left: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tokens WHERE ws = ?1 AND lower(user) = lower(?2))",
+                params![ws, user],
+                |r| r.get(0),
+            )?;
+            if !left {
+                let waiting: Vec<(String, String)> = {
+                    let mut q = tx.prepare(
+                        "SELECT id, state FROM handoffs WHERE ws = ?1 AND lower(to_user) = lower(?2) AND state IN ('uploading', 'offered')",
+                    )?;
+                    let rows = q.query_map(params![ws, user], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                    rows.collect::<rusqlite::Result<_>>()?
+                };
+                for (id, state) in waiting {
+                    if close(&tx, &id, parse_state(&state), HandoffState::Expired, &json!({}), now)? { moved.extend(load(&tx, &id)?); }
+                }
+            }
+        }
         tx.commit()?;
         Ok((n, moved))
     }
@@ -229,8 +252,15 @@ impl Store {
     pub fn register(&self, ws: &str, user: &str, label: &str, now: i64) -> rusqlite::Result<Option<(String, Identity)>> {
         let mut db = self.db();
         let tx = db.transaction()?;
+        // A name whose machines were all revoked still owns its personal log and its handoffs;
+        // only an admin's invite gives it out again.
         let taken: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tokens WHERE ws = ?1 AND lower(user) = lower(?2))",
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM tokens WHERE ws = ?1 AND lower(user) = lower(?2))
+                 OR EXISTS(SELECT 1 FROM events WHERE ws = ?1 AND lower(actor) = lower(?2) AND stream NOT IN ({}))
+                 OR EXISTS(SELECT 1 FROM handoffs WHERE ws = ?1 AND (lower(to_user) = lower(?2) OR lower(from_user) = lower(?2)))",
+                shared_streams()
+            ),
             params![ws, user],
             |r| r.get(0),
         )?;
@@ -281,6 +311,29 @@ impl Store {
                 |r| Ok(Identity { ws: r.get(0)?, user: r.get(1)?, device: r.get(2)? }),
             )
             .optional()
+    }
+
+    /// Whether a device still holds a token: `revoke` runs in another process, so a live socket asks.
+    pub fn device_live(&self, device: &str) -> rusqlite::Result<bool> {
+        self.db().query_row("SELECT EXISTS(SELECT 1 FROM tokens WHERE device = ?1)", params![device], |r| r.get(0))
+    }
+
+    /// Up to `limit` of `user`'s own memory events after `after`, oldest first: a `MemoryReplay`'s pages.
+    pub fn memory_since(&self, ws: &str, user: &str, after: u64, limit: usize) -> rusqlite::Result<Vec<Event>> {
+        let db = self.db();
+        let mut q = db.prepare_cached(
+            "SELECT seq, key, actor, device, at, payload FROM events WHERE ws = ?1 AND actor = ?2 AND stream = 'memory' AND seq > ?3 ORDER BY seq LIMIT ?4",
+        )?;
+        let rows = q.query_map(params![ws, user, after, limit as i64], |r| {
+            Ok((r.get::<_, u64>(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get::<_, String>(5)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (seq, key, actor, device, at, payload) = row?;
+            let Ok(payload) = serde_json::from_str(&payload) else { continue };
+            out.push(Event { seq, stream: Stream::Memory, key, actor, device, at, payload });
+        }
+        Ok(out)
     }
 
     pub fn head(&self, ws: &str) -> rusqlite::Result<u64> {
@@ -368,6 +421,8 @@ pub const HANDOFF_KEEP_MS: i64 = 7 * 86_400_000;
 const CLAIM_HOLD_MS: i64 = 3_600_000;
 const MAX_OPEN_SENT: i64 = 10;
 const MAX_PENDING_BYTES: i64 = 256 << 20;
+// An upload no part has reached for this long stops reserving its declared size.
+const UPLOAD_STALL_MS: i64 = 3_600_000;
 const OPEN: &str = "('uploading', 'offered', 'claimed')";
 const COLS: &str = "ws, id, from_user, from_device, to_user, to_device, state, taker, meta, size, parts, sha256, created, expires, updated";
 
@@ -535,9 +590,15 @@ impl Store {
             |r| r.get(0),
         )?;
         if open >= MAX_OPEN_SENT { return refused(HandoffErr::Quota, format!("at most {MAX_OPEN_SENT} handoffs open at once")); }
+        // A stalled upload counts only what it holds, so offers that never send a byte cannot
+        // fill someone's quota for the whole TTL.
         let pending: i64 = tx.query_row(
-            &format!("SELECT COALESCE(SUM(size), 0) FROM handoffs WHERE ws = ?1 AND to_user = ?2 AND state IN {OPEN}"),
-            params![who.ws, to_user],
+            &format!(
+                "SELECT COALESCE(SUM(CASE WHEN state = 'uploading' AND updated + ?3 <= ?4
+                   THEN (SELECT COALESCE(SUM(length(data)), 0) FROM handoff_parts p WHERE p.id = handoffs.id) ELSE size END), 0)
+                 FROM handoffs WHERE ws = ?1 AND to_user = ?2 AND state IN {OPEN}"
+            ),
+            params![who.ws, to_user, UPLOAD_STALL_MS, now],
             |r| r.get(0),
         )?;
         if pending.saturating_add(req.size as i64) > MAX_PENDING_BYTES.max(cfg.max_bytes as i64) {
@@ -687,6 +748,24 @@ impl Store {
             HandoffState::Offered | HandoffState::Claimed | HandoffState::Done | HandoffState::Declined => Ok(true),
             _ => self.db().query_row("SELECT offered IS NOT NULL FROM handoffs WHERE id = ?1", params![h.id], |r| r.get(0)).optional().map(|o| o.unwrap_or(false)),
         }
+    }
+
+    /// With handoff switched off every open one expires: a sender is told it is back, so nothing
+    /// left open may be claimed or completed once the switch comes on again.
+    pub fn handoff_close_all(&self, now: i64) -> rusqlite::Result<Vec<(String, HandoffInfo)>> {
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        let open: Vec<(String, String)> = {
+            let mut q = tx.prepare(&format!("SELECT id, state FROM handoffs WHERE state IN {OPEN}"))?;
+            let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut moved = Vec::new();
+        for (id, state) in open {
+            if close(&tx, &id, parse_state(&state), HandoffState::Expired, &json!({}), now)? { moved.extend(load(&tx, &id)?); }
+        }
+        tx.commit()?;
+        Ok(moved)
     }
 
     /// Open handoffs past their TTL expire and lose their parts; closed rows past the keep go.
@@ -1104,6 +1183,53 @@ mod tests {
         assert_eq!(ended(&t.ana2), [(uid(3), HandoffState::Expired)], "the taker's");
         assert_eq!(ended(&t.desk), [(uid(2), HandoffState::Recalled)], "the one addressed to it; uid(3) is closed already");
         assert!([1, 2, 3].iter().all(|n| held(&t.s, &uid(*n)) == 0));
+    }
+
+    #[test]
+    fn revoking_a_persons_last_machine_ends_offers_to_any_of_theirs_and_keeps_their_name() {
+        let t = team();
+        let (id, _) = offered(&t, 1);
+        t.s.append(&t.ana, &[NewEvent { stream: Stream::Memory, key: "p|a.md".into(), at: 1, payload: json!({"text": "x", "sha": "ab"}) }]).unwrap();
+        assert!(t.s.revoke_at(&t.ana.device, 20).unwrap().1.is_empty(), "Ana still has a machine that may take it");
+        let (_, moved) = t.s.revoke_at(&t.ana2.device, 30).unwrap();
+        assert_eq!(moved.into_iter().map(|(_, h)| (h.id, h.state)).collect::<Vec<_>>(), [(id, HandoffState::Expired)]);
+        assert!(t.s.register("w", "ana", "Stranger", 40).unwrap().is_none(), "her personal log is not up for grabs");
+        assert!(t.s.register("w", "Bea", "Mac", 40).unwrap().is_some());
+    }
+
+    #[test]
+    fn switching_handoff_off_closes_every_open_one() {
+        let t = team();
+        let (a, _) = offered(&t, 1);
+        let (b, _) = offered(&t, 2);
+        t.s.handoff_claim(&t.ana, &b, 10).unwrap();
+        let moved = t.s.handoff_close_all(20).unwrap();
+        assert_eq!(moved.len(), 2);
+        assert_eq!(why(t.s.handoff_claim(&t.ana, &a, 30)), HandoffErr::Gone);
+        assert_eq!(why(t.s.handoff_complete(&t.ana, &b, 30)), HandoffErr::Gone, "nothing left open is honoured later");
+    }
+
+    #[test]
+    fn a_stalled_upload_reserves_only_what_it_holds() {
+        let t = team();
+        let roomy = HandoffCfg { max_bytes: 256 << 20, ..CFG };
+        let sized = |n: u32, mb: u64| Offer { size: mb << 20, parts: ((mb << 20) / HANDOFF_PART as u64) as u32, ..offer(n, "me", &blob(1)) };
+        t.s.handoff_offer(&t.ana, &sized(20, 200), &roomy, 0).unwrap();
+        assert_eq!(why(t.s.handoff_offer(&t.ana2, &sized(21, 100), &roomy, 10)), HandoffErr::Quota);
+        assert!(t.s.handoff_offer(&t.ana2, &sized(21, 100), &roomy, 2 * 3_600_000).is_ok(), "nothing arrived for an hour");
+    }
+
+    #[test]
+    fn a_memory_replay_is_one_users_memory_and_nothing_else() {
+        let s = Store::open_in_memory().unwrap();
+        let me = Identity { ws: "w".into(), user: "me".into(), device: "d1".into() };
+        let ana = Identity { ws: "w".into(), user: "ana".into(), device: "d2".into() };
+        let mem = |k: &str| NewEvent { stream: Stream::Memory, key: k.into(), at: 1, payload: json!({"text": "x", "sha": "ab"}) };
+        s.append(&me, &[mem("p|a.md"), ev("cc-sort", 1), mem("p|b.md")]).unwrap();
+        s.append(&ana, &[mem("p|c.md")]).unwrap();
+        let got = s.memory_since("w", "me", 0, 10).unwrap();
+        assert_eq!(got.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["p|a.md", "p|b.md"]);
+        assert_eq!(s.memory_since("w", "me", got[0].seq, 10).unwrap().len(), 1);
     }
 
     #[test]

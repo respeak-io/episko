@@ -81,6 +81,8 @@ pub(crate) enum SyncOut {
     Status { status: SyncStatus },
     Server { msg: ServerMsg },
     Pushed { id: u64, seqs: Vec<u64> },
+    /// The server refused push `id` whole: nothing of it was stored.
+    PushFailed { id: u64, message: String },
     /// Handoff traffic, digested by ./handoff.rs: part bytes never reach the webview.
     Handoff { ev: HandoffEv },
 }
@@ -89,6 +91,7 @@ enum Ctl {
     Push(u64, Vec<NewEvent>),
     Presence(serde_json::Value),
     Invite,
+    MemoryReplay,
     Reconnect,
     Handoff(HandoffCtl),
 }
@@ -235,9 +238,14 @@ fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<
     loop {
         if !alive() { let _ = sock.close(None); return End::Stopped; }
         match hear(&mut sock) {
-            Ok(Some(ServerMsg::Error { code: code @ (ErrorCode::BadToken | ErrorCode::Protocol), message })) => {
-                out(SyncOut::Server { msg: ServerMsg::Error { code, message: message.clone() } });
+            Ok(Some(ServerMsg::Error { code: code @ (ErrorCode::BadToken | ErrorCode::Protocol), message, .. })) => {
+                out(SyncOut::Server { msg: ServerMsg::Error { code, message: message.clone(), push: false } });
                 return End::Halt(message);
+            }
+            // A refused push never gets its `Pushed`: drop its id, or the next ack is credited to it.
+            Ok(Some(ServerMsg::Error { push: true, message, .. })) => {
+                on_ok();
+                if let Some(id) = inflight.pop_front() { out(SyncOut::PushFailed { id, message }); }
             }
             Ok(Some(ServerMsg::Pushed { seqs })) => { on_ok(); out(SyncOut::Pushed { id: inflight.pop_front().unwrap_or(0), seqs }); }
             Ok(Some(msg)) if handoff::is_handoff(&msg) => {
@@ -265,6 +273,9 @@ fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<
                 }
                 Ok(Ctl::Invite) => {
                     if let Err(e) = say(&mut sock, &ClientMsg::Invite {}) { return End::Retry(e); }
+                }
+                Ok(Ctl::MemoryReplay) => {
+                    if let Err(e) = say(&mut sock, &ClientMsg::MemoryReplay {}) { return End::Retry(e); }
                 }
                 Ok(Ctl::Handoff(c)) => {
                     let step = xfer.on_ctl(c);
@@ -556,6 +567,12 @@ pub(crate) fn sync_invite(state: State<'_, crate::AppState>) -> bool {
     lock(&state.sync.tx).as_ref().is_some_and(|tx| tx.send(Ctl::Invite).is_ok())
 }
 
+/// Asks for this user's whole memory stream again (docs/sync.md); `false` with no connection.
+#[tauri::command]
+pub(crate) fn sync_memory_replay(state: State<'_, crate::AppState>) -> bool {
+    lock(&state.sync.tx).as_ref().is_some_and(|tx| tx.send(Ctl::MemoryReplay).is_ok())
+}
+
 /// The frontend applied everything up to `seq`: the next reconnect replays from there.
 #[tauri::command]
 pub(crate) fn sync_ack(state: State<'_, crate::AppState>, seq: u64) -> Result<(), String> {
@@ -715,10 +732,37 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_push_fails_its_own_id_and_the_next_ack_lands_on_the_next_push() {
+        let url = mock(|ws| {
+            read_msg(ws);
+            write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 0, devices: vec![], handoff: None, memory: false });
+            assert!(matches!(read_msg(ws), ClientMsg::Push { .. }));
+            assert!(matches!(read_msg(ws), ClientMsg::Push { .. }));
+            write_msg(ws, &ServerMsg::Error { code: ErrorCode::TooLarge, message: "big".into(), push: true });
+            write_msg(ws, &ServerMsg::Pushed { seqs: vec![1] });
+            let _ = ws.read();
+        });
+        let (tx, rx) = channel();
+        let ev = || vec![NewEvent { stream: Stream::Prefs, key: "cc-foot".into(), at: 2, payload: "y".into() }];
+        tx.send(Ctl::Push(5, ev())).unwrap();
+        tx.send(Ctl::Push(6, ev())).unwrap();
+        let seen = Mutex::new(Vec::new());
+        let stop = AtomicBool::new(false);
+        let out = |o: SyncOut| {
+            if matches!(o, SyncOut::Pushed { .. }) { stop.store(true, Ordering::SeqCst); }
+            lock(&seen).push(serde_json::to_value(&o).unwrap());
+        };
+        session(&url, "tk", &vec![], 0, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {}, &mut Transfers::new(crate::testutil::scratch_dir()));
+        let got: Vec<(String, u64)> = lock(&seen).iter().filter(|v| v["kind"] != "server")
+            .map(|v| (v["kind"].as_str().unwrap().to_string(), v["id"].as_u64().unwrap())).collect();
+        assert_eq!(got, [("pushFailed".to_string(), 5), ("pushed".to_string(), 6)]);
+    }
+
+    #[test]
     fn a_refused_token_halts_rather_than_hammering() {
         let url = mock(|ws| {
             read_msg(ws);
-            write_msg(ws, &ServerMsg::Error { code: ErrorCode::BadToken, message: "unknown".into() });
+            write_msg(ws, &ServerMsg::Error { code: ErrorCode::BadToken, message: "unknown".into(), push: false });
         });
         let (_tx, rx) = channel();
         assert_eq!(session(&url, "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}, &mut Transfers::new(crate::testutil::scratch_dir())), End::Halt("unknown".into()));

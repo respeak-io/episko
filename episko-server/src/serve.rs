@@ -163,6 +163,14 @@ pub fn serve(listener: TcpListener, store: Arc<Store>, cfg: Arc<Config>) {
         std::thread::sleep(Duration::from_secs(5));
         sweeper.sweep(Instant::now());
     });
+    // Off means off: nothing left open may be claimed once the switch comes back (docs/handoff.md).
+    if cfg.handoff.is_none() {
+        match store.handoff_close_all(now_ms()) {
+            Ok(moved) if !moved.is_empty() => eprintln!("[episko-server] handoff is off: {} open handoff(s) expired", moved.len()),
+            Ok(_) => {}
+            Err(e) => eprintln!("[episko-server] closing open handoffs failed: {e}"),
+        }
+    }
     let (held, told) = (store.clone(), hub.clone());
     std::thread::spawn(move || loop {
         std::thread::sleep(HANDOFF_SWEEP_EVERY);
@@ -206,7 +214,19 @@ fn send(sock: &mut Sock, msg: &ServerMsg) -> tungstenite::Result<()> {
 }
 
 fn refuse(sock: &mut Sock, code: ErrorCode, message: impl Into<String>) -> tungstenite::Result<()> {
-    send(sock, &ServerMsg::Error { code, message: message.into() })
+    send(sock, &ServerMsg::Error { code, message: message.into(), push: false })
+}
+
+/// Refuses a whole push: flagged, so the client's ack queue drops it instead of crediting the next.
+fn refuse_push(sock: &mut Sock, code: ErrorCode, message: impl Into<String>) -> tungstenite::Result<()> {
+    send(sock, &ServerMsg::Error { code, message: message.into(), push: true })
+}
+
+/// A token `revoke` deleted from another process: the socket it authorised goes with it.
+fn shut_out(sock: &mut Sock, cx: &Ctx) -> tungstenite::Result<bool> {
+    if cx.store.device_live(&cx.who.device).unwrap_or(true) { return Ok(false); }
+    refuse(sock, ErrorCode::BadToken, "this device was revoked")?;
+    Ok(true)
 }
 
 fn is_timeout(e: &tungstenite::Error) -> bool {
@@ -346,6 +366,7 @@ fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<
     let mut pinged = Instant::now();
     loop {
         match sock.read() {
+            Ok(Message::Text(_)) if shut_out(sock, cx).map_err(err)? => return Ok(()),
             Ok(Message::Text(t)) => push(sock, cx, &t).map_err(err)?,
             Ok(Message::Close(_)) => return Ok(()),
             Ok(_) => {}
@@ -361,6 +382,7 @@ fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<
                     if !fresh.is_empty() { send(sock, &ServerMsg::Events { events: fresh, more: false }).map_err(err)?; }
                 }
                 Out::Msg(ServerMsg::Handoff { info }) if !fresh(&mut last, &info) => {}
+                Out::Msg(ServerMsg::Handoff { .. }) if shut_out(sock, cx).map_err(err)? => return Ok(()),
                 Out::Msg(msg) => send(sock, &msg).map_err(err)?,
             }
         }
@@ -397,15 +419,16 @@ fn push(sock: &mut Sock, cx: &Ctx, text: &str) -> tungstenite::Result<()> {
             | ClientMsg::HandoffRecall { .. }
             | ClientMsg::HandoffDecline { .. }),
         ) => return handoff(sock, cx, msg),
+        Ok(ClientMsg::MemoryReplay {}) => return memory_replay(sock, cx),
         Ok(_) => return refuse(sock, ErrorCode::BadMessage, "already said hello; only push from here"),
         Err(e) => return refuse(sock, ErrorCode::BadMessage, e.to_string()),
     };
     if events.len() > MAX_PUSH {
-        return refuse(sock, ErrorCode::TooLarge, format!("at most {MAX_PUSH} events per push"));
+        return refuse_push(sock, ErrorCode::TooLarge, format!("at most {MAX_PUSH} events per push"));
     }
     if events.iter().any(|e| e.stream == Stream::Memory) {
-        if !cx.cfg.memory { return refuse(sock, ErrorCode::BadMessage, "this server has the memory stream off"); }
-        if !cx.memory { return refuse(sock, ErrorCode::BadMessage, "say \"memory\" in hello's features before pushing it"); }
+        if !cx.cfg.memory { return refuse_push(sock, ErrorCode::BadMessage, "this server has the memory stream off"); }
+        if !cx.memory { return refuse_push(sock, ErrorCode::BadMessage, "say \"memory\" in hello's features before pushing it"); }
     }
     match store.append(who, &events) {
         Ok(out) => {
@@ -413,8 +436,25 @@ fn push(sock: &mut Sock, cx: &Ctx, text: &str) -> tungstenite::Result<()> {
             hub.publish(cx.id, &who.ws, &out);
             send(sock, &ServerMsg::Pushed { seqs })
         }
-        Err(PushError::TooLarge(m)) => refuse(sock, ErrorCode::TooLarge, m),
-        Err(PushError::Db(m)) => refuse(sock, ErrorCode::Internal, m),
+        Err(PushError::TooLarge(m)) => refuse_push(sock, ErrorCode::TooLarge, m),
+        Err(PushError::Db(m)) => refuse_push(sock, ErrorCode::Internal, m),
+    }
+}
+
+/// This user's whole memory stream again, for a peer whose cursor passed memory it was never sent.
+fn memory_replay(sock: &mut Sock, cx: &Ctx) -> tungstenite::Result<()> {
+    if !cx.memory { return refuse(sock, ErrorCode::BadMessage, "this connection does not take the memory stream"); }
+    let mut after = 0;
+    loop {
+        let mut page = match cx.store.memory_since(&cx.who.ws, &cx.who.user, after, PAGE + 1) {
+            Ok(p) => p,
+            Err(e) => return refuse(sock, ErrorCode::Internal, e.to_string()),
+        };
+        let more = page.len() > PAGE;
+        page.truncate(PAGE);
+        if let Some(last) = page.last() { after = last.seq; }
+        send(sock, &ServerMsg::MemoryReplay { events: page, more })?;
+        if !more { return Ok(()); }
     }
 }
 
@@ -981,7 +1021,47 @@ mod tests {
         let (ta, _) = pair(addr, &store, "laptop");
         let (mut a, _, _) = hello_as(addr, &ta, &[]);
         say(&mut a, &ClientMsg::Push { events: vec![pref("cc-sort"), memory_event("p|a.md")] });
-        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, push: true, .. }));
         assert_eq!(store.head("default").unwrap(), 0, "a refused push lands nothing, prefs included");
+    }
+
+    #[test]
+    fn a_peer_whose_cursor_passed_memory_can_ask_for_all_of_it_again() {
+        let (addr, store) = start_cfg(None, true);
+        let (ta, device) = pair(addr, &store, "laptop");
+        let me = Identity { ws: "default".into(), user: "me".into(), device };
+        store.append(&me, &[memory_event("p|a.md"), pref("cc-sort"), memory_event("p|b.md")]).unwrap();
+        let (mut a, _, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        say(&mut a, &ClientMsg::MemoryReplay {});
+        match hear(&mut a) {
+            ServerMsg::MemoryReplay { events, more } => {
+                assert!(!more);
+                assert_eq!(events.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["p|a.md", "p|b.md"]);
+            }
+            m => panic!("expected MemoryReplay, got {m:?}"),
+        }
+        let (mut old, _, _) = hello_as(addr, &ta, &[]);
+        say(&mut old, &ClientMsg::MemoryReplay {});
+        assert!(matches!(hear(&mut old), ServerMsg::Error { code: ErrorCode::BadMessage, push: false, .. }));
+    }
+
+    #[test]
+    fn an_oversized_push_is_refused_as_a_push() {
+        let (addr, store) = start();
+        let (ta, _) = pair(addr, &store, "laptop");
+        let (mut a, _) = hello(addr, &ta, 0);
+        let many: Vec<NewEvent> = (0..=MAX_PUSH).map(|i| pref(&format!("k{i}"))).collect();
+        say(&mut a, &ClientMsg::Push { events: many });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::TooLarge, push: true, .. }));
+    }
+
+    #[test]
+    fn a_device_revoked_from_another_process_loses_its_live_socket() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, device) = pair(addr, &store, "laptop");
+        let (mut a, _, _) = join(addr, &ta, true);
+        store.revoke(&device).unwrap();
+        say(&mut a, &ClientMsg::HandoffClaim { id: ID.into() });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadToken, .. }));
     }
 }

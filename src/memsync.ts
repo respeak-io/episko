@@ -6,8 +6,14 @@ import { safeParse } from "./store";
 const NAME = /^[A-Za-z0-9._-]+\.md$/;
 /** usage.rs's MEMORY_NAME_MAX: a longer name never travels either way. */
 export const MEM_NAME_MAX = 120;
-/** What this machine holds for projects it has not applied yet; past it an arrival is dropped. */
+/** What this machine holds for projects it has not applied yet; past it the oldest carry goes. */
 export const HELD_MAX = 2 * 1024 * 1024;
+/** episko-proto's MAX_KEY and MAX_PAYLOAD: past either the server refuses the whole push. */
+export const KEY_MAX = 256;
+export const PAYLOAD_MAX = 256 * 1024;
+/** Under episko-proto's MAX_PUSH (1000), like flush's chunks. */
+export const PUSH_EVENTS = 900;
+const bytes = (s: string) => new TextEncoder().encode(s).length;
 
 /** A memory file that may travel: never the index in any case (macOS and Windows fold it), never a path. */
 export const validName = (n: unknown): n is string =>
@@ -54,14 +60,18 @@ export function narrowScan(v: unknown): MemScan | null {
 
 /** An arrival accepted but not on disk yet: no checkout here, the opt-in off, or a failed write. */
 export interface Held { payload: MemPayload | null; at: number; device: string }
-/** `seen`: memKey → the sha this machine and the server last agreed on; `dirs`: the checkout each project is scanned in. */
-export interface MemBook { seen: Record<string, string>; held: Record<string, Held>; dirs: Record<string, string> }
+/**
+ * `seen`: memKey → the sha this machine and the server last agreed on; `dirs`: the checkout each
+ * project is scanned in; `caught`: this machine has had the server's whole memory stream once.
+ */
+export interface MemBook { seen: Record<string, string>; held: Record<string, Held>; dirs: Record<string, string>; caught?: boolean }
 
 export function readMemBook(raw: string | null): MemBook {
   const v = safeParse<Record<string, unknown>>(raw);
   const book: MemBook = { seen: {}, held: {}, dirs: {} };
   if (!v || typeof v !== "object" || Array.isArray(v)) return book;
   const seen = v.seen, held = v.held, dirs = v.dirs;
+  if (v.caught === true) book.caught = true;
   if (dirs && typeof dirs === "object" && !Array.isArray(dirs)) {
     for (const [pid, d] of Object.entries(dirs)) if (pid && typeof d === "string" && d) book.dirs[pid] = d;
   }
@@ -88,10 +98,11 @@ export interface MemOut { key: string; payload: MemPayload | null; reveal: boole
  */
 export function diffLocal(pid: string, scan: MemScan, book: MemBook, stamped: (key: string) => boolean): MemOut[] {
   const out: MemOut[] = [];
+  if (bytes(memKey(pid, "")) + 1 > KEY_MAX) return out; // a project id this long names no key the server takes
   const here = new Set([...scan.files.map((f) => f.name), ...scan.skipped]);
   for (const f of scan.files) {
     const key = memKey(pid, f.name);
-    if (book.seen[key] === f.sha || key in book.held) continue;
+    if (book.seen[key] === f.sha || key in book.held || !travels(key, f)) continue;
     out.push({ key, payload: { text: f.text, sha: f.sha }, reveal: !(key in book.seen) && !stamped(key) });
   }
   for (const key of scan.found ? Object.keys(book.seen) : []) {
@@ -100,6 +111,10 @@ export function diffLocal(pid: string, scan: MemScan, book: MemBook, stamped: (k
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
 }
+
+/** Whether the server would take it: one key or payload too big refuses the whole push. */
+export const travels = (key: string, payload: MemPayload | null) =>
+  bytes(key) <= KEY_MAX && (!payload || bytes(JSON.stringify({ text: payload.text, sha: payload.sha })) <= PAYLOAD_MAX);
 
 /**
  * The one checkout a project's memories are read and written in: the one it was last, while it
@@ -130,13 +145,29 @@ export function acceptMem(
 
 const heldBytes = (held: Record<string, Held>) => Object.values(held).reduce((n, h) => n + (h.payload?.text.length ?? 0), 0);
 
-/** Holds an arrival, replacing any older one for its key; false when the cap would be passed. */
-export function holdMem(book: MemBook, key: string, h: Held): boolean {
+/**
+ * Holds an arrival, replacing any older one for its key. Past the cap the oldest arrivals for
+ * projects not cloned here make room; `evicted` names them, and `held` is false when even that
+ * is not enough. Either way the caller owes a replay, or what was let go is gone for good.
+ */
+export function holdMem(book: MemBook, key: string, h: Held, known: (pid: string) => boolean = () => true): { held: boolean; evicted: string[] } {
   const rest = { ...book.held };
   delete rest[key];
-  if (heldBytes(rest) + (h.payload?.text.length ?? 0) > HELD_MAX) return false;
+  const need = h.payload?.text.length ?? 0;
+  let size = heldBytes(rest);
+  const evicted: string[] = [];
+  if (size + need > HELD_MAX) {
+    const carries = Object.entries(rest).filter(([k]) => { const p = parseMemKey(k); return !p || !known(p.pid); }).sort(([, a], [, b]) => a.at - b.at);
+    for (const [k, c] of carries) {
+      if (size + need <= HELD_MAX) break;
+      size -= c.payload?.text.length ?? 0;
+      evicted.push(k);
+    }
+  }
+  if (size + need > HELD_MAX) return { held: false, evicted: [] };
+  for (const k of evicted) delete book.held[k];
   book.held[key] = h;
-  return true;
+  return { held: true, evicted };
 }
 
 /**
@@ -152,13 +183,13 @@ export function mergeMemWire(held: Record<string, Held>, known: (pid: string) =>
   return { apply, carry };
 }
 
-/** Pushes of at most ~`max` payload bytes each; one bigger memory still goes, alone. */
+/** Pushes of at most ~`max` payload bytes and PUSH_EVENTS events each; one bigger memory still goes, alone. */
 export function memChunks<T extends { payload: unknown }>(events: T[], max = 512 * 1024): T[][] {
   const out: T[][] = [];
   let cur: T[] = [], size = 0;
   for (const e of events) {
     const n = JSON.stringify(e.payload ?? null).length + 128;
-    if (cur.length && size + n > max) { out.push(cur); cur = []; size = 0; }
+    if (cur.length && (size + n > max || cur.length >= PUSH_EVENTS)) { out.push(cur); cur = []; size = 0; }
     cur.push(e);
     size += n;
   }

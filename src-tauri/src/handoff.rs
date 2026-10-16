@@ -798,13 +798,26 @@ fn pack_in(
     if let Some(p) = &project_id {
         meta.insert("project_id".into(), p.clone().into());
     }
-    if !mems.is_empty() {
-        let list: Vec<&usage::MemoryFile> = mems.iter().map(|(f, _)| f).collect();
-        meta.insert("memories".into(), serde_json::to_value(list).map_err(|e| e.to_string())?);
+    // The brief names at most ten; the memory list below is the one the recipient reads.
+    if let Some(Value::Array(names)) = meta.get_mut("brief").and_then(|b| b.get_mut("memories")) {
+        names.truncate(10);
     }
+    let fits = |m: &serde_json::Map<String, Value>| Value::Object(m.clone()).to_string().len() + GIT_META_ROOM <= HANDOFF_META_MAX;
     // Checked before anything is pushed; the git meta still to come is a few hundred bytes.
-    if Value::Object(meta.clone()).to_string().len() + GIT_META_ROOM > HANDOFF_META_MAX {
+    if !fits(&meta) {
         return Err("the brief is too long to send".into());
+    }
+    if !mems.is_empty() {
+        // The blob carries every file whole, so the list's descriptions give way before a send does.
+        let mut sent = false;
+        for cap in [200, 80, 0] {
+            let list: Vec<usage::MemoryFile> = mems.iter().map(|(f, _)| usage::MemoryFile { description: f.description.chars().take(cap).collect(), ..f.clone() }).collect();
+            meta.insert("memories".into(), serde_json::to_value(list).map_err(|e| e.to_string())?);
+            if fits(&meta) { sent = true; break; }
+        }
+        if !sent {
+            return Err(format!("{} memories are too many to send with this brief: untick some", mems.len()));
+        }
     }
     let bundle = staged(stage, "out", id, "bundle");
     let packed = git::handoff_ship(workdir, id, how, &bundle).and_then(|shipped| ship_rest(stage, id, workdir, resume_id, provider, project_id, export, mems, meta, shipped));
@@ -932,11 +945,12 @@ fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[S
         (None, Some(g)) => {
             let bundle = names.iter().any(|n| n == "repo.bundle").then(|| dir.join("repo.bundle"));
             let a = git::handoff_land(checkout, id, g, bundle.as_deref())?;
-            if let Some(l) = &a.leftover {
-                log::warn!("handoff {id}: {l}");
-            }
             rec.applied = Some((a.worktree.clone(), a.branch.clone()));
             write_json(&jp, &rec)?;
+            // Only now that a retry would find this worktree may the branch it came on go.
+            if let Err(l) = git::handoff_landed(checkout, id, &g.via) {
+                log::warn!("handoff {id}: {l}");
+            }
             (a.worktree, Some(a.branch), true)
         }
     };
@@ -992,6 +1006,29 @@ fn prune_archive(root: &Path, now: SystemTime) {
         }
     }
 }
+
+/// Staging no record names any more, once it is a day old: the webview lost it (aged out, or
+/// its storage was cleared), so nothing can reach it. The day spares a send packed this minute.
+fn prune_staging(stage: &Path, keep: &[String], now: SystemTime) {
+    for side in ["out", "in"] {
+        let Ok(rd) = std::fs::read_dir(stage.join(side)) else { continue };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let id = name.split('.').next().unwrap_or_default();
+            if !uuid_shaped(id) || keep.iter().any(|k| k.eq_ignore_ascii_case(id)) {
+                continue;
+            }
+            let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > STAGING_ORPHAN));
+            if !old {
+                continue;
+            }
+            let p = e.path();
+            let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
+}
+
+const STAGING_ORPHAN: Duration = Duration::from_secs(86_400);
 
 pub(crate) fn init(app: &AppHandle) {
     if let Ok(root) = archive_root(app) {
@@ -1065,6 +1102,12 @@ pub(crate) fn handoff_decline(state: State<'_, crate::AppState>, id: String, rea
 #[tauri::command(async)]
 pub(crate) fn handoff_install(app: AppHandle, id: String, checkout: String, memories: Vec<String>, teammate: bool) -> Result<Installed, String> {
     install_in(&stage_dir(&app), &claude_base()?, &id, &checkout, &memories, teammate)
+}
+
+/// Boot, from the webview: every id `cc-handoff` still holds; the rest of the staging may go.
+#[tauri::command(async)]
+pub(crate) fn handoff_prune(app: AppHandle, keep: Vec<String>) {
+    prune_staging(&stage_dir(&app), &keep, SystemTime::now());
 }
 
 #[tauri::command(async)]
@@ -1478,6 +1521,31 @@ mod tests {
     }
 
     #[test]
+    fn fifty_memories_with_long_descriptions_still_go_their_descriptions_shortened() {
+        let root = scratch_dir();
+        let (sbase, sender) = (root.join("sender-claude"), root.join("sender"));
+        std::fs::create_dir_all(&sender).unwrap();
+        let cwd = sender.to_string_lossy().into_owned();
+        let tdir = usage::project_transcript_dir(&sbase, &cwd);
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join(format!("{SID}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        let mdir = usage::memory_dir(&sbase, &cwd).unwrap();
+        std::fs::create_dir_all(&mdir).unwrap();
+        let names: Vec<String> = (0..MEMORY_MAX).map(|i| format!("{i:02}-{}.md", "n".repeat(90))).collect();
+        for n in &names {
+            std::fs::write(mdir.join(n), format!("---\ntype: project\ndescription: {}\n---\nbody\n", "d".repeat(300))).unwrap();
+        }
+        let brief = json!({"brief": {"summary": "s".repeat(600), "memories": names}});
+        let out = root.join("out-stage");
+        pack_in(&out, &sbase, ID, &cwd, SID, "none", &names, false, brief).expect("packed");
+        let rec: OutRec = read_json(&staged(&out, "out", ID, "json")).unwrap();
+        assert_eq!(rec.meta["memories"].as_array().unwrap().len(), MEMORY_MAX);
+        assert_eq!(rec.meta["brief"]["memories"].as_array().unwrap().len(), 10);
+        assert!(rec.meta["memories"][0]["description"].as_str().unwrap().len() < 200);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_manifest_that_lies_about_a_file_is_refused() {
         let stage = scratch_dir();
         let mut entries = manifest_for(None, b"one");
@@ -1520,5 +1588,20 @@ mod tests {
         assert!(root.join(ID).exists(), "a fresh archive stays");
         prune_archive(&root, SystemTime::now() + ARCHIVE_KEEP + Duration::from_secs(60));
         assert!(!root.join(ID).exists());
+    }
+
+    #[test]
+    fn staging_no_record_names_goes_once_it_is_a_day_old() {
+        let stage = scratch_dir();
+        const OTHER: &str = "11111111-2222-4333-8444-555555555555";
+        stage_out(&stage, ID, b"abc", "ben");
+        stage_out(&stage, OTHER, b"abc", "ben");
+        std::fs::create_dir_all(stage.join("in").join(OTHER)).unwrap();
+        prune_staging(&stage, &[ID.to_uppercase()], SystemTime::now());
+        assert!(staged(&stage, "out", OTHER, "json").exists(), "a send packed this minute stays");
+        prune_staging(&stage, &[ID.to_uppercase()], SystemTime::now() + STAGING_ORPHAN + Duration::from_secs(60));
+        assert!(staged(&stage, "out", ID, "epkh").exists(), "a record still names it");
+        assert!(!staged(&stage, "out", OTHER, "epkh").exists() && !staged(&stage, "out", OTHER, "json").exists());
+        assert!(!stage.join("in").join(OTHER).exists());
     }
 }

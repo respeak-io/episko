@@ -656,7 +656,7 @@ const SET_TABS: SetTab[] = [
     id: "sync", label: "Sync", glyph: "⇅", group: "app", sub: "Your settings and spend on every machine",
     controls: () => [
       { kind: "sync", id: "syncserver", label: "Sync server", hint: "Carries your preferences, spend and limits between your machines.",
-        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it: no prompts, transcripts, tool output or diffs. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
+        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it (no prompts, transcripts, tool output or diffs) except what you opt into: a session you explicitly send, and Claude's memory files once both switches are on. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
         aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted", "memory"], since: "0.32.0",
         summary: () => syncSummary(syncStatus, syncHealthNow()) },
     ],

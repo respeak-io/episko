@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  HELD_MAX, MEM_NAME_MAX, acceptMem, conflictName, diffLocal, holdMem, memChunks, memKey, mergeMemWire, narrowMem, narrowScan,
+  HELD_MAX, KEY_MAX, MEM_NAME_MAX, PAYLOAD_MAX, PUSH_EVENTS, acceptMem, conflictName, diffLocal, holdMem, memChunks, memKey, mergeMemWire, narrowMem, narrowScan,
   parseMemKey, pickDir, readMemBook, validName, type MemBook,
 } from "../src/memsync";
 
@@ -46,6 +46,20 @@ describe("narrowing", () => {
       held: { "p|a.md": { payload: null, at: 3, device: "d2" }, "p|b.md": { payload: { text: "x" }, at: 3, device: "d2" }, "p|c.md": { payload: null, device: "d2" } },
     });
     expect(readMemBook(raw)).toEqual(book({ seen: { "p|a.md": sha("a") }, held: { "p|a.md": { payload: null, at: 3, device: "d2" } } }));
+    expect(readMemBook(JSON.stringify({ caught: true })).caught).toBe(true);
+    expect(readMemBook(JSON.stringify({ caught: "yes" })).caught).toBeUndefined();
+  });
+});
+
+describe("diffLocal: what the server would refuse never goes", () => {
+  it("skips a key past the server's limit and a payload past its size once escaped", () => {
+    const long = "git:" + "a".repeat(KEY_MAX);
+    expect(diffLocal(long, { files: [{ name: "a.md", text: "x", sha: sha("a") }], skipped: [], found: true }, book(), () => false)).toEqual([]);
+    const pid = "git:" + "b".repeat(KEY_MAX - 10);
+    const files = [{ name: "a.md", text: "x", sha: sha("a") }, { name: "much-longer-name.md", text: "x", sha: sha("b") }];
+    expect(diffLocal(pid, { files, skipped: [], found: true }, book(), () => false).map((o) => o.key)).toEqual([`${pid}|a.md`]);
+    const ansi = String.fromCharCode(27).repeat(Math.ceil(PAYLOAD_MAX / 6) + 1);
+    expect(diffLocal("p", { files: [{ name: "a.md", text: ansi, sha: sha("c") }], skipped: [], found: true }, book(), () => false)).toEqual([]);
   });
 });
 
@@ -111,10 +125,20 @@ describe("arrivals", () => {
   it("holds within a cap, a replacement counted once", () => {
     const b = book();
     const big = (n: number) => ({ payload: { text: "x".repeat(n), sha: sha("a") }, at: 1, device: "d2" });
-    expect(holdMem(b, "p|a.md", big(HELD_MAX - 10))).toBe(true);
-    expect(holdMem(b, "p|b.md", big(20))).toBe(false);
-    expect(holdMem(b, "p|a.md", big(HELD_MAX))).toBe(true);
-    expect(holdMem(b, "p|b.md", { payload: null, at: 1, device: "d2" })).toBe(true);
+    expect(holdMem(b, "p|a.md", big(HELD_MAX - 10)).held).toBe(true);
+    expect(holdMem(b, "p|b.md", big(20)).held).toBe(false);
+    expect(holdMem(b, "p|a.md", big(HELD_MAX)).held).toBe(true);
+    expect(holdMem(b, "p|b.md", { payload: null, at: 1, device: "d2" }).held).toBe(true);
+  });
+
+  it("past the cap lets the oldest carries go first, and never a cloned project's", () => {
+    const h = (n: number, at: number) => ({ payload: { text: "x".repeat(n), sha: sha("a") }, at, device: "d2" });
+    const b = book({ held: { "far|old.md": h(HELD_MAX / 2, 1), "far|new.md": h(HELD_MAX / 4, 5), "p|mine.md": h(HELD_MAX / 4, 2) } });
+    const known = (pid: string) => pid === "p";
+    expect(holdMem(b, "p|b.md", h(100, 9), known)).toEqual({ held: true, evicted: ["far|old.md"] });
+    expect(Object.keys(b.held).sort()).toEqual(["far|new.md", "p|b.md", "p|mine.md"]);
+    expect(holdMem(b, "p|c.md", h(HELD_MAX, 9), known)).toEqual({ held: false, evicted: [] });
+    expect("far|new.md" in b.held).toBe(true);
   });
 
   it("applies what this machine has a checkout for and carries the rest untouched", () => {
@@ -131,5 +155,9 @@ describe("memChunks", () => {
     expect(memChunks([e(200), e(200), e(200)], 1000).map((c) => c.length)).toEqual([2, 1]);
     expect(memChunks([e(5000), e(10)], 1000).map((c) => c.length)).toEqual([1, 1]);
     expect(memChunks([])).toEqual([]);
+  });
+  it("never puts more events in one push than the server takes", () => {
+    const tomb = Array.from({ length: 2000 }, () => ({ payload: null }));
+    expect(memChunks(tomb).map((c) => c.length)).toEqual([PUSH_EVENTS, PUSH_EVENTS, 2000 - 2 * PUSH_EVENTS]);
   });
 });

@@ -1045,6 +1045,28 @@ fn rewrite_prefixes(text: &str, rules: &[(String, String)]) -> String {
     out
 }
 
+/// Claude restores a resumed session's last `permission-mode` record unless a flag overrides it,
+/// and a standard-mode launch passes none, so the sender's mode would travel. Reset to `default`.
+fn neutral_modes(text: &str) -> String {
+    if !text.contains("\"permission-mode\"") {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, nl) = line.strip_suffix('\n').map_or((line, ""), |b| (b, "\n"));
+        let rec = body.contains("\"permission-mode\"").then(|| serde_json::from_str::<serde_json::Value>(body).ok()).flatten();
+        match rec {
+            Some(mut v) if v.get("type").and_then(|t| t.as_str()) == Some("permission-mode") => {
+                v["permissionMode"] = "default".into();
+                out.push_str(&v.to_string());
+                out.push_str(nl);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
 /// Never overwrite: identical bytes already there are success, anything else a conflict.
 /// Written beside the target and renamed, so a crash never leaves half a file under its name.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1109,7 +1131,7 @@ fn transcript_import_with(
     let local = dir.join(id);
     let rules = prefix_rules(from_prefixes, id, &local.to_string_lossy());
     let text = std::fs::read_to_string(jsonl).map_err(|e| format!("could not read the transcript: {e}"))?;
-    let body = rewrite_prefixes(&text, &rules);
+    let body = neutral_modes(&rewrite_prefixes(&text, &rules));
     let dst = dir.join(&file);
     if dst.exists() {
         write_new(&dst, body.as_bytes())?;
@@ -1874,6 +1896,21 @@ mod tests {
         let art = dir.join(HID).join("tool-results").join("artifact.html");
         assert_eq!(std::fs::read_to_string(art).unwrap(), "<p>kept</p>");
         assert!(!dir.join(format!("{HID}.jsonl.episko-tmp")).exists(), "no temp file is left behind");
+    }
+
+    #[test]
+    fn an_imported_transcript_carries_no_foreign_permission_mode() {
+        let text = "{\"type\":\"user\",\"message\":\"say \\\"permission-mode\\\"\"}\n\
+                    {\"type\":\"permission-mode\",\"permissionMode\":\"acceptEdits\",\"sessionId\":\"s\"}\n\
+                    {\"type\":\"permission-mode\",\"permissionMode\":\"auto\"}";
+        let out = neutral_modes(text);
+        let lines: Vec<serde_json::Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], serde_json::from_str::<serde_json::Value>(text.lines().next().unwrap()).unwrap(), "a message is untouched");
+        assert_eq!((lines[1]["permissionMode"].as_str(), lines[1]["sessionId"].as_str()), (Some("default"), Some("s")));
+        assert_eq!(lines[2]["permissionMode"], "default");
+        assert!(out.lines().next() == text.lines().next() && !out.ends_with('\n'));
+        assert_eq!(neutral_modes("{\"type\":\"user\"}\n"), "{\"type\":\"user\"}\n");
     }
 
     #[test]

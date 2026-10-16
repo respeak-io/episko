@@ -124,6 +124,25 @@ describe("reduce: the recipient's record", () => {
   });
 });
 
+describe("reduce: a received record keeps the meta the server wipes when it closes", () => {
+  const done = () => run(reduce([], ev({ state: "offered" }), BEN, NOW), [
+    ev({ state: "claimed", taker: "b1", updated: NOW + 1 }), { kind: "ready", id: ID }, ev({ state: "done", taker: "b1", meta: {}, updated: NOW + 2 }),
+  ], BEN);
+  it("still reads its title and project once done", () => {
+    const l = done();
+    expect(l[0].state).toBe("done");
+    expect(narrowMeta(l[0].info?.meta)?.title).toBe("Fix the parser");
+    const r = restorableFor(l[0].info!, { workdir: "/w/epi", resume_id: RESUME, branch: null, worktree: false, kept: [], failed: [], memory_off: [] }, "n", "/w/epi");
+    expect(r.title).toBe("Fix the parser");
+    expect(incomingByProject(l, (pid) => (pid === "pid" ? ["/w/epi"] : [])).get("/w/epi")?.map((x) => x.id)).toEqual([ID]);
+    expect(rowText(l[0], NOW).actions).toEqual(["retry"]);
+  });
+  it("lets a newer server's meta replace it when it can be read", () => {
+    const l = reduce(done(), ev({ state: "done", taker: "b1", meta: meta({ title: "Renamed" }), updated: NOW + 3 }), BEN, NOW);
+    expect(narrowMeta(l[0].info?.meta)?.title).toBe("Renamed");
+  });
+});
+
 describe("reduce: a list is the whole truth", () => {
   it("returns a sender's open record the server no longer holds", () => {
     const l = reduce([out({ state: "offered" }), out({ id: "x", state: "packing" })], { kind: "list", records: [] }, ANNA, NOW);
@@ -324,8 +343,20 @@ describe("narrowing", () => {
   });
   it("drops a closed record past its week and a duplicate id, and keeps an open one", () => {
     const old = NOW - 8 * 24 * HOUR;
-    const l = readHandoffs([out({ state: "offered", at: old }), out({ state: "done", at: old }), out({ id: "d", state: "done", at: old }), out({ id: "n" })], NOW);
+    const l = readHandoffs([out({ state: "offered", at: old }), out({ state: "done", settled: true, at: old }), out({ id: "d", state: "done", settled: true, at: old }), out({ id: "n" })], NOW);
     expect(l.map((r) => `${r.id}:${r.state}`)).toEqual([`${ID}:offered`, "n:packing"]);
+  });
+  it("keeps an unresolved closed record however old: a returned send, an unarchived one, an uninstalled arrival", () => {
+    const old = NOW - 30 * 24 * HOUR;
+    const l = readHandoffs([
+      out({ id: "r", state: "returned", at: old }), out({ id: "u", state: "done", at: old }),
+      out({ id: "i", dir: "in", state: "done", at: old }), out({ id: "t", dir: "in", state: "done", takenBy: "b2", at: old }),
+      out({ id: "x", state: "declined", at: old }),
+    ], NOW);
+    expect(l.map((r) => r.id)).toEqual(["r", "u", "i"]);
+  });
+  it("remembers that an offer reached the socket", () => {
+    expect(readHandoffs([out({ sent: true })], NOW)[0].sent).toBe(true);
   });
   it("round-trips a full record", () => {
     const r = out({ state: "uploading", info: info(), progress: { done: 1, total: 2 }, unknownSince: NOW, title: "t", takenBy: "b2" });

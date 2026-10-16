@@ -34,7 +34,8 @@ export interface SyncStatus {
 type ServerMsg =
   | { t: "welcome"; user: string; device: string; head: number; devices?: unknown; handoff?: unknown; memory?: unknown }
   | { t: "events"; events: SyncEvent[]; more: boolean }
-  | { t: "error"; code: string; message: string }
+  | { t: "memory_replay"; events: SyncEvent[]; more: boolean }
+  | { t: "error"; code: string; message: string; push?: boolean }
   | { t: "presence"; user: string; device: string; items: unknown }
   | { t: "invited"; code: string; expires: number }
   | { t: "paired" | "pushed" };
@@ -42,6 +43,7 @@ export type SyncOut =
   | { kind: "status"; status: SyncStatus }
   | { kind: "server"; msg: ServerMsg }
   | { kind: "pushed"; id: number; seqs: number[] }
+  | { kind: "pushFailed"; id: number; message: string }
   | { kind: "handoff"; ev: HandoffEv };
 
 const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", label: "", cursor: 0, connected: false, lastOkAt: null, error: null, halted: false, headerNames: [] };
@@ -249,6 +251,13 @@ export function flush() {
   }
 }
 
+/** The server refused push `id` whole: nothing of it is agreed, so all of it stays owed. */
+function pushFailed(id: number, message: string) {
+  log("warn", `sync: a push was refused (${message})`);
+  if (memInflight.delete(id)) return;
+  inflight.delete(id);
+}
+
 function pushed(id: number) {
   if (memPushed(id)) return;
   const f = inflight.get(id);
@@ -377,7 +386,8 @@ function applyAll(events: SyncEvent[], more: boolean) {
   if (top) invoke("sync_ack", { seq: top }).catch((e) => log("warn", `sync ack: ${e}`));
   if (memMoved) { memMoved = false; saveMem(); }
   // Caught up: only now can a first discovery's oldest stamp not undercut what the server held.
-  if (!more && !caughtUp) { caughtUp = true; void syncMemory(); } else if (events.length) void drainMem();
+  if (!more) logCaught = true;
+  if (!more && !caughtUp && !memReplaying) { caughtUp = true; void syncMemory(); } else if (events.length) void drainMem();
   render();
 }
 
@@ -391,10 +401,11 @@ export function onSyncEvent(o: SyncOut) {
       presence.clear(); // nobody can vouch for it any more
       serverHandoff = undefined;
       onHandoff.caps();
-      serverMemory = false; caughtUp = false;
+      serverMemory = false; caughtUp = false; logCaught = false; memReplaying = false;
     }
     render();
   } else if (o.kind === "pushed") pushed(o.id);
+  else if (o.kind === "pushFailed") pushFailed(o.id, o.message);
   else if (o.kind === "handoff") onHandoff.ev(o.ev);
   else if (o.msg.t === "welcome") {
     status = { ...status, connected: true, error: null, device: o.msg.device, user: o.msg.user };
@@ -406,8 +417,9 @@ export function onSyncEvent(o: SyncOut) {
     }
     serverHandoff = narrowCaps(o.msg.handoff);
     serverMemory = o.msg.memory === true;
-    caughtUp = false;
+    caughtUp = false; logCaught = false;
     memInflight.clear();
+    askMemReplay();
     handoffDevices = capableDevices(o.msg.devices);
     onHandoff.caps();
     // Whatever was in flight on the old socket is lost with it; the outbox is rebuilt from scratch.
@@ -415,6 +427,7 @@ export function onSyncEvent(o: SyncOut) {
     flush();
     render();
   } else if (o.msg.t === "events") applyAll(o.msg.events, o.msg.more);
+  else if (o.msg.t === "memory_replay") applyReplay(o.msg.events, o.msg.more);
   else if (o.msg.t === "presence") {
     const items = narrowPresence(o.msg.items);
     if (items.length) presence.set(o.msg.device, { user: o.msg.user, items }); else presence.delete(o.msg.device);
@@ -777,6 +790,8 @@ const memBook: MemBook = readMemBook(localStorage.getItem(MEMBOOK));
 /** Welcome said this server carries memory; false until it does, and once it cannot be heard. */
 export let serverMemory = false;
 let caughtUp = false, memMoved = false, memBusy = false;
+// `logCaught`: this connection's catch-up has ended; `memReplaying`: a MemoryReplay is still arriving.
+let logCaught = false, memReplaying = false;
 // Push id → memKey → the sha it carried (null for a tombstone), agreed once the server takes it.
 const memInflight = new Map<number, Map<string, string | null>>();
 function saveMem() { quiet(() => raw.set.call(localStorage, MEMBOOK, JSON.stringify(memBook))); }
@@ -789,11 +804,51 @@ export function setMemorySync(on: boolean) {
   render();
 }
 
+/**
+ * A cursor can pass memory this machine was never sent (an older client, the server's gate off),
+ * so the first welcome that says memory, and the first after anything was let go, asks for all of it.
+ */
+function askMemReplay() {
+  if (!serverMemory) {
+    if (memBook.caught) { delete memBook.caught; saveMem(); }
+    memReplaying = false;
+    return;
+  }
+  if (memBook.caught) return;
+  memReplaying = true;
+  invoke<boolean>("sync_memory_replay").then((ok) => { if (!ok) memReplaying = false; })
+    .catch((e) => { memReplaying = false; log("warn", `sync memory replay: ${e}`); });
+}
+
+function applyReplay(events: SyncEvent[], more: boolean) {
+  for (const ev of events) {
+    try { if (ev?.stream === "memory" && applyMem(ev)) { const a = act("memory"); a.got++; a.gotAt = Math.max(a.gotAt, ev.at); } }
+    catch (e) { log("warn", `sync: skipped memory:${ev?.key} (${e})`); }
+  }
+  if (memMoved) { memMoved = false; saveMem(); }
+  if (more) return;
+  memReplaying = false;
+  if (!memLetGo) { memBook.caught = true; saveMem(); }
+  memLetGo = false;
+  if (logCaught && !caughtUp) { caughtUp = true; void syncMemory(); } else void drainMem();
+  render();
+}
+// Something was evicted or dropped during this replay: the next welcome asks again.
+let memLetGo = false;
+
 function applyMem(ev: SyncEvent): boolean {
   const sk = stampKey("memory", ev.key);
   const h = acceptMem(ev, stamps[sk], status.device);
   if (!h) return false;
-  if (!holdMem(memBook, ev.key, h)) { log("warn", `sync: memory ${ev.key} dropped, too much is waiting for a checkout`); return false; }
+  const kept = holdMem(memBook, ev.key, h, known);
+  if (kept.evicted.length || !kept.held) {
+    // Let go: its stamp goes too, or the replay that brings it back would be refused as old.
+    for (const k of kept.evicted) delete stamps[stampKey("memory", k)];
+    delete memBook.caught;
+    memLetGo = true;
+    log("warn", `sync: too much memory waits for projects not cloned here; ${kept.held ? `${kept.evicted.length} let go` : `${ev.key} dropped`} until the next connection asks again`);
+  }
+  if (!kept.held) return false;
   stamps[sk] = { at: ev.at, device: ev.device };
   memMoved = true;
   return true;
@@ -841,6 +896,8 @@ async function drainMem(retry = false) {
       memParked.delete(key);
       if (ok) { if (h.payload) memBook.seen[key] = h.payload.sha; else delete memBook.seen[key]; }
       else if (ok === false && agreed === null && h.payload) await keepBoth(key, k.name, dir, h);
+      // A local edit kept against a newer arrival: its push's ack must not mark it agreed, or it is never resent.
+      else if (ok === false) for (const owed of memInflight.values()) owed.delete(key);
     }
     saveMem();
   } finally { memBusy = false; }

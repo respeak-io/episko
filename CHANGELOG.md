@@ -13,28 +13,16 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-~ **Sync server: groundwork for handing a session to another machine.** The sync protocol learns
-  the handoff messages and the capability fields a client and server advertise. Nothing sends them
-  yet, and an app or server from before this sees nothing new on the wire. The server's database
-  gains the tables that will hold a handoff until it is picked up, and an existing `episko.db`
-  is upgraded in place; `revoke` now also ends the open handoffs of the machine it shuts out.
-  The server now speaks it when `EPISKO_HANDOFF=1` is set (`EPISKO_HANDOFF_TTL_HOURS`,
-  `EPISKO_HANDOFF_MAX_MB`), and it is off by default; only an app that says it speaks handoff is
-  ever sent one. A proxy in front must pass WebSocket messages of at least 1 MiB. The app can
-  now copy a session's transcript out of `~/.claude` and file one back in under another
-  checkout, never overwriting a conversation already there; nothing calls it yet. It can also
-  package a checkout's unpushed commits and uncommitted work (secrets left behind) as a branch or a
-  bundle and unpack them into a fresh worktree elsewhere; nothing calls that yet either. And it
-  can ask Claude for a short brief of a stopped session for whoever picks it up, run on a
-  throwaway, unpersisted fork with no tools or hooks; unused so far. The app now says it speaks
-  handoff when it connects, and can pack a session into one checksummed file, send it to the
-  server in parts, fetch one it was given and unpack it into a checkout once the server says it
-  is done; nothing in the interface starts one yet. The interface now keeps a record of each
-  handoff and follows the server's word on it, and a session being handed over cannot be resumed
-  here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
-  The server also learns a `memory` stream for sharing Claude's project memories between one
-  person's own machines, off unless `EPISKO_MEMORY=1` is set and heard only by an app that asks
-  for it; the app does not use it yet.
+~ **Sync server: handoff and the memory stream.** The sync protocol learns the handoff messages,
+  the capability fields a client and server advertise, and a `memory` stream; an app or server
+  from before this sees nothing new on the wire. The server's database gains the tables that hold
+  a handoff until it is picked up, and an existing `episko.db` is upgraded in place. Handoff is on
+  with `EPISKO_HANDOFF=1` (`EPISKO_HANDOFF_TTL_HOURS`, `EPISKO_HANDOFF_MAX_MB`) and the memory
+  stream with `EPISKO_MEMORY=1`; both are off by default, and starting the server with handoff off
+  expires every handoff still open. `revoke` ends the open handoffs of the machine it shuts out,
+  and of the person when it was their last, and closes that machine's live connection; a name
+  that still owns a personal log is no longer free to register with the team code. A proxy in
+  front must pass WebSocket messages of at least 1 MiB.
 
 + **Hand a session to another machine, or to a teammate.** On a sync server started with
   `EPISKO_HANDOFF=1`, *Send to…* on a Claude session stops it, drafts a short brief and sends
@@ -44,7 +32,8 @@ Markers: `+` new · `~` changed · `!` fixed
   travelled, and resumes the conversation. *Decline*, ↶ *Take it back* and *Give back* (while it
   downloads) all leave the sender with a resumable session; nothing is written on the receiving
   machine until the server says it has changed hands. A transcript carries whatever the agent
-  read, so the send sheet says so every time. Permission modes never travel.
+  read, so the send sheet says so every time. Permission modes never travel, including the one
+  the transcript itself records.
   The project's saved Claude memories can go along, ticked one by one: a teammate is only ever
   offered project and reference memories, never the ones about you, and the session that wrote
   each is stripped. The receiving machine adds them beside its own and never replaces one it has.

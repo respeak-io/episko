@@ -54,11 +54,14 @@ const settling = new Set<string>();
 // Ids whose offer went to the socket this run: their ↶ is a server recall, never a local settle.
 const offered = new Set<string>();
 const heldSeen = new Set<string>();
+// Cancels sent to the server as a recall; a `gone` answer means it never held the offer.
+const recalling = new Set<string>();
 
 const me = () => ({ user: syncStatus.user, device: syncStatus.device });
 const currentTargets = () => targets(devices, handoffDevices, me(), onlineDevices());
 const recOf = (id: string) => handoffs.find((r) => r.id === id);
 const save = (list: HandoffRec[]) => { host.saveHandoffs(list); host.renderAll(); };
+const patch = (id: string, f: (r: HandoffRec) => HandoffRec) => save(handoffs.map((x) => (x.id === id ? f(x) : x)));
 const errText = (e: unknown) => String(e).replace(/^Error: /, "");
 
 /** Why a session's "Send to…" is greyed, or null. `id` is a live pane's or a shelved row's. */
@@ -226,6 +229,7 @@ async function send() {
       throw e;
     }
     if (!sent) offered.delete(hid); // nothing reached the socket: a cancel may still settle it here
+    else if (recOf(hid)) patch(hid, (x) => ({ ...x, sent: true }));
     if (sheet === sh) { sheet = null; $("handoffDlg").classList.remove("show"); dropScrim(); }
     const left = packed.left_behind.length ? ` · left behind: ${packed.left_behind.slice(0, 3).join(", ")}${packed.left_behind.length > 3 ? "…" : ""}` : "";
     toast((sent ? `Sending to ${t.label}` : `Packed · it goes to ${t.label} when sync reconnects`) + left);
@@ -246,9 +250,18 @@ function settleOut(id: string, workdir: string | undefined, resumeId: string | n
 async function cancelPacking(id: string, quiet = false) {
   const r = recOf(id);
   if (!r) return;
-  if (offered.has(id)) {
+  if (offered.has(id) || r.sent) {
     // The offer is on the socket ahead of this recall; the server's `recalled` settles it.
-    try { await invoke("handoff_recall", { id }); toast("Taking it back…"); return; } catch { offered.delete(id); }
+    try {
+      await invoke("handoff_recall", { id });
+      recalling.add(id);
+      toast("Taking it back…");
+      return;
+    } catch {
+      // The server may hold it: settling here would let it come back as a send nobody cancelled.
+      if (r.sent) { toast("Can't cancel until sync reconnects: the server may already have it"); return; }
+      offered.delete(id);
+    }
   }
   save(handoffs.filter((x) => x.id !== id));
   await settleOut(id, r.checkout, null, false).catch((e) => dlog("warn", `handoff ${id.slice(0, 8)}: ${errText(e)}`));
@@ -283,7 +296,7 @@ export async function confirmReturned(resumeId: string): Promise<boolean> {
   if (!r) return true;
   const who = peerName(r.peer);
   const ok = await ask(
-    `The sync server stopped answering before it said whether ${who} picked this session up.\n\nCheck with ${who} before resuming, or two machines carry on one conversation.`,
+    `The sync server never said whether ${who} picked this session up: it stopped answering, or had handoff switched off.\n\nCheck with ${who} before resuming, or two machines carry on one conversation.`,
     { title: "Resume a session you handed over?", kind: "warning", okLabel: "Resume here", cancelLabel: "Not yet" },
   );
   if (!ok) return false;
@@ -303,7 +316,13 @@ const BACK_TEXT: Record<string, (who: string, r: HandoffRec) => string> = {
 
 /** Acts on every sent record whose outcome is in: after each event, and once at boot. */
 export function settleDue(ev?: HandoffEv) {
-  if (ev?.kind === "refused") noteHeld(ev.id, ev.message);
+  if (ev?.kind === "refused" && ev.reason === "gone" && recalling.has(ev.id) && recOf(ev.id)?.state === "packing") {
+    // A recall of an offer the server never took (held for quota): nothing there, so settle here.
+    recalling.delete(ev.id);
+    offered.delete(ev.id);
+    patch(ev.id, (x) => ({ ...x, sent: false }));
+    void cancelPacking(ev.id);
+  } else if (ev?.kind === "refused") noteHeld(ev.id, ev.message);
   for (const r of handoffs) {
     if (r.dir !== "out" || settling.has(r.id)) continue;
     if (r.state === "done" && !r.settled) void settleDone(r);
@@ -362,6 +381,8 @@ const installFailed = new Set<string>();
 // Declined this run: a `ready` that raced the decline waits for the user rather than installing.
 const givenBack = new Set<string>();
 const announced = new Set<string>(handoffs.filter((r) => r.dir === "in").map((r) => r.id)); // already on the rail at boot
+// Staging a record no longer names (aged out, or storage cleared) can never be reached again.
+void invoke("handoff_prune", { keep: handoffs.map((r) => r.id) }).catch((e) => dlog("warn", `handoff prune: ${errText(e)}`));
 
 const chosen = (sh: InSheet): string | null => (sh.pick === -1 ? sh.folder : sh.pick === null ? null : sh.paths[sh.pick] ?? null);
 
@@ -421,7 +442,6 @@ function paintIn() {
   if (html !== painted) { painted = html; $("handBody").innerHTML = html; }
 }
 
-const patch = (id: string, f: (r: HandoffRec) => HandoffRec) => save(handoffs.map((x) => (x.id === id ? f(x) : x)));
 
 async function claimIn() {
   const sh = inSheet;

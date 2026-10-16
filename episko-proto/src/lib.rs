@@ -121,6 +121,9 @@ pub enum ClientMsg {
         features: Vec<String>,
     },
     Push { events: Vec<NewEvent> },
+    /// After a welcome that says `memory`: replay this user's whole memory stream, once. A peer
+    /// whose cursor passed memory it was never sent (an older client, the gate off) asks for it.
+    MemoryReplay {},
     /// What this device has open right now. Held in memory with a TTL, never logged.
     Presence { items: serde_json::Value },
     /// Offer a session to `to_user` (one of their machines, or any); `data` follows as puts.
@@ -181,7 +184,15 @@ pub enum ServerMsg {
     Events { events: Vec<Event>, more: bool },
     /// The seqs the log gave a push's events, in the order they were sent.
     Pushed { seqs: Vec<u64> },
-    Error { code: ErrorCode, message: String },
+    /// `push`: this refuses the oldest unanswered push, which will never get its `Pushed`.
+    Error {
+        code: ErrorCode,
+        message: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        push: bool,
+    },
+    /// The answer to `MemoryReplay`, in pages; it never moves the connection's cursor.
+    MemoryReplay { events: Vec<Event>, more: bool },
     /// The answer to `Invite`: good once, until `expires` (ms).
     Invited { code: String, expires: i64 },
     /// A device's presence; `items: null` means it went away or its heartbeat lapsed.
@@ -290,8 +301,13 @@ mod tests {
             {"stream":"prefs","key":"cc-sort","at":5,"payload":"manual"}]})).unwrap();
         let ClientMsg::Push { events } = push else { panic!("not a push") };
         assert_eq!(events[0].stream, Stream::Prefs);
-        let err = ServerMsg::Error { code: ErrorCode::BadToken, message: "no".into() };
+        let err = ServerMsg::Error { code: ErrorCode::BadToken, message: "no".into(), push: false };
         assert_eq!(serde_json::to_value(&err).unwrap(), json!({"t":"error","code":"bad_token","message":"no"}));
+        let refused = ServerMsg::Error { code: ErrorCode::TooLarge, message: "big".into(), push: true };
+        assert_eq!(serde_json::to_value(&refused).unwrap(), json!({"t":"error","code":"too_large","message":"big","push":true}));
+        assert_eq!(serde_json::to_value(ClientMsg::MemoryReplay {}).unwrap(), json!({"t":"memory_replay"}));
+        let replay: ServerMsg = serde_json::from_value(json!({"t":"memory_replay","events":[],"more":false})).unwrap();
+        assert_eq!(replay, ServerMsg::MemoryReplay { events: vec![], more: false });
     }
 
     #[test]

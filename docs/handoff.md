@@ -20,6 +20,8 @@ the same WebSocket:
   greys the ones that cannot receive (`targets`).
 - The server's switch is `EPISKO_HANDOFF` (off by default), with `EPISKO_HANDOFF_TTL_HOURS`
   (72) and `EPISKO_HANDOFF_MAX_MB` (64). Settings › Sync shows it; no client can turn it on.
+  Off is authoritative: a server started with it off expires every open handoff, so a sender
+  told its send is back is told the truth, and nothing left open is claimed once it comes on.
 - After every hello the server sends the user's whole set (`handoff_list`), and `handoff` on
   every change. A missed message is therefore harmless: the next list is the whole truth.
 
@@ -35,7 +37,9 @@ that passed through it. So:
 - On entering a terminal state the server deletes the parts and drops the meta (the brief).
   The row itself is kept 7 days so an offline sender still learns the outcome.
 - **Permission modes never travel.** The recipient's resume is an ordinary `launch`, which
-  reads its own `launchPermission`.
+  reads its own `launchPermission`. The transcript would carry one anyway: Claude restores a
+  session's last `permission-mode` record on resume unless a flag says otherwise, and the
+  standard mode passes none, so the import resets every such record to `default` (`neutral_modes`).
 
 ## State machines
 
@@ -47,6 +51,17 @@ that passed through it. So:
 `offered` or the taker's in `claimed` (giving it back). A claim extends `expires` to at least
 an hour out. The TTL sweep runs every ten minutes **whether or not the flag is on**, so held
 blobs die on schedule after the switch is turned off.
+
+- The server wipes `meta` on every terminal transition, `done` included. A record the app already
+  holds keeps the meta it had while open (`applyInfo`), so a received session whose install
+  failed still knows its title, project and memories, and its row still offers Retry.
+- A recipient's pending quota (256 MiB) counts an upload no part has reached for an hour at
+  what it holds, not what it declared, so offers that never send a byte cannot fill it.
+- Revoking a person's **last** machine expires every open offer to "any of theirs", and a name
+  that still owns a personal log or a handoff is never given out again by the registration code;
+  only an admin's invite reissues it. A socket whose token was revoked is closed on its next message.
+- A recipient deletes the pushed `handoff/<id>` branch only after the install has recorded its
+  worktree, so a retry after a lost record can still fetch what it lands.
 
 ### Sender (`cc-handoff`, `dir: "out"`)
 
@@ -165,7 +180,9 @@ checkout (`repo_root_of`), not the folder the session ran in.
   `.claude/settings.local.json` and `.claude/settings.json` (in the checkout and the main one)
   outrank `~/.claude/settings.json`, as they do for Claude.
 - `MEMORY.md` itself never travels. Keeping one person's memories in step across their own
-  machines is the job of a memory stream still to come, not this one.
+  machines is the memory stream's job (docs/sync.md, *Claude's memory: your machines only*). A
+  memory a handoff writes is a first discovery to that stream, so it goes out at stamp 1 and
+  never undercuts a copy the server already holds.
 
 ## The brief
 
@@ -181,10 +198,13 @@ write by hand; every field is cut to the schema's bounds (`clampBrief`) whoever 
 | server off, or older than handoff | the entry points are greyed with the reason |
 | sync drops mid-upload | the next connection re-offers; the server answers with the parts it `have`s |
 | oversized, bad target | refused before or at the offer; the row goes back on the shelf |
-| quota | refused with the reason on the row; ↶ cancels, or it is offered again on the next connection |
+| quota | refused with the reason on the row; ↶ asks the server, whose *gone* (it never took the offer) settles it here; otherwise it is offered again on the next connection |
 | checksum mismatch on seal | the server drops the parts and refuses |
 | recipient's download corrupt | one re-fetch, then *Give back* |
 | TTL before `done` | `expired`: the sender's row returns, the recipient installed nothing |
 | server unreachable after the offer | the sender stays locked until it hears, or expiry + 1h |
-| recipient's install fails after `done` | the blob stays; Retry or open the folder |
+| recipient's install fails after `done` | the blob stays; Retry or open the folder. The record never ages out while it waits, since it is the only copy |
+| a closed record past its week | dropped, unless still unresolved (`returned`, an unarchived `done`, an uninstalled arrival); staging no record names goes at boot once a day old (`handoff_prune`) |
+| app quits between the offer and the server's answer | the record keeps `sent`, so ↶ after a restart is a recall, never a local settle that the server's row would undo |
+| too many memories for the meta | descriptions are shortened, then dropped from the list (the files travel whole); past that the error names the memories |
 | another of my machines claimed it | the others say *taken on …* and drop the row |

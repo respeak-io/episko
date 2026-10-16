@@ -32,6 +32,8 @@ export interface HandoffRec {
   takenBy?: string;
   /** The memories the recipient ticked at the claim; the install that follows `ready` writes them. */
   memories?: string[];
+  /** The offer reached the socket: a cancel is the server's to answer, even after a restart. */
+  sent?: boolean;
   at: number;
 }
 export type HandoffEv =
@@ -149,18 +151,22 @@ function narrowRec(x: unknown): HandoffRec | null {
   if (num(o.unknownSince)) rec.unknownSince = num(o.unknownSince);
   if (o.settled === true) rec.settled = true;
   if (str(o.takenBy)) rec.takenBy = str(o.takenBy);
+  if (o.sent === true) rec.sent = true;
   if (Array.isArray(o.memories)) rec.memories = o.memories.filter((n): n is string => typeof n === "string" && memoryName(n)).slice(0, 50);
   return rec;
 }
 
-/** `cc-handoff`, narrowed; a closed record past its week is dropped, like the server's. */
+/** Closed, yet still deciding something here: a resume's confirm, a lock, the only copy of a session. */
+const unresolved = (r: HandoffRec) => r.state === "returned" || (r.state === "done" && !r.settled && (r.dir === "out" || !r.takenBy));
+
+/** `cc-handoff`, narrowed; a closed record past its week is dropped like the server's, unless unresolved. */
 export function readHandoffs(raw: unknown, now: number): HandoffRec[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   const out: HandoffRec[] = [];
   for (const x of raw) {
     const r = narrowRec(x);
-    if (!r || seen.has(r.id) || (CLOSED.includes(r.state) && now - r.at > KEEP_CLOSED_MS)) continue;
+    if (!r || seen.has(r.id) || (CLOSED.includes(r.state) && now - r.at > KEEP_CLOSED_MS && !unresolved(r))) continue;
     seen.add(r.id);
     out.push(r);
   }
@@ -195,7 +201,9 @@ function applyInfo(list: HandoffRec[], info: HandoffInfo, me: Me, now: number): 
   // Somebody else's machine took an offer to all of mine: gone once it closes either way.
   if (dir === "in" && info.taker && info.taker !== me.device && CLOSED.includes(info.state)) return list.filter((r) => r.id !== info.id);
   if (dir === "in" && (info.state === "declined" || info.state === "recalled" || info.state === "expired")) return list.filter((r) => r.id !== info.id);
-  const next: HandoffRec = { ...prev, state: info.state, info, at: now };
+  // A closed row's meta is wiped by the server; the copy this record had while open stands.
+  const kept = !narrowMeta(info.meta) && prev.info && narrowMeta(prev.info.meta) ? prev.info.meta : undefined;
+  const next: HandoffRec = { ...prev, state: info.state, info: kept ? { ...info, meta: kept } : info, at: now };
   delete next.unknownSince;
   if (info.state !== "uploading" && info.state !== "claimed") delete next.progress;
   if (dir === "in" && info.taker && info.taker !== me.device) next.takenBy = info.taker;
