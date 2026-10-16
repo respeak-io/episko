@@ -208,11 +208,18 @@ inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usag
   and a line the index lost is put back. A line is never taken out, whatever arrives.
 - **Payload `{text, sha}`**, or `null` as a tombstone. A tombstone goes only for a file this
   machine saw (`cc-sync-memory`'s `seen` holds the sha each machine last agreed with the server)
-  and no longer has. A file over 96 KiB stays home and is never read as removed.
+  and no longer has. A file over 96 KiB stays home and is never read as removed, and neither is
+  anything when the folder is missing or the project's checkout changed (`cc-sync-memory`'s
+  `dirs` keeps the one each project is scanned in, so a second clone never reads as a removal).
 - **Last writer wins**, with a twist that keeps data: a write or a removal only replaces the copy
   this machine last agreed on. A file edited here and not sent yet is kept and sent instead, at a
   newer stamp. A first discovery goes at stamp 1, like the roster, and only after the first
   catch-up, so it never undercuts a copy the server already held.
+- **A name two machines each had is kept twice.** An arrival for a file this machine never agreed
+  on (or any first discovery) never replaces it: it lands beside as `<name>.from-<device>.md`,
+  and the local copy goes out anew, so every machine ends with both.
+- **Case never folds a name.** `memory.md` is the index on macOS and Windows, so no case of it
+  travels, and a name that differs only in case from a file already here is refused.
 - **Its own batch.** The server refuses a whole push carrying memory while the stream is off, so
   memory never rides with prefs. A push is about half a MiB at most.
 - **Always heard, gated on what it does.** The app names `"memory"` in every hello, opted in or

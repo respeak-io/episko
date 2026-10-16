@@ -52,7 +52,8 @@ Markers: `+` new · `~` changed · `!` fixed
 + **Claude's memory follows you between your machines.** On a sync server started with
   `EPISKO_MEMORY=1`, switch on Settings › Sync › *Claude's memory* and each project's saved
   memories reach your other machines, never a teammate's. A file edited on two machines keeps the
-  later one, a local edit that has not gone out yet is never overwritten, `MEMORY.md` only ever
+  later one, a local edit that has not gone out yet is never overwritten, two machines that each
+  already had a memory of one name keep both copies, `MEMORY.md` only ever
   gains lines, and a project you have not cloned on a machine gets its memories once you do.
 
 ## 0.35.0 — 2026-10-15

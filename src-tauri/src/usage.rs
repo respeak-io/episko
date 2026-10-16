@@ -1259,9 +1259,10 @@ pub(crate) fn memory_dir(base: &Path, cwd: &str) -> Option<PathBuf> {
 /// The longest memory name that travels; handoff.ts narrows the meta to the same.
 const MEMORY_NAME_MAX: usize = 120;
 
-/// One memory file a session may carry: `[A-Za-z0-9._-]+.md`, never the index.
+/// One memory file a session may carry: `[A-Za-z0-9._-]+.md`, never the index in any case
+/// (macOS and Windows resolve `memory.md` to it).
 pub(crate) fn valid_memory_name(n: &str) -> bool {
-    n != MEMORY_INDEX && n.len() <= MEMORY_NAME_MAX && n.strip_suffix(".md").is_some_and(valid_part_name)
+    !n.eq_ignore_ascii_case(MEMORY_INDEX) && n.len() <= MEMORY_NAME_MAX && n.strip_suffix(".md").is_some_and(valid_part_name)
 }
 
 /// A description as one line of at most 200 chars: a received one lands in the always-read index.
@@ -1397,10 +1398,12 @@ pub(crate) struct MemoryText {
 }
 
 /// `skipped` are files too big to travel: present, so their absence must never become a tombstone.
+/// Nor may anything's while `found` is false: a missing folder is not a removal.
 #[derive(serde::Serialize, Debug, PartialEq, Default)]
 pub(crate) struct MemoryScan {
     files: Vec<MemoryText>,
     skipped: Vec<String>,
+    found: bool,
 }
 
 fn text_sha(text: &str) -> String {
@@ -1408,13 +1411,19 @@ fn text_sha(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Every memory of the project at `cwd` with its text; `None` where auto memory is off here.
+/// Every memory of the project at `cwd` with its text; `None` where auto memory is off here or
+/// the folder cannot be read.
 pub(crate) fn memory_scan_in(base: &Path, cwd: &str) -> Option<MemoryScan> {
     if auto_memory_off(base, cwd) {
         return None;
     }
     let mut out = MemoryScan::default();
-    let Ok(rd) = std::fs::read_dir(memory_dir(base, cwd)?) else { return Some(out) };
+    let rd = match std::fs::read_dir(memory_dir(base, cwd)?) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(out),
+        Err(_) => return None,
+    };
+    out.found = true;
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(md) = e.metadata() else { continue };
@@ -1431,8 +1440,8 @@ pub(crate) fn memory_scan_in(base: &Path, cwd: &str) -> Option<MemoryScan> {
     Some(out)
 }
 
-/// One memory from another of your machines. A removal only takes the copy whose sha is
-/// `if_sha`, so a local edit nobody has sent yet survives it. `Ok(false)` is "left as it was".
+/// One memory from another of your machines. It only replaces (or removes) the copy whose sha is
+/// `if_sha`, so a local edit nobody has sent yet survives. `Ok(true)`: the disk now matches it.
 pub(crate) fn memory_write_in(base: &Path, cwd: &str, name: &str, text: Option<&str>, if_sha: Option<&str>) -> Result<bool, String> {
     if !valid_memory_name(name) {
         return Err(format!("not a memory file name: {name}"));
@@ -1441,14 +1450,31 @@ pub(crate) fn memory_write_in(base: &Path, cwd: &str, name: &str, text: Option<&
         return Err("auto memory is off for this project here".into());
     }
     let dir = memory_dir(base, cwd).ok_or("this project's memories cannot be found")?;
+    let twin = std::fs::read_dir(&dir).into_iter().flatten().flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n != name && n.eq_ignore_ascii_case(name)
+    });
+    if twin {
+        return Err(format!("not a memory file name here: {name} differs only in case from one already here"));
+    }
     let held = std::fs::read_to_string(dir.join(name)).ok().map(|t| text_sha(&t));
     let Some(text) = text else {
-        return if held.is_some() && held.as_deref() == if_sha { write_memory_in(&dir, name, None, false) } else { Ok(false) };
+        return match held {
+            None => Ok(true),
+            Some(h) if Some(h.as_str()) == if_sha => write_memory_in(&dir, name, None, false).map(|_| true),
+            Some(_) => Ok(false),
+        };
     };
-    let changed = held.as_deref() != Some(text_sha(text).as_str()) && write_memory_in(&dir, name, Some(text), false)?;
+    match held.as_deref() {
+        Some(h) if h == text_sha(text) => {}
+        Some(h) if Some(h) != if_sha => return Ok(false),
+        _ => {
+            write_memory_in(&dir, name, Some(text), false)?;
+        }
+    }
     // A line the index lost is put back from the frontmatter; one is never taken out.
     index_memory(&dir, name, text)?;
-    Ok(changed)
+    Ok(true)
 }
 
 #[tauri::command]
@@ -3011,6 +3037,7 @@ mod tests {
         let scan = memory_scan_in(&base, &cwd).unwrap();
         assert_eq!(scan.files, vec![MemoryText { name: "wip.md".into(), text: NESTED.into(), sha: text_sha(NESTED) }]);
         assert_eq!(scan.skipped, vec!["big.md".to_string()]);
+        assert!(scan.found);
         std::fs::write(base.join("settings.json"), r#"{"autoMemoryEnabled": false}"#).unwrap();
         assert_eq!(memory_scan_in(&base, &cwd), None);
         assert!(memory_write_in(&base, &cwd, "wip.md", Some("x"), None).is_err(), "never writes where auto memory is off");
@@ -3018,25 +3045,35 @@ mod tests {
     }
 
     #[test]
-    fn a_synced_memory_overwrites_rebuilds_its_index_line_and_removes_only_what_it_knew() {
+    fn a_synced_memory_replaces_only_the_agreed_copy_rebuilds_its_index_line_and_removes_only_what_it_knew() {
         let root = scratch_dir();
         let (base, proj) = (root.join("claude"), root.join("proj"));
         std::fs::create_dir_all(&proj).unwrap();
         let cwd = proj.to_string_lossy().into_owned();
         let dir = memory_dir(&base, &cwd).unwrap();
         assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(TOP), None), Ok(true));
-        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(true), "the stream overwrites");
-        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(false), "same text: nothing to do");
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(false), "never agreed here: kept");
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), Some(&text_sha(TOP))), Ok(true), "the agreed copy goes");
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(true), "same text: already matches");
         std::fs::write(dir.join(MEMORY_INDEX), "- [Other](other.md)\n").unwrap();
-        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(false));
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(NESTED), None), Ok(true));
         let index = std::fs::read_to_string(dir.join(MEMORY_INDEX)).unwrap();
         assert_eq!(index, "- [Other](other.md)\n- [wip](wip.md) — Where the parser stands\n");
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", Some(TOP), Some(&text_sha(TOP))), Ok(false), "a local edit survives");
+        assert_eq!(std::fs::read_to_string(dir.join("wip.md")).unwrap(), NESTED);
         assert_eq!(memory_write_in(&base, &cwd, "wip.md", None, Some(&text_sha(TOP))), Ok(false), "edited since: kept");
         assert_eq!(memory_write_in(&base, &cwd, "wip.md", None, None), Ok(false));
         assert!(dir.join("wip.md").exists());
         assert_eq!(memory_write_in(&base, &cwd, "wip.md", None, Some(&text_sha(NESTED))), Ok(true));
         assert!(!dir.join("wip.md").exists());
+        assert_eq!(memory_write_in(&base, &cwd, "wip.md", None, None), Ok(true), "already gone matches a removal");
         assert_eq!(std::fs::read_to_string(dir.join(MEMORY_INDEX)).unwrap(), index, "a removal never edits the index");
+        for bad in ["memory.md", "Memory.MD"] {
+            assert!(memory_write_in(&base, &cwd, bad, Some("x"), None).is_err(), "{bad}");
+        }
+        std::fs::write(dir.join("Foo.md"), TOP).unwrap();
+        assert!(memory_write_in(&base, &cwd, "foo.md", Some("x"), None).is_err(), "a case twin never lands on another file");
+        assert_eq!(std::fs::read_to_string(dir.join("Foo.md")).unwrap(), TOP);
         assert!(memory_write_in(&base, &cwd, MEMORY_INDEX, Some("x"), None).is_err());
         let _ = std::fs::remove_dir_all(&root);
     }

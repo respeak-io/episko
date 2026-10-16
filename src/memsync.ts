@@ -9,9 +9,9 @@ export const MEM_NAME_MAX = 120;
 /** What this machine holds for projects it has not applied yet; past it an arrival is dropped. */
 export const HELD_MAX = 2 * 1024 * 1024;
 
-/** A memory file that may travel: never the index, never a path. */
+/** A memory file that may travel: never the index in any case (macOS and Windows fold it), never a path. */
 export const validName = (n: unknown): n is string =>
-  typeof n === "string" && n !== "MEMORY.md" && n.length <= MEM_NAME_MAX && NAME.test(n) && !/^\.+\.md$/.test(n);
+  typeof n === "string" && n.toLowerCase() !== "memory.md" && n.length <= MEM_NAME_MAX && NAME.test(n) && !/^\.+\.md$/.test(n);
 
 export const memKey = (pid: string, name: string) => `${pid}|${name}`;
 
@@ -35,8 +35,8 @@ export function narrowMem(v: unknown): MemPayload | null | undefined {
 }
 
 export interface MemFile { name: string; text: string; sha: string }
-/** `skipped` is present but too big to travel, so its absence is never read as a removal. */
-export interface MemScan { files: MemFile[]; skipped: string[] }
+/** `skipped` is present but too big to travel; nothing is read as removed while `found` is false. */
+export interface MemScan { files: MemFile[]; skipped: string[]; found: boolean }
 
 export function narrowScan(v: unknown): MemScan | null {
   if (!v || typeof v !== "object") return null;
@@ -49,19 +49,22 @@ export function narrowScan(v: unknown): MemScan | null {
     if (p && validName(name)) files.push({ name, ...p });
   }
   const skipped = Array.isArray(o.skipped) ? o.skipped.filter(validName) : [];
-  return { files, skipped };
+  return { files, skipped, found: o.found === true };
 }
 
 /** An arrival accepted but not on disk yet: no checkout here, the opt-in off, or a failed write. */
 export interface Held { payload: MemPayload | null; at: number; device: string }
-/** `seen`: memKey → the sha this machine and the server last agreed on. */
-export interface MemBook { seen: Record<string, string>; held: Record<string, Held> }
+/** `seen`: memKey → the sha this machine and the server last agreed on; `dirs`: the checkout each project is scanned in. */
+export interface MemBook { seen: Record<string, string>; held: Record<string, Held>; dirs: Record<string, string> }
 
 export function readMemBook(raw: string | null): MemBook {
   const v = safeParse<Record<string, unknown>>(raw);
-  const book: MemBook = { seen: {}, held: {} };
+  const book: MemBook = { seen: {}, held: {}, dirs: {} };
   if (!v || typeof v !== "object" || Array.isArray(v)) return book;
-  const seen = v.seen, held = v.held;
+  const seen = v.seen, held = v.held, dirs = v.dirs;
+  if (dirs && typeof dirs === "object" && !Array.isArray(dirs)) {
+    for (const [pid, d] of Object.entries(dirs)) if (pid && typeof d === "string" && d) book.dirs[pid] = d;
+  }
   if (seen && typeof seen === "object" && !Array.isArray(seen)) {
     for (const [k, sha] of Object.entries(seen)) if (parseMemKey(k) && typeof sha === "string" && SHA.test(sha)) book.seen[k] = sha;
   }
@@ -91,11 +94,26 @@ export function diffLocal(pid: string, scan: MemScan, book: MemBook, stamped: (k
     if (book.seen[key] === f.sha || key in book.held) continue;
     out.push({ key, payload: { text: f.text, sha: f.sha }, reveal: !(key in book.seen) && !stamped(key) });
   }
-  for (const key of Object.keys(book.seen)) {
+  for (const key of scan.found ? Object.keys(book.seen) : []) {
     const k = parseMemKey(key);
     if (k && k.pid === pid && !here.has(k.name) && !(key in book.held)) out.push({ key, payload: null, reveal: false });
   }
   return out.sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * The one checkout a project's memories are read and written in: the one it was last, while it
+ * is still here. `moved`: a new pick, whose first scan must not read the old folder's files as removed.
+ */
+export function pickDir(had: string | undefined, paths: readonly string[]): { dir: string; moved: boolean } | null {
+  if (had && paths.includes(had)) return { dir: had, moved: false };
+  return paths.length ? { dir: paths[0], moved: true } : null;
+}
+
+/** Where an arrival goes when a file of its name here was never agreed: beside it, both kept. */
+export function conflictName(name: string, device: string): string {
+  const tag = `.from-${device.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 8) || "other"}.md`;
+  return name.slice(0, -3).slice(0, MEM_NAME_MAX - tag.length) + tag;
 }
 
 /** An arrival worth holding: another machine's, valid, and newer than what this one holds. */

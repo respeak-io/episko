@@ -22,7 +22,9 @@ import { customIcons } from "./icons";
 import { basename } from "./format";
 import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
 import { capableDevices, narrowCaps, type HandoffCaps, type HandoffEv } from "./handoff";
-import { acceptMem, diffLocal, holdMem, memChunks, mergeMemWire, narrowScan, parseMemKey, readMemBook, type MemBook } from "./memsync";
+import {
+  acceptMem, conflictName, diffLocal, holdMem, memChunks, mergeMemWire, narrowScan, parseMemKey, pickDir, readMemBook, type Held, type MemBook,
+} from "./memsync";
 
 export interface SyncStatus {
   configured: boolean; url: string; user: string; device: string; label: string; cursor: number;
@@ -806,37 +808,67 @@ function memPushed(id: number): boolean {
   return true;
 }
 
+/** The checkout a project's memories live in, kept stable across scans (memsync's `pickDir`). */
+function memDir(pid: string): { dir: string; moved: boolean } | null {
+  const pick = pickDir(memBook.dirs[pid], pathsOfId(pid));
+  if (pick?.moved) memBook.dirs[pid] = pick.dir;
+  return pick;
+}
+// Keys whose write failed for a reason that may pass: retried by syncMemory, not on every batch.
+const memParked = new Set<string>();
+
 /** Writes what arrived for projects cloned here; a local edit nobody sent yet is kept and sent instead. */
-async function drainMem() {
+async function drainMem(retry = false) {
   if (!memorySyncOn() || memBusy) return;
   memBusy = true;
   try {
     for (const [key, h] of mergeMemWire(memBook.held, known).apply) {
-      const k = parseMemKey(key)!;
-      const ok = await invoke<boolean>("memory_write", { dir: pathOf(k.pid), name: k.name, text: h.payload?.text ?? null, ifSha: memBook.seen[key] ?? null })
-        .catch((e) => { log("warn", `sync: memory ${k.name} not written (${e})`); return null; });
-      if (ok === null || memBook.held[key] !== h) continue;
+      if (memParked.has(key) && !retry) continue;
+      const k = parseMemKey(key)!, dir = memDir(k.pid)?.dir;
+      // A first discovery (stamp 1) has no claim on a file already here, whatever was agreed.
+      const agreed = h.at === 1 ? null : memBook.seen[key] ?? null;
+      let err = "";
+      const ok = await invoke<boolean>("memory_write", { dir, name: k.name, text: h.payload?.text ?? null, ifSha: agreed })
+        .catch((e) => { err = String(e); return null; });
+      if (memBook.held[key] !== h) continue;
+      if (ok === null && !err.startsWith("not a memory file name")) {
+        if (!memParked.has(key)) log("warn", `sync: memory ${k.name} not written (${err})`);
+        memParked.add(key);
+        continue;
+      }
+      if (ok === null) log("warn", `sync: memory ${k.name} refused here (${err})`);
       delete memBook.held[key];
-      if (!ok) continue;
-      if (h.payload) memBook.seen[key] = h.payload.sha; else delete memBook.seen[key];
+      memParked.delete(key);
+      if (ok) { if (h.payload) memBook.seen[key] = h.payload.sha; else delete memBook.seen[key]; }
+      else if (ok === false && agreed === null && h.payload) await keepBoth(key, k.name, dir, h);
     }
     saveMem();
   } finally { memBusy = false; }
 }
 
+/** Two machines' copies of a name nobody agreed on: the arrival lands beside, ours goes out anew. */
+async function keepBoth(key: string, name: string, dir: string | undefined, h: Held) {
+  const side = conflictName(name, h.device);
+  await invoke<boolean>("memory_write", { dir, name: side, text: h.payload?.text ?? null, ifSha: null })
+    .catch((e) => log("warn", `sync: memory ${side} not written (${e})`));
+  delete memBook.seen[key];
+  for (const owed of memInflight.values()) owed.delete(key);
+}
+
 /** Focus, a session's exit and a ten-minute tick: apply what arrived, then send what changed here. */
 export async function syncMemory() {
   if (!memorySyncOn() || !status.connected || !serverMemory || !caughtUp) return;
-  await drainMem();
+  await drainMem(true);
   if (memBusy) return;
   memBusy = true;
   try {
     const events: NewEvent[] = [];
     const owed = new Map<string, string | null>();
     for (const pid of new Set(Object.values(ids).filter(Boolean))) {
-      const dir = pathOf(pid);
-      const scan = dir ? narrowScan(await invoke("memory_scan", { dir }).catch(() => null)) : null;
+      const where = memDir(pid);
+      const scan = where ? narrowScan(await invoke("memory_scan", { dir: where.dir }).catch(() => null)) : null;
       if (!scan) continue; // auto memory is off there: nothing of it leaves
+      if (where?.moved) scan.found = false;
       for (const o of diffLocal(pid, scan, memBook, (k) => stampKey("memory", k) in stamps)) {
         const at = o.reveal ? 1 : Date.now();
         stamps[stampKey("memory", o.key)] = { at, device: status.device };
@@ -844,6 +876,7 @@ export async function syncMemory() {
         owed.set(o.key, o.payload?.sha ?? null);
       }
     }
+    saveMem();
     if (!events.length || !status.connected) return;
     saveBook();
     // Batches of their own: the server refuses a whole push it cannot take, and prefs must not go

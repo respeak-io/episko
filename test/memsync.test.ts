@@ -1,17 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
-  HELD_MAX, MEM_NAME_MAX, acceptMem, diffLocal, holdMem, memChunks, memKey, mergeMemWire, narrowMem, narrowScan,
-  parseMemKey, readMemBook, validName, type MemBook,
+  HELD_MAX, MEM_NAME_MAX, acceptMem, conflictName, diffLocal, holdMem, memChunks, memKey, mergeMemWire, narrowMem, narrowScan,
+  parseMemKey, pickDir, readMemBook, validName, type MemBook,
 } from "../src/memsync";
 
 const sha = (c: string) => c.repeat(64);
-const book = (b: Partial<MemBook> = {}): MemBook => ({ seen: {}, held: {}, ...b });
+const book = (b: Partial<MemBook> = {}): MemBook => ({ seen: {}, held: {}, dirs: {}, ...b });
 const ev = (key: string, payload: unknown, at = 10, device = "d2") => ({ stream: "memory", key, at, device, payload });
 
 describe("names and keys", () => {
   it("takes a plain memory file and nothing that could be the index or a path", () => {
     for (const ok of ["wip.md", "user_role.md", "a.b-c.md", "x".repeat(MEM_NAME_MAX - 3) + ".md"]) expect(validName(ok), ok).toBe(true);
-    for (const bad of ["MEMORY.md", ".md", "..md", "../x.md", "a/b.md", "a\\b.md", "x.txt", "bad name.md", "", "x".repeat(MEM_NAME_MAX) + ".md", 7]) {
+    for (const bad of ["MEMORY.md", "memory.md", "Memory.MD", ".md", "..md", "../x.md", "a/b.md", "a\\b.md", "x.txt", "bad name.md", "", "x".repeat(MEM_NAME_MAX) + ".md", 7]) {
       expect(validName(bad), String(bad)).toBe(false);
     }
   });
@@ -34,7 +34,7 @@ describe("narrowing", () => {
 
   it("keeps a scan's good files and drops the rest one by one", () => {
     const scan = narrowScan({ files: [{ name: "a.md", text: "t", sha: sha("a") }, { name: "MEMORY.md", text: "t", sha: sha("b") }, { name: "c.md" }], skipped: ["big.md", "../x.md"] });
-    expect(scan).toEqual({ files: [{ name: "a.md", text: "t", sha: sha("a") }], skipped: ["big.md"] });
+    expect(scan).toEqual({ files: [{ name: "a.md", text: "t", sha: sha("a") }], skipped: ["big.md"], found: false });
     expect(narrowScan(null)).toBeNull();
     expect(narrowScan({ files: "x" })).toBeNull();
   });
@@ -50,7 +50,7 @@ describe("narrowing", () => {
 });
 
 describe("diffLocal", () => {
-  const scan = { files: [{ name: "a.md", text: "A", sha: sha("a") }, { name: "b.md", text: "B2", sha: sha("c") }, { name: "new.md", text: "N", sha: sha("d") }], skipped: ["big.md"] };
+  const scan = { files: [{ name: "a.md", text: "A", sha: sha("a") }, { name: "b.md", text: "B2", sha: sha("c") }, { name: "new.md", text: "N", sha: sha("d") }], skipped: ["big.md"], found: true };
   const seen = { "p|a.md": sha("a"), "p|b.md": sha("b"), "p|gone.md": sha("e"), "p|big.md": sha("f"), "q|other.md": sha("1") };
 
   it("owes what changed, reveals only a first discovery, and tombstones only a file it saw go", () => {
@@ -69,7 +69,28 @@ describe("diffLocal", () => {
   });
 
   it("owes nothing when the disk is what was agreed", () => {
-    expect(diffLocal("p", { files: [scan.files[0]], skipped: [] }, book({ seen: { "p|a.md": sha("a") } }), () => false)).toEqual([]);
+    expect(diffLocal("p", { files: [scan.files[0]], skipped: [], found: true }, book({ seen: { "p|a.md": sha("a") } }), () => false)).toEqual([]);
+  });
+
+  it("never reads a missing folder as every file removed", () => {
+    expect(diffLocal("p", { files: [], skipped: [], found: false }, book({ seen }), () => false)).toEqual([]);
+  });
+});
+
+describe("where a project's memories live", () => {
+  it("keeps the checkout it scanned while that is still here, and calls any new pick a move", () => {
+    expect(pickDir("/b", ["/a", "/b"])).toEqual({ dir: "/b", moved: false });
+    expect(pickDir("/gone", ["/a", "/b"])).toEqual({ dir: "/a", moved: true });
+    expect(pickDir(undefined, ["/a"])).toEqual({ dir: "/a", moved: true });
+    expect(pickDir("/a", [])).toBeNull();
+  });
+
+  it("names a conflicting arrival beside the original, still a memory that may travel", () => {
+    expect(conflictName("user_role.md", "d2:abc/xyz")).toBe("user_role.from-d2abcxyz.md");
+    expect(conflictName("a.md", "")).toBe("a.from-other.md");
+    const long = conflictName("x".repeat(MEM_NAME_MAX - 3) + ".md", "device123456");
+    expect(long.length).toBe(MEM_NAME_MAX);
+    expect(validName(long)).toBe(true);
   });
 });
 
