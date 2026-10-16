@@ -246,8 +246,8 @@ It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. 
 `cp episko.db`. `episko-server devices` lists paired machines, and `revoke <device>` shuts one
 out; the app then halts and asks to pair again rather than retrying. Every six hours the server
 compacts: an event superseded by a newer one of the same key goes once it is older than
-`EPISKO_RETENTION_DAYS` (30). The latest per key always stays, so a device that was away for
-months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
+`EPISKO_RETENTION_DAYS` (30). The latest per key always stays (per user on a personal stream,
+since teammates share project ids), so a device that was away for months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
 (`episko-server/README.md`), with settings in an untracked `.env` and proxy wiring in an untracked
 `docker-compose.override.yml`, so `update.sh` moves a deployment between release tags without a
 merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
@@ -272,8 +272,9 @@ operator switched it off still dies on schedule. A proxy must pass ~1 MiB WebSoc
 `yes` or `on`; default off) lets one person's machines share Claude's per-project memory files on
 the personal stream `memory`, which no teammate ever hears. `welcome.memory` says whether it is
 on. A connection hears memory events, live or in its catch-up, only when its `hello.features`
-named `"memory"`, and a push carrying one is `bad_message` while the stream is off or unasked,
-the whole push refused so a client sends memory in a batch of its own.
+named `"memory"` and the stream is on; switching it off stops serving what is stored too. A push
+carrying one is `bad_message` while the stream is off or unasked, the whole push refused so a
+client sends memory in a batch of its own.
 
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,

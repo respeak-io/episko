@@ -104,6 +104,11 @@ pub fn valid_name(raw: &str) -> Result<String, &'static str> {
     Ok(name)
 }
 
+/// The shared streams as an SQL list; everything else is filtered or compacted per user.
+fn shared_streams() -> String {
+    STREAMS.iter().filter(|s| !s.is_personal()).map(|s| format!("'{}'", s.as_str())).collect::<Vec<_>>().join(",")
+}
+
 impl Store {
     pub fn open(path: &str) -> rusqlite::Result<Store> {
         let conn = Connection::open(path)?;
@@ -138,10 +143,13 @@ impl Store {
     }
 
     /// Drops every event a newer one of the same key has superseded, once it is older than
-    /// `keep_ms`. The latest per key always stays, so a device that was away still converges.
+    /// `keep_ms`. The latest per key (per user, on a personal stream) always stays.
     pub fn compact(&self, now: i64, keep_ms: i64) -> rusqlite::Result<usize> {
         self.db().execute(
-            "DELETE FROM events WHERE rx < ?1 AND seq NOT IN (SELECT MAX(seq) FROM events GROUP BY ws, stream, key)",
+            &format!(
+                "DELETE FROM events WHERE rx < ?1 AND seq NOT IN (SELECT MAX(seq) FROM events                  GROUP BY ws, stream, key, CASE WHEN stream IN ({}) THEN '' ELSE actor END)",
+                shared_streams()
+            ),
             params![now - keep_ms],
         )
     }
@@ -323,7 +331,7 @@ impl Store {
     /// Up to `limit` events after `cursor` that `user` may see, oldest first: the team's
     /// shared streams, and only their own personal ones. Memory only for a peer that takes it.
     pub fn since(&self, ws: &str, user: &str, cursor: u64, limit: usize, memory: bool) -> rusqlite::Result<Vec<Event>> {
-        let shared = STREAMS.iter().filter(|s| !s.is_personal()).map(|s| format!("'{}'", s.as_str())).collect::<Vec<_>>().join(",");
+        let shared = shared_streams();
         let db = self.db();
         let mut q = db.prepare_cached(&format!(
             "SELECT seq, stream, key, actor, device, at, payload FROM events              WHERE ws = ?1 AND seq > ?2 AND (actor = ?4 OR stream IN ({shared})) AND (?5 OR stream <> 'memory') ORDER BY seq LIMIT ?3",
@@ -768,6 +776,23 @@ mod tests {
         assert_eq!(old, vec!["cc-sort"]);
         assert_eq!(s.since("w", "me", 0, 10, true).unwrap().len(), 3);
         assert!(s.since("w", "them", 0, 10, true).unwrap().is_empty(), "personal, so never a teammate's");
+    }
+
+    #[test]
+    fn compaction_keeps_each_users_latest_on_a_personal_stream() {
+        let s = Store::open_in_memory().unwrap();
+        let me = Identity { ws: "w".into(), user: "me".into(), device: "d1".into() };
+        let ana = Identity { ws: "w".into(), user: "ana".into(), device: "d2".into() };
+        let mem = || NewEvent { stream: Stream::Memory, key: "p|MEMORY.md".into(), at: 1, payload: json!({"text": "x"}) };
+        let note = || NewEvent { stream: Stream::Notes, key: "n1".into(), at: 1, payload: json!({"text": "hi"}) };
+        s.append_at(&me, &[mem(), ev("cc-sort", 1), note()], 100).unwrap();
+        s.append_at(&ana, &[mem(), ev("cc-sort", 2), note()], 200).unwrap();
+        // One project id serves the whole team, so a teammate's push must not supersede yours.
+        assert_eq!(s.compact(1_000_000, 0).unwrap(), 1, "only my note: a shared stream still collapses");
+        let mine: Vec<_> = s.since("w", "me", 0, 10, true).unwrap().into_iter().map(|e| (e.key, e.actor)).collect();
+        let me_ = || "me".to_string();
+        assert_eq!(mine, vec![("p|MEMORY.md".into(), me_()), ("cc-sort".into(), me_()), ("n1".into(), "ana".into())]);
+        assert_eq!(s.since("w", "ana", 0, 10, true).unwrap().len(), 3);
     }
 
     #[test]

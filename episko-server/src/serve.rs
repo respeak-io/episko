@@ -272,13 +272,13 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Resu
     // Join before replaying, so a push landing mid-catch-up is queued rather than missed.
     let (id, rx) = hub.join(&who, &features);
     let speaks = |f: &str| features.iter().any(|x| x == f);
-    let cx = Ctx { store, hub, cfg, id, who: &who, handoff: speaks(FEATURE_HANDOFF), memory: speaks(FEATURE_MEMORY) };
+    let cx = Ctx { store, hub, cfg, id, who: &who, handoff: speaks(FEATURE_HANDOFF), memory: cfg.memory && speaks(FEATURE_MEMORY) };
     let out = session(&mut sock, &cx, &rx, since);
     hub.leave(id, &who);
     out
 }
 
-/// One connection after hello: who it is, and whether it said it speaks handoff and memory.
+/// One connection after hello: who it is, and whether it speaks handoff, and memory with the gate on.
 struct Ctx<'a> {
     store: &'a Store,
     hub: &'a Hub,
@@ -968,9 +968,13 @@ mod tests {
     #[test]
     fn a_memory_push_is_refused_while_the_stream_is_off_or_unasked() {
         let (addr, store) = start();
-        let (ta, _) = pair(addr, &store, "laptop");
-        let (mut a, on, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        let (ta, device) = pair(addr, &store, "laptop");
+        // Stored while the gate was on: switching it off must stop serving it too.
+        let me = Identity { ws: "default".into(), user: "me".into(), device };
+        store.append(&me, &[memory_event("p|old.md")]).unwrap();
+        let (mut a, on, caught) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
         assert!(!on);
+        assert!(caught.is_empty(), "the catch-up holds no memory once the gate is off");
         say(&mut a, &ClientMsg::Push { events: vec![memory_event("p|a.md")] });
         assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
         let (addr, store) = start_cfg(None, true);
