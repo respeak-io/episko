@@ -21,6 +21,7 @@ import {
 import { customIcons } from "./icons";
 import { basename } from "./format";
 import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
+import { capableDevices, narrowCaps, type HandoffCaps, type HandoffEv } from "./handoff";
 
 export interface SyncStatus {
   configured: boolean; url: string; user: string; device: string; label: string; cursor: number;
@@ -28,7 +29,7 @@ export interface SyncStatus {
   headerNames: string[]; // what the proxy headers are called; their values never reach this side
 }
 type ServerMsg =
-  | { t: "welcome"; user: string; device: string; head: number; devices?: unknown }
+  | { t: "welcome"; user: string; device: string; head: number; devices?: unknown; handoff?: unknown }
   | { t: "events"; events: SyncEvent[]; more: boolean }
   | { t: "error"; code: string; message: string }
   | { t: "presence"; user: string; device: string; items: unknown }
@@ -37,7 +38,8 @@ type ServerMsg =
 export type SyncOut =
   | { kind: "status"; status: SyncStatus }
   | { kind: "server"; msg: ServerMsg }
-  | { kind: "pushed"; id: number; seqs: number[] };
+  | { kind: "pushed"; id: number; seqs: number[] }
+  | { kind: "handoff"; ev: HandoffEv };
 
 const OFF: SyncStatus = { configured: false, url: "", user: "", device: "", label: "", cursor: 0, connected: false, lastOkAt: null, error: null, halted: false, headerNames: [] };
 export let status: SyncStatus = OFF;
@@ -53,6 +55,12 @@ export let devices: DeviceInfo[] = narrowDevices(safeParse(localStorage.getItem(
 export const pending: Record<string, PendingPref> = readPending(localStorage.getItem("cc-sync-pending"));
 /** Settings kept to this machine: neither sent nor taken. */
 export const excluded = new Set(readKeyList(localStorage.getItem("cc-sync-exclude")));
+/** What this connection's server allows; undefined until a welcome says, and while it cannot be heard. */
+export let serverHandoff: HandoffCaps | null | undefined = undefined;
+/** Devices whose last hello spoke handoff; memory only, since sending needs a live connection. */
+export let handoffDevices: Set<string> = new Set();
+let onHandoff: { ev: (ev: HandoffEv) => void; caps: () => void } = { ev: () => {}, caps: () => {} };
+export function setHandoffSink(h: typeof onHandoff) { onHandoff = h; }
 /** The last code `Add a machine` asked for, while it is still good. */
 export let invite: { code: string; expires: number } | null = null;
 
@@ -369,9 +377,12 @@ export function onSyncEvent(o: SyncOut) {
     if (was.connected && !status.connected) {
       log("warn", `sync: disconnected${status.error ? ` (${status.error})` : ""}`);
       presence.clear(); // nobody can vouch for it any more
+      serverHandoff = undefined;
+      onHandoff.caps();
     }
     render();
   } else if (o.kind === "pushed") pushed(o.id);
+  else if (o.kind === "handoff") onHandoff.ev(o.ev);
   else if (o.msg.t === "welcome") {
     status = { ...status, connected: true, error: null, device: o.msg.device, user: o.msg.user };
     // An older server sends no list; the last one heard stands.
@@ -380,6 +391,9 @@ export function onSyncEvent(o: SyncOut) {
       devices = named;
       quiet(() => raw.set.call(localStorage, "cc-sync-devices", JSON.stringify(devices)));
     }
+    serverHandoff = narrowCaps(o.msg.handoff);
+    handoffDevices = capableDevices(o.msg.devices);
+    onHandoff.caps();
     // Whatever was in flight on the old socket is lost with it; the outbox is rebuilt from scratch.
     inflight.clear();
     flush();

@@ -29,7 +29,9 @@ Markers: `+` new · `~` changed · `!` fixed
   throwaway, unpersisted fork with no tools or hooks; unused so far. The app now says it speaks
   handoff when it connects, and can pack a session into one checksummed file, send it to the
   server in parts, fetch one it was given and unpack it into a checkout once the server says it
-  is done; nothing in the interface starts one yet.
+  is done; nothing in the interface starts one yet. The interface now keeps a record of each
+  handoff and follows the server's word on it, and a session being handed over cannot be resumed
+  here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

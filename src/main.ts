@@ -40,7 +40,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
-  openDevtools, reloadUi,
+  openDevtools, reloadUi, applyHandoffEv, applyHandoffCaps,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -130,6 +130,7 @@ import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
   beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
+  setHandoffSink,
   tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
@@ -521,6 +522,7 @@ setSyncHost({
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
   review: () => { refreshReview(); openReview(); },
 });
+setHandoffSink({ ev: applyHandoffEv, caps: applyHandoffCaps });
 setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 

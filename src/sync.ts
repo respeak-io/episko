@@ -33,6 +33,8 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
   "cc-forecast-log": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
   "cc-dash-seen": "local",
+  // A handoff is between two named machines; the server, not sync, carries its outcome.
+  "cc-handoff": "local",
   // A review in progress is about one machine's checkout of the PR; GitHub holds the sent one.
   "cc-review-drafts": "local", "cc-review-viewed": "local",
   // Measured on this machine (its disk, its transcripts): a sum across machines means nothing.

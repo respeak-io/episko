@@ -6,7 +6,7 @@ import {
 import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
-  setBackendLive, setDormants,
+  setBackendLive, setDormants, setHandoffs,
   setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
   worktreesByRepo,
 } from "../src/state";
@@ -68,7 +68,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW_MS);
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
-  setBackendLive(new Set());
+  setBackendLive(new Set()); setHandoffs([]);
   setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
   worktreesByRepo.clear();
   dirtyByFolder.clear();
@@ -1364,6 +1364,16 @@ describe("dormantBusy — a live session must not be offered for restore", () =>
 
   it("frees the row once the orphan's process exits and the poll catches up", () => {
     setBackendLive(new Set());
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
+  });
+
+  it("is busy while another machine is being handed it, and free once it came back", () => {
+    const rec = { id: "h", dir: "out" as const, resumeId: "d1", peer: { user: "ben" }, at: 0 };
+    setHandoffs([{ ...rec, state: "offered" }]);
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+    setHandoffs([{ ...rec, state: "done" }]);
+    expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(true);
+    setHandoffs([{ ...rec, state: "returned" }]);
     expect(dormantBusy(dorm({ id: "d1", resumeId: "d1" }))).toBe(false);
   });
 

@@ -10,10 +10,11 @@ import {
 import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty,
+  accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty, handoffs,
   projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
+import { handoffBusy } from "./handoff";
 
 // Dormants hang off the group, not a cluster: no live checkout to cluster by. `repoRoot` is set
 // only on the groups `splitByWorktree` mints; the project is `repoRoot ?? path`, the folder `path`.
@@ -117,6 +118,7 @@ export function dormantBusy(d: Restorable): boolean {
     if (s.provider === d.provider && (s.resumeId === d.resumeId || s.id === d.id)) return true;
   }
   if (backendLive.has(providerSessionKey(d.provider, d.id))) return true;
+  if (d.provider === "claude" && handoffBusy(handoffs, d.resumeId)) return true; // another machine owns it
   return d.provider === "claude" && externals.some((e) => e.session_id === d.resumeId);
 }
 // Backend PTYs to rebuild a pane for after a webview reload (#47). Agent panes only: a task's `run`
