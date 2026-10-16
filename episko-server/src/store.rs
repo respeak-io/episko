@@ -180,8 +180,8 @@ impl Store {
         let mut moved = Vec::new();
         for (id, state, from, to, taker) in open {
             let state = parse_state(&state);
-            // The sender re-sends to a live machine; a held blob is never retargeted.
-            let to = if from == device || (to.as_deref() == Some(device) && state != HandoffState::Claimed) {
+            // A claimed blob stays with its taker, who may hold the only surviving copy.
+            let to = if (from == device || to.as_deref() == Some(device)) && state != HandoffState::Claimed {
                 HandoffState::Recalled
             } else if taker.as_deref() == Some(device) && state == HandoffState::Claimed {
                 HandoffState::Expired
@@ -531,7 +531,7 @@ impl Store {
             params![who.ws, to_user],
             |r| r.get(0),
         )?;
-        if pending.saturating_add(req.size as i64) > MAX_PENDING_BYTES {
+        if pending.saturating_add(req.size as i64) > MAX_PENDING_BYTES.max(cfg.max_bytes as i64) {
             return refused(HandoffErr::Quota, format!("{to_user} already has {pending} bytes waiting"));
         }
         tx.execute(
@@ -654,16 +654,18 @@ impl Store {
         Ok(h)
     }
 
-    /// Every handoff a person sends or receives, oldest first, closed ones included.
-    pub fn handoffs_for(&self, ws: &str, user: &str) -> rusqlite::Result<Vec<HandoffInfo>> {
+    /// Every handoff a person sends or receives, oldest first, closed ones included. A recipient
+    /// never sees one still uploading, and only the sending machine sees `have`.
+    pub fn handoffs_for(&self, who: &Identity) -> rusqlite::Result<Vec<HandoffInfo>> {
         let db = self.db();
         let mut q = db.prepare(&format!(
-            "SELECT {COLS} FROM handoffs WHERE ws = ?1 AND (lower(from_user) = lower(?2) OR lower(to_user) = lower(?2)) ORDER BY created, id"
+            "SELECT {COLS} FROM handoffs WHERE ws = ?1 AND (lower(from_user) = lower(?2)
+               OR (lower(to_user) = lower(?2) AND state != 'uploading')) ORDER BY created, id"
         ))?;
-        let rows = q.query_map(params![ws, user], row_info)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = q.query_map(params![who.ws, who.user], row_info)?.collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::with_capacity(rows.len());
         for (_, mut h) in rows {
-            fill_have(&db, &mut h)?;
+            if h.from_device == who.device { fill_have(&db, &mut h)?; }
             out.push(h);
         }
         Ok(out)
@@ -905,7 +907,7 @@ mod tests {
         let t = team();
         for n in 0..10 { t.s.handoff_offer(&t.lap, &offer(n, "Ana", &blob(10)), &CFG, 0).unwrap(); }
         assert_eq!(why(t.s.handoff_offer(&t.desk, &offer(10, "Ana", &blob(10)), &CFG, 0)), HandoffErr::Quota, "ten open per person");
-        let roomy = HandoffCfg { max_bytes: 1 << 30, ..CFG };
+        let roomy = HandoffCfg { max_bytes: 256 << 20, ..CFG };
         let sized = |n: u32, mb: u64| Offer { size: mb << 20, parts: ((mb << 20) / HANDOFF_PART as u64) as u32, ..offer(n, "me", &blob(1)) };
         t.s.handoff_offer(&t.ana, &sized(20, 200), &roomy, 0).unwrap();
         assert_eq!(why(t.s.handoff_offer(&t.ana, &sized(21, 100), &roomy, 0)), HandoffErr::Quota, "256 MiB waiting per recipient");
@@ -929,7 +931,7 @@ mod tests {
         t.s.handoff_put(&t.lap, &uid(2), 0, &data[..HANDOFF_PART], 1).unwrap();
         assert_eq!(why(t.s.handoff_put(&t.lap, &uid(2), 1, &data[HANDOFF_PART..], 1)), HandoffErr::Checksum);
         assert_eq!(held(&t.s, &uid(2)), 0);
-        assert_eq!(t.s.handoffs_for("w", "me").unwrap()[1].state, HandoffState::Uploading, "it can be sent again");
+        assert_eq!(t.s.handoffs_for(&t.lap).unwrap()[1].state, HandoffState::Uploading, "it can be sent again");
     }
 
     #[test]
@@ -1016,11 +1018,11 @@ mod tests {
         assert_eq!(held(&t.s, &uid(1)), 0);
         assert_eq!(why(t.s.handoff_complete(&t.ana, &uid(2), 10 + CLAIM_HOLD_MS)), HandoffErr::Gone, "a claim past its hold");
         assert_eq!(t.s.handoff_sweep(10 + CLAIM_HOLD_MS).unwrap()[0].1.state, HandoffState::Expired);
-        assert_eq!(t.s.handoffs_for("w", "Ana").unwrap().len(), 2, "kept so an offline sender learns the outcome");
+        assert_eq!(t.s.handoffs_for(&t.ana).unwrap().len(), 2, "kept so an offline sender learns the outcome");
         t.s.handoff_sweep(1000 + HANDOFF_KEEP_MS + 1).unwrap();
-        assert_eq!(t.s.handoffs_for("w", "me").unwrap().len(), 1);
+        assert_eq!(t.s.handoffs_for(&t.lap).unwrap().len(), 1);
         t.s.handoff_sweep(10 + CLAIM_HOLD_MS + HANDOFF_KEEP_MS + 1).unwrap();
-        assert!(t.s.handoffs_for("w", "me").unwrap().is_empty());
+        assert!(t.s.handoffs_for(&t.lap).unwrap().is_empty());
     }
 
     #[test]
@@ -1029,7 +1031,7 @@ mod tests {
         offered(&t, 1);
         assert_eq!(t.s.rename("me", "Frederic").unwrap(), Some(2));
         assert_eq!(t.s.rename("Ana", "Anna").unwrap(), Some(2));
-        let h = &t.s.handoffs_for("w", "frederic").unwrap()[0];
+        let h = &t.s.handoffs_for(&Identity { user: "frederic".into(), ..t.lap.clone() }).unwrap()[0];
         assert_eq!((h.from_user.as_str(), h.to_user.as_str()), ("Frederic", "Anna"));
     }
 
@@ -1057,6 +1059,39 @@ mod tests {
     }
 
     #[test]
+    fn revoking_the_sender_leaves_a_claimed_handoff_with_its_taker() {
+        let t = team();
+        let (id, data) = offered(&t, 1);
+        t.s.handoff_claim(&t.ana, &id, 10).unwrap();
+        let (_, moved) = t.s.revoke_at(&t.lap.device, 20).unwrap();
+        assert!(moved.is_empty());
+        assert_eq!(t.s.handoff_part(&t.ana, &id, 1, 30).unwrap(), data[HANDOFF_PART..]);
+        assert_eq!(t.s.handoff_complete(&t.ana, &id, 40).unwrap().state, HandoffState::Done);
+    }
+
+    #[test]
+    fn a_blob_the_server_takes_is_never_over_the_pending_quota() {
+        let t = team();
+        let big = HandoffCfg { max_bytes: 512 << 20, ..CFG };
+        let size: u64 = 300 << 20;
+        let o = Offer { size, parts: size.div_ceil(HANDOFF_PART as u64) as u32, ..offer(1, "Ana", &blob(10)) };
+        assert_eq!(t.s.handoff_offer(&t.lap, &o, &big, 0).unwrap().state, HandoffState::Uploading);
+    }
+
+    #[test]
+    fn a_recipient_lists_no_upload_in_progress_and_no_progress() {
+        let t = team();
+        let data = blob(HANDOFF_PART + 10);
+        t.s.handoff_offer(&t.lap, &offer(1, "Ana", &data), &CFG, 0).unwrap();
+        t.s.handoff_put(&t.lap, &uid(1), 0, &data[..HANDOFF_PART], 1).unwrap();
+        assert_eq!(t.s.handoffs_for(&t.lap).unwrap()[0].have, vec![0]);
+        assert!(t.s.handoffs_for(&t.desk).unwrap()[0].have.is_empty(), "the sender's other machine");
+        assert!(t.s.handoffs_for(&t.ana).unwrap().is_empty());
+        t.s.handoff_put(&t.lap, &uid(1), 1, &data[HANDOFF_PART..], 2).unwrap();
+        assert_eq!(t.s.handoffs_for(&t.ana).unwrap()[0].state, HandoffState::Offered);
+    }
+
+    #[test]
     fn a_database_from_before_handoff_gains_its_tables_and_features() {
         let old = Connection::open_in_memory().unwrap();
         old.execute_batch(
@@ -1073,6 +1108,6 @@ mod tests {
         assert!(s.devices_in("w").unwrap()[0].handoff, "the last hello's features");
         s.set_features("d1", &[]).unwrap();
         assert!(!s.devices_in("w").unwrap()[0].handoff);
-        assert!(s.handoffs_for("w", "me").unwrap().is_empty());
+        assert!(s.handoffs_for(&Identity { ws: "w".into(), user: "me".into(), device: "d1".into() }).unwrap().is_empty());
     }
 }
