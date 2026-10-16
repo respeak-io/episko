@@ -22,6 +22,7 @@ import { customIcons } from "./icons";
 import { basename } from "./format";
 import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
 import { capableDevices, narrowCaps, type HandoffCaps, type HandoffEv } from "./handoff";
+import { acceptMem, diffLocal, holdMem, memChunks, mergeMemWire, narrowScan, parseMemKey, readMemBook, type MemBook } from "./memsync";
 
 export interface SyncStatus {
   configured: boolean; url: string; user: string; device: string; label: string; cursor: number;
@@ -29,7 +30,7 @@ export interface SyncStatus {
   headerNames: string[]; // what the proxy headers are called; their values never reach this side
 }
 type ServerMsg =
-  | { t: "welcome"; user: string; device: string; head: number; devices?: unknown; handoff?: unknown }
+  | { t: "welcome"; user: string; device: string; head: number; devices?: unknown; handoff?: unknown; memory?: unknown }
   | { t: "events"; events: SyncEvent[]; more: boolean }
   | { t: "error"; code: string; message: string }
   | { t: "presence"; user: string; device: string; items: unknown }
@@ -247,6 +248,7 @@ export function flush() {
 }
 
 function pushed(id: number) {
+  if (memPushed(id)) return;
   const f = inflight.get(id);
   if (!f) return;
   inflight.delete(id);
@@ -311,6 +313,7 @@ function apply(ev: SyncEvent): boolean {
     }
     case "notes": return applyTeam(ev);
     case "claims": return applyLease(ev);
+    case "memory": return applyMem(ev);
     default: return onForeign(ev);
   }
 }
@@ -370,6 +373,9 @@ function applyAll(events: SyncEvent[], more: boolean) {
   const waiting = Object.keys(pending).length;
   if (waiting > waitingBefore) { log("info", `sync: ${waiting} preference(s) from another machine waiting for review`); onReview(); }
   if (top) invoke("sync_ack", { seq: top }).catch((e) => log("warn", `sync ack: ${e}`));
+  if (memMoved) { memMoved = false; saveMem(); }
+  // Caught up: only now can a first discovery's oldest stamp not undercut what the server held.
+  if (!more && !caughtUp) { caughtUp = true; void syncMemory(); } else if (events.length) void drainMem();
   render();
 }
 
@@ -383,6 +389,7 @@ export function onSyncEvent(o: SyncOut) {
       presence.clear(); // nobody can vouch for it any more
       serverHandoff = undefined;
       onHandoff.caps();
+      serverMemory = false; caughtUp = false;
     }
     render();
   } else if (o.kind === "pushed") pushed(o.id);
@@ -396,6 +403,9 @@ export function onSyncEvent(o: SyncOut) {
       quiet(() => raw.set.call(localStorage, "cc-sync-devices", JSON.stringify(devices)));
     }
     serverHandoff = narrowCaps(o.msg.handoff);
+    serverMemory = o.msg.memory === true;
+    caughtUp = false;
+    memInflight.clear();
     handoffDevices = capableDevices(o.msg.devices);
     onHandoff.caps();
     // Whatever was in flight on the old socket is lost with it; the outbox is rebuilt from scratch.
@@ -440,6 +450,8 @@ export async function pairSync(url: string, code: string, label: string, user: s
   seed.add(ROSTER_SEED);
   wire = {};
   saveWire();
+  memBook.seen = {};
+  saveMem();
   sent.usage = {}; sent.detail = {}; sent.rl = ""; sent.scopedAt = 0;
   saveBook();
   render();
@@ -450,6 +462,7 @@ export async function forgetSync() {
   serverHandoff = undefined;
   handoffDevices = new Set();
   onHandoff.caps();
+  serverMemory = false; caughtUp = false;
   render();
 }
 export function reconnectSync() { void invoke("sync_reconnect"); }
@@ -753,4 +766,93 @@ function renewLeases(alive: (sid: string) => boolean) {
     if (!alive(l.sid)) { delete leases[k]; publishLease(k); }
     else if (leaseDue(l, now)) { l.until = now + LEASE_MS; publishLease(k); }
   }
+}
+
+// ---------- the memory stream: your machines only (docs/sync.md) ----------
+
+const MEMBOOK = "cc-sync-memory", MEMORY_OPT = "cc-memory-sync";
+const memBook: MemBook = readMemBook(localStorage.getItem(MEMBOOK));
+/** Welcome said this server carries memory; false until it does, and once it cannot be heard. */
+export let serverMemory = false;
+let caughtUp = false, memMoved = false, memBusy = false;
+// Push id → memKey → the sha it carried (null for a tombstone), agreed once the server takes it.
+const memInflight = new Map<number, Map<string, string | null>>();
+function saveMem() { quiet(() => raw.set.call(localStorage, MEMBOOK, JSON.stringify(memBook))); }
+
+export const memorySyncOn = () => localStorage.getItem(MEMORY_OPT) === "1";
+/** Settings › Sync's switch: off sends and writes nothing, though arrivals are still held. */
+export function setMemorySync(on: boolean) {
+  quiet(() => (on ? raw.set.call(localStorage, MEMORY_OPT, "1") : raw.remove.call(localStorage, MEMORY_OPT)));
+  if (on) void syncMemory();
+  render();
+}
+
+function applyMem(ev: SyncEvent): boolean {
+  const sk = stampKey("memory", ev.key);
+  const h = acceptMem(ev, stamps[sk], status.device);
+  if (!h) return false;
+  if (!holdMem(memBook, ev.key, h)) { log("warn", `sync: memory ${ev.key} dropped, too much is waiting for a checkout`); return false; }
+  stamps[sk] = { at: ev.at, device: ev.device };
+  memMoved = true;
+  return true;
+}
+
+function memPushed(id: number): boolean {
+  const owed = memInflight.get(id);
+  if (!owed) return false;
+  memInflight.delete(id);
+  for (const [key, sha] of owed) if (sha === null) delete memBook.seen[key]; else memBook.seen[key] = sha;
+  saveMem();
+  return true;
+}
+
+/** Writes what arrived for projects cloned here; a local edit nobody sent yet is kept and sent instead. */
+async function drainMem() {
+  if (!memorySyncOn() || memBusy) return;
+  memBusy = true;
+  try {
+    for (const [key, h] of mergeMemWire(memBook.held, known).apply) {
+      const k = parseMemKey(key)!;
+      const ok = await invoke<boolean>("memory_write", { dir: pathOf(k.pid), name: k.name, text: h.payload?.text ?? null, ifSha: memBook.seen[key] ?? null })
+        .catch((e) => { log("warn", `sync: memory ${k.name} not written (${e})`); return null; });
+      if (ok === null || memBook.held[key] !== h) continue;
+      delete memBook.held[key];
+      if (!ok) continue;
+      if (h.payload) memBook.seen[key] = h.payload.sha; else delete memBook.seen[key];
+    }
+    saveMem();
+  } finally { memBusy = false; }
+}
+
+/** Focus, a session's exit and a ten-minute tick: apply what arrived, then send what changed here. */
+export async function syncMemory() {
+  if (!memorySyncOn() || !status.connected || !serverMemory || !caughtUp) return;
+  await drainMem();
+  if (memBusy) return;
+  memBusy = true;
+  try {
+    const events: NewEvent[] = [];
+    const owed = new Map<string, string | null>();
+    for (const pid of new Set(Object.values(ids).filter(Boolean))) {
+      const dir = pathOf(pid);
+      const scan = dir ? narrowScan(await invoke("memory_scan", { dir }).catch(() => null)) : null;
+      if (!scan) continue; // auto memory is off there: nothing of it leaves
+      for (const o of diffLocal(pid, scan, memBook, (k) => stampKey("memory", k) in stamps)) {
+        const at = o.reveal ? 1 : Date.now();
+        stamps[stampKey("memory", o.key)] = { at, device: status.device };
+        events.push({ stream: "memory", key: o.key, at, payload: o.payload });
+        owed.set(o.key, o.payload?.sha ?? null);
+      }
+    }
+    if (!events.length || !status.connected) return;
+    saveBook();
+    // Batches of their own: the server refuses a whole push it cannot take, and prefs must not go
+    // with it. Each stays near half a MiB, under what a proxy in front will pass.
+    for (const chunk of memChunks(events)) {
+      const id = nextId++;
+      memInflight.set(id, new Map(chunk.map((e) => [e.key, owed.get(e.key) ?? null])));
+      const a = act("memory"); a.sent += chunk.length; a.sentAt = Date.now();
+      invoke<boolean>("sync_push", { id, events: chunk }).catch((e) => log("warn", `sync memory push: ${e}`));
+    }
+  } finally { memBusy = false; }
 }

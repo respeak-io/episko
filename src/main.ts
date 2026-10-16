@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -131,7 +131,7 @@ import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
   beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
   setHandoffSink,
-  tickSync, type SyncOut,
+  syncMemory, tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
 import { closeHandoff, dismissHanded, handoffOpen, onHandoffEvent, openIncoming, openSend, setHandoffHost, settleDue, takeBack } from "./handoffui";
@@ -455,6 +455,7 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   mcpExit(e.payload.sessionId, e.payload.code);
   releaseClaimFor(e.payload.sessionId); // also before the early return: no dead claims linger
   const s = sessions.get(e.payload.sessionId); if (!s) return;
+  if (isClaude(s)) void syncMemory(); // a session's last memories are written by now
   const code = e.payload.code;
   s.attention = null;
   if (s.kind === "task") {
@@ -732,7 +733,7 @@ if (IS_TAURI && (IS_MAC || IS_WIN)) {
 // DOM's focus/blur also fire for the webview's internal moves; the DOM pair is only the
 // browser fallback. visibilitychange is a third source: minimised can still be "focused".
 if (IS_TAURI) {
-  void getCurrentWindow().onFocusChanged(({ payload }) => setWindowFocused(payload));
+  void getCurrentWindow().onFocusChanged(({ payload }) => { setWindowFocused(payload); if (payload) void syncMemory(); });
 } else {
   window.addEventListener("focus", () => setWindowFocused(true));
   window.addEventListener("blur", () => setWindowFocused(false));
@@ -922,6 +923,7 @@ setInterval(flushDebug, 4000);
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 // Sends what the last half-minute left owed, and ages the sync badge past its window.
 setInterval(() => tickSync((sid) => { const s = sessions.get(sid); return !!s && !isExited(s); }), 30_000);
+setInterval(() => { void syncMemory(); }, 10 * 60_000);
 // Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
 setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
   pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),

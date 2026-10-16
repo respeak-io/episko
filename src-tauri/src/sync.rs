@@ -4,7 +4,7 @@
 //! `sync-event`. With sync unconfigured it does nothing at all.
 
 use crate::handoff::{self, HandoffCtl, HandoffEv, Transfers};
-use episko_proto::{ClientMsg, ErrorCode, NewEvent, ServerMsg, FEATURE_HANDOFF, PROTOCOL};
+use episko_proto::{ClientMsg, ErrorCode, NewEvent, ServerMsg, FEATURE_HANDOFF, FEATURE_MEMORY, PROTOCOL};
 use serde::Serialize;
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -226,7 +226,9 @@ fn relay(sock: &mut Sock, (msgs, evs): handoff::Step, out: &dyn Fn(SyncOut)) -> 
 #[allow(clippy::too_many_arguments)] // one connection's whole context; a struct would only rename it
 fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn(), xfer: &mut Transfers) -> End {
     let mut sock = match open(url, headers) { Ok(s) => s, Err(e) => return End::Retry(e) };
-    let hello = ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL, features: vec![FEATURE_HANDOFF.to_string()] };
+    // Memory is always heard: the opt-in gates what is sent and written, or a later opt-in
+    // would find everything before it already behind the cursor (docs/sync.md).
+    let hello = ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL, features: vec![FEATURE_HANDOFF.to_string(), FEATURE_MEMORY.to_string()] };
     if let Err(e) = say(&mut sock, &hello) { return End::Retry(e); }
     if let Err(e) = tcp_of(&sock).set_read_timeout(Some(POLL)) { return End::Retry(e.to_string()); }
     let mut inflight: std::collections::VecDeque<u64> = Default::default();
@@ -689,7 +691,7 @@ mod tests {
     #[test]
     fn a_session_says_hello_from_its_cursor_and_relays_both_ways() {
         let url = mock(|ws| {
-            assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL, features: vec![FEATURE_HANDOFF.into()] });
+            assert_eq!(read_msg(ws), ClientMsg::Hello { token: "tk".into(), since: 7, protocol: PROTOCOL, features: vec![FEATURE_HANDOFF.into(), FEATURE_MEMORY.into()] });
             write_msg(ws, &ServerMsg::Welcome { user: "me".into(), device: "d1".into(), head: 8, devices: vec![], handoff: None, memory: false });
             let ev = Event { seq: 8, stream: Stream::Prefs, key: "cc-sort".into(), actor: "me".into(), device: "d2".into(), at: 1, payload: "x".into() };
             write_msg(ws, &ServerMsg::Events { events: vec![ev], more: false });
@@ -770,7 +772,7 @@ mod tests {
         let (d2, s2) = (data.clone(), sha.clone());
         let url = mock(move |ws| {
             let ClientMsg::Hello { features, .. } = read_msg(ws) else { panic!("not a hello") };
-            assert_eq!(features, vec![FEATURE_HANDOFF.to_string()]);
+            assert_eq!(features, vec![FEATURE_HANDOFF.to_string(), FEATURE_MEMORY.to_string()]);
             let caps = HandoffCaps { enabled: true, max_bytes: 1 << 20, part_bytes: episko_proto::HANDOFF_PART as u32, ttl_ms: 1 };
             write_msg(ws, &ServerMsg::Welcome { user: "ben".into(), device: "d2".into(), head: 0, devices: vec![], handoff: Some(caps), memory: false });
             write_msg(ws, &ServerMsg::HandoffList { records: vec![hinfo(HandoffState::Claimed, 1000, &s2)] });

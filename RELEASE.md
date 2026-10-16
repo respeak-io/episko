@@ -563,6 +563,12 @@ second half. Watch the server's `handoffs` table with `sqlite3` beside it.
       lists it ticked, and after *Resume here* it sits in the recipient's
       `~/.claude/projects/<main checkout>/memory/` without an `originSessionId` and with a new
       `MEMORY.md` line. A memory of that name already there is kept, and a toast says so.
+- [ ] **Memory stream.** A server with `EPISKO_MEMORY=1`, two machines of yours, Settings › Sync ›
+      *Claude's memory* on both. Edit a memory on one and focus the other: it lands in the same
+      project's `memory/` folder (and in a worktree's, keyed by the main checkout) with a
+      `MEMORY.md` line. Delete it on the first: it goes on the second. Edit it on the second
+      without focusing the first, then change it from the first: the second's edit survives
+      and wins. A teammate's machine never receives any of it.
 - [ ] **Decline.** *Decline* on the recipient: the sender toasts that it was declined and
       the session is an ordinary shelved row again, resumable.
 - [ ] **Take back.** ↶ on the sender while *waiting*: the recipient's row disappears.

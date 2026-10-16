@@ -20,6 +20,8 @@ export interface SyncPanel {
   nameOf: (device: string) => string; projects: ProjectSyncRow[]; now: number;
   /** Welcome's handoff caps; undefined until a server says, kept apart from one that has it off. */
   handoff?: HandoffCaps | null;
+  /** The memory stream: this machine's switch, and whether the server carries it at all. */
+  memory: { on: boolean; server: boolean };
 }
 
 const ago = (ms: number) => {
@@ -154,6 +156,18 @@ function projects(p: SyncPanel): string {
     Project settings in its menu. Click a name to open it.`);
 }
 
+// Off until you say: a memory is written from your conversations. Both switches are named, since
+// the server's (EPISKO_MEMORY) is the one no client can throw.
+function memorySect(p: SyncPanel): string {
+  const { on, server } = p.memory;
+  const where = !p.st.connected ? "Whether this server carries it is known once connected."
+    : server ? "This server carries it." : "This server does not carry it: its admin turns it on with EPISKO_MEMORY.";
+  return sect("Claude's memory", `<div class="sync-pref"><span>Saved memories, per project</span>
+      <button class="sync-seg${on ? "" : " on"}" data-setsync="memory|0">This machine only</button><button class="sync-seg${on ? " on" : ""}" data-setsync="memory|1">Your machines</button></div>`,
+    `The files Claude keeps in each project's memory folder, sent to your other machines only, never a teammate's.
+    A file changed on two machines keeps the later one. ${where}`);
+}
+
 // The server's switch (EPISKO_HANDOFF), shown rather than offered: no client can turn it on.
 function handoffText(c: HandoffCaps | null | undefined, connected: boolean): string {
   if (!connected) return `<span class="sync-dim">known once connected</span>`;
@@ -183,6 +197,7 @@ export function syncPanelHtml(p: SyncPanel): string {
     ${machines(p)}
     ${prefs(p)}
     ${streams(p)}
+    ${memorySect(p)}
     ${projects(p)}
     <div class="trow-end">
       <button class="set-freset" data-setsync="reconnect">Reconnect</button>

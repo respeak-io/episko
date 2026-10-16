@@ -35,6 +35,8 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-dash-seen": "local",
   // A handoff is between two named machines; the server, not sync, carries its outcome.
   "cc-handoff": "local",
+  // The memory stream's switch is this machine's to throw; what it holds is the stream's own.
+  "cc-memory-sync": "local", "cc-sync-memory": "local",
   // A review in progress is about one machine's checkout of the PR; GitHub holds the sent one.
   "cc-review-drafts": "local", "cc-review-viewed": "local",
   // Measured on this machine (its disk, its transcripts): a sum across machines means nothing.
@@ -51,7 +53,7 @@ export const syncClass = (key: string): SyncClass => SYNC_KEYS[key] ?? "local";
 
 // ---------- the wire's shape, as the client sees it ----------
 
-export type Stream = "prefs" | "usage" | "limits" | "roster" | "detail" | "notes" | "claims";
+export type Stream = "prefs" | "usage" | "limits" | "roster" | "detail" | "notes" | "claims" | "memory";
 export interface SyncEvent { seq: number; stream: Stream; key: string; actor: string; device: string; at: number; payload: unknown }
 /** What a client pushes; `actor`, `device` and `seq` are the server's to stamp. */
 export interface NewEvent { stream: Stream; key: string; at: number; payload: unknown }
@@ -456,6 +458,7 @@ export const STREAM_INFO: Readonly<Record<Stream, { label: string; scope: "you" 
   roster: { label: "Projects", scope: "you", what: "favourites, order, groups, colours, icons, agent, gh account, sharing" },
   notes: { label: "Notes and work log", scope: "team", what: "shared notes, each day's project line, the sharing channel, and each person's spend on a shared project" },
   claims: { label: "Claims", scope: "team", what: "who dispatched at an issue or PR, while that session runs" },
+  memory: { label: "Memory", scope: "you", what: "Claude's saved memories per project, once you switch it on; never the index" },
 };
 
 // ---------- the work log on the server: which commits a line covers ----------

@@ -49,6 +49,12 @@ Markers: `+` new · `~` changed · `!` fixed
   offered project and reference memories, never the ones about you, and the session that wrote
   each is stripped. The receiving machine adds them beside its own and never replaces one it has.
 
++ **Claude's memory follows you between your machines.** On a sync server started with
+  `EPISKO_MEMORY=1`, switch on Settings › Sync › *Claude's memory* and each project's saved
+  memories reach your other machines, never a teammate's. A file edited on two machines keeps the
+  later one, a local edit that has not gone out yet is never overwritten, `MEMORY.md` only ever
+  gains lines, and a project you have not cloned on a machine gets its memories once you do.
+
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,
 one pending review sent as Comment, Approve or Request changes, and a PR link in a pane opens it

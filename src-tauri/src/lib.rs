@@ -553,6 +553,8 @@ pub fn run() {
             usage::list_session_history,
             usage::token_usage_by_day,
             usage::claude_usage_limits,
+            usage::memory_scan,
+            usage::memory_write,
             sync::sync_status,
             sync::sync_start,
             sync::sync_pair,

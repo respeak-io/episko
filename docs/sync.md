@@ -45,7 +45,8 @@ like preferences:
 
 **The privacy floor.** Nothing conversational goes over the wire: no transcripts, prompts, tool
 payloads, diffs, file contents or health measurements, except a session you explicitly hand off
-on a server with `EPISKO_HANDOFF` on (see below). `sync.ts` never touches storage itself.
+on a server with `EPISKO_HANDOFF` on (see below), and Claude's memory files between your own
+machines once you switch that on (see *Claude's memory* below). `sync.ts` never touches storage itself.
 Callers pass it a getter, and the contract test fails if it imports anything but `./store` or
 reaches `localStorage`, `fetch` or Tauri.
 
@@ -84,7 +85,8 @@ reaches `localStorage`, `fetch` or Tauri.
 | 1. Personal sync | event log, prefs, usage partitioning, limits; one user, one token | built |
 | 2. Identity and roster | root-commit ids, the path-keyed stores, the `cc-usage-detail` re-key, shared notes, presence | built |
 | 3. Coordination | claims as leases, shown on the shared queue | built |
-| 4. Handoff | send a stopped session to another of your machines or a teammate (docs/handoff.md) | sender built; the recipient's sheet is next |
+| 4. Handoff | send a stopped session to another of your machines or a teammate (docs/handoff.md) | built |
+| 5. Memory | Claude's per-project memory files between one person's machines | built, off by default on both ends |
 
 The *shelved on another device* row is not a roster that syncs: a session moves between
 machines only when somebody sends it, and then the sending row says where it went until the
@@ -192,6 +194,35 @@ as whole values. Rules, all in `roster.ts`:
   at stamp 1 and never over a key the server already holds. Only a real local edit is stamped
   now.
 - A group's `collapsed` state stays on this screen.
+
+## Claude's memory: your machines only
+
+Claude keeps per-project memory files in `<project dir>/memory/`, one folder per repo (keyed by
+the main checkout, so every worktree shares it). With **both** switches on, `EPISKO_MEMORY` on
+the server and Settings › Sync › *Claude's memory* here (`cc-memory-sync`, off by default), they
+travel on the personal stream `memory`. A teammate never hears it; for them a memory goes only
+inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usage.rs`:
+
+- **Keyed `<project id>|<name>.md`**, the name `[A-Za-z0-9._-]+.md` and at most 120 characters.
+  `MEMORY.md` never travels: a file written here adds its index line from its own frontmatter,
+  and a line the index lost is put back. A line is never taken out, whatever arrives.
+- **Payload `{text, sha}`**, or `null` as a tombstone. A tombstone goes only for a file this
+  machine saw (`cc-sync-memory`'s `seen` holds the sha each machine last agreed with the server)
+  and no longer has. A file over 96 KiB stays home and is never read as removed.
+- **Last writer wins**, with a twist that keeps data: a write or a removal only replaces the copy
+  this machine last agreed on. A file edited here and not sent yet is kept and sent instead, at a
+  newer stamp. A first discovery goes at stamp 1, like the roster, and only after the first
+  catch-up, so it never undercuts a copy the server already held.
+- **Its own batch.** The server refuses a whole push carrying memory while the stream is off, so
+  memory never rides with prefs. A push is about half a MiB at most.
+- **Always heard, gated on what it does.** The app names `"memory"` in every hello, opted in or
+  not: an arrival is **held** in `cc-sync-memory` (2 MiB at most) until this machine has both the
+  switch on and a checkout of the project, so switching it on later, or cloning later, loses
+  nothing. Advertising only when opted in would leave everything sent before behind the cursor.
+- **Driven on focus, on a Claude session's exit and every ten minutes**: apply what is held,
+  then scan each project with an id and push what changed. Where auto memory is off
+  (`autoMemoryEnabled: false`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, or a moved
+  `autoMemoryDirectory`), nothing of that project is read or written.
 
 ## Shared notes and the work log: where they go is per project
 
