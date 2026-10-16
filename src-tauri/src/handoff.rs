@@ -22,6 +22,8 @@ const IN_FLIGHT: usize = 2;
 /// A part nobody answered is asked for again after this long.
 const RESEND_AFTER: Duration = Duration::from_secs(60);
 const ARCHIVE_KEEP: Duration = Duration::from_secs(14 * 24 * 3600);
+/// Room kept in the meta for the git half, which is only known once the code has shipped.
+const GIT_META_ROOM: usize = 512;
 
 // ---------- the container ----------
 
@@ -214,6 +216,9 @@ fn read_manifest(dir: &Path, names: &[String]) -> Result<Manifest, String> {
     if let Some(n) = names.iter().find(|n| *n != "manifest.json" && !listed.contains(n.as_str())) {
         return Err(format!("{n} is not in the manifest"));
     }
+    if let Some(f) = m.files.iter().find(|f| f.name == "manifest.json" || !valid_name(&f.name) || !names.contains(&f.name)) {
+        return Err(format!("the manifest lists {:?}, which is not in the handoff", f.name));
+    }
     for f in &m.files {
         let p = dir.join(&f.name);
         let len = std::fs::metadata(&p).map(|m| m.len()).map_err(|_| format!("{} is missing", f.name))?;
@@ -224,10 +229,11 @@ fn read_manifest(dir: &Path, names: &[String]) -> Result<Manifest, String> {
     Ok(m)
 }
 
-// ---------- staging (`<app cache>/handoff/{out,in}`) ----------
+// ---------- staging (`<app local data>/handoff/{out,in}`) ----------
 
+/// Not the cache dir: once the sender has archived, a received blob is the only live copy.
 pub(crate) fn stage_dir(app: &AppHandle) -> PathBuf {
-    app.path().app_cache_dir().unwrap_or_else(|_| std::env::temp_dir().join("episko")).join("handoff")
+    app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("episko")).join("handoff")
 }
 
 fn archive_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -264,6 +270,14 @@ struct OutRec {
     meta: Value,
     #[serde(default)]
     state: Option<HandoffState>,
+    /// The server refused the offer for good; a reconnect does not offer it again.
+    #[serde(default)]
+    refused: bool,
+}
+
+/// A refusal no retry of the same offer can fix.
+fn permanent(reason: HandoffErr) -> bool {
+    matches!(reason, HandoffErr::TooLarge | HandoffErr::BadTarget | HandoffErr::Conflict)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
@@ -415,7 +429,10 @@ impl Transfers {
         match c {
             HandoffCtl::Offer { id } => match self.offer(&id) {
                 Ok(m) => (vec![m], vec![]),
-                Err((reason, why)) => refuse(&id, reason, why),
+                Err((reason, why)) => {
+                    self.mark_refused(&id, reason);
+                    refuse(&id, reason, why)
+                }
             },
             HandoffCtl::Claim { id } => (vec![ClientMsg::HandoffClaim { id }], vec![]),
             HandoffCtl::Recall { id } => (vec![ClientMsg::HandoffRecall { id }], vec![]),
@@ -431,6 +448,11 @@ impl Transfers {
         if rec.to_user.is_empty() {
             return Err((HandoffErr::BadTarget, "nobody was chosen to receive it".into()));
         }
+        if let Caps::Known(c) = &self.caps {
+            if rec.size > c.max_bytes {
+                return Err((HandoffErr::TooLarge, format!("{} bytes is more than this sync server takes ({})", rec.size, c.max_bytes)));
+            }
+        }
         Ok(ClientMsg::HandoffOffer {
             id: id.to_string(), to_user: rec.to_user, to_device: rec.to_device, size: rec.size, parts: rec.parts, sha256: rec.sha256, meta: rec.meta,
         })
@@ -443,13 +465,37 @@ impl Transfers {
             .flatten()
             .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_string))
             .filter(|id| uuid_shaped(id) && !records.iter().any(|r| r.id == *id))
-            .filter(|id| read_json::<OutRec>(&staged(&self.stage, "out", id, "json")).is_some_and(|r| r.state.is_none()))
+            .filter(|id| read_json::<OutRec>(&staged(&self.stage, "out", id, "json")).is_some_and(|r| r.state.is_none() && !r.refused))
             .collect();
         ids.sort();
         ids
     }
 
+    /// Records a permanent refusal of an offer the server never acknowledged.
+    fn mark_refused(&self, id: &str, reason: HandoffErr) {
+        let jp = staged(&self.stage, "out", id, "json");
+        let Some(mut rec) = read_json::<OutRec>(&jp).filter(|r| permanent(reason) && r.state.is_none() && !r.refused) else { return };
+        rec.refused = true;
+        if let Err(e) = write_json(&jp, &rec) {
+            log::warn!("handoff {id}: {e}");
+        }
+    }
+
+    /// Commands a connection that never reached its welcome was still holding.
+    pub(crate) fn take_held(&mut self) -> Vec<HandoffCtl> {
+        std::mem::take(&mut self.held)
+    }
+
+    /// A server with handoff off still lists, so senders can reconcile; it is never answered.
     pub(crate) fn on_server(&mut self, msg: &ServerMsg) -> Step {
+        let mut step = self.heard(msg);
+        if !self.enabled() {
+            step.0.clear();
+        }
+        step
+    }
+
+    fn heard(&mut self, msg: &ServerMsg) -> Step {
         match msg {
             ServerMsg::HandoffList { records } => {
                 let mut step = (vec![], vec![HandoffEv::List { records: records.clone() }]);
@@ -457,7 +503,12 @@ impl Transfers {
                     join(&mut step, self.track(r));
                 }
                 if self.enabled() {
-                    step.0.extend(self.unsent(records).iter().filter_map(|id| self.offer(id).ok()));
+                    for id in self.unsent(records) {
+                        match self.offer(&id) {
+                            Ok(m) => step.0.push(m),
+                            Err((reason, _)) => self.mark_refused(&id, reason),
+                        }
+                    }
                 }
                 step
             }
@@ -529,9 +580,11 @@ impl Transfers {
         let part = staged(&self.stage, "in", id, "part");
         let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         let next = if have >= rec.size { rec.parts } else { (have / HANDOFF_PART as u64) as u32 };
+        // Every byte staged: trim to the size, never pad a short last part out to a full one.
+        let keep = (u64::from(next) * HANDOFF_PART as u64).min(rec.size);
         let resized = write_json(&jp, &rec).and_then(|_| {
             let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&part).map_err(|e| e.to_string())?;
-            f.set_len(u64::from(next) * HANDOFF_PART as u64).map_err(|e| e.to_string())
+            f.set_len(keep).map_err(|e| e.to_string())
         });
         if let Err(e) = resized {
             return refuse(id, HandoffErr::Unknown, format!("could not stage the download: {e}"));
@@ -548,7 +601,9 @@ impl Transfers {
         let jp = staged(&self.stage, "in", id, "json");
         let Some(mut rec) = read_json::<InRec>(&jp) else { return Step::default() };
         if !staged(&self.stage, "in", id, "epkh").is_file() {
-            return Step::default();
+            self.downs.remove(id);
+            drop_in(&self.stage, id);
+            return refuse(id, HandoffErr::Gone, "the received session is no longer on this machine; ask for it to be sent again");
         }
         self.downs.remove(id);
         if rec.got != Got::Done {
@@ -635,6 +690,7 @@ impl Transfers {
             self.ups.remove(id);
         }
         self.downs.remove(id);
+        self.mark_refused(id, reason);
         refuse(id, reason, message)
     }
 
@@ -707,16 +763,36 @@ fn pack_in(stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, 
     }
     std::fs::create_dir_all(stage.join("out")).map_err(|e| e.to_string())?;
     let export = usage::transcript_export_in(base, workdir, resume_id)?;
-    let bundle = staged(stage, "out", id, "bundle");
-    let shipped = git::handoff_ship(workdir, id, how, &bundle)?;
     let project_id = git::project_id(workdir.to_string());
-    let git_meta = serde_json::to_value(&shipped.git).map_err(|e| e.to_string())?;
-    for (k, v) in [("v", Value::from(1)), ("resume_id", resume_id.into()), ("provider", provider.clone().into()), ("git", git_meta)] {
+    for (k, v) in [("v", Value::from(1)), ("resume_id", resume_id.into()), ("provider", provider.clone().into())] {
         meta.insert(k.into(), v);
     }
     if let Some(p) = &project_id {
         meta.insert("project_id".into(), p.clone().into());
     }
+    // Checked before anything is pushed; the git meta still to come is a few hundred bytes.
+    if Value::Object(meta.clone()).to_string().len() + GIT_META_ROOM > HANDOFF_META_MAX {
+        return Err("the brief is too long to send".into());
+    }
+    let bundle = staged(stage, "out", id, "bundle");
+    let packed = git::handoff_ship(workdir, id, how, &bundle).and_then(|shipped| ship_rest(stage, id, workdir, resume_id, provider, project_id, export, meta, shipped));
+    let _ = std::fs::remove_file(&bundle);
+    if packed.is_err() && how != "none" {
+        // Nothing staged, so nobody will settle this id: take back what was shipped.
+        if let Err(e) = git::handoff_forget(workdir, id, how == "branch") {
+            log::warn!("handoff {id}: {e}");
+        }
+    }
+    packed
+}
+
+#[allow(clippy::too_many_arguments)] // pack_in's state at the moment the code has shipped
+fn ship_rest(
+    stage: &Path, id: &str, workdir: &str, resume_id: &str, provider: String, project_id: Option<String>, export: usage::TranscriptExport,
+    mut meta: serde_json::Map<String, Value>, shipped: git::Shipped,
+) -> Result<Packed, String> {
+    let bundle = staged(stage, "out", id, "bundle");
+    meta.insert("git".into(), serde_json::to_value(&shipped.git).map_err(|e| e.to_string())?);
     let meta = Value::Object(meta);
     if meta.to_string().len() > HANDOFF_META_MAX {
         return Err("the brief is too long to send".into());
@@ -735,11 +811,9 @@ fn pack_in(stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, 
         v: 1, resume_id: resume_id.into(), sidecar_prefixes: export.prefixes, cwd: workdir.into(), project_id, provider, git: shipped.git, files,
     };
     entries.insert(0, ("manifest.json".into(), Src::Bytes(serde_json::to_vec(&manifest).map_err(|e| e.to_string())?)));
-    let packed = pack(&staged(stage, "out", id, "epkh"), &entries);
-    let _ = std::fs::remove_file(&bundle);
-    let (size, sha256) = packed?;
+    let (size, sha256) = pack(&staged(stage, "out", id, "epkh"), &entries)?;
     let parts = size.div_ceil(HANDOFF_PART as u64) as u32;
-    write_json(&json, &OutRec { size, parts, sha256: sha256.clone(), meta, ..Default::default() })?;
+    write_json(&staged(stage, "out", id, "json"), &OutRec { size, parts, sha256: sha256.clone(), meta, ..Default::default() })?;
     Ok(Packed { size, parts, sha256, left_behind: shipped.left_behind })
 }
 
@@ -777,7 +851,7 @@ fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[S
     let (workdir, branch, worktree) = match (&rec.applied, &man.git) {
         (Some((wt, b)), _) => (wt.clone(), Some(b.clone()), true),
         (None, None) => (checkout.to_string(), None, false),
-        (None, Some(g)) if g.via == "none" && git::clean_at(checkout, &g.head) => (checkout.to_string(), g.branch.clone(), false),
+        (None, Some(g)) if g.via == "none" && git::clean_at(checkout, &g.head, g.branch.as_deref()) => (checkout.to_string(), g.branch.clone(), false),
         (None, Some(g)) => {
             let bundle = names.iter().any(|n| n == "repo.bundle").then(|| dir.join("repo.bundle"));
             let a = git::handoff_land(checkout, id, g, bundle.as_deref())?;
@@ -865,7 +939,7 @@ pub(crate) fn handoff_send(app: AppHandle, state: State<'_, crate::AppState>, id
     if rec.state.is_some() {
         return Err("this handoff was already sent".into());
     }
-    (rec.to_user, rec.to_device) = (to_user, to_device);
+    (rec.to_user, rec.to_device, rec.refused) = (to_user, to_device, false);
     write_json(&json, &rec)?;
     Ok(crate::sync::send_handoff(&state.sync, HandoffCtl::Offer { id }))
 }
@@ -1083,6 +1157,54 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_offer_is_not_offered_again_and_an_oversized_one_never_leaves() {
+        let stage = scratch_dir();
+        stage_out(&stage, ID, &blob(10), "ben");
+        let mut t = Transfers::new(stage.clone());
+        t.on_welcome("d1", Some(&caps()));
+        let (_, evs) = t.on_server(&ServerMsg::HandoffRefused { id: ID.into(), reason: HandoffErr::TooLarge, message: "no".into() });
+        assert_eq!(evs.len(), 1);
+        let (msgs, _) = t.on_server(&ServerMsg::HandoffList { records: vec![] });
+        assert!(msgs.is_empty(), "{msgs:?}");
+
+        let stage = scratch_dir();
+        stage_out(&stage, ID, &blob(10), "ben");
+        let mut t = Transfers::new(stage.clone());
+        t.on_welcome("d1", Some(&HandoffCaps { max_bytes: 5, ..caps() }));
+        let (msgs, evs) = t.on_ctl(HandoffCtl::Offer { id: ID.into() });
+        assert!(msgs.is_empty() && matches!(&evs[..], [HandoffEv::Refused { reason: HandoffErr::TooLarge, .. }]), "{msgs:?} {evs:?}");
+        assert!(read_json::<OutRec>(&staged(&stage, "out", ID, "json")).unwrap().refused);
+    }
+
+    #[test]
+    fn a_server_with_handoff_off_hears_nothing_back() {
+        let stage = scratch_dir();
+        let data = blob(100);
+        let sha = sha_hex(&data);
+        std::fs::create_dir_all(stage.join("in")).unwrap();
+        let rec = InRec { size: 100, parts: 1, sha256: sha.clone(), got: Got::Fetched, ..Default::default() };
+        write_json(&staged(&stage, "in", ID, "json"), &rec).unwrap();
+        let mut t = Transfers::new(stage);
+        t.on_welcome("d2", Some(&HandoffCaps { enabled: false, ..caps() }));
+        let (msgs, _) = t.on_server(&ServerMsg::HandoffList { records: vec![info(HandoffState::Claimed, "d1", Some("d2"), 100, &sha)] });
+        assert!(msgs.is_empty(), "{msgs:?}");
+    }
+
+    #[test]
+    fn a_part_file_already_whole_completes_without_padding() {
+        let stage = scratch_dir();
+        let data = blob(HANDOFF_PART + 7);
+        let sha = sha_hex(&data);
+        std::fs::create_dir_all(stage.join("in")).unwrap();
+        std::fs::write(staged(&stage, "in", ID, "part"), &data).unwrap();
+        let mut t = Transfers::new(stage.clone());
+        t.on_welcome("d2", Some(&caps()));
+        let (msgs, _) = t.on_server(&info_msg(info(HandoffState::Claimed, "d1", Some("d2"), data.len() as u64, &sha)));
+        assert_eq!(msgs, vec![ClientMsg::HandoffComplete { id: ID.into() }]);
+        assert_eq!(std::fs::read(staged(&stage, "in", ID, "epkh")).unwrap(), data);
+    }
+
+    #[test]
     fn a_download_appends_resumes_from_the_staged_length_and_is_ready_only_on_done() {
         let stage = scratch_dir();
         let data = blob(2 * HANDOFF_PART + 100);
@@ -1147,6 +1269,20 @@ mod tests {
         assert!(!evs.iter().any(|e| matches!(e, HandoffEv::Ready { .. })));
     }
 
+    #[test]
+    fn a_done_whose_blob_vanished_says_so_once() {
+        let stage = scratch_dir();
+        received(&stage, manifest_for(None, b"x"), Got::Fetched);
+        std::fs::remove_file(staged(&stage, "in", ID, "epkh")).unwrap();
+        let mut t = Transfers::new(stage);
+        t.on_welcome("d2", Some(&caps()));
+        let done = || info_msg(info(HandoffState::Done, "d1", Some("d2"), 10, &"a".repeat(64)));
+        let (_, evs) = t.on_server(&done());
+        assert!(evs.iter().any(|e| matches!(e, HandoffEv::Refused { reason: HandoffErr::Gone, .. })), "{evs:?}");
+        let (_, evs) = t.on_server(&done());
+        assert!(!evs.iter().any(|e| matches!(e, HandoffEv::Refused { .. })), "{evs:?}");
+    }
+
     fn received(stage: &Path, entries: Vec<(String, Src)>, got: Got) {
         std::fs::create_dir_all(stage.join("in")).unwrap();
         let (size, sha256) = pack(&staged(stage, "in", ID, "epkh"), &entries).unwrap();
@@ -1195,6 +1331,18 @@ mod tests {
         received(&stage, entries, Got::Done);
         let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[]);
         assert!(e.as_ref().is_err_and(|e| e.contains("does not match")), "{e:?}");
+
+        for name in ["../../x", "memory/absent.md"] {
+            let body = b"one";
+            let files = vec![
+                FileEntry { name: "transcript.jsonl".into(), len: 3, sha256: sha_hex(body) },
+                FileEntry { name: name.into(), len: 3, sha256: sha_hex(body) },
+            ];
+            let m = Manifest { v: 1, resume_id: SID.into(), sidecar_prefixes: vec![], cwd: "/x".into(), project_id: None, provider: "claude".into(), git: None, files };
+            received(&stage, vec![("manifest.json".into(), Src::Bytes(serde_json::to_vec(&m).unwrap())), ("transcript.jsonl".into(), Src::Bytes(body.to_vec()))], Got::Done);
+            let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[]);
+            assert!(e.as_ref().is_err_and(|e| e.contains("not in the handoff")), "{name}: {e:?}");
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ use episko_proto::{ClientMsg, ErrorCode, NewEvent, ServerMsg, FEATURE_HANDOFF, P
 use serde::Serialize;
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -222,15 +222,14 @@ fn relay(sock: &mut Sock, (msgs, evs): handoff::Step, out: &dyn Fn(SyncOut)) -> 
 }
 
 /// One connected session: hello, then relay both ways until it fails or `rx` says reconnect.
-/// `stage` is the handoff staging folder the transfers resume from.
+/// `xfer` is this connection's handoff driver, fresh per connection.
 #[allow(clippy::too_many_arguments)] // one connection's whole context; a struct would only rename it
-fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn(), stage: &Path) -> End {
+fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<Ctl>, out: &dyn Fn(SyncOut), alive: &dyn Fn() -> bool, on_ok: &dyn Fn(), xfer: &mut Transfers) -> End {
     let mut sock = match open(url, headers) { Ok(s) => s, Err(e) => return End::Retry(e) };
     let hello = ClientMsg::Hello { token: token.to_string(), since, protocol: PROTOCOL, features: vec![FEATURE_HANDOFF.to_string()] };
     if let Err(e) = say(&mut sock, &hello) { return End::Retry(e); }
     if let Err(e) = tcp_of(&sock).set_read_timeout(Some(POLL)) { return End::Retry(e.to_string()); }
     let mut inflight: std::collections::VecDeque<u64> = Default::default();
-    let mut xfer = Transfers::new(stage.to_path_buf());
     loop {
         if !alive() { let _ = sock.close(None); return End::Stopped; }
         match hear(&mut sock) {
@@ -432,6 +431,8 @@ fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: St
     let alive = || ctl.generation.load(Ordering::SeqCst) == gen;
     let stage = handoff::stage_dir(&app);
     let mut backoff = Duration::from_secs(1);
+    // Handoff verbs accepted while the session was dying go to the next one, not nowhere.
+    let mut held: Vec<HandoffCtl> = vec![];
     while alive() {
         let since = lock(&ctl.status).cursor;
         let out = |o: SyncOut| {
@@ -442,7 +443,12 @@ fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: St
             let _ = app.emit("sync-event", o);
         };
         let on_ok = || lock(&ctl.status).last_ok_at = Some(now_ms());
-        let end = session(&url, &token, &headers, since, &rx, &out, &alive, &on_ok, &stage);
+        let mut xfer = Transfers::new(stage.clone());
+        for c in held.drain(..) {
+            xfer.on_ctl(c);
+        }
+        let end = session(&url, &token, &headers, since, &rx, &out, &alive, &on_ok, &mut xfer);
+        held = xfer.take_held();
         let was_up = lock(&ctl.status).connected;
         match end {
             End::Stopped => { set_status(&app, &ctl, |s| s.connected = false); return; }
@@ -459,7 +465,11 @@ fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: St
         let until = Instant::now() + backoff;
         while alive() && Instant::now() < until {
             // A reconnect asked for during the wait is answered at once rather than after it.
-            if let Ok(Ctl::Reconnect) = rx.recv_timeout(Duration::from_millis(200)) { break; }
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(Ctl::Reconnect) => break,
+                Ok(Ctl::Handoff(c)) => held.push(c),
+                _ => {}
+            }
         }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
@@ -695,7 +705,7 @@ mod tests {
             if matches!(o, SyncOut::Pushed { .. }) { stop.store(true, Ordering::SeqCst); }
             lock(&seen).push(serde_json::to_value(&o).unwrap());
         };
-        let end = session(&url, "tk", &vec![], 7, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {}, &crate::testutil::scratch_dir());
+        let end = session(&url, "tk", &vec![], 7, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {}, &mut Transfers::new(crate::testutil::scratch_dir()));
         assert_eq!(end, End::Stopped);
         let kinds: Vec<String> = lock(&seen).iter().map(|v| v["kind"].as_str().unwrap().to_string()).collect();
         assert_eq!(kinds, ["server", "server", "pushed"]);
@@ -709,7 +719,7 @@ mod tests {
             write_msg(ws, &ServerMsg::Error { code: ErrorCode::BadToken, message: "unknown".into() });
         });
         let (_tx, rx) = channel();
-        assert_eq!(session(&url, "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}, &crate::testutil::scratch_dir()), End::Halt("unknown".into()));
+        assert_eq!(session(&url, "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}, &mut Transfers::new(crate::testutil::scratch_dir())), End::Halt("unknown".into()));
     }
 
     // Against a real episko-server: EPISKO_E2E_URL and two fresh invite codes in EPISKO_E2E_CODES.
@@ -728,13 +738,13 @@ mod tests {
             let (_tx, rx) = channel();
             let start = Instant::now();
             session(&u, &tb, &vec![], 0, &rx, &|o| lock(&h).push(serde_json::to_value(&o).unwrap()),
-                &|| start.elapsed() < Duration::from_secs(4), &|| {}, &crate::testutil::scratch_dir())
+                &|| start.elapsed() < Duration::from_secs(4), &|| {}, &mut Transfers::new(crate::testutil::scratch_dir()))
         });
         std::thread::sleep(Duration::from_millis(500));
         let (tx, rx) = channel();
         tx.send(Ctl::Push(1, vec![NewEvent { stream: episko_proto::Stream::Prefs, key: "cc-sort".into(), at: 1, payload: "active".into() }])).unwrap();
         let start = Instant::now();
-        session(&url, &ta, &vec![], 0, &rx, &|_| {}, &|| start.elapsed() < Duration::from_secs(2), &|| {}, &crate::testutil::scratch_dir());
+        session(&url, &ta, &vec![], 0, &rx, &|_| {}, &|| start.elapsed() < Duration::from_secs(2), &|| {}, &mut Transfers::new(crate::testutil::scratch_dir()));
         assert_eq!(listener.join().unwrap(), End::Stopped);
         let got = lock(&heard).clone();
         let ev = got.iter().flat_map(|v| v["msg"]["events"].as_array().cloned().unwrap_or_default())
@@ -779,7 +789,7 @@ mod tests {
             if matches!(o, SyncOut::Handoff { ev: HandoffEv::Ready { .. } }) { stop.store(true, Ordering::SeqCst); }
             lock(&seen).push(serde_json::to_value(&o).unwrap());
         };
-        assert_eq!(session(&url, "tk", &vec![], 0, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {}, &stage), End::Stopped);
+        assert_eq!(session(&url, "tk", &vec![], 0, &rx, &out, &|| !stop.load(Ordering::SeqCst), &|| {}, &mut Transfers::new(stage.clone())), End::Stopped);
         let seen = lock(&seen).clone();
         assert!(seen.iter().all(|v| !v.to_string().contains("handoff_part")), "no part reaches the webview: {seen:?}");
         let evs: Vec<&str> = seen.iter().filter(|v| v["kind"] == "handoff").map(|v| v["ev"]["kind"].as_str().unwrap()).collect();
@@ -821,7 +831,7 @@ mod tests {
                 SyncOut::Handoff { ev: HandoffEv::Ready { id } } if id == idb => ready.store(true, Ordering::SeqCst),
                 _ => {}
             };
-            session(&u, &tb, &vec![], 0, &rx, &out, &|| !ready.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(30), &|| {}, &stage_b);
+            session(&u, &tb, &vec![], 0, &rx, &out, &|| !ready.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(30), &|| {}, &mut Transfers::new(stage_b.clone()));
             ready.load(Ordering::SeqCst)
         });
         let (tx, rx) = channel();
@@ -832,7 +842,7 @@ mod tests {
                 if info.id == id && info.state == HandoffState::Done { done.store(true, Ordering::SeqCst); }
             }
         };
-        session(&url, &ta, &vec![], 0, &rx, &out, &|| !done.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(30), &|| {}, &sa);
+        session(&url, &ta, &vec![], 0, &rx, &out, &|| !done.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(30), &|| {}, &mut Transfers::new(sa.clone()));
         assert!(ben.join().unwrap(), "the recipient was handed the session");
         assert!(done.load(Ordering::SeqCst), "the sender heard it was done");
         assert_eq!(std::fs::read(sb.join("in").join(format!("{id}.epkh"))).unwrap(), data);
@@ -842,6 +852,6 @@ mod tests {
     fn an_unreachable_server_is_a_retry() {
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let (_tx, rx) = channel();
-        assert!(matches!(session(&format!("ws://127.0.0.1:{port}/"), "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}, &crate::testutil::scratch_dir()), End::Retry(_)));
+        assert!(matches!(session(&format!("ws://127.0.0.1:{port}/"), "tk", &vec![], 0, &rx, &|_| {}, &|| true, &|| {}, &mut Transfers::new(crate::testutil::scratch_dir())), End::Retry(_)));
     }
 }

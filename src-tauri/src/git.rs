@@ -3135,11 +3135,17 @@ fn handoff_apply(repo: &str, id: &str, meta: &HandoffGitMeta) -> Result<Applied,
         return Err(format!("{branch} already exists here; delete it, then retry"));
     }
     let worktree = create_worktree(repo.to_string(), branch.clone(), Some(tip.clone()))?;
+    // A later failure takes the worktree and branch back out, so a retry starts clean.
+    let undo = |e: String| {
+        let _ = git_out(repo, &["worktree", "remove", "--force", &worktree]);
+        let _ = git_out(repo, &["branch", "-D", &branch]);
+        e
+    };
     if git_out(&worktree, &["rev-parse", "HEAD"]).ok().as_deref() != Some(tip.as_str()) {
-        return Err(format!("the worktree at {worktree} is not on {}", &tip[..8]));
+        return Err(undo(format!("the worktree at {worktree} is not on {}", &tip[..8])));
     }
     if meta.snap {
-        git_out(&worktree, &["reset", "-q", "--mixed", "HEAD~1"])?;
+        git_out(&worktree, &["reset", "-q", "--mixed", "HEAD~1"]).map_err(undo)?;
     }
     if let (Some(sent), false) = (sent, remotes.is_empty()) {
         let up = format!("{}/{sent}", primary_remote(&remotes));
@@ -3232,10 +3238,12 @@ pub(crate) fn handoff_forget(workdir: &str, id: &str, remote_branch: bool) -> Re
     handoff_cleanup(&repo_top(workdir)?, id, remote_branch)
 }
 
-/// Whether `dir` is a checkout with nothing uncommitted sitting on `head`.
-pub(crate) fn clean_at(dir: &str, head: &str) -> bool {
+/// Whether `dir` is a checkout with nothing uncommitted sitting on `head`, on `branch`
+/// (None: detached), so a resumed agent commits where the sender's would have.
+pub(crate) fn clean_at(dir: &str, head: &str, branch: Option<&str>) -> bool {
     let at = git_out(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok_and(|h| h == head);
-    at && git_out(dir, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty())
+    let on = git_out(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok().filter(|s| !s.is_empty());
+    at && on.as_deref() == branch && git_out(dir, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty())
 }
 
 /// What the send sheet offers for this checkout's code. Fetches first, so "pushed" is current.
@@ -5536,7 +5544,8 @@ canonicalizehostname false
         assert_eq!((g.via.as_str(), g.snap), ("bundle", true));
         let done = handoff_land(&st(&b), HID, &g, Some(&file)).expect("landed");
         assert_eq!(said(Path::new(&done.worktree), &["status", "--porcelain"]), "M README");
-        assert!(clean_at(&st(&b), &pushed) && !clean_at(&done.worktree, &g.head));
+        assert!(clean_at(&st(&b), &pushed, Some("main")) && !clean_at(&done.worktree, &g.head, Some(&done.branch)));
+        assert!(!clean_at(&st(&b), &pushed, Some("other")) && !clean_at(&st(&b), &pushed, None), "another branch is not reused");
         assert!(handoff_ship(&st(&a), HID, "carrier pigeon", &file).is_err());
     }
 
