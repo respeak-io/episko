@@ -32,9 +32,6 @@ Markers: `+` new · `~` changed · `!` fixed
   is done; nothing in the interface starts one yet. The interface now keeps a record of each
   handoff and follows the server's word on it, and a session being handed over cannot be resumed
   here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
-  A session's menu, its ⌘K page and the shelved card now have *Send to…*: it stops the session,
-  drafts a brief, asks how the code should travel, warns that a transcript carries whatever the
-  agent read, and sends it; its row says where it stands and ↶ takes it back.
 
 + **Hand a session to another machine, or to a teammate.** On a sync server started with
   `EPISKO_HANDOFF=1`, *Send to…* on a Claude session stops it, drafts a short brief and sends

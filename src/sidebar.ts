@@ -19,8 +19,7 @@ import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
 import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
 import { incomingByProject, rowText, type HandoffRec } from "./handoff";
 import { incomingRowHtml, incomingStripHtml } from "./handoffview";
-import { deviceLabel } from "./handoffui";
-import { pathsOfId } from "./synclink";
+import { deviceLabel, pathsOfId } from "./synclink";
 import {
   activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, peekPrefs,
   projGroups,

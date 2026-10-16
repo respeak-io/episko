@@ -51,6 +51,10 @@ export const activity: Partial<Record<Stream, Activity>> = {};
 const act = (stream: Stream) => (activity[stream] ??= { sent: 0, got: 0, sentAt: 0, gotAt: 0 });
 /** Every machine on the server as it last said at welcome; kept so names survive offline. */
 export let devices: DeviceInfo[] = narrowDevices(safeParse(localStorage.getItem("cc-sync-devices")));
+/** A device id as the sidebar says it: its label when Welcome named it. */
+export function deviceLabel(device: string): string {
+  return devices.find((d) => d.device === device)?.label || `machine ${device.slice(0, 6)}`;
+}
 /** Preferences other machines changed, held for review: nothing is written until you accept it. */
 export const pending: Record<string, PendingPref> = readPending(localStorage.getItem("cc-sync-pending"));
 /** Settings kept to this machine: neither sent nor taken. */
@@ -494,13 +498,13 @@ const asked = new Set<string>();
 let wire: Wire = readObj<unknown>(WIRE);
 
 export const projectIdOf = (path: string): string | undefined => ids[path] || undefined;
-/** Every checkout on this machine that is this project. */
-export const pathsOfId = (id: string): string[] => Object.keys(ids).filter((p) => ids[p] === id);
-const idOf = projectIdOf;
-function pathOf(id: string): string | undefined {
-  const cands = Object.keys(ids).filter((p) => ids[p] === id);
-  return cands.find((p) => projOrder.includes(p)) ?? cands.find((p) => FAVORITES.some((f) => f.path === p)) ?? cands[0];
+/** Every checkout on this machine that is this project, the sidebar's own projects first. */
+export function pathsOfId(id: string): string[] {
+  const rank = (p: string) => (projOrder.includes(p) ? 0 : FAVORITES.some((f) => f.path === p) ? 1 : 2);
+  return Object.keys(ids).filter((p) => ids[p] === id).sort((a, b) => rank(a) - rank(b));
 }
+const idOf = projectIdOf;
+const pathOf = (id: string): string | undefined => pathsOfId(id)[0];
 const known = (id: string) => pathOf(id) !== undefined;
 /** Every id this machine resolved for a folder of that name, if exactly one: a spend row's owner. */
 function idForName(name: string): string | undefined {

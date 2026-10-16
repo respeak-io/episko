@@ -13,7 +13,7 @@ import {
 } from "./handoff";
 import { briefingHtml, incomingSheetHtml, reviewBriefHtml, reviewRestHtml, sendSheetHtml, type IncomingView } from "./handoffview";
 import { dormants, handoffs, sessions } from "./state";
-import { devices, handoffDevices, onlineDevices, pathsOfId, serverHandoff, status as syncStatus } from "./synclink";
+import { deviceLabel, devices, handoffDevices, onlineDevices, pathsOfId, serverHandoff, status as syncStatus } from "./synclink";
 import { dormantBusy } from "./grouping";
 import { nfcPath } from "./format";
 import { canShelve, isClaude, isClaudeRow, midWork, phaseText, type Restorable } from "./types";
@@ -346,12 +346,10 @@ let inSheet: InSheet | null = null;
 const installing = new Set<string>();
 // An install that failed this run waits for Retry; a reconnect's `ready` must not repeat it.
 const installFailed = new Set<string>();
+// Declined this run: a `ready` that raced the decline waits for the user rather than installing.
+const givenBack = new Set<string>();
 const announced = new Set<string>(handoffs.filter((r) => r.dir === "in").map((r) => r.id)); // already on the rail at boot
 
-/** A device id as the sidebar says it: its label when Welcome named it. */
-export function deviceLabel(device: string): string {
-  return devices.find((d) => d.device === device)?.label || `machine ${device.slice(0, 6)}`;
-}
 const chosen = (sh: InSheet): string | null => (sh.pick === -1 ? sh.folder : sh.pick === null ? null : sh.paths[sh.pick] ?? null);
 
 export function openIncoming(id: string) {
@@ -424,6 +422,7 @@ async function claimIn() {
   } catch (e) {
     sh.busy = false;
     sh.err = errText(e);
+    patch(r.id, (x) => ({ ...x, reason: sh.err })); // no claim reached the server; the row must not say "claiming…"
   }
   paintIn();
 }
@@ -433,11 +432,13 @@ async function declineIn(giveBack: boolean) {
   if (!r) return;
   const who = peerName(r.peer);
   if (giveBack && !await ask(`${who} gets the session back, and nothing of it is written here.`, { title: "Give it back?", kind: "warning", okLabel: "Give back", cancelLabel: "Keep it" })) return;
+  givenBack.add(r.id);
   try {
     await invoke("handoff_decline", { id: r.id, reason: giveBack ? "given back" : "declined" });
     toast(giveBack ? `Giving it back to ${who}…` : `Declined · ${who} gets it back`);
     if (inSheet?.id === r.id) closeIn();
   } catch (e) {
+    givenBack.delete(r.id);
     if (inSheet?.id === r.id) { inSheet.err = errText(e); paintIn(); }
   }
 }
@@ -451,9 +452,21 @@ async function install(id: string, checkout: string) {
   installFailed.delete(id);
   if (inSheet?.id === id) { inSheet.err = ""; paintIn(); }
   host.renderAll();
+  let row: Restorable;
   try {
     const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: [] });
-    const row = restorableFor(r.info, inst, crypto.randomUUID(), checkout);
+    row = restorableFor(r.info, inst, crypto.randomUUID(), checkout);
+  } catch (e) {
+    installFailed.add(id);
+    dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
+    if (inSheet?.id === id) inSheet.err = errText(e);
+    else toast(`Couldn't place the session from ${who}: ${errText(e)} · its row retries`);
+    installing.delete(id);
+    paintIn();
+    host.renderAll();
+    return;
+  }
+  try {
     patch(id, (x) => ({ ...x, checkout, settled: true, at: Date.now() }));
     host.insertDormant(row);
     await invoke("handoff_settle", { id, dir: "in", workdir: null, resumeId: null, archive: false })
@@ -462,10 +475,9 @@ async function install(id: string, checkout: string) {
     toast(`Resuming ${row.title || "the session"} from ${who}`);
     await host.resumeDormant(row.id);
   } catch (e) {
-    installFailed.add(id);
-    dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
-    if (inSheet?.id === id) inSheet.err = errText(e);
-    else toast(`Couldn't place the session from ${who}: ${errText(e)} · its row retries`);
+    // Installed and on the rail as a shelved row; only the resume failed.
+    dlog("warn", `handoff ${id.slice(0, 8)}: resume failed: ${errText(e)}`);
+    toast(`Placed the session from ${who}, but couldn't resume it: ${errText(e)} · resume its row`);
   } finally {
     installing.delete(id);
     paintIn();
@@ -487,7 +499,10 @@ function receiveDue(ev: HandoffEv) {
   if (ev.kind !== "ready") return;
   const ready = recOf(ev.id);
   // The checkout was chosen at the claim; a repeat `ready` after a failure waits for Retry.
-  if (ready?.checkout && awaitsInstall(ready) && !installFailed.has(ready.id)) void install(ready.id, ready.checkout);
+  if (!ready?.checkout || !awaitsInstall(ready) || installFailed.has(ready.id)) return;
+  if (!givenBack.has(ready.id)) { void install(ready.id, ready.checkout); return; }
+  installFailed.add(ready.id); // waits for Retry, like a failed install
+  toast(`${peerName(ready.peer)} had already handed it over, so it stayed yours · open its row to place it`);
 }
 
 /** Every handoff event, after ./actions reduced it into the records. */
