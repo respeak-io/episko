@@ -81,8 +81,11 @@ fn main() {
         Some("revoke") => {
             let device = args.get(1).unwrap_or_else(|| fail(USAGE));
             match store.revoke(device) {
-                Ok(0) => fail(&format!("no device {device}")),
-                Ok(_) => println!("revoked {device}"),
+                Ok((0, _)) => fail(&format!("no device {device}")),
+                Ok((_, ended)) => {
+                    println!("revoked {device}");
+                    for (_, h) in ended { println!("  handoff {} from {} to {} is now {:?}", h.id, h.from_user, h.to_user, h.state); }
+                }
                 Err(e) => fail(&e.to_string()),
             }
         }

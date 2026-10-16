@@ -15,7 +15,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ~ **Sync server: groundwork for handing a session to another machine.** The sync protocol learns
   the handoff messages and the capability fields a client and server advertise. Nothing sends them
-  yet, and an app or server from before this sees nothing new on the wire.
+  yet, and an app or server from before this sees nothing new on the wire. The server's database
+  gains the tables that will hold a handoff until it is picked up, and an existing `episko.db`
+  is upgraded in place; `revoke` now also ends the open handoffs of the machine it shuts out.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,
