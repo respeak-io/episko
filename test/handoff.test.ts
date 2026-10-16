@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  awaitsInstall, capableDevices, clampBrief, codeText, gitChoices, handoffBusy, incomingByProject, keepTicks, lostOnHandoff, memoryOffer, narrowCaps,
+  awaitsInstall, capableDevices, clampBrief, codeText, fromTeammate, gitChoices, handoffBusy, incomingByProject, keepTicks, lostOnHandoff, memoryOffer, narrowCaps,
   narrowInfo, narrowMeta, onCaps, placeGate, readHandoffs, reduce, restorableFor, rowText, sendGate, targets,
   type HandoffCaps, type HandoffEv, type HandoffGit, type HandoffInfo, type HandoffRec, type Me,
 } from "../src/handoff";
@@ -291,14 +291,21 @@ describe("handoffBusy", () => {
   });
 });
 
+describe("fromTeammate", () => {
+  it("is another account, whatever the case of its name", () => {
+    expect(fromTeammate(info())).toBe(true);
+    expect(fromTeammate(info({ from_user: "Ben", to_user: "ben", to_device: "b2" }))).toBe(false);
+  });
+});
+
 describe("restorableFor and incomingByProject", () => {
   it("builds the roster row a received session resumes from", () => {
-    const r = restorableFor(info({ updated: NOW + 7 }), { workdir: "/w/epi-feat", resume_id: RESUME, branch: "feat", worktree: true, kept: [] }, "new-id", "/w/epi");
+    const r = restorableFor(info({ updated: NOW + 7 }), { workdir: "/w/epi-feat", resume_id: RESUME, branch: "feat", worktree: true, kept: [], failed: [], memory_off: [] }, "new-id", "/w/epi");
     expect(r).toEqual({
       id: "new-id", resumeId: RESUME, provider: "claude", project: "epi", workdir: "/w/epi-feat", colorKey: "/w/epi",
       worktree: "feat", branch: "feat", title: "Fix the parser", lastActivity: NOW + 7,
     });
-    expect(restorableFor(info(), { workdir: "/w/epi", resume_id: RESUME, branch: null, worktree: false, kept: [] }, "n", "/w/epi").worktree).toBeNull();
+    expect(restorableFor(info(), { workdir: "/w/epi", resume_id: RESUME, branch: null, worktree: false, kept: [], failed: [], memory_off: [] }, "n", "/w/epi").worktree).toBeNull();
   });
   it("files incoming offers under their project's checkout, or under null when not cloned", () => {
     const l = reduce(reduce([], ev({}), BEN, NOW), ev({ id: "x", meta: meta({ project_id: "other" }) }), BEN, NOW);

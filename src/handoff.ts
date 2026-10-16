@@ -61,6 +61,8 @@ const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v)
 const obj = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
 const sameUser = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** Whether a handoff crossed accounts; then only a project or reference memory may land. */
+export const fromTeammate = (info: HandoffInfo) => !sameUser(info.from_user, info.to_user);
 const strList = (v: unknown, max: number, len: number): string[] =>
   Array.isArray(v) ? v.map((x) => str(x, len).trim()).filter(Boolean).slice(0, max) : [];
 
@@ -366,7 +368,11 @@ export function handoffBusy(list: readonly HandoffRec[], resumeId: string): stri
   return `sending to ${who}`;
 }
 
-export interface Installed { workdir: string; resume_id: string; branch: string | null; worktree: boolean; kept: string[] }
+export interface Installed {
+  workdir: string; resume_id: string; branch: string | null; worktree: boolean;
+  /** Memories this machine already had a different one of; `failed` is `name: reason`. */
+  kept: string[]; failed: string[]; memory_off: string[];
+}
 /** The roster row a received session resumes from. */
 export function restorableFor(info: HandoffInfo, inst: Installed, id: string, colorKey: string): Restorable {
   const meta = narrowMeta(info.meta);

@@ -38,7 +38,7 @@ pub(crate) fn valid_name(n: &str) -> bool {
     if let Some(rest) = n.strip_prefix("sidecar/tool-results/").or_else(|| n.strip_prefix("sidecar/subagents/")) {
         return flat(rest);
     }
-    n.strip_prefix("memory/").and_then(|r| r.strip_suffix(".md")).is_some_and(flat)
+    n.strip_prefix("memory/").is_some_and(usage::valid_memory_name)
 }
 
 pub(crate) enum Src {
@@ -746,11 +746,16 @@ pub(crate) struct Packed {
 
 /// Memory types a teammate may receive; `user` and `feedback` are about the sender, never theirs.
 const TEAM_MEMORY: [&str; 2] = ["project", "reference"];
+/// The most memories one handoff carries; handoff.ts narrows the meta to the same.
+const MEMORY_MAX: usize = 50;
 
 /// The ticked memories as they travel, `originSessionId` stripped; refused before anything ships.
 fn pack_memories(base: &Path, workdir: &str, names: &[String], teammate: bool) -> Result<Vec<(usage::MemoryFile, Vec<u8>)>, String> {
     if names.is_empty() {
         return Ok(Vec::new());
+    }
+    if names.len() > MEMORY_MAX {
+        return Err(format!("at most {MEMORY_MAX} memories go with one handoff"));
     }
     let dir = usage::memory_dir(base, workdir).ok_or("this project's memories cannot be found")?;
     let all = usage::list_memories_in(&dir);
@@ -847,38 +852,62 @@ fn ship_rest(
     Ok(Packed { size, parts, sha256, left_behind: shipped.left_behind })
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Default)]
 pub(crate) struct Installed {
     workdir: String,
     resume_id: String,
     branch: Option<String>,
     worktree: bool,
-    /// Ticked memories left alone because this machine already had one of that name.
+    /// Ticked memories left alone because this machine already had a different one of that name.
     kept: Vec<String>,
+    /// `name: reason` for each ticked memory that could not be written; the session lands anyway.
+    failed: Vec<String>,
+    /// Ticked memories not written because auto memory is off for this project here.
+    memory_off: Vec<String>,
 }
 
-/// Never replaces a memory already here, so a repeat install writes nothing twice.
-fn install_memories(base: &Path, workdir: &str, dir: &Path, names: &[String], picked: &[String]) -> Result<Vec<String>, String> {
-    if let Some(n) = picked.iter().find(|n| !names.contains(&format!("memory/{n}"))) {
-        return Err(format!("{n} did not come with this handoff"));
+/// Best effort: a memory is an extra, so no failure here may keep the session from landing.
+/// Never replaces a memory already here; one identical to the incoming copy counts as written.
+fn install_memories(base: &Path, workdir: &str, dir: &Path, names: &[String], picked: &[String], teammate: bool, out: &mut Installed) {
+    if picked.is_empty() {
+        return;
     }
-    if picked.is_empty() || usage::auto_memory_off(base) {
-        return Ok(Vec::new());
-    }
-    let to = usage::memory_dir(base, workdir).ok_or("this project's memory folder cannot be found")?;
-    let mut kept = Vec::new();
+    let off = usage::auto_memory_off(base, workdir);
+    let to = usage::memory_dir(base, workdir);
     for n in picked {
-        let text = std::fs::read_to_string(dir.join("memory").join(n)).map_err(|e| format!("read {n}: {e}"))?;
-        if !usage::write_memory_in(&to, n, Some(&text), true)? {
-            kept.push(n.clone());
+        if !names.contains(&format!("memory/{n}")) {
+            out.failed.push(format!("{n}: did not come with this handoff"));
+            continue;
+        }
+        if off {
+            out.memory_off.push(n.clone());
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(dir.join("memory").join(n)) else {
+            out.failed.push(format!("{n}: unreadable in the handoff"));
+            continue;
+        };
+        let kind = usage::memory_meta(&text).0;
+        if teammate && !TEAM_MEMORY.contains(&kind.as_str()) {
+            out.failed.push(format!("{n}: a {} memory, which a teammate's handoff may not carry", if kind.is_empty() { "untyped" } else { &kind }));
+            continue;
+        }
+        let Some(to) = &to else {
+            out.failed.push(format!("{n}: this project's memory folder cannot be found"));
+            continue;
+        };
+        match usage::write_memory_in(to, n, Some(&text), true) {
+            Ok(true) => {}
+            Ok(false) if std::fs::read_to_string(to.join(n)).is_ok_and(|have| have == text) => {}
+            Ok(false) => out.kept.push(n.clone()),
+            Err(e) => out.failed.push(format!("{n}: {e}")),
         }
     }
-    Ok(kept)
 }
 
 /// Only after the server said `done`: unpack, refuse another project, land the code, file the
 /// transcript, add the ticked memories. Every step is safe to repeat, so a failed install is retried.
-fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[String]) -> Result<Installed, String> {
+fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[String], teammate: bool) -> Result<Installed, String> {
     if !uuid_shaped(id) {
         return Err(format!("not a handoff id: {id}"));
     }
@@ -913,8 +942,9 @@ fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[S
     };
     let sidecar: Vec<(String, PathBuf)> = names.iter().filter(|n| n.starts_with("sidecar/")).map(|n| (n.clone(), dir.join(n))).collect();
     usage::transcript_import_in(base, &workdir, &man.resume_id, &dir.join("transcript.jsonl"), &sidecar, &man.sidecar_prefixes)?;
-    let kept = install_memories(base, &workdir, &dir, &names, memories)?;
-    Ok(Installed { workdir, resume_id: man.resume_id, branch, worktree, kept })
+    let mut out = Installed { workdir, resume_id: man.resume_id, branch, worktree, ..Default::default() };
+    install_memories(base, &out.workdir.clone(), &dir, &names, memories, teammate, &mut out);
+    Ok(out)
 }
 
 /// Whether the staged send pushed a `handoff/<id>` branch; only then is a remote delete worth a push.
@@ -987,7 +1017,7 @@ pub(crate) fn handoff_pack(
 #[tauri::command(async)]
 pub(crate) fn handoff_memories(workdir: String) -> Result<Vec<usage::MemoryFile>, String> {
     let base = claude_base()?;
-    if usage::auto_memory_off(&base) {
+    if usage::auto_memory_off(&base, &workdir) {
         return Ok(Vec::new());
     }
     Ok(usage::memory_dir(&base, &workdir).map(|d| usage::list_memories_in(&d)).unwrap_or_default())
@@ -1033,8 +1063,8 @@ pub(crate) fn handoff_decline(state: State<'_, crate::AppState>, id: String, rea
 }
 
 #[tauri::command(async)]
-pub(crate) fn handoff_install(app: AppHandle, id: String, checkout: String, memories: Vec<String>) -> Result<Installed, String> {
-    install_in(&stage_dir(&app), &claude_base()?, &id, &checkout, &memories)
+pub(crate) fn handoff_install(app: AppHandle, id: String, checkout: String, memories: Vec<String>, teammate: bool) -> Result<Installed, String> {
+    install_in(&stage_dir(&app), &claude_base()?, &id, &checkout, &memories, teammate)
 }
 
 #[tauri::command(async)]
@@ -1147,7 +1177,7 @@ mod tests {
             assert!(valid_name(ok), "{ok}");
         }
         let bad = ["../x", "/etc/passwd", "C:/x", "sidecar\\tool-results\\a", "notes/x", "sidecar/tool-results/..",
-            "sidecar/tool-results/a/b", "sidecar/other/a", "memory/x.txt", "memory/.md", ""];
+            "sidecar/tool-results/a/b", "sidecar/other/a", "memory/x.txt", "memory/.md", "memory/MEMORY.md", ""];
         let dir = scratch_dir();
         for name in bad {
             assert!(!valid_name(name), "{name}");
@@ -1374,19 +1404,19 @@ mod tests {
         let body = b"{\"type\":\"user\"}\n";
 
         received(&stage, manifest_for(git::project_id(checkout.clone()), body), Got::Fetched);
-        let e = install_in(&stage, &base, ID, &checkout, &[]);
+        let e = install_in(&stage, &base, ID, &checkout, &[], false);
         assert!(e.as_ref().is_err_and(|e| e.contains("not handed over")), "{e:?}");
 
         received(&stage, manifest_for(Some("git:0000".into()), body), Got::Done);
-        let e = install_in(&stage, &base, ID, &checkout, &[]);
+        let e = install_in(&stage, &base, ID, &checkout, &[], false);
         assert!(e.as_ref().is_err_and(|e| e.contains("different project")), "{e:?}");
 
         received(&stage, manifest_for(git::project_id(checkout.clone()), body), Got::Done);
-        let done = install_in(&stage, &base, ID, &checkout, &[]).expect("installed");
+        let done = install_in(&stage, &base, ID, &checkout, &[], false).expect("installed");
         assert_eq!((done.workdir.as_str(), done.resume_id.as_str(), done.worktree), (checkout.as_str(), SID, false));
         let filed = usage::project_transcript_dir(&base, &checkout).join(format!("{SID}.jsonl"));
         assert_eq!(std::fs::read(&filed).unwrap(), body);
-        assert!(install_in(&stage, &base, ID, &checkout, &[]).is_ok(), "a retry is harmless");
+        assert!(install_in(&stage, &base, ID, &checkout, &[], false).is_ok(), "a retry is harmless");
     }
 
     #[test]
@@ -1408,9 +1438,12 @@ mod tests {
         let e = pack_in(&out, &sbase, ID, &cwd, SID, "none", &["me.md".into()], true, json!({}));
         assert!(e.as_ref().is_err_and(|e| e.contains("never goes to a teammate")), "{e:?}");
         assert!(!staged(&out, "out", ID, "json").exists(), "a refusal stages nothing");
-        let packed = pack_in(&out, &sbase, ID, &cwd, SID, "none", &["wip.md".into()], true, json!({"title": "t"})).expect("packed");
+        let e = pack_in(&out, &sbase, ID, &cwd, SID, "none", &vec!["wip.md".to_string(); MEMORY_MAX + 1], false, json!({}));
+        assert!(e.as_ref().is_err_and(|e| e.contains("at most")), "{e:?}");
+        // My own machine may carry a user memory; a teammate's install must still refuse it.
+        let packed = pack_in(&out, &sbase, ID, &cwd, SID, "none", &["wip.md".into(), "me.md".into()], false, json!({"title": "t"})).expect("packed");
         let rec: OutRec = read_json(&staged(&out, "out", ID, "json")).unwrap();
-        assert_eq!(rec.meta["memories"], json!([{"name": "wip.md", "type": "project", "description": "the parser"}]));
+        assert_eq!(rec.meta["memories"][0], json!({"name": "wip.md", "type": "project", "description": "the parser"}));
 
         let (stage, rbase, recv) = (root.join("in-stage"), root.join("recv-claude"), root.join("recv"));
         std::fs::create_dir_all(stage.join("in")).unwrap();
@@ -1420,16 +1453,27 @@ mod tests {
         write_json(&staged(&stage, "in", ID, "json"), &rec).unwrap();
         let checkout = recv.to_string_lossy().into_owned();
 
-        let e = install_in(&stage, &rbase, ID, &checkout, &["me.md".into()]);
-        assert!(e.as_ref().is_err_and(|e| e.contains("did not come")), "{e:?}");
-        let done = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into()]).expect("installed");
-        assert!(done.kept.is_empty());
+        let picked: Vec<String> = ["wip.md", "me.md", "absent.md"].map(String::from).to_vec();
+        let done = install_in(&stage, &rbase, ID, &checkout, &picked, true).expect("a memory never fails the install");
+        assert!(done.kept.is_empty() && done.memory_off.is_empty());
+        assert_eq!(done.failed.len(), 2, "{:?}", done.failed);
+        assert!(done.failed[0].starts_with("me.md: a user memory") && done.failed[1].contains("did not come"), "{:?}", done.failed);
         let landed = usage::memory_dir(&rbase, &checkout).unwrap();
+        assert!(!landed.join("me.md").exists());
         let text = std::fs::read_to_string(landed.join("wip.md")).unwrap();
         assert!(text.contains("  type: project") && !text.contains("originSessionId"), "{text}");
         assert!(std::fs::read_to_string(landed.join("MEMORY.md")).unwrap().contains("(wip.md)"));
-        let again = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into()]).expect("a retry is harmless");
-        assert_eq!(again.kept, vec!["wip.md".to_string()]);
+
+        std::fs::write(landed.join("me.md"), "mine").unwrap();
+        let again = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into(), "me.md".into()], false).expect("a retry is harmless");
+        assert_eq!(again.kept, vec!["me.md".to_string()], "the copy an earlier attempt wrote is not reported as kept");
+        assert!(again.failed.is_empty(), "{:?}", again.failed);
+
+        std::fs::write(rbase.join("settings.json"), r#"{"autoMemoryEnabled": false}"#).unwrap();
+        std::fs::remove_file(landed.join("wip.md")).unwrap();
+        let off = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into()], true).expect("installed");
+        assert_eq!(off.memory_off, vec!["wip.md".to_string()]);
+        assert!(!landed.join("wip.md").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1439,7 +1483,7 @@ mod tests {
         let mut entries = manifest_for(None, b"one");
         entries[1] = ("transcript.jsonl".into(), Src::Bytes(b"two".to_vec()));
         received(&stage, entries, Got::Done);
-        let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[]);
+        let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[], false);
         assert!(e.as_ref().is_err_and(|e| e.contains("does not match")), "{e:?}");
 
         for name in ["../../x", "memory/absent.md"] {
@@ -1450,7 +1494,7 @@ mod tests {
             ];
             let m = Manifest { v: 1, resume_id: SID.into(), sidecar_prefixes: vec![], cwd: "/x".into(), project_id: None, provider: "claude".into(), git: None, files };
             received(&stage, vec![("manifest.json".into(), Src::Bytes(serde_json::to_vec(&m).unwrap())), ("transcript.jsonl".into(), Src::Bytes(body.to_vec()))], Got::Done);
-            let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[]);
+            let e = install_in(&stage, &scratch_dir(), ID, &stage.to_string_lossy(), &[], false);
             assert!(e.as_ref().is_err_and(|e| e.contains("not in the handoff")), "{name}: {e:?}");
         }
     }

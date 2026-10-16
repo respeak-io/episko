@@ -112,7 +112,8 @@ finally gives up (expiry + 1h) it asks a human, who can ask the other human.
 
 `"EPKH1\n"`, then per entry `u32 name_len | name | u64 len | bytes`, little-endian. Allowed
 names: `manifest.json`, `transcript.jsonl`, `sidecar/tool-results/<n>`, `sidecar/subagents/<n>`,
-`repo.bundle`, `memory/<n>.md`, with `<n>` matching `[A-Za-z0-9._-]+`. Any other name rejects
+`repo.bundle`, `memory/<n>.md`, with `<n>` matching `[A-Za-z0-9._-]+` (a memory name is at most
+120 characters and never `MEMORY.md`). Any other name rejects
 the whole blob. The manifest lists each file's length and sha256; the offer carries the whole
 blob's. Parts are 512 KiB raw (base64 on the wire, about 683 KiB a frame), so a proxy in front
 of the server must pass WebSocket messages of at least 1 MiB. At most two parts are in flight.
@@ -142,14 +143,27 @@ checkout (`repo_root_of`), not the folder the session ran in.
 - `handoff_pack` refuses a non-team memory to a teammate itself, so a tick the sheet should not
   have offered still never leaves. Each travels as `memory/<name>.md` with its `originSessionId`
   line stripped, and their names, types and descriptions ride in the meta so the recipient's sheet
-  can list them before anything is downloaded. The brief names only what was ticked.
+  can list them before anything is downloaded. The brief names only what was ticked. At most 50
+  go with one handoff, the same cap the recipient narrows the meta to, so nothing is shipped that
+  the other side would silently drop.
 - The recipient ticks which to keep (all by default); the choice is stored on the record at the
   claim, so the install after `ready` needs no sheet. A memory is written **only if no file of
   that name exists** there, and a new one appends its line to `MEMORY.md`, which is never
-  rewritten or trimmed. `Installed.kept` names the ones left alone.
+  rewritten or trimmed. A received description reaches that index flattened to one line of at
+  most 200 characters: Claude reads the index in every session, and the meta the sheet showed is
+  not the file in the blob, so the file's text must not be able to add lines of its own.
+- **A memory never fails the install.** The session is the point and a memory is an extra, so
+  each one is best effort: `Installed.kept` names one left alone because a different file of that
+  name was already there (an identical one, which a retry finds, counts as written), `failed`
+  says `name: reason`, and `memory_off` names the ones skipped because auto memory is off here.
+- A teammate's install re-reads each file's own `type` and refuses anything but project and
+  reference: the type on the sheet came in the relayed meta, and the sender's own check is only
+  as good as the sender's build.
 - Auto memory switched off (`autoMemoryEnabled: false` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY`), or
   moved by `autoMemoryDirectory`, means nothing is listed and nothing is written: a custom folder
-  cannot be keyed by project, so it is left alone rather than guessed at.
+  cannot be keyed by project, so it is left alone rather than guessed at. The project's own
+  `.claude/settings.local.json` and `.claude/settings.json` (in the checkout and the main one)
+  outrank `~/.claude/settings.json`, as they do for Claude.
 - `MEMORY.md` itself never travels. Keeping one person's memories in step across their own
   machines is the job of a memory stream still to come, not this one.
 

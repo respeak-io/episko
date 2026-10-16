@@ -7,7 +7,7 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
-  awaitsInstall, clampBrief, codeText, gitChoices, handoffBusy, keepTicks, lostOnHandoff, memoryOffer, narrowMeta, peerName, placeGate,
+  awaitsInstall, clampBrief, codeText, fromTeammate, gitChoices, handoffBusy, keepTicks, lostOnHandoff, memoryOffer, narrowMeta, peerName, placeGate,
   restorableFor, rowText, sendGate, targets,
   type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Installed, type MemoryFile, type MemoryRow, type Peer, type Target,
 } from "./handoff";
@@ -459,6 +459,15 @@ async function declineIn(giveBack: boolean) {
   }
 }
 
+/** A memory never fails the install, so whatever it did not write is said here instead. */
+function memoryNotes(inst: Installed, who: string) {
+  if (inst.kept.length) toast(`Kept your own ${inst.kept.join(", ")}; the one from ${who} was not written`);
+  const n = inst.memory_off.length;
+  if (n) toast(`Auto memory is off here, so ${n} memor${n === 1 ? "y was" : "ies were"} not written`);
+  for (const f of inst.failed) dlog("warn", `handoff memory not written: ${f}`);
+  if (inst.failed.length) toast(`Couldn't write ${inst.failed.map((f) => f.split(":")[0]).join(", ")} from ${who}`);
+}
+
 /** On the server's `done`: land the code, file the transcript, then resume as a shelved row would. */
 async function install(id: string, checkout: string) {
   const r = recOf(id);
@@ -470,9 +479,10 @@ async function install(id: string, checkout: string) {
   host.renderAll();
   let row: Restorable;
   try {
-    const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: r.memories ?? [] });
+    const teammate = fromTeammate(r.info);
+    const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: r.memories ?? [], teammate });
     row = restorableFor(r.info, inst, crypto.randomUUID(), checkout);
-    if (inst.kept.length) toast(`Kept your own ${inst.kept.join(", ")}; the one from ${who} was not written`);
+    memoryNotes(inst, who);
   } catch (e) {
     installFailed.add(id);
     dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
