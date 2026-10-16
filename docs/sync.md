@@ -251,6 +251,21 @@ months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.y
 merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
 and a test in `main.rs` fails when one the source reads is missing from it or from `USAGE`.
 
+**Handoff is off unless the server switches it on.** Handing a session to another machine
+(docs/handoff.md) is the one thing that puts a transcript on the server, so it waits for an
+operator to opt in:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `EPISKO_HANDOFF` | off | `1`, `true`, `yes` or `on` turns it on |
+| `EPISKO_HANDOFF_TTL_HOURS` | `72` | how long an unclaimed handoff is held; clamped to 1..=720 |
+| `EPISKO_HANDOFF_MAX_MB` | `64` | the largest blob accepted; clamped to 1..=1024 |
+
+`welcome` always carries `handoff: {enabled, max_bytes, part_bytes, ttl_ms}`, `enabled: false`
+included, so an app can tell a server with it off from an older server that never sends the
+field. The TTL sweep runs every ten minutes whether or not it is on, so a blob held before an
+operator switched it off still dies on schedule. A proxy must pass ~1 MiB WebSocket messages.
+
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,
 ForwardAuth on a header, and a Cloudflare Access service token (`CF-Access-Client-Id` +
@@ -270,11 +285,16 @@ in `sync.rs` pairs two devices through a running server and checks that a push a
 `cargo test -- --ignored two_devices_meet`.
 
 **The conversation.** A client sends `pair {code, label, user?}` and gets back `paired {token,
-user, device}`; `user` is read only with the registration code. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by
-`events` pages until `more` is false. After that it pushes with `push {events}`, answered by
+user, device}`; `user` is read only with the registration code. It then sends `hello {token, since, protocol, features?}` and gets `welcome`, followed by
+`events` pages until `more` is false (and then `handoff_list`, if `features` named `"handoff"`). After that it pushes with `push {events}`, answered by
 `pushed {seqs}`, and hears the other devices' pushes as `events`. The rules the server enforces:
 
 - It mints the device id, so two machines with one label never share a usage cell.
 - It stamps `actor`/`device` from the token, whatever the client sent.
 - It stores only a hash of each token.
 - It refuses a mismatched protocol with `error {code: "protocol"}` rather than misreading it.
+- **It never sends a peer what it did not advertise.** `hello.features` is opt-in: a connection
+  without `"handoff"` hears no `handoff*` message, even one addressed to its own user, and a
+  `handoff*` it sends anyway is `bad_message`, as on an older server. That is what lets the
+  channel ship without a `PROTOCOL` bump. What a device last advertised is kept per token, so
+  `welcome.devices[].handoff` tells the app which machines can receive one.

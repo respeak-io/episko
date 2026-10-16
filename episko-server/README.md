@@ -39,10 +39,27 @@ file, which passes it to the container:
 | `EPISKO_RETENTION_DAYS` | `30` | how long superseded events are kept; the latest per key always stays |
 | `EPISKO_DB` | `episko.db` | the database file (`/data/episko.db` in the Docker image) |
 | `EPISKO_BIND` | `127.0.0.1:7878` | where to listen (`0.0.0.0:7878` in the Docker image) |
+| `EPISKO_HANDOFF` | off | lets people hand a session to another machine through this server (see below) |
+| `EPISKO_HANDOFF_TTL_HOURS` | `72` | how long an unclaimed handoff is held before it is deleted; 1 to 720 |
+| `EPISKO_HANDOFF_MAX_MB` | `64` | the largest handoff accepted; 1 to 1024 |
 
 **Don't edit the tracked files on a server.** `.env` and `docker-compose.override.yml` are
 ignored by git, so settings and proxy wiring live there and an update never merges over them.
 A release never adds a variable you must set to keep working; `./update.sh` lists the new ones.
+
+## Handing a session to another machine
+
+With `EPISKO_HANDOFF=1`, Episko can send a stopped session to another of your machines or to a
+teammate, through this server. It is **off by default** because it changes what the server holds:
+the session's transcript, which contains everything the agent read (file contents, command
+output, any secret that passed through it), is stored here until the recipient picks it up, and
+deleted then or after `EPISKO_HANDOFF_TTL_HOURS`, whichever comes first. The startup log says
+`handoff: on (ttl 72h, max 64 MiB)` or `handoff: off`.
+
+A handoff travels in parts of 512 KiB, sent as base64 WebSocket messages of about 700 KB. **A proxy
+in front must pass WebSocket messages of at least 1 MiB.** Caddy and Traefik do by default; check
+any limit you set yourself. Only an app that says it speaks handoff is ever sent one, so an older
+Episko paired to the same server sees nothing new.
 
 ## Behind Traefik, with or without an auth layer
 
@@ -158,5 +175,7 @@ version numbers.
 ## What it never holds
 
 It holds no transcripts, prompts, tool output, diffs, file contents or session titles, and no
-repository access. Permission modes, trusted projects, task definitions and branch protection
+repository access. The one exception is opt-in: with `EPISKO_HANDOFF` on, a session someone
+explicitly sends is held until it is picked up or expires (see *Handing a session to another
+machine*). Permission modes, trusted projects, task definitions and branch protection
 never reach it either, because they change what runs or what is permitted.

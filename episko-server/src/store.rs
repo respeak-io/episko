@@ -340,7 +340,6 @@ impl Store {
 }
 
 /// What `EPISKO_HANDOFF*` configured (docs/handoff.md); serve holds `None` when it is off.
-#[cfg_attr(not(test), allow(dead_code))] // wired into serve.rs by the next slice
 #[derive(Debug, Clone, Copy)]
 pub struct HandoffCfg {
     pub ttl_ms: i64,
@@ -360,7 +359,6 @@ const OPEN: &str = "('uploading', 'offered', 'claimed')";
 const COLS: &str = "ws, id, from_user, from_device, to_user, to_device, state, taker, meta, size, parts, sha256, created, expires, updated";
 
 /// A `HandoffOffer` as the store takes it; who sends it comes from the token.
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct Offer {
     pub id: String,
     pub to_user: String,
@@ -371,7 +369,6 @@ pub struct Offer {
     pub meta: Value,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, PartialEq)]
 pub enum HandoffError {
     Refused(HandoffErr, String),
@@ -479,7 +476,6 @@ fn close(c: &Connection, id: &str, from: HandoffState, to: HandoffState, meta: &
 }
 
 // The handoff half of the store (docs/handoff.md): every transition is one guarded UPDATE.
-#[cfg_attr(not(test), allow(dead_code))]
 impl Store {
     /// Records what this device's last hello advertised; unknown spellings are dropped.
     pub fn set_features(&self, device: &str, features: &[String]) -> rusqlite::Result<()> {

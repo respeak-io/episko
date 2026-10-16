@@ -18,6 +18,9 @@ Markers: `+` new · `~` changed · `!` fixed
   yet, and an app or server from before this sees nothing new on the wire. The server's database
   gains the tables that will hold a handoff until it is picked up, and an existing `episko.db`
   is upgraded in place; `revoke` now also ends the open handoffs of the machine it shuts out.
+  The server now speaks it when `EPISKO_HANDOFF=1` is set (`EPISKO_HANDOFF_TTL_HOURS`,
+  `EPISKO_HANDOFF_MAX_MB`), and it is off by default; only an app that says it speaks handoff is
+  ever sent one. A proxy in front must pass WebSocket messages of at least 1 MiB.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,
