@@ -163,6 +163,8 @@ function applyInfo(list: HandoffRec[], info: HandoffInfo, me: Me, now: number): 
   const prev = i < 0 ? null : list[i];
   if (prev && prev.info && prev.info.updated > info.updated) return list; // out of order
   if (prev && prev.state === info.state && prev.info?.updated === info.updated && !prev.unknownSince) return list;
+  // A local verdict is final: the session may already have been resumed here.
+  if (prev && (prev.state === "returned" || prev.state === "refused") && OPEN.includes(info.state)) return list;
   if (!prev) {
     // Only an open record can be rebuilt from the server: a closed one has lost its meta.
     const meta = narrowMeta(info.meta);
@@ -328,8 +330,10 @@ export const peerName = (p: Peer) => p.label || p.user;
 /** Why a session is not resumable here because of a handoff, or null. */
 export function handoffBusy(list: readonly HandoffRec[], resumeId: string): string | null {
   const id = resumeId.toLowerCase();
-  const r = list.find((x) => x.dir === "out" && x.resumeId.toLowerCase() === id && (x.state === "packing" || x.state === "done" || OPEN.includes(x.state)));
-  if (!r) return null;
+  const mine = list.filter((x) => x.resumeId.toLowerCase() === id);
+  // A settled send has nothing left here; one that came back since is this machine's again.
+  const r = mine.find((x) => x.dir === "out" && (x.state === "packing" || (x.state === "done" && !x.settled) || OPEN.includes(x.state)));
+  if (!r || mine.some((x) => x.dir === "in" && x.at > r.at)) return null;
   const who = peerName(r.peer);
   if (r.state === "done") return `handed to ${who}`;
   if (r.unknownSince) return "outcome unknown until sync reconnects";

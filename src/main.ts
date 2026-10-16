@@ -523,6 +523,7 @@ setSyncHost({
   review: () => { refreshReview(); openReview(); },
 });
 setHandoffSink({ ev: applyHandoffEv, caps: applyHandoffCaps });
+applyHandoffCaps(); // no server heard yet: a persisted open offer starts locked
 setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 

@@ -443,6 +443,9 @@ export async function pairSync(url: string, code: string, label: string, user: s
 export async function forgetSync() {
   status = await invoke<SyncStatus>("sync_forget");
   inflight.clear();
+  serverHandoff = undefined;
+  handoffDevices = new Set();
+  onHandoff.caps();
   render();
 }
 export function reconnectSync() { void invoke("sync_reconnect"); }
@@ -461,6 +464,7 @@ export async function setSyncHeaders(headers: [string, string][]) {
 export function tickSync(alive: (sessionId: string) => boolean = () => true) {
   renewLeases(alive);
   if (status.connected) flush();
+  if (!serverHandoff) onHandoff.caps(); // an unknown offer's bound passes while nobody can be heard
   render();
 }
 function sharesSpend(pid: string): boolean {

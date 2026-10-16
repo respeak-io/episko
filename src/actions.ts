@@ -716,12 +716,15 @@ export function saveHandoffs(list: HandoffRec[] = handoffs) {
 }
 const sameRecs = (a: HandoffRec[], b: HandoffRec[]) => a.length === b.length && a.every((r, i) => r === b[i]);
 export function applyHandoffEv(ev: HandoffEv) {
-  const next = reduce(handoffs, ev, { user: syncStatus.user, device: syncStatus.device }, Date.now());
+  const now = Date.now();
+  const reduced = reduce(handoffs, ev, { user: syncStatus.user, device: syncStatus.device }, now);
+  // A server with handoff off still lists its rows; they must not reopen what its caps returned.
+  const next = serverHandoff?.enabled === false ? onCaps(reduced, serverHandoff, now) : reduced;
   if (sameRecs(next, handoffs)) return;
   saveHandoffs(next);
   renderAll();
 }
-// On every welcome and every drop: the server's caps decide whether an open offer is locked.
+// On every welcome, drop and sync tick: the caps decide whether an open offer is locked or back.
 export function applyHandoffCaps() {
   const next = onCaps(handoffs, serverHandoff, Date.now());
   if (sameRecs(next, handoffs)) return;

@@ -39,12 +39,15 @@ describe("reduce: the sender's record follows the server", () => {
       expect(l[0].state).toBe(want);
     }
   });
-  for (const end of ["declined", "recalled", "expired"] as const) {
-    it(`ends in ${end} without dropping the record (actions settle it)`, () => {
-      const l = run([out({ state: "offered" })], [ev({ state: end, updated: NOW + 5 })], ANNA);
-      expect(l).toHaveLength(1);
-      expect(l[0].state).toBe(end);
-    });
+  for (const from of ["uploading", "offered", "claimed"] as const) {
+    for (const end of ["declined", "recalled", "expired"] as const) {
+      it(`ends ${from} → ${end} without dropping the record, and frees the session`, () => {
+        const l = run([out({ state: from })], [ev({ state: end, updated: NOW + 5 })], ANNA);
+        expect(l).toHaveLength(1);
+        expect(l[0].state).toBe(end);
+        expect(handoffBusy(l, RESUME)).toBeNull();
+      });
+    }
   }
   it("is idempotent: the same event twice is the same list", () => {
     for (const [i] of steps) {
@@ -77,6 +80,17 @@ describe("reduce: the sender's record follows the server", () => {
   it("lets the server's word override a local `returned`", () => {
     expect(reduce([out({ state: "returned" })], ev({ state: "done" }), ANNA, NOW)[0].state).toBe("done");
   });
+  it("never reopens a local `returned` or `refused` into an open state", () => {
+    for (const st of ["returned", "refused"] as const) {
+      expect(reduce([out({ state: st })], ev({ state: "offered", updated: NOW + 1 }), ANNA, NOW)[0].state).toBe(st);
+    }
+  });
+  it("keeps an offer returned when a server with handoff off still lists it", () => {
+    const off = onCaps([out({ state: "offered", info: info() })], { ...ON, enabled: false }, NOW);
+    const l = reduce(off, { kind: "list", records: [info({ updated: NOW + 1 })] }, ANNA, NOW + 1);
+    expect(l[0].state).toBe("returned");
+    expect(handoffBusy(l, RESUME)).toBeNull();
+  });
 });
 
 describe("reduce: the recipient's record", () => {
@@ -94,9 +108,13 @@ describe("reduce: the recipient's record", () => {
     expect(reduce([], ev({ to_user: "Ben" }), BEN, NOW)).toHaveLength(1);
     expect(reduce([], ev({ to_device: "b2" }), BEN, NOW)).toEqual([]);
   });
-  it("leaves when declined, recalled or expired", () => {
-    const l = reduce([], ev({ state: "offered" }), BEN, NOW);
-    for (const s of ["declined", "recalled", "expired"] as const) expect(reduce(l, ev({ state: s, updated: NOW + 1 }), BEN, NOW)).toEqual([]);
+  it("leaves when declined, recalled or expired, offered or claimed by me", () => {
+    const offered = reduce([], ev({ state: "offered" }), BEN, NOW);
+    const claimed = reduce(offered, ev({ state: "claimed", taker: "b1", updated: NOW + 1 }), BEN, NOW);
+    expect(claimed[0].state).toBe("claimed");
+    for (const l of [offered, claimed]) {
+      for (const s of ["declined", "recalled", "expired"] as const) expect(reduce(l, ev({ state: s, taker: "b1", updated: NOW + 2 }), BEN, NOW)).toEqual([]);
+    }
   });
   it("says another of my machines took it, then leaves once it closes", () => {
     let l = reduce([], ev({ state: "offered" }), BEN, NOW);
@@ -241,6 +259,12 @@ describe("handoffBusy", () => {
     expect(handoffBusy([out({ state: "done" })], RESUME)).toBe("handed to ben");
     for (const s of ["returned", "declined", "recalled", "expired", "refused"] as const) expect(handoffBusy([out({ state: s })], RESUME)).toBeNull();
     expect(handoffBusy([{ ...out({ state: "offered" }), dir: "in" }], RESUME)).toBeNull();
+  });
+  it("frees a settled send, and a session that came back after it was handed out", () => {
+    expect(handoffBusy([out({ state: "done", settled: true })], RESUME)).toBeNull();
+    const back: HandoffRec = { id: "i1", dir: "in", resumeId: RESUME, peer: { user: "ben" }, state: "done", at: NOW + 1 };
+    expect(handoffBusy([out({ state: "done" }), back], RESUME)).toBeNull();
+    expect(handoffBusy([{ ...back, at: NOW - 1 }, out({ state: "offered" })], RESUME)).toBe("sending to ben");
   });
 });
 
