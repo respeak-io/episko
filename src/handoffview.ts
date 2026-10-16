@@ -75,3 +75,60 @@ export function handoffRowHtml(r: HandoffRec, tag: string, title: string): strin
     <span class="past-tag">${esc(tag)}</span>
     <span class="sclose" data-handout="${escAttr(r.id)}" title="Clear this row">✕</span></div>`;
 }
+
+/** An offer to this machine, or one it is receiving: clicking opens its sheet. */
+export function incomingRowHtml(r: HandoffRec, tag: string, title: string): string {
+  const taken = !!r.takenBy;
+  return `<div class="srow pastrow handin${taken ? " taken" : ""}" data-handin="${escAttr(r.id)}" title="${escAttr(taken ? tag : `Sent by ${peerName(r.peer)} · click to look`)}">
+    <span class="sglyph g-ended">⇠</span>
+    <span class="sbranch">${esc(title)}</span>
+    <span class="past-tag">${esc(tag)}</span></div>`;
+}
+
+/** The rail's strip for offers whose project is not cloned here; empty when there are none. */
+export function incomingStripHtml(rows: string, n: number): string {
+  if (!rows) return "";
+  return `<div class="handin-strip"><div class="phead ext-only"><span class="pname">⇠ Incoming</span>
+    <span class="pcount ext">${n} not cloned here</span></div><div class="psessions">${rows}</div></div>`;
+}
+
+export interface IncomingView {
+  from: string; title: string; project: string; brief: Brief | null; code: string; newer: boolean;
+  paths: string[]; pick: number | null; folder: string | null; gate: string | null;
+  stage: "offer" | "claiming" | "receiving" | "ready" | "installing" | "taken";
+  progress: string; err: string; ttlHours: number;
+}
+const briefRead = (b: Brief) => {
+  const list = (label: string, xs: string[]) => (xs.length ? `<div class="hand-sec"><span class="label">${esc(label)}</span></div><ul class="hand-ul">${xs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "");
+  return `${b.summary ? `<p class="hand-note">${esc(b.summary)}</p>` : ""}${b.state ? `<p class="hand-note sync-dim">${esc(b.state)}</p>` : ""}
+    ${list("Next steps", b.next_steps)}${list("Open questions", b.open_questions)}`;
+};
+/** An offer from `from`, and what Resume here would do; also the receiving and retry states. */
+export function incomingSheetHtml(v: IncomingView): string {
+  const head = `<div class="hand-what"><b>${esc(v.title)}</b><span class="sync-dim">${esc(v.project)} · from ${esc(v.from)}</span></div>`;
+  if (v.newer) {
+    return `${head}<p class="hand-note">This was sent from a newer Episko, and this version can't read it. Update, then open it again.</p>
+      ${foot("esc later", btn("in-later", "Later", "ghost") + btn("in-decline", "Decline", "danger"))}`;
+  }
+  if (v.stage === "taken") return `${head}<p class="hand-note">${esc(v.progress)}</p>${foot("", btn("in-later", "Close", "ghost"))}`;
+  const brief = v.brief && (v.brief.summary || v.brief.state || v.brief.next_steps.length || v.brief.open_questions.length)
+    ? briefRead(v.brief) : `<p class="hand-note sync-dim">No brief came with it.</p>`;
+  const choose = v.stage === "offer" || v.stage === "ready";
+  const places = v.paths.map((p, i) => `<label class="hand-g"><input type="radio" name="handin" data-hand="in-pick|${i}"${v.pick === i ? " checked" : ""}${choose ? "" : " disabled"}>
+      <span class="mono">${esc(p)}</span></label>`).join("");
+  const folder = v.folder ? `<label class="hand-g"><input type="radio" name="handin" data-hand="in-pick|-1"${v.pick === -1 ? " checked" : ""}${choose ? "" : " disabled"}><span class="mono">${esc(v.folder)}</span></label>` : "";
+  const where = `<div class="hand-sec"><span class="label">Resume it in</span></div><div class="hand-gs">${places}${folder}
+      ${choose ? `<button class="cfm-btn ghost hand-pickdir" type="button" data-hand="in-folder">Choose a folder…</button>` : ""}</div>`;
+  const status = v.stage === "offer" ? "" : `<p class="hand-note">${v.stage === "ready" ? "" : `<span class="hand-spin" aria-hidden="true"></span>`}${esc(v.progress)}</p>`;
+  const err = v.err ? `<div class="sync-err">${esc(v.err)}</div>` : "";
+  const gate = v.gate ? `<div class="hand-warn">${esc(v.gate)}</div>` : "";
+  let buttons: string;
+  if (v.stage === "offer") buttons = btn("in-later", "Later", "ghost") + btn("in-decline", "Decline", "ghost") + btn("in-claim", "Resume here", "go", v.gate ?? "");
+  else if (v.stage === "ready") buttons = btn("in-later", "Later", "ghost") + btn("in-open", "Open folder", "ghost", v.pick === null ? "Choose a folder first" : "") + btn("in-retry", "Retry", "go", v.gate ?? "");
+  else if (v.stage === "installing") buttons = btn("in-later", "Hide", "ghost");
+  else buttons = btn("in-later", "Hide", "ghost") + btn("in-giveback", "Give back", "ghost");
+  const hint = v.stage === "offer" ? `held for ${v.ttlHours}h at most` : v.stage === "ready" ? "this is now your copy" : "nothing is written until it is yours";
+  return `${head}<div class="hand-sec"><span class="label">Brief</span></div>${brief}
+    <div class="hand-sec"><span class="label">Code</span></div><p class="hand-note">${esc(v.code)}</p>
+    ${where}${gate}${status}${err}${foot(hint, buttons)}`;
+}

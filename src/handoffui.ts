@@ -1,19 +1,22 @@
-// The send sheet (#handoffDlg) and what a handoff's outcome does on this machine: archive a
-// session the recipient now owns, or put one back on the shelf (docs/handoff.md). ./handoff
-// decides, ./handoffview draws; this file owns the dialog, its listener and its guard.
+// The send and incoming sheets (#handoffDlg) and what a handoff's outcome does on this machine:
+// archive, put back on the shelf, or install and resume (docs/handoff.md). ./handoff decides,
+// ./handoffview draws; this file owns the dialog, its listener and its guard.
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
-  clampBrief, gitChoices, handoffBusy, lostOnHandoff, peerName, rowText, sendGate, targets,
-  type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Peer, type Target,
+  awaitsInstall, clampBrief, codeText, gitChoices, handoffBusy, lostOnHandoff, narrowMeta, peerName, placeGate,
+  restorableFor, rowText, sendGate, targets,
+  type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Installed, type Peer, type Target,
 } from "./handoff";
-import { briefingHtml, reviewBriefHtml, reviewRestHtml, sendSheetHtml } from "./handoffview";
+import { briefingHtml, incomingSheetHtml, reviewBriefHtml, reviewRestHtml, sendSheetHtml, type IncomingView } from "./handoffview";
 import { dormants, handoffs, sessions } from "./state";
-import { devices, handoffDevices, onlineDevices, serverHandoff, status as syncStatus } from "./synclink";
+import { devices, handoffDevices, onlineDevices, pathsOfId, serverHandoff, status as syncStatus } from "./synclink";
 import { dormantBusy } from "./grouping";
-import { canShelve, isClaude, isClaudeRow, midWork, phaseText } from "./types";
+import { nfcPath } from "./format";
+import { canShelve, isClaude, isClaudeRow, midWork, phaseText, type Restorable } from "./types";
 
 // What the sheet does that this module does not own; one host object (CLAUDE.md seam rule).
 let host: {
@@ -22,7 +25,13 @@ let host: {
   forgetDormant: (id: string) => void;
   saveHandoffs: (list: HandoffRec[]) => void;
   renderAll: () => void;
-} = { stopForTranscript: async () => {}, shelve: () => false, forgetDormant: () => {}, saveHandoffs: () => {}, renderAll: () => {} };
+  /** A received session's roster row, written before it resumes. */
+  insertDormant: (r: Restorable) => void;
+  resumeDormant: (id: string) => Promise<void>;
+} = {
+  stopForTranscript: async () => {}, shelve: () => false, forgetDormant: () => {}, saveHandoffs: () => {}, renderAll: () => {},
+  insertDormant: () => {}, resumeDormant: async () => {},
+};
 export function setHandoffHost(h: typeof host) { host = h; }
 
 interface Packed { size: number; parts: number; sha256: string; left_behind: string[] }
@@ -63,7 +72,7 @@ export function sendGateFor(id: string): string | null {
   return sendGate(t, serverHandoff, syncStatus.connected, currentTargets().filter((x) => x.ready).length);
 }
 
-export const handoffOpen = () => sheet !== null;
+export const handoffOpen = () => sheet !== null || inSheet !== null;
 
 export function openSend(id: string) {
   const why = sendGateFor(id);
@@ -134,6 +143,7 @@ function paintReview(sh: Sheet, who: string) {
 }
 
 export function closeHandoff() {
+  if (inSheet) { closeIn(); return; }
   if (!sheet || sheet.offering) return; // on its way: only the row's ↶ can stop it now
   // Once the session is stopped, closing is Cancel: the record goes and the row stays shelved.
   if (sheet.hid && sheet.step !== "pick") void cancelPacking(sheet.hid, sheet.step !== "sending");
@@ -330,10 +340,190 @@ async function settleBack(r: HandoffRec) {
   }
 }
 
+// ---------- receiving: the incoming sheet, the claim and the install ----------
+interface InSheet { id: string; paths: string[]; pick: number | null; folder: string | null; err: string; busy: boolean }
+let inSheet: InSheet | null = null;
+const installing = new Set<string>();
+// An install that failed this run waits for Retry; a reconnect's `ready` must not repeat it.
+const installFailed = new Set<string>();
+const announced = new Set<string>(handoffs.filter((r) => r.dir === "in").map((r) => r.id)); // already on the rail at boot
+
+/** A device id as the sidebar says it: its label when Welcome named it. */
+export function deviceLabel(device: string): string {
+  return devices.find((d) => d.device === device)?.label || `machine ${device.slice(0, 6)}`;
+}
+const chosen = (sh: InSheet): string | null => (sh.pick === -1 ? sh.folder : sh.pick === null ? null : sh.paths[sh.pick] ?? null);
+
+export function openIncoming(id: string) {
+  const r = recOf(id);
+  if (!r || r.dir !== "in" || sheet) return;
+  const meta = narrowMeta(r.info?.meta);
+  const paths = meta?.projectId ? pathsOfId(meta.projectId) : [];
+  const at = r.checkout ? paths.indexOf(r.checkout) : -1;
+  inSheet = {
+    id, paths, pick: r.checkout ? (at >= 0 ? at : -1) : paths.length ? 0 : null,
+    folder: r.checkout && at < 0 ? r.checkout : null, err: r.reason ?? "", busy: false,
+  };
+  painted = "";
+  $("scrim").classList.add("show");
+  $("handoffDlg").classList.add("show");
+  paintIn();
+}
+
+function closeIn() {
+  inSheet = null;
+  $("handoffDlg").classList.remove("show");
+  dropScrim();
+}
+
+function inStage(r: HandoffRec, sh: InSheet): IncomingView["stage"] {
+  if (r.takenBy) return "taken";
+  if (installing.has(r.id)) return "installing";
+  if (r.state === "done") return "ready";
+  if (r.state === "claimed") return "receiving";
+  return sh.busy ? "claiming" : "offer";
+}
+
+function paintIn() {
+  const sh = inSheet;
+  if (!sh) return;
+  const r = recOf(sh.id);
+  if (!r || r.settled) { closeIn(); return; } // declined, recalled, expired or already resumed
+  const meta = narrowMeta(r.info?.meta);
+  const who = peerName(r.peer);
+  const stage = inStage(r, sh);
+  const p = r.progress;
+  const progress = stage === "taken" ? `Taken on ${deviceLabel(r.takenBy!)}; it is that machine's now.`
+    : stage === "claiming" ? "Asking the server for it…"
+      : stage === "receiving" ? `Receiving from ${who}${p && p.total ? ` · ${Math.floor((100 * p.done) / p.total)}%` : "…"}`
+        : stage === "installing" ? "Placing the code and the conversation…"
+          : stage === "ready" ? `${who} has already handed this over; this is now your copy to repair.` : "";
+  $("handTitle").textContent = stage === "ready" ? "Couldn't resume it yet" : `From ${who}`;
+  const html = incomingSheetHtml({
+    from: who, title: r.title || meta?.title || "A session", project: meta?.project ?? "", brief: meta?.brief ?? null,
+    code: codeText(meta?.git ?? null), newer: !meta, paths: sh.paths, pick: sh.pick, folder: sh.folder,
+    gate: meta ? placeGate(chosen(sh), meta, r.id) : null, stage, progress, err: sh.err,
+    ttlHours: Math.round((serverHandoff?.ttl_ms ?? 72 * 3_600_000) / 3_600_000),
+  });
+  if (html !== painted) { painted = html; $("handBody").innerHTML = html; }
+}
+
+const patch = (id: string, f: (r: HandoffRec) => HandoffRec) => save(handoffs.map((x) => (x.id === id ? f(x) : x)));
+
+async function claimIn() {
+  const sh = inSheet;
+  const r = sh && recOf(sh.id);
+  const meta = narrowMeta(r?.info?.meta);
+  const checkout = sh && chosen(sh);
+  if (!sh || !r || !meta || !checkout || sh.busy || placeGate(checkout, meta, r.id)) return;
+  sh.busy = true;
+  sh.err = "";
+  patch(r.id, (x) => { const n = { ...x, checkout, at: Date.now() }; delete n.reason; return n; });
+  try {
+    await invoke("handoff_claim", { id: r.id });
+  } catch (e) {
+    sh.busy = false;
+    sh.err = errText(e);
+  }
+  paintIn();
+}
+
+async function declineIn(giveBack: boolean) {
+  const r = inSheet && recOf(inSheet.id);
+  if (!r) return;
+  const who = peerName(r.peer);
+  if (giveBack && !await ask(`${who} gets the session back, and nothing of it is written here.`, { title: "Give it back?", kind: "warning", okLabel: "Give back", cancelLabel: "Keep it" })) return;
+  try {
+    await invoke("handoff_decline", { id: r.id, reason: giveBack ? "given back" : "declined" });
+    toast(giveBack ? `Giving it back to ${who}…` : `Declined · ${who} gets it back`);
+    if (inSheet?.id === r.id) closeIn();
+  } catch (e) {
+    if (inSheet?.id === r.id) { inSheet.err = errText(e); paintIn(); }
+  }
+}
+
+/** On the server's `done`: land the code, file the transcript, then resume as a shelved row would. */
+async function install(id: string, checkout: string) {
+  const r = recOf(id);
+  if (!r || !r.info || !awaitsInstall(r) || installing.has(id)) return;
+  const who = peerName(r.peer);
+  installing.add(id);
+  installFailed.delete(id);
+  if (inSheet?.id === id) { inSheet.err = ""; paintIn(); }
+  host.renderAll();
+  try {
+    const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: [] });
+    const row = restorableFor(r.info, inst, crypto.randomUUID(), checkout);
+    patch(id, (x) => ({ ...x, checkout, settled: true, at: Date.now() }));
+    host.insertDormant(row);
+    await invoke("handoff_settle", { id, dir: "in", workdir: null, resumeId: null, archive: false })
+      .catch((e) => dlog("warn", `handoff ${id.slice(0, 8)}: ${errText(e)}`));
+    if (inSheet?.id === id) closeIn();
+    toast(`Resuming ${row.title || "the session"} from ${who}`);
+    await host.resumeDormant(row.id);
+  } catch (e) {
+    installFailed.add(id);
+    dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
+    if (inSheet?.id === id) inSheet.err = errText(e);
+    else toast(`Couldn't place the session from ${who}: ${errText(e)} · its row retries`);
+  } finally {
+    installing.delete(id);
+    paintIn();
+    host.renderAll();
+  }
+}
+
+/** What a server event means for a session handed TO this machine. */
+function receiveDue(ev: HandoffEv) {
+  for (const r of handoffs) {
+    if (r.dir !== "in" || announced.has(r.id) || r.state !== "offered" || r.takenBy) continue;
+    announced.add(r.id);
+    toast(`${peerName(r.peer)} sent you “${r.title || "a session"}” · it's in the sidebar`);
+  }
+  const sh = inSheet;
+  const r = sh ? recOf(sh.id) : undefined;
+  if (sh && ev.kind === "refused" && ev.id === sh.id) { sh.busy = false; sh.err = ev.message; }
+  if (sh && r && r.state !== "offered") sh.busy = false;
+  if (ev.kind !== "ready") return;
+  const ready = recOf(ev.id);
+  // The checkout was chosen at the claim; a repeat `ready` after a failure waits for Retry.
+  if (ready?.checkout && awaitsInstall(ready) && !installFailed.has(ready.id)) void install(ready.id, ready.checkout);
+}
+
+/** Every handoff event, after ./actions reduced it into the records. */
+export function onHandoffEvent(ev: HandoffEv) {
+  settleDue(ev);
+  receiveDue(ev);
+  paintIn();
+}
+
+function inClick(verb: string, arg: string | undefined) {
+  const sh = inSheet;
+  if (!sh) return;
+  const checkout = chosen(sh);
+  if (verb === "in-pick") { sh.pick = Number(arg); paintIn(); }
+  else if (verb === "in-folder") {
+    void open({ directory: true, multiple: false }).then((dir) => {
+      if (typeof dir !== "string" || inSheet !== sh) return;
+      sh.folder = nfcPath(dir);
+      sh.pick = -1;
+      paintIn();
+    });
+  }
+  else if (verb === "in-claim") void claimIn();
+  else if (verb === "in-decline") void declineIn(false);
+  else if (verb === "in-giveback") void declineIn(true);
+  else if (verb === "in-retry" && checkout) void install(sh.id, checkout);
+  else if (verb === "in-open" && checkout) void invoke("open_folder", { dir: checkout }).catch((e) => toast(errText(e)));
+  else if (verb === "in-later") closeIn();
+}
+
 $("handBody").addEventListener("click", (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>("[data-hand]");
-  if (!el || !sheet || (el as HTMLButtonElement).disabled) return;
+  if (!el || (el as HTMLButtonElement).disabled) return;
   const [verb, arg] = el.dataset.hand!.split("|");
+  if (inSheet) { inClick(verb, arg); return; }
+  if (!sheet) return;
   if (verb === "pick") { sheet.pick = Number(arg); paint(); }
   else if (verb === "git") { sheet.gitPick = arg; paint(); }
   else if (verb === "go") void proceed();

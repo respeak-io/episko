@@ -211,6 +211,9 @@ dropped, so a server with handoff off says so where you looked for the button.
   machine already carried on.
 - **Nothing is typed.** The brief is a headless, forked, unpersisted `claude -p` after the
   pane is gone (`handoff_brief`); the Enter rule's two places are unchanged.
+- **Receiving ends in a shelved row.** The other machine's ⇠ row opens a sheet; *Resume here*
+  claims it, and on the server's `done` the install writes an ordinary roster row and resumes it
+  through `resumeDormant`, so restore, History and drift treat it like any session started there.
 
 ## History (`◷`, ⌘⇧H)
 

@@ -34,8 +34,17 @@ Markers: `+` new · `~` changed · `!` fixed
   here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
   A session's menu, its ⌘K page and the shelved card now have *Send to…*: it stops the session,
   drafts a brief, asks how the code should travel, warns that a transcript carries whatever the
-  agent read, and sends it; its row says where it stands and ↶ takes it back. The receiving side
-  is not there yet, so for now it is only worth trying against a test server.
+  agent read, and sends it; its row says where it stands and ↶ takes it back.
+
++ **Hand a session to another machine, or to a teammate.** On a sync server started with
+  `EPISKO_HANDOFF=1`, *Send to…* on a Claude session stops it, drafts a short brief and sends
+  the conversation with the code it was working on. The other machine gets a ⇠ row under the
+  project (or in an *Incoming* strip when it isn't cloned there): open it to read the brief,
+  pick the checkout, and *Resume here* downloads it, lands the code in a new worktree when it
+  travelled, and resumes the conversation. *Decline*, ↶ *Take it back* and *Give back* (while it
+  downloads) all leave the sender with a resumable session; nothing is written on the receiving
+  machine until the server says it has changed hands. A transcript carries whatever the agent
+  read, so the send sheet says so every time. Permission modes never travel.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

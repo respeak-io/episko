@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  capableDevices, clampBrief, gitChoices, handoffBusy, incomingByProject, lostOnHandoff, memoryOffer, narrowCaps,
-  narrowInfo, narrowMeta, onCaps, readHandoffs, reduce, restorableFor, rowText, sendGate, targets,
+  awaitsInstall, capableDevices, clampBrief, codeText, gitChoices, handoffBusy, incomingByProject, lostOnHandoff, memoryOffer, narrowCaps,
+  narrowInfo, narrowMeta, onCaps, placeGate, readHandoffs, reduce, restorableFor, rowText, sendGate, targets,
   type HandoffCaps, type HandoffEv, type HandoffGit, type HandoffInfo, type HandoffRec, type Me,
 } from "../src/handoff";
 import type { Sess } from "../src/types";
@@ -325,5 +325,47 @@ describe("rowText", () => {
   it("names a refusal that only holds the send", () => {
     expect(rowText(out({ state: "uploading", reason: "over quota" }), NOW)).toMatchObject({ tag: "→ ben · held: over quota", actions: ["takeback"] });
     expect(rowText(out({ reason: "over quota" }), NOW)).toMatchObject({ tag: "→ ben · held: over quota", actions: ["cancel"] });
+  });
+});
+
+describe("receiving", () => {
+  const inRec = (o: Partial<HandoffRec> = {}): HandoffRec => ({
+    id: ID, dir: "in", resumeId: RESUME, peer: { user: "anna", device: "a1" }, state: "offered", info: info(), at: NOW, ...o,
+  });
+  const m = (o: Record<string, unknown> = {}) => narrowMeta(meta(o))!;
+  it("says what an incoming row is doing", () => {
+    expect(rowText(inRec(), NOW)).toMatchObject({ tag: "from anna", actions: ["open"] });
+    expect(rowText(inRec({ checkout: "/w/epi" }), NOW).tag).toBe("from anna · claiming…");
+    expect(rowText(inRec({ checkout: "/w/epi", reason: "already taken" }), NOW).tag).toBe("from anna · already taken");
+    expect(rowText(inRec({ state: "claimed", progress: { done: 1, total: 2 } }), NOW)).toMatchObject({ tag: "receiving from anna 50%", actions: ["giveback"] });
+    expect(rowText(inRec({ state: "done" }), NOW).actions).toEqual(["retry"]);
+  });
+  it("leaves a resumed one off the incoming rows and out of the install queue", () => {
+    const l = [inRec({ state: "done", settled: true }), inRec({ id: "x", state: "done" })];
+    expect([...incomingByProject(l, () => ["/w/epi"]).values()].flat().map((r) => r.id)).toEqual(["x"]);
+    expect(l.map(awaitsInstall)).toEqual([false, true]);
+    expect(awaitsInstall(inRec({ state: "done", takenBy: "b2" }))).toBe(false);
+    expect(awaitsInstall(inRec({ state: "claimed" }))).toBe(false);
+  });
+  it("refuses a place it cannot resume in, and why", () => {
+    expect(placeGate("/w/epi", m(), ID)).toBeNull();
+    expect(placeGate(null, m(), ID)).toMatch(/isn't cloned here/);
+    expect(placeGate(null, m({ project_id: null }), ID)).toMatch(/Choose the folder/);
+    expect(placeGate("/w/epi", m({ provider: "codex" }), ID)).toMatch(/Only a Claude session/);
+  });
+  it("judges a long path on the worktree it may get, not on the checkout alone", () => {
+    const git = { via: "bundle", branch: "feat", head: "a".repeat(40), snap: false };
+    const at = (n: number) => "/" + "p".repeat(n - 1);
+    expect(placeGate(at(180), m(), ID)).toBeNull(); // no git: the folder itself
+    expect(placeGate(at(180), m({ git }), ID)).toMatch(/too long/);
+    expect(placeGate(at(150), m({ git }), ID)).toBeNull();
+    expect(placeGate(at(150) + "/", m({ git }), ID)).toBeNull(); // a trailing separator is not a character Claude sees
+  });
+  it("tells the recipient how the code arrives", () => {
+    const head = "abcdef1".padEnd(40, "0");
+    expect(codeText(null)).toMatch(/Only the conversation/);
+    expect(codeText({ via: "none", branch: "main", head, snap: false })).toMatch(/^main at abcdef1, already on the remote/);
+    expect(codeText({ via: "bundle", branch: "feat", head, snap: true })).toMatch(/uncommitted work.*packed into the handoff/);
+    expect(codeText({ via: "branch", branch: null, head, snap: false })).toMatch(/^a detached commit at abcdef1, pushed/);
   });
 });

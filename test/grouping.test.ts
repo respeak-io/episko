@@ -489,6 +489,11 @@ describe("projectList — manual order", () => {
     setProjOrder(["/w/c"]);
     expect(names(projectList())).toEqual(["/w/c", "/w/a", "/w/b"]);
   });
+  it("keeps a checkout that holds only a row handed to this machine", () => {
+    setFavorites([{ name: "a", path: "/w/a" }]);
+    expect(names(projectList(["/w/in", "/w/a"]))).toEqual(["/w/a", "/w/in"]);
+    expect(names(projectList())).toEqual(["/w/a"]);
+  });
   it("leaves the sessions within a project alone", () => {
     open(sess({ id: "a", lastActivity: 1 }), sess({ id: "b", lastActivity: 9 }));
     expect(ids(projectList()[0].sessions)).toEqual(["a", "b"]);

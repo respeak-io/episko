@@ -120,7 +120,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
+  setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
@@ -134,7 +134,7 @@ import {
   tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
-import { closeHandoff, dismissHanded, handoffOpen, openSend, setHandoffHost, settleDue, takeBack } from "./handoffui";
+import { closeHandoff, dismissHanded, handoffOpen, onHandoffEvent, openIncoming, openSend, setHandoffHost, settleDue, takeBack } from "./handoffui";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -523,8 +523,11 @@ setSyncHost({
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
   review: () => { refreshReview(); openReview(); },
 });
-setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); settleDue(ev); }, caps: applyHandoffCaps });
-setHandoffHost({ stopForTranscript, shelve: shelveSession, forgetDormant, saveHandoffs, renderAll });
+setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); onHandoffEvent(ev); }, caps: applyHandoffCaps });
+setHandoffHost({
+  stopForTranscript, shelve: shelveSession, forgetDormant, saveHandoffs, renderAll, resumeDormant,
+  insertDormant: (r) => { setDormants([r, ...dormants.filter((d) => d.id !== r.id)]); flushRoster(); },
+});
 applyHandoffCaps(); // no server heard yet: a persisted open offer starts locked
 setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
@@ -642,7 +645,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -659,6 +662,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.handrecall) takeBack(el.dataset.handrecall);
   else if (el.dataset.handsend) openSend(el.dataset.handsend);
   else if (el.dataset.handout) dismissHanded(el.dataset.handout);
+  else if (el.dataset.handin) openIncoming(el.dataset.handin);
   else if (el.dataset.resume) void resumeDormant(el.dataset.resume);
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);

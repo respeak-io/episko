@@ -77,6 +77,26 @@ another project or provider, land the code, file the transcript, then resume. Be
 the only way out is *Give back*; nothing has been written. After `done` a failed install keeps
 the blob and offers Retry: the sender has already let go, so this is now the only copy.
 
+On screen (./handoffui, ./handoffview):
+
+- An offer is a ⇠ row under the project whose id it carries (`incomingByProject`, through
+  sync's path map), or in the *Incoming* strip above the projects when no checkout here has
+  that id. It toasts once, on arrival; there is no sound in v1.
+- The sheet shows the brief, how the code arrives (`codeText`) and *Resume it in*: every
+  checkout of the project here, or a folder chosen by hand, which `handoff_install` still
+  refuses if its project id differs. *Resume here* is greyed with `placeGate`'s reason: not
+  cloned, not Claude, or a path past Claude's 200-character folder name once the worktree
+  it may get is counted. The check is before the claim on purpose, since after `done` a
+  refusal can only be repaired, not undone.
+- The chosen checkout is stored on the record at the claim, so the install that follows
+  `ready` needs no sheet open. It runs once per `ready`; after a failure, a reconnect's repeat
+  `ready` waits for the person's Retry, which may also pick another checkout.
+- A successful install writes the roster row (`restorableFor`), marks the record `settled`
+  (kept a week, so a later send of the same conversation from here is not taken for the old
+  one), drops the staging and resumes through `resumeDormant`, the same path ⟲ takes.
+- Another of my machines claiming an offer made to all of them leaves *taken on …* here
+  until the server closes it.
+
 ## Why exactly one machine owns it
 
 The server makes the one decision that matters, with a compare-and-set: `offered → claimed`

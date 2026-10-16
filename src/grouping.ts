@@ -66,7 +66,7 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
 export const clusterIsLive = (c: WtCluster): boolean =>
   c.sessions.length + c.externals.length > 0 || removingWt.has(c.key);
 // toplevel mode: one group per worktree; the root checkout keeps the project's identity.
-export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
+export function splitByWorktree(list: ProjGroup[], keep: readonly string[] = []): ProjGroup[] {
   const out: ProjGroup[] = [];
   for (const p of list) {
     const cl = clusterByWorktree(p);
@@ -74,7 +74,7 @@ export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
     if (!wts.length) { out.push(p); continue; }
     const root = cl.find((c) => c.isMain);
     // Keep the root group only when it carries rows or is a favourite (a launch target).
-    if (root || FAVORITES.some((f) => f.path === p.path) || handedFrom(p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
+    if (root || FAVORITES.some((f) => f.path === p.path) || handedFrom(p.path) || keep.includes(p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
     // `repoRoot` is what the group was split out of; without it nothing downstream reaches the project.
     for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch, repoRoot: p.path });
   }
@@ -153,11 +153,12 @@ export function adoptIdentity(workdir: string, meta: Restorable | null, heads: r
 }
 // A settled send keeps its "handed to" row after the shelved row that held its project went.
 const handedFrom = (path: string) => handoffs.some((r) => r.dir === "out" && r.state === "done" && r.settled && r.colorKey === path);
-export function projectList(): ProjGroup[] {
+/** `keep`: checkouts that hold a row nothing else here knows of, like an offer handed to this machine. */
+export function projectList(keep: readonly string[] = []): ProjGroup[] {
   const list = allProjects();
-  for (const r of handoffs) {
-    const key = r.colorKey;
-    if (!key || !handedFrom(key) || list.some((p) => p.path === key)) continue;
+  const extra = [...handoffs.filter((r) => r.colorKey && handedFrom(r.colorKey)).map((r) => r.colorKey!), ...keep];
+  for (const key of extra) {
+    if (list.some((p) => p.path === key)) continue;
     list.push({ name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [], dormants: [] });
   }
   // Sort sessions first so each split group inherits the order, then order the groups.
@@ -165,7 +166,7 @@ export function projectList(): ProjGroup[] {
     : sortMode === "attention" ? (a: Sess, b: Sess) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince
     : null;
   if (sessCmp) for (const p of list) p.sessions.sort(sessCmp);
-  const groups = wtGroup === "toplevel" ? splitByWorktree(list) : list;
+  const groups = wtGroup === "toplevel" ? splitByWorktree(list, keep) : list;
   if (sortMode === "active") {
     groups.sort((a, b) => projActivity(b) - projActivity(a));
   } else if (sortMode === "attention") {

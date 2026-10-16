@@ -542,6 +542,35 @@ and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
 - [ ] **Forgetting.** *Forget this machine* asks first (red button), then the pairing form
       is back and the status bar's ⇅ segment reads *Off*. Every setting stays as it was.
 
+### Handoff
+
+Two machines paired to one server started with `EPISKO_HANDOFF=1` (docs/handoff.md), a
+throwaway Claude session in a git project cloned on both, and a teammate's invite for the
+second half. Watch the server's `handoffs` table with `sqlite3` beside it.
+
+- [ ] **A send reaches the server.** *Send to…* on a live session: it stops, a brief is
+      drafted, Send packs it, and the row reads *→ … · sending*, then *waiting*. The
+      `handoffs` row says `offered`.
+- [ ] **Self to a second machine.** The offer toasts on the other machine and appears as a
+      ⇠ row under its project. Click it: brief, code and *Resume it in* are filled in.
+      *Resume here* shows the download, then the session resumes in a new tab (a new
+      worktree when the code travelled) and picks up the conversation. The sender's row
+      becomes *handed to …* and its transcript is gone from `~/.claude/projects`.
+- [ ] **Teammate.** The same to another user: each of their machines lists it; the one that
+      takes it resumes, the others say *taken on …* and drop the row once it is done.
+- [ ] **Decline.** *Decline* on the recipient: the sender toasts that it was declined and
+      the session is an ordinary shelved row again, resumable.
+- [ ] **Take back.** ↶ on the sender while *waiting*: the recipient's row disappears.
+- [ ] **Give back.** *Resume here*, then *Give back* while it downloads: the sender has it
+      again and nothing landed on the recipient (no worktree, no transcript).
+- [ ] **Not cloned here.** A project the recipient never cloned goes in the *Incoming*
+      strip; *Resume here* stays greyed until *Choose a folder…* names a clone of it.
+- [ ] **TTL.** A server with `EPISKO_HANDOFF_TTL_HOURS=1`: an offer nobody takes comes back
+      to the sender within the hour and ten minutes the sweep allows.
+- [ ] **Server off mid-offer.** Stop the server with an offer *waiting*: the sender's row
+      reads *outcome unknown* and stays locked. Restart it without `EPISKO_HANDOFF`: the
+      row becomes *back from …?* and ⟲ asks before it resumes.
+
 ### The OS edge
 
 - [ ] **Tray** mirrors the fleet; picking a session brings it to the stage.

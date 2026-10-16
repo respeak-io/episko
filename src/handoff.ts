@@ -2,7 +2,7 @@
 // records `cc-handoff` keeps, how a server event moves one, and the sheet's rules. No DOM, no
 // Tauri; the server is the authority and every rule here only reads what it said.
 import { basename } from "./format";
-import { liveJobs, type Restorable, type Sess } from "./types";
+import { isClaudeProvider, liveJobs, type Restorable, type Sess } from "./types";
 
 export type HandoffState = "uploading" | "offered" | "claimed" | "done" | "declined" | "recalled" | "expired" | "unknown";
 /** `packing` is before the offer; `returned` and `refused` are local verdicts the server never states. */
@@ -358,13 +358,41 @@ export function restorableFor(info: HandoffInfo, inst: Installed, id: string, co
 export function incomingByProject(list: readonly HandoffRec[], pathsOfId: (id: string) => string[]): Map<string | null, HandoffRec[]> {
   const out = new Map<string | null, HandoffRec[]>();
   for (const r of list) {
-    if (r.dir !== "in") continue;
+    if (r.dir !== "in" || r.settled) continue; // a resumed one is an ordinary row now
     const pid = narrowMeta(r.info?.meta)?.projectId;
     const key = (pid && pathsOfId(pid)[0]) || null;
     out.set(key, [...(out.get(key) ?? []), r]);
   }
   return out;
 }
+
+/** Claude files a conversation under its folder's path, one character each; past this it is refused. */
+export const SLUG_MAX = 200;
+/** Why a received session cannot be placed in `checkout`, or null. Judged on the worktree it may get. */
+export function placeGate(checkout: string | null, meta: HandoffMeta, id: string): string | null {
+  if (!isClaudeProvider(meta.provider)) return "Only a Claude session can be resumed from a handoff";
+  if (!checkout) return meta.projectId ? `${meta.project || "This project"} isn't cloned here: clone it, or choose its folder` : "Choose the folder to resume it in";
+  const len = (s: string) => Array.from(s).length;
+  const top = checkout.replace(/[\\/]+$/, "");
+  const branch = Math.max(len(meta.git?.branch ?? ""), len(`handoff/${id.slice(0, 8)}`));
+  // create_worktree's <parent>/.cc-worktrees/<name>/<branch>, the longest folder it may land in
+  const worst = meta.git ? len(top) + len("/.cc-worktrees/") + 1 + branch : len(top);
+  if (worst > SLUG_MAX) return "This folder's path is too long for Claude to file the conversation under";
+  return null;
+}
+
+/** What the recipient is told about the code, from the sender's git meta. */
+export function codeText(g: GitMeta | null): string {
+  if (!g) return "Only the conversation: it was not in a git checkout.";
+  const at = `${g.branch ?? "a detached commit"} at ${g.head.slice(0, 7)}`;
+  const wip = g.snap ? ", with the uncommitted work as it was" : "";
+  if (g.via === "branch") return `${at}${wip}, pushed as a handoff branch; a new worktree is made for it.`;
+  if (g.via === "bundle") return `${at}${wip}, packed into the handoff; a new worktree is made for it.`;
+  return `${at}, already on the remote. A checkout sitting there clean is used as it is; otherwise a new worktree.`;
+}
+
+/** A received session the server has handed over and nothing here has resumed yet. */
+export const awaitsInstall = (r: HandoffRec) => r.dir === "in" && r.state === "done" && !r.settled && !r.takenBy;
 
 const pct = (p?: { done: number; total: number }) => (p && p.total ? ` ${Math.floor((100 * p.done) / p.total)}%` : "");
 export type RowAction = "cancel" | "takeback" | "dismiss" | "resume" | "open" | "giveback" | "retry";
@@ -390,6 +418,6 @@ export function rowText(r: HandoffRec, now: number, name: (device: string) => st
   switch (r.state) {
     case "claimed": return { tag: `receiving from ${who}${pct(r.progress)}`, title, actions: ["giveback"] };
     case "done": return { tag: `from ${who} · ready`, title, actions: ["retry"] };
-    default: return { tag: `from ${who}`, title, actions: ["open"] };
+    default: return { tag: r.reason ? `from ${who} · ${r.reason}` : r.checkout ? `from ${who} · claiming…` : `from ${who}`, title, actions: ["open"] };
   }
 }
