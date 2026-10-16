@@ -7,6 +7,7 @@ mod deps;
 mod external;
 mod files;
 mod git;
+mod handoff;
 mod health;
 mod github;
 mod icons;
@@ -309,6 +310,7 @@ pub fn run() {
                 sync: Default::default(),
             });
             sync::init(app.handle());
+            handoff::init(app.handle());
 
             let handle = app.handle().clone();
             // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the first
@@ -561,6 +563,13 @@ pub fn run() {
             sync::sync_ack,
             sync::sync_reconnect,
             sync::sync_set_headers,
+            handoff::handoff_pack,
+            handoff::handoff_send,
+            handoff::handoff_claim,
+            handoff::handoff_recall,
+            handoff::handoff_decline,
+            handoff::handoff_install,
+            handoff::handoff_settle,
             summarize::summarize_day,
             summarize::read_digest,
             summarize::has_digest,

@@ -2812,7 +2812,6 @@ pub(crate) struct HandoffGit {
 }
 
 /// How the code travelled, as the recipient's `handoff_apply` reads it from the blob's meta.
-#[cfg_attr(not(test), allow(dead_code))] // read by handoff.rs from a later slice
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default, Clone, PartialEq)]
 pub(crate) struct HandoffGitMeta {
     pub(crate) via: String, // none | branch | bundle
@@ -2823,7 +2822,6 @@ pub(crate) struct HandoffGitMeta {
     pub(crate) snap: bool, // the shipped ref is a snapshot commit on top of `head`
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub(crate) struct Applied {
     pub(crate) worktree: String,
@@ -2831,14 +2829,12 @@ pub(crate) struct Applied {
     pub(crate) leftover: Option<String>, // a remote `handoff/<id>` the cleanup could not delete
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum HandoffSrc {
     Remote,
     Bundle(std::path::PathBuf),
 }
 
 /// Never shipped in a snapshot even when dirty; matched on the file name.
-#[cfg_attr(not(test), allow(dead_code))]
 const SECRET_NAMES: [&str; 7] = [".env", ".env.*", "*.pem", "id_rsa*", "*.tfvars", "*.p12", "*.key"];
 const BUNDLE_SCAN_MAX: usize = 2000;
 
@@ -2913,7 +2909,6 @@ fn handoff_classify(top: &str) -> HandoffGit {
 }
 
 /// Removes the temporary index whichever way the snapshot ends.
-#[cfg_attr(not(test), allow(dead_code))]
 struct TempIndex(std::path::PathBuf);
 impl Drop for TempIndex {
     fn drop(&mut self) {
@@ -2924,7 +2919,6 @@ impl Drop for TempIndex {
 /// Commit the working tree, untracked files included, onto HEAD under `refs/episko/handoff/<id>`
 /// through a copied index, so the checkout's own index and status are untouched. Secrets stay
 /// behind and are named. None when nothing but a secret is dirty.
-#[cfg_attr(not(test), allow(dead_code))]
 fn handoff_snapshot(top: &str, id: &str) -> Result<(Option<String>, Vec<String>), String> {
     check_handoff_id(id)?;
     let top = &repo_top(top)?;
@@ -2987,7 +2981,6 @@ fn handoff_snapshot(top: &str, id: &str) -> Result<(Option<String>, Vec<String>)
 }
 
 /// Push `rev` to `<remote>/handoff/<id>`; the remote it went to.
-#[cfg_attr(not(test), allow(dead_code))]
 fn handoff_push_wip(top: &str, id: &str, rev: &str) -> Result<String, String> {
     check_handoff_id(id)?;
     let top = &repo_top(top)?;
@@ -3004,7 +2997,6 @@ fn handoff_push_wip(top: &str, id: &str, rev: &str) -> Result<String, String> {
 }
 
 /// The prerequisite commits a bundle file's header names (`-<sha> <subject>` lines).
-#[cfg_attr(not(test), allow(dead_code))]
 fn bundle_prereqs(path: &std::path::Path) -> Result<Vec<String>, String> {
     use std::io::{BufRead, Read};
     let f = std::fs::File::open(path).map_err(|e| format!("read the bundle: {e}"))?;
@@ -3036,7 +3028,6 @@ fn bundle_prereqs(path: &std::path::Path) -> Result<Vec<String>, String> {
 
 /// Bundle `rev` minus everything the remote already holds (the whole history without one).
 /// None for an empty bundle; else the commits the recipient must already have.
-#[cfg_attr(not(test), allow(dead_code))]
 fn handoff_bundle(top: &str, id: &str, rev: &str, out: &std::path::Path) -> Result<Option<Vec<String>>, String> {
     check_handoff_id(id)?;
     let top = &repo_top(top)?;
@@ -3066,7 +3057,6 @@ fn handoff_bundle(top: &str, id: &str, rev: &str, out: &std::path::Path) -> Resu
 }
 
 /// Fetch the sender's ref into `refs/episko/handoff/<id>`; its sha.
-#[cfg_attr(not(test), allow(dead_code))]
 fn handoff_receive(repo: &str, id: &str, src: &HandoffSrc) -> Result<String, String> {
     check_handoff_id(id)?;
     let repo = &repo_top(repo)?;
@@ -3104,7 +3094,6 @@ fn handoff_receive(repo: &str, id: &str, src: &HandoffSrc) -> Result<String, Str
 
 /// A worktree on what was received: the sender's branch name unless this clone already has
 /// one, a snapshot unwound into uncommitted changes, then both handoff refs deleted.
-#[cfg_attr(not(test), allow(dead_code))]
 fn handoff_apply(repo: &str, id: &str, meta: &HandoffGitMeta) -> Result<Applied, String> {
     check_handoff_id(id)?;
     if !full_sha(&meta.head) {
@@ -3178,6 +3167,75 @@ fn handoff_cleanup(top: &str, id: &str, remote_branch: bool) -> Result<(), Strin
     } else {
         Err(format!("{remote}/handoff/{id} is still there: {}", git_says(&o)))
     }
+}
+
+/// What `handoff_pack` took of a checkout: the meta the recipient applies (None: no code
+/// travels), whether `bundle_out` was written, and the secrets a snapshot left behind.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Shipped {
+    pub(crate) git: Option<HandoffGitMeta>,
+    pub(crate) bundle: bool,
+    pub(crate) left_behind: Vec<String>,
+}
+
+/// Ship a checkout's code `how` the sender chose: `none` sends only a HEAD the remote already
+/// holds, `branch` pushes `handoff/<id>`, `bundle` writes `bundle_out` (docs/handoff.md).
+pub(crate) fn handoff_ship(workdir: &str, id: &str, how: &str, bundle_out: &std::path::Path) -> Result<Shipped, String> {
+    check_handoff_id(id)?;
+    let Ok(top) = repo_top(workdir) else { return Ok(Shipped::default()) };
+    let head = git_out(&top, &["rev-parse", "--verify", "--quiet", "HEAD"]).ok().filter(|s| !s.is_empty());
+    let branch = git_out(&top, &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok().filter(|s| !s.is_empty());
+    let meta = |via: &str, head: &str, snap: bool| HandoffGitMeta { via: via.into(), branch: branch.clone(), head: head.into(), snap };
+    match how {
+        "none" => {
+            let Some(head) = head else { return Ok(Shipped::default()) };
+            let remotes = remotes_of(&top);
+            let not = remotes.first().map(|_| format!("--remotes={}", primary_remote(&remotes)));
+            let pushed = not.is_some_and(|n| git_out(&top, &["rev-list", "--count", "HEAD", "--not", &n]).is_ok_and(|c| c == "0"));
+            Ok(Shipped { git: pushed.then(|| meta("none", &head, false)), ..Default::default() })
+        }
+        "branch" | "bundle" => {
+            let head = head.ok_or("no commit to hand over")?;
+            let (snap, left_behind) = handoff_snapshot(&top, id)?;
+            let rev = snap.clone().unwrap_or_else(|| head.clone());
+            if how == "branch" {
+                handoff_push_wip(&top, id, &rev)?;
+                return Ok(Shipped { git: Some(meta("branch", &head, snap.is_some())), bundle: false, left_behind });
+            }
+            // An empty bundle means the remote holds everything: the clean-and-pushed case.
+            let bundle = handoff_bundle(&top, id, &rev, bundle_out)?.is_some();
+            let git = if bundle { meta("bundle", &head, snap.is_some()) } else { meta("none", &head, false) };
+            Ok(Shipped { git: Some(git), bundle, left_behind })
+        }
+        other => Err(format!("not a way to send code: {other}")),
+    }
+}
+
+/// The recipient's half: fetch what was shipped, then a worktree on it.
+pub(crate) fn handoff_land(repo: &str, id: &str, meta: &HandoffGitMeta, bundle: Option<&std::path::Path>) -> Result<Applied, String> {
+    match meta.via.as_str() {
+        "none" => {}
+        "branch" => {
+            handoff_receive(repo, id, &HandoffSrc::Remote)?;
+        }
+        "bundle" => {
+            let b = bundle.ok_or("this handoff's bundle is missing")?;
+            handoff_receive(repo, id, &HandoffSrc::Bundle(b.to_path_buf()))?;
+        }
+        v => return Err(format!("code sent as {v:?} needs a newer Episko")),
+    }
+    handoff_apply(repo, id, meta)
+}
+
+/// The sender's refs for `id` once it is settled; the remote branch too when nobody fetched it.
+pub(crate) fn handoff_forget(workdir: &str, id: &str, remote_branch: bool) -> Result<(), String> {
+    handoff_cleanup(&repo_top(workdir)?, id, remote_branch)
+}
+
+/// Whether `dir` is a checkout with nothing uncommitted sitting on `head`.
+pub(crate) fn clean_at(dir: &str, head: &str) -> bool {
+    let at = git_out(dir, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok_and(|h| h == head);
+    at && git_out(dir, &["status", "--porcelain"]).is_ok_and(|s| s.is_empty())
 }
 
 /// What the send sheet offers for this checkout's code. Fetches first, so "pushed" is current.
@@ -5457,6 +5515,29 @@ canonicalizehostname false
         assert!(dirty.contains("M README") && dirty.contains("?? new.txt"), "{dirty}");
         assert_eq!(said(&b, &["ls-remote", "origin", &format!("refs/heads/handoff/{HID}")]), "", "the remote branch is deleted");
         assert_eq!(said(&b, &["for-each-ref", "refs/episko"]), "");
+    }
+
+    #[test]
+    fn ship_and_land_carry_a_dirty_tree_and_none_sends_only_a_pushed_head() {
+        let (root, a, b) = trio();
+        let pushed = said(&a, &["rev-parse", "HEAD"]);
+        let file = root.join("h.bundle");
+        let none = handoff_ship(&st(&a), HID, "none", &file).unwrap();
+        assert_eq!(none.git, Some(meta("none", Some("main"), &pushed, false)));
+        ci(&a, "u.txt", "u
+", "unpushed");
+        assert_eq!(handoff_ship(&st(&a), HID, "none", &file).unwrap().git, None, "the remote lacks HEAD: no code travels");
+
+        std::fs::write(a.join("README"), "dirty
+").unwrap();
+        let shipped = handoff_ship(&st(&a), HID, "bundle", &file).unwrap();
+        assert!(shipped.bundle && file.exists());
+        let g = shipped.git.expect("code travels");
+        assert_eq!((g.via.as_str(), g.snap), ("bundle", true));
+        let done = handoff_land(&st(&b), HID, &g, Some(&file)).expect("landed");
+        assert_eq!(said(Path::new(&done.worktree), &["status", "--porcelain"]), "M README");
+        assert!(clean_at(&st(&b), &pushed) && !clean_at(&done.worktree, &g.head));
+        assert!(handoff_ship(&st(&a), HID, "carrier pigeon", &file).is_err());
     }
 
     #[test]

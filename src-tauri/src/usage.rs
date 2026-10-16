@@ -851,7 +851,6 @@ fn valid_part_name(n: &str) -> bool {
 
 /// What leaves this machine for one session: `(container name, file)` pairs, and every
 /// spelling of the sidecar's absolute path here, which the recipient rewrites to its own.
-#[cfg_attr(not(test), allow(dead_code))] // read by handoff.rs from a later slice
 pub(crate) struct TranscriptExport {
     pub(crate) files: Vec<(String, PathBuf)>,
     pub(crate) prefixes: Vec<String>,
@@ -898,7 +897,6 @@ fn sender_dir(base: &Path, cwd: &str, id: &str) -> Result<Option<PathBuf>, Strin
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn transcript_export_in(base: &Path, cwd: &str, id: &str) -> Result<TranscriptExport, String> {
     check_session_id(id)?;
     let want = project_transcript_dir(base, cwd);
@@ -1072,7 +1070,6 @@ fn tmp_sibling(path: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn transcript_import_in(
     base: &Path,
     cwd: &str,
@@ -1183,7 +1180,6 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The sender's copy leaves `~/.claude` for `archive` once the handoff is done; a file
 /// already gone is success, so a retry after a crash finishes what the first call began.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn transcript_archive_in(base: &Path, cwd: &str, id: &str, archive: &Path) -> Result<(), String> {
     check_session_id(id)?;
     let Some(dir) = sender_dir(base, cwd, id)? else { return Ok(()) };

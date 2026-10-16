@@ -121,6 +121,14 @@ server is up, so stand one up first (`docs/sync.md` › *Running the server*): b
 with `EPISKO_DB` pointing at a throwaway file and `EPISKO_BIND` on a spare port, mint two
 invites, and pass them as `EPISKO_E2E_CODES`. No tokens and no auth; ~5s.
 
+`two_users_hand_off_through_a_real_server` runs in that pass too, and needs a server started
+with `EPISKO_HANDOFF=1` and, in `EPISKO_E2E_HANDOFF_CODES`, two invites minted for two
+**different** people (it refuses two codes of one person). One offers a blob of just over one part, the other claims, fetches,
+completes and must end with the same bytes, both seeing `done`. A server without the flag
+fails it, which is the point: it is the one check that the app and server agree on the
+handoff channel end to end. No tokens; a few seconds. Invites are single-use, so mint fresh
+ones for every run.
+
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through
 below.
