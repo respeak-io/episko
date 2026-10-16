@@ -32,6 +32,9 @@ Markers: `+` new · `~` changed · `!` fixed
   is done; nothing in the interface starts one yet. The interface now keeps a record of each
   handoff and follows the server's word on it, and a session being handed over cannot be resumed
   here meanwhile; while the server cannot be heard it stays locked rather than guessed back.
+  The server also learns a `memory` stream for sharing Claude's project memories between one
+  person's own machines, off unless `EPISKO_MEMORY=1` is set and heard only by an app that asks
+  for it; the app does not use it yet.
 
 + **Hand a session to another machine, or to a teammate.** On a sync server started with
   `EPISKO_HANDOFF=1`, *Send to…* on a Claude session stops it, drafts a short brief and sends

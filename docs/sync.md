@@ -268,6 +268,13 @@ included, so an app can tell a server with it off from an older server that neve
 field. The TTL sweep runs every ten minutes whether or not it is on, so a blob held before an
 operator switched it off still dies on schedule. A proxy must pass ~1 MiB WebSocket messages.
 
+**The memory stream is off unless the server switches it on.** `EPISKO_MEMORY` (`1`, `true`,
+`yes` or `on`; default off) lets one person's machines share Claude's per-project memory files on
+the personal stream `memory`, which no teammate ever hears. `welcome.memory` says whether it is
+on. A connection hears memory events, live or in its catch-up, only when its `hello.features`
+named `"memory"`, and a push carrying one is `bad_message` while the stream is off or unasked,
+the whole push refused so a client sends memory in a batch of its own.
+
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,
 ForwardAuth on a header, and a Cloudflare Access service token (`CF-Access-Client-Id` +
@@ -297,6 +304,7 @@ user, device}`; `user` is read only with the registration code. It then sends `h
 - It refuses a mismatched protocol with `error {code: "protocol"}` rather than misreading it.
 - **It never sends a peer what it did not advertise.** `hello.features` is opt-in: a connection
   without `"handoff"` hears no `handoff*` message, even one addressed to its own user, and a
-  `handoff*` it sends anyway is `bad_message`, as on an older server. That is what lets the
+  `handoff*` it sends anyway is `bad_message`, as on an older server. The `memory` stream follows
+  the same rule with `"memory"`. That is what lets the
   channel ship without a `PROTOCOL` bump. What a device last advertised is kept per token, so
   `welcome.devices[].handoff` tells the app which machines can receive one.

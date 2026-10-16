@@ -23,7 +23,9 @@ environment:
   EPISKO_HANDOFF         lets people hand a session to another machine through this server:
                          1, true, yes or on (default: off; the transcript is held here until picked up)
   EPISKO_HANDOFF_TTL_HOURS  how long an unclaimed handoff is held, 1 to 720 (default: 72)
-  EPISKO_HANDOFF_MAX_MB  the largest handoff accepted, 1 to 1024 (default: 64)";
+  EPISKO_HANDOFF_MAX_MB  the largest handoff accepted, 1 to 1024 (default: 64)
+  EPISKO_MEMORY          lets one person's machines share Claude's project memory files:
+                         1, true, yes or on (default: off; the files are held here like settings)";
 
 // One workspace per server: a team runs one server (docs/sync.md).
 const WORKSPACE: &str = "default";
@@ -62,7 +64,9 @@ fn main() {
                 Some(c) => eprintln!("[episko-server] handoff: on (ttl {}h, max {} MiB)", c.ttl_ms / 3_600_000, c.max_bytes >> 20),
                 None => eprintln!("[episko-server] handoff: off"),
             }
-            serve::serve(listener, store, Arc::new(serve::Config { ws: WORKSPACE.into(), register, handoff }));
+            let memory = switched_on(std::env::var("EPISKO_MEMORY").ok().as_deref());
+            eprintln!("[episko-server] memory stream: {}", if memory { "on" } else { "off" });
+            serve::serve(listener, store, Arc::new(serve::Config { ws: WORKSPACE.into(), register, handoff, memory }));
         }
         Some("invite") => {
             // `--user NAME` is the old spelling and still works.
@@ -108,12 +112,16 @@ fn main() {
 
 /// `EPISKO_HANDOFF` switches it on; the TTL and size are clamped rather than refused.
 fn handoff_config(on: Option<&str>, ttl_hours: Option<&str>, max_mb: Option<&str>) -> Option<store::HandoffCfg> {
-    let on = on.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+    let on = switched_on(on);
     let num = |v: Option<&str>, default: i64, max: i64| v.and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(default).clamp(1, max);
     on.then(|| store::HandoffCfg {
         ttl_ms: num(ttl_hours, 72, 720) * 3_600_000,
         max_bytes: (num(max_mb, 64, 1024) as u64) << 20,
     })
+}
+
+fn switched_on(v: Option<&str>) -> bool {
+    v.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
 fn fail(msg: &str) -> ! {
@@ -163,5 +171,12 @@ mod tests {
         assert_eq!((c.ttl_ms, c.max_bytes), (3_600_000, 1024 << 20));
         let c = handoff_config(Some("on"), Some("9999"), Some("junk")).expect("on");
         assert_eq!((c.ttl_ms, c.max_bytes), (720 * 3_600_000, 64 << 20));
+    }
+
+    #[test]
+    fn memory_is_off_unless_switched_on() {
+        use super::switched_on;
+        assert!(!switched_on(None) && !switched_on(Some("")) && !switched_on(Some("0")) && !switched_on(Some("off")));
+        assert!(switched_on(Some(" ON ")) && switched_on(Some("1")) && switched_on(Some("true")));
     }
 }

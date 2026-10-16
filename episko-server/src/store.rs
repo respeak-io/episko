@@ -321,14 +321,14 @@ impl Store {
     }
 
     /// Up to `limit` events after `cursor` that `user` may see, oldest first: the team's
-    /// shared streams, and only their own personal ones.
-    pub fn since(&self, ws: &str, user: &str, cursor: u64, limit: usize) -> rusqlite::Result<Vec<Event>> {
+    /// shared streams, and only their own personal ones. Memory only for a peer that takes it.
+    pub fn since(&self, ws: &str, user: &str, cursor: u64, limit: usize, memory: bool) -> rusqlite::Result<Vec<Event>> {
         let shared = STREAMS.iter().filter(|s| !s.is_personal()).map(|s| format!("'{}'", s.as_str())).collect::<Vec<_>>().join(",");
         let db = self.db();
         let mut q = db.prepare_cached(&format!(
-            "SELECT seq, stream, key, actor, device, at, payload FROM events              WHERE ws = ?1 AND seq > ?2 AND (actor = ?4 OR stream IN ({shared})) ORDER BY seq LIMIT ?3",
+            "SELECT seq, stream, key, actor, device, at, payload FROM events              WHERE ws = ?1 AND seq > ?2 AND (actor = ?4 OR stream IN ({shared})) AND (?5 OR stream <> 'memory') ORDER BY seq LIMIT ?3",
         ))?;
-        let rows = q.query_map(params![ws, cursor, limit as i64, user], |r| {
+        let rows = q.query_map(params![ws, cursor, limit as i64, user, memory], |r| {
             let stream: String = r.get(1)?;
             let payload: String = r.get(6)?;
             Ok((r.get::<_, u64>(0)?, stream, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, payload))
@@ -741,9 +741,9 @@ mod tests {
         assert_eq!(out.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![1, 2]);
         assert_eq!(out[0].device, "d1");
         assert_eq!(s.head("default").unwrap(), 2);
-        assert_eq!(s.since("default", "me", 0, 1).unwrap()[0].key, "cc-sort");
-        assert_eq!(s.since("default", "me", 1, 10).unwrap()[0].key, "cc-foot");
-        assert!(s.since("other", "me", 0, 10).unwrap().is_empty(), "workspaces never see each other");
+        assert_eq!(s.since("default", "me", 0, 1, false).unwrap()[0].key, "cc-sort");
+        assert_eq!(s.since("default", "me", 1, 10, false).unwrap()[0].key, "cc-foot");
+        assert!(s.since("other", "me", 0, 10, false).unwrap().is_empty(), "workspaces never see each other");
     }
 
     #[test]
@@ -752,9 +752,22 @@ mod tests {
         let me = Identity { ws: "team".into(), user: "me".into(), device: "d1".into() };
         let note = NewEvent { stream: Stream::Notes, key: "n1".into(), at: 1, payload: json!({"text": "hi"}) };
         s.append(&me, &[ev("cc-sort", 1), note]).unwrap();
-        let theirs: Vec<_> = s.since("team", "them", 0, 10).unwrap().into_iter().map(|e| e.key).collect();
+        let theirs: Vec<_> = s.since("team", "them", 0, 10, false).unwrap().into_iter().map(|e| e.key).collect();
         assert_eq!(theirs, vec!["n1"]);
-        assert_eq!(s.since("team", "me", 0, 10).unwrap().len(), 2);
+        assert_eq!(s.since("team", "me", 0, 10, false).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn memory_is_left_out_of_a_catch_up_for_a_peer_that_does_not_take_it() {
+        let s = Store::open_in_memory().unwrap();
+        let me = Identity { ws: "w".into(), user: "me".into(), device: "d1".into() };
+        let mem = |k: &str| NewEvent { stream: Stream::Memory, key: k.into(), at: 1, payload: json!({"text": "x", "sha": "ab"}) };
+        s.append(&me, &[mem("p|a.md"), mem("p|b.md"), ev("cc-sort", 1)]).unwrap();
+        // Filtered before the limit, so a page of memory never hides the prefs behind it.
+        let old: Vec<_> = s.since("w", "me", 0, 1, false).unwrap().into_iter().map(|e| e.key).collect();
+        assert_eq!(old, vec!["cc-sort"]);
+        assert_eq!(s.since("w", "me", 0, 10, true).unwrap().len(), 3);
+        assert!(s.since("w", "them", 0, 10, true).unwrap().is_empty(), "personal, so never a teammate's");
     }
 
     #[test]
@@ -766,7 +779,7 @@ mod tests {
         s.append_at(&who, &[ev("cc-sort", 3)], 10_000).unwrap();
         // Inside the window a superseded event is kept, so a device a day behind still sees it.
         assert_eq!(s.compact(10_050, 9_900).unwrap(), 1, "only the rx-100 cc-sort is both old and superseded");
-        let keys: Vec<_> = s.since("w", "me", 0, 10).unwrap().into_iter().map(|e| (e.key, e.at)).collect();
+        let keys: Vec<_> = s.since("w", "me", 0, 10, false).unwrap().into_iter().map(|e| (e.key, e.at)).collect();
         assert_eq!(keys, vec![("cc-foot".to_string(), 1), ("cc-sort".to_string(), 2), ("cc-sort".to_string(), 3)]);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 1);
         assert_eq!(s.compact(1_000_000, 0).unwrap(), 0, "the latest per key always stays");
@@ -808,8 +821,8 @@ mod tests {
         assert_eq!(s.rename("me", "ana").unwrap(), None, "a name in use is refused");
         assert_eq!(s.rename("me", "Frederic").unwrap(), Some(1));
         assert_eq!(s.auth(&token).unwrap().unwrap().user, "Frederic");
-        assert_eq!(s.since("default", "Frederic", 0, 10).unwrap().len(), 1, "their prefs follow the new name");
-        assert!(s.since("default", "me", 0, 10).unwrap().is_empty());
+        assert_eq!(s.since("default", "Frederic", 0, 10, false).unwrap().len(), 1, "their prefs follow the new name");
+        assert!(s.since("default", "me", 0, 10, false).unwrap().is_empty());
     }
 
     #[test]

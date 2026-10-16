@@ -42,6 +42,7 @@ file, which passes it to the container:
 | `EPISKO_HANDOFF` | off | lets people hand a session to another machine through this server (see below) |
 | `EPISKO_HANDOFF_TTL_HOURS` | `72` | how long an unclaimed handoff is held before it is deleted; 1 to 720 |
 | `EPISKO_HANDOFF_MAX_MB` | `64` | the largest handoff accepted; 1 to 1024 |
+| `EPISKO_MEMORY` | off | lets one person's machines share Claude's project memory files; never a teammate's |
 
 **Don't edit the tracked files on a server.** `.env` and `docker-compose.override.yml` are
 ignored by git, so settings and proxy wiring live there and an update never merges over them.

@@ -34,10 +34,13 @@ pub enum Stream {
     Detail,
     Notes,
     Claims,
+    /// Claude's per-project memory files, for one person's own machines (docs/sync.md).
+    Memory,
 }
 
 /// Every stream, for a peer that has to list them.
-pub const STREAMS: [Stream; 7] = [Stream::Prefs, Stream::Usage, Stream::Limits, Stream::Roster, Stream::Detail, Stream::Notes, Stream::Claims];
+pub const STREAMS: [Stream; 8] =
+    [Stream::Prefs, Stream::Usage, Stream::Limits, Stream::Roster, Stream::Detail, Stream::Notes, Stream::Claims, Stream::Memory];
 
 impl Stream {
     pub fn as_str(self) -> &'static str {
@@ -49,6 +52,7 @@ impl Stream {
             Stream::Detail => "detail",
             Stream::Notes => "notes",
             Stream::Claims => "claims",
+            Stream::Memory => "memory",
         }
     }
     /// A personal stream reaches only its own user's devices, even in a team workspace.
@@ -64,6 +68,7 @@ impl Stream {
             "detail" => Some(Stream::Detail),
             "notes" => Some(Stream::Notes),
             "claims" => Some(Stream::Claims),
+            "memory" => Some(Stream::Memory),
             _ => None,
         }
     }
@@ -295,6 +300,17 @@ mod tests {
         assert!(serde_json::from_value::<ClientMsg>(bad).is_err());
         for s in STREAMS { assert_eq!(Stream::parse(s.as_str()), Some(s)); }
         assert_eq!(Stream::parse("tasks"), None);
+    }
+
+    #[test]
+    fn the_memory_stream_parses_and_stays_with_its_own_user() {
+        let push: ClientMsg = serde_json::from_value(json!({"t":"push","events":[
+            {"stream":"memory","key":"p1|notes.md","at":5,"payload":{"text":"x","sha":"ab"}}]})).unwrap();
+        let ClientMsg::Push { events } = push else { panic!("not a push") };
+        assert_eq!(events[0].stream, Stream::Memory);
+        assert_eq!(Stream::Memory.as_str(), "memory");
+        assert!(STREAMS.contains(&Stream::Memory));
+        assert!(Stream::Memory.is_personal(), "a memory never reaches a teammate through the log");
     }
 
     fn round_trips<T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(m: T) {

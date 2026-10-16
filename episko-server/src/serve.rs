@@ -5,8 +5,8 @@ use crate::store::{valid_name, HandoffCfg, HandoffError, Identity, Offer, PushEr
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use episko_proto::{
-    ClientMsg, ErrorCode, Event, HandoffCaps, HandoffErr, HandoffInfo, HandoffState, ServerMsg, FEATURE_HANDOFF, HANDOFF_PART,
-    MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL,
+    ClientMsg, ErrorCode, Event, HandoffCaps, HandoffErr, HandoffInfo, HandoffState, ServerMsg, Stream, FEATURE_HANDOFF,
+    FEATURE_MEMORY, HANDOFF_PART, MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL,
 };
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -29,11 +29,13 @@ type Sock = WebSocket<TcpStream>;
 
 /// What the environment configured: the workspace everyone joins, the code that lets a new
 /// person register themselves (`EPISKO_REGISTER_CODE`; `None` keeps pairing invite-only), and
-/// handoff's limits (`EPISKO_HANDOFF*`; `None` is off).
+/// handoff's limits (`EPISKO_HANDOFF*`; `None` is off), and whether the memory stream is on
+/// (`EPISKO_MEMORY`).
 pub struct Config {
     pub ws: String,
     pub register: Option<String>,
     pub handoff: Option<HandoffCfg>,
+    pub memory: bool,
 }
 
 // A wrong code costs this long, so a registration code cannot be guessed at line speed.
@@ -107,10 +109,16 @@ impl Hub {
             self.set_presence(who, serde_json::Value::Null);
         }
     }
-    /// Log events go to the workspace, except a personal stream, which only its own user hears.
+    /// Log events go to the workspace, except a personal stream, which only its own user hears,
+    /// and memory, which only a connection that said it takes memory hears.
     fn publish(&self, from: u64, ws: &str, events: &[Event]) {
         for s in guard(&self.subs).iter().filter(|s| s.id != from && s.who.ws == ws) {
-            let mine: Vec<Event> = events.iter().filter(|e| !e.stream.is_personal() || e.actor == s.who.user).cloned().collect();
+            let memory = s.speaks(FEATURE_MEMORY);
+            let mine: Vec<Event> = events
+                .iter()
+                .filter(|e| (!e.stream.is_personal() || e.actor == s.who.user) && (memory || e.stream != Stream::Memory))
+                .cloned()
+                .collect();
             if !mine.is_empty() { let _ = s.tx.send(Out::Events(Arc::new(mine))); }
         }
     }
@@ -263,13 +271,14 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Resu
     store.set_features(&who.device, &features).map_err(|e| e.to_string())?;
     // Join before replaying, so a push landing mid-catch-up is queued rather than missed.
     let (id, rx) = hub.join(&who, &features);
-    let cx = Ctx { store, hub, cfg, id, who: &who, handoff: features.iter().any(|f| f == FEATURE_HANDOFF) };
+    let speaks = |f: &str| features.iter().any(|x| x == f);
+    let cx = Ctx { store, hub, cfg, id, who: &who, handoff: speaks(FEATURE_HANDOFF), memory: speaks(FEATURE_MEMORY) };
     let out = session(&mut sock, &cx, &rx, since);
     hub.leave(id, &who);
     out
 }
 
-/// One connection after hello: who it is, and whether it said it speaks handoff.
+/// One connection after hello: who it is, and whether it said it speaks handoff and memory.
 struct Ctx<'a> {
     store: &'a Store,
     hub: &'a Hub,
@@ -277,6 +286,7 @@ struct Ctx<'a> {
     id: u64,
     who: &'a Identity,
     handoff: bool,
+    memory: bool,
 }
 
 /// Sent even when handoff is off, so a client can tell "off" from an older server (docs/handoff.md).
@@ -314,11 +324,11 @@ fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<
     let head = store.head(&who.ws).map_err(|e| e.to_string())?;
     let devices = store.devices_in(&who.ws).map_err(|e| e.to_string())?;
     let handoff = Some(handoff_caps(cx.cfg));
-    let welcome = ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices, handoff, memory: false };
+    let welcome = ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices, handoff, memory: cx.cfg.memory };
     send(sock, &welcome).map_err(err)?;
     let mut sent = since;
     loop {
-        let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1).map_err(|e| e.to_string())?;
+        let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1, cx.memory).map_err(|e| e.to_string())?;
         let more = page.len() > PAGE;
         page.truncate(PAGE);
         if let Some(last) = page.last() { sent = last.seq; }
@@ -392,6 +402,10 @@ fn push(sock: &mut Sock, cx: &Ctx, text: &str) -> tungstenite::Result<()> {
     };
     if events.len() > MAX_PUSH {
         return refuse(sock, ErrorCode::TooLarge, format!("at most {MAX_PUSH} events per push"));
+    }
+    if events.iter().any(|e| e.stream == Stream::Memory) {
+        if !cx.cfg.memory { return refuse(sock, ErrorCode::BadMessage, "this server has the memory stream off"); }
+        if !cx.memory { return refuse(sock, ErrorCode::BadMessage, "say \"memory\" in hello's features before pushing it"); }
     }
     match store.append(who, &events) {
         Ok(out) => {
@@ -478,11 +492,15 @@ mod tests {
     const ON: HandoffCfg = HandoffCfg { ttl_ms: 72 * 3_600_000, max_bytes: 64 << 20 };
 
     fn start_with(handoff: Option<HandoffCfg>) -> (SocketAddr, Arc<Store>) {
+        start_cfg(handoff, false)
+    }
+
+    fn start_cfg(handoff: Option<HandoffCfg>, memory: bool) -> (SocketAddr, Arc<Store>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let store = Arc::new(Store::open_in_memory().unwrap());
         let s = store.clone();
-        let cfg = Arc::new(Config { ws: "default".into(), register: Some("TEAM-CODE-1234".into()), handoff });
+        let cfg = Arc::new(Config { ws: "default".into(), register: Some("TEAM-CODE-1234".into()), handoff, memory });
         std::thread::spawn(move || serve(listener, s, cfg));
         (addr, store)
     }
@@ -887,5 +905,79 @@ mod tests {
         assert!(!fresh(&mut last, &rec(HandoffState::Claimed, 9)));
         assert!(fresh(&mut last, &rec(HandoffState::Done, 5)), "a clock that stepped back cannot hide a transition");
         assert!(fresh(&mut last, &rec(HandoffState::Done, 6)));
+    }
+
+    fn memory_event(key: &str) -> NewEvent {
+        NewEvent { stream: Stream::Memory, key: key.into(), at: 1, payload: json!({"text": "x", "sha": "ab"}) }
+    }
+
+    /// Hello with the given features: whether the welcome says memory is on, then the catch-up.
+    fn hello_as(addr: SocketAddr, token: &str, features: &[&str]) -> (Client, bool, Vec<Event>) {
+        let mut c = connect(addr);
+        let features = features.iter().map(|f| f.to_string()).collect();
+        say(&mut c, &ClientMsg::Hello { token: token.into(), since: 0, protocol: PROTOCOL, features });
+        let ServerMsg::Welcome { memory, .. } = hear(&mut c) else { panic!("expected Welcome") };
+        let mut got = Vec::new();
+        loop {
+            match hear(&mut c) {
+                ServerMsg::Events { events, more } => { got.extend(events); if !more { break; } }
+                m => panic!("expected Events, got {m:?}"),
+            }
+        }
+        (c, memory, got)
+    }
+
+    /// Every event this client hears before two round trips of its own complete.
+    fn heard_events(c: &mut Client) -> Vec<Event> {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            say(c, &ClientMsg::Invite {});
+            loop {
+                match hear(c) {
+                    ServerMsg::Invited { .. } => break,
+                    ServerMsg::Events { events, .. } => got.extend(events),
+                    _ => {}
+                }
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn memory_reaches_only_your_own_machines_that_take_it() {
+        let (addr, store) = start_cfg(None, true);
+        let (ta, _) = pair_as(addr, &store, "me", "laptop");
+        let (tb, _) = pair_as(addr, &store, "me", "desk");
+        let (tc, _) = pair_as(addr, &store, "me", "old");
+        let (tt, _) = pair_as(addr, &store, "them", "theirs");
+        let (mut a, on, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        assert!(on, "the welcome says the stream is on");
+        let (mut b, _, _) = hello_as(addr, &tb, &[FEATURE_MEMORY]);
+        let (mut c, _, _) = hello_as(addr, &tc, &[]);
+        let (mut t, _, _) = hello_as(addr, &tt, &[FEATURE_MEMORY]);
+        say(&mut a, &ClientMsg::Push { events: vec![memory_event("p|a.md"), pref("cc-sort")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Pushed { .. }));
+        let keys = |evs: Vec<Event>| evs.into_iter().map(|e| e.key).collect::<Vec<_>>();
+        assert_eq!(keys(heard_events(&mut b)), vec!["p|a.md", "cc-sort"]);
+        assert_eq!(keys(heard_events(&mut c)), vec!["cc-sort"], "live: a peer that never asked for memory");
+        assert!(heard_events(&mut t).is_empty(), "personal, so never a teammate's");
+        assert_eq!(keys(hello_as(addr, &tc, &[]).2), vec!["cc-sort"], "nor in the catch-up");
+        assert_eq!(keys(hello_as(addr, &tb, &[FEATURE_MEMORY]).2), vec!["p|a.md", "cc-sort"]);
+    }
+
+    #[test]
+    fn a_memory_push_is_refused_while_the_stream_is_off_or_unasked() {
+        let (addr, store) = start();
+        let (ta, _) = pair(addr, &store, "laptop");
+        let (mut a, on, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        assert!(!on);
+        say(&mut a, &ClientMsg::Push { events: vec![memory_event("p|a.md")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+        let (addr, store) = start_cfg(None, true);
+        let (ta, _) = pair(addr, &store, "laptop");
+        let (mut a, _, _) = hello_as(addr, &ta, &[]);
+        say(&mut a, &ClientMsg::Push { events: vec![pref("cc-sort"), memory_event("p|a.md")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+        assert_eq!(store.head("default").unwrap(), 0, "a refused push lands nothing, prefs included");
     }
 }
