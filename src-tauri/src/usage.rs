@@ -14,7 +14,7 @@ use crate::git::repo_root_of;
 use crate::platform::{augmented_path, home_dir, nfc, norm_path, physical_cwd, resolve_claude, sys_command};
 
 /// None when there is no home directory; every caller reports that rather than hiding it.
-fn claude_dir() -> Option<PathBuf> {
+pub(crate) fn claude_dir() -> Option<PathBuf> {
     let home = home_dir();
     if home.is_empty() {
         return None;
@@ -35,7 +35,7 @@ pub(crate) struct TranscriptMsg {
 /// non-ASCII-alphanumeric char replaced by `-`. Claude spells that cwd precomposed whatever
 /// the volume reports (a Google Drive folder measured decomposed), so `ö` is ONE dash; a
 /// folder some build filed under the raw spelling is found only while the precomposed is absent.
-fn project_transcript_dir(base: &Path, cwd: &str) -> PathBuf {
+pub(crate) fn project_transcript_dir(base: &Path, cwd: &str) -> PathBuf {
     let phys = physical_cwd(cwd);
     let projects = base.join("projects");
     let primary = projects.join(transcript_slug(&nfc(&phys)));
@@ -1194,6 +1194,30 @@ pub(crate) fn transcript_archive_in(base: &Path, cwd: &str, id: &str, archive: &
     Ok(())
 }
 
+/// The handoff brief's fork, should the CLI have written one despite `--no-session-persistence`.
+/// Never the session it forked from; `Ok(true)` when something was deleted.
+pub(crate) fn discard_fork(cwd: &str, source: &str, fork: &str) -> Result<bool, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    discard_fork_in(&base, cwd, source, fork)
+}
+
+fn discard_fork_in(base: &Path, cwd: &str, source: &str, fork: &str) -> Result<bool, String> {
+    if fork.eq_ignore_ascii_case(source) || !crate::summarize::uuid_shaped(fork) {
+        return Ok(false);
+    }
+    let dir = project_transcript_dir(base, cwd);
+    let jsonl = dir.join(format!("{fork}.jsonl"));
+    if !jsonl.is_file() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&jsonl).map_err(|e| format!("could not remove {}: {e}", jsonl.display()))?;
+    let side = dir.join(fork);
+    if side.is_dir() {
+        crate::platform::remove_tree(&side).map_err(|(p, e)| format!("could not remove {}: {e}", p.display()))?;
+    }
+    Ok(true)
+}
+
 // ---------- the account's per-model plan limits ----------
 // The statusLine payload carries `five_hour` and `seven_day` and nothing else, so a
 // per-model weekly window — Fable's — reaches the telemetry stream nowhere. The CLI answers
@@ -1329,6 +1353,28 @@ fn parse_usage_limits(line: &str) -> Result<PlanLimits, String> {
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    #[test]
+    fn a_leaked_fork_goes_and_its_source_never_does() {
+        let base = scratch_dir();
+        let cwd = scratch_dir().to_string_lossy().into_owned();
+        let dir = project_transcript_dir(&base, &cwd);
+        let src = "11111111-2222-3333-4444-555555555555";
+        let fork = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        std::fs::create_dir_all(dir.join(fork).join("tool-results")).unwrap();
+        for id in [src, fork, "not-a-uuid"] {
+            std::fs::write(dir.join(format!("{id}.jsonl")), "{}\n").unwrap();
+        }
+        assert_eq!(discard_fork_in(&base, &cwd, src, src), Ok(false));
+        assert_eq!(discard_fork_in(&base, &cwd, src, &src.to_uppercase()), Ok(false));
+        assert_eq!(discard_fork_in(&base, &cwd, src, "not-a-uuid"), Ok(false));
+        assert_eq!(discard_fork_in(&base, &cwd, src, "../../etc"), Ok(false));
+        assert!(dir.join("not-a-uuid.jsonl").exists());
+        assert_eq!(discard_fork_in(&base, &cwd, src, fork), Ok(true));
+        assert!(!dir.join(format!("{fork}.jsonl")).exists() && !dir.join(fork).exists());
+        assert!(dir.join(format!("{src}.jsonl")).exists(), "the source session stays");
+        assert_eq!(discard_fork_in(&base, &cwd, src, fork), Ok(false), "nothing left is not an error");
+    }
 
     /// Captured from the real CLI (2.1.276) rather than written to match our intent: the
     /// account's Fable window is the row this whole path exists to carry.

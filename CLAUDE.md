@@ -87,7 +87,7 @@ Three hard constraints shape this code:
 | `review.rs` | one pull request under review (docs/review.md): the whole PR in one GraphQL read (threads, reviews, checks, commits), its diff against the merge base with any missing commits fetched by oid and no ref written, a file at an oid for expanding context, and the writes: a review with its comments in one call, reply, resolve, a conversation comment, ready/draft and a merge pinned to the head you saw |
 | `deps.rs` | Dependabot alerts, the update bots' PRs with their check rollup, what the manifests declare (read, never run), and the one command this app runs in your project: `<pm> outdated` (docs/dependencies.md) |
 | `notes.rs` | shared notes (`.episko/notes.toml`) |
-| `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md` |
+| `summarize.rs` | `summarize_day` (Haiku via `claude -p`) over both `Scope`s + the committed `.episko/digest.md`, and `handoff_brief` (a forked, tool-less, unpersisted resume; docs/handoff.md) |
 | `icons.rs` | project favicon/logo probing, including what a page's `<link rel="icon">` declares (which may be the whole icon, inline) + the tray menu's status glyphs (`glyph_rgba`) |
 | `files.rs` | the explorer's project index: `git ls-files` for a repo, a bounded walk for anything else; `index_of` is the in-crate half, so `health.rs` measures exactly the files the explorer lists |
 | `health.rs` | what a change did to the shape of the code: code lines with comments stripped, function spans, nesting, approximate cognitive complexity, and the cross-file duplicate index. Facts only — which of them earn a chip is `health.ts`'s |

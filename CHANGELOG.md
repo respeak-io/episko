@@ -24,7 +24,9 @@ Markers: `+` new · `~` changed · `!` fixed
   now copy a session's transcript out of `~/.claude` and file one back in under another
   checkout, never overwriting a conversation already there; nothing calls it yet. It can also
   package a checkout's unpushed commits and uncommitted work (secrets left behind) as a branch or a
-  bundle and unpack them into a fresh worktree elsewhere; nothing calls that yet either.
+  bundle and unpack them into a fresh worktree elsewhere; nothing calls that yet either. And it
+  can ask Claude for a short brief of a stopped session for whoever picks it up, run on a
+  throwaway fork with no tools or hooks that leaves no second transcript behind; unused so far.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

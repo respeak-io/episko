@@ -64,7 +64,7 @@ cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Five checks against Claude Code's real state, in one pass:
+Six checks against Claude Code's real state, in one pass:
 
 - `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
   throwaway session in a temp dir and asserts our hooks reach our server, that routing
@@ -101,6 +101,14 @@ Five checks against Claude Code's real state, in one pass:
   while every other gate stays green. **No tokens** (there is no model turn) but it does
   need an authenticated `claude`: an API-key or unauthenticated session answers
   `rate_limits_available: false` and the assertion fails for the right reason.
+- `brief_fork_leaves_no_transcript` seeds one short Haiku session, then asks it for a
+  handoff brief exactly the way the send sheet does: `--resume --fork-session
+  --no-session-persistence` with no tools, no hooks, no MCP servers and a `--json-schema`.
+  It asserts the CLI still accepts that combination, that the brief comes back in the
+  structure the sheet reads, and that the fork wrote **no transcript of its own** into the
+  project's folder. The app deletes a leaked fork after the fact, so a regression here is
+  otherwise silent: a second, unlisted copy of a conversation on the sender's disk.
+  **It spends tokens** (two short Haiku turns) and needs auth.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet

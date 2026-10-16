@@ -1,9 +1,10 @@
 //! The Trail's one generated sentence: `summarize_day` (Haiku via `claude -p`) and the
 //! committed `.episko/digest.md`. Ask once per closed day, run in a scratch cwd (never a
 //! real project), and let it fail: no summary is a fine state. See docs/dashboard.md.
+//! Also the handoff brief, the one headless run inside a real project (docs/handoff.md).
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -104,15 +105,21 @@ fn cache_key(root: &str, day: &str, scope: Scope) -> String {
     }
 }
 
-/// Run `claude -p`, bounded; returns the trimmed stdout. A reader thread drains stdout,
-/// since a `wait()` that only reads afterwards deadlocks past one pipe buffer.
+/// The Trail's sentence: one bounded `claude -p` in the scratch cwd.
 fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
     let cwd = scratch_cwd();
     let _ = std::fs::create_dir_all(&cwd); // `scratch_cwd` only names it
+    let args = ["-p", prompt, "--model", model].map(String::from);
+    run_headless(&cwd, &args, TIMEOUT)
+}
+
+/// Run `claude` with `args` in `cwd`, bounded; returns the trimmed stdout. A reader thread
+/// drains stdout, since a `wait()` that only reads afterwards deadlocks past one pipe buffer.
+fn run_headless(cwd: &Path, args: &[String], timeout: Duration) -> Result<String, String> {
     let mut child = sys_command(resolve_claude())
         .env("PATH", augmented_path())
         .current_dir(cwd)
-        .args(["-p", prompt, "--model", model])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -126,7 +133,7 @@ fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
         s
     });
 
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -147,6 +154,143 @@ fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+// ---------- the handoff brief (docs/handoff.md) ----------
+// A stopped session summarised for whoever picks it up: a forked, tool-less, hook-less,
+// unpersisted resume of its transcript. Runs only after `pty-exit`, and types at no PTY.
+
+/// A long conversation is a slow read, even for Haiku.
+const BRIEF_TIMEOUT: Duration = Duration::from_secs(120);
+
+const BRIEF_SCHEMA: &str = r#"{"type":"object","additionalProperties":false,
+"required":["summary","state","next_steps","open_questions","memories"],
+"properties":{"summary":{"type":"string","maxLength":600},"state":{"type":"string","maxLength":400},
+"next_steps":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":200}},
+"open_questions":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":200}},
+"memories":{"type":"array","maxItems":10,"items":{"type":"string","maxLength":120}}}}"#;
+
+const BRIEF_PROMPT: &str = "You are handing this conversation to another developer, who will \
+resume it on their own machine. Write a brief from what is above: what the work is (summary), \
+where it stands right now (state), the next concrete steps, and any questions still open. In \
+`memories`, list the file names of any saved memories this session relied on, or none. Do not \
+quote secrets, credentials, tokens or file contents; name files and decisions instead. Answer \
+only through the requested structure.";
+
+/// What the recipient reads before resuming. Every field may be empty: the sheet edits it.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default, PartialEq)]
+#[serde(default)]
+pub(crate) struct Brief {
+    summary: String,
+    state: String,
+    next_steps: Vec<String>,
+    open_questions: Vec<String>,
+    memories: Vec<String>,
+}
+
+impl Brief {
+    /// The schema asks for these bounds; a model that overran them is cut, not trusted.
+    fn clamped(mut self) -> Self {
+        let cut = |s: &mut String, n: usize| *s = s.trim().chars().take(n).collect();
+        cut(&mut self.summary, 600);
+        cut(&mut self.state, 400);
+        let lists = [(&mut self.next_steps, 6, 200), (&mut self.open_questions, 6, 200), (&mut self.memories, 10, 120)];
+        for (list, max, len) in lists {
+            list.iter_mut().for_each(|s| cut(s, len));
+            list.retain(|s| !s.is_empty());
+            list.truncate(max);
+        }
+        self
+    }
+}
+
+/// 8-4-4-4-12 hex: the only shape a session id passed to `--resume` or deleted by name may take.
+pub(crate) fn uuid_shaped(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A model alias or id, never something the CLI could read as a flag.
+fn model_or(model: Option<&str>, fallback: &str) -> String {
+    match model.map(str::trim) {
+        Some(m) if !m.is_empty() && !m.starts_with('-')
+            && m.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '[' | ']')) => m.to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
+/// The prompt sits right after `-p`: `--tools` and `--mcp-config` take lists and would swallow it.
+fn brief_args(resume_id: &str, model: &str, prompt: &str) -> Vec<String> {
+    [
+        "-p", prompt, "--resume", resume_id, "--fork-session", "--no-session-persistence",
+        "--model", model, "--tools", "", "--settings", r#"{"disableAllHooks":true}"#,
+        "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#,
+        "--output-format", "json", "--json-schema", BRIEF_SCHEMA,
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+/// `--output-format json`'s envelope: the brief from `structured_output`, else `result` read as JSON.
+fn parse_brief(stdout: &str) -> Result<Brief, String> {
+    let v: serde_json::Value = serde_json::from_str(stdout).map_err(|e| format!("not a JSON answer: {e}"))?;
+    if v.get("is_error").and_then(|b| b.as_bool()) == Some(true) {
+        return Err("claude reported an error".into());
+    }
+    let body = match v.get("structured_output") {
+        Some(o) if o.is_object() => o.clone(),
+        _ => v
+            .get("result")
+            .and_then(|r| r.as_str())
+            .and_then(|r| serde_json::from_str(r).ok())
+            .ok_or("the answer carried no brief")?,
+    };
+    let brief: Brief = serde_json::from_value(body).map_err(|e| format!("not a brief: {e}"))?;
+    Ok(brief.clamped())
+}
+
+/// The fork's session id is read even off a failed answer, so a leaked transcript still goes.
+fn fork_id(stdout: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    v.get("session_id").and_then(|s| s.as_str()).map(String::from)
+}
+
+fn brief_once(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, String> {
+    let out = run_headless(cwd, &brief_args(resume_id, model, BRIEF_PROMPT), BRIEF_TIMEOUT)?;
+    if let Some(fork) = fork_id(&out) {
+        if let Err(e) = crate::usage::discard_fork(&cwd.to_string_lossy(), resume_id, &fork) {
+            log::warn!("handoff brief: {e}");
+        }
+    }
+    parse_brief(&out)
+}
+
+/// One retry on Sonnet; an `Err` leaves the sheet an empty brief to write by hand.
+fn brief_blocking(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, String> {
+    brief_once(cwd, resume_id, model).or_else(|e| {
+        if model == "sonnet" {
+            return Err(e);
+        }
+        log::warn!("handoff brief on {model}: {e}; retrying on sonnet");
+        brief_once(cwd, resume_id, "sonnet")
+    })
+}
+
+/// The brief for `resume_id`, asked in `workdir`, the folder its transcript is filed under.
+#[tauri::command]
+pub(crate) async fn handoff_brief(workdir: String, resume_id: String, model: Option<String>) -> Result<Brief, String> {
+    if !uuid_shaped(&resume_id) {
+        return Err(format!("not a session id: {resume_id}"));
+    }
+    let cwd = PathBuf::from(&workdir);
+    if !cwd.is_dir() {
+        return Err(format!("{workdir} is not a folder"));
+    }
+    let model = model_or(model.as_deref(), "haiku");
+    tauri::async_runtime::spawn_blocking(move || brief_blocking(&cwd, &resume_id, &model))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 // ---------- the shared half: .episko/digest.md ----------
@@ -357,7 +501,104 @@ fn first_sentence(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{cache_key, commit_digest_removal, first_sentence, parse_digest, prompt_for, remove_digest, render_digest, write_digest, Scope};
+    use super::{brief_args, fork_id, model_or, parse_brief, uuid_shaped, Brief, BRIEF_SCHEMA};
     use crate::testutil::scratch_dir;
+
+    const SRC: &str = "11111111-2222-3333-4444-555555555555";
+
+    #[test]
+    fn the_brief_runs_forked_toolless_hookless_and_unpersisted() {
+        let a = brief_args(SRC, "haiku", "PROMPT");
+        assert_eq!(&a[..2], ["-p", "PROMPT"], "a list-taking flag before it would swallow the prompt");
+        let after = |flag: &str| a.iter().position(|x| x == flag).map(|i| a[i + 1].as_str());
+        assert_eq!(after("--resume"), Some(SRC));
+        assert!(a.iter().any(|x| x == "--fork-session"));
+        assert!(a.iter().any(|x| x == "--no-session-persistence"));
+        assert!(a.iter().any(|x| x == "--strict-mcp-config"));
+        assert_eq!(after("--tools"), Some(""));
+        assert_eq!(after("--model"), Some("haiku"));
+        assert_eq!(after("--output-format"), Some("json"));
+        assert_eq!(after("--json-schema"), Some(BRIEF_SCHEMA));
+        let settings: serde_json::Value = serde_json::from_str(after("--settings").unwrap()).unwrap();
+        assert_eq!(settings["disableAllHooks"], true);
+        let mcp: serde_json::Value = serde_json::from_str(after("--mcp-config").unwrap()).unwrap();
+        assert_eq!(mcp["mcpServers"], serde_json::json!({}));
+        assert!(!a.iter().any(|x| x == "--bare"), "--bare breaks a subscription login");
+        let schema: serde_json::Value = serde_json::from_str(BRIEF_SCHEMA).unwrap();
+        assert_eq!(schema["properties"]["summary"]["maxLength"], 600);
+    }
+
+    #[test]
+    fn only_a_uuid_or_a_plain_model_name_reaches_the_command_line() {
+        assert!(uuid_shaped(SRC));
+        assert!(uuid_shaped("AAAAAAAA-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        for bad in ["", "--help", "1111111-2222-3333-4444-555555555555", "11111111-2222-3333-4444-55555555555g", "../x", "11111111-2222-3333-4444-555555555555-6"] {
+            assert!(!uuid_shaped(bad), "{bad}");
+        }
+        assert_eq!(model_or(Some("claude-haiku-4-5[1m]"), "haiku"), "claude-haiku-4-5[1m]");
+        assert_eq!(model_or(Some("--tools"), "haiku"), "haiku");
+        assert_eq!(model_or(Some("a b"), "haiku"), "haiku");
+        assert_eq!(model_or(Some("  "), "haiku"), "haiku");
+        assert_eq!(model_or(None, "haiku"), "haiku");
+    }
+
+    #[test]
+    fn the_brief_comes_from_structured_output_else_from_result() {
+        let structured = r#"{"type":"result","is_error":false,"session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","result":"",
+            "structured_output":{"summary":"Handoff slice six.","state":"tests green","next_steps":["commit"],"open_questions":[],"memories":["a.md"]}}"#;
+        let b = parse_brief(structured).unwrap();
+        assert_eq!(b.summary, "Handoff slice six.");
+        assert_eq!(b.memories, vec!["a.md".to_string()]);
+        assert_eq!(fork_id(structured).as_deref(), Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+        let in_result = r#"{"result":"{\"summary\":\"S\",\"next_steps\":[\"x\"]}"}"#;
+        let b = parse_brief(in_result).unwrap();
+        assert_eq!((b.summary.as_str(), b.state.as_str(), b.next_steps.len()), ("S", "", 1), "a missing field is empty");
+        assert!(parse_brief(r#"{"is_error":true,"structured_output":{"summary":"x"}}"#).is_err());
+        assert!(parse_brief(r#"{"result":"just prose"}"#).is_err());
+        assert!(parse_brief("not json").is_err());
+        assert_eq!(fork_id("not json"), None);
+    }
+
+    #[test]
+    fn a_brief_that_overran_its_schema_is_cut() {
+        let long = serde_json::json!({
+            "summary": "x".repeat(900), "state": format!("  {}  ", "y".repeat(500)),
+            "next_steps": (0..9).map(|i| format!("step {i}")).collect::<Vec<_>>(),
+            "open_questions": ["", "  ", "real"], "memories": (0..14).map(|i| format!("m{i}.md")).collect::<Vec<_>>(),
+        });
+        let b = parse_brief(&serde_json::json!({ "structured_output": long }).to_string()).unwrap();
+        assert_eq!((b.summary.chars().count(), b.state.chars().count()), (600, 400));
+        assert!(!b.state.starts_with(' '));
+        assert_eq!((b.next_steps.len(), b.memories.len()), (6, 10));
+        assert_eq!(b.open_questions, vec!["real".to_string()], "blank entries are dropped");
+        assert_eq!(Brief::default(), parse_brief(r#"{"structured_output":{}}"#).unwrap());
+    }
+
+    /// Against the real CLI, spending a few Haiku tokens: the brief's flags still combine,
+    /// and the fork it resumes under leaves no transcript of its own behind (RELEASE.md).
+    #[test]
+    #[ignore]
+    fn brief_fork_leaves_no_transcript() {
+        let cwd = scratch_dir();
+        let id = "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+        let seed = ["-p", "Remember the word heron. Reply with ok.", "--session-id", id, "--model", "haiku"].map(String::from);
+        super::run_headless(&cwd, &seed, super::TIMEOUT).expect("seeding a session needs an authenticated claude");
+        let dir = crate::usage::project_transcript_dir(&crate::usage::claude_dir().unwrap(), &cwd.to_string_lossy());
+        let listing = || {
+            let mut v: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        let before = listing();
+        assert!(before.contains(&format!("{id}.jsonl")), "{before:?}");
+        // The raw run, not `brief_blocking`: its cleanup would hide the leak this checks for.
+        let out = super::run_headless(&cwd, &brief_args(id, "haiku", super::BRIEF_PROMPT), super::BRIEF_TIMEOUT);
+        let after = listing();
+        let _ = crate::platform::remove_tree(&dir);
+        let brief = parse_brief(&out.expect("the brief's flag combination was refused")).expect("no brief in the answer");
+        assert!(!brief.summary.is_empty(), "{brief:?}");
+        assert_eq!(before, after, "the forked brief wrote into the project's transcripts");
+    }
 
     #[test]
     fn the_two_scopes_never_share_a_cache_entry() {
