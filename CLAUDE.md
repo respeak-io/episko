@@ -530,7 +530,7 @@ And the things that hold however the files are arranged:
 
 ## App-wide rules
 
-- **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. Inside `~/.claude` there are three writes: *Move session*'s transcript move, and a handoff's two halves, the recipient filing the received transcript (never overwriting one) and the sender archiving its own, each only after the server's `done` (docs/handoff.md). Everything else is `localStorage` and the app dirs.
+- **Episko writes almost nothing outside its own storage.** In a user's repo: only `.episko/{tasks.toml,episko.toml,notes.toml,digest.md}`, always through `toml_edit`/read-modify-write so hand-written formatting survives, and always asking before creating a new committable file. Inside `~/.claude` there are three writes: *Move session*'s transcript move, and a handoff's two halves, the recipient filing the received transcript and the memories ticked to come with it (never overwriting either; a new memory only ever adds a line to `MEMORY.md`) and the sender archiving its own, each only after the server's `done` (docs/handoff.md). Everything else is `localStorage` and the app dirs.
 - **The app has three lists of files, and they must describe a path the same way.** The
   working set (git, `wpeekHtml` → the peek — drawn in every host that asks about one: the
   inspector, the external mirror, the ⑃ dialog's fact and the dashboard's Working set card,

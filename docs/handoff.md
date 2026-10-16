@@ -128,6 +128,31 @@ bundle. A dirty tree is snapshotted (a commit on a private index, never touching
 goes either way, and **has no preset**: Send stays disabled until somebody chooses, because
 neither answer is safe to assume. Applying in place and cherry-picking are not offered.
 
+## Memories
+
+Claude's saved memories live in `<project dir of the main checkout>/memory/`, one file per memory
+with a `type` in its frontmatter (top level, or under `metadata:` — that one wins), plus the
+`MEMORY.md` index. Every worktree of a repo shares one folder, so `memory_dir` keys on the main
+checkout (`repo_root_of`), not the folder the session ran in.
+
+- `handoff_memories` lists them for the review step; `memoryOffer` decides what is offered. A
+  teammate gets **project and reference** memories only, all unticked, the brief's suggestions
+  marked; `user` and `feedback` describe the sender and never go. Your own machine is offered
+  everything, the suggested ones ticked.
+- `handoff_pack` refuses a non-team memory to a teammate itself, so a tick the sheet should not
+  have offered still never leaves. Each travels as `memory/<name>.md` with its `originSessionId`
+  line stripped, and their names, types and descriptions ride in the meta so the recipient's sheet
+  can list them before anything is downloaded. The brief names only what was ticked.
+- The recipient ticks which to keep (all by default); the choice is stored on the record at the
+  claim, so the install after `ready` needs no sheet. A memory is written **only if no file of
+  that name exists** there, and a new one appends its line to `MEMORY.md`, which is never
+  rewritten or trimmed. `Installed.kept` names the ones left alone.
+- Auto memory switched off (`autoMemoryEnabled: false` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY`), or
+  moved by `autoMemoryDirectory`, means nothing is listed and nothing is written: a custom folder
+  cannot be keyed by project, so it is left alone rather than guessed at.
+- `MEMORY.md` itself never travels. Keeping one person's memories in step across their own
+  machines is the job of a memory stream still to come, not this one.
+
 ## The brief
 
 `handoff_brief` runs `claude -p` on a `--fork-session --no-session-persistence` resume with

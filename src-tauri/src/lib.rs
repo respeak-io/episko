@@ -564,6 +564,7 @@ pub fn run() {
             sync::sync_reconnect,
             sync::sync_set_headers,
             handoff::handoff_pack,
+            handoff::handoff_memories,
             handoff::handoff_send,
             handoff::handoff_claim,
             handoff::handoff_recall,

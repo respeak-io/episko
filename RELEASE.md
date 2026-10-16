@@ -558,6 +558,11 @@ second half. Watch the server's `handoffs` table with `sqlite3` beside it.
       becomes *handed to …* and its transcript is gone from `~/.claude/projects`.
 - [ ] **Teammate.** The same to another user: each of their machines lists it; the one that
       takes it resumes, the others say *taken on …* and drop the row once it is done.
+- [ ] **Memories.** In a project with saved memories, the teammate send lists only project and
+      reference ones, unticked, the brief's suggestions marked. Tick one: the recipient's sheet
+      lists it ticked, and after *Resume here* it sits in the recipient's
+      `~/.claude/projects/<main checkout>/memory/` without an `originSessionId` and with a new
+      `MEMORY.md` line. A memory of that name already there is kept, and a toast says so.
 - [ ] **Decline.** *Decline* on the recipient: the sender toasts that it was declined and
       the session is an ordinary shelved row again, resumable.
 - [ ] **Take back.** ↶ on the sender while *waiting*: the recipient's row disappears.

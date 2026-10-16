@@ -17,7 +17,7 @@ export interface Brief { summary: string; state: string; next_steps: string[]; o
 export interface GitMeta { via: "none" | "branch" | "bundle"; branch: string | null; head: string; snap: boolean }
 export interface HandoffMeta {
   resumeId: string; provider: string; projectId: string | null; title: string; project: string;
-  brief: Brief | null; git: GitMeta | null;
+  brief: Brief | null; git: GitMeta | null; memories: MemoryFile[];
 }
 export interface Peer { user: string; device?: string; label?: string }
 export interface HandoffRec {
@@ -30,6 +30,8 @@ export interface HandoffRec {
   settled?: boolean;
   /** Another of my machines claimed an offer made to all of them. */
   takenBy?: string;
+  /** The memories the recipient ticked at the claim; the install that follows `ready` writes them. */
+  memories?: string[];
   at: number;
 }
 export type HandoffEv =
@@ -99,6 +101,18 @@ export function clampBrief(b: unknown): Brief {
   };
 }
 
+/** `[A-Za-z0-9._-]+.md`, never the index: the backend's rule, so a bad name is never asked for. */
+export const memoryName = (n: string) => /^[A-Za-z0-9._-]+\.md$/.test(n) && n !== "MEMORY.md" && n !== ".md";
+
+function narrowMemories(x: unknown): MemoryFile[] {
+  if (!Array.isArray(x)) return [];
+  return x.flatMap((m) => {
+    const o = obj(m);
+    const name = str(o?.name, 120);
+    return o && memoryName(name) ? [{ name, type: str(o.type, 40), description: str(o.description) }] : [];
+  }).slice(0, 50);
+}
+
 function narrowGit(x: unknown): GitMeta | null {
   const o = obj(x);
   if (!o || !str(o.head) || !["none", "branch", "bundle"].includes(o.via as string)) return null;
@@ -112,7 +126,7 @@ export function narrowMeta(x: unknown): HandoffMeta | null {
   return {
     resumeId: str(o.resume_id), provider: str(o.provider) || "claude", projectId: str(o.project_id) || null,
     title: str(o.title), project: str(o.project), brief: o.brief === undefined ? null : clampBrief(o.brief),
-    git: narrowGit(o.git),
+    git: narrowGit(o.git), memories: narrowMemories(o.memories),
   };
 }
 
@@ -133,6 +147,7 @@ function narrowRec(x: unknown): HandoffRec | null {
   if (num(o.unknownSince)) rec.unknownSince = num(o.unknownSince);
   if (o.settled === true) rec.settled = true;
   if (str(o.takenBy)) rec.takenBy = str(o.takenBy);
+  if (Array.isArray(o.memories)) rec.memories = o.memories.filter((n): n is string => typeof n === "string" && memoryName(n)).slice(0, 50);
   return rec;
 }
 
@@ -317,12 +332,21 @@ export function lostOnHandoff(s: Sess): { jobs: number; servers: string[] } {
 export interface MemoryFile { name: string; type: string; description: string }
 export interface MemoryRow extends MemoryFile { ticked: boolean; suggested: boolean }
 const TEAM_TYPES = new Set(["project", "reference"]);
+// The brief names a memory however the model spelled it: case and the `.md` are not evidence.
+const memKey = (n: string) => n.trim().toLowerCase().replace(/\.md$/, "");
 /** A teammate is offered project and reference memories only, all unticked; never user or feedback. */
 export function memoryOffer(files: readonly MemoryFile[], same: boolean, suggested: readonly string[]): MemoryRow[] {
-  const hint = new Set(suggested);
+  const hint = new Set(suggested.map(memKey));
   return files
-    .filter((f) => same || TEAM_TYPES.has(f.type))
-    .map((f) => ({ ...f, suggested: hint.has(f.name), ticked: same && hint.has(f.name) }));
+    .filter((f) => memoryName(f.name) && (same || TEAM_TYPES.has(f.type)))
+    .map((f) => ({ ...f, suggested: hint.has(memKey(f.name)), ticked: same && hint.has(memKey(f.name)) }));
+}
+
+/** Re-offer after the brief arrives, keeping whatever the person already ticked or unticked. */
+export function keepTicks(next: readonly MemoryRow[], prev: readonly MemoryRow[] | null): MemoryRow[] {
+  if (!prev) return [...next];
+  const was = new Map(prev.map((r) => [r.name, r.ticked]));
+  return next.map((r) => (was.has(r.name) ? { ...r, ticked: was.get(r.name)! } : r));
 }
 
 export const peerName = (p: Peer) => p.label || p.user;
@@ -342,7 +366,7 @@ export function handoffBusy(list: readonly HandoffRec[], resumeId: string): stri
   return `sending to ${who}`;
 }
 
-export interface Installed { workdir: string; resume_id: string; branch: string | null; worktree: boolean }
+export interface Installed { workdir: string; resume_id: string; branch: string | null; worktree: boolean; kept: string[] }
 /** The roster row a received session resumes from. */
 export function restorableFor(info: HandoffInfo, inst: Installed, id: string, colorKey: string): Restorable {
   const meta = narrowMeta(info.meta);

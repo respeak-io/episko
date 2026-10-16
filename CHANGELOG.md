@@ -42,6 +42,9 @@ Markers: `+` new · `~` changed · `!` fixed
   downloads) all leave the sender with a resumable session; nothing is written on the receiving
   machine until the server says it has changed hands. A transcript carries whatever the agent
   read, so the send sheet says so every time. Permission modes never travel.
+  The project's saved Claude memories can go along, ticked one by one: a teammate is only ever
+  offered project and reference memories, never the ones about you, and the session that wrote
+  each is stripped. The receiving machine adds them beside its own and never replaces one it has.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

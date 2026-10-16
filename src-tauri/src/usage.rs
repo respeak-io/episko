@@ -1221,6 +1221,152 @@ fn discard_fork_in(base: &Path, cwd: &str, source: &str, fork: &str) -> Result<b
     Ok(true)
 }
 
+// ---------- the project's saved memories (docs/handoff.md) ----------
+
+/// The index Claude reads first; it never travels, and a new file only ever adds a line to it.
+const MEMORY_INDEX: &str = "MEMORY.md";
+
+/// Whether auto memory is off, or moved somewhere this cannot key by project: then it is left alone.
+pub(crate) fn auto_memory_off(base: &Path) -> bool {
+    if std::env::var_os("CLAUDE_CODE_DISABLE_AUTO_MEMORY").is_some_and(|v| !v.is_empty() && v != "0") {
+        return true;
+    }
+    let settings = std::fs::read_to_string(base.join("settings.json")).unwrap_or_default();
+    memory_settings_off(&settings)
+}
+
+fn memory_settings_off(text: &str) -> bool {
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    v["autoMemoryEnabled"] == serde_json::Value::Bool(false) || v["autoMemoryDirectory"].as_str().is_some_and(|s| !s.trim().is_empty())
+}
+
+/// `<project dir of the MAIN worktree>/memory`: every worktree of a repo shares one. `None` for
+/// a path too long to key, which import_dir refuses rather than guesses.
+pub(crate) fn memory_dir(base: &Path, cwd: &str) -> Option<PathBuf> {
+    let root = repo_root_of(cwd).unwrap_or_else(|| cwd.to_string());
+    import_dir(base, &root, cfg!(windows)).ok().map(|d| d.join("memory"))
+}
+
+/// One memory file a session may carry: `[A-Za-z0-9._-]+.md`, never the index.
+pub(crate) fn valid_memory_name(n: &str) -> bool {
+    n != MEMORY_INDEX && n.strip_suffix(".md").is_some_and(valid_part_name)
+}
+
+#[derive(serde::Serialize, Debug, PartialEq, Clone)]
+pub(crate) struct MemoryFile {
+    pub(crate) name: String,
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    pub(crate) description: String,
+}
+
+/// The frontmatter's lines, or none when the file does not open with `---`.
+fn frontmatter(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else { return "" };
+    rest.find("\n---").map_or("", |i| &rest[..i])
+}
+
+fn yaml_scalar(v: &str) -> String {
+    let v = v.trim();
+    if v.starts_with('"') {
+        return serde_json::from_str::<String>(v).unwrap_or_else(|_| v.trim_matches('"').to_string());
+    }
+    v.trim_matches('\'').to_string()
+}
+
+/// `type` under `metadata:` wins over a top-level one; both shapes are on disk.
+fn memory_meta(text: &str) -> (String, String) {
+    let (mut top, mut nested, mut desc, mut in_meta) = (String::new(), String::new(), String::new(), false);
+    for line in frontmatter(text).lines() {
+        let indented = line.starts_with([' ', '\t']);
+        let Some((k, v)) = line.trim().split_once(':') else { continue };
+        if !indented {
+            in_meta = k == "metadata";
+        }
+        match (indented, k.trim()) {
+            (false, "type") => top = yaml_scalar(v),
+            (false, "description") => desc = yaml_scalar(v),
+            (true, "type") if in_meta => nested = yaml_scalar(v),
+            _ => {}
+        }
+    }
+    (if nested.is_empty() { top } else { nested }, desc)
+}
+
+pub(crate) fn list_memories_in(dir: &Path) -> Vec<MemoryFile> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<MemoryFile> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !valid_memory_name(&name) {
+                return None;
+            }
+            let (kind, description) = memory_meta(&std::fs::read_to_string(e.path()).ok()?);
+            Some(MemoryFile { name, kind, description: description.chars().take(200).collect() })
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// A memory as it may leave this machine: the session that wrote it is not the recipient's business.
+pub(crate) fn strip_origin(text: &str) -> String {
+    let fm = frontmatter(text);
+    if fm.is_empty() {
+        return text.to_string();
+    }
+    let at = fm.as_ptr() as usize - text.as_ptr() as usize;
+    let kept: Vec<&str> = fm.split_inclusive('\n').filter(|l| l.trim().split_once(':').is_none_or(|(k, _)| k.trim() != "originSessionId")).collect();
+    format!("{}{}{}", &text[..at], kept.concat(), &text[at + fm.len()..])
+}
+
+/// Writes (or with `None` removes) one memory. `absent_only` never touches a file already
+/// there; `Ok(false)` is "left as it was". A new file adds its line to the index, never removes one.
+pub(crate) fn write_memory_in(dir: &Path, name: &str, text: Option<&str>, absent_only: bool) -> Result<bool, String> {
+    if !valid_memory_name(name) {
+        return Err(format!("not a memory file name: {name}"));
+    }
+    let path = dir.join(name);
+    let Some(text) = text else {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("could not remove {}: {e}", path.display())),
+        };
+    };
+    let existed = path.exists();
+    if existed && absent_only {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let tmp = tmp_sibling(&path);
+    std::fs::write(&tmp, text).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not place {}: {e}", path.display())
+    })?;
+    if !existed {
+        index_memory(dir, name, text)?;
+    }
+    Ok(true)
+}
+
+fn index_memory(dir: &Path, name: &str, text: &str) -> Result<(), String> {
+    let index = dir.join(MEMORY_INDEX);
+    let have = std::fs::read_to_string(&index).unwrap_or_default();
+    if have.contains(&format!("({name})")) {
+        return Ok(());
+    }
+    let (_, desc) = memory_meta(text);
+    let title = name.trim_end_matches(".md");
+    let line = if desc.is_empty() { format!("- [{title}]({name})\n") } else { format!("- [{title}]({name}) — {desc}\n") };
+    let sep = if have.is_empty() || have.ends_with('\n') { "" } else { "\n" };
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&index).map_err(|e| format!("could not open {}: {e}", index.display()))?;
+    f.write_all(format!("{sep}{line}").as_bytes()).map_err(|e| format!("could not write {}: {e}", index.display()))
+}
+
 // ---------- the account's per-model plan limits ----------
 // The statusLine payload carries `five_hour` and `seven_day` and nothing else, so a
 // per-model weekly window — Fable's — reaches the telemetry stream nowhere. The CLI answers
@@ -2670,5 +2816,81 @@ mod tests {
         let base = scratch_dir();
         assert!(scan_usage_in(&base, 30).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    const NESTED: &str = "---\nname: wip\ndescription: \"Where the parser stands\"\nmetadata: \n  node_type: memory\n  type: project\n  originSessionId: 87cba454-0cba-4cd5-84d5-ab14c42b6083\n---\n\nbody originSessionId: stays\n";
+    const TOP: &str = "---\r\nname: me\r\ntype: user\r\ndescription: 'Likes short commits'\r\n---\r\nbody\r\n";
+
+    #[test]
+    fn a_memory_reads_its_type_from_either_frontmatter_shape() {
+        assert_eq!(memory_meta(NESTED), ("project".to_string(), "Where the parser stands".to_string()));
+        assert_eq!(memory_meta(TOP), ("user".to_string(), "Likes short commits".to_string()));
+        let both = "---\ntype: user\nmetadata:\n  type: reference\n---\n";
+        assert_eq!(memory_meta(both).0, "reference", "metadata.type wins");
+        assert_eq!(memory_meta("no frontmatter\ntype: user\n").0, "");
+        let dir = scratch_dir();
+        for (n, t) in [("b.md", NESTED), ("a.md", TOP), (MEMORY_INDEX, "- x"), ("c.txt", TOP), ("bad name.md", TOP)] {
+            std::fs::write(dir.join(n), t).unwrap();
+        }
+        let names: Vec<String> = list_memories_in(&dir).into_iter().map(|m| format!("{}:{}", m.name, m.kind)).collect();
+        assert_eq!(names, ["a.md:user", "b.md:project"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_session_that_wrote_a_memory_is_stripped_and_nothing_else() {
+        let out = strip_origin(NESTED);
+        assert!(!out.contains("87cba454"));
+        assert!(out.contains("  type: project\n") && out.ends_with("body originSessionId: stays\n"));
+        assert_eq!(strip_origin("plain text\n"), "plain text\n");
+    }
+
+    #[test]
+    fn a_worktree_files_its_memories_under_the_main_checkout() {
+        let root = scratch_dir();
+        let (base, repo) = (root.join("claude"), root.join("repo"));
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let wt = root.join("wt");
+        git(&repo, &["worktree", "add", "-q", "-b", "side", &wt.to_string_lossy()]);
+        let main = memory_dir(&base, &repo.to_string_lossy()).unwrap();
+        assert_eq!(memory_dir(&base, &wt.to_string_lossy()), Some(main.clone()));
+        assert_eq!(main, project_transcript_dir(&base, &repo.to_string_lossy()).join("memory"));
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(memory_dir(&base, &plain.to_string_lossy()), Some(project_transcript_dir(&base, &plain.to_string_lossy()).join("memory")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_received_memory_never_replaces_one_and_the_index_only_grows() {
+        let dir = scratch_dir().join("memory");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(MEMORY_INDEX), "- [Mine](mine.md) — kept\n- [Gone](gone.md)").unwrap();
+        std::fs::write(dir.join("mine.md"), "local").unwrap();
+        assert_eq!(write_memory_in(&dir, "mine.md", Some(NESTED), true), Ok(false));
+        assert_eq!(std::fs::read_to_string(dir.join("mine.md")).unwrap(), "local");
+        assert_eq!(write_memory_in(&dir, "wip.md", Some(NESTED), true), Ok(true));
+        assert_eq!(write_memory_in(&dir, "wip.md", Some("other"), true), Ok(false));
+        let index = std::fs::read_to_string(dir.join(MEMORY_INDEX)).unwrap();
+        assert_eq!(index, "- [Mine](mine.md) — kept\n- [Gone](gone.md)\n- [wip](wip.md) — Where the parser stands\n");
+        // Overwriting an existing file adds no second index line.
+        assert_eq!(write_memory_in(&dir, "wip.md", Some(TOP), false), Ok(true));
+        assert_eq!(std::fs::read_to_string(dir.join(MEMORY_INDEX)).unwrap(), index);
+        for bad in [MEMORY_INDEX, "../x.md", "x.txt", ".md"] {
+            assert!(write_memory_in(&dir, bad, Some("x"), true).is_err(), "{bad}");
+        }
+        assert_eq!(write_memory_in(&dir, "wip.md", None, false), Ok(true));
+        assert!(!dir.join("wip.md").exists());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn auto_memory_turned_off_or_moved_is_left_alone() {
+        assert!(!memory_settings_off(""));
+        assert!(!memory_settings_off(r#"{"autoMemoryEnabled": true}"#));
+        assert!(memory_settings_off(r#"{"autoMemoryEnabled": false}"#));
+        assert!(memory_settings_off(r#"{"autoMemoryDirectory": "~/notes"}"#));
     }
 }

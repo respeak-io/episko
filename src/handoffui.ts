@@ -7,9 +7,9 @@ import { $, dropScrim, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import {
-  awaitsInstall, clampBrief, codeText, gitChoices, handoffBusy, lostOnHandoff, narrowMeta, peerName, placeGate,
+  awaitsInstall, clampBrief, codeText, gitChoices, handoffBusy, keepTicks, lostOnHandoff, memoryOffer, narrowMeta, peerName, placeGate,
   restorableFor, rowText, sendGate, targets,
-  type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Installed, type Peer, type Target,
+  type Brief, type HandoffEv, type HandoffGit, type HandoffRec, type Installed, type MemoryFile, type MemoryRow, type Peer, type Target,
 } from "./handoff";
 import { briefingHtml, incomingSheetHtml, reviewBriefHtml, reviewRestHtml, sendSheetHtml, type IncomingView } from "./handoffview";
 import { dormants, handoffs, sessions } from "./state";
@@ -41,6 +41,8 @@ interface Sheet {
   step: Step; targets: Target[]; pick: number | null; warnings: string[];
   git: HandoffGit | null; gitErr: string; gitPick: string | null;
   hid: string | null; brief: Brief; briefNote: string; err: string; gen: number;
+  /** The project's memories as read, and the rows offered once the target and brief are known. */
+  memFiles: MemoryFile[]; mems: MemoryRow[] | null;
   /** `handoff_send` was called: closing can no longer stop it, only a recall can. */
   offering: boolean;
 }
@@ -94,8 +96,14 @@ export function openSend(id: string) {
     workdir: at.workdir, colorKey: s ? s.colorKey : d!.colorKey, resumeId: s ? s.resumeId || s.id : d!.resumeId,
     step: "pick", targets: list, pick: ready.length === 1 ? list.indexOf(ready[0]) : null, warnings,
     git: null, gitErr: "", gitPick: null, hid: null, brief: clampBrief({}), briefNote: "", err: "", gen: ++gen, offering: false,
+    memFiles: [], mems: null,
   };
   const mine = sheet.gen;
+  invoke<MemoryFile[]>("handoff_memories", { workdir: sheet.workdir }).then((files) => {
+    if (sheet?.gen !== mine || !Array.isArray(files)) return;
+    sheet.memFiles = files;
+    paint();
+  }).catch((e) => dlog("warn", `handoff: memories unreadable: ${errText(e)}`));
   invoke<HandoffGit>("handoff_git_state", { workdir: sheet.workdir }).then((g) => {
     if (sheet?.gen !== mine) return;
     sheet.git = g;
@@ -131,13 +139,16 @@ function paintReview(sh: Sheet, who: string) {
     paintedRest = "";
     $("handBody").innerHTML = `${reviewBriefHtml(who, sh.brief, sh.briefNote)}<div id="handRest"></div>`;
   }
+  const t = sh.pick === null ? null : sh.targets[sh.pick];
+  // Offered against the brief's suggestions; a tick the person changed survives a repaint.
+  sh.mems = t ? keepTicks(memoryOffer(sh.memFiles, t.mine, sh.brief.memories), sh.mems) : [];
   const ch = sh.git ? gitChoices(sh.git, serverHandoff?.max_bytes ?? 0) : null;
   const options = sh.gitErr ? [{ id: "none" as const, label: "Send only the conversation" }] : ch?.options ?? null;
   const rest = reviewRestHtml({
     who, options, pick: sh.gitErr ? "none" : sh.gitPick,
     gitNote: sh.gitErr ? `Couldn't read the checkout: ${sh.gitErr}` : ch?.note ?? "",
     ttlHours: Math.round((serverHandoff?.ttl_ms ?? 72 * 3_600_000) / 3_600_000), maxBytes: serverHandoff?.max_bytes ?? 0,
-    err: sh.err, busy: sh.step === "sending", offering: sh.offering,
+    err: sh.err, busy: sh.step === "sending", offering: sh.offering, memories: sh.mems, teammate: !!t && !t.mine,
   });
   if (rest !== paintedRest) { paintedRest = rest; $("handRest").innerHTML = rest; }
 }
@@ -192,11 +203,13 @@ async function send() {
   sh.step = "sending";
   sh.err = "";
   paint();
-  const brief = clampBrief(sh.brief);
+  const memories = (sh.mems ?? []).filter((m) => m.ticked).map((m) => m.name);
+  // The brief names only what travels: a suggestion left unticked stays here, name and all.
+  const brief = { ...clampBrief(sh.brief), memories };
   const empty = !brief.summary && !brief.state && !brief.next_steps.length && !brief.open_questions.length;
   try {
     const packed = await invoke<Packed>("handoff_pack", {
-      id: hid, workdir: sh.workdir, resumeId: sh.resumeId, git: how, memories: [],
+      id: hid, workdir: sh.workdir, resumeId: sh.resumeId, git: how, memories, teammate: !t.mine,
       meta: { title: sh.title, project: sh.project, ...(empty ? {} : { brief }) },
     });
     // Cancelled from its row while packing: what was just staged must not be offered later.
@@ -341,7 +354,7 @@ async function settleBack(r: HandoffRec) {
 }
 
 // ---------- receiving: the incoming sheet, the claim and the install ----------
-interface InSheet { id: string; paths: string[]; pick: number | null; folder: string | null; err: string; busy: boolean }
+interface InSheet { id: string; paths: string[]; pick: number | null; folder: string | null; err: string; busy: boolean; mems: Set<string> }
 let inSheet: InSheet | null = null;
 const installing = new Set<string>();
 // An install that failed this run waits for Retry; a reconnect's `ready` must not repeat it.
@@ -361,6 +374,7 @@ export function openIncoming(id: string) {
   inSheet = {
     id, paths, pick: r.checkout ? (at >= 0 ? at : -1) : paths.length ? 0 : null,
     folder: r.checkout && at < 0 ? r.checkout : null, err: r.reason ?? "", busy: false,
+    mems: new Set(r.memories ?? meta?.memories.map((m) => m.name) ?? []),
   };
   painted = "";
   $("scrim").classList.add("show");
@@ -402,6 +416,7 @@ function paintIn() {
     code: codeText(meta?.git ?? null), newer: !meta, paths: sh.paths, pick: sh.pick, folder: sh.folder,
     gate: meta ? placeGate(chosen(sh), meta, r.id) : null, stage, progress, err: sh.err,
     ttlHours: Math.round((serverHandoff?.ttl_ms ?? 72 * 3_600_000) / 3_600_000),
+    memories: meta?.memories ?? [], ticked: sh.mems,
   });
   if (html !== painted) { painted = html; $("handBody").innerHTML = html; }
 }
@@ -416,7 +431,8 @@ async function claimIn() {
   if (!sh || !r || !meta || !checkout || sh.busy || placeGate(checkout, meta, r.id)) return;
   sh.busy = true;
   sh.err = "";
-  patch(r.id, (x) => { const n = { ...x, checkout, at: Date.now() }; delete n.reason; return n; });
+  const memories = meta.memories.map((m) => m.name).filter((n) => sh.mems.has(n));
+  patch(r.id, (x) => { const n = { ...x, checkout, memories, at: Date.now() }; delete n.reason; return n; });
   try {
     await invoke("handoff_claim", { id: r.id });
   } catch (e) {
@@ -454,8 +470,9 @@ async function install(id: string, checkout: string) {
   host.renderAll();
   let row: Restorable;
   try {
-    const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: [] });
+    const inst = await invoke<Installed>("handoff_install", { id, checkout, memories: r.memories ?? [] });
     row = restorableFor(r.info, inst, crypto.randomUUID(), checkout);
+    if (inst.kept.length) toast(`Kept your own ${inst.kept.join(", ")}; the one from ${who} was not written`);
   } catch (e) {
     installFailed.add(id);
     dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
@@ -512,11 +529,22 @@ export function onHandoffEvent(ev: HandoffEv) {
   paintIn();
 }
 
+// A Retry installs from the record, so a tick changed after the claim is written there too.
+function toggleInMem(sh: InSheet, i: number) {
+  const r = recOf(sh.id);
+  const name = narrowMeta(r?.info?.meta)?.memories[i]?.name;
+  if (!r || !name) return;
+  if (!sh.mems.delete(name)) sh.mems.add(name);
+  if (r.memories) patch(r.id, (x) => ({ ...x, memories: [...sh.mems] }));
+  paintIn();
+}
+
 function inClick(verb: string, arg: string | undefined) {
   const sh = inSheet;
   if (!sh) return;
   const checkout = chosen(sh);
   if (verb === "in-pick") { sh.pick = Number(arg); paintIn(); }
+  else if (verb === "in-mem") toggleInMem(sh, Number(arg));
   else if (verb === "in-folder") {
     void open({ directory: true, multiple: false }).then((dir) => {
       if (typeof dir !== "string" || inSheet !== sh) return;
@@ -541,6 +569,11 @@ $("handBody").addEventListener("click", (e) => {
   if (!sheet) return;
   if (verb === "pick") { sheet.pick = Number(arg); paint(); }
   else if (verb === "git") { sheet.gitPick = arg; paint(); }
+  else if (verb === "mem" && sheet.mems?.[Number(arg)] && sheet.step === "review") {
+    const i = Number(arg);
+    sheet.mems = sheet.mems.map((m, j) => (j === i ? { ...m, ticked: !m.ticked } : m));
+    paint();
+  }
   else if (verb === "go") void proceed();
   else if (verb === "skip" && sheet.step === "brief" && sheet.hid) { sheet.step = "review"; paint(); }
   else if (verb === "send") void send();

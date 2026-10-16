@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  awaitsInstall, capableDevices, clampBrief, codeText, gitChoices, handoffBusy, incomingByProject, lostOnHandoff, memoryOffer, narrowCaps,
+  awaitsInstall, capableDevices, clampBrief, codeText, gitChoices, handoffBusy, incomingByProject, keepTicks, lostOnHandoff, memoryOffer, narrowCaps,
   narrowInfo, narrowMeta, onCaps, placeGate, readHandoffs, reduce, restorableFor, rowText, sendGate, targets,
   type HandoffCaps, type HandoffEv, type HandoffGit, type HandoffInfo, type HandoffRec, type Me,
 } from "../src/handoff";
@@ -249,6 +249,29 @@ describe("lostOnHandoff and memoryOffer", () => {
     expect(rows).toHaveLength(4);
     expect(rows.filter((r) => r.ticked).map((r) => r.name)).toEqual(["c.md"]);
   });
+  it("never offers a teammate a user, feedback or untyped memory, whatever the brief suggests", () => {
+    const more = [...files, { name: "e.md", type: "", description: "" }, { name: "MEMORY.md", type: "project", description: "" }];
+    const rows = memoryOffer(more, false, ["b.md", "c.md", "e.md", "MEMORY.md"]);
+    expect(rows.map((r) => r.name)).toEqual(["a.md", "d.md"]);
+  });
+  it("matches the brief's suggestion however the model spelled it", () => {
+    expect(memoryOffer(files, true, [" A ", "D.MD"]).filter((r) => r.ticked).map((r) => r.name)).toEqual(["a.md", "d.md"]);
+  });
+  it("keeps a tick the person changed when the offer is recomputed", () => {
+    const first = memoryOffer(files, true, ["a.md"]).map((r) => (r.name === "a.md" ? { ...r, ticked: false } : r.name === "b.md" ? { ...r, ticked: true } : r));
+    const again = keepTicks(memoryOffer(files, true, ["a.md"]), first);
+    expect(again.filter((r) => r.ticked).map((r) => r.name)).toEqual(["b.md"]);
+    expect(keepTicks(memoryOffer(files, true, ["a.md"]), null).filter((r) => r.ticked).map((r) => r.name)).toEqual(["a.md"]);
+  });
+  it("reads the memories a meta names, dropping any name the backend would refuse", () => {
+    const m = narrowMeta(meta({ memories: [{ name: "a.md", type: "project", description: "x" }, { name: "../b.md" }, { name: "MEMORY.md" }, "c.md"] }));
+    expect(m?.memories).toEqual([{ name: "a.md", type: "project", description: "x" }]);
+    expect(narrowMeta(meta())?.memories).toEqual([]);
+  });
+  it("keeps the recipient's ticks on its record, valid names only", () => {
+    const raw = [{ id: ID, dir: "in", resumeId: RESUME, peer: { user: "ben" }, state: "claimed", at: NOW, memories: ["a.md", "../x.md", 3] }];
+    expect(readHandoffs(raw, NOW)[0].memories).toEqual(["a.md"]);
+  });
 });
 
 describe("handoffBusy", () => {
@@ -270,12 +293,12 @@ describe("handoffBusy", () => {
 
 describe("restorableFor and incomingByProject", () => {
   it("builds the roster row a received session resumes from", () => {
-    const r = restorableFor(info({ updated: NOW + 7 }), { workdir: "/w/epi-feat", resume_id: RESUME, branch: "feat", worktree: true }, "new-id", "/w/epi");
+    const r = restorableFor(info({ updated: NOW + 7 }), { workdir: "/w/epi-feat", resume_id: RESUME, branch: "feat", worktree: true, kept: [] }, "new-id", "/w/epi");
     expect(r).toEqual({
       id: "new-id", resumeId: RESUME, provider: "claude", project: "epi", workdir: "/w/epi-feat", colorKey: "/w/epi",
       worktree: "feat", branch: "feat", title: "Fix the parser", lastActivity: NOW + 7,
     });
-    expect(restorableFor(info(), { workdir: "/w/epi", resume_id: RESUME, branch: null, worktree: false }, "n", "/w/epi").worktree).toBeNull();
+    expect(restorableFor(info(), { workdir: "/w/epi", resume_id: RESUME, branch: null, worktree: false, kept: [] }, "n", "/w/epi").worktree).toBeNull();
   });
   it("files incoming offers under their project's checkout, or under null when not cloned", () => {
     const l = reduce(reduce([], ev({}), BEN, NOW), ev({ id: "x", meta: meta({ project_id: "other" }) }), BEN, NOW);

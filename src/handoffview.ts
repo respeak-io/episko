@@ -1,7 +1,7 @@
 // The send sheet's markup and the rows a handed session leaves behind (docs/handoff.md). Data
 // in, string out: ./handoffui owns #handoffDlg, its listener and its guard.
 import { esc, escAttr } from "./format";
-import { peerName, type Brief, type GitOption, type HandoffRec, type Target } from "./handoff";
+import { peerName, type Brief, type GitOption, type HandoffRec, type MemoryFile, type MemoryRow, type Target } from "./handoff";
 
 export const PRIVACY = (hours: number) =>
   "A transcript contains everything the agent read: file contents, command output, and any secret that passed through it. "
@@ -39,6 +39,18 @@ export function briefingHtml(who: string, stopping: boolean): string {
 export interface ReviewView {
   who: string; options: GitOption[] | null; pick: string | null; gitNote: string;
   ttlHours: number; maxBytes: number; err: string; busy: boolean; offering: boolean;
+  memories: MemoryRow[]; teammate: boolean;
+}
+const memRow = (m: MemoryFile, verb: string, ticked: boolean, off: boolean, extra = "") =>
+  `<label class="hand-g hand-m"><input type="checkbox" data-hand="${escAttr(verb)}"${ticked ? " checked" : ""}${off ? " disabled" : ""}>
+    <span><span class="mono">${esc(m.name)}</span> <span class="sync-dim">· ${esc(m.type || "untyped")}${extra}</span>
+    ${m.description ? `<span class="hand-md sync-dim">${esc(m.description)}</span>` : ""}</span></label>`;
+/** The project's saved memories, ticked to travel; empty when there are none worth offering. */
+function memoriesHtml(rows: MemoryRow[], teammate: boolean, who: string, busy: boolean): string {
+  if (!rows.length) return "";
+  const note = teammate ? `Only project and reference memories can go to ${who}; yours about you never do.` : "Ticked ones go with it.";
+  return `<div class="hand-sec"><span class="label">Memories</span><span class="sync-dim">${esc(note)}</span></div>
+    <div class="hand-gs">${rows.map((m, i) => memRow(m, `mem|${i}`, m.ticked, busy, m.suggested ? " · the session used it" : "")).join("")}</div>`;
 }
 const lines = (xs: string[]) => esc(xs.join("\n"));
 /** Step 2's brief, painted once per sheet: a repaint would replace the field being typed into. */
@@ -61,6 +73,7 @@ export function reviewRestHtml(v: ReviewView): string {
   const blocked = v.busy ? "Sending…" : v.options === null ? "Still reading the checkout" : v.pick === null ? "Choose how the code travels" : "";
   return `<div class="hand-sec"><span class="label">Code</span>${v.gitNote ? `<span class="sync-dim">${esc(v.gitNote)}</span>` : ""}</div>
     <div class="hand-gs">${git}</div>
+    ${memoriesHtml(v.memories, v.teammate, v.who, v.busy)}
     <div class="hand-priv">${esc(PRIVACY(v.ttlHours))}</div>
     <div class="sync-dim">This server takes up to ${esc(mib(v.maxBytes))}. Files like <span class="mono">.env</span> and keys are left out of a snapshot.</div>
     ${v.err ? `<div class="sync-err">${esc(v.err)}</div>` : ""}
@@ -97,6 +110,7 @@ export interface IncomingView {
   paths: string[]; pick: number | null; folder: string | null; gate: string | null;
   stage: "offer" | "claiming" | "receiving" | "ready" | "installing" | "taken";
   progress: string; err: string; ttlHours: number;
+  memories: MemoryFile[]; ticked: ReadonlySet<string>;
 }
 const briefRead = (b: Brief) => {
   const list = (label: string, xs: string[]) => (xs.length ? `<div class="hand-sec"><span class="label">${esc(label)}</span></div><ul class="hand-ul">${xs.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "");
@@ -119,6 +133,8 @@ export function incomingSheetHtml(v: IncomingView): string {
   const folder = v.folder ? `<label class="hand-g"><input type="radio" name="handin" data-hand="in-pick|-1"${v.pick === -1 ? " checked" : ""}${choose ? "" : " disabled"}><span class="mono">${esc(v.folder)}</span></label>` : "";
   const where = `<div class="hand-sec"><span class="label">Resume it in</span></div><div class="hand-gs">${places}${folder}
       ${choose ? `<button class="cfm-btn ghost hand-pickdir" type="button" data-hand="in-folder">Choose a folder…</button>` : ""}</div>`;
+  const mems = v.memories.length ? `<div class="hand-sec"><span class="label">Memories</span><span class="sync-dim">One you already have is never replaced.</span></div>
+    <div class="hand-gs">${v.memories.map((m, i) => memRow(m, `in-mem|${i}`, v.ticked.has(m.name), !choose)).join("")}</div>` : "";
   const status = v.stage === "offer" ? "" : `<p class="hand-note">${v.stage === "ready" ? "" : `<span class="hand-spin" aria-hidden="true"></span>`}${esc(v.progress)}</p>`;
   const err = v.err ? `<div class="sync-err">${esc(v.err)}</div>` : "";
   const gate = v.gate ? `<div class="hand-warn">${esc(v.gate)}</div>` : "";
@@ -130,5 +146,5 @@ export function incomingSheetHtml(v: IncomingView): string {
   const hint = v.stage === "offer" ? `held for ${v.ttlHours}h at most` : v.stage === "ready" ? "this is now your copy" : "nothing is written until it is yours";
   return `${head}<div class="hand-sec"><span class="label">Brief</span></div>${brief}
     <div class="hand-sec"><span class="label">Code</span></div><p class="hand-note">${esc(v.code)}</p>
-    ${where}${gate}${status}${err}${foot(hint, buttons)}`;
+    ${where}${mems}${gate}${status}${err}${foot(hint, buttons)}`;
 }

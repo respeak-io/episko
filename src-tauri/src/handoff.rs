@@ -744,14 +744,37 @@ pub(crate) struct Packed {
     left_behind: Vec<String>,
 }
 
+/// Memory types a teammate may receive; `user` and `feedback` are about the sender, never theirs.
+const TEAM_MEMORY: [&str; 2] = ["project", "reference"];
+
+/// The ticked memories as they travel, `originSessionId` stripped; refused before anything ships.
+fn pack_memories(base: &Path, workdir: &str, names: &[String], teammate: bool) -> Result<Vec<(usage::MemoryFile, Vec<u8>)>, String> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let dir = usage::memory_dir(base, workdir).ok_or("this project's memories cannot be found")?;
+    let all = usage::list_memories_in(&dir);
+    let mut out = Vec::with_capacity(names.len());
+    for n in names {
+        let f = all.iter().find(|f| &f.name == n).ok_or_else(|| format!("no memory named {n}"))?;
+        if teammate && !TEAM_MEMORY.contains(&f.kind.as_str()) {
+            let kind = if f.kind.is_empty() { "untyped" } else { &f.kind };
+            return Err(format!("{n} is a {kind} memory, which never goes to a teammate"));
+        }
+        let text = std::fs::read_to_string(dir.join(n)).map_err(|e| format!("read {n}: {e}"))?;
+        out.push((f.clone(), usage::strip_origin(&text).into_bytes()));
+    }
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)] // the command's own arguments, plus where to read and write
-fn pack_in(stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, how: &str, memories: &[String], meta: Value) -> Result<Packed, String> {
+fn pack_in(
+    stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, how: &str, memories: &[String], teammate: bool, meta: Value,
+) -> Result<Packed, String> {
     if !uuid_shaped(id) {
         return Err(format!("not a handoff id: {id}"));
     }
-    if !memories.is_empty() {
-        return Err("memories cannot travel with a handoff yet".into());
-    }
+    let mems = pack_memories(base, workdir, memories, teammate)?;
     let Value::Object(mut meta) = meta else { return Err("a handoff's meta is an object".into()) };
     let provider = meta.get("provider").and_then(Value::as_str).unwrap_or("claude").to_string();
     if provider != "claude" {
@@ -770,12 +793,16 @@ fn pack_in(stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, 
     if let Some(p) = &project_id {
         meta.insert("project_id".into(), p.clone().into());
     }
+    if !mems.is_empty() {
+        let list: Vec<&usage::MemoryFile> = mems.iter().map(|(f, _)| f).collect();
+        meta.insert("memories".into(), serde_json::to_value(list).map_err(|e| e.to_string())?);
+    }
     // Checked before anything is pushed; the git meta still to come is a few hundred bytes.
     if Value::Object(meta.clone()).to_string().len() + GIT_META_ROOM > HANDOFF_META_MAX {
         return Err("the brief is too long to send".into());
     }
     let bundle = staged(stage, "out", id, "bundle");
-    let packed = git::handoff_ship(workdir, id, how, &bundle).and_then(|shipped| ship_rest(stage, id, workdir, resume_id, provider, project_id, export, meta, shipped));
+    let packed = git::handoff_ship(workdir, id, how, &bundle).and_then(|shipped| ship_rest(stage, id, workdir, resume_id, provider, project_id, export, mems, meta, shipped));
     let _ = std::fs::remove_file(&bundle);
     if packed.is_err() && how != "none" {
         // Nothing staged, so nobody will settle this id: take back what was shipped.
@@ -789,7 +816,7 @@ fn pack_in(stage: &Path, base: &Path, id: &str, workdir: &str, resume_id: &str, 
 #[allow(clippy::too_many_arguments)] // pack_in's state at the moment the code has shipped
 fn ship_rest(
     stage: &Path, id: &str, workdir: &str, resume_id: &str, provider: String, project_id: Option<String>, export: usage::TranscriptExport,
-    mut meta: serde_json::Map<String, Value>, shipped: git::Shipped,
+    mems: Vec<(usage::MemoryFile, Vec<u8>)>, mut meta: serde_json::Map<String, Value>, shipped: git::Shipped,
 ) -> Result<Packed, String> {
     let bundle = staged(stage, "out", id, "bundle");
     meta.insert("git".into(), serde_json::to_value(&shipped.git).map_err(|e| e.to_string())?);
@@ -801,11 +828,14 @@ fn ship_rest(
     if shipped.bundle {
         entries.push(("repo.bundle".into(), Src::File(bundle.clone())));
     }
+    entries.extend(mems.into_iter().map(|(f, b)| (format!("memory/{}", f.name), Src::Bytes(b))));
     let mut files = Vec::with_capacity(entries.len());
     for (name, src) in &entries {
-        let Src::File(p) = src else { continue };
-        let len = std::fs::metadata(p).map_err(|e| format!("read {}: {e}", p.display()))?.len();
-        files.push(FileEntry { name: name.clone(), len, sha256: hash_file(p)? });
+        let (len, sha256) = match src {
+            Src::File(p) => (std::fs::metadata(p).map_err(|e| format!("read {}: {e}", p.display()))?.len(), hash_file(p)?),
+            Src::Bytes(b) => (b.len() as u64, hex(&Sha256::digest(b))),
+        };
+        files.push(FileEntry { name: name.clone(), len, sha256 });
     }
     let manifest = Manifest {
         v: 1, resume_id: resume_id.into(), sidecar_prefixes: export.prefixes, cwd: workdir.into(), project_id, provider, git: shipped.git, files,
@@ -823,16 +853,34 @@ pub(crate) struct Installed {
     resume_id: String,
     branch: Option<String>,
     worktree: bool,
+    /// Ticked memories left alone because this machine already had one of that name.
+    kept: Vec<String>,
+}
+
+/// Never replaces a memory already here, so a repeat install writes nothing twice.
+fn install_memories(base: &Path, workdir: &str, dir: &Path, names: &[String], picked: &[String]) -> Result<Vec<String>, String> {
+    if let Some(n) = picked.iter().find(|n| !names.contains(&format!("memory/{n}"))) {
+        return Err(format!("{n} did not come with this handoff"));
+    }
+    if picked.is_empty() || usage::auto_memory_off(base) {
+        return Ok(Vec::new());
+    }
+    let to = usage::memory_dir(base, workdir).ok_or("this project's memory folder cannot be found")?;
+    let mut kept = Vec::new();
+    for n in picked {
+        let text = std::fs::read_to_string(dir.join("memory").join(n)).map_err(|e| format!("read {n}: {e}"))?;
+        if !usage::write_memory_in(&to, n, Some(&text), true)? {
+            kept.push(n.clone());
+        }
+    }
+    Ok(kept)
 }
 
 /// Only after the server said `done`: unpack, refuse another project, land the code, file the
-/// transcript. Every step is safe to repeat, so a failed install is retried rather than undone.
+/// transcript, add the ticked memories. Every step is safe to repeat, so a failed install is retried.
 fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[String]) -> Result<Installed, String> {
     if !uuid_shaped(id) {
         return Err(format!("not a handoff id: {id}"));
-    }
-    if !memories.is_empty() {
-        return Err("memories cannot travel with a handoff yet".into());
     }
     let jp = staged(stage, "in", id, "json");
     let mut rec: InRec = read_json(&jp).ok_or("nothing was received under this id")?;
@@ -865,7 +913,8 @@ fn install_in(stage: &Path, base: &Path, id: &str, checkout: &str, memories: &[S
     };
     let sidecar: Vec<(String, PathBuf)> = names.iter().filter(|n| n.starts_with("sidecar/")).map(|n| (n.clone(), dir.join(n))).collect();
     usage::transcript_import_in(base, &workdir, &man.resume_id, &dir.join("transcript.jsonl"), &sidecar, &man.sidecar_prefixes)?;
-    Ok(Installed { workdir, resume_id: man.resume_id, branch, worktree })
+    let kept = install_memories(base, &workdir, &dir, &names, memories)?;
+    Ok(Installed { workdir, resume_id: man.resume_id, branch, worktree, kept })
 }
 
 /// Whether the staged send pushed a `handoff/<id>` branch; only then is a remote delete worth a push.
@@ -928,8 +977,20 @@ fn claude_base() -> Result<PathBuf, String> {
 
 #[allow(clippy::too_many_arguments)] // the send sheet's whole answer
 #[tauri::command(async)]
-pub(crate) fn handoff_pack(app: AppHandle, id: String, workdir: String, resume_id: String, git: String, memories: Vec<String>, meta: Value) -> Result<Packed, String> {
-    pack_in(&stage_dir(&app), &claude_base()?, &id, &workdir, &resume_id, &git, &memories, meta)
+pub(crate) fn handoff_pack(
+    app: AppHandle, id: String, workdir: String, resume_id: String, git: String, memories: Vec<String>, teammate: bool, meta: Value,
+) -> Result<Packed, String> {
+    pack_in(&stage_dir(&app), &claude_base()?, &id, &workdir, &resume_id, &git, &memories, teammate, meta)
+}
+
+/// The project's saved memories the send sheet can tick; empty where auto memory is off.
+#[tauri::command(async)]
+pub(crate) fn handoff_memories(workdir: String) -> Result<Vec<usage::MemoryFile>, String> {
+    let base = claude_base()?;
+    if usage::auto_memory_off(&base) {
+        return Ok(Vec::new());
+    }
+    Ok(usage::memory_dir(&base, &workdir).map(|d| usage::list_memories_in(&d)).unwrap_or_default())
 }
 
 /// Names the recipient and offers the packed blob; `false` when sync is down, in which case
@@ -1326,6 +1387,50 @@ mod tests {
         let filed = usage::project_transcript_dir(&base, &checkout).join(format!("{SID}.jsonl"));
         assert_eq!(std::fs::read(&filed).unwrap(), body);
         assert!(install_in(&stage, &base, ID, &checkout, &[]).is_ok(), "a retry is harmless");
+    }
+
+    #[test]
+    fn a_ticked_memory_travels_stripped_and_lands_beside_the_recipients_own() {
+        let root = scratch_dir();
+        let (sbase, sender) = (root.join("sender-claude"), root.join("sender"));
+        std::fs::create_dir_all(&sender).unwrap();
+        let cwd = sender.to_string_lossy().into_owned();
+        let tdir = usage::project_transcript_dir(&sbase, &cwd);
+        std::fs::create_dir_all(&tdir).unwrap();
+        std::fs::write(tdir.join(format!("{SID}.jsonl")), "{\"type\":\"user\"}\n").unwrap();
+        let mdir = usage::memory_dir(&sbase, &cwd).unwrap();
+        std::fs::create_dir_all(&mdir).unwrap();
+        let project = "---\nname: wip\ndescription: the parser\nmetadata:\n  type: project\n  originSessionId: 87cba454-0cba-4cd5-84d5-ab14c42b6083\n---\nbody\n";
+        std::fs::write(mdir.join("wip.md"), project).unwrap();
+        std::fs::write(mdir.join("me.md"), "---\ntype: user\n---\nprivate\n").unwrap();
+        let out = root.join("out-stage");
+
+        let e = pack_in(&out, &sbase, ID, &cwd, SID, "none", &["me.md".into()], true, json!({}));
+        assert!(e.as_ref().is_err_and(|e| e.contains("never goes to a teammate")), "{e:?}");
+        assert!(!staged(&out, "out", ID, "json").exists(), "a refusal stages nothing");
+        let packed = pack_in(&out, &sbase, ID, &cwd, SID, "none", &["wip.md".into()], true, json!({"title": "t"})).expect("packed");
+        let rec: OutRec = read_json(&staged(&out, "out", ID, "json")).unwrap();
+        assert_eq!(rec.meta["memories"], json!([{"name": "wip.md", "type": "project", "description": "the parser"}]));
+
+        let (stage, rbase, recv) = (root.join("in-stage"), root.join("recv-claude"), root.join("recv"));
+        std::fs::create_dir_all(stage.join("in")).unwrap();
+        std::fs::create_dir_all(&recv).unwrap();
+        std::fs::copy(staged(&out, "out", ID, "epkh"), staged(&stage, "in", ID, "epkh")).unwrap();
+        let rec = InRec { size: packed.size, parts: packed.parts, sha256: packed.sha256, got: Got::Done, ..Default::default() };
+        write_json(&staged(&stage, "in", ID, "json"), &rec).unwrap();
+        let checkout = recv.to_string_lossy().into_owned();
+
+        let e = install_in(&stage, &rbase, ID, &checkout, &["me.md".into()]);
+        assert!(e.as_ref().is_err_and(|e| e.contains("did not come")), "{e:?}");
+        let done = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into()]).expect("installed");
+        assert!(done.kept.is_empty());
+        let landed = usage::memory_dir(&rbase, &checkout).unwrap();
+        let text = std::fs::read_to_string(landed.join("wip.md")).unwrap();
+        assert!(text.contains("  type: project") && !text.contains("originSessionId"), "{text}");
+        assert!(std::fs::read_to_string(landed.join("MEMORY.md")).unwrap().contains("(wip.md)"));
+        let again = install_in(&stage, &rbase, ID, &checkout, &["wip.md".into()]).expect("a retry is harmless");
+        assert_eq!(again.kept, vec!["wip.md".to_string()]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
