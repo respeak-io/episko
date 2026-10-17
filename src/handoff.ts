@@ -273,7 +273,7 @@ export function sendGate(t: GateTarget, caps: HandoffCaps | null | undefined, co
   if (!t.workdir) return "This session has no folder to hand over";
   if (!t.canResume) return "This session can't be resumed yet";
   if (!connected) return "Sync isn't connected";
-  if (!caps) return "This sync server doesn't know about handoff";
+  if (!caps) return "This sync server doesn't support handoff";
   if (!caps.enabled) return "Handoff is off on this sync server";
   if (peers < 1) return "No other machine or teammate on this server can take it";
   return null;
@@ -421,12 +421,12 @@ export function placeGate(checkout: string | null, meta: HandoffMeta, id: string
 
 /** What the recipient is told about the code, from the sender's git meta. */
 export function codeText(g: GitMeta | null): string {
-  if (!g) return "Only the conversation: it was not in a git checkout.";
+  if (!g) return "Only the conversation. It wasn't in a git checkout.";
   const at = `${g.branch ?? "a detached commit"} at ${g.head.slice(0, 7)}`;
   const wip = g.snap ? ", with the uncommitted work as it was" : "";
   if (g.via === "branch") return `${at}${wip}, pushed as a handoff branch; a new worktree is made for it.`;
   if (g.via === "bundle") return `${at}${wip}, packed into the handoff; a new worktree is made for it.`;
-  return `${at}, already on the remote. A checkout sitting there clean is used as it is; otherwise a new worktree.`;
+  return `${at}, already on the remote. A clean checkout already on it is used as is; otherwise a new worktree is made.`;
 }
 
 /** A received session the server has handed over and nothing here has resumed yet. */

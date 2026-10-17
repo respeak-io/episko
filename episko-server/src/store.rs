@@ -556,14 +556,14 @@ impl Store {
     /// A new offer, or the same one again from the same machine, which answers with `have`.
     pub fn handoff_offer(&self, who: &Identity, req: &Offer, cfg: &HandoffCfg, now: i64) -> Result<HandoffInfo, HandoffError> {
         let meta = req.meta.to_string();
-        if !uuid_shaped(&req.id) { return refused(HandoffErr::BadPart, "a handoff id is a uuid"); }
+        if !uuid_shaped(&req.id) { return refused(HandoffErr::BadPart, "a handoff id must be a uuid"); }
         if req.size > cfg.max_bytes { return refused(HandoffErr::TooLarge, format!("this server takes at most {} bytes", cfg.max_bytes)); }
         if meta.len() > HANDOFF_META_MAX { return refused(HandoffErr::TooLarge, format!("meta exceeds {HANDOFF_META_MAX} bytes")); }
         if req.size == 0 || u64::from(req.parts) != req.size.div_ceil(HANDOFF_PART as u64) {
             return refused(HandoffErr::BadPart, format!("{} bytes do not make {} parts", req.size, req.parts));
         }
         let sha = req.sha256.to_ascii_lowercase();
-        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return refused(HandoffErr::BadPart, "sha256 is 64 hex digits"); }
+        if sha.len() != 64 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) { return refused(HandoffErr::BadPart, "sha256 must be 64 hex digits"); }
         let mut db = self.db();
         let tx = db.transaction()?;
         if let Some((ws, old)) = load(&tx, &req.id)? {

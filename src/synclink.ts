@@ -846,7 +846,7 @@ function applyMem(ev: SyncEvent): boolean {
     for (const k of kept.evicted) delete stamps[stampKey("memory", k)];
     delete memBook.caught;
     memLetGo = true;
-    log("warn", `sync: too much memory waits for projects not cloned here; ${kept.held ? `${kept.evicted.length} let go` : `${ev.key} dropped`} until the next connection asks again`);
+    log("warn", `sync: memory held for projects not cloned here is over its cap; ${kept.held ? `${kept.evicted.length} dropped` : `${ev.key} dropped`}, asked for again on the next connection`);
   }
   if (!kept.held) return false;
   stamps[sk] = { at: ev.at, device: ev.device };

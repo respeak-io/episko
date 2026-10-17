@@ -191,7 +191,7 @@ pub(crate) struct Brief {
 }
 
 impl Brief {
-    /// The schema asks for these bounds; a model that overran them is cut, not trusted.
+    /// The schema asks for these bounds; an answer that overruns them is cut to fit.
     fn clamped(mut self) -> Self {
         let cut = |s: &mut String, n: usize| *s = s.trim().chars().take(n).collect();
         cut(&mut self.summary, 600);

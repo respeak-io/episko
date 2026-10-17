@@ -110,7 +110,7 @@ fn main() {
     }
 }
 
-/// `EPISKO_HANDOFF` switches it on; the TTL and size are clamped rather than refused.
+/// `EPISKO_HANDOFF` switches it on; an out-of-range TTL or size is clamped to its bounds.
 fn handoff_config(on: Option<&str>, ttl_hours: Option<&str>, max_mb: Option<&str>) -> Option<store::HandoffCfg> {
     let on = switched_on(on);
     let num = |v: Option<&str>, default: i64, max: i64| v.and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(default).clamp(1, max);

@@ -1,14 +1,14 @@
 # Session handoff
 
-Sending a stopped Claude session to another of your machines, or to a teammate, through the
-sync server: the conversation, the code it was working on, and a short brief. The recipient
-resumes it as an ordinary shelved row. Everything else about sync (docs/sync.md) still holds;
-this is the one channel that carries anything conversational.
+Handoff sends a stopped Claude session to another of your machines, or to a teammate, through
+the sync server. It carries the conversation, the code it was working on and a short brief, and
+the recipient resumes it as an ordinary shelved row. Everything else in docs/sync.md still
+holds; this is the only channel that carries anything conversational.
 
 ## The channel
 
-Handoff is **not** a sync `Stream` and does not bump `PROTOCOL`. It is an opt-in channel on
-the same WebSocket:
+Handoff is an opt-in channel on the sync WebSocket. It is not a sync `Stream` and does not
+bump `PROTOCOL`.
 
 - A client says it speaks it with `hello.features: ["handoff"]`. A server sends `handoff*`
   messages only to a socket that said so, and answers one from a socket that did not with
@@ -20,10 +20,10 @@ the same WebSocket:
   greys the ones that cannot receive (`targets`).
 - The server's switch is `EPISKO_HANDOFF` (off by default), with `EPISKO_HANDOFF_TTL_HOURS`
   (72) and `EPISKO_HANDOFF_MAX_MB` (64). Settings › Sync shows it; no client can turn it on.
-  Off is authoritative: a server started with it off expires every open handoff, so a sender
-  told its send is back is told the truth, and nothing left open is claimed once it comes on.
+  Off is authoritative: a server started with it off expires every open handoff. A sender told
+  its send is back can rely on that, and nothing left open is claimed once the switch is on again.
 - After every hello the server sends the user's whole set (`handoff_list`), and `handoff` on
-  every change. A missed message is therefore harmless: the next list is the whole truth.
+  every change. A missed message does no harm, because the next list carries the whole set.
 
 ## Privacy
 
@@ -101,37 +101,37 @@ On screen (./handoffui, ./handoffview):
   checkout of the project here, or a folder chosen by hand, which `handoff_install` still
   refuses if its project id differs. *Resume here* is greyed with `placeGate`'s reason: not
   cloned, not Claude, or a path past Claude's 200-character folder name once the worktree
-  it may get is counted. The check is before the claim on purpose, since after `done` a
-  refusal can only be repaired, not undone.
+  it may get is counted. The check runs before the claim because after `done` a refusal can
+  be repaired but not undone.
 - The chosen checkout is stored on the record at the claim, so the install that follows
   `ready` needs no sheet open. It runs once per `ready`; after a failure, a reconnect's repeat
   `ready` waits for the person's Retry, which may also pick another checkout.
 - A successful install writes the roster row (`restorableFor`), marks the record `settled`
   (kept a week, so a later send of the same conversation from here is not taken for the old
   one), drops the staging and resumes through `resumeDormant`, the same path ⟲ takes.
-- Another of my machines claiming an offer made to all of them leaves *taken on …* here
-  until the server closes it.
+- When another of your machines claims an offer made to all of them, this one shows *taken
+  on …* until the server closes it.
 
 ## Why exactly one machine owns it
 
-The server makes the one decision that matters, with a compare-and-set: `offered → claimed`
-has one winner. The recipient writes into `~/.claude` or git **only after `done`**, and the
-sender archives its transcript **only after that same `done`**. If the TTL fires in any state
-before `done`, ownership is the sender's again and the recipient has installed nothing.
+The server decides ownership with a compare-and-set: `offered → claimed` has one winner. The
+recipient writes into `~/.claude` or git **only after `done`**, and the sender archives its
+transcript **only after that same `done`**. If the TTL fires in any state before `done`,
+ownership is the sender's again and the recipient has installed nothing.
 `complete` is idempotent for the taker, so a crash between sending it and hearing `done` is
 repaired by the next connection. The one hole is a sender that cannot hear the server: it
-cannot know whether `done` happened, so it stays locked rather than guessing, and when it
-finally gives up (expiry + 1h) it asks a human, who can ask the other human.
+cannot know whether `done` happened, so it stays locked. When it gives up (expiry + 1h) it
+asks the person at the keyboard, who can check with the recipient.
 
 ## The container (`EPKH`)
 
 `"EPKH1\n"`, then per entry `u32 name_len | name | u64 len | bytes`, little-endian. Allowed
 names: `manifest.json`, `transcript.jsonl`, `sidecar/tool-results/<n>`, `sidecar/subagents/<n>`,
 `repo.bundle`, `memory/<n>.md`, with `<n>` matching `[A-Za-z0-9._-]+` (a memory name is at most
-120 characters and never `MEMORY.md`). Any other name rejects
-the whole blob. The manifest lists each file's length and sha256; the offer carries the whole
-blob's. Parts are 512 KiB raw (base64 on the wire, about 683 KiB a frame), so a proxy in front
-of the server must pass WebSocket messages of at least 1 MiB. At most two parts are in flight.
+120 characters and never `MEMORY.md`). Any other name rejects the whole blob. The manifest
+lists each file's length and sha256; the offer carries the whole blob's. Parts are 512 KiB raw
+(base64 on the wire, about 683 KiB a frame), so a proxy in front of the server must pass
+WebSocket messages of at least 1 MiB. At most two parts are in flight.
 
 Staging lives under the app cache (`handoff/out`, `handoff/in`); the sender's archive of a
 handed transcript lives under app data for 14 days.
@@ -147,7 +147,7 @@ neither answer is safe to assume. Applying in place and cherry-picking are not o
 ## Memories
 
 Claude's saved memories live in `<project dir of the main checkout>/memory/`, one file per memory
-with a `type` in its frontmatter (top level, or under `metadata:` — that one wins), plus the
+with a `type` in its frontmatter (top level, or under `metadata:`, which wins), plus the
 `MEMORY.md` index. Every worktree of a repo shares one folder, so `memory_dir` keys on the main
 checkout (`repo_root_of`), not the folder the session ran in.
 
@@ -167,8 +167,8 @@ checkout (`repo_root_of`), not the folder the session ran in.
   rewritten or trimmed. A received description reaches that index flattened to one line of at
   most 200 characters: Claude reads the index in every session, and the meta the sheet showed is
   not the file in the blob, so the file's text must not be able to add lines of its own.
-- **A memory never fails the install.** The session is the point and a memory is an extra, so
-  each one is best effort: `Installed.kept` names one left alone because a different file of that
+- **A memory never fails the install.** The session matters more than any memory, so each
+  memory is best effort: `Installed.kept` names one left alone because a different file of that
   name was already there (an identical one, which a retry finds, counts as written), `failed`
   says `name: reason`, and `memory_off` names the ones skipped because auto memory is off here.
 - A teammate's install re-reads each file's own `type` and refuses anything but project and
@@ -176,7 +176,7 @@ checkout (`repo_root_of`), not the folder the session ran in.
   as good as the sender's build.
 - Auto memory switched off (`autoMemoryEnabled: false` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY`), or
   moved by `autoMemoryDirectory`, means nothing is listed and nothing is written: a custom folder
-  cannot be keyed by project, so it is left alone rather than guessed at. The project's own
+  cannot be keyed by project, so it is left alone. The project's own
   `.claude/settings.local.json` and `.claude/settings.json` (in the checkout and the main one)
   outrank `~/.claude/settings.json`, as they do for Claude.
 - `MEMORY.md` itself never travels. Keeping one person's memories in step across their own

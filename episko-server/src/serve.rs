@@ -163,7 +163,7 @@ pub fn serve(listener: TcpListener, store: Arc<Store>, cfg: Arc<Config>) {
         std::thread::sleep(Duration::from_secs(5));
         sweeper.sweep(Instant::now());
     });
-    // Off means off: nothing left open may be claimed once the switch comes back (docs/handoff.md).
+    // Switching off expires every open handoff, so none can be claimed once it is back on (docs/handoff.md).
     if cfg.handoff.is_none() {
         match store.handoff_close_all(now_ms()) {
             Ok(moved) if !moved.is_empty() => eprintln!("[episko-server] handoff is off: {} open handoff(s) expired", moved.len()),

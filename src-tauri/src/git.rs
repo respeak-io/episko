@@ -3042,7 +3042,7 @@ fn handoff_bundle(top: &str, id: &str, rev: &str, out: &std::path::Path) -> Resu
     }
     let o = git_run(git_cmd(top, &args), 60)?;
     if !o.status.success() {
-        // An unpushed-nothing bundle is refused by git; it is the clean case, not an error.
+        // git refuses to write an empty bundle; here that is the clean case, so it returns None.
         let empty = String::from_utf8_lossy(&o.stderr).contains("empty bundle");
         let _ = std::fs::remove_file(out);
         // Put the ref back as it was: a snapshot's stays, one made only for this bundle goes.

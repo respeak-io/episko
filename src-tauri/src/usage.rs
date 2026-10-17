@@ -820,7 +820,7 @@ fn move_session_transcript_in(
 }
 
 /// The id is pasted into a filename: uuid characters only, so no `..` or separator can escape
-/// the projects tree. Rejected, not sanitised: a sanitised id names the wrong file.
+/// the projects tree. A bad id is rejected, since a sanitised one would name the wrong file.
 fn check_session_id(id: &str) -> Result<(), String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(format!("not a valid session id: {id}"));
@@ -923,7 +923,7 @@ pub(crate) fn transcript_export_in(base: &Path, cwd: &str, id: &str) -> Result<T
             }
         }
     }
-    // The computed spelling too: Claude names paths from its cwd, not from the folder's case.
+    // The computed spelling too: Claude spells paths from its cwd, whatever case the folder has on disk.
     let mut prefixes = vec![side.to_string_lossy().into_owned()];
     let computed = want.join(id).to_string_lossy().into_owned();
     if !prefixes.contains(&computed) {
@@ -1351,7 +1351,7 @@ pub(crate) fn list_memories_in(dir: &Path) -> Vec<MemoryFile> {
     out
 }
 
-/// A memory as it may leave this machine: the session that wrote it is not the recipient's business.
+/// A memory as it may leave this machine: without the id of the session that wrote it.
 pub(crate) fn strip_origin(text: &str) -> String {
     let fm = frontmatter(text);
     if fm.is_empty() {

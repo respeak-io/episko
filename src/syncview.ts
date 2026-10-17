@@ -160,12 +160,12 @@ function projects(p: SyncPanel): string {
 // the server's (EPISKO_MEMORY) is the one no client can throw.
 function memorySect(p: SyncPanel): string {
   const { on, server } = p.memory;
-  const where = !p.st.connected ? "Whether this server carries it is known once connected."
-    : server ? "This server carries it." : "This server does not carry it: its admin turns it on with EPISKO_MEMORY.";
+  const where = !p.st.connected ? "Connect to see whether this server carries it."
+    : server ? "This server carries it." : "This server doesn't carry it. Its admin can turn it on with EPISKO_MEMORY.";
   return sect("Claude's memory", `<div class="sync-pref"><span>Saved memories, per project</span>
       <button class="sync-seg${on ? "" : " on"}" data-setsync="memory|0">This machine only</button><button class="sync-seg${on ? " on" : ""}" data-setsync="memory|1">Your machines</button></div>`,
-    `The files Claude keeps in each project's memory folder, sent to your other machines only, never a teammate's.
-    A file changed on two machines keeps the later one. ${where}`);
+    `The files Claude keeps in each project's memory folder. They go to your other machines only, never to a teammate's.
+    When a file changes on two machines, the later edit wins. ${where}`);
 }
 
 // The server's switch (EPISKO_HANDOFF), shown rather than offered: no client can turn it on.

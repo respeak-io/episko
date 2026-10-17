@@ -192,18 +192,18 @@ session running in another terminal *and* one running nowhere at all.
 A Claude session can be sent to another of your machines or to a teammate through the sync
 server (docs/handoff.md has the protocol, the ownership argument and the failure table). The
 verb sits beside ⇩ everywhere shelving does: a live row's menu, a shelved row's menu, the ⌘K
-action page and the shelved mirror's card. Each is greyed with `sendGate`'s reason rather than
-dropped, so a server with handoff off says so where you looked for the button.
+action page and the shelved mirror's card. Each stays visible, greyed with `sendGate`'s
+reason, so when the server has handoff off the button itself says so.
 
-- **It is a shelve first.** A live pane goes through `stopForTranscript` (./actions) and then
+- **Sending starts with a shelve.** A live pane goes through `stopForTranscript` (./actions) and then
   `shelveSession`, so the dormant row exists before anything is packed and *Cancel* at any
   step leaves exactly a shelved session behind. `stopForTranscript` is the drift move's
   kill-and-wait, extracted so both callers wait for `pty-exit` rather than for the signal:
   a transcript packed while Claude still holds it open is a torn read.
-- **A sent row is locked, not gone.** `handoffBusy` feeds `dormantBusy` and `histBusy`, so
+- **A sent row stays, locked.** `handoffBusy` feeds `dormantBusy` and `histBusy`, so
   neither ⟲ nor History can resume a conversation another machine may own. The row's tag says
   where it stands (`rowText`); ↶ takes it back until the recipient claims it.
-- **The outcome decides the row, and only the server's outcome does.** `done` archives the
+- **Only the server's outcome decides the row.** `done` archives the
   transcript here and removes the row (a *handed to …* row stays until ✕); a decline, recall
   or expiry puts it back on the shelf with a toast. A server that cannot be heard leaves it
   locked; only an explicit `enabled: false`, a list without it, or expiry plus an hour returns

@@ -188,7 +188,7 @@ describe("sendGate", () => {
     expect(sendGate({ ...ok, workdir: "" }, ON, true, 1)).toMatch(/folder/);
     expect(sendGate({ ...ok, canResume: false }, ON, true, 1)).toMatch(/resumed/);
     expect(sendGate(ok, ON, false, 1)).toMatch(/connected/);
-    expect(sendGate(ok, undefined, true, 1)).toMatch(/doesn't know/);
+    expect(sendGate(ok, undefined, true, 1)).toMatch(/doesn't support handoff/);
     expect(sendGate(ok, { ...ON, enabled: false }, true, 1)).toMatch(/off/);
     expect(sendGate(ok, ON, true, 0)).toMatch(/No other machine/);
     expect(sendGate(ok, ON, true, 1)).toBeNull();

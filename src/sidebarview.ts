@@ -224,7 +224,7 @@ function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>): string {
   const busy = !out && dormantBusy(d);
   const label = pastLabel(d);
   const when = relTime(d.lastActivity);
-  const tip = out ? `${sent!.lock} · it can't be resumed here meanwhile`
+  const tip = out ? `${sent!.lock} · it can't be resumed here until then`
     : busy ? "This provider session is already running, so it cannot be resumed twice"
       : `Shelved · last active ${when} · click to look, ⟲ to resume`;
   const x = out

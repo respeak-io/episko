@@ -88,10 +88,10 @@ reaches `localStorage`, `fetch` or Tauri.
 | 4. Handoff | send a stopped session to another of your machines or a teammate (docs/handoff.md) | built |
 | 5. Memory | Claude's per-project memory files between one person's machines | built, off by default on both ends |
 
-The *shelved on another device* row is not a roster that syncs: a session moves between
-machines only when somebody sends it, and then the sending row says where it went until the
-recipient's machine takes it (docs/handoff.md). Not built: `episko-server` workspaces beyond the one default. A team runs
-one server, which is the per-team answer.
+There is no synced roster of shelved sessions. A session moves between machines only when
+somebody sends it, and the sending row says where it went until the recipient's machine takes
+it (docs/handoff.md). Also not built: `episko-server` workspaces beyond the one default. A team
+runs one server, which is the per-team answer.
 
 ## Where the code lives
 
@@ -211,8 +211,8 @@ inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usag
   and no longer has. A file over 96 KiB stays home and is never read as removed, and neither is
   anything when the folder is missing or the project's checkout changed (`cc-sync-memory`'s
   `dirs` keeps the one each project is scanned in, so a second clone never reads as a removal).
-- **Last writer wins**, with a twist that keeps data: a write or a removal only replaces the copy
-  this machine last agreed on. A file edited here and not sent yet is kept and sent instead, at a
+- **Last writer wins**, except that a write or a removal only replaces the copy this machine
+  last agreed on. A file edited here and not sent yet is kept and sent instead, at a
   newer stamp. A first discovery goes at stamp 1, like the roster, and only after the first
   catch-up, so it never undercuts a copy the server already held.
 - **A name two machines each had is kept twice.** An arrival for a file this machine never agreed
@@ -220,12 +220,12 @@ inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usag
   and the local copy goes out anew, so every machine ends with both.
 - **Case never folds a name.** `memory.md` is the index on macOS and Windows, so no case of it
   travels, and a name that differs only in case from a file already here is refused.
-- **Its own batch.** The server refuses a whole push carrying memory while the stream is off, so
+- **Memory pushes in a batch of its own.** The server refuses a whole push carrying memory while the stream is off, so
   memory never rides with prefs. A push is about half a MiB and 900 events at most, and a key or
   payload the server would refuse (`KEY_MAX`, `PAYLOAD_MAX` once JSON-escaped) never goes. A
   refused push comes back as `error` with `push: true`, which `sync.rs` turns into `pushFailed`
   for that push's id: nothing of it is agreed, and the next `pushed` lands on the next push.
-- **Always heard, gated on what it does.** The app names `"memory"` in every hello, opted in or
+- **Always advertised, applied only when allowed.** The app names `"memory"` in every hello, opted in or
   not: an arrival is **held** in `cc-sync-memory` until this machine has both the switch on and
   a checkout of the project. Advertising only when opted in would leave everything sent before
   behind the cursor.
@@ -296,15 +296,16 @@ It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. 
 out; the app then halts and asks to pair again rather than retrying. Every six hours the server
 compacts: an event superseded by a newer one of the same key goes once it is older than
 `EPISKO_RETENTION_DAYS` (30). The latest per key always stays (per user on a personal stream,
-since teammates share project ids), so a device that was away for months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
+since teammates share project ids), so a device that was away for months still converges.
+Docker: `episko-server/Dockerfile` and `docker-compose.yml`
 (`episko-server/README.md`), with settings in an untracked `.env` and proxy wiring in an untracked
 `docker-compose.override.yml`, so `update.sh` moves a deployment between release tags without a
 merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
 and a test in `main.rs` fails when one the source reads is missing from it or from `USAGE`.
 
 **Handoff is off unless the server switches it on.** Handing a session to another machine
-(docs/handoff.md) is the one thing that puts a transcript on the server, so it waits for an
-operator to opt in:
+(docs/handoff.md) is the only feature that puts a transcript on the server, so it waits for
+an operator to opt in:
 
 | Variable | Default | |
 | --- | --- | --- |
@@ -322,8 +323,8 @@ operator switched it off still dies on schedule. A proxy must pass ~1 MiB WebSoc
 the personal stream `memory`, which no teammate ever hears. `welcome.memory` says whether it is
 on. A connection hears memory events, live or in its catch-up, only when its `hello.features`
 named `"memory"` and the stream is on; switching it off stops serving what is stored too. A push
-carrying one is `bad_message` while the stream is off or unasked, the whole push refused so a
-client sends memory in a batch of its own.
+carrying one is `bad_message` while the stream is off or unasked, and the whole push is
+refused, so a client sends memory in a batch of its own.
 
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,
@@ -355,6 +356,6 @@ user, device}`; `user` is read only with the registration code. It then sends `h
 - **It never sends a peer what it did not advertise.** `hello.features` is opt-in: a connection
   without `"handoff"` hears no `handoff*` message, even one addressed to its own user, and a
   `handoff*` it sends anyway is `bad_message`, as on an older server. The `memory` stream follows
-  the same rule with `"memory"`. That is what lets the
-  channel ship without a `PROTOCOL` bump. What a device last advertised is kept per token, so
+  the same rule with `"memory"`. That is what lets the channel ship without a `PROTOCOL`
+  bump. What a device last advertised is kept per token, so
   `welcome.devices[].handoff` tells the app which machines can receive one.

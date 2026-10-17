@@ -86,11 +86,11 @@ export function openSend(id: string) {
   const d = s ? undefined : dormants.find((x) => x.id === id)!;
   const at = s ? s.home ?? s : d!;
   const warnings: string[] = [];
-  if (s && midWork(s)) warnings.push(`It is still going (${phaseText(s)}); the turn it is in will not finish.`);
+  if (s && midWork(s)) warnings.push(`It is still running (${phaseText(s)}). The current turn will not finish.`);
   if (s) {
     const lost = lostOnHandoff(s);
-    if (lost.jobs) warnings.push(`${lost.jobs} background job${lost.jobs === 1 ? "" : "s"} stop with it and do not come back.`);
-    for (const url of lost.servers) warnings.push(`The server at ${url} stops with it.`);
+    if (lost.jobs) warnings.push(`${lost.jobs} background job${lost.jobs === 1 ? "" : "s"} will stop and won't restart.`);
+    for (const url of lost.servers) warnings.push(`The server at ${url} will stop too.`);
   }
   const list = currentTargets();
   const ready = list.filter((t) => t.ready);
@@ -190,7 +190,7 @@ async function proceed() {
     sh.brief = clampBrief(b);
   } catch (e) {
     if (sheet !== sh || sh.step !== "brief") return;
-    sh.briefNote = `Couldn't write one (${errText(e)}); write your own or leave it empty.`;
+    sh.briefNote = `Couldn't write a brief (${errText(e)}). Write your own or leave it empty.`;
   }
   sh.step = "review";
   paint();
@@ -259,7 +259,7 @@ async function cancelPacking(id: string, quiet = false) {
       return;
     } catch {
       // The server may hold it: settling here would let it come back as a send nobody cancelled.
-      if (r.sent) { toast("Can't cancel until sync reconnects: the server may already have it"); return; }
+      if (r.sent) { toast("Can't cancel until sync reconnects, because the server may already have it"); return; }
       offered.delete(id);
     }
   }
@@ -273,7 +273,7 @@ export function takeBack(id: string) {
   const r = recOf(id);
   if (!r || r.dir !== "out") return;
   if (r.state === "packing") { void cancelPacking(id); return; }
-  if (!rowText(r, Date.now()).actions.includes("takeback")) { toast(`Too late: ${peerName(r.peer)} is picking it up`); return; }
+  if (!rowText(r, Date.now()).actions.includes("takeback")) { toast(`Too late. ${peerName(r.peer)} is already picking it up`); return; }
   invoke("handoff_recall", { id }).then(() => toast("Taking it back…")).catch((e) => toast(`Can't take it back yet: ${errText(e)}`));
 }
 
@@ -296,7 +296,7 @@ export async function confirmReturned(resumeId: string): Promise<boolean> {
   if (!r) return true;
   const who = peerName(r.peer);
   const ok = await ask(
-    `The sync server never said whether ${who} picked this session up: it stopped answering, or had handoff switched off.\n\nCheck with ${who} before resuming, or two machines carry on one conversation.`,
+    `The sync server never confirmed whether ${who} picked up this session. It either stopped responding or had handoff turned off.\n\nCheck with ${who} before you resume, or two machines will continue the same conversation.`,
     { title: "Resume a session you handed over?", kind: "warning", okLabel: "Resume here", cancelLabel: "Not yet" },
   );
   if (!ok) return false;
@@ -336,7 +336,7 @@ function noteHeld(id: string, message: string) {
   const r = recOf(id);
   if (!r || r.dir !== "out" || (r.state !== "packing" && r.state !== "uploading") || heldSeen.has(`${id}|${message}`)) return;
   heldSeen.add(`${id}|${message}`);
-  toast(`Held by the server: ${message} · ↶ on its row cancels`);
+  toast(`The server is holding it: ${message} · ↶ on its row cancels it`);
 }
 
 function dropShelved(r: HandoffRec) {
@@ -426,11 +426,11 @@ function paintIn() {
   const who = peerName(r.peer);
   const stage = inStage(r, sh);
   const p = r.progress;
-  const progress = stage === "taken" ? `Taken on ${deviceLabel(r.takenBy!)}; it is that machine's now.`
-    : stage === "claiming" ? "Asking the server for it…"
+  const progress = stage === "taken" ? `Taken on ${deviceLabel(r.takenBy!)}. It belongs to that machine now.`
+    : stage === "claiming" ? "Requesting it from the server…"
       : stage === "receiving" ? `Receiving from ${who}${p && p.total ? ` · ${Math.floor((100 * p.done) / p.total)}%` : "…"}`
         : stage === "installing" ? "Placing the code and the conversation…"
-          : stage === "ready" ? `${who} has already handed this over; this is now your copy to repair.` : "";
+          : stage === "ready" ? `${who} has already handed this over, so this copy is now yours to repair.` : "";
   $("handTitle").textContent = stage === "ready" ? "Couldn't resume it yet" : `From ${who}`;
   const html = incomingSheetHtml({
     from: who, title: r.title || meta?.title || "A session", project: meta?.project ?? "", brief: meta?.brief ?? null,
@@ -467,7 +467,7 @@ async function declineIn(giveBack: boolean) {
   const r = inSheet && recOf(inSheet.id);
   if (!r) return;
   const who = peerName(r.peer);
-  if (giveBack && !await ask(`${who} gets the session back, and nothing of it is written here.`, { title: "Give it back?", kind: "warning", okLabel: "Give back", cancelLabel: "Keep it" })) return;
+  if (giveBack && !await ask(`${who} gets the session back. Nothing from it is written to this machine.`, { title: "Give it back?", kind: "warning", okLabel: "Give back", cancelLabel: "Keep it" })) return;
   givenBack.add(r.id);
   try {
     await invoke("handoff_decline", { id: r.id, reason: giveBack ? "given back" : "declined" });
@@ -481,7 +481,7 @@ async function declineIn(giveBack: boolean) {
 
 /** A memory never fails the install, so whatever it did not write is said here instead. */
 function memoryNotes(inst: Installed, who: string) {
-  if (inst.kept.length) toast(`Kept your own ${inst.kept.join(", ")}; the one from ${who} was not written`);
+  if (inst.kept.length) toast(`Kept your own ${inst.kept.join(", ")}. The version from ${who} was not written.`);
   const n = inst.memory_off.length;
   if (n) toast(`Auto memory is off here, so ${n} memor${n === 1 ? "y was" : "ies were"} not written`);
   for (const f of inst.failed) dlog("warn", `handoff memory not written: ${f}`);
@@ -507,7 +507,7 @@ async function install(id: string, checkout: string) {
     installFailed.add(id);
     dlog("warn", `handoff ${id.slice(0, 8)}: install failed: ${errText(e)}`);
     if (inSheet?.id === id) inSheet.err = errText(e);
-    else toast(`Couldn't place the session from ${who}: ${errText(e)} · its row retries`);
+    else toast(`Couldn't place the session from ${who}: ${errText(e)} · retry from its row`);
     installing.delete(id);
     paintIn();
     host.renderAll();
@@ -524,7 +524,7 @@ async function install(id: string, checkout: string) {
   } catch (e) {
     // Installed and on the rail as a shelved row; only the resume failed.
     dlog("warn", `handoff ${id.slice(0, 8)}: resume failed: ${errText(e)}`);
-    toast(`Placed the session from ${who}, but couldn't resume it: ${errText(e)} · resume its row`);
+    toast(`Placed the session from ${who} but couldn't resume it: ${errText(e)} · resume it from its row`);
   } finally {
     installing.delete(id);
     paintIn();
@@ -537,7 +537,7 @@ function receiveDue(ev: HandoffEv) {
   for (const r of handoffs) {
     if (r.dir !== "in" || announced.has(r.id) || r.state !== "offered" || r.takenBy) continue;
     announced.add(r.id);
-    toast(`${peerName(r.peer)} sent you “${r.title || "a session"}” · it's in the sidebar`);
+    toast(`${peerName(r.peer)} sent you "${r.title || "a session"}" · it's in the sidebar`);
   }
   const sh = inSheet;
   const r = sh ? recOf(sh.id) : undefined;

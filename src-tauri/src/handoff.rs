@@ -231,7 +231,7 @@ fn read_manifest(dir: &Path, names: &[String]) -> Result<Manifest, String> {
 
 // ---------- staging (`<app local data>/handoff/{out,in}`) ----------
 
-/// Not the cache dir: once the sender has archived, a received blob is the only live copy.
+/// Kept out of the cache dir: once the sender has archived, a received blob is the only live copy.
 pub(crate) fn stage_dir(app: &AppHandle) -> PathBuf {
     app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("episko")).join("handoff")
 }
@@ -446,7 +446,7 @@ impl Transfers {
     fn offer(&self, id: &str) -> Result<ClientMsg, (HandoffErr, String)> {
         let rec: OutRec = read_json(&staged(&self.stage, "out", id, "json")).ok_or((HandoffErr::Gone, "nothing is packed under this id".to_string()))?;
         if rec.to_user.is_empty() {
-            return Err((HandoffErr::BadTarget, "nobody was chosen to receive it".into()));
+            return Err((HandoffErr::BadTarget, "no recipient was chosen".into()));
         }
         if let Caps::Known(c) = &self.caps {
             if rec.size > c.max_bytes {
@@ -640,7 +640,7 @@ impl Transfers {
             return Step::default();
         }
         self.downs.remove(id);
-        refuse(id, HandoffErr::Checksum, "what arrived does not match what was sent; give it back so it can be sent again")
+        refuse(id, HandoffErr::Checksum, "the download does not match what was sent; give it back so it can be sent again")
     }
 
     fn on_part(&mut self, id: &str, part: u32, data: &str) -> Step {
@@ -744,7 +744,7 @@ pub(crate) struct Packed {
     left_behind: Vec<String>,
 }
 
-/// Memory types a teammate may receive; `user` and `feedback` are about the sender, never theirs.
+/// Memory types a teammate may receive; `user` and `feedback` describe the sender and stay behind.
 const TEAM_MEMORY: [&str; 2] = ["project", "reference"];
 /// The most memories one handoff carries; handoff.ts narrows the meta to the same.
 const MEMORY_MAX: usize = 50;
@@ -780,7 +780,7 @@ fn pack_in(
         return Err(format!("not a handoff id: {id}"));
     }
     let mems = pack_memories(base, workdir, memories, teammate)?;
-    let Value::Object(mut meta) = meta else { return Err("a handoff's meta is an object".into()) };
+    let Value::Object(mut meta) = meta else { return Err("a handoff's meta must be a JSON object".into()) };
     let provider = meta.get("provider").and_then(Value::as_str).unwrap_or("claude").to_string();
     if provider != "claude" {
         return Err("only a Claude session can be handed over".into());

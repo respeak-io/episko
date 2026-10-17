@@ -444,7 +444,7 @@ fn supervise(app: AppHandle, ctl: Arc<SyncCtl>, gen: u64, url: String, token: St
     let alive = || ctl.generation.load(Ordering::SeqCst) == gen;
     let stage = handoff::stage_dir(&app);
     let mut backoff = Duration::from_secs(1);
-    // Handoff verbs accepted while the session was dying go to the next one, not nowhere.
+    // Handoff verbs accepted while the session was dying are kept for the next one.
     let mut held: Vec<HandoffCtl> = vec![];
     while alive() {
         let since = lock(&ctl.status).cursor;
