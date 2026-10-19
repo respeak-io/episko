@@ -3634,6 +3634,18 @@ select.in-ctl { cursor: pointer; }
 .dsh .dw-f select, .dsh .dw-f input { min-width: 0; padding: 4px 7px; border-radius: 6px; font: 11px var(--font-mono); color: var(--text); background: var(--bg); border: 1px solid var(--hair); }
 .dsh .dw-f :is(select, input):focus { outline: none; border-color: var(--accent-line); }
 .dsh .dw-f select:disabled { opacity: .5; }
+.dsh .dw-f select { appearance: none; cursor: pointer; padding-right: 24px; background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23736d84' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 8px center; }
+.dsh .dw-f select:hover:not(:disabled) { border-color: var(--hair-strong); }
+/* A themed list where the webview draws one (WebView2); WKWebView keeps the native menu. */
+@supports (appearance: base-select) {
+  .dsh .dw-f select, .dsh .dw-f select::picker(select) { appearance: base-select; }
+  .dsh .dw-f select::picker-icon { display: none; }
+  .dsh .dw-f select::picker(select) { margin-top: 4px; padding: 4px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--surface); box-shadow: 0 18px 40px -12px rgba(0,0,0,.7); }
+  .dsh .dw-f option { padding: 5px 8px; border-radius: 5px; font: 11px var(--font-mono); color: var(--muted); cursor: pointer; }
+  .dsh .dw-f option::checkmark { content: "✓"; order: 1; margin-left: auto; color: var(--accent-ink); }
+  .dsh .dw-f option:is(:hover, :focus-visible) { outline: none; background: var(--lift); color: var(--text); }
+  .dsh .dw-f option:checked { background: var(--accent-wash); color: var(--accent-ink); }
+}
 .dsh .foot .act:disabled { opacity: .45; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .dsh, .dsh-scrim, .dsw i, .dsw i::after { transition: none; } }
 
