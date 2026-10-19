@@ -86,6 +86,56 @@ Right-click a row under a project — a live pane, a shelved one or an external 
 - **A task pane carries its own verbs first** — ⟳ *Run again*, ⋯ *Run again with…*, ■ *Stop*, ↗ *Reveal source* and the ▶ Run pin, all of them ./taskrun's and ./tasks', all of them already on the inspector's task card. ⟳ **replaces** the pane rather than adding one and re-runs *this step only*, so its sub says which; ■ keeps the pane and its output where ✕ takes both, and the two subs say so rather than leaving you to find out. A definition that has gone from the last discovery greys the row with *rescan with ▶ Run* instead of toasting after the click. The failed-task handoff stays in the card: it needs a target session picked, which is a submenu rather than a row.
 - **Every act is a verb that already exists elsewhere** — ⌘T's shell (`openShellFor`, so `splitBeside` still decides where it lands), the inspector's working-set card, branch chip and task card, the drift card's follow/move, the header's ⇩ and ✕, the shelf's ⟲. The menu adds reach, never a second implementation to keep in step.
 
+## Back and forward between screens (./nav)
+
+‹ › at the left of the stage header, the mouse's back/forward buttons and two bindable actions
+(`navBack`/`navForward`: ⌘[ ⌘] on macOS, Ctrl+Alt+← Ctrl+Alt+→ elsewhere) step through what has owned the
+stage. A *location* is a session (`activeId`) or a copy of `mirror` — an external or shelved
+mirror, a project dashboard, the fleet, a pull-request review. ./nav is the pure half (two stacks,
+the cursor, `sameLoc`, the labels); main.ts holds the driver beside `renderAllNow`.
+
+- **One recording point.** `renderAllNow` compares where the stage is against the cursor and
+  records a difference (`visit`), next to `syncAttn`. Every `takeStage` schedules a pass
+  (`setStageMoved`), so `setActive` — which paints its own surfaces and calls no `renderAll` — is
+  recorded too, and a pass only ever sees where the stage *settled* within a frame: a close that
+  lands on home and then on the next pane is one entry, not two, and a handover caught mid-flight
+  (`null`) is none. **A handover that spans an await is not one frame**: *Move session* and a task
+  re-run close the pane, await IPC, then stage the replacement, and a frame painted in between
+  would record the sidebar neighbour the close fell to — a place you never chose, one Back away.
+  Such a flow takes `holdNav()` (./dom) before the close and releases it in a `finally`; while
+  held, `renderAllNow` records nothing, and the release schedules the pass that records where it
+  landed.
+- **A step moves the cursor before it opens anything**, so the pass after it finds the stage
+  already where the cursor says and records nothing; forward survives a step back.
+- **Reopen through the verb a click uses** (`openLoc`): `setActive`, `openRunGroup`,
+  `openExternal`, `openDormant`, `openDashboard`, `openFleet`, `openPrReview`. Nothing here touches
+  `takeStage` or `hidden`, so a new stage kind is a new `Loc` arm and a new opener, not a new path.
+- **Identity, not labels.** An external mirror is keyed by pid (its session id rotates on
+  `/clear`, the same reason `mirror` carries the pid). A tiled run group is **one** location:
+  clicking a tile moves `activeId`, so `here()` reports the group and the tile is not an entry. A
+  split shell is never `activeId`, and dialogs and overlays (Settings, the diff, ⌘K, ⌘P, History)
+  never touch the stage, so neither is an entry.
+- **Dead entries are skipped and dropped as a step passes them**, and the buttons ask the same
+  `alive` predicate through `peek`, so a closed session never greys in as a destination. A
+  dashboard or review stays alive while its root is a project the sidebar lists, from the same
+  sources ./grouping's `allProjects` reads: a favourite, a live pane's project, a shelved one's,
+  an external session's repo, or a checkout mid-removal. The back stack is capped at 50.
+- **Ctrl+[ is Escape to a terminal**, which is why the non-mac default differs: a `KeyActionDef`
+  may carry `pc`, and `shippedCombo`/`defaultKeyBinds(mac)` pick per platform. On a Mac, where
+  `mod` is ⌘ *or* Ctrl, `comboOf` reads a bare Ctrl on `[`/`]` as no modifier at all, so Ctrl+[
+  still reaches a pane as ESC (and Ctrl+] as ^]); and a bracket typed with ⌥ (German, French,
+  Nordic layouts put `[` on ⌥5) drops that ⌥, since it is part of the character. Left and right
+  are the only arrows `comboOf` binds. The buttons sit in `.st-nav`, outside `.st-title`, so no
+  stage's header paint rewrites them; `renderNav` sets their state and tooltip every pass.
+- **Never ship Alt+←/→ off macOS**: an app chord is matched before xterm, so a pane never sees it,
+  and that is the word jump in Codex's composer, Claude's input and every readline shell. The PC
+  default is Ctrl+Alt+←/→ (JetBrains' back/forward), which no terminal binds; rebinding is one row.
+- **./keys never reads the platform.** Every function that resolves a default (`clampKeyBinds`,
+  `keyOverrides`, `resetKey`, …) and every matcher takes `mac`, so vitest runs both platforms.
+  `clampKeyBinds` settles the user's stored chords **before** any shipped default, so a default a
+  release adds (⌘[ here, on a chord a Mac user may already have bound) loses to the user's
+  binding rather than silently switching it off.
+
 ## Coding-agent providers (`kind:"agent"`)
 
 Every coding conversation is now `Sess.kind === "agent"`. `provider` is a stable catalogue id and `capabilities` says what its adapter can actually supply: session state, activity, context, usage, runtime permissions, launch-permission choices, resume, history and external-terminal support. Shells and tasks remain their own kinds. `isClaude` is reserved for Claude-specific launch/protocol decisions; shared surfaces gate on `hasAgentCapability` / `hasSessionState`.
@@ -186,6 +236,34 @@ Two seams are load-bearing. ./signoff reaches `shelveSession`/`closeSession` thr
 ./panes imports ./footer — a direct import closes the ring. And `#extPane`'s bar is
 written per opener (`renderExtHeader` / `renderPastHeader`), since one pane now serves a
 session running in another terminal *and* one running nowhere at all.
+
+## Send to… (handing a session to another machine)
+
+A Claude session can be sent to another of your machines or to a teammate through the sync
+server (docs/handoff.md has the protocol, the ownership argument and the failure table). The
+verb sits beside ⇩ everywhere shelving does: a live row's menu, a shelved row's menu, the ⌘K
+action page and the shelved mirror's card. Each stays visible, greyed with `sendGate`'s
+reason, so when the server has handoff off the button itself says so.
+
+- **Sending starts with a shelve.** A live pane goes through `stopForTranscript` (./actions) and then
+  `shelveSession`, so the dormant row exists before anything is packed and *Cancel* at any
+  step leaves exactly a shelved session behind. `stopForTranscript` is the drift move's
+  kill-and-wait, extracted so both callers wait for `pty-exit` rather than for the signal:
+  a transcript packed while Claude still holds it open is a torn read.
+- **A sent row stays, locked.** `handoffBusy` feeds `dormantBusy` and `histBusy`, so
+  neither ⟲ nor History can resume a conversation another machine may own. The row's tag says
+  where it stands (`rowText`); ↶ takes it back until the recipient claims it.
+- **Only the server's outcome decides the row.** `done` archives the
+  transcript here and removes the row (a *handed to …* row stays until ✕); a decline, recall
+  or expiry puts it back on the shelf with a toast. A server that cannot be heard leaves it
+  locked; only an explicit `enabled: false`, a list without it, or expiry plus an hour returns
+  it, and then ⟲ asks first (`confirmReturned`), because nobody can rule out that the other
+  machine already carried on.
+- **Nothing is typed.** The brief is a headless, forked, unpersisted `claude -p` after the
+  pane is gone (`handoff_brief`); the Enter rule's two places are unchanged.
+- **Receiving ends in a shelved row.** The other machine's ⇠ row opens a sheet; *Resume here*
+  claims it, and on the server's `done` the install writes an ordinary roster row and resumes it
+  through `resumeDormant`, so restore, History and drift treat it like any session started there.
 
 ## History (`◷`, ⌘⇧H)
 

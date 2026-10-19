@@ -3,7 +3,7 @@
 // never anything that would need a person (stopRuleBlocked, then prefillInputs).
 
 import { invoke } from "@tauri-apps/api/core";
-import { toast } from "./dom";
+import { holdNav, toast } from "./dom";
 import { dlog } from "./debug";
 import { hasSessionState, type Runnable, type Sess } from "./types";
 import { sessions, stageGroup } from "./state";
@@ -77,11 +77,16 @@ export async function rerunTask(s: Sess, withParams = false) {
   const ready = resolveRunInputs(spec, s.project, withParams);
   if (!ready) { openInputPrompt(spec, s.project, { colorKey: s.colorKey, worktree: s.worktree, branch: s.branch, discoveredIn: r.root, ...grp }); return; }
   const project = s.project, colorKey = s.colorKey, worktree = s.worktree, branch = s.branch;
-  closeSession(s.id);
-  const id = await launchTask(ready, project, { colorKey, worktree, branch, discoveredIn: r.root, ...grp });
-  // launchTask stages a group member only while that mosaic is already up; a re-run you
-  // clicked is one you want to watch, so the fresh pane still takes the stage otherwise.
-  if (id && grp.groupId && stageGroup !== grp.groupId) setActive(id);
+  const release = holdNav(); // the close's neighbour is a hop, not a place (./nav)
+  try {
+    closeSession(s.id);
+    const id = await launchTask(ready, project, { colorKey, worktree, branch, discoveredIn: r.root, ...grp });
+    // launchTask stages a group member only while that mosaic is already up; a re-run you
+    // clicked is one you want to watch, so the fresh pane still takes the stage otherwise.
+    if (id && grp.groupId && stageGroup !== grp.groupId) setActive(id);
+  } finally {
+    release();
+  }
 }
 
 // No trailing newline: Episko prefills, the human presses Enter (same contract as handToTerminal).

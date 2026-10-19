@@ -2,12 +2,14 @@
 // Reads are the live ESM binding (`activeId`, never `state.activeId`); a `setX` assigns and
 // nothing else. Preferences are read at module scope, so a test imports ./localstorage first.
 import { basename, clampTitlePrefs, hslToHex, nfcKeys, nfcPath, type TitlePrefs } from "./format";
-import { safeParse } from "./store";
+import { readList, safeParse } from "./store";
+import { readHandoffs, type HandoffRec } from "./handoff";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
 import type { RailLayout } from "./review";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
+import { IS_MAC } from "./dom";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
@@ -106,8 +108,8 @@ export const fetchedByRepo = new Map<string, FetchState>();
 // --- keyboard shortcuts ----------------------------------------------------------
 // Held resolved (the keydown handler reads it per keystroke) but stored as overrides only, so a
 // later default reaches old installs. Read a chord through `activeBind`, never `keyPrefs.binds[id]`.
-export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")));
-export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p)); }
+export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")), IS_MAC);
+export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p, IS_MAC), IS_MAC); }
 // Narrowing reads, declared so they hoist. A bad value is dropped whole: a throw here is a blank window.
 function strMap(raw: string | null): Record<string, string> {
   const v = safeParse<Record<string, string>>(raw);
@@ -174,6 +176,9 @@ export let externals: ExtSession[] = [];
 export function setExternals(l: ExtSession[]) { externals = l; }
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
+// Sessions handed to or from another machine (./handoff); a sent one locks its dormant row.
+export let handoffs: HandoffRec[] = readHandoffs(readList("cc-handoff"), Date.now());
+export function setHandoffs(l: HandoffRec[]) { handoffs = l; }
 // Every PTY the backend holds, keyed `<provider>:<session id>`. After a webview reload the map is
 // empty while every PTY runs on (#47), so this is what lets `dormantBusy`/`histBusy` refuse a resume.
 export let backendLive: ReadonlySet<string> = new Set();

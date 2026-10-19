@@ -234,13 +234,57 @@ pub fn discover_cached(root: &Path, trusted: bool) -> Vec<Runnable> {
             return list.clone();
         }
     }
-    let list = discover(root, trusted);
+    let mut list = discover(root, trusted);
+    mark_missing(&mut list);
     // A map that only grows is a leak; dropping the lot costs one re-parse.
     if cache.len() >= 64 {
         cache.clear();
     }
     cache.insert(key, (now, list.clone()));
     list
+}
+
+// Words a shell line can start with that are not a program on PATH.
+const SHELL_WORDS: &[&str] = &[
+    "cd", "export", "source", ".", "set", "unset", "if", "for", "while", "until", "case", "exec",
+    "echo", "printf", "test", "[", "[[", "true", "false", "eval", "ulimit", "umask", "env", "time",
+    "!", "{", "(", "command", "builtin", "trap", "wait", "read", "shift", "alias", "type",
+];
+
+/// The program a task starts, when it can be named without running anything: argv's program,
+/// or a shell line's first word. `None` for a variable, an assignment, a relative path or a builtin.
+fn program_of(exec: &Exec) -> Option<&str> {
+    let p = match exec {
+        Exec::Argv { program, .. } => program.as_str(),
+        Exec::Shell { line } => line.split_whitespace().next()?,
+    };
+    let unresolved = p.contains('$') || p.contains('{') || p.contains('=') || p.contains('`');
+    let relative = !Path::new(p).is_absolute() && (p.contains('/') || p.contains('\\'));
+    (!p.is_empty() && !unresolved && !relative && !SHELL_WORDS.contains(&p)).then_some(p)
+}
+
+/// Is it there to run? An absolute path must exist; a bare name must be on the PATH a task will
+/// get (`augmented_path`, the login shell's own). Scanned, not `which`-ed: no process per task.
+fn program_found(p: &str, path: &str) -> bool {
+    if Path::new(p).is_absolute() {
+        return Path::new(p).exists();
+    }
+    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat", ".ps1", ".com"] } else { &[""] };
+    std::env::split_paths(path).any(|d| exts.iter().any(|e| d.join(format!("{p}{e}")).is_file()))
+}
+
+/// A task whose program is not installed says so rather than failing at launch: pii's 14
+/// `pwsh` tasks on a Mac were offered as runnable. Blocked, never hidden (docs/tasks.md).
+fn mark_missing(list: &mut [Runnable]) {
+    let path = crate::platform::augmented_path();
+    let mut seen: BTreeMap<String, bool> = BTreeMap::new();
+    for r in list.iter_mut().filter(|r| r.blocked.is_none() && !r.compound) {
+        let Some(p) = program_of(&r.exec) else { continue };
+        let found = *seen.entry(p.to_string()).or_insert_with(|| program_found(p, &path));
+        if !found {
+            r.blocked = Some(format!("{p} is not installed (not on PATH)"));
+        }
+    }
 }
 
 /// Ids key pins and frecency, so a collision gets a numeric suffix rather than shadowing.
@@ -1578,6 +1622,23 @@ pub fn discover_runnables(workdir: String, trusted: bool) -> Result<Vec<Runnable
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_whose_program_is_missing_is_blocked_and_says_which() {
+        let shell = |l: &str| Exec::Shell { line: l.into() };
+        assert_eq!(program_of(&shell("pwsh -File x.ps1")), Some("pwsh"));
+        assert_eq!(program_of(&shell("cd web && pnpm dev")), None);
+        assert_eq!(program_of(&shell("FOO=1 node x.js")), None);
+        assert_eq!(program_of(&shell("./scripts/dev.sh")), None);
+        assert_eq!(program_of(&Exec::Argv { program: "${workspaceFolder}/.venv/bin/python".into(), args: vec![] }), None);
+        let bin = crate::testutil::scratch_dir().join("bin-probe");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("present-tool"), "").unwrap();
+        let path = std::env::join_paths([&bin]).unwrap().into_string().unwrap();
+        assert!(program_found("present-tool", &path));
+        assert!(!program_found("pwsh-that-is-not-here", &path));
+        assert!(program_found(&bin.join("present-tool").display().to_string(), ""));
+    }
 
     /// A scratch project directory that cleans itself up.
     struct Tmp(std::path::PathBuf);

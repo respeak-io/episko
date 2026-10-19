@@ -7,6 +7,7 @@ import {
   PREF_LABEL, STREAM_INFO, prefLabel, type DeviceInfo, type PendingPref, type Stream, type SyncHealth, type UserDevices,
 } from "./sync";
 import type { ShareMode } from "./state";
+import type { HandoffCaps } from "./handoff";
 
 export interface SyncDraft { url: string; code: string; user: string; label: string; headers: string }
 
@@ -17,6 +18,10 @@ export interface SyncPanel {
   users: UserDevices[]; online: Set<string>; activity: Partial<Record<Stream, Activity>>;
   pending: PendingPref[]; excluded: ReadonlySet<string>; invite: { code: string; expires: number } | null;
   nameOf: (device: string) => string; projects: ProjectSyncRow[]; now: number;
+  /** Welcome's handoff caps; undefined until a server says, kept apart from one that has it off. */
+  handoff?: HandoffCaps | null;
+  /** The memory stream: this machine's switch, and whether the server carries it at all. */
+  memory: { on: boolean; server: boolean };
 }
 
 const ago = (ms: number) => {
@@ -112,7 +117,7 @@ function streams(p: SyncPanel): string {
   return sect("What travels, and to whom",
     `<table class="sv-tbl sync-tbl"><thead><tr><th>What</th><th>Reaches</th><th>This run</th></tr></thead><tbody>${rows}</tbody></table>`,
     `Permission modes, trusted folders, tasks and auto-fetch never leave this machine, and nothing conversational
-    (prompts, transcripts, diffs, session titles) ever does.`);
+    (prompts, transcripts, diffs, session titles) ever does, except a session you explicitly send when this server allows it.`);
 }
 
 function waiting(p: SyncPanel): string {
@@ -151,6 +156,26 @@ function projects(p: SyncPanel): string {
     Project settings in its menu. Click a name to open it.`);
 }
 
+// Off until you say: a memory is written from your conversations. Both switches are named, since
+// the server's (EPISKO_MEMORY) is the one no client can throw.
+function memorySect(p: SyncPanel): string {
+  const { on, server } = p.memory;
+  const where = !p.st.connected ? "Connect to see whether this server carries it."
+    : server ? "This server carries it." : "This server doesn't carry it. Its admin can turn it on with EPISKO_MEMORY.";
+  return sect("Claude's memory", `<div class="sync-pref"><span>Saved memories, per project</span>
+      <button class="sync-seg${on ? "" : " on"}" data-setsync="memory|0">This machine only</button><button class="sync-seg${on ? " on" : ""}" data-setsync="memory|1">Your machines</button></div>`,
+    `The files Claude keeps in each project's memory folder. They go to your other machines only, never to a teammate's.
+    When a file changes on two machines, the later edit wins. ${where}`);
+}
+
+// The server's switch (EPISKO_HANDOFF), shown rather than offered: no client can turn it on.
+function handoffText(c: HandoffCaps | null | undefined, connected: boolean): string {
+  if (!connected) return `<span class="sync-dim">known once connected</span>`;
+  if (!c) return "This server predates handoff";
+  if (!c.enabled) return "Off on this server";
+  return `On <span class="sync-dim">· up to ${Math.round(c.max_bytes / (1 << 20))} MiB, held ${Math.round(c.ttl_ms / 3_600_000)}h</span>`;
+}
+
 export function syncPanelHtml(p: SyncPanel): string {
   const { st, h, draft: d, busy, err } = p;
   if (!st.configured) return pairForm(d, busy, err);
@@ -165,12 +190,14 @@ export function syncPanelHtml(p: SyncPanel): string {
       ${row("Server", esc(st.url), " mono")}
       ${row("You", `${esc(st.label || "unnamed")} <span class="sync-dim">as user</span> <span class="mono">${esc(st.user || "?")}</span>`)}
       ${row("Last", st.lastOkAt ? `exchange ${ago(p.now - st.lastOkAt)}` : "never")}
+      ${row("Handoff", handoffText(p.handoff, st.connected))}
     </div>
     ${me}
     ${waiting(p)}
     ${machines(p)}
     ${prefs(p)}
     ${streams(p)}
+    ${memorySect(p)}
     ${projects(p)}
     <div class="trow-end">
       <button class="set-freset" data-setsync="reconnect">Reconnect</button>

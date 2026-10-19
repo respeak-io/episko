@@ -3,7 +3,7 @@ import {
   applyBg, applyBgLog, applyBgMiss, BG_RETIRE_MS, bgBlind, bgKind, bgLogPath, bgOutcome,
   bgPeekEmpty, bgRetire, bgSentinel, bgStopId, bgTaskId, bgTimedOut, cmdLabel, endBg,
   failedServers, forgetServer, isJob, markKilled, liveServers, logLines, logTail, serverUrl,
-  portOf, reconcilePorts, servingUrls, shownServers, taskServerUrl, usefulPort,
+  foldPages, pageName, portOf, reconcilePorts, servingUrls, shownServers, usefulPort,
   type BgRead,
 } from "../src/servers";
 import type { BgMissReason, BgServer } from "../src/types";
@@ -404,8 +404,9 @@ describe("a shell whose log never appears", () => {
 
 describe("a server Episko itself ran (just / VS Code task / npm script)", () => {
   // Real output, fed one line at a time as it arrives on the PTY stream.
-  const feed = (lines: string[], start?: string) =>
-    lines.reduce<string | undefined>((u, l) => taskServerUrl(u, l), start);
+  const pages = (lines: string[], start: { label: string; url: string }[] = []) => lines.reduce(foldPages, start);
+  // What the row, the pill and the inspector open: the first address announced.
+  const feed = (lines: string[], start?: string) => pages(lines, start ? [{ label: "Local", url: start }] : [])[0]?.url;
 
   it("latches the URL as the output streams", () => {
     expect(feed([
@@ -444,6 +445,31 @@ describe("a server Episko itself ran (just / VS Code task / npm script)", () => 
     expect(feed(["curl http://localhost:9999/ping"])).toBeUndefined();
     expect(feed(["curl http://localhost:9999/ping", "Listening on http://localhost:4000"]))
       .toBe("http://localhost:4000");
+  });
+
+  it("keeps every page a dev script names, and the host it names over the one vite bound", () => {
+    // wirksam's scripts/dev.mjs serves both halves on wirksam.localhost so the cookie stays same-site.
+    const got = pages([
+      "  $ docker compose up -d db adminer",
+      "▶ Frontend http://wirksam.localhost:5174",
+      "▶ Backend  http://wirksam.localhost:8788  (docs: http://wirksam.localhost:8788/docs)",
+      "  VITE v8.1.5  ready in 900 ms",
+      "  ➜  Local:   http://127.0.0.1:5174/",
+    ]);
+    expect(got.map((p) => [pageName(p), p.url])).toEqual([
+      ["Frontend", "http://wirksam.localhost:5174"],
+      ["Backend", "http://wirksam.localhost:8788"],
+      ["docs", "http://wirksam.localhost:8788/docs"],
+    ]);
+    // The other order too: a named host announced after the bare one replaces it in place.
+    expect(pages(["  ➜  Local:   http://127.0.0.1:5174/", "▶ Frontend http://wirksam.localhost:5174"])[0])
+      .toEqual({ label: "Local", url: "http://wirksam.localhost:5174" });
+  });
+
+  it("takes a bullet banner, and not a URL that is only mentioned mid-sentence", () => {
+    const got = pages(["→ http://dev.localhost:5173/ui/   (HMR — Auth und API gehen an https://app.localhost:8443)"]);
+    expect(got.map((p) => p.url)).toEqual(["http://dev.localhost:5173/ui/"]);
+    expect(pageName({ label: "Ready", url: "http://app.localhost:8443/ui/" })).toBe("app.localhost:8443/ui/");
   });
 
   it("says nothing for a task that is not a server at all", () => {

@@ -1,13 +1,15 @@
 // The sidebar's rows and the glyph vocabulary shared with the mini-rail and the tray. Data in,
 // string out: ./sidebar owns the elements and handlers, ./grouping the split and the order.
 
-import { basename, esc, relTime, tilde } from "./format";
+import { basename, esc, escAttr, relTime, tilde } from "./format";
+import { handoffBusy, rowText } from "./handoff";
+import { handoffRowHtml } from "./handoffview";
 import {
   apiErrText, fanoutTally, hasSessionState, isAgent, liveCount, liveJobs, orphanAgents, statusKey,
   taskStateText, type ExtSession, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, pastMirrorId, removingWt,
+  accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, handoffs, pastMirrorId, removingWt,
   peekPrefs, stageGroup, wtGroup,
 } from "./state";
 import {
@@ -207,20 +209,36 @@ export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
 }
 // Below the live rows, outside any cluster; one shape for shelved-now and last-run rows.
 export function dormantRows(p: ProjGroup): string {
-  return p.dormants.map((d) => dormantRow(d)).join("");
+  return p.dormants.map((d) => dormantRow(d, sentTag(d))).join("") + handedRows(p);
 }
-function dormantRow(d: Restorable): string {
-  const busy = dormantBusy(d);
+// The newest send of this conversation still worth a word on its row (./handoff's rowText).
+function sentTag(d: Restorable): { id: string; tag: string; lock: string | null; recall: boolean } | undefined {
+  const rid = d.resumeId.toLowerCase();
+  const r = handoffs.filter((x) => x.dir === "out" && x.resumeId.toLowerCase() === rid && !x.settled).sort((a, b) => b.at - a.at)[0];
+  if (!r) return undefined;
+  const t = rowText(r, Date.now());
+  return { id: r.id, tag: t.tag, lock: handoffBusy(handoffs, d.resumeId), recall: t.actions.includes("takeback") || t.actions.includes("cancel") };
+}
+function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>): string {
+  const out = !!sent?.lock;
+  const busy = !out && dormantBusy(d);
   const label = pastLabel(d);
   const when = relTime(d.lastActivity);
-  const tip = busy
-    ? "This provider session is already running, so it cannot be resumed twice"
-    : `Shelved · last active ${when} · click to look, ⟲ to resume`;
-  return `<div class="srow pastrow${busy ? " busy" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
-    <span class="sglyph g-ended">·</span>
+  const tip = out ? `${sent!.lock} · it can't be resumed here until then`
+    : busy ? "This provider session is already running, so it cannot be resumed twice"
+      : `Shelved · last active ${when} · click to look, ⟲ to resume`;
+  const x = out
+    ? (sent!.recall ? `<span class="sclose" data-handrecall="${escAttr(sent!.id)}" title="Take it back">↶</span>` : "")
+    : `<span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">✕</span>`;
+  return `<div class="srow pastrow${busy ? " busy" : ""}${out ? " out" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
+    <span class="sglyph g-ended">${out ? "⇢" : "·"}</span>
     <span class="sbranch">${esc(label)}</span>
-    <span class="past-tag">${busy ? "busy" : when}</span>
-    <span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">✕</span></div>`;
+    <span class="past-tag">${esc(sent?.tag ?? (busy ? "busy" : when))}</span>
+    ${x}</div>`;
+}
+function handedRows(p: ProjGroup): string {
+  return handoffs.filter((r) => r.dir === "out" && r.state === "done" && r.settled && r.colorKey === p.path)
+    .map((r) => handoffRowHtml(r, rowText(r, Date.now()).tag, r.title || "A session")).join("");
 }
 function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);

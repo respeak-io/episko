@@ -219,6 +219,9 @@ export function resumeAgent(provider: string | undefined, catalogue: AgentCli[])
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 export const isAgent = (s: Sess) => s.kind === "agent";
 export const isClaude = (s: Sess) => isAgent(s) && s.provider === "claude";
+/** A shelved row's twin of isClaude: only Claude's transcript can be handed over (docs/handoff.md). */
+export const isClaudeProvider = (provider: string) => provider === "claude";
+export const isClaudeRow = (d: Restorable) => isClaudeProvider(d.provider);
 // the shared UI boundary; isClaude only where the protocol matters
 export const hasAgentCapability = (s: Sess, capability: AgentCapability) =>
   isAgent(s) && s.capabilities.includes(capability);
@@ -365,6 +368,9 @@ export interface Runnable {
   compound: boolean;
   // "build" | "test" when this is the group's default task, what ⌘⇧B / ⌘⇧T resolve to
   defaultFor: string | null;
+  // laid over discovery from `[run."<id>"]` by applyRunInfo (./runinfo); absent when undescribed
+  described?: "fresh" | "stale";
+  kind?: string; ready?: string; describedPages?: Record<string, string>; stops?: string; note?: string;
 }
 
 export interface Sess {
@@ -420,8 +426,11 @@ export interface Sess {
   run?: { // task panes only
     id: string; label: string; source: string; sourceFile: string; cmd: string; background: boolean;
     startedAt: number; exitCode: number | null; tail: string[];
-    // latched as output streams, never rescanned from the rolling tail (taskServerUrl in ./servers)
-    url?: string;
+    // latched as output streams, never rescanned from the rolling tail (foldPages in ./servers)
+    url?: string; // pages[0]: what the row, the pill and ◨ open
+    pages?: { label: string; url: string }[]; // every address it announced, the named host kept
+    kind?: string; ready?: string; readyAt?: number; // from its description (./runinfo); readyAt latched on output
+    describedPages?: Record<string, string>; stops?: string;
     partial?: string; // the unfinished last line, so a URL split across two chunks is read whole
     endedAt?: number; // freezes the duration at exit
     root: string; // where discovery ran; sourceFile is rooted here

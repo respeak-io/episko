@@ -47,6 +47,8 @@ episko-proto = { path = "../episko-proto" }
 portable-pty = "0.9.0"
 tiny_http = "0.12.0"
 base64 = "0.22.1"
+# A handoff blob's checksum, checked by the server against the same digest (docs/handoff.md).
+sha2 = "0.10"
 # The MCP endpoint's per-launch bearer token (mcp.rs); already in the tree through tauri.
 getrandom = "0.3"
 tauri-plugin-dialog = "2.7.1"

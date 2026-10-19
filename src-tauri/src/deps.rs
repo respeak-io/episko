@@ -651,7 +651,7 @@ fn cargo_cmd(args: &[&str], dir: &str) -> std::process::Command {
 
 /// Like `git_run`, with two differences that matter here: its own wording, and a non-zero
 /// exit that is DATA — `npm`/`pnpm outdated` exit 1 precisely when they found something.
-fn run_capped(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
+pub(crate) fn run_capped(mut cmd: std::process::Command, secs: u64) -> Result<std::process::Output, String> {
     let child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

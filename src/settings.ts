@@ -69,7 +69,7 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
   activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
-  onlineDevices, pending as syncPending, prefsArrived, requestInvite, setExcluded,
+  memorySyncOn, onlineDevices, pending as syncPending, prefsArrived, requestInvite, serverHandoff, serverMemory, setExcluded, setMemorySync,
   status as syncStatus,
 } from "./synclink";
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
@@ -621,11 +621,11 @@ const SET_TABS: SetTab[] = [
         summary: () => {
           if (!keyPrefs.enabled) return "off";
           const all = KEY_GROUPS.flatMap((g) => g.actions);
-          const touched = all.filter((id) => !isDefaultBind(keyPrefs.binds, id)).length;
+          const touched = all.filter((id) => !isDefaultBind(keyPrefs.binds, id, IS_MAC)).length;
           return `${all.length} bindings${touched ? ` · ${touched} changed` : ""}`;
         },
         lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
-        isDefault: () => isDefaultKeyPrefs(keyPrefs), reset: () => applyKeySetting("resetall") },
+        isDefault: () => isDefaultKeyPrefs(keyPrefs, IS_MAC), reset: () => applyKeySetting("resetall") },
       { kind: "toggle", set: "copychord", key: "cc-copy-chord", label: "Ctrl+Shift+C copies the selection",
         hint: "In every pane and anywhere else text is selected, instead of opening the web inspector.",
         more: "Off, the chord is left to the webview, which opens its inspector. A pane never receives it as Ctrl+C either way; Settings › Diagnostics opens the inspector too.",
@@ -656,8 +656,8 @@ const SET_TABS: SetTab[] = [
     id: "sync", label: "Sync", glyph: "⇅", group: "app", sub: "Your settings and spend on every machine",
     controls: () => [
       { kind: "sync", id: "syncserver", label: "Sync server", hint: "Carries your preferences, spend and limits between your machines.",
-        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it: no prompts, transcripts, tool output or diffs. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
-        aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted"], since: "0.32.0",
+        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it (no prompts, transcripts, tool output or diffs) except what you opt into: a session you explicitly send, and Claude's memory files once both switches are on. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
+        aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted", "memory"], since: "0.32.0",
         summary: () => syncSummary(syncStatus, syncHealthNow()) },
     ],
   },
@@ -1264,9 +1264,9 @@ function keyChordHtml(id: KeyAction): string {
 function keyRow(id: KeyAction): string {
   const d = keyActionDef(id);
   const rec = keyRec === id;
-  const dflt = isDefaultBind(keyPrefs.binds, id);
+  const dflt = isDefaultBind(keyPrefs.binds, id, IS_MAC);
   const bound = !!keyPrefs.binds[id];
-  // ./keys is pure and cannot read the platform; the footer's popover completes it the same way.
+  // ./keys never reads the platform and knows no file manager; the footer completes it the same way.
   const label = id === "reveal" ? `${d.label} in ${FILE_MANAGER}` : d.label;
   // ⊘ and "turn off", not ✕ and "clear": a state rather than a deletion, and ⟲ puts it back.
   return `<div class="kbrow${rec ? " rec" : ""}${bound ? "" : " off"}">
@@ -1275,7 +1275,7 @@ function keyRow(id: KeyAction): string {
       rec ? `<span class="kb-rec">Press a chord<i>esc</i></span>` : keyChordHtml(id)}</button>
     <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; ⟲ puts it back"
       aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>⊘</button>
-    <button class="kb-x" data-setkey="reset:${id}" title="Back to ${esc(comboText(defaultKeyBinds()[id], IS_MAC))}"
+    <button class="kb-x" data-setkey="reset:${id}" title="Back to ${esc(comboText(defaultKeyBinds(IS_MAC)[id], IS_MAC))}"
       aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>⟲</button>
   </div>`;
 }
@@ -1285,7 +1285,7 @@ function renderKeysControl(): string {
   ).join("");
   // Named rather than counted, and switched-off rows kept apart from rebound ones: which
   // shortcuts will not fire is the one state worth confirming at a glance.
-  const touched = KEY_GROUPS.flatMap((g) => g.actions).filter((id) => !isDefaultBind(keyPrefs.binds, id));
+  const touched = KEY_GROUPS.flatMap((g) => g.actions).filter((id) => !isDefaultBind(keyPrefs.binds, id, IS_MAC));
   const names = (l: KeyAction[]) => l.map((id) => keyActionDef(id).label).join(", ");
   const offRows = touched.filter((id) => !keyPrefs.binds[id]);
   const rebound = touched.filter((id) => keyPrefs.binds[id]);
@@ -1298,7 +1298,7 @@ function renderKeysControl(): string {
   return `<div class="kbbox${on ? "" : " off"}">
     <div class="peekrow kb-top">
       <span class="peekstep-l">${esc(summary)}</span>
-      <button class="set-freset" data-setkey="resetall" ${isDefaultKeyPrefs(keyPrefs) ? "disabled" : ""}>Reset all</button>
+      <button class="set-freset" data-setkey="resetall" ${isDefaultKeyPrefs(keyPrefs, IS_MAC) ? "disabled" : ""}>Reset all</button>
     </div>
     ${groups}
     <div class="peekhint">${on
@@ -1309,7 +1309,7 @@ function renderKeysControl(): string {
 
 /** A press in the shortcut picker. Recording is armed here and captured below. */
 function applyKeySetting(cmd: string) {
-  if (cmd === "resetall") { stopKeyRec(); host.setKeyPrefs(defaultKeyPrefs()); return; }
+  if (cmd === "resetall") { stopKeyRec(); host.setKeyPrefs(defaultKeyPrefs(IS_MAC)); return; }
   if (cmd === "toggle") {
     // Disarm first: a row still recording would bind into a layer no longer listening.
     stopKeyRec();
@@ -1329,7 +1329,7 @@ function applyKeySetting(cmd: string) {
   }
   stopKeyRec();
   if (verb === "clear") host.setKeyPrefs({ ...keyPrefs, binds: unbindKey(keyPrefs.binds, id) });
-  else if (verb === "reset") host.setKeyPrefs({ ...keyPrefs, binds: resetKey(keyPrefs.binds, id) });
+  else if (verb === "reset") host.setKeyPrefs({ ...keyPrefs, binds: resetKey(keyPrefs.binds, id, IS_MAC) });
 }
 function stopKeyRec() {
   if (keyRec === null) return;
@@ -1344,7 +1344,7 @@ function recordKey(e: KeyboardEvent) {
   // Esc before normalisation: ./keys refuses to bind a named key, so `comboOf` returns
   // null for it and the only way out of a recording would stay armed forever.
   if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); stopKeyRec(); renderSettings(); return; }
-  const c = comboOf(e, { digits: id === "sessionSwitch" });
+  const c = comboOf(e, { digits: id === "sessionSwitch", mac: IS_MAC });
   if (!c) return; // a lone ⌘/⇧/⌥ held down, or a key this layer won't bind: keep waiting
   e.preventDefault();
   e.stopPropagation();
@@ -1467,7 +1467,8 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
         users: devicesByUser(syncDevices, syncStatus.user, syncStatus.device), online: onlineDevices(),
         activity: syncActivity, pending: Object.values(syncPending), excluded: syncExcluded, invite: syncInvite,
         nameOf: (d) => deviceName(syncDevices, d, syncStatus.device),
-        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(),
+        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(), handoff: serverHandoff,
+        memory: { on: memorySyncOn(), server: serverMemory },
       });
       always = true;
       break;
@@ -1650,6 +1651,7 @@ function applySyncSetting(verb: string) {
   else if (verb === "reload") void host.reloadUi();
   else if (verb === "review") host.syncReview();
   else if (verb === "invite") requestInvite();
+  else if (verb.startsWith("memory|")) { setMemorySync(verb === "memory|1"); renderSettings(); }
   else if (verb.startsWith("excl|")) {
     const [, key, keep] = verb.split("|");
     setExcluded(key, keep === "1");

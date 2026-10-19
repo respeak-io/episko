@@ -44,7 +44,9 @@ like preferences:
 `tasks.toml`, `[branches] protect` and `[health]` stay git-only for the same reason.
 
 **The privacy floor.** Nothing conversational goes over the wire: no transcripts, prompts, tool
-payloads, diffs, file contents or health measurements. `sync.ts` never touches storage itself.
+payloads, diffs, file contents or health measurements, except a session you explicitly hand off
+on a server with `EPISKO_HANDOFF` on (see below), and Claude's memory files between your own
+machines once you switch that on (see *Claude's memory* below). `sync.ts` never touches storage itself.
 Callers pass it a getter, and the contract test fails if it imports anything but `./store` or
 reaches `localStorage`, `fetch` or Tauri.
 
@@ -83,11 +85,13 @@ reaches `localStorage`, `fetch` or Tauri.
 | 1. Personal sync | event log, prefs, usage partitioning, limits; one user, one token | built |
 | 2. Identity and roster | root-commit ids, the path-keyed stores, the `cc-usage-detail` re-key, shared notes, presence | built |
 | 3. Coordination | claims as leases, shown on the shared queue | built |
+| 4. Handoff | send a stopped session to another of your machines or a teammate (docs/handoff.md) | built |
+| 5. Memory | Claude's per-project memory files between one person's machines | built, off by default on both ends |
 
-Not built yet: the *shelved on another device* row, which is a non-goal's honest half. It needs
-a roster of dormant sessions that carries no title, since a title is written from the
-conversation. Also not built: `episko-server` workspaces beyond the one default. A team runs
-one server, which is the per-team answer.
+There is no synced roster of shelved sessions. A session moves between machines only when
+somebody sends it, and the sending row says where it went until the recipient's machine takes
+it (docs/handoff.md). Also not built: `episko-server` workspaces beyond the one default. A team
+runs one server, which is the per-team answer.
 
 ## Where the code lives
 
@@ -191,6 +195,53 @@ as whole values. Rules, all in `roster.ts`:
   now.
 - A group's `collapsed` state stays on this screen.
 
+## Claude's memory: your machines only
+
+Claude keeps per-project memory files in `<project dir>/memory/`, one folder per repo (keyed by
+the main checkout, so every worktree shares it). With **both** switches on, `EPISKO_MEMORY` on
+the server and Settings › Sync › *Claude's memory* here (`cc-memory-sync`, off by default), they
+travel on the personal stream `memory`. A teammate never hears it; for them a memory goes only
+inside a handoff, ticked (docs/handoff.md). Rules in `memsync.ts`, disk in `usage.rs`:
+
+- **Keyed `<project id>|<name>.md`**, the name `[A-Za-z0-9._-]+.md` and at most 120 characters.
+  `MEMORY.md` never travels: a file written here adds its index line from its own frontmatter,
+  and a line the index lost is put back. A line is never taken out, whatever arrives.
+- **Payload `{text, sha}`**, or `null` as a tombstone. A tombstone goes only for a file this
+  machine saw (`cc-sync-memory`'s `seen` holds the sha each machine last agreed with the server)
+  and no longer has. A file over 96 KiB stays home and is never read as removed, and neither is
+  anything when the folder is missing or the project's checkout changed (`cc-sync-memory`'s
+  `dirs` keeps the one each project is scanned in, so a second clone never reads as a removal).
+- **Last writer wins**, except that a write or a removal only replaces the copy this machine
+  last agreed on. A file edited here and not sent yet is kept and sent instead, at a
+  newer stamp. A first discovery goes at stamp 1, like the roster, and only after the first
+  catch-up, so it never undercuts a copy the server already held.
+- **A name two machines each had is kept twice.** An arrival for a file this machine never agreed
+  on (or any first discovery) never replaces it: it lands beside as `<name>.from-<device>.md`,
+  and the local copy goes out anew, so every machine ends with both.
+- **Case never folds a name.** `memory.md` is the index on macOS and Windows, so no case of it
+  travels, and a name that differs only in case from a file already here is refused.
+- **Memory pushes in a batch of its own.** The server refuses a whole push carrying memory while the stream is off, so
+  memory never rides with prefs. A push is about half a MiB and 900 events at most, and a key or
+  payload the server would refuse (`KEY_MAX`, `PAYLOAD_MAX` once JSON-escaped) never goes. A
+  refused push comes back as `error` with `push: true`, which `sync.rs` turns into `pushFailed`
+  for that push's id: nothing of it is agreed, and the next `pushed` lands on the next push.
+- **Always advertised, applied only when allowed.** The app names `"memory"` in every hello, opted in or
+  not: an arrival is **held** in `cc-sync-memory` until this machine has both the switch on and
+  a checkout of the project. Advertising only when opted in would leave everything sent before
+  behind the cursor.
+- **A cursor can still pass memory it was never sent**: an older client acked past it, or the
+  server's gate was off. So the first welcome that says `memory` sends `memory_replay`, and the
+  server answers with this user's whole (compacted) memory stream in pages that never move the
+  cursor; `cc-sync-memory`'s `caught` records that it happened, and a welcome without `memory`
+  clears it. The first catch-up waits for the replay before any first discovery is stamped.
+- **Held is capped at 2 MiB.** Past it the oldest arrivals for projects not cloned here go first,
+  their stamps with them; when anything is let go or dropped, `caught` is cleared, so the next
+  connection replays and nothing is lost for good, only late.
+- **Driven on focus, on a Claude session's exit and every ten minutes**: apply what is held,
+  then scan each project with an id and push what changed. Where auto memory is off
+  (`autoMemoryEnabled: false`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, or a moved
+  `autoMemoryDirectory`), nothing of that project is read or written.
+
 ## Shared notes and the work log: where they go is per project
 
 Each project holds one choice (`cc-episko-share`, synced with the roster). It is set in the
@@ -244,12 +295,36 @@ It binds localhost and does not terminate TLS; put Caddy or Tailscale in front. 
 `cp episko.db`. `episko-server devices` lists paired machines, and `revoke <device>` shuts one
 out; the app then halts and asks to pair again rather than retrying. Every six hours the server
 compacts: an event superseded by a newer one of the same key goes once it is older than
-`EPISKO_RETENTION_DAYS` (30). The latest per key always stays, so a device that was away for
-months still converges. Docker: `episko-server/Dockerfile` and `docker-compose.yml`
+`EPISKO_RETENTION_DAYS` (30). The latest per key always stays (per user on a personal stream,
+since teammates share project ids), so a device that was away for months still converges.
+Docker: `episko-server/Dockerfile` and `docker-compose.yml`
 (`episko-server/README.md`), with settings in an untracked `.env` and proxy wiring in an untracked
 `docker-compose.override.yml`, so `update.sh` moves a deployment between release tags without a
 merge. **Every variable is optional and defaults to the old behaviour**; `.env.example` lists them
 and a test in `main.rs` fails when one the source reads is missing from it or from `USAGE`.
+
+**Handoff is off unless the server switches it on.** Handing a session to another machine
+(docs/handoff.md) is the only feature that puts a transcript on the server, so it waits for
+an operator to opt in:
+
+| Variable | Default | |
+| --- | --- | --- |
+| `EPISKO_HANDOFF` | off | `1`, `true`, `yes` or `on` turns it on |
+| `EPISKO_HANDOFF_TTL_HOURS` | `72` | how long an unclaimed handoff is held; clamped to 1..=720 |
+| `EPISKO_HANDOFF_MAX_MB` | `64` | the largest blob accepted; clamped to 1..=1024 |
+
+`welcome` always carries `handoff: {enabled, max_bytes, part_bytes, ttl_ms}`, `enabled: false`
+included, so an app can tell a server with it off from an older server that never sends the
+field. The TTL sweep runs every ten minutes whether or not it is on, so a blob held before an
+operator switched it off still dies on schedule. A proxy must pass ~1 MiB WebSocket messages.
+
+**The memory stream is off unless the server switches it on.** `EPISKO_MEMORY` (`1`, `true`,
+`yes` or `on`; default off) lets one person's machines share Claude's per-project memory files on
+the personal stream `memory`, which no teammate ever hears. `welcome.memory` says whether it is
+on. A connection hears memory events, live or in its catch-up, only when its `hello.features`
+named `"memory"` and the stream is on; switching it off stops serving what is stored too. A push
+carrying one is `bad_message` while the stream is off or unasked, and the whole push is
+refused, so a client sends memory in a batch of its own.
 
 **A proxy in front: extra headers.** Every handshake, the pairing one included, carries
 whatever `Name: value` headers Settings › Sync holds. That covers Traefik basic auth,
@@ -270,11 +345,17 @@ in `sync.rs` pairs two devices through a running server and checks that a push a
 `cargo test -- --ignored two_devices_meet`.
 
 **The conversation.** A client sends `pair {code, label, user?}` and gets back `paired {token,
-user, device}`; `user` is read only with the registration code. It then sends `hello {token, since, protocol}` and gets `welcome`, followed by
-`events` pages until `more` is false. After that it pushes with `push {events}`, answered by
+user, device}`; `user` is read only with the registration code. It then sends `hello {token, since, protocol, features?}` and gets `welcome`, followed by
+`events` pages until `more` is false (and then `handoff_list`, if `features` named `"handoff"`). After that it pushes with `push {events}`, answered by
 `pushed {seqs}`, and hears the other devices' pushes as `events`. The rules the server enforces:
 
 - It mints the device id, so two machines with one label never share a usage cell.
 - It stamps `actor`/`device` from the token, whatever the client sent.
 - It stores only a hash of each token.
 - It refuses a mismatched protocol with `error {code: "protocol"}` rather than misreading it.
+- **It never sends a peer what it did not advertise.** `hello.features` is opt-in: a connection
+  without `"handoff"` hears no `handoff*` message, even one addressed to its own user, and a
+  `handoff*` it sends anyway is `bad_message`, as on an older server. The `memory` stream follows
+  the same rule with `"memory"`. That is what lets the channel ship without a `PROTOCOL`
+  bump. What a device last advertised is kept per token, so
+  `welcome.devices[].handoff` tells the app which machines can receive one.

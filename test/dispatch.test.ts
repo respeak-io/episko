@@ -252,7 +252,9 @@ describe("the project dashboard's own dispatcher", () => {
 // own `#svrPop` listener, a chain of `closest()` probes. `.sv-head` is the row's whole background,
 // so `closest("[data-svtoggle]")` matches a click on ANY control there; it must stay probed last.
 
-const SV = readFileSync(new URL("../src/serversui.ts", import.meta.url), "utf8");
+// ./stackview paints the stack blocks into the same popover, so its attributes join the emitters.
+const SV = ["serversui.ts", "stackview.ts"]
+  .map((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8")).join("\n");
 
 describe("the servers popover's own dispatcher", () => {
   // Payload read off an element that already matched (the ✕ carries both `data-svstop`

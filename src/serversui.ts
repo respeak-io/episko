@@ -7,14 +7,17 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ask } from "./confirm";
 import { $, FILE_MANAGER, toast } from "./dom";
-import { esc, escAttr } from "./format";
-import { sessions, activeId } from "./state";
+import { basename, esc, escAttr } from "./format";
+import { FAVORITES, sessions, activeId, worktreesByRepo } from "./state";
 import {
   applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
   failedServers, forgetServer, liveServers, markKilled, portOf,
-  reconcilePorts, servingUrls, shownServers, type BgRead, type SessionPort,
+  reconcilePorts, servingUrls, shownServers, usefulPort, type BgRead, type SessionPort,
 } from "./servers";
 import { isClaude, type BgServer, type Sess } from "./types";
+import { buildStacks, stackTally, type Checkout, type Container, type PaneIn, type Stack, type StackCfg } from "./stack";
+import { stackHtml } from "./stackview";
+import { discoverTasks, launchWithDeps } from "./tasks";
 
 // A row: "bg" is a shell an agent backgrounded (the record is all there is), "task" a
 // runnable Episko launched (the pane is the server), "port" a socket nothing announced. A
@@ -54,6 +57,11 @@ function taskRows(): Row[] {
 }
 
 function rows(): Row[] {
+  const inStack = stackPanes();
+  return allRows().filter((r) => r.kind === "bg" || !inStack.has(sidOf(r))); // a stack lists its own panes
+}
+
+function allRows(): Row[] {
   const out: Row[] = [];
   for (const s of sessions.values()) {
     for (const b of shownServers(s.servers)) out.push({ kind: "bg", s, at: b.startedAt, b });
@@ -85,16 +93,20 @@ const isServerRow = (r: Row) => r.kind !== "bg" || bgKind(r.b) === "server";
 // Hidden when nothing is running, so a forgotten server is what catches the eye.
 export function renderServers() {
   const shown = rows();
+  const stacks = currentStacks();
+  const tally = stackTally(stacks);
   const el = $("svrBadge");
   // Keyed on every row, not the server count: hiding the pill would force the popover shut over the jobs.
-  if (!shown.length) { el.className = "svr-badge"; closeServersPop(); return; }
+  if (!shown.length && !stacks.length) { el.className = "svr-badge"; closeServersPop(); return; }
   let serving = 0, failed = 0;
   for (const s2 of sessions.values()) {
     serving += servingUrls(s2.servers).length;
     failed += failedServers(s2.servers).length;
   }
   serving += shown.filter((r) => r.kind !== "bg").length; // task and port rows are serving by definition
-  const servers = shown.filter(isServerRow).length;
+  serving += tally.serving;
+  if (tally.failed) failed++;
+  const servers = shown.filter(isServerRow).length + tally.serving;
   const jobs = shown.length - servers;
   el.className = "svr-badge show";
   // The number is the server count; with none up it shows the jobs instead of a bare 0,
@@ -102,7 +114,10 @@ export function renderServers() {
   $("svrBadgeTxt").textContent = String(servers || jobs);
   el.classList.toggle("jobs-only", servers === 0);
   // One line per row, jobs prefixed, so the hover list and the number agree.
-  el.title = shown.map((r) => `${isServerRow(r) ? "" : "job · "}${projectOf(r)} ·${rowTitle(r)}`).join("\n");
+  el.title = [
+    ...stacks.map((st) => `stack · ${st.project}${st.label ? ` · ${st.label}` : ""}: ${st.why || st.state}`),
+    ...shown.map((r) => `${isServerRow(r) ? "" : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
+  ].join("\n");
   el.classList.toggle("serving", serving > 0 && !failed); // failure wins the colour
   el.classList.toggle("failed", failed > 0);
   if ($("svrPop").classList.contains("show")) renderServersPop();
@@ -221,20 +236,25 @@ function rowHtml(r: Row, open: boolean): string {
 
 function renderServersPop() {
   const shown = rows();
+  const stacks = currentStacks();
   const pop = $("svrPop");
   // Partitioned here so `rows()` stays the single ordering, and it holds within each section.
   const servers = shown.filter(isServerRow);
   const jobs = shown.filter((r) => !isServerRow(r));
   // The servers heading stands at zero: "Running servers 0" over a list of jobs answers the pill.
-  const html = shown.length
-    ? `<div class="sv-h">Running servers<span class="sv-hn">${servers.length}</span></div>`
+  const stackPart = stacks.length
+    ? `<div class="sv-h">Stacks<span class="sv-hn">${stacks.length}</span></div>`
+      + stacks.map((st) => stackHtml(st, downLabel(st))).join("")
+    : "";
+  const html = stackPart + (shown.length
+    ? `<div class="sv-h${stackPart ? " sv-h2" : ""}">Running servers<span class="sv-hn">${servers.length}</span></div>`
       + servers.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
       + (jobs.length
         ? `<div class="sv-h sv-h2">Background jobs<span class="sv-hn">${jobs.length}</span></div>`
           + jobs.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
         : "")
-      + `<div class="sv-foot">▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
-    : "";
+      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
+    : "");
   // innerHTML guard: an assignment between mousedown and mouseup drops the click (docs/architecture.md).
   if (html === lastPop) return;
   lastPop = html;
@@ -268,6 +288,129 @@ export function setServersRepaint(f: () => void) { repaint = f; }
 let closePane: (id: string) => void = () => {};
 export function setServersCloseSession(f: (id: string) => void) { closePane = f; }
 
+// ---------- stacks ----------
+
+// The last `compose_containers` answer. Docker is optional: without it a stack is its panes alone.
+let containers: Container[] = [];
+let dockerAt = 0, dockerOk = true;
+// Ports per pane from the last `session_ports`, every one of them: a stack member's are its own.
+let portsBySid = new Map<string, number[]>();
+// Checkout → its `[stack]` table, re-read on a slow clock: the file is hand-edited, not watched.
+const configs = new Map<string, { cfg: StackCfg; at: number }>();
+const CONFIG_MS = 30_000;
+
+// Every checkout Episko knows, so a container's `working_dir` can be traced to a repo.
+function checkouts(): Checkout[] {
+  const out = new Map<string, Checkout>();
+  const add = (repo: string, path: string) => { if (path && !out.has(path)) out.set(path, { repo, path, name: basename(path) }); };
+  for (const [repo, heads] of worktreesByRepo) { add(repo, repo); for (const h of heads) add(repo, h.path); }
+  for (const f of FAVORITES) add(f.path, f.path);
+  for (const s2 of sessions.values()) { add(s2.colorKey, s2.colorKey); add(s2.colorKey, s2.workdir); }
+  return [...out.values()];
+}
+
+function stackInput(): PaneIn[] {
+  const out: PaneIn[] = [];
+  for (const s2 of sessions.values()) {
+    const r = s2.run;
+    if (s2.kind !== "task" || !r) continue;
+    out.push({
+      sid: s2.id, root: r.root, project: s2.project, taskId: r.id, label: r.label, background: r.background,
+      exit: r.exitCode, url: r.url, startedAt: r.startedAt, groupId: r.groupId, groupLabel: r.groupLabel, groupRoot: r.groupRoot,
+      pages: r.pages, kind: r.kind, readyAt: r.readyAt, describedPages: r.describedPages, stops: r.stops,
+    });
+  }
+  return out;
+}
+
+/** Useful ports a pane's process tree listens on, as of the last poll. */
+export function portsOf(sid: string): number[] {
+  return (portsBySid.get(sid) ?? []).filter(usefulPort);
+}
+
+export function currentStacks(): Stack[] {
+  const cfg = new Map([...configs].map(([k, v]) => [k, v.cfg]));
+  return buildStacks({ panes: stackInput(), ports: portsBySid, containers, checkouts: checkouts(), configs: cfg, now: Date.now() });
+}
+
+function stackPanes(): Set<string> {
+  return new Set(currentStacks().flatMap((st) => st.members.map((m) => m.sid)));
+}
+
+// Every 4s while a dev task runs (health flips are the point), every 20s otherwise for
+// leftovers, every 60s once docker has said no: a missing CLI must cost nothing.
+async function refreshContainers(): Promise<boolean> {
+  const now = Date.now();
+  const live = stackInput().some((p) => p.exit == null);
+  if (now - dockerAt < (!dockerOk ? 60_000 : live ? 0 : 20_000)) return false;
+  dockerAt = now;
+  for (const root of new Set(stackInput().map((p) => p.root))) {
+    const had = configs.get(root);
+    if (had && now - had.at < CONFIG_MS) continue;
+    const cfg = await invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg);
+    configs.set(root, { cfg, at: now });
+  }
+  try {
+    const got = await invoke<{ available: boolean; error: string; list: Container[] }>("compose_containers");
+    dockerOk = got.available;
+    const next = got.available ? got.list : [];
+    const sig = (l: Container[]) => l.map((c) => `${c.id}${c.state}${c.status.replace(/\d+ \w+ ago|About an? \w+ ago/, "")}`).join("|");
+    const moved = sig(next) !== sig(containers);
+    containers = next;
+    return moved;
+  } catch {
+    return false;
+  }
+}
+
+/** A fresh reading for an agent asking now: ports and Docker re-read, not the last poll's. */
+export async function refreshStacksNow(): Promise<Stack[]> {
+  dockerAt = 0;
+  await pollServers();
+  return currentStacks();
+}
+
+function downLabel(st: Stack): string {
+  const down = configs.get(st.checkout)?.cfg.down ?? st.stops;
+  return down ? `Run ${down} to stop the containers` : `Stop the containers (docker compose -p ${st.composeProjects.join(", ")} stop)`;
+}
+
+// Closing a pane is what its own ✕ does; the containers stay, and the block becomes a leftover.
+function closeStack(key: string) {
+  const st = currentStacks().find((x) => x.key === key);
+  if (!st) return;
+  for (const m of st.members) closePane(m.sid);
+  lastPop = "";
+  toast(`Closed ${st.label}`);
+}
+
+// `[stack] down` is the project's own answer and runs as a task; without one, Compose's
+// `stop`, which keeps containers and volumes. Shared by every checkout, hence the question.
+async function stackDown(key: string) {
+  const st = currentStacks().find((x) => x.key === key);
+  if (!st) return;
+  const down = configs.get(st.checkout)?.cfg.down ?? st.stops;
+  if (down) {
+    const repo = checkouts().find((c) => c.path === st.checkout)?.repo ?? st.checkout;
+    const task = (await discoverTasks(st.checkout, repo, true)).find((r) => r.id === down);
+    if (!task) { toast(`[stack] down names ${down}, which ${st.project} does not define`); return; }
+    await launchWithDeps(task, st.project, { colorKey: repo, discoveredIn: st.checkout });
+    return;
+  }
+  const ok = await ask(
+    `Stop ${st.boxes.length} container${st.boxes.length === 1 ? "" : "s"} of ${st.composeProjects.join(", ")}?\n\nEvery checkout of this repo shares them. Nothing is removed: \`docker compose stop\` keeps the containers and their volumes.`,
+    { title: "Stop the containers", kind: "warning", okLabel: "Stop", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  for (const project of st.composeProjects) {
+    try { await invoke("compose_stop", { project }); } catch (err) { toast(String(err)); }
+  }
+  dockerAt = 0;
+  lastPop = "";
+  await pollServers();
+  repaint();
+}
+
 // ---------- the poll ----------
 
 // Ask the kernel which ports our panes hold and reconcile against what the panes said. This
@@ -280,6 +423,8 @@ async function refreshPorts(): Promise<boolean> {
     return false; // keep the last answer rather than blanking the list on one bad poll
   }
   const now = Date.now();
+  portsBySid = new Map();
+  for (const p of seen) portsBySid.set(p.sessionId, [...(portsBySid.get(p.sessionId) ?? []), p.port]);
   const bySession = new Map<string, SessionPort[]>();
   for (const p of seen) {
     const list = bySession.get(p.sessionId) ?? [];
@@ -327,6 +472,7 @@ async function refreshPorts(): Promise<boolean> {
 // a disk read per server, so slower than anything on the telemetry path.
 export async function pollServers() {
   let changed = await refreshPorts();
+  if (await refreshContainers()) changed = true;
   const live = livePolled();
   if (!live.length) { if (changed) repaint(); return; }
   for (const b of live) {
@@ -372,6 +518,10 @@ $("svrPop").addEventListener("click", (e) => {
   if (port) { e.stopPropagation(); void killPort(port.dataset.svsid!, port.dataset.svport!); return; }
   const kill = t.closest<HTMLElement>("[data-svkill]");
   if (kill) { e.stopPropagation(); stopTask(kill.dataset.svkill!); return; }
+  const stk = t.closest<HTMLElement>("[data-svstack]");
+  if (stk) { e.stopPropagation(); closeStack(stk.dataset.svstack!); return; }
+  const down = t.closest<HTMLElement>("[data-svdown]");
+  if (down) { e.stopPropagation(); void stackDown(down.dataset.svdown!); return; }
   // Neither closes the popover: you are still reading the row. A path that no longer
   // resolves surfaces the backend's error; a silent no-op reads as a dead button.
   const rev = t.closest<HTMLElement>("[data-svreveal]");

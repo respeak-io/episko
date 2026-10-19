@@ -78,6 +78,11 @@
       <!-- A sibling of .stage, not a child, so it owns a grid row spanning the stage and the inspector
            (the `head` area in styles.css): its verbs act on the stage, the inspector starts underneath. -->
       <div class="stage-head">
+        <!-- Outside .st-title, whose parts each stage taker rewrites: nothing repaints these but main.ts's renderNav. -->
+        <div class="st-nav">
+          <button class="act icon" id="navBack" data-nav="back" disabled><span class="gl">‹</span></button>
+          <button class="act icon" id="navFwd" data-nav="forward" disabled><span class="gl">›</span></button>
+        </div>
         <div class="st-title">
           <!-- The avatar and the chip line are the dashboard's; a session leaves both empty and
                the header collapses back to its one line. -->
@@ -224,6 +229,7 @@
       <input id="runInput" placeholder="Search tasks…" autocomplete="off" spellcheck="false" />
       <div class="run-tabs" id="runTabs" hidden></div>
       <div class="run-list" id="runList"></div>
+      <div class="run-stack" id="runStack" hidden></div>
       <div class="run-foot">
         <span><kbd>⏎</kbd> run</span><span><kbd>⌥</kbd><kbd>⏎</kbd> params</span><span><kbd>⌘</kbd><kbd>⏎</kbd> pin</span><span><kbd>→</kbd> details</span><span><kbd>⇧</kbd><kbd>⌫</kbd> forget</span><span><kbd>⇥</kbd> source</span><span><kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
       </div>
@@ -457,6 +463,12 @@
     <div class="projdlg" id="projDlg" role="dialog" aria-modal="true" aria-label="Project settings">
       <button class="set-x" id="projClose" title="Close (Esc)" aria-label="Close project settings">✕</button>
       <div class="ps-wrap" id="projBody"></div>
+    </div>
+
+    <!-- Handing a session to another machine (src/handoffui.ts): on the shared #scrim, below ./confirm. -->
+    <div class="cfm hand k-info" id="handoffDlg" role="dialog" aria-modal="true" aria-labelledby="handTitle">
+      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true">⇢</span><b id="handTitle">Send to…</b></div>
+      <div class="cfm-body hand-body" id="handBody"></div>
     </div>
 
     <div class="dbg-panel" id="dbgPanel" hidden>

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { CLAUDE_CLI, type ExtSession, type Restorable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
-import { sessions, setBackendLive, setDormants, setExternals, setFavorites } from "../src/state";
+import { sessions, setBackendLive, setDormants, setExternals, setFavorites, setHandoffs } from "../src/state";
 import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW_MS);
   sessions.clear();
-  setExternals([]); setDormants([]); setFavorites([]); setBackendLive(new Set());
+  setExternals([]); setDormants([]); setFavorites([]); setBackendLive(new Set()); setHandoffs([]);
   store.clear();
 });
 afterEach(() => { vi.useRealTimers(); });
@@ -102,6 +102,14 @@ describe("histBusy — a live session must not be resumed twice", () => {
   it("is busy when it runs in someone else's terminal", () => {
     setExternals([ext({ session_id: "e1" })]);
     expect(histBusy(row({ session_id: "e1" }))).toBe(true);
+  });
+
+  it("is busy while it is handed to another machine, and after it was", () => {
+    setHandoffs([{ id: "h", dir: "out", resumeId: "HND", peer: { user: "ben" }, state: "claimed", at: 0 }]);
+    expect(histBusy(row({ session_id: "hnd" }))).toBe(true);
+    setHandoffs([{ id: "h", dir: "out", resumeId: "HND", peer: { user: "ben" }, state: "done", at: 0 }]);
+    expect(histBusy(row({ session_id: "hnd" }))).toBe(true);
+    expect(histBusy(row({ session_id: "hnd", provider: "codex" }))).toBe(false);
   });
 
   it("matches ids case-insensitively, like the telemetry router", () => {

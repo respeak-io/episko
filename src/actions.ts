@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, foldDashNext, toast } from "./dom";
+import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
@@ -13,7 +13,9 @@ import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
-import { waitForExit } from "./tasks";
+import { discoverTasks, waitForExit } from "./tasks";
+import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
+import { checkRun, describePrompt, runSummaryText, taskCmd, type RunInfo } from "./runinfo";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -43,6 +45,7 @@ import {
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   titlePrefs, setTitlePrefs as setTitlePrefsState,
   shareByProject, setShareMode, shareModeOf, type ShareMode,
+  handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
   type SortMode, type WtGroup,
 } from "./state";
@@ -71,7 +74,8 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
-import { projectIdOf, publishDigest, publishShare, status as syncStatus } from "./synclink";
+import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
+import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -380,8 +384,8 @@ export function tickRevive() {
 export function setKeyPrefs(p: KeyPrefs) {
   setKeyPrefsState(p);
   // Nothing stored while everything is standard, so a reset install equals a fresh one.
-  if (isDefaultKeyPrefs(keyPrefs)) localStorage.removeItem("cc-keys");
-  else localStorage.setItem("cc-keys", JSON.stringify(serializeKeyPrefs(keyPrefs)));
+  if (isDefaultKeyPrefs(keyPrefs, IS_MAC)) localStorage.removeItem("cc-keys");
+  else localStorage.setItem("cc-keys", JSON.stringify(serializeKeyPrefs(keyPrefs, IS_MAC)));
   renderAll();
   renderSettings();
 }
@@ -626,6 +630,15 @@ function adoptCheckout(s: Sess, dir: string, branch: string) {
   renderAll();
 }
 
+// Wait for `pty-exit`, not for `kill_session` (which only sends the signal): a transcript read
+// or renamed while open fails on Windows and corrupts on POSIX. Waiter before the kill, or a
+// fast exit resolves nothing; `closeSession` after this, since it settles waiters.
+export async function stopForTranscript(id: string): Promise<void> {
+  const dead = waitForExit(id);
+  await invoke("kill_session", { sessionId: id }).catch(() => {});
+  await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
+}
+
 export async function followSessionDrift(id: string, mode: "follow" | "track" | "back" = "follow") {
   const s = sessions.get(id);
   if (!s) return;
@@ -676,28 +689,95 @@ export async function followSessionDrift(id: string, mode: "follow" | "track" | 
   // Captured before the close: the fallback relaunch rebuilds the session as it was.
   const { project, colorKey, resumeId } = s;
   const { workdir, worktree: wasWt, branch: wasBranch } = s.home ?? s;   // where it really runs
-  // Wait for `pty-exit`, not for `kill_session` (which only sends the signal): renaming the
-  // transcript while it is open fails on Windows and corrupts on POSIX. Waiter before the
-  // kill, or a fast exit resolves nothing; close after, since `closeSession` settles waiters.
-  const dead = waitForExit(id);
-  await invoke("kill_session", { sessionId: id }).catch(() => {});
-  await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
-  closeSession(id);
-
+  await stopForTranscript(id);
+  // The neighbour the close hands the stage to is a hop, not a place you went (./nav).
+  const release = holdNav();
   let moved = true;
   try {
-    await invoke("move_session_transcript", { sessionId: resumeId, fromWorkdir: workdir, toWorkdir: dir });
-  } catch (e) {
-    // Nothing was moved: relaunch where it was, not in a folder its conversation is not in.
-    moved = false;
-    toast("Couldn't move the session: " + e);
+    closeSession(id);
+    try {
+      await invoke("move_session_transcript", { sessionId: resumeId, fromWorkdir: workdir, toWorkdir: dir });
+    } catch (e) {
+      // Nothing was moved: relaunch where it was, not in a folder its conversation is not in.
+      moved = false;
+      toast("Couldn't move the session: " + e);
+    }
+    await launch(project, moved ? dir : workdir, {
+      colorKey,
+      // Drifting into the repo's main checkout is not a worktree; `colorKey` is the repo root.
+      worktree: moved ? (dir === colorKey ? null : branch) : wasWt,
+      branch: moved ? branch : wasBranch,
+      resume: resumeId,
+    });
+  } finally {
+    release();
   }
-  await launch(project, moved ? dir : workdir, {
-    colorKey,
-    // Drifting into the repo's main checkout is not a worktree; `colorKey` is the repo root.
-    worktree: moved ? (dir === colorKey ? null : branch) : wasWt,
-    branch: moved ? branch : wasBranch,
-    resume: resumeId,
-  });
   if (moved) toast(`Session moved to ${branch}`);
+}
+
+// ---------- handoff records (./handoff decides, docs/handoff.md) ----------
+
+export function saveHandoffs(list: HandoffRec[] = handoffs) {
+  setHandoffs(list);
+  localStorage.setItem("cc-handoff", JSON.stringify(list));
+}
+const sameRecs = (a: HandoffRec[], b: HandoffRec[]) => a.length === b.length && a.every((r, i) => r === b[i]);
+export function applyHandoffEv(ev: HandoffEv) {
+  const now = Date.now();
+  const reduced = reduce(handoffs, ev, { user: syncStatus.user, device: syncStatus.device }, now);
+  // A server with handoff off still lists its rows; they must not reopen what its caps returned.
+  const next = serverHandoff?.enabled === false ? onCaps(reduced, serverHandoff, now) : reduced;
+  if (sameRecs(next, handoffs)) return;
+  saveHandoffs(next);
+  renderAll();
+}
+// On every welcome, drop and sync tick: the caps decide whether an open offer is locked or back.
+export function applyHandoffCaps() {
+  const next = onCaps(handoffs, serverHandoff, Date.now());
+  if (sameRecs(next, handoffs)) return;
+  saveHandoffs(next);
+  renderAll();
+}
+
+// ---------- the dev stack proposal ----------
+
+const proposing = new Set<string>();
+
+// Headless and read-only, like the day summary: `propose_stack` runs `claude -p` in the project
+// with nothing but Read/Glob/Grep. Nothing is written until the dialog's Apply (docs/stack.md).
+export async function proposeStack(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project to describe its tasks. This can take a minute or two");
+  try {
+    const [cfg, before, found] = await Promise.all([
+      invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg),
+      invoke<Record<string, RunInfo>>("run_infos", { dir: root }).catch(() => ({}) as Record<string, RunInfo>),
+      discoverTasks(root, root, true),
+    ]);
+    const real = found.filter((r) => !r.blocked);
+    const tasks = real.map((r) => ({ id: r.id, cmd: taskCmd(r), background: r.background }));
+    const p = await invoke<StackProposal>("propose_stack", { dir: root, prompt: describePrompt(cfg, tasks) });
+    const checked = checkProposal(p, tasks);
+    const run = checkRun(p.run ?? {}, real);
+    checked.dropped.push(...run.dropped);
+    if (!stackSummary(checked.stack) && !p.tasks.length && !Object.keys(run.run).length) {
+      await ask(proposalText(p, checked), { title: "Nothing to describe", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    const text = [runSummaryText(run.run, before), proposalText(p, checked)].filter(Boolean).join("\n\n");
+    const ok = await ask(text, { title: `Tasks and dev stack of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" });
+    if (!ok) return;
+    // Tasks first: `down` may name one of them, and a table pointing at nothing is worse than none.
+    for (const t of p.tasks) {
+      await invoke("save_episko_task", { workdir: root, id: null, task: { label: t.label, run: t.run, group: null, background: false, cwd: null } });
+    }
+    await invoke("write_stack", { dir: root, run: run.run, stack: { up: checked.stack.up ?? null, down: checked.stack.down ?? null, compose: checked.stack.compose ?? [], pages: checked.stack.pages ?? {} } });
+    const n = Object.keys(run.run).length;
+    toast(`Described ${n} task${n === 1 ? "" : "s"}${p.tasks.length ? ` and added ${p.tasks.length}` : ""}. Commit .episko/ to share it`);
+  } catch (e) {
+    toast(`No dev stack proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
 }

@@ -10,10 +10,11 @@ import {
 import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
-  accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty,
+  accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty, handoffs,
   projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
 import { taskPrefs } from "./tasks";
+import { handoffBusy } from "./handoff";
 
 // Dormants hang off the group, not a cluster: no live checkout to cluster by. `repoRoot` is set
 // only on the groups `splitByWorktree` mints; the project is `repoRoot ?? path`, the folder `path`.
@@ -65,7 +66,7 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
 export const clusterIsLive = (c: WtCluster): boolean =>
   c.sessions.length + c.externals.length > 0 || removingWt.has(c.key);
 // toplevel mode: one group per worktree; the root checkout keeps the project's identity.
-export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
+export function splitByWorktree(list: ProjGroup[], keep: readonly string[] = []): ProjGroup[] {
   const out: ProjGroup[] = [];
   for (const p of list) {
     const cl = clusterByWorktree(p);
@@ -73,7 +74,7 @@ export function splitByWorktree(list: ProjGroup[]): ProjGroup[] {
     if (!wts.length) { out.push(p); continue; }
     const root = cl.find((c) => c.isMain);
     // Keep the root group only when it carries rows or is a favourite (a launch target).
-    if (root || FAVORITES.some((f) => f.path === p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
+    if (root || FAVORITES.some((f) => f.path === p.path) || handedFrom(p.path) || keep.includes(p.path)) out.push({ ...p, sessions: root?.sessions ?? [], externals: root?.externals ?? [] });
     // `repoRoot` is what the group was split out of; without it nothing downstream reaches the project.
     for (const c of wts) out.push({ name: p.name, path: c.key, accent: p.accent, sessions: c.sessions, externals: c.externals, dormants: [], wtBranch: c.branch, repoRoot: p.path });
   }
@@ -117,6 +118,7 @@ export function dormantBusy(d: Restorable): boolean {
     if (s.provider === d.provider && (s.resumeId === d.resumeId || s.id === d.id)) return true;
   }
   if (backendLive.has(providerSessionKey(d.provider, d.id))) return true;
+  if (d.provider === "claude" && handoffBusy(handoffs, d.resumeId)) return true; // another machine owns it
   return d.provider === "claude" && externals.some((e) => e.session_id === d.resumeId);
 }
 // Backend PTYs to rebuild a pane for after a webview reload (#47). Agent panes only: a task's `run`
@@ -149,14 +151,22 @@ export function adoptIdentity(workdir: string, meta: Restorable | null, heads: r
     branch: own?.branch || "",
   };
 }
-export function projectList(): ProjGroup[] {
+// A settled send keeps its "handed to" row after the shelved row that held its project went.
+const handedFrom = (path: string) => handoffs.some((r) => r.dir === "out" && r.state === "done" && r.settled && r.colorKey === path);
+/** `keep`: checkouts that hold a row nothing else here knows of, like an offer handed to this machine. */
+export function projectList(keep: readonly string[] = []): ProjGroup[] {
   const list = allProjects();
+  const extra = [...handoffs.filter((r) => r.colorKey && handedFrom(r.colorKey)).map((r) => r.colorKey!), ...keep];
+  for (const key of extra) {
+    if (list.some((p) => p.path === key)) continue;
+    list.push({ name: basename(key), path: key, accent: accentFor(key), sessions: [], externals: [], dormants: [] });
+  }
   // Sort sessions first so each split group inherits the order, then order the groups.
   const sessCmp = sortMode === "active" ? (a: Sess, b: Sess) => b.lastActivity - a.lastActivity
     : sortMode === "attention" ? (a: Sess, b: Sess) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince
     : null;
   if (sessCmp) for (const p of list) p.sessions.sort(sessCmp);
-  const groups = wtGroup === "toplevel" ? splitByWorktree(list) : list;
+  const groups = wtGroup === "toplevel" ? splitByWorktree(list, keep) : list;
   if (sortMode === "active") {
     groups.sort((a, b) => projActivity(b) - projActivity(a));
   } else if (sortMode === "attention") {

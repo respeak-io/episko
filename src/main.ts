@@ -5,11 +5,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
-import { $, chord, IS_MAC, IS_TAURI, IS_WIN, setStageHome, takeStage, toast, wireTips } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, navHeld, setStageHome, setStageMoved, takeStage, toast, wireTips } from "./dom";
 import { wireMenu } from "./menu";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -27,7 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
-import { closeMdReader, mdReaderOpen } from "./mdreader";
+import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
@@ -40,11 +40,11 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
-  openDevtools, reloadUi,
+  openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
-import { endBg, liveServers, taskServerUrl } from "./servers";
+import { endBg, foldPages, liveServers } from "./servers";
 import {
   closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
@@ -103,7 +103,7 @@ import {
 } from "./fleetui";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
-  closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
+  askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
@@ -111,7 +111,7 @@ import {
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
-import { closeProjectSettings, openProjectSettings, projSettingsOpen, setProjSetHost } from "./projsettings";
+import { closeProjectSettings, openProjectSettings, projSettingsOpen, renderProjSettings, setProjSetHost } from "./projsettings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -120,19 +120,22 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
-  vitalsPrefs, type BgLogHealthEvent,
+  setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
+  vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
-import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
+import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
+import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
   beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
-  tickSync, type SyncOut,
+  setHandoffSink,
+  syncMemory, tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
+import { closeHandoff, dismissHanded, handoffOpen, onHandoffEvent, openIncoming, openSend, setHandoffHost, settleDue, takeBack } from "./handoffui";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -229,6 +232,8 @@ setProjSetHost({
   setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setTools: setProjectTools, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
+  setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
+  trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -330,6 +335,7 @@ wireReview();
 // The stage's home: whatever steps off it lands here, so "no sessions running" is not a
 // screen the app has any more. Wired before anything can close a pane.
 setStageHome(() => openFleet());
+setStageMoved(renderAll); // the pass after a handover is where ./nav records it
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
@@ -357,6 +363,7 @@ setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
+  setupStack: (root) => void proposeStack(root),
 });
 setWtLaunch(launch);
 setWtCloseSession(closeSession);
@@ -395,6 +402,8 @@ function flushRender() {
 function renderAllNow() {
   telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
+  if (!navHeld()) nav = visit(nav, here()); // the one place history records; a back/forward step already moved its cursor
+  renderNav();
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
@@ -420,6 +429,81 @@ function renderAllNow() {
   tourTick(); // last: it re-measures the anchor the renderers above just replaced
 }
 
+// ---------- back / forward (./nav) ----------
+// A pass sees where the stage settled within a frame. A hop across an await is recorded
+// unless the flow holds history (`holdNav` in ./dom), as a move or a task re-run does.
+let nav = emptyNav();
+function here(): Loc | null {
+  if (activeId) {
+    const group = stageGroup && !sessions.has(stageGroup) ? stageGroup : undefined; // a run group, not a split
+    return group ? { kind: "session", id: activeId, group } : { kind: "session", id: activeId };
+  }
+  return mirror ? { ...mirror } : null;
+}
+// The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
+const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
+  || [...sessions.values()].some((s) => s.colorKey === root) || dormants.some((d) => d.colorKey === root)
+  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
+function navAlive(l: Loc): boolean {
+  switch (l.kind) {
+    case "session": return l.group ? [...sessions.values()].some((s) => s.run?.groupId === l.group) : sessions.has(l.id);
+    case "ext": return externals.some((e) => e.pid === l.pid);
+    case "past": return dormants.some((d) => d.id === l.id);
+    case "fleet": return true;
+    case "dash": case "review": return knownRoot(l.root);
+  }
+}
+function navName(l: Loc): string {
+  const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
+  switch (l.kind) {
+    case "session": {
+      const s = sessions.get(l.id);
+      const t = s && !l.group ? (s.kind === "task" ? s.run?.label : s.title) : "";
+      return s ? cap(t ? `${s.project}: ${t}` : s.project) : "";
+    }
+    case "ext": return cap(externals.find((e) => e.pid === l.pid)?.name ?? "");
+    case "past": { const d = dormants.find((x) => x.id === l.id); return d ? cap(d.title ? `${d.project}: ${d.title}` : d.project) : ""; }
+    case "fleet": return "";
+    case "dash": case "review": return l.name;
+  }
+}
+// Every location reopens through the verb a click on it would use; none touches the stage itself.
+function openLoc(l: Loc) {
+  switch (l.kind) {
+    case "session": if (l.group) openRunGroup(l.group); else setActive(l.id); break;
+    case "ext": { const e = externals.find((x) => x.pid === l.pid); if (e) openExternal(e.session_id); break; }
+    case "past": openDormant(l.id); break;
+    case "dash": openDashboard(l.name, l.root); break;
+    case "fleet": openFleet(); break;
+    case "review": openPrReview(l.name, l.root, l.number); break;
+  }
+}
+function goNav(dir: NavDir) {
+  const r = step(nav, dir, navAlive);
+  if (!r) return;
+  nav = r.nav;
+  openLoc(r.to);
+  renderAll();
+}
+function renderNav() {
+  for (const dir of ["back", "forward"] as const) {
+    const to = peek(nav, dir, navAlive);
+    const b = $(dir === "back" ? "navBack" : "navFwd") as HTMLButtonElement;
+    b.disabled = !to;
+    b.title = navTip(dir, to, to ? navName(to) : "", comboText(activeBind(keyPrefs, dir === "back" ? "navBack" : "navForward"), IS_MAC));
+  }
+}
+// The mouse's back/forward buttons, in the capture phase so xterm's mouse reporting never sees
+// them; every phase is cancelled, or the webview would run a history of its own.
+for (const type of ["mousedown", "mouseup", "auxclick"] as const) {
+  window.addEventListener(type, (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (type === "mouseup") goNav(e.button === 3 ? "back" : "forward");
+  }, true);
+}
+
 // ---------- events ----------
 listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
   const s = sessions.get(e.payload.sessionId); if (!s?.term) return;
@@ -440,9 +524,15 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
     // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
     const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
     s.run.partial = whole.pop()!.slice(-1024);
-    const was = s.run.url;
-    for (const line of whole) s.run.url = taskServerUrl(s.run.url, line);
-    if (s.run.url !== was) renderAll(); // the pill and the task's card both name it
+    // The description's ready text, latched once: a stack waits on it, MCP reports on it.
+    if (s.run.ready && !s.run.readyAt && whole.some((l) => l.includes(s.run!.ready!))) { s.run.readyAt = Date.now(); renderAll(); }
+    const was = s.run.pages ?? [];
+    const now = whole.reduce(foldPages, was);
+    if (now !== was) { // foldPages hands back the same array when a chunk announced nothing
+      s.run.pages = now;
+      s.run.url = now[0]?.url;
+      renderAll(); // the pill, the task's card and its stack all name them
+    }
   }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
@@ -453,6 +543,7 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   mcpExit(e.payload.sessionId, e.payload.code);
   releaseClaimFor(e.payload.sessionId); // also before the early return: no dead claims linger
   const s = sessions.get(e.payload.sessionId); if (!s) return;
+  if (isClaude(s)) void syncMemory(); // a session's last memories are written by now
   const code = e.payload.code;
   s.attention = null;
   if (s.kind === "task") {
@@ -521,6 +612,12 @@ setSyncHost({
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
   review: () => { refreshReview(); openReview(); },
 });
+setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); onHandoffEvent(ev); }, caps: applyHandoffCaps });
+setHandoffHost({
+  stopForTranscript, shelve: shelveSession, forgetDormant, saveHandoffs, renderAll, resumeDormant,
+  insertDormant: (r) => { setDormants([r, ...dormants.filter((d) => d.id !== r.id)]); flushRoster(); },
+});
+applyHandoffCaps(); // no server heard yet: a persisted open offer starts locked
 setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 
@@ -637,7 +734,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -650,7 +747,12 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
   else if (el.dataset.jump) jumpExternal(+el.dataset.jump);
-  else if (el.dataset.resume) resumeDormant(el.dataset.resume);
+  // Before data-past: these sit inside a shelved row or its mirror card.
+  else if (el.dataset.handrecall) takeBack(el.dataset.handrecall);
+  else if (el.dataset.handsend) openSend(el.dataset.handsend);
+  else if (el.dataset.handout) dismissHanded(el.dataset.handout);
+  else if (el.dataset.handin) openIncoming(el.dataset.handin);
+  else if (el.dataset.resume) void resumeDormant(el.dataset.resume);
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
@@ -685,6 +787,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);
   else if (el.dataset.fgo) openFootTarget(el.dataset.fgo);
+  else if (el.dataset.nav) goNav(el.dataset.nav === "forward" ? "forward" : "back");
 });
 
 // A footer popover's quick open. The menu it came from goes first — the panel it opens
@@ -719,7 +822,7 @@ if (IS_TAURI && (IS_MAC || IS_WIN)) {
 // DOM's focus/blur also fire for the webview's internal moves; the DOM pair is only the
 // browser fallback. visibilitychange is a third source: minimised can still be "focused".
 if (IS_TAURI) {
-  void getCurrentWindow().onFocusChanged(({ payload }) => setWindowFocused(payload));
+  void getCurrentWindow().onFocusChanged(({ payload }) => { setWindowFocused(payload); if (payload) void syncMemory(); });
 } else {
   window.addEventListener("focus", () => setWindowFocused(true));
   window.addEventListener("blur", () => setWindowFocused(false));
@@ -763,12 +866,14 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   palette: () => { $("palette").classList.contains("show") ? closePalette() : openPalette(); },
   sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
+  navBack: () => goNav("back"),
+  navForward: () => goNav("forward"),
   terminal: () => openPlainTerminal(),
   terminalOther: () => openPlainTerminal({ other: true }),
   history: () => { histOpen() ? closeHistory() : void openHistory(true); },
@@ -788,7 +893,7 @@ window.addEventListener("keydown", (e) => {
   // A Settings › Keys row is armed: what the capture-phase recorder let through must not fire.
   if (keyRecording()) return;
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
-  const act = matchAction(keyPrefs, e);
+  const act = matchAction(keyPrefs, e, IS_MAC);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
   // A dialog's own listener already spent this Esc on itself; falling through would also
   // close the pane under it (the dashboard, a mirror).
@@ -796,6 +901,7 @@ window.addEventListener("keydown", (e) => {
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
@@ -822,7 +928,7 @@ window.addEventListener("keydown", (e) => {
 // stands down rather than consuming, leaving plain ⌘⏎ to the run picker's pin.
 window.addEventListener("keydown", (e) => {
   if (keyRecording()) return;
-  if (!comboMatches(activeBind(keyPrefs, "reveal"), e)) return;
+  if (!comboMatches(activeBind(keyPrefs, "reveal"), e, IS_MAC)) return;
   if ($("scrim").classList.contains("show")) return;
   // The colour popover's hex box has no scrim, so also stand down in a real text field;
   // xterm's hidden textarea is not one.
@@ -908,6 +1014,7 @@ setInterval(flushDebug, 4000);
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 // Sends what the last half-minute left owed, and ages the sync badge past its window.
 setInterval(() => tickSync((sid) => { const s = sessions.get(sid); return !!s && !isExited(s); }), 30_000);
+setInterval(() => { void syncMemory(); }, 10 * 60_000);
 // Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
 setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
   pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),
@@ -976,7 +1083,8 @@ setInterval(refreshExternals, 3000);
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants());
+// After the roster: an outcome heard just before the last quit removes the row it settles.
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 

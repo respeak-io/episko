@@ -7,6 +7,7 @@ mod deps;
 mod external;
 mod files;
 mod git;
+mod handoff;
 mod health;
 mod github;
 mod icons;
@@ -15,6 +16,7 @@ mod notes;
 mod platform;
 mod pty;
 mod review;
+mod stack;
 mod summarize;
 mod sync;
 mod tasks;
@@ -309,6 +311,7 @@ pub fn run() {
                 sync: Default::default(),
             });
             sync::init(app.handle());
+            handoff::init(app.handle());
 
             let handle = app.handle().clone();
             // `serve_telemetry`, not `run_telemetry_server`: the inner loop ends on the first
@@ -494,11 +497,19 @@ pub fn run() {
             git::git_log_days,
             git::project_facts,
             git::project_id,
+            git::handoff_git_state,
+            git::handoff_git_cleanup,
             deps::dep_report,
             deps::dep_invalidate,
             deps::dep_manifests,
             deps::dep_tools,
             deps::dep_outdated,
+            stack::compose_containers,
+            stack::compose_stop,
+            stack::stack_config,
+            stack::run_infos,
+            stack::propose_stack,
+            stack::write_stack,
             github::gh_threads,
             github::gh_issue,
             github::gh_accounts,
@@ -549,6 +560,8 @@ pub fn run() {
             usage::list_session_history,
             usage::token_usage_by_day,
             usage::claude_usage_limits,
+            usage::memory_scan,
+            usage::memory_write,
             sync::sync_status,
             sync::sync_start,
             sync::sync_pair,
@@ -556,15 +569,26 @@ pub fn run() {
             sync::sync_push,
             sync::sync_presence,
             sync::sync_invite,
+            sync::sync_memory_replay,
             sync::sync_ack,
             sync::sync_reconnect,
             sync::sync_set_headers,
+            handoff::handoff_pack,
+            handoff::handoff_memories,
+            handoff::handoff_send,
+            handoff::handoff_claim,
+            handoff::handoff_recall,
+            handoff::handoff_decline,
+            handoff::handoff_install,
+            handoff::handoff_prune,
+            handoff::handoff_settle,
             summarize::summarize_day,
             summarize::read_digest,
             summarize::has_digest,
             summarize::write_digest,
             summarize::remove_digest,
             summarize::commit_digest_removal,
+            summarize::handoff_brief,
             icons::find_project_icon,
             icons::read_custom_icon,
             platform::read_legacy_localstorage,

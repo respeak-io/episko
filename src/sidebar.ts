@@ -17,8 +17,11 @@ import {
 } from "./peek";
 import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
 import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
+import { incomingByProject, rowText, type HandoffRec } from "./handoff";
+import { incomingRowHtml, incomingStripHtml } from "./handoffview";
+import { deviceLabel, pathsOfId } from "./synclink";
 import {
-  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, keyPrefs, peekPrefs,
+  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, peekPrefs,
   projGroups,
   saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
   type SortMode,
@@ -41,12 +44,19 @@ let lastHtml: string | null = null;
 // A drag moves real nodes in #projects, so the cache cannot be trusted across one.
 function invalidateSidebarCache() { lastHtml = null; }
 
+// Sessions handed to this machine, by the checkout their project lives in (null: not cloned here).
+let incoming = new Map<string | null, HandoffRec[]>();
+const incomingRows = (recs: HandoffRec[] | undefined) =>
+  (recs ?? []).map((r) => { const t = rowText(r, Date.now(), deviceLabel); return incomingRowHtml(r, t.tag, t.title); }).join("");
+
 export function renderSidebar() {
   if (draggingProjects) return;
-  const list = projectList();
+  incoming = incomingByProject(handoffs, pathsOfId);
+  const list = projectList([...incoming.keys()].filter((k): k is string => !!k));
   // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
-  const html = groupedProjects(list).map((slot) =>
+  const loose = incoming.get(null) ?? [];
+  const html = incomingStripHtml(incomingRows(loose), loose.length) + groupedProjects(list).map((slot) =>
     slot.kind === "project" ? projectHtml(slot.project, dash) : foldHtml(slot.group, slot.projects, dash)).join("");
   if (html !== lastHtml) {
     lastHtml = html;
@@ -68,7 +78,8 @@ function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string
 }
 
 function projectHtml(p: ProjGroup, dash: Set<string>): string {
-  const rows = groupBody(p) + dormantRows(p);
+  const inbox = incoming.get(p.path);
+  const rows = groupBody(p) + incomingRows(inbox) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
   // A dirty worktree lights its parent project's dot too.
@@ -91,7 +102,7 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
     // discovered via an external session or a shelved one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
-      : `<span class="pcount ext">${p.dormants.length} shelved</span>`;
+      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming` : "handed"}</span>`;
     head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
   }
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
