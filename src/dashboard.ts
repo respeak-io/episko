@@ -77,6 +77,7 @@ import {
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { copyText, refreshGhAccounts } from "./actions";
+import { typeInto } from "./panes";
 
 // What this pane does but does not own; one host object rather than a dozen setters.
 export interface DashHost {
@@ -1949,7 +1950,7 @@ async function dispatchNote(id: string): Promise<void> {
   renderDash();
   // Claude's REPL needs a moment before it accepts input; failing to type is harmless.
   setTimeout(() => {
-    void invoke("write_pty", { sessionId: sid, data: n.text.replace(/\n/g, " ") }).catch(() => {});
+    void typeInto(sid, n.text).catch(() => {});
   }, 1400);
   toast("Dispatched and prefilled. Press Enter to send");
 }
@@ -2064,7 +2065,7 @@ async function doDispatch(): Promise<void> {
   // burst arriving in one chunk is read as a paste, and a `\r` inside a paste is a newline.
   setTimeout(() => {
     const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
-    void invoke("write_pty", { sessionId: sid, data: prompt.replace(/\n/g, " ") })
+    void typeInto(sid, prompt)
       .then(() => new Promise((r2) => setTimeout(r2, SUBMIT_MS)))
       .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
       .catch(() => {});
@@ -2180,7 +2181,7 @@ async function dispatchText(text: string): Promise<void> {
   const sid = await host.launch(name(), root(), { colorKey: root() });
   if (typeof sid !== "string") return;
   setTimeout(() => {
-    void invoke("write_pty", { sessionId: sid, data: text.replace(/\n/g, " ") }).catch(() => {});
+    void typeInto(sid, text).catch(() => {});
   }, 1400);
   toast("Dispatched and prefilled. Press Enter to send");
 }

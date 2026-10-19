@@ -13,7 +13,9 @@ import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
-import { waitForExit } from "./tasks";
+import { discoverTasks, waitForExit } from "./tasks";
+import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
+import { checkRun, describePrompt, runSummaryText, taskCmd, type RunInfo } from "./runinfo";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -735,4 +737,47 @@ export function applyHandoffCaps() {
   if (sameRecs(next, handoffs)) return;
   saveHandoffs(next);
   renderAll();
+}
+
+// ---------- the dev stack proposal ----------
+
+const proposing = new Set<string>();
+
+// Headless and read-only, like the day summary: `propose_stack` runs `claude -p` in the project
+// with nothing but Read/Glob/Grep. Nothing is written until the dialog's Apply (docs/stack.md).
+export async function proposeStack(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project to describe its tasks. This can take a minute or two");
+  try {
+    const [cfg, before, found] = await Promise.all([
+      invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg),
+      invoke<Record<string, RunInfo>>("run_infos", { dir: root }).catch(() => ({}) as Record<string, RunInfo>),
+      discoverTasks(root, root, true),
+    ]);
+    const real = found.filter((r) => !r.blocked);
+    const tasks = real.map((r) => ({ id: r.id, cmd: taskCmd(r), background: r.background }));
+    const p = await invoke<StackProposal>("propose_stack", { dir: root, prompt: describePrompt(cfg, tasks) });
+    const checked = checkProposal(p, tasks);
+    const run = checkRun(p.run ?? {}, real);
+    checked.dropped.push(...run.dropped);
+    if (!stackSummary(checked.stack) && !p.tasks.length && !Object.keys(run.run).length) {
+      await ask(proposalText(p, checked), { title: "Nothing to describe", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    const text = [runSummaryText(run.run, before), proposalText(p, checked)].filter(Boolean).join("\n\n");
+    const ok = await ask(text, { title: `Tasks and dev stack of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" });
+    if (!ok) return;
+    // Tasks first: `down` may name one of them, and a table pointing at nothing is worse than none.
+    for (const t of p.tasks) {
+      await invoke("save_episko_task", { workdir: root, id: null, task: { label: t.label, run: t.run, group: null, background: false, cwd: null } });
+    }
+    await invoke("write_stack", { dir: root, run: run.run, stack: { up: checked.stack.up ?? null, down: checked.stack.down ?? null, compose: checked.stack.compose ?? [], pages: checked.stack.pages ?? {} } });
+    const n = Object.keys(run.run).length;
+    toast(`Described ${n} task${n === 1 ? "" : "s"}${p.tasks.length ? ` and added ${p.tasks.length}` : ""}. Commit .episko/ to share it`);
+  } catch (e) {
+    toast(`No dev stack proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
 }

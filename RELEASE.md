@@ -379,6 +379,35 @@ macOS and Linux halves are three separate implementations of the same question.
       (the roster is checked first). With panes open and no servers, the pill stays
       hidden and the paint counter stays flat.
 
+
+### Dev stacks
+
+Needs Docker and a project whose dev task brings up Compose containers (docs/stack.md).
+
+- [ ] **A stack goes starting → ready.** ▶ Run a compound dev task (*Dev: Frontend +
+      Backend*) or a `just dev`, and keep the servers popover open. The block says what it
+      is waiting for (a prep step, a server not yet listening, a health check), then
+      *ready* once every server shows a URL or port and every container is healthy. Its
+      panes leave *Running servers* rather than appearing twice.
+- [ ] **A failure names itself.** Stop one of the stack's containers by hand
+      (`docker stop <name>`) or break a prep step: the block and the pill go red and the
+      line names the container or step. A container that exited weeks ago must NOT do this.
+- [ ] **Containers outlive their panes, visibly.** ✕ the stack: the panes close, the
+      containers stay as a *no dev task running* block with a green dot. ⏹ asks, then
+      `docker compose stop`s them (or runs `[stack] down` when the project names one), and
+      the block disappears.
+- [ ] **A worktree's run shares the repo's containers** and says `from <worktree>` on any
+      container started from another checkout.
+- [ ] **No Docker is no noise.** Quit Docker Desktop: stacks keep their panes, nothing
+      errors, and the poll backs off (the 🐞 log shows no `compose_containers` storm).
+- [ ] **The Run picker's Dev stack strip.** ▶ Run shows it under the list: *not set up* with
+      *Set up with an agent*, or the table's summary with *▶ Start stack* and the `up` row
+      tagged *stack*. *Set up with an agent* opens no session: a toast, then (seconds to a
+      minute later) a dialog with each proposed value and the file it came from. *Discard*
+      writes nothing; *Apply* writes `[stack]` (and any proposed stop task) and keeps every
+      other table and comment in the file. No pane appears and nothing is committed.
+- [ ] **Project settings › The team's › Dev stack** shows the same table, and *Open file*
+      opens `.episko/episko.toml`.
 ### Identity across rotations
 
 - [ ] **`/clear` (or `/compact`) does not orphan the pane.** Claude mints a new

@@ -27,7 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
-import { closeMdReader, mdReaderOpen } from "./mdreader";
+import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
   addProject, addProjectPath, cycleSort, openProjectFolder,
@@ -40,11 +40,11 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
-  openDevtools, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
+  openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
-import { endBg, liveServers, taskServerUrl } from "./servers";
+import { endBg, foldPages, liveServers } from "./servers";
 import {
   closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
@@ -103,7 +103,7 @@ import {
 } from "./fleetui";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
-  closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
+  askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
 } from "./taskui";
 import {
@@ -111,7 +111,7 @@ import {
   type PrivacyAsk,
 } from "./settings";
 import { closeUsage, openUsage, refreshTokens, renderUsage, usageOpen } from "./usagedlg";
-import { closeProjectSettings, openProjectSettings, projSettingsOpen, setProjSetHost } from "./projsettings";
+import { closeProjectSettings, openProjectSettings, projSettingsOpen, renderProjSettings, setProjSetHost } from "./projsettings";
 import { closeHistory, histOpen, initHistoryEvents, openHistory } from "./historyui";
 import {
   applyHook, applyStatusline, permCmd, riskLevel, setOnPrompt, setOnSessionTouched, setOnTurnEnd,
@@ -232,6 +232,8 @@ setProjSetHost({
   setAgent: setProjectAgent, setPerm: setProjectPerm, setFetch: setProjectFetch, setTools: setProjectTools, setGh: setProjectGhAccount,
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
+  setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
+  trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
 setSignoffHost({ closeFootMenus, renderAll, shelveSession, closeSession });
@@ -361,6 +363,7 @@ setExplorerCloseFootMenus(closeFootMenus);
 setTaskUiHost({
   launchTask, handToTerminal, activeProjectCtx, activeCwd,
   setActive, renderAll, closePalette,
+  setupStack: (root) => void proposeStack(root),
 });
 setWtLaunch(launch);
 setWtCloseSession(closeSession);
@@ -521,9 +524,15 @@ listen<{ sessionId: string; data: string; seq: number }>("pty-output", (e) => {
     // Latched here as it streams: the 40-line tail forgets a server's banner within seconds.
     const whole = ((s.run.partial ?? "") + text).split(/\r?\n/);
     s.run.partial = whole.pop()!.slice(-1024);
-    const was = s.run.url;
-    for (const line of whole) s.run.url = taskServerUrl(s.run.url, line);
-    if (s.run.url !== was) renderAll(); // the pill and the task's card both name it
+    // The description's ready text, latched once: a stack waits on it, MCP reports on it.
+    if (s.run.ready && !s.run.readyAt && whole.some((l) => l.includes(s.run!.ready!))) { s.run.readyAt = Date.now(); renderAll(); }
+    const was = s.run.pages ?? [];
+    const now = whole.reduce(foldPages, was);
+    if (now !== was) { // foldPages hands back the same array when a chunk announced nothing
+      s.run.pages = now;
+      s.run.url = now[0]?.url;
+      renderAll(); // the pill, the task's card and its stack all name them
+    }
   }
 });
 listen<{ sessionId: string; code: number }>("pty-exit", (e) => {

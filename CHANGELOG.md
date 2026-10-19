@@ -40,6 +40,23 @@ Markers: `+` new · `~` changed · `!` fixed
   already had a memory of one name keep both copies, `MEMORY.md` only ever
   gains lines, and a project you have not cloned on a machine gets its memories once you do.
 
++ **A dev environment is one block in the servers popover.** Start `just dev` or a compound
+  task like *Dev: Frontend + Backend*, and the popover groups its panes with the Docker Compose
+  containers of the repo: each pane's port or URL, each container's health and ports, and one
+  state for the whole stack. *Starting* names what it is waiting for, *failed* names the step
+  or container that broke (a crash-looping container included), and *ready* means every prep
+  step passed, every server listens and every health check is green. Containers that outlive
+  their panes stay listed, with ⏹ to stop them. An optional `[stack]` table in
+  `.episko/episko.toml` names the project's own `down` task; the ▶ Run picker and project
+  settings show it (with *Start stack* when it names an `up` task), and *Set up with an
+  agent* has Claude read your justfile, tasks.json and compose files in the background,
+  read-only, and propose the table, each value with the file and lines it is based on, for
+  you to apply or discard. It describes every task too: whether it is a check, a test, a
+  server, a desktop app or a deploy, what it serves, which line means it is up and what
+  stops it, so Episko stops guessing from names like `dev` and `start`; the ▶ Run picker
+  shows each task's kind and marks a deploy. Each stack lists every page worth opening: what its panes
+  announce, its containers' Traefik routes, and any `pages` the table declares.
+
 ~ **Sync server: handoff and the memory stream.** The sync protocol learns the handoff messages,
   the capability fields a client and server advertise, and a `memory` stream; an app or server
   from before this sees nothing new on the wire. The server's database gains the tables that hold
@@ -50,6 +67,33 @@ Markers: `+` new · `~` changed · `!` fixed
   and of the person when it was their last, and closes that machine's live connection; a name
   that still owns a personal log is no longer free to register with the team code. A proxy in
   front must pass WebSocket messages of at least 1 MiB.
+
+~ **Trusting a project is a button, not a hidden click.** A justfile, Taskfile or mise config
+  is listed by running it, so Episko asks first, but the only way to answer was clicking a
+  greyed-out row. The ▶ Run picker now says why those tasks are hidden and offers
+  **Trust <project>…**, and project settings carry the same switch, with *Revoke*.
+
+~ **An agent can start your dev server through Episko, not only a check.** `run_task` used to
+  take one-shot tasks only. A dev server, a desktop app or a whole compound dev task is now
+  answered once it is up, with its addresses, and keeps running in its pane; `stack_status`
+  tells the agent what of the repository already runs across its worktrees, so it stops
+  probing ports.
+
+! **A task whose program is not installed says so.** A VS Code task that runs `pwsh` on a Mac
+  without it was offered like any other and failed at launch; it is now a greyed row reading
+  *pwsh is not installed*, in the ▶ Run picker and for agents alike.
+
+! **A task opens on the host its project chose.** A dev script that serves on
+  `wirksam.localhost` (so its cookie and CORS work) showed `127.0.0.1` instead, because only
+  vite's own `Local:` line was read; the frontend then opened on the wrong origin. Every
+  labelled address a task prints is kept now, the named host wins on a shared port, and the
+  task's inspector lists them all.
+
+! **A long prefilled prompt arrives whole.** Claude Code reads text typed into a fresh session
+  in one burst as a paste: under 1 KB it collapsed to `[Pasted text]` before you could read it,
+  and past 1 KB it lost the first 1,024 characters. A dispatched note or issue, and the stack
+  setup brief, are now typed in small beats, so the whole sentence is there to read before
+  you press Enter.
 
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,

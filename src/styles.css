@@ -1391,6 +1391,16 @@ html.win .wctl { display: flex; }
    flex item a long subtitle shrank to min-content. The sub takes the squeeze (min-width: 0). */
 .run-h { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px 0; font-size: 13px; font-weight: 700; }
 .run-h .run-t { flex: none; white-space: nowrap; }
+.run-stack { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-top: 1px solid var(--hair); font-size: 11px; }
+.run-stack[hidden] { display: none; }
+.run-stack-l { flex: none; font: 700 9.5px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.run-stack-t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px var(--font-mono); color: var(--muted); }
+.run-stack-t.dim { color: var(--muted-2); font-family: var(--font-ui); }
+.run-stack-go, .run-stack-ai { flex: none; padding: 3px 9px; border-radius: 7px; font: 600 11px var(--font-ui); cursor: pointer; }
+.run-stack-go { border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); }
+.run-stack-go:hover { border-color: var(--accent-ink); }
+.run-stack-ai { border: 1px solid var(--hair-strong); background: transparent; color: var(--muted); }
+.run-stack-ai:hover { color: var(--text); background: var(--surface); }
 .run-h .run-sub { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--font-mono); color: var(--muted-2); font-weight: 400; }
 #runInput { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font: 13px var(--font-ui); padding: 9px 14px 11px; border-bottom: 1px solid var(--hair); }
 #runInput::placeholder { color: var(--muted-2); }
@@ -1452,7 +1462,12 @@ html.win .wctl { display: flex; }
 .ri-b.go { color: #16121f; border-color: transparent; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); font-weight: 600; }
 /* Blocked runnables stay listed — a missing row reads as "Episko didn't find it". */
 .run-row.blocked { opacity: .5; cursor: not-allowed; }
+.run-row.trustrow { border: 1px dashed color-mix(in srgb, var(--st-working) 45%, transparent); }
+.run-row.trustrow small { white-space: normal; }
+.run-trust { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--st-working) 50%, transparent); background: color-mix(in srgb, var(--st-working) 14%, transparent); color: var(--st-working); font: 600 11px var(--font-ui); cursor: pointer; }
+.run-trust:hover { background: color-mix(in srgb, var(--st-working) 24%, transparent); }
 .run-row.blocked .end { color: var(--st-working); }
+.run-row .end.risky { color: var(--st-error); }
 .run-empty { padding: 20px 14px; text-align: center; font-size: 11.5px; color: var(--muted); line-height: 1.7; }
 .run-empty .dim { color: var(--muted-2); font-size: 10.5px; }
 .run-empty code { font: 10px var(--font-mono); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
@@ -2477,6 +2492,26 @@ select.in-ctl { cursor: pointer; }
 .svrpop .sv-log-empty { color: var(--muted-2); font-style: italic; }
 .svrpop .sv-foot { padding: 6px 5px 2px; margin-top: 3px; border-top: 1px solid var(--hair); font-size: 9.5px; color: var(--muted-2); }
 .svrpop .sv-foot code { font-family: var(--font-mono); color: var(--muted); }
+/* A stack: one bordered block whose head carries the summed state, then a line per pane and container. */
+.svrpop .sv-stack { margin: 0 2px 6px; padding: 4px 4px 5px; border: 1px solid var(--hair); border-left: 3px solid var(--muted-2); border-radius: 9px; }
+.svrpop .sv-stack.st-ready { border-left-color: var(--st-done); }
+.svrpop .sv-stack.st-starting { border-left-color: var(--st-working); }
+.svrpop .sv-stack.st-failed { border-left-color: var(--st-error); background: color-mix(in srgb, var(--st-error) 6%, transparent); }
+.svrpop .sv-sh { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 2px 2px 4px 4px; }
+.svrpop .sv-sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-2); }
+.svrpop .st-ready .sv-sdot { background: var(--st-done); }
+.svrpop .st-starting .sv-sdot { background: var(--st-working); }
+.svrpop .st-failed .sv-sdot { background: var(--st-error); }
+.svrpop .st-failed .sv-sh .sv-cmd { color: var(--st-error); }
+.svrpop .sv-line { display: grid; grid-template-columns: auto minmax(0, 1fr) auto 24px; align-items: center; gap: 7px; min-height: 24px; padding: 0 2px 0 8px; }
+.svrpop .sv-ln { font: 500 11px var(--font-ui); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svrpop .sv-box .sv-ln { color: var(--muted); }
+.svrpop .sv-meta { font: 500 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.svrpop .sv-meta.sv-bad { color: var(--st-error); }
+.svrpop .sv-dot.done { background: transparent; border: 1px solid var(--muted-2); }
+.svrpop .sv-pages { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 4px 5px 20px; }
+.svrpop .sv-page { padding: 3px 8px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); font: 600 10.5px var(--font-ui); cursor: pointer; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svrpop .sv-page:hover { border-color: var(--accent-ink); }
 
 /* account usage-limits popover (5-hour session + 7-day weekly windows) */
 /* Every status-bar popover names itself, and the right end of that header is where its quick

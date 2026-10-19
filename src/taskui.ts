@@ -11,6 +11,8 @@ import { paneDir, type Runnable } from "./types";
 import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
 import { activeBind, comboMatches } from "./keys";
 import { bumpFrec, forgetFrec, frecScore } from "./palette";
+import { stackSummary, type StackCfg } from "./stack";
+import { describedTally } from "./runinfo";
 import {
   applyInputs, defSpan, discoverTasks, execCmd, hiddenIds, launchWithDeps, pinnedIds,
   prefillInputs, PROVIDER_LABEL, rememberedInput, rememberInput, rescanTasks, resolveRunInputs, RUNNERS,
@@ -28,11 +30,12 @@ export interface TaskUiHost {
   setActive: (id: string) => void;
   renderAll: () => void;
   closePalette: () => void;
+  setupStack: (root: string) => void;
 }
 let host: TaskUiHost = {
   launchTask: async () => null, handToTerminal: async () => {},
   activeProjectCtx: () => null, activeCwd: () => null, setActive: () => {},
-  renderAll: () => {}, closePalette: () => {},
+  renderAll: () => {}, closePalette: () => {}, setupStack: () => {},
 };
 export function setTaskUiHost(h: TaskUiHost) { host = h; }
 
@@ -244,6 +247,7 @@ async function deleteMgrTask(id: string) {
 let runCtx: { project: string; colorKey: string; worktree: string | null; branch: string; workdir: string } | null = null;
 let runList: Runnable[] = [];
 let runSel = 0;
+let runStackCfg: StackCfg = {}; // this checkout's [stack]; the strip under the list reads it
 let runSource: string | null = null;   // jump-bar filter; null = every source
 
 export function runTargetCtx() {
@@ -270,6 +274,15 @@ export async function openRunPicker() {
   runCtx = { project: c.project, colorKey: c.colorKey, worktree: c.worktree, branch: c.branch, workdir: c.workdir };
   runList = await discoverTasks(c.workdir, c.colorKey);
   runSel = 0;
+  runStackCfg = {};
+  renderRunStack();
+  const asked = c.workdir;
+  void invoke<StackCfg>("stack_config", { dir: asked }).then((cfg) => {
+    if (runCtx?.workdir !== asked) return; // the picker closed or moved on
+    runStackCfg = cfg;
+    renderRunStack();
+    renderRunPicker(($("runInput") as HTMLInputElement).value);
+  }).catch(() => {});
   runSource = null;
   runInfo = null;
   srcCache.clear();
@@ -402,11 +415,19 @@ function renderRunPicker(term: string) {
       const ready = asks && runCtx ? prefillInputs(r, runCtx.project) : null;
       // A lifted row has left its source group, so it carries the source itself.
       const lifted = g.name === "recent" || g.name === "pinned";
+      // The one blocked row you can act on, so it must not look disabled (docs/tasks.md).
+      if (r.id.endsWith(":__untrusted") && runCtx) {
+        return `<div class="run-row trustrow${on}" data-i="${idx}" title="Listing these runs ${esc(INTROSPECT_CMD[r.source] ?? r.source)} inside the folder">
+        <span class="ic">🔒</span>
+        <span class="txt"><b>${esc(PROVIDER_LABEL[r.source as Provider] ?? r.source)} tasks are hidden</b><small>Listing them runs code from this folder, so Episko asks first.</small></span>
+        <button class="run-trust" type="button" data-trust="${idx}">Trust ${esc(runCtx.project)}…</button>
+      </div>`;
+      }
       return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
         <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         ${lifted ? `<span class="run-src">${esc(sourceShort(r))}</span>` : ""}
-        <span class="end">${r.blocked ? esc(r.blocked) : r.background ? "bg" : pinned ? "★" : ""}</span>
+        <span class="end${r.kind === "deploy" ? " risky" : ""}"${r.note ? ` title="${esc(r.note)}"` : ""}>${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.kind ?? (r.described === "stale" ? "changed?" : r.background ? "bg" : "")}${pinned && !r.blocked ? " ★" : ""}</span>
         <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">ⓘ</button>
         ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
         ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
@@ -425,10 +446,44 @@ function renderRunPicker(term: string) {
     // Without stopPropagation, forgetting a task would also launch it.
     el.addEventListener("click", (e) => { e.stopPropagation(); forgetRecent(el.dataset.forget!); });
   });
+  body.querySelectorAll<HTMLElement>("[data-trust]").forEach((el) => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.trust!; pickRun("run"); });
+  });
   body.querySelectorAll<HTMLElement>("[data-info]").forEach((el) => {
     el.addEventListener("click", (e) => { e.stopPropagation(); runSel = +el.dataset.info!; void openRunInfo(); });
   });
   body.querySelector(".run-row.on")?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- the dev stack strip ----------
+// Where you start a dev environment is where you learn Episko can describe it (docs/stack.md).
+function renderRunStack() {
+  const el = $("runStack");
+  if (!runCtx) { el.hidden = true; return; }
+  const sum = stackSummary(runStackCfg);
+  const up = runStackCfg.up ? runList.find((r) => r.id === runStackCfg.up && !r.blocked) : undefined;
+  const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">▶ Start stack</button>` : "";
+  const t = describedTally(runList);
+  const todo = t.stale + t.missing;
+  const setup = `<button class="run-stack-ai" type="button" data-stackai title="Claude reads this project's task, script and compose files in the background, read-only, and describes every task (what it is, what it serves, how it stops) plus the dev stack, for you to apply or discard">${t.fresh && !todo ? "Re-check…" : "Describe tasks…"}</button>`;
+  const described = t.fresh || t.stale
+    ? `${t.fresh} described${t.stale ? ` · ${t.stale} changed since` : ""}${t.missing ? ` · ${t.missing} new` : ""}`
+    : "tasks not described: guessed from their names";
+  const what = `<span class="run-stack-t${sum ? "" : " dim"}" title="${esc([sum, described].filter(Boolean).join(" · "))}">${esc([sum, described].filter(Boolean).join(" · "))}</span>`;
+  el.innerHTML = `<span class="run-stack-l">Tasks</span>${what}${start}${setup}`;
+  el.hidden = false;
+  el.querySelector<HTMLElement>("[data-stackgo]")?.addEventListener("click", () => {
+    if (!up || !runCtx) return;
+    const ctx = runCtx;
+    closeRunPicker();
+    runRunnable(up, ctx.project, { colorKey: ctx.colorKey, worktree: ctx.worktree, branch: ctx.branch, discoveredIn: ctx.workdir });
+  });
+  el.querySelector<HTMLElement>("[data-stackai]")?.addEventListener("click", () => {
+    if (!runCtx) return;
+    const root = runCtx.workdir;
+    closeRunPicker();
+    host.setupStack(root);
+  });
 }
 
 // ---------- ⓘ: what's behind a row ----------
@@ -564,7 +619,7 @@ function pickRun(how: "run" | "pin" | "params") {
   if (!r || !runCtx) return;
   if (how === "pin") { togglePin(runCtx.colorKey, r.id); renderRunPicker(($("runInput") as HTMLInputElement).value); return; }
   // The trust gate is the one blocked row you can act on.
-  if (r.id === "just:__untrusted") { void askTrust(runCtx.colorKey, runCtx.project); return; }
+  if (r.id.endsWith(":__untrusted")) { void askTrust(runCtx.colorKey, runCtx.project, r.source); return; }
   if (r.blocked) { toast(`${r.label}: ${r.blocked}`); return; }
   const ctx = runCtx;
   closeRunPicker();
@@ -606,16 +661,22 @@ export async function runDefaultTask(kind: "build" | "test") {
   if (runRunnable(pick, c.project, o)) toast(`▶ ${pick.label}`);
 }
 
+// What each introspecting provider runs to list itself; the question names the real command.
+const INTROSPECT_CMD: Record<string, string> = { just: "just --dump", taskfile: "task --list-all", mise: "mise tasks" };
+
 // Trust lets Episko run code from the folder to enumerate tasks: asked plainly, and once.
-export async function askTrust(path: string, project: string) {
+// `after` is where the asker returns to: the picker by default, project settings from there.
+export async function askTrust(path: string, project: string, source = "just", after: () => unknown = openRunPicker) {
+  const cmd = INTROSPECT_CMD[source] ?? INTROSPECT_CMD.just;
   const ok = await ask(
-    `Episko will run \`just --dump\` inside ${project} to list its recipes.\n\n`
-    + `That evaluates the justfile, which can execute code from this folder. Only do this for projects you trust.`,
+    `Episko will run \`${cmd}\` inside ${project} to list its tasks.\n\n`
+    + `That evaluates the project's own files (a justfile's backticks and imports), which can execute code from this folder. Only do this for projects you trust.\n\n`
+    + `Adding the folder as a project trusts it too, and Settings › Tasks lists what you trusted by hand.`,
     { title: `Trust ${project}?`, kind: "warning", okLabel: "Trust and rescan", cancelLabel: "Cancel" });
   if (!ok) return;
   trustProject(path);
   dlog("info", `trusted ${path}`);
-  await openRunPicker();
+  await after();
 }
 
 // ---------- the panels' own event wiring ----------

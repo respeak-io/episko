@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import type { Runnable } from "./types";
+import { applyRunInfo, type RunInfo } from "./runinfo";
 import { readList, readObj } from "./store";
 import { FAVORITES } from "./state";
 
@@ -288,6 +289,11 @@ export function untrustProject(path: string) {
   if (i >= 0) { trustedPaths.splice(i, 1); saveTrusted(); }
   taskRepaint();
 }
+/** Why a folder may (or may not) be introspected: a project is trusted by being one. */
+export function trustOf(path: string): "project" | "trusted" | "no" {
+  return FAVORITES.some((f) => f.path === path) ? "project" : trustedPaths.includes(path) ? "trusted" : "no";
+}
+
 // Only hand-trusted projects can be revoked here; a favourite is trusted by being one.
 export function explicitlyTrusted(): string[] { return [...trustedPaths]; }
 
@@ -339,8 +345,10 @@ export async function discoverTasks(workdir: string, colorKey = workdir, include
   try {
     const raw = (await invoke<Runnable[]>("discover_runnables", { workdir, trusted }))
       .filter((r) => taskPrefs.providers.includes(r.source as Provider));
-    // The runner override goes in before the result is cached, so a re-run gets what the picker showed.
-    const all = applyRunner(raw, colorKey);
+    // The runner override goes in before the result is cached, so a re-run gets what the picker showed;
+    // the descriptions after it, since a description is pinned to the command that will actually run.
+    const infos = await invoke<Record<string, RunInfo>>("run_infos", { dir: workdir }).catch(() => ({}));
+    const all = applyRunInfo(applyRunner(raw, colorKey), infos);
     // Replaced whole, so a task deleted from its file is gone here too; hidden ones stay for their dependants.
     runnablesByRoot.set(workdir, new Map(all.map((r) => [r.id, r])));
     const hid = hiddenIds(colorKey);

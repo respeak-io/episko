@@ -127,6 +127,17 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
 
 // ---------- launch ----------
 // Returns the session id, or null when the spawn failed; the dashboard's dispatch depends on it.
+// One line of text into a fresh agent prompt, as a person would type it. Claude Code reads a
+// burst as a paste: under 1KB it collapses to "[Pasted text]", which nobody can read before
+// Enter, and past 1KB it drops the first 1024-byte read outright. Small beats arrive whole.
+export async function typeInto(sid: string, text: string, size = 240, gapMs = 50): Promise<void> {
+  const chars = Array.from(text.replace(/[\r\n]+/g, " ")); // by code point: never split an emoji
+  for (let i = 0; i < chars.length; i += size) {
+    await invoke("write_pty", { sessionId: sid, data: chars.slice(i, i + size).join("") });
+    await new Promise((r) => setTimeout(r, gapMs));
+  }
+}
+
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
@@ -439,7 +450,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
