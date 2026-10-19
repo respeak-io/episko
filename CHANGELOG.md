@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.36.0 — 2026-10-19
+Step back and forward between screens like a browser, hand a Claude session to another machine
+or a teammate through the sync server, and see a whole dev environment, panes and containers,
+as one block in the servers popover.
+
 + **Back and forward between screens, like a browser.** ‹ › at the left of the header, the
   mouse's back and forward buttons, and ⌘[ ⌘] on macOS (Ctrl+Alt+← Ctrl+Alt+→ elsewhere) step through the
   sessions, dashboards, pull-request reviews and mirrors you had on stage. A closed session is
