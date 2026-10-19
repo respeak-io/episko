@@ -81,7 +81,7 @@ export function applyScrollback(list: Iterable<Sess>, lines: number) {
 
 // xterm stopPropagation()s every Ctrl+key it encodes, so on Windows an app chord never reached
 // main.ts's window listener. `false` makes xterm skip the event untouched; every pane's handler asks this first.
-const appChord = (e: KeyboardEvent) => e.type === "keydown" && !!matchAction(keyPrefs, e);
+const appChord = (e: KeyboardEvent) => e.type === "keydown" && !!matchAction(keyPrefs, e, IS_MAC);
 
 // xterm keeps only the last custom key handler; task panes take `clipboardKeys` alone (no prompt).
 export function shellKeys(id: string, term: Terminal): (e: KeyboardEvent) => boolean {

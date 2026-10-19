@@ -20,9 +20,22 @@ export let stageGen = 0; // bumped per handover; an #inspector paint cache is va
 // import nothing — and "nothing on the stage" is therefore not a state this app can reach.
 let home: () => void = () => {};
 export function setStageHome(fn: () => void) { home = fn; }
+// Every handover schedules a full paint, which is where ./nav's history records it (main.ts).
+let moved: () => void = () => {};
+export function setStageMoved(fn: () => void) { moved = fn; }
+// A flow that closes a pane, awaits, then stages its replacement holds history across the
+// await, so the neighbour the close fell to is never recorded. Release is idempotent.
+let navHold = 0;
+export const navHeld = () => navHold > 0;
+export function holdNav(): () => void {
+  navHold++;
+  let done = false;
+  return () => { if (!done) { done = true; navHold--; moved(); } };
+}
 // The only code that may touch #extPane/#dashPane/#fleetPane/#reviewPane (the stage has one owner).
 export function takeStage(show: Stage) {
   stageGen++;
+  moved();
   if (show === "home") { home(); return; }
   ($("extPane") as HTMLElement).hidden = show !== "ext";
   ($("dashPane") as HTMLElement).hidden = show !== "dash";
