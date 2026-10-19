@@ -43,8 +43,8 @@ export interface KeyActionDef {
 export const KEY_ACTIONS: KeyActionDef[] = [
   { id: "palette",       label: "Command palette",           combo: "mod+k" },
   { id: "sessionSwitch", label: "Switch to session 1–9",     combo: "mod+digit",   hint: "One binding over nine digits. A digit bound elsewhere is carved out; the rest keep working." },
-  { id: "navBack",       label: "Back to the previous screen", combo: "mod+[", pc: "alt+left", rowLabel: "Back · forward", hint: "Sessions, dashboards and mirrors you had on stage, like a browser's back. The mouse's back button does it too. Off macOS, Alt+←/→ is taken from every pane, so a shell's or Codex's word jump moves to Ctrl+←/→." },
-  { id: "navForward",    label: "Forward again",             combo: "mod+]", pc: "alt+right", rowLabel: "Back · forward" },
+  { id: "navBack",       label: "Back to the previous screen", combo: "mod+[", pc: "mod+alt+left", rowLabel: "Back · forward", hint: "Sessions, dashboards and mirrors you had on stage, like a browser's back. The mouse's back button does it too. Off macOS it ships on Ctrl+Alt+←/→, leaving Alt+←/→ to a terminal's word jump." },
+  { id: "navForward",    label: "Forward again",             combo: "mod+]", pc: "mod+alt+right", rowLabel: "Back · forward" },
   { id: "terminal",      label: "Open a terminal here",      combo: "mod+t",       hint: "A plain shell, beside the session or in its own pane: Settings › Launching decides." },
   { id: "terminalOther", label: "Open a terminal, the other way", combo: "mod+alt+t", hint: "Its own pane when new terminals split; a split when they don't." },
   { id: "history",       label: "Session history",           combo: "mod+shift+h" },

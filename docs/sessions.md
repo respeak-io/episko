@@ -89,7 +89,7 @@ Right-click a row under a project — a live pane, a shelved one or an external 
 ## Back and forward between screens (./nav)
 
 ‹ › at the left of the stage header, the mouse's back/forward buttons and two bindable actions
-(`navBack`/`navForward`: ⌘[ ⌘] on macOS, Alt+← Alt+→ elsewhere) step through what has owned the
+(`navBack`/`navForward`: ⌘[ ⌘] on macOS, Ctrl+Alt+← Ctrl+Alt+→ elsewhere) step through what has owned the
 stage. A *location* is a session (`activeId`) or a copy of `mirror` — an external or shelved
 mirror, a project dashboard, the fleet, a pull-request review. ./nav is the pure half (two stacks,
 the cursor, `sameLoc`, the labels); main.ts holds the driver beside `renderAllNow`.
@@ -127,9 +127,9 @@ the cursor, `sameLoc`, the labels); main.ts holds the driver beside `renderAllNo
   Nordic layouts put `[` on ⌥5) drops that ⌥, since it is part of the character. Left and right
   are the only arrows `comboOf` binds. The buttons sit in `.st-nav`, outside `.st-title`, so no
   stage's header paint rewrites them; `renderNav` sets their state and tooltip every pass.
-- **Alt+←/→ off macOS has a cost, accepted on purpose**: the chord is matched before xterm, so a
-  pane never sees it, and Codex's composer and a readline shell bound to `\e[1;3D` lose their
-  word jump to it (Ctrl+←/→ still jumps a word). The `navBack` hint says so; rebinding is one row.
+- **Never ship Alt+←/→ off macOS**: an app chord is matched before xterm, so a pane never sees it,
+  and that is the word jump in Codex's composer, Claude's input and every readline shell. The PC
+  default is Ctrl+Alt+←/→ (JetBrains' back/forward), which no terminal binds; rebinding is one row.
 - **./keys never reads the platform.** Every function that resolves a default (`clampKeyBinds`,
   `keyOverrides`, `resetKey`, …) and every matcher takes `mac`, so vitest runs both platforms.
   `clampKeyBinds` settles the user's stored chords **before** any shipped default, so a default a

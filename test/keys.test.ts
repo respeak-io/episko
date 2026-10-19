@@ -41,14 +41,16 @@ describe("the table itself", () => {
   });
 
   // Ctrl+[ is the Escape byte to every terminal pane, so the ⌘ chord cannot simply cross over.
-  it("ships back/forward on ⌘[ ⌘] on macOS and Alt+arrows elsewhere", () => {
+  it("ships back/forward on ⌘[ ⌘] on macOS and Ctrl+Alt+arrows elsewhere", () => {
     expect(formatCombo(defaultKeyBinds(true).navBack!)).toBe("mod+[");
     expect(formatCombo(defaultKeyBinds(true).navForward!)).toBe("mod+]");
-    expect(formatCombo(defaultKeyBinds(false).navBack!)).toBe("alt+left");
-    expect(formatCombo(defaultKeyBinds(false).navForward!)).toBe("alt+right");
+    expect(formatCombo(defaultKeyBinds(false).navBack!)).toBe("mod+alt+left");
+    expect(formatCombo(defaultKeyBinds(false).navForward!)).toBe("mod+alt+right");
     expect(matchAction(on(defaultKeyBinds(true)), cmd("["), true)).toBe("navBack");
-    expect(matchAction(on(defaultKeyBinds(false)), press("ArrowLeft", { altKey: true, code: "ArrowLeft" }), false)).toBe("navBack");
-    expect(matchAction(on(defaultKeyBinds(false)), press("ArrowRight", { altKey: true, code: "ArrowRight" }), false)).toBe("navForward");
+    expect(matchAction(on(defaultKeyBinds(false)), press("ArrowLeft", { ctrlKey: true, altKey: true, code: "ArrowLeft" }), false)).toBe("navBack");
+    // Alt+←/→ alone is a terminal's word jump and must reach the pane.
+    expect(matchAction(on(defaultKeyBinds(false)), press("ArrowLeft", { altKey: true, code: "ArrowLeft" }), false)).toBeNull();
+    expect(matchAction(on(defaultKeyBinds(false)), press("ArrowRight", { ctrlKey: true, altKey: true, code: "ArrowRight" }), false)).toBe("navForward");
     // An action with no `pc` ships the same chord everywhere.
     expect(shippedCombo(keyActionDef("palette"), false)).toBe("mod+k");
   });
@@ -498,7 +500,7 @@ describe("clampKeyBinds", () => {
 });
 
 describe("the stored value, per platform", () => {
-  const ship = (mac: boolean) => (mac ? { back: "mod+[", fwd: "mod+]" } : { back: "alt+left", fwd: "alt+right" });
+  const ship = (mac: boolean) => (mac ? { back: "mod+[", fwd: "mod+]" } : { back: "mod+alt+left", fwd: "mod+alt+right" });
   for (const mac of [true, false]) {
     it(`clamps, stores and resets against the ${mac ? "Mac" : "PC"} defaults`, () => {
       const dflt = defaultKeyBinds(mac);
