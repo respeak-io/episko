@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **Back and forward between screens, like a browser.** ‹ › at the left of the header, the
+  mouse's back and forward buttons, and ⌘[ ⌘] on macOS (Alt+← Alt+→ elsewhere) step through the
+  sessions, dashboards, pull-request reviews and mirrors you had on stage. A closed session is
+  skipped rather than reopened, and a dialog is never a stop. Rebind the keys in Settings › Keys.
+  Off macOS, Alt+← Alt+→ no longer reach a pane, so a shell's or Codex's word jump is Ctrl+← Ctrl+→;
+  on a Mac, Ctrl+[ is still Escape in a pane, and a ⌘[ ⌘] you had already bound to something else keeps it.
+
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,
 one pending review sent as Comment, Approve or Request changes, and a PR link in a pane opens it

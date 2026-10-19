@@ -9,7 +9,7 @@ import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
-import { $, chord, IS_MAC, IS_TAURI, IS_WIN, setStageHome, takeStage, toast, wireTips } from "./dom";
+import { $, chord, IS_MAC, IS_TAURI, IS_WIN, navHeld, setStageHome, setStageMoved, takeStage, toast, wireTips } from "./dom";
 import { wireMenu } from "./menu";
 import { ask } from "./confirm";
 import { updateTray } from "./tray";
@@ -121,10 +121,11 @@ import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
-  vitalsPrefs, type BgLogHealthEvent,
+  vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
-import { activeBind, comboMatches, digitOf, matchAction, type KeyAction } from "./keys";
+import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
+import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
 import { orderedSessions, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
@@ -330,6 +331,7 @@ wireReview();
 // The stage's home: whatever steps off it lands here, so "no sessions running" is not a
 // screen the app has any more. Wired before anything can close a pane.
 setStageHome(() => openFleet());
+setStageMoved(renderAll); // the pass after a handover is where ./nav records it
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 setCafHost({ closeFootMenus, renderFoot, renderAll });
@@ -395,6 +397,8 @@ function flushRender() {
 function renderAllNow() {
   telem.renders++; // the coalescing is invisible unless the 🐞 console can count it
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
+  if (!navHeld()) nav = visit(nav, here()); // the one place history records; a back/forward step already moved its cursor
+  renderNav();
   renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
@@ -418,6 +422,81 @@ function renderAllNow() {
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
   tourTick(); // last: it re-measures the anchor the renderers above just replaced
+}
+
+// ---------- back / forward (./nav) ----------
+// A pass sees where the stage settled within a frame. A hop across an await is recorded
+// unless the flow holds history (`holdNav` in ./dom), as a move or a task re-run does.
+let nav = emptyNav();
+function here(): Loc | null {
+  if (activeId) {
+    const group = stageGroup && !sessions.has(stageGroup) ? stageGroup : undefined; // a run group, not a split
+    return group ? { kind: "session", id: activeId, group } : { kind: "session", id: activeId };
+  }
+  return mirror ? { ...mirror } : null;
+}
+// The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
+const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
+  || [...sessions.values()].some((s) => s.colorKey === root) || dormants.some((d) => d.colorKey === root)
+  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
+function navAlive(l: Loc): boolean {
+  switch (l.kind) {
+    case "session": return l.group ? [...sessions.values()].some((s) => s.run?.groupId === l.group) : sessions.has(l.id);
+    case "ext": return externals.some((e) => e.pid === l.pid);
+    case "past": return dormants.some((d) => d.id === l.id);
+    case "fleet": return true;
+    case "dash": case "review": return knownRoot(l.root);
+  }
+}
+function navName(l: Loc): string {
+  const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
+  switch (l.kind) {
+    case "session": {
+      const s = sessions.get(l.id);
+      const t = s && !l.group ? (s.kind === "task" ? s.run?.label : s.title) : "";
+      return s ? cap(t ? `${s.project}: ${t}` : s.project) : "";
+    }
+    case "ext": return cap(externals.find((e) => e.pid === l.pid)?.name ?? "");
+    case "past": { const d = dormants.find((x) => x.id === l.id); return d ? cap(d.title ? `${d.project}: ${d.title}` : d.project) : ""; }
+    case "fleet": return "";
+    case "dash": case "review": return l.name;
+  }
+}
+// Every location reopens through the verb a click on it would use; none touches the stage itself.
+function openLoc(l: Loc) {
+  switch (l.kind) {
+    case "session": if (l.group) openRunGroup(l.group); else setActive(l.id); break;
+    case "ext": { const e = externals.find((x) => x.pid === l.pid); if (e) openExternal(e.session_id); break; }
+    case "past": openDormant(l.id); break;
+    case "dash": openDashboard(l.name, l.root); break;
+    case "fleet": openFleet(); break;
+    case "review": openPrReview(l.name, l.root, l.number); break;
+  }
+}
+function goNav(dir: NavDir) {
+  const r = step(nav, dir, navAlive);
+  if (!r) return;
+  nav = r.nav;
+  openLoc(r.to);
+  renderAll();
+}
+function renderNav() {
+  for (const dir of ["back", "forward"] as const) {
+    const to = peek(nav, dir, navAlive);
+    const b = $(dir === "back" ? "navBack" : "navFwd") as HTMLButtonElement;
+    b.disabled = !to;
+    b.title = navTip(dir, to, to ? navName(to) : "", comboText(activeBind(keyPrefs, dir === "back" ? "navBack" : "navForward"), IS_MAC));
+  }
+}
+// The mouse's back/forward buttons, in the capture phase so xterm's mouse reporting never sees
+// them; every phase is cancelled, or the webview would run a history of its own.
+for (const type of ["mousedown", "mouseup", "auxclick"] as const) {
+  window.addEventListener(type, (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (type === "mouseup") goNav(e.button === 3 ? "back" : "forward");
+  }, true);
 }
 
 // ---------- events ----------
@@ -637,7 +716,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -685,6 +764,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);
   else if (el.dataset.fgo) openFootTarget(el.dataset.fgo);
+  else if (el.dataset.nav) goNav(el.dataset.nav === "forward" ? "forward" : "back");
 });
 
 // A footer popover's quick open. The menu it came from goes first — the panel it opens
@@ -769,6 +849,8 @@ $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDif
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
   palette: () => { $("palette").classList.contains("show") ? closePalette() : openPalette(); },
   sessionSwitch: (e) => { const s = orderedSessions()[digitOf(e) - 1]; if (s) setActive(s.id); },
+  navBack: () => goNav("back"),
+  navForward: () => goNav("forward"),
   terminal: () => openPlainTerminal(),
   terminalOther: () => openPlainTerminal({ other: true }),
   history: () => { histOpen() ? closeHistory() : void openHistory(true); },
@@ -788,7 +870,7 @@ window.addEventListener("keydown", (e) => {
   // A Settings › Keys row is armed: what the capture-phase recorder let through must not fire.
   if (keyRecording()) return;
   // reveal has its own capture-phase listener below, ahead of every dialog's Enter.
-  const act = matchAction(keyPrefs, e);
+  const act = matchAction(keyPrefs, e, IS_MAC);
   if (act && act !== "reveal") { e.preventDefault(); KEY_ACTIONS_RUN[act](e); return; }
   // A dialog's own listener already spent this Esc on itself; falling through would also
   // close the pane under it (the dashboard, a mirror).
@@ -822,7 +904,7 @@ window.addEventListener("keydown", (e) => {
 // stands down rather than consuming, leaving plain ⌘⏎ to the run picker's pin.
 window.addEventListener("keydown", (e) => {
   if (keyRecording()) return;
-  if (!comboMatches(activeBind(keyPrefs, "reveal"), e)) return;
+  if (!comboMatches(activeBind(keyPrefs, "reveal"), e, IS_MAC)) return;
   if ($("scrim").classList.contains("show")) return;
   // The colour popover's hex box has no scrim, so also stand down in a real text field;
   // xterm's hidden textarea is not one.

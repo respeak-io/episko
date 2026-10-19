@@ -8,6 +8,7 @@ import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./aut
 import type { DiffMode } from "./diff";
 import type { RailLayout } from "./review";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
+import { IS_MAC } from "./dom";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
 import { clampRevivePrefs, type RevivePrefs } from "./revive";
 import { clampGroups, type GroupStore } from "./projgroups";
@@ -106,8 +107,8 @@ export const fetchedByRepo = new Map<string, FetchState>();
 // --- keyboard shortcuts ----------------------------------------------------------
 // Held resolved (the keydown handler reads it per keystroke) but stored as overrides only, so a
 // later default reaches old installs. Read a chord through `activeBind`, never `keyPrefs.binds[id]`.
-export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")));
-export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p)); }
+export let keyPrefs: KeyPrefs = clampKeyPrefs(safeParse(localStorage.getItem("cc-keys")), IS_MAC);
+export function setKeyPrefs(p: KeyPrefs) { keyPrefs = clampKeyPrefs(serializeKeyPrefs(p, IS_MAC), IS_MAC); }
 // Narrowing reads, declared so they hoist. A bad value is dropped whole: a throw here is a blank window.
 function strMap(raw: string | null): Record<string, string> {
   const v = safeParse<Record<string, string>>(raw);

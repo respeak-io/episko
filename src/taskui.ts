@@ -3,7 +3,7 @@
 // only file written; editing a discovered task writes an [override."<id>"] there.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, toast } from "./dom";
+import { $, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
@@ -647,7 +647,7 @@ $("runInput").addEventListener("keydown", (e) => {
   else if (e.key === "Enter") { e.preventDefault(); pickRun(meta ? "pin" : e.altKey ? "params" : "run"); }
   // The chord that opened the picker is a real rescan inside it. Read from the binding,
   // so it follows a rebind in Settings › Keys.
-  else if (comboMatches(activeBind(keyPrefs, "runTask"), e)) { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
+  else if (comboMatches(activeBind(keyPrefs, "runTask"), e, IS_MAC)) { e.preventDefault(); if (runCtx) void rescanTasks(runCtx.workdir).then(() => openRunPicker()); }
   // ⇧⌫ / ⇧⌦ is the ✕ without the mouse. Not a binding: it exists only in this picker,
   // on a group that only exists with an empty search box.
   else if ((e.key === "Backspace" || e.key === "Delete") && e.shiftKey) {

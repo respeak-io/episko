@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, foldDashNext, toast } from "./dom";
+import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
@@ -380,8 +380,8 @@ export function tickRevive() {
 export function setKeyPrefs(p: KeyPrefs) {
   setKeyPrefsState(p);
   // Nothing stored while everything is standard, so a reset install equals a fresh one.
-  if (isDefaultKeyPrefs(keyPrefs)) localStorage.removeItem("cc-keys");
-  else localStorage.setItem("cc-keys", JSON.stringify(serializeKeyPrefs(keyPrefs)));
+  if (isDefaultKeyPrefs(keyPrefs, IS_MAC)) localStorage.removeItem("cc-keys");
+  else localStorage.setItem("cc-keys", JSON.stringify(serializeKeyPrefs(keyPrefs, IS_MAC)));
   renderAll();
   renderSettings();
 }
@@ -682,22 +682,27 @@ export async function followSessionDrift(id: string, mode: "follow" | "track" | 
   const dead = waitForExit(id);
   await invoke("kill_session", { sessionId: id }).catch(() => {});
   await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
-  closeSession(id);
-
+  // The neighbour the close hands the stage to is a hop, not a place you went (./nav).
+  const release = holdNav();
   let moved = true;
   try {
-    await invoke("move_session_transcript", { sessionId: resumeId, fromWorkdir: workdir, toWorkdir: dir });
-  } catch (e) {
-    // Nothing was moved: relaunch where it was, not in a folder its conversation is not in.
-    moved = false;
-    toast("Couldn't move the session: " + e);
+    closeSession(id);
+    try {
+      await invoke("move_session_transcript", { sessionId: resumeId, fromWorkdir: workdir, toWorkdir: dir });
+    } catch (e) {
+      // Nothing was moved: relaunch where it was, not in a folder its conversation is not in.
+      moved = false;
+      toast("Couldn't move the session: " + e);
+    }
+    await launch(project, moved ? dir : workdir, {
+      colorKey,
+      // Drifting into the repo's main checkout is not a worktree; `colorKey` is the repo root.
+      worktree: moved ? (dir === colorKey ? null : branch) : wasWt,
+      branch: moved ? branch : wasBranch,
+      resume: resumeId,
+    });
+  } finally {
+    release();
   }
-  await launch(project, moved ? dir : workdir, {
-    colorKey,
-    // Drifting into the repo's main checkout is not a worktree; `colorKey` is the repo root.
-    worktree: moved ? (dir === colorKey ? null : branch) : wasWt,
-    branch: moved ? branch : wasBranch,
-    resume: resumeId,
-  });
   if (moved) toast(`Session moved to ${branch}`);
 }
