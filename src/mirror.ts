@@ -3,7 +3,9 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, setHeadPath, stageGen, takeStage, toast } from "./dom";
+import { handoffBusy } from "./handoff";
+import { confirmReturned, recallable, sendGateFor } from "./handoffui";
 import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
@@ -17,11 +19,11 @@ import {
 } from "./providers";
 import { allProjects, dormantBusy } from "./grouping";
 import {
-  hasAgentCapability, isAgent, providerSessionKey,
+  hasAgentCapability, isAgent, isClaudeRow, providerSessionKey,
   type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, handoffs,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
   setExternals, setMirror, worktreesByRepo,
 } from "./state";
@@ -232,11 +234,19 @@ export function renderPastInspector(d: Restorable) {
   const asked = rows ? `<div class="ext-qh"><span class="label">What you asked</span></div>${rows}` : "";
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
-  const action = busy
-    ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can interleave or corrupt its state, so it can't be restored until the other one exits.</div>`
-    : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
-       <div class="ext-note">${esc(d.provider || "claude")} picks the conversation back up where it left off. A long session may compact its context first.</div>`;
-  $("inspector").innerHTML = `
+  const sent = handoffBusy(handoffs, d.resumeId);
+  const back = sent ? recallable(d.resumeId) : undefined;
+  const why = isClaudeRow(d) && !busy ? sendGateFor(d.id) : null;
+  const action = sent
+    ? `<div class="ext-note warn">${esc(sent[0].toUpperCase() + sent.slice(1))}: another machine may own this conversation, so it can't be resumed here.</div>
+       ${back ? `<button class="ext-forget-btn" data-handrecall="${esc(back.id)}">↶ Take it back</button>` : ""}`
+    : busy
+      ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can interleave or corrupt its state, so it can't be restored until the other one exits.</div>`
+      : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
+       <div class="ext-note">${esc(d.provider || "claude")} picks the conversation back up where it left off. A long session may compact its context first.</div>
+       ${isClaudeRow(d) ? `<button class="ext-forget-btn" data-handsend="${esc(d.id)}"${why ? ` disabled title="${esc(why)}"` : ""}>⇢ Send to…</button>
+       ${why ? `<div class="ext-note">${esc(why)}.</div>` : ""}` : ""}`;
+  const html = `
     <div class="ext-card">
       <div class="ext-hl">· ${esc(d.provider || "claude")} · shelved</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
@@ -249,11 +259,20 @@ export function renderPastInspector(d: Restorable) {
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
       <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
     </div>`;
+  // Guarded like every renderAll surface: a repaint under the pointer drops the click.
+  if (html === pastPainted && pastGen === stageGen) return;
+  pastPainted = html; pastGen = stageGen;
+  $("inspector").innerHTML = html;
 }
-export function resumeDormant(id: string) {
+let pastPainted = "";
+let pastGen = -1;
+export async function resumeDormant(id: string) {
   const d = dormants.find((x) => x.id === id);
   if (!d) return;
+  const sent = handoffBusy(handoffs, d.resumeId);
+  if (sent) { toast(`Can't resume: ${sent}`); return; }
   if (dormantBusy(d)) { toast("That session is already running"); return; }
+  if (!await confirmReturned(d.resumeId) || !dormants.some((x) => x.id === id)) return;
   leaveMirror();   // the launch takes the stage a beat later; this is what it takes it from
   launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId, resumeProvider: d.provider || "claude" });
 }

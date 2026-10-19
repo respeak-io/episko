@@ -43,6 +43,7 @@ import {
   motionPrefs, setMotionPrefs as setMotionPrefsState, winFocused, setWinFocused as setWinFocusedState,
   titlePrefs, setTitlePrefs as setTitlePrefsState,
   shareByProject, setShareMode, shareModeOf, type ShareMode,
+  handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
   type SortMode, type WtGroup,
 } from "./state";
@@ -71,7 +72,8 @@ import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
-import { projectIdOf, publishDigest, publishShare, status as syncStatus } from "./synclink";
+import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
+import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -626,6 +628,15 @@ function adoptCheckout(s: Sess, dir: string, branch: string) {
   renderAll();
 }
 
+// Wait for `pty-exit`, not for `kill_session` (which only sends the signal): a transcript read
+// or renamed while open fails on Windows and corrupts on POSIX. Waiter before the kill, or a
+// fast exit resolves nothing; `closeSession` after this, since it settles waiters.
+export async function stopForTranscript(id: string): Promise<void> {
+  const dead = waitForExit(id);
+  await invoke("kill_session", { sessionId: id }).catch(() => {});
+  await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
+}
+
 export async function followSessionDrift(id: string, mode: "follow" | "track" | "back" = "follow") {
   const s = sessions.get(id);
   if (!s) return;
@@ -676,12 +687,7 @@ export async function followSessionDrift(id: string, mode: "follow" | "track" | 
   // Captured before the close: the fallback relaunch rebuilds the session as it was.
   const { project, colorKey, resumeId } = s;
   const { workdir, worktree: wasWt, branch: wasBranch } = s.home ?? s;   // where it really runs
-  // Wait for `pty-exit`, not for `kill_session` (which only sends the signal): renaming the
-  // transcript while it is open fails on Windows and corrupts on POSIX. Waiter before the
-  // kill, or a fast exit resolves nothing; close after, since `closeSession` settles waiters.
-  const dead = waitForExit(id);
-  await invoke("kill_session", { sessionId: id }).catch(() => {});
-  await Promise.race([dead, new Promise((r) => setTimeout(r, KILL_WAIT_MS))]);
+  await stopForTranscript(id);
   // The neighbour the close hands the stage to is a hop, not a place you went (./nav).
   const release = holdNav();
   let moved = true;
@@ -705,4 +711,28 @@ export async function followSessionDrift(id: string, mode: "follow" | "track" | 
     release();
   }
   if (moved) toast(`Session moved to ${branch}`);
+}
+
+// ---------- handoff records (./handoff decides, docs/handoff.md) ----------
+
+export function saveHandoffs(list: HandoffRec[] = handoffs) {
+  setHandoffs(list);
+  localStorage.setItem("cc-handoff", JSON.stringify(list));
+}
+const sameRecs = (a: HandoffRec[], b: HandoffRec[]) => a.length === b.length && a.every((r, i) => r === b[i]);
+export function applyHandoffEv(ev: HandoffEv) {
+  const now = Date.now();
+  const reduced = reduce(handoffs, ev, { user: syncStatus.user, device: syncStatus.device }, now);
+  // A server with handoff off still lists its rows; they must not reopen what its caps returned.
+  const next = serverHandoff?.enabled === false ? onCaps(reduced, serverHandoff, now) : reduced;
+  if (sameRecs(next, handoffs)) return;
+  saveHandoffs(next);
+  renderAll();
+}
+// On every welcome, drop and sync tick: the caps decide whether an open offer is locked or back.
+export function applyHandoffCaps() {
+  const next = onCaps(handoffs, serverHandoff, Date.now());
+  if (sameRecs(next, handoffs)) return;
+  saveHandoffs(next);
+  renderAll();
 }

@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isExited, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -40,7 +40,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
-  openDevtools, reloadUi,
+  openDevtools, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -120,7 +120,7 @@ import {
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
-  setBgLogHealth, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
+  setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
@@ -131,9 +131,11 @@ import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
   beatPresence, forgetSync, hookStorage, onSyncEvent, pairSync, pathsOfId, projectIdOf, reconnectSync, setSyncHeaders, setSyncHost, startSync,
-  tickSync, type SyncOut,
+  setHandoffSink,
+  syncMemory, tickSync, type SyncOut,
 } from "./synclink";
 import { renderSync } from "./syncui";
+import { closeHandoff, dismissHanded, handoffOpen, onHandoffEvent, openIncoming, openSend, setHandoffHost, settleDue, takeBack } from "./handoffui";
 import {
   exitWaiters, setTaskLauncher, setTaskLogger, setTaskRepaint, setTaskToast,
 } from "./tasks";
@@ -532,6 +534,7 @@ listen<{ sessionId: string; code: number }>("pty-exit", (e) => {
   mcpExit(e.payload.sessionId, e.payload.code);
   releaseClaimFor(e.payload.sessionId); // also before the early return: no dead claims linger
   const s = sessions.get(e.payload.sessionId); if (!s) return;
+  if (isClaude(s)) void syncMemory(); // a session's last memories are written by now
   const code = e.payload.code;
   s.attention = null;
   if (s.kind === "task") {
@@ -600,6 +603,12 @@ setSyncHost({
   share: (pid, mode, by) => { for (const p of pathsOfId(pid)) setProjectShareMode(p, mode, by); },
   review: () => { refreshReview(); openReview(); },
 });
+setHandoffSink({ ev: (ev) => { applyHandoffEv(ev); onHandoffEvent(ev); }, caps: applyHandoffCaps });
+setHandoffHost({
+  stopForTranscript, shelve: shelveSession, forgetDormant, saveHandoffs, renderAll, resumeDormant,
+  insertDormant: (r) => { setDormants([r, ...dormants.filter((d) => d.id !== r.id)]); flushRoster(); },
+});
+applyHandoffCaps(); // no server heard yet: a persisted open offer starts locked
 setReviewReload(reloadUi);
 void listen<SyncOut>("sync-event", (e) => onSyncEvent(e.payload)).then(() => startSync());
 
@@ -716,7 +725,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -729,7 +738,12 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
   else if (el.dataset.jump) jumpExternal(+el.dataset.jump);
-  else if (el.dataset.resume) resumeDormant(el.dataset.resume);
+  // Before data-past: these sit inside a shelved row or its mirror card.
+  else if (el.dataset.handrecall) takeBack(el.dataset.handrecall);
+  else if (el.dataset.handsend) openSend(el.dataset.handsend);
+  else if (el.dataset.handout) dismissHanded(el.dataset.handout);
+  else if (el.dataset.handin) openIncoming(el.dataset.handin);
+  else if (el.dataset.resume) void resumeDormant(el.dataset.resume);
   else if (el.dataset.forget) forgetDormant(el.dataset.forget);
   else if (el.dataset.ext) openExternal(el.dataset.ext);
   else if (el.dataset.past) openDormant(el.dataset.past);
@@ -799,7 +813,7 @@ if (IS_TAURI && (IS_MAC || IS_WIN)) {
 // DOM's focus/blur also fire for the webview's internal moves; the DOM pair is only the
 // browser fallback. visibilitychange is a third source: minimised can still be "focused".
 if (IS_TAURI) {
-  void getCurrentWindow().onFocusChanged(({ payload }) => setWindowFocused(payload));
+  void getCurrentWindow().onFocusChanged(({ payload }) => { setWindowFocused(payload); if (payload) void syncMemory(); });
 } else {
   window.addEventListener("focus", () => setWindowFocused(true));
   window.addEventListener("blur", () => setWindowFocused(false));
@@ -843,7 +857,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -878,6 +892,7 @@ window.addEventListener("keydown", (e) => {
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
+  else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
@@ -990,6 +1005,7 @@ setInterval(flushDebug, 4000);
 setInterval(() => tickVitals(vitalsPrefs.enabled, vitalsPrefs.everyMs), 20_000);
 // Sends what the last half-minute left owed, and ages the sync badge past its window.
 setInterval(() => tickSync((sid) => { const s = sessions.get(sid); return !!s && !isExited(s); }), 30_000);
+setInterval(() => { void syncMemory(); }, 10 * 60_000);
 // Presence: what this machine has open, for the team's fleet screen. Titles never go (docs/sync.md).
 setInterval(() => beatPresence([...sessions.values()].filter((s) => isAgent(s) && !isExited(s)).map((s) => ({
   pid: projectIdOf(s.colorKey) ?? "", project: s.project, branch: s.branch || "", state: statusKey(s),
@@ -1058,7 +1074,8 @@ setInterval(refreshExternals, 3000);
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants());
+// After the roster: an outcome heard just before the last quit removes the row it settles.
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 

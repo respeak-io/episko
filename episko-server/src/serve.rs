@@ -1,8 +1,13 @@
 //! One thread per connection, like the app's telemetry server. A connection pairs or says
 //! hello, is replayed everything after its cursor, and then hears every other device's pushes.
 
-use crate::store::{valid_name, Identity, PushError, Store, INVITE_TTL_MS};
-use episko_proto::{ClientMsg, ErrorCode, Event, ServerMsg, MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL};
+use crate::store::{valid_name, HandoffCfg, HandoffError, Identity, Offer, PushError, Store, INVITE_TTL_MS};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
+use episko_proto::{
+    ClientMsg, ErrorCode, Event, HandoffCaps, HandoffErr, HandoffInfo, HandoffState, ServerMsg, Stream, FEATURE_HANDOFF,
+    FEATURE_MEMORY, HANDOFF_PART, MAX_PUSH, PAGE, PRESENCE_TTL_MS, PROTOCOL,
+};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
@@ -17,30 +22,43 @@ const HELLO_WITHIN: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 // A reverse proxy drops a silent connection; a ping keeps it open and finds a dead peer.
 const PING_EVERY: Duration = Duration::from_secs(30);
+// Expired handoffs lose their blobs on this beat, whether or not handoff is switched on.
+const HANDOFF_SWEEP_EVERY: Duration = Duration::from_secs(600);
 
 type Sock = WebSocket<TcpStream>;
 
-/// What the environment configured: the workspace everyone joins, and the code that lets a new
-/// person register themselves (`EPISKO_REGISTER_CODE`); `None` keeps pairing invite-only.
+/// What the environment configured: the workspace everyone joins, the code that lets a new
+/// person register themselves (`EPISKO_REGISTER_CODE`; `None` keeps pairing invite-only), and
+/// handoff's limits (`EPISKO_HANDOFF*`; `None` is off), and whether the memory stream is on
+/// (`EPISKO_MEMORY`).
 pub struct Config {
     pub ws: String,
     pub register: Option<String>,
+    pub handoff: Option<HandoffCfg>,
+    pub memory: bool,
 }
 
 // A wrong code costs this long, so a registration code cannot be guessed at line speed.
 const WRONG_CODE_DELAY: Duration = Duration::from_millis(400);
 
-/// What the hub hands a connection: a batch of log events, or one device's presence.
+/// What the hub hands a connection: a batch of log events, or one message to pass on as it is.
 #[derive(Clone)]
 enum Out {
     Events(Arc<Vec<Event>>),
-    Presence(ServerMsg),
+    Msg(ServerMsg),
 }
 
 struct Sub {
     id: u64,
     who: Identity,
+    features: Vec<String>,
     tx: Sender<Out>,
+}
+
+impl Sub {
+    fn speaks(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
 }
 
 struct Seen {
@@ -62,16 +80,27 @@ fn guard<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Hub {
-    fn join(&self, who: &Identity) -> (u64, Receiver<Out>) {
+    fn join(&self, who: &Identity, features: &[String]) -> (u64, Receiver<Out>) {
         let (tx, rx) = channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         for ((ws, device), seen) in guard(&self.presence).iter() {
             if *ws == who.ws && *device != who.device {
-                let _ = tx.send(Out::Presence(ServerMsg::Presence { user: seen.user.clone(), device: device.clone(), items: seen.items.clone() }));
+                let _ = tx.send(Out::Msg(ServerMsg::Presence { user: seen.user.clone(), device: device.clone(), items: seen.items.clone() }));
             }
         }
-        guard(&self.subs).push(Sub { id, who: who.clone(), tx });
+        guard(&self.subs).push(Sub { id, who: who.clone(), features: features.to_vec(), tx });
         (id, rx)
+    }
+    /// A handoff changed: both people hear it, but only on connections that said they speak it.
+    /// The recipient hears only what was once offered to it; only the sending machine sees `have`.
+    fn handoff(&self, ws: &str, info: &HandoffInfo, offered: bool) {
+        for s in guard(&self.subs).iter().filter(|s| s.who.ws == ws && s.speaks(FEATURE_HANDOFF)) {
+            let sender = s.who.user.eq_ignore_ascii_case(&info.from_user);
+            if !sender && (!offered || !s.who.user.eq_ignore_ascii_case(&info.to_user)) { continue; }
+            let mut info = info.clone();
+            if s.who.device != info.from_device { info.have.clear(); }
+            let _ = s.tx.send(Out::Msg(ServerMsg::Handoff { info: Box::new(info) }));
+        }
     }
     fn leave(&self, id: u64, who: &Identity) {
         guard(&self.subs).retain(|s| s.id != id);
@@ -80,10 +109,16 @@ impl Hub {
             self.set_presence(who, serde_json::Value::Null);
         }
     }
-    /// Log events go to the workspace, except a personal stream, which only its own user hears.
+    /// Log events go to the workspace, except a personal stream, which only its own user hears,
+    /// and memory, which only a connection that said it takes memory hears.
     fn publish(&self, from: u64, ws: &str, events: &[Event]) {
         for s in guard(&self.subs).iter().filter(|s| s.id != from && s.who.ws == ws) {
-            let mine: Vec<Event> = events.iter().filter(|e| !e.stream.is_personal() || e.actor == s.who.user).cloned().collect();
+            let memory = s.speaks(FEATURE_MEMORY);
+            let mine: Vec<Event> = events
+                .iter()
+                .filter(|e| (!e.stream.is_personal() || e.actor == s.who.user) && (memory || e.stream != Stream::Memory))
+                .cloned()
+                .collect();
             if !mine.is_empty() { let _ = s.tx.send(Out::Events(Arc::new(mine))); }
         }
     }
@@ -102,7 +137,7 @@ impl Hub {
     fn announce(&self, who: &Identity, items: serde_json::Value) {
         let msg = ServerMsg::Presence { user: who.user.clone(), device: who.device.clone(), items };
         for s in guard(&self.subs).iter().filter(|s| s.who.ws == who.ws && s.who.device != who.device) {
-            let _ = s.tx.send(Out::Presence(msg.clone()));
+            let _ = s.tx.send(Out::Msg(msg.clone()));
         }
     }
     /// Drops every device whose heartbeat lapsed and tells the workspace it went away.
@@ -128,6 +163,19 @@ pub fn serve(listener: TcpListener, store: Arc<Store>, cfg: Arc<Config>) {
         std::thread::sleep(Duration::from_secs(5));
         sweeper.sweep(Instant::now());
     });
+    // Switching off expires every open handoff, so none can be claimed once it is back on (docs/handoff.md).
+    if cfg.handoff.is_none() {
+        match store.handoff_close_all(now_ms()) {
+            Ok(moved) if !moved.is_empty() => eprintln!("[episko-server] handoff is off: {} open handoff(s) expired", moved.len()),
+            Ok(_) => {}
+            Err(e) => eprintln!("[episko-server] closing open handoffs failed: {e}"),
+        }
+    }
+    let (held, told) = (store.clone(), hub.clone());
+    std::thread::spawn(move || loop {
+        std::thread::sleep(HANDOFF_SWEEP_EVERY);
+        sweep_handoffs(&held, &told, now_ms());
+    });
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         let (store, hub, cfg) = (store.clone(), hub.clone(), cfg.clone());
@@ -140,12 +188,45 @@ pub fn serve(listener: TcpListener, store: Arc<Store>, cfg: Arc<Config>) {
     }
 }
 
+/// Expires what outlived its TTL and tells both parties, so a held blob never outlives it.
+fn sweep_handoffs(store: &Store, hub: &Hub, now: i64) {
+    match store.handoff_sweep(now) {
+        Ok(moved) => {
+            for (ws, info) in moved {
+                eprintln!("[episko-server] handoff {} from {} to {} expired", info.id, info.from_user, info.to_user);
+                hub.handoff(&ws, &info, reached(store, &info));
+            }
+        }
+        Err(e) => eprintln!("[episko-server] handoff sweep failed: {e}"),
+    }
+}
+
+// A lookup that fails tells the recipient nothing: a missed notice heals at the next hello.
+fn reached(store: &Store, info: &HandoffInfo) -> bool {
+    store.handoff_reached_recipient(info).unwrap_or_else(|e| {
+        eprintln!("[episko-server] handoff {}: {e}", info.id);
+        false
+    })
+}
+
 fn send(sock: &mut Sock, msg: &ServerMsg) -> tungstenite::Result<()> {
     sock.send(Message::text(serde_json::to_string(msg).expect("a ServerMsg always serialises")))
 }
 
 fn refuse(sock: &mut Sock, code: ErrorCode, message: impl Into<String>) -> tungstenite::Result<()> {
-    send(sock, &ServerMsg::Error { code, message: message.into() })
+    send(sock, &ServerMsg::Error { code, message: message.into(), push: false })
+}
+
+/// Refuses a whole push: flagged, so the client's ack queue drops it instead of crediting the next.
+fn refuse_push(sock: &mut Sock, code: ErrorCode, message: impl Into<String>) -> tungstenite::Result<()> {
+    send(sock, &ServerMsg::Error { code, message: message.into(), push: true })
+}
+
+/// A token `revoke` deleted from another process: the socket it authorised goes with it.
+fn shut_out(sock: &mut Sock, cx: &Ctx) -> tungstenite::Result<bool> {
+    if cx.store.device_live(&cx.who.device).unwrap_or(true) { return Ok(false); }
+    refuse(sock, ErrorCode::BadToken, "this device was revoked")?;
+    Ok(true)
 }
 
 fn is_timeout(e: &tungstenite::Error) -> bool {
@@ -177,7 +258,7 @@ fn pair(store: &Store, cfg: &Config, code: &str, label: &str, user: Option<&str>
 fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Result<(), String> {
     stream.set_read_timeout(Some(HELLO_WITHIN)).map_err(|e| e.to_string())?;
     let mut sock = tungstenite::accept(stream).map_err(|e| e.to_string())?;
-    let (who, since) = loop {
+    let (who, since, features) = loop {
         let text = match sock.read() {
             Ok(Message::Text(t)) => t,
             Ok(Message::Close(_)) => return Ok(()),
@@ -194,44 +275,99 @@ fn connection(stream: TcpStream, store: &Store, hub: &Hub, cfg: &Config) -> Resu
                 let _ = refuse(&mut sock, ErrorCode::Protocol, format!("server speaks protocol {PROTOCOL}, client {protocol}"));
                 return Ok(());
             }
-            Ok(ClientMsg::Hello { token, since, .. }) => match store.auth(&token) {
-                Ok(Some(who)) => break (who, since),
+            Ok(ClientMsg::Hello { token, since, features, .. }) => match store.auth(&token) {
+                Ok(Some(who)) => break (who, since, features),
                 Ok(None) => {
                     let _ = refuse(&mut sock, ErrorCode::BadToken, "this device's token is not known here");
                     return Ok(());
                 }
                 Err(e) => return Err(e.to_string()),
             },
-            Ok(ClientMsg::Push { .. } | ClientMsg::Presence { .. } | ClientMsg::Invite {}) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
+            Ok(_) => refuse(&mut sock, ErrorCode::NotReady, "say hello first").map_err(|e| e.to_string())?,
             Err(e) => refuse(&mut sock, ErrorCode::BadMessage, e.to_string()).map_err(|e| e.to_string())?,
         }
     };
+    // Recorded before the welcome, so the devices list it carries already says what this one speaks.
+    store.set_features(&who.device, &features).map_err(|e| e.to_string())?;
     // Join before replaying, so a push landing mid-catch-up is queued rather than missed.
-    let (id, rx) = hub.join(&who);
-    let out = session(&mut sock, store, hub, id, &rx, &who, since);
+    let (id, rx) = hub.join(&who, &features);
+    let speaks = |f: &str| features.iter().any(|x| x == f);
+    let cx = Ctx { store, hub, cfg, id, who: &who, handoff: speaks(FEATURE_HANDOFF), memory: cfg.memory && speaks(FEATURE_MEMORY) };
+    let out = session(&mut sock, &cx, &rx, since);
     hub.leave(id, &who);
     out
 }
 
-fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out>, who: &Identity, since: u64) -> Result<(), String> {
+/// One connection after hello: who it is, and whether it speaks handoff, and memory with the gate on.
+struct Ctx<'a> {
+    store: &'a Store,
+    hub: &'a Hub,
+    cfg: &'a Config,
+    id: u64,
+    who: &'a Identity,
+    handoff: bool,
+    memory: bool,
+}
+
+/// Sent even when handoff is off, so a client can tell "off" from an older server (docs/handoff.md).
+fn handoff_caps(cfg: &Config) -> HandoffCaps {
+    let on = cfg.handoff;
+    HandoffCaps {
+        enabled: on.is_some(),
+        max_bytes: on.map_or(0, |c| c.max_bytes),
+        part_bytes: HANDOFF_PART as u32,
+        ttl_ms: on.map_or(0, |c| c.ttl_ms),
+    }
+}
+
+fn state_rank(s: HandoffState) -> u8 {
+    match s {
+        HandoffState::Uploading => 0,
+        HandoffState::Offered => 1,
+        HandoffState::Claimed => 2,
+        _ => 3,
+    }
+}
+
+/// Whether to forward a record change, given the newest this connection already sent. States only
+/// move forward, so rank leads and a clock stepping back can only hide a same-state progress note.
+fn fresh(last: &mut HashMap<String, (u8, i64)>, info: &HandoffInfo) -> bool {
+    let key = (state_rank(info.state), info.updated);
+    if last.get(&info.id).is_some_and(|&l| key < l) { return false; }
+    last.insert(info.id.clone(), key);
+    true
+}
+
+fn session(sock: &mut Sock, cx: &Ctx, rx: &Receiver<Out>, since: u64) -> Result<(), String> {
+    let (store, who) = (cx.store, cx.who);
     let err = |e: tungstenite::Error| e.to_string();
     let head = store.head(&who.ws).map_err(|e| e.to_string())?;
     let devices = store.devices_in(&who.ws).map_err(|e| e.to_string())?;
-    send(sock, &ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices }).map_err(err)?;
+    let handoff = Some(handoff_caps(cx.cfg));
+    let welcome = ServerMsg::Welcome { user: who.user.clone(), device: who.device.clone(), head, devices, handoff, memory: cx.cfg.memory };
+    send(sock, &welcome).map_err(err)?;
     let mut sent = since;
     loop {
-        let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1).map_err(|e| e.to_string())?;
+        let mut page = store.since(&who.ws, &who.user, sent, PAGE + 1, cx.memory).map_err(|e| e.to_string())?;
         let more = page.len() > PAGE;
         page.truncate(PAGE);
         if let Some(last) = page.last() { sent = last.seq; }
         send(sock, &ServerMsg::Events { events: page, more }).map_err(err)?;
         if !more { break; }
     }
+    // Two threads may publish one record's changes out of commit order; nothing older is forwarded.
+    let mut last: HashMap<String, (u8, i64)> = HashMap::new();
+    if cx.handoff {
+        let records = store.handoffs_for(who).map_err(|e| e.to_string())?;
+        for h in &records { fresh(&mut last, h); }
+        send(sock, &ServerMsg::HandoffList { records }).map_err(err)?;
+    }
     sock.get_mut().set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
     let mut pinged = Instant::now();
     loop {
         match sock.read() {
-            Ok(Message::Text(t)) => push(sock, store, hub, id, who, &t).map_err(err)?,
+            Ok(Message::Text(_)) if shut_out(sock, cx).map_err(err)? => return Ok(()),
+            Ok(Message::Text(t)) => push(sock, cx, &t).map_err(err)?,
             Ok(Message::Close(_)) => return Ok(()),
             Ok(_) => {}
             Err(e) if is_timeout(&e) => {}
@@ -245,7 +381,9 @@ fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out
                     if let Some(last) = fresh.last() { sent = last.seq; }
                     if !fresh.is_empty() { send(sock, &ServerMsg::Events { events: fresh, more: false }).map_err(err)?; }
                 }
-                Out::Presence(msg) => send(sock, &msg).map_err(err)?,
+                Out::Msg(ServerMsg::Handoff { info }) if !fresh(&mut last, &info) => {}
+                Out::Msg(ServerMsg::Handoff { .. }) if shut_out(sock, cx).map_err(err)? => return Ok(()),
+                Out::Msg(msg) => send(sock, &msg).map_err(err)?,
             }
         }
         if pinged.elapsed() >= PING_EVERY {
@@ -255,7 +393,8 @@ fn session(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, rx: &Receiver<Out
     }
 }
 
-fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text: &str) -> tungstenite::Result<()> {
+fn push(sock: &mut Sock, cx: &Ctx, text: &str) -> tungstenite::Result<()> {
+    let (store, hub, who) = (cx.store, cx.hub, cx.who);
     let events = match serde_json::from_str::<ClientMsg>(text) {
         Ok(ClientMsg::Push { events }) => events,
         Ok(ClientMsg::Presence { items }) => {
@@ -271,20 +410,109 @@ fn push(sock: &mut Sock, store: &Store, hub: &Hub, id: u64, who: &Identity, text
                 Err(e) => refuse(sock, ErrorCode::Internal, e.to_string()),
             };
         }
+        Ok(
+            msg @ (ClientMsg::HandoffOffer { .. }
+            | ClientMsg::HandoffPut { .. }
+            | ClientMsg::HandoffClaim { .. }
+            | ClientMsg::HandoffFetch { .. }
+            | ClientMsg::HandoffComplete { .. }
+            | ClientMsg::HandoffRecall { .. }
+            | ClientMsg::HandoffDecline { .. }),
+        ) => return handoff(sock, cx, msg),
+        Ok(ClientMsg::MemoryReplay {}) => return memory_replay(sock, cx),
         Ok(_) => return refuse(sock, ErrorCode::BadMessage, "already said hello; only push from here"),
         Err(e) => return refuse(sock, ErrorCode::BadMessage, e.to_string()),
     };
     if events.len() > MAX_PUSH {
-        return refuse(sock, ErrorCode::TooLarge, format!("at most {MAX_PUSH} events per push"));
+        return refuse_push(sock, ErrorCode::TooLarge, format!("at most {MAX_PUSH} events per push"));
+    }
+    if events.iter().any(|e| e.stream == Stream::Memory) {
+        if !cx.cfg.memory { return refuse_push(sock, ErrorCode::BadMessage, "this server has the memory stream off"); }
+        if !cx.memory { return refuse_push(sock, ErrorCode::BadMessage, "say \"memory\" in hello's features before pushing it"); }
     }
     match store.append(who, &events) {
         Ok(out) => {
             let seqs = out.iter().map(|e| e.seq).collect();
-            hub.publish(id, &who.ws, &out);
+            hub.publish(cx.id, &who.ws, &out);
             send(sock, &ServerMsg::Pushed { seqs })
         }
-        Err(PushError::TooLarge(m)) => refuse(sock, ErrorCode::TooLarge, m),
-        Err(PushError::Db(m)) => refuse(sock, ErrorCode::Internal, m),
+        Err(PushError::TooLarge(m)) => refuse_push(sock, ErrorCode::TooLarge, m),
+        Err(PushError::Db(m)) => refuse_push(sock, ErrorCode::Internal, m),
+    }
+}
+
+/// This user's whole memory stream again, for a peer whose cursor passed memory it was never sent.
+fn memory_replay(sock: &mut Sock, cx: &Ctx) -> tungstenite::Result<()> {
+    if !cx.memory { return refuse(sock, ErrorCode::BadMessage, "this connection does not take the memory stream"); }
+    let mut after = 0;
+    loop {
+        let mut page = match cx.store.memory_since(&cx.who.ws, &cx.who.user, after, PAGE + 1) {
+            Ok(p) => p,
+            Err(e) => return refuse(sock, ErrorCode::Internal, e.to_string()),
+        };
+        let more = page.len() > PAGE;
+        page.truncate(PAGE);
+        if let Some(last) = page.last() { after = last.seq; }
+        send(sock, &ServerMsg::MemoryReplay { events: page, more })?;
+        if !more { return Ok(()); }
+    }
+}
+
+fn handoff_id(msg: &ClientMsg) -> &str {
+    match msg {
+        ClientMsg::HandoffOffer { id, .. }
+        | ClientMsg::HandoffPut { id, .. }
+        | ClientMsg::HandoffClaim { id }
+        | ClientMsg::HandoffFetch { id, .. }
+        | ClientMsg::HandoffComplete { id }
+        | ClientMsg::HandoffRecall { id }
+        | ClientMsg::HandoffDecline { id, .. } => id,
+        _ => "",
+    }
+}
+
+fn handoff_refused(sock: &mut Sock, id: String, e: HandoffError) -> tungstenite::Result<()> {
+    match e {
+        HandoffError::Refused(reason, message) => send(sock, &ServerMsg::HandoffRefused { id, reason, message }),
+        HandoffError::Db(m) => refuse(sock, ErrorCode::Internal, m),
+    }
+}
+
+/// A peer that never said it speaks handoff is refused the old way; every change reaches both
+/// parties through the hub, this socket included, and a fetched part goes to this socket alone.
+fn handoff(sock: &mut Sock, cx: &Ctx, msg: ClientMsg) -> tungstenite::Result<()> {
+    if !cx.handoff { return refuse(sock, ErrorCode::BadMessage, "say \"handoff\" in hello's features before sending one"); }
+    let id = handoff_id(&msg).to_string();
+    let Some(cfg) = cx.cfg.handoff else {
+        return send(sock, &ServerMsg::HandoffRefused { id, reason: HandoffErr::Off, message: "handoff is off on this server".into() });
+    };
+    let (store, who, now) = (cx.store, cx.who, now_ms());
+    let done = match msg {
+        ClientMsg::HandoffOffer { id, to_user, to_device, size, parts, sha256, meta } => {
+            store.handoff_offer(who, &Offer { id, to_user, to_device, size, parts, sha256, meta }, &cfg, now)
+        }
+        ClientMsg::HandoffPut { id, part, data } => match B64.decode(data.as_bytes()) {
+            Ok(bytes) => store.handoff_put(who, &id, part, &bytes, now),
+            Err(e) => Err(HandoffError::Refused(HandoffErr::BadPart, format!("part {part} is not base64: {e}"))),
+        },
+        ClientMsg::HandoffClaim { id } => store.handoff_claim(who, &id, now),
+        ClientMsg::HandoffFetch { id, part } => {
+            return match store.handoff_part(who, &id, part, now) {
+                Ok(bytes) => send(sock, &ServerMsg::HandoffPart { id, part, data: B64.encode(bytes) }),
+                Err(e) => handoff_refused(sock, id, e),
+            };
+        }
+        ClientMsg::HandoffComplete { id } => store.handoff_complete(who, &id, now),
+        ClientMsg::HandoffRecall { id } => store.handoff_recall(who, &id, now),
+        ClientMsg::HandoffDecline { id, reason } => store.handoff_decline(who, &id, reason.as_deref(), now),
+        _ => return Ok(()),
+    };
+    match done {
+        Ok(info) => {
+            cx.hub.handoff(&who.ws, &info, reached(store, &info));
+            Ok(())
+        }
+        Err(e) => handoff_refused(sock, id, e),
     }
 }
 
@@ -298,11 +526,21 @@ mod tests {
     type Client = WebSocket<TcpStream>;
 
     fn start() -> (SocketAddr, Arc<Store>) {
+        start_with(None)
+    }
+
+    const ON: HandoffCfg = HandoffCfg { ttl_ms: 72 * 3_600_000, max_bytes: 64 << 20 };
+
+    fn start_with(handoff: Option<HandoffCfg>) -> (SocketAddr, Arc<Store>) {
+        start_cfg(handoff, false)
+    }
+
+    fn start_cfg(handoff: Option<HandoffCfg>, memory: bool) -> (SocketAddr, Arc<Store>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let store = Arc::new(Store::open_in_memory().unwrap());
         let s = store.clone();
-        let cfg = Arc::new(Config { ws: "default".into(), register: Some("TEAM-CODE-1234".into()) });
+        let cfg = Arc::new(Config { ws: "default".into(), register: Some("TEAM-CODE-1234".into()), handoff, memory });
         std::thread::spawn(move || serve(listener, s, cfg));
         (addr, store)
     }
@@ -335,7 +573,7 @@ mod tests {
 
     fn hello(addr: SocketAddr, token: &str, since: u64) -> (Client, Vec<Event>) {
         let mut c = connect(addr);
-        say(&mut c, &ClientMsg::Hello { token: token.into(), since, protocol: PROTOCOL });
+        say(&mut c, &ClientMsg::Hello { token: token.into(), since, protocol: PROTOCOL, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Welcome { .. }));
         let mut got = Vec::new();
         loop {
@@ -407,11 +645,11 @@ mod tests {
         let hub = Hub::default();
         let who = Identity { ws: "w".into(), user: "u".into(), device: "d".into() };
         let watcher = Identity { device: "e".into(), ..who.clone() };
-        let (_, rx) = hub.join(&watcher);
+        let (_, rx) = hub.join(&watcher, &[]);
         hub.set_presence(&who, json!(["x"]));
-        assert!(matches!(rx.try_recv(), Ok(Out::Presence(_))));
+        assert!(matches!(rx.try_recv(), Ok(Out::Msg(_))));
         hub.sweep(Instant::now() + Duration::from_millis(PRESENCE_TTL_MS + 1));
-        match rx.try_recv() { Ok(Out::Presence(ServerMsg::Presence { items, .. })) => assert!(items.is_null()), _ => panic!("no sweep") }
+        match rx.try_recv() { Ok(Out::Msg(ServerMsg::Presence { items, .. })) => assert!(items.is_null()), _ => panic!("no sweep") }
     }
 
     fn register(addr: SocketAddr, code: &str, user: Option<&str>) -> ServerMsg {
@@ -450,7 +688,7 @@ mod tests {
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::NotReady, .. }));
         say(&mut c, &ClientMsg::Pair { code: "EPSK-0000-0000".into(), label: "x".into(), user: None });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadInvite, .. }));
-        say(&mut c, &ClientMsg::Hello { token: "nope".into(), since: 0, protocol: PROTOCOL });
+        say(&mut c, &ClientMsg::Hello { token: "nope".into(), since: 0, protocol: PROTOCOL, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadToken, .. }));
     }
 
@@ -459,7 +697,371 @@ mod tests {
         let (addr, store) = start();
         let (token, _) = pair(addr, &store, "laptop");
         let mut c = connect(addr);
-        say(&mut c, &ClientMsg::Hello { token, since: 0, protocol: PROTOCOL + 1 });
+        say(&mut c, &ClientMsg::Hello { token, since: 0, protocol: PROTOCOL + 1, features: vec![] });
         assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::Protocol, .. }));
+    }
+
+    #[test]
+    fn a_client_that_never_said_handoff_is_refused_the_old_way() {
+        let (addr, store) = start_with(Some(ON));
+        let mut c = connect(addr);
+        say(&mut c, &ClientMsg::HandoffClaim { id: "h1".into() });
+        assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::NotReady, .. }));
+        let (token, _) = pair(addr, &store, "laptop");
+        let (mut c, _) = hello(addr, &token, 0);
+        say(&mut c, &ClientMsg::HandoffRecall { id: "h1".into() });
+        assert!(matches!(hear(&mut c), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+    }
+
+    const ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+    fn pair_as(addr: SocketAddr, store: &Store, user: &str, label: &str) -> (String, String) {
+        let mut c = connect(addr);
+        let code = store.create_invite("default", user, now_ms()).unwrap();
+        say(&mut c, &ClientMsg::Pair { code, label: label.into(), user: None });
+        match hear(&mut c) {
+            ServerMsg::Paired { token, device, .. } => (token, device),
+            m => panic!("expected Paired, got {m:?}"),
+        }
+    }
+
+    /// Hello with or without the handoff feature: the welcome, then the list if it asked for one.
+    fn join(addr: SocketAddr, token: &str, handoff: bool) -> (Client, ServerMsg, Vec<HandoffInfo>) {
+        let mut c = connect(addr);
+        let features = if handoff { vec![FEATURE_HANDOFF.to_string()] } else { vec![] };
+        say(&mut c, &ClientMsg::Hello { token: token.into(), since: 0, protocol: PROTOCOL, features });
+        let welcome = hear(&mut c);
+        assert!(matches!(welcome, ServerMsg::Welcome { .. }), "{welcome:?}");
+        while let ServerMsg::Events { more: true, .. } = hear(&mut c) {}
+        let list = if handoff {
+            match hear(&mut c) {
+                ServerMsg::HandoffList { records } => records,
+                m => panic!("expected HandoffList, got {m:?}"),
+            }
+        } else { vec![] };
+        (c, welcome, list)
+    }
+
+    /// Everything this client is sent before two round trips of its own complete: a barrier,
+    /// since anything the hub queued for it is delivered between the two answers.
+    fn settle(c: &mut Client) -> Vec<ServerMsg> {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            say(c, &ClientMsg::Invite {});
+            loop {
+                match hear(c) {
+                    ServerMsg::Invited { .. } => break,
+                    ServerMsg::Events { .. } | ServerMsg::Presence { .. } => {}
+                    m => got.push(m),
+                }
+            }
+        }
+        got
+    }
+
+    fn until_state(c: &mut Client, state: HandoffState) -> HandoffInfo {
+        loop {
+            match hear(c) {
+                ServerMsg::Handoff { info } if info.state == state => return *info,
+                ServerMsg::Handoff { .. } | ServerMsg::Events { .. } | ServerMsg::Presence { .. } => {}
+                m => panic!("waiting for {state:?}, got {m:?}"),
+            }
+        }
+    }
+
+    fn blob() -> Vec<u8> {
+        (0..HANDOFF_PART + 10).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn sha_hex(b: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// Offers the blob to `to` and uploads it, returning once the server has sealed it.
+    fn offer(c: &mut Client, to: &str) -> HandoffInfo {
+        let b = blob();
+        say(c, &ClientMsg::HandoffOffer {
+            id: ID.into(), to_user: to.into(), to_device: None, size: b.len() as u64, parts: 2, sha256: sha_hex(&b), meta: json!({"title": "t"}),
+        });
+        let first = until_state(c, HandoffState::Uploading);
+        assert!(first.have.is_empty());
+        for (part, chunk) in b.chunks(HANDOFF_PART).enumerate() {
+            say(c, &ClientMsg::HandoffPut { id: ID.into(), part: part as u32, data: B64.encode(chunk) });
+        }
+        until_state(c, HandoffState::Offered)
+    }
+
+    #[test]
+    fn a_server_with_handoff_off_says_so_and_refuses_it_by_name() {
+        let (addr, store) = start();
+        let (token, _) = pair_as(addr, &store, "ana", "lap");
+        let (mut c, welcome, list) = join(addr, &token, true);
+        match welcome {
+            ServerMsg::Welcome { handoff: Some(caps), .. } => assert!(!caps.enabled && caps.part_bytes == HANDOFF_PART as u32),
+            m => panic!("an off server still sends its caps: {m:?}"),
+        }
+        assert!(list.is_empty());
+        say(&mut c, &ClientMsg::HandoffClaim { id: ID.into() });
+        assert!(matches!(hear(&mut c), ServerMsg::HandoffRefused { reason: HandoffErr::Off, .. }));
+    }
+
+    #[test]
+    fn a_peer_without_the_feature_never_hears_a_handoff_even_one_addressed_to_it() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, _) = pair_as(addr, &store, "ana", "lap");
+        let (tb, _) = pair_as(addr, &store, "bob", "desk");
+        let (mut bob, welcome, _) = join(addr, &tb, false);
+        assert!(matches!(welcome, ServerMsg::Welcome { handoff: Some(HandoffCaps { enabled: true, .. }), .. }));
+        let (mut ana, _, _) = join(addr, &ta, true);
+        say(&mut bob, &ClientMsg::HandoffClaim { id: ID.into() });
+        assert!(matches!(hear(&mut bob), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+        offer(&mut ana, "bob");
+        let heard = settle(&mut bob);
+        assert!(heard.is_empty(), "{heard:?}");
+    }
+
+    #[test]
+    fn a_session_travels_between_two_people_and_every_machine_hears_what_it_may() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, _) = pair_as(addr, &store, "ana", "lap");
+        let (ta2, _) = pair_as(addr, &store, "ana", "desk");
+        let (tb, db) = pair_as(addr, &store, "bob", "lap");
+        let (tb2, _) = pair_as(addr, &store, "bob", "desk");
+        let (mut ana, _, _) = join(addr, &ta, true);
+        let (mut ana2, _, _) = join(addr, &ta2, true);
+        let (mut bob, _, _) = join(addr, &tb, true);
+        let (mut bob2, _, _) = join(addr, &tb2, true);
+
+        offer(&mut ana, "bob");
+        match hear(&mut ana2) {
+            ServerMsg::Handoff { info } => assert!(info.state == HandoffState::Uploading && info.have.is_empty(), "only the sender sees have"),
+            m => panic!("expected Handoff, got {m:?}"),
+        }
+        match hear(&mut bob) {
+            ServerMsg::Handoff { info } => assert_eq!(info.state, HandoffState::Offered, "a recipient never sees an upload"),
+            m => panic!("expected Handoff, got {m:?}"),
+        }
+
+        say(&mut bob, &ClientMsg::HandoffClaim { id: ID.into() });
+        assert_eq!(until_state(&mut bob, HandoffState::Claimed).taker.as_deref(), Some(db.as_str()));
+        until_state(&mut ana, HandoffState::Claimed);
+        until_state(&mut ana2, HandoffState::Claimed);
+
+        let mut got = Vec::new();
+        for part in 0..2 {
+            say(&mut bob, &ClientMsg::HandoffFetch { id: ID.into(), part });
+            loop {
+                match hear(&mut bob) {
+                    ServerMsg::HandoffPart { part: p, data, .. } if p == part => { got.extend(B64.decode(data).unwrap()); break; }
+                    ServerMsg::Handoff { .. } => {}
+                    m => panic!("expected HandoffPart, got {m:?}"),
+                }
+            }
+        }
+        assert_eq!(got, blob());
+        let heard = settle(&mut bob2);
+        assert!(heard.iter().all(|m| !matches!(m, ServerMsg::HandoffPart { .. })), "a part goes to the claiming socket alone");
+        say(&mut bob2, &ClientMsg::HandoffFetch { id: ID.into(), part: 0 });
+        assert!(matches!(hear(&mut bob2), ServerMsg::HandoffRefused { reason: HandoffErr::Gone, .. }));
+
+        say(&mut bob, &ClientMsg::HandoffComplete { id: ID.into() });
+        until_state(&mut bob, HandoffState::Done);
+        until_state(&mut ana, HandoffState::Done);
+        until_state(&mut ana2, HandoffState::Done);
+    }
+
+    #[test]
+    fn a_recipient_that_was_away_finds_the_offer_in_its_list() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, _) = pair_as(addr, &store, "ana", "lap");
+        let (tb, _) = pair_as(addr, &store, "bob", "desk");
+        let (mut ana, _, _) = join(addr, &ta, true);
+        offer(&mut ana, "bob");
+        let (_, _, list) = join(addr, &tb, true);
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].id.as_str(), list[0].state, list[0].from_user.as_str()), (ID, HandoffState::Offered, "ana"));
+        let (_, _, again) = join(addr, &ta, true);
+        assert_eq!(again[0].state, HandoffState::Offered, "the sender reconciles from the same list");
+    }
+
+    #[test]
+    fn a_device_is_listed_as_speaking_handoff_by_its_last_hello() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, da) = pair_as(addr, &store, "ana", "lap");
+        let (tb, _) = pair_as(addr, &store, "ana", "desk");
+        let speaks = |w: ServerMsg| match w {
+            ServerMsg::Welcome { devices, .. } => devices.iter().find(|d| d.device == da).unwrap().handoff,
+            m => panic!("{m:?}"),
+        };
+        let (_, own, _) = join(addr, &ta, true);
+        assert!(speaks(own), "a welcome already lists what its own hello said");
+        assert!(speaks(join(addr, &tb, false).1));
+        join(addr, &ta, false);
+        assert!(!speaks(join(addr, &tb, false).1));
+    }
+
+    #[test]
+    fn the_sweep_tells_both_people_an_offer_expired_and_the_recipient_nothing_of_an_upload() {
+        let (store, hub) = (Store::open_in_memory().unwrap(), Hub::default());
+        let mut people = Vec::new();
+        for user in ["ana", "bob"] {
+            let code = store.create_invite("w", user, 0).unwrap();
+            people.push(store.redeem(&code, "lap", 0).unwrap().unwrap().1);
+        }
+        let (b, cfg) = (blob(), HandoffCfg { ttl_ms: 1000, ..ON });
+        let req = |id: &str| Offer { id: id.into(), to_user: "bob".into(), to_device: None, size: b.len() as u64, parts: 2, sha256: sha_hex(&b), meta: json!({}) };
+        const UNSENT: &str = "1f8fad5b-d9cb-469f-a165-70867728950e";
+        store.handoff_offer(&people[0], &req(ID), &cfg, 0).unwrap();
+        for (part, chunk) in b.chunks(HANDOFF_PART).enumerate() { store.handoff_put(&people[0], ID, part as u32, chunk, 1).unwrap(); }
+        store.handoff_offer(&people[0], &req(UNSENT), &cfg, 0).unwrap();
+        let speaks = [FEATURE_HANDOFF.to_string()];
+        let (_, deaf) = hub.join(&people[1], &[]);
+        let (_, ana) = hub.join(&people[0], &speaks);
+        let (_, bob) = hub.join(&people[1], &speaks);
+        sweep_handoffs(&store, &hub, 5000);
+        let (ana, bob): (Vec<Out>, Vec<Out>) = (ana.try_iter().collect(), bob.try_iter().collect());
+        let told = |got: &[Out], id: &str| got.iter().any(|o| matches!(o, Out::Msg(ServerMsg::Handoff { info }) if info.id == id && info.state == HandoffState::Expired));
+        assert!(told(&ana, ID) && told(&ana, UNSENT), "the sender hears both");
+        assert!(told(&bob, ID), "the recipient hears the offer expired");
+        assert!(!told(&bob, UNSENT), "but nothing of an upload it was never offered");
+        assert!(deaf.try_recv().is_err(), "a connection without the feature hears nothing");
+    }
+
+    fn rec(state: HandoffState, updated: i64) -> HandoffInfo {
+        HandoffInfo {
+            id: ID.into(), from_user: "ana".into(), from_device: "a".into(), to_user: "bob".into(), to_device: None, state, taker: None,
+            meta: json!({}), size: 1, parts: 1, sha256: String::new(), have: vec![], created: 0, expires: 0, updated,
+        }
+    }
+
+    #[test]
+    fn a_change_published_out_of_order_is_dropped_and_nothing_newer_is() {
+        let mut last = HashMap::new();
+        assert!(fresh(&mut last, &rec(HandoffState::Offered, 10)));
+        assert!(fresh(&mut last, &rec(HandoffState::Offered, 10)), "an equal one is kept");
+        assert!(fresh(&mut last, &rec(HandoffState::Claimed, 10)), "same millisecond, later state");
+        assert!(!fresh(&mut last, &rec(HandoffState::Offered, 10)), "claimed then offered: the offer is stale");
+        assert!(!fresh(&mut last, &rec(HandoffState::Claimed, 9)));
+        assert!(fresh(&mut last, &rec(HandoffState::Done, 5)), "a clock that stepped back cannot hide a transition");
+        assert!(fresh(&mut last, &rec(HandoffState::Done, 6)));
+    }
+
+    fn memory_event(key: &str) -> NewEvent {
+        NewEvent { stream: Stream::Memory, key: key.into(), at: 1, payload: json!({"text": "x", "sha": "ab"}) }
+    }
+
+    /// Hello with the given features: whether the welcome says memory is on, then the catch-up.
+    fn hello_as(addr: SocketAddr, token: &str, features: &[&str]) -> (Client, bool, Vec<Event>) {
+        let mut c = connect(addr);
+        let features = features.iter().map(|f| f.to_string()).collect();
+        say(&mut c, &ClientMsg::Hello { token: token.into(), since: 0, protocol: PROTOCOL, features });
+        let ServerMsg::Welcome { memory, .. } = hear(&mut c) else { panic!("expected Welcome") };
+        let mut got = Vec::new();
+        loop {
+            match hear(&mut c) {
+                ServerMsg::Events { events, more } => { got.extend(events); if !more { break; } }
+                m => panic!("expected Events, got {m:?}"),
+            }
+        }
+        (c, memory, got)
+    }
+
+    /// Every event this client hears before two round trips of its own complete.
+    fn heard_events(c: &mut Client) -> Vec<Event> {
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            say(c, &ClientMsg::Invite {});
+            loop {
+                match hear(c) {
+                    ServerMsg::Invited { .. } => break,
+                    ServerMsg::Events { events, .. } => got.extend(events),
+                    _ => {}
+                }
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn memory_reaches_only_your_own_machines_that_take_it() {
+        let (addr, store) = start_cfg(None, true);
+        let (ta, _) = pair_as(addr, &store, "me", "laptop");
+        let (tb, _) = pair_as(addr, &store, "me", "desk");
+        let (tc, _) = pair_as(addr, &store, "me", "old");
+        let (tt, _) = pair_as(addr, &store, "them", "theirs");
+        let (mut a, on, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        assert!(on, "the welcome says the stream is on");
+        let (mut b, _, _) = hello_as(addr, &tb, &[FEATURE_MEMORY]);
+        let (mut c, _, _) = hello_as(addr, &tc, &[]);
+        let (mut t, _, _) = hello_as(addr, &tt, &[FEATURE_MEMORY]);
+        say(&mut a, &ClientMsg::Push { events: vec![memory_event("p|a.md"), pref("cc-sort")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Pushed { .. }));
+        let keys = |evs: Vec<Event>| evs.into_iter().map(|e| e.key).collect::<Vec<_>>();
+        assert_eq!(keys(heard_events(&mut b)), vec!["p|a.md", "cc-sort"]);
+        assert_eq!(keys(heard_events(&mut c)), vec!["cc-sort"], "live: a peer that never asked for memory");
+        assert!(heard_events(&mut t).is_empty(), "personal, so never a teammate's");
+        assert_eq!(keys(hello_as(addr, &tc, &[]).2), vec!["cc-sort"], "nor in the catch-up");
+        assert_eq!(keys(hello_as(addr, &tb, &[FEATURE_MEMORY]).2), vec!["p|a.md", "cc-sort"]);
+    }
+
+    #[test]
+    fn a_memory_push_is_refused_while_the_stream_is_off_or_unasked() {
+        let (addr, store) = start();
+        let (ta, device) = pair(addr, &store, "laptop");
+        // Stored while the gate was on: switching it off must stop serving it too.
+        let me = Identity { ws: "default".into(), user: "me".into(), device };
+        store.append(&me, &[memory_event("p|old.md")]).unwrap();
+        let (mut a, on, caught) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        assert!(!on);
+        assert!(caught.is_empty(), "the catch-up holds no memory once the gate is off");
+        say(&mut a, &ClientMsg::Push { events: vec![memory_event("p|a.md")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, .. }));
+        let (addr, store) = start_cfg(None, true);
+        let (ta, _) = pair(addr, &store, "laptop");
+        let (mut a, _, _) = hello_as(addr, &ta, &[]);
+        say(&mut a, &ClientMsg::Push { events: vec![pref("cc-sort"), memory_event("p|a.md")] });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadMessage, push: true, .. }));
+        assert_eq!(store.head("default").unwrap(), 0, "a refused push lands nothing, prefs included");
+    }
+
+    #[test]
+    fn a_peer_whose_cursor_passed_memory_can_ask_for_all_of_it_again() {
+        let (addr, store) = start_cfg(None, true);
+        let (ta, device) = pair(addr, &store, "laptop");
+        let me = Identity { ws: "default".into(), user: "me".into(), device };
+        store.append(&me, &[memory_event("p|a.md"), pref("cc-sort"), memory_event("p|b.md")]).unwrap();
+        let (mut a, _, _) = hello_as(addr, &ta, &[FEATURE_MEMORY]);
+        say(&mut a, &ClientMsg::MemoryReplay {});
+        match hear(&mut a) {
+            ServerMsg::MemoryReplay { events, more } => {
+                assert!(!more);
+                assert_eq!(events.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["p|a.md", "p|b.md"]);
+            }
+            m => panic!("expected MemoryReplay, got {m:?}"),
+        }
+        let (mut old, _, _) = hello_as(addr, &ta, &[]);
+        say(&mut old, &ClientMsg::MemoryReplay {});
+        assert!(matches!(hear(&mut old), ServerMsg::Error { code: ErrorCode::BadMessage, push: false, .. }));
+    }
+
+    #[test]
+    fn an_oversized_push_is_refused_as_a_push() {
+        let (addr, store) = start();
+        let (ta, _) = pair(addr, &store, "laptop");
+        let (mut a, _) = hello(addr, &ta, 0);
+        let many: Vec<NewEvent> = (0..=MAX_PUSH).map(|i| pref(&format!("k{i}"))).collect();
+        say(&mut a, &ClientMsg::Push { events: many });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::TooLarge, push: true, .. }));
+    }
+
+    #[test]
+    fn a_device_revoked_from_another_process_loses_its_live_socket() {
+        let (addr, store) = start_with(Some(ON));
+        let (ta, device) = pair(addr, &store, "laptop");
+        let (mut a, _, _) = join(addr, &ta, true);
+        store.revoke(&device).unwrap();
+        say(&mut a, &ClientMsg::HandoffClaim { id: ID.into() });
+        assert!(matches!(hear(&mut a), ServerMsg::Error { code: ErrorCode::BadToken, .. }));
     }
 }

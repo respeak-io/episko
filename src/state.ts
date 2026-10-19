@@ -2,7 +2,8 @@
 // Reads are the live ESM binding (`activeId`, never `state.activeId`); a `setX` assigns and
 // nothing else. Preferences are read at module scope, so a test imports ./localstorage first.
 import { basename, clampTitlePrefs, hslToHex, nfcKeys, nfcPath, type TitlePrefs } from "./format";
-import { safeParse } from "./store";
+import { readList, safeParse } from "./store";
+import { readHandoffs, type HandoffRec } from "./handoff";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
@@ -175,6 +176,9 @@ export let externals: ExtSession[] = [];
 export function setExternals(l: ExtSession[]) { externals = l; }
 export let dormants: Restorable[] = [];
 export function setDormants(l: Restorable[]) { dormants = l; }
+// Sessions handed to or from another machine (./handoff); a sent one locks its dormant row.
+export let handoffs: HandoffRec[] = readHandoffs(readList("cc-handoff"), Date.now());
+export function setHandoffs(l: HandoffRec[]) { handoffs = l; }
 // Every PTY the backend holds, keyed `<provider>:<session id>`. After a webview reload the map is
 // empty while every PTY runs on (#47), so this is what lets `dormantBusy`/`histBusy` refuse a resume.
 export let backendLive: ReadonlySet<string> = new Set();

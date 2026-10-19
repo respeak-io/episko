@@ -15,3 +15,5 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 getrandom = "0.3"
 sha2 = "0.10"
+# Handoff parts arrive base64 and are stored as raw BLOBs, so a seal can hash them (docs/handoff.md).
+base64 = "0.22"

@@ -3,7 +3,8 @@
 // the restore roster forgets a closed session and never knew ones started elsewhere.
 
 import { basename } from "./format";
-import { backendLive, dormants, externals, FAVORITES, sessions } from "./state";
+import { backendLive, dormants, externals, FAVORITES, handoffs, sessions } from "./state";
+import { handoffBusy } from "./handoff";
 import { providerSessionKey } from "./types";
 
 export interface HistEntry {
@@ -47,6 +48,7 @@ export function histBusy(h: HistEntry): boolean {
       && backendLive.has(providerSessionKey(d.provider, d.id))
       && d.resumeId.toLowerCase() === id) return true;
   }
+  if (h.provider === "claude" && handoffBusy(handoffs, id)) return true;
   return h.provider === "claude" && externals.some((e) => e.session_id.toLowerCase() === id);
 }
 

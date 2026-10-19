@@ -19,6 +19,38 @@ Markers: `+` new · `~` changed · `!` fixed
   skipped rather than reopened, and a dialog is never a stop. Rebind the keys in Settings › Keys.
   Alt+← Alt+→ stay a terminal's word jump; on a Mac, Ctrl+[ is still Escape in a pane, and a ⌘[ ⌘] you had already bound to something else keeps it.
 
++ **Hand a session to another machine, or to a teammate.** On a sync server started with
+  `EPISKO_HANDOFF=1`, *Send to…* on a Claude session stops it, drafts a short brief and sends
+  the conversation with the code it was working on. The other machine gets a ⇠ row under the
+  project (or in an *Incoming* strip when it isn't cloned there): open it to read the brief,
+  pick the checkout, and *Resume here* downloads it, lands the code in a new worktree when it
+  travelled, and resumes the conversation. *Decline*, ↶ *Take it back* and *Give back* (while it
+  downloads) all leave the sender with a resumable session; nothing is written on the receiving
+  machine until the server says it has changed hands. A transcript carries whatever the agent
+  read, so the send sheet says so every time. Permission modes never travel, including the one
+  the transcript itself records.
+  The project's saved Claude memories can go along, ticked one by one: a teammate is only ever
+  offered project and reference memories, never the ones about you, and the session that wrote
+  each is stripped. The receiving machine adds them beside its own and never replaces one it has.
+
++ **Claude's memory follows you between your machines.** On a sync server started with
+  `EPISKO_MEMORY=1`, switch on Settings › Sync › *Claude's memory* and each project's saved
+  memories reach your other machines, never a teammate's. A file edited on two machines keeps the
+  later one, a local edit that has not gone out yet is never overwritten, two machines that each
+  already had a memory of one name keep both copies, `MEMORY.md` only ever
+  gains lines, and a project you have not cloned on a machine gets its memories once you do.
+
+~ **Sync server: handoff and the memory stream.** The sync protocol learns the handoff messages,
+  the capability fields a client and server advertise, and a `memory` stream; an app or server
+  from before this sees nothing new on the wire. The server's database gains the tables that hold
+  a handoff until it is picked up, and an existing `episko.db` is upgraded in place. Handoff is on
+  with `EPISKO_HANDOFF=1` (`EPISKO_HANDOFF_TTL_HOURS`, `EPISKO_HANDOFF_MAX_MB`) and the memory
+  stream with `EPISKO_MEMORY=1`; both are off by default, and starting the server with handoff off
+  expires every handoff still open. `revoke` ends the open handoffs of the machine it shuts out,
+  and of the person when it was their last, and closes that machine's live connection; a name
+  that still owns a personal log is no longer free to register with the team code. A proxy in
+  front must pass WebSocket messages of at least 1 MiB.
+
 ## 0.35.0 — 2026-10-15
 Review a pull request inside Episko: the diff against its merge base, threads on their lines,
 one pending review sent as Comment, Approve or Request changes, and a PR link in a pane opens it

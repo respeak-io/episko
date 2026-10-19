@@ -219,6 +219,9 @@ export function resumeAgent(provider: string | undefined, catalogue: AgentCli[])
 export type Engine = "embedded" | "ghostty" | "terminal" | "iterm";
 export const isAgent = (s: Sess) => s.kind === "agent";
 export const isClaude = (s: Sess) => isAgent(s) && s.provider === "claude";
+/** A shelved row's twin of isClaude: only Claude's transcript can be handed over (docs/handoff.md). */
+export const isClaudeProvider = (provider: string) => provider === "claude";
+export const isClaudeRow = (d: Restorable) => isClaudeProvider(d.provider);
 // the shared UI boundary; isClaude only where the protocol matters
 export const hasAgentCapability = (s: Sess, capability: AgentCapability) =>
   isAgent(s) && s.capabilities.includes(capability);

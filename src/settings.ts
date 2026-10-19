@@ -69,7 +69,7 @@ import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
   activity as syncActivity, devices as syncDevices, excluded as syncExcluded, health as syncHealthNow, invite as syncInvite,
-  onlineDevices, pending as syncPending, prefsArrived, requestInvite, setExcluded,
+  memorySyncOn, onlineDevices, pending as syncPending, prefsArrived, requestInvite, serverHandoff, serverMemory, setExcluded, setMemorySync,
   status as syncStatus,
 } from "./synclink";
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
@@ -656,8 +656,8 @@ const SET_TABS: SetTab[] = [
     id: "sync", label: "Sync", glyph: "⇅", group: "app", sub: "Your settings and spend on every machine",
     controls: () => [
       { kind: "sync", id: "syncserver", label: "Sync server", hint: "Carries your preferences, spend and limits between your machines.",
-        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it: no prompts, transcripts, tool output or diffs. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
-        aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted"], since: "0.32.0",
+        more: "A server you run yourself (one binary, one SQLite file). Nothing conversational goes over it (no prompts, transcripts, tool output or diffs) except what you opt into: a session you explicitly send, and Claude's memory files once both switches are on. Permission modes, trusted projects and task rules never leave this machine. With the server down everything keeps working and the top bar says so.",
+        aliases: ["sync", "server", "devices", "machines", "pair", "invite", "laptop", "desktop", "team", "self-hosted", "memory"], since: "0.32.0",
         summary: () => syncSummary(syncStatus, syncHealthNow()) },
     ],
   },
@@ -1467,7 +1467,8 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
         users: devicesByUser(syncDevices, syncStatus.user, syncStatus.device), online: onlineDevices(),
         activity: syncActivity, pending: Object.values(syncPending), excluded: syncExcluded, invite: syncInvite,
         nameOf: (d) => deviceName(syncDevices, d, syncStatus.device),
-        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(),
+        projects: syncStatus.configured ? syncProjects() : [], now: Date.now(), handoff: serverHandoff,
+        memory: { on: memorySyncOn(), server: serverMemory },
       });
       always = true;
       break;
@@ -1650,6 +1651,7 @@ function applySyncSetting(verb: string) {
   else if (verb === "reload") void host.reloadUi();
   else if (verb === "review") host.syncReview();
   else if (verb === "invite") requestInvite();
+  else if (verb.startsWith("memory|")) { setMemorySync(verb === "memory|1"); renderSettings(); }
   else if (verb.startsWith("excl|")) {
     const [, key, keep] = verb.split("|");
     setExcluded(key, keep === "1");

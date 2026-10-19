@@ -64,7 +64,7 @@ cd src-tauri
 cargo test --locked -- --ignored --nocapture
 ```
 
-Five checks against Claude Code's real state, in one pass:
+Six checks against Claude Code's real state, in one pass:
 
 - `claude_cli_still_honours_our_instrumentation` runs one real `claude -p` against a
   throwaway session in a temp dir and asserts our hooks reach our server, that routing
@@ -101,6 +101,14 @@ Five checks against Claude Code's real state, in one pass:
   while every other gate stays green. **No tokens** (there is no model turn) but it does
   need an authenticated `claude`: an API-key or unauthenticated session answers
   `rate_limits_available: false` and the assertion fails for the right reason.
+- `brief_fork_leaves_no_transcript` seeds one short Haiku session, then asks it for a
+  handoff brief exactly the way the send sheet does: `--resume --fork-session
+  --no-session-persistence` with no tools, no hooks, no MCP servers and a `--json-schema`.
+  It asserts the CLI still accepts that combination, that the brief comes back in the
+  structure the sheet reads, and that the fork wrote **no transcript of its own** into the
+  project's folder. The app deletes a leaked fork after the fact, so a regression here is
+  otherwise silent: a second, unlisted copy of a conversation on the sender's disk.
+  **It spends tokens** (two short Haiku turns) and needs auth.
 
 A failure here is the highest-signal failure in this document: it means a Claude Code
 release changed something under us, and the app would otherwise have gone quiet
@@ -112,6 +120,14 @@ a preference and the other must hear it. It fails on `EPISKO_E2E_URL` alone unle
 server is up, so stand one up first (`docs/sync.md` › *Running the server*): build the crate, run it
 with `EPISKO_DB` pointing at a throwaway file and `EPISKO_BIND` on a spare port, mint two
 invites, and pass them as `EPISKO_E2E_CODES`. No tokens and no auth; ~5s.
+
+`two_users_hand_off_through_a_real_server` runs in that pass too, and needs a server started
+with `EPISKO_HANDOFF=1` and, in `EPISKO_E2E_HANDOFF_CODES`, two invites minted for two
+**different** people (it refuses two codes of one person). One offers a blob of just over one
+part, the other claims, fetches, completes and must end with the same bytes, both seeing
+`done`. A server without the flag fails it on purpose: this is the only end-to-end check that
+the app and server agree on the handoff channel. No tokens; a few seconds. Invites are single-use, so mint fresh
+ones for every run.
 
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through
@@ -525,6 +541,46 @@ and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
       again: the badge clears and *Last exchange* restarts, with no reload.
 - [ ] **Forgetting.** *Forget this machine* asks first (red button), then the pairing form
       is back and the status bar's ⇅ segment reads *Off*. Every setting stays as it was.
+
+### Handoff
+
+Two machines paired to one server started with `EPISKO_HANDOFF=1` (docs/handoff.md), a
+throwaway Claude session in a git project cloned on both, and a teammate's invite for the
+second half. Watch the server's `handoffs` table with `sqlite3` beside it.
+
+- [ ] **A send reaches the server.** *Send to…* on a live session: it stops, a brief is
+      drafted, Send packs it, and the row reads *→ … · sending*, then *waiting*. The
+      `handoffs` row says `offered`.
+- [ ] **Self to a second machine.** The offer toasts on the other machine and appears as a
+      ⇠ row under its project. Click it: brief, code and *Resume it in* are filled in.
+      *Resume here* shows the download, then the session resumes in a new tab (a new
+      worktree when the code travelled) and picks up the conversation. The sender's row
+      becomes *handed to …* and its transcript is gone from `~/.claude/projects`.
+- [ ] **Teammate.** The same to another user: each of their machines lists it; the one that
+      takes it resumes, the others say *taken on …* and drop the row once it is done.
+- [ ] **Memories.** In a project with saved memories, the teammate send lists only project and
+      reference ones, unticked, the brief's suggestions marked. Tick one: the recipient's sheet
+      lists it ticked, and after *Resume here* it sits in the recipient's
+      `~/.claude/projects/<main checkout>/memory/` without an `originSessionId` and with a new
+      `MEMORY.md` line. A memory of that name already there is kept, and a toast says so.
+- [ ] **Memory stream.** A server with `EPISKO_MEMORY=1`, two machines of yours, Settings › Sync ›
+      *Claude's memory* on both. Edit a memory on one and focus the other: it lands in the same
+      project's `memory/` folder (and in a worktree's, keyed by the main checkout) with a
+      `MEMORY.md` line. Delete it on the first: it goes on the second. Edit it on the second
+      without focusing the first, then change it from the first: the second's edit survives
+      and wins. A teammate's machine never receives any of it.
+- [ ] **Decline.** *Decline* on the recipient: the sender toasts that it was declined and
+      the session is an ordinary shelved row again, resumable.
+- [ ] **Take back.** ↶ on the sender while *waiting*: the recipient's row disappears.
+- [ ] **Give back.** *Resume here*, then *Give back* while it downloads: the sender has it
+      again and nothing landed on the recipient (no worktree, no transcript).
+- [ ] **Not cloned here.** A project the recipient never cloned goes in the *Incoming*
+      strip; *Resume here* stays greyed until *Choose a folder…* names a clone of it.
+- [ ] **TTL.** A server with `EPISKO_HANDOFF_TTL_HOURS=1`: an offer nobody takes comes back
+      to the sender within the hour and ten minutes the sweep allows.
+- [ ] **Server off mid-offer.** Stop the server with an offer *waiting*: the sender's row
+      reads *outcome unknown* and stays locked. Restart it without `EPISKO_HANDOFF`: the
+      row becomes *back from …?* and ⟲ asks before it resumes.
 
 ### The OS edge
 
