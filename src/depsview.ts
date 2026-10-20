@@ -193,7 +193,7 @@ function staleTab(v: DepsView): string {
 
 // ---------- the dispatch sheet ----------
 // The prompt is SENT, so this sheet is the reading: the whole brief is here, editable,
-// before anything starts. Same rule as the issue dispatch it sits beside.
+// before anything starts. The issue dispatch, with no such box, only prefills.
 
 export function depSheet(title: string, brief: string, mode: string, lines: number): string {
   return `<h4>${esc(title)}</h4>

@@ -1569,8 +1569,8 @@ function openPrSheet(number: number): void {
   renderDash();
 }
 
-// Sent, not prefilled, like the issue dispatch beside it — and for the same reason: the
-// sheet was the reading. Newlines go as a CR inside ONE chunk (a paste-newline, never a
+// Sent, not prefilled, unlike the issue dispatch beside it: the brief was edited in the sheet,
+// so the sheet was the reading. Newlines go as a CR inside ONE chunk (a paste-newline, never a
 // submit) and the submitting one is a write of its own, a beat behind (./taskrun's contract).
 async function doDepDispatch(): Promise<void> {
   if (sheet?.kind !== "deps") return;
@@ -2059,9 +2059,9 @@ async function setKept(number: number, keep: boolean): Promise<void> {
   }
 }
 
-// Start an agent on a thread and say so where colleagues can see it. The prompt is sent,
-// the one exception to "Episko prefills, the human presses Enter": the sheet was the
-// reading. The claim is written after the session exists, never before.
+// Start an agent on a thread and say so where colleagues can see it. The prompt is prefilled,
+// never sent: a thread rarely wants the generic ask as it stands. The claim is written after the
+// session exists, never before.
 async function doDispatch(): Promise<void> {
   if (sheet?.kind !== "dispatch") return;
   const t = sheet.t, r = root(), n = name(), w = where;
@@ -2102,16 +2102,11 @@ async function doDispatch(): Promise<void> {
     });
   }
 
-  // Sent, not prefilled. The `\r` goes in a write of its own, a beat behind the text: a
-  // burst arriving in one chunk is read as a paste, and a `\r` inside a paste is a newline.
   setTimeout(() => {
     const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
-    void typeInto(sid, prompt)
-      .then(() => new Promise((r2) => setTimeout(r2, SUBMIT_MS)))
-      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
-      .catch(() => {});
+    void typeInto(sid, prompt).catch(() => {});
   }, 1400);
-  toast(`Started on #${t.number}`);
+  toast(`Started on #${t.number} and prefilled. Edit it, then press Enter`);
 }
 
 function openDispatch(t: GhThread): void {

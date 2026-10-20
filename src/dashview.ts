@@ -1144,7 +1144,7 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
     <div class="body">
       <p class="sheet-ti">${esc(t.title)}</p>
       ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago, probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is only ever a hint.</p>` : ""}
-      <p>A session in this project, and <b>the prompt is sent</b>, so the agent starts working without waiting for you.</p>
+      <p>A session in this project, with the prompt <b>typed in but not sent</b>: say what you want done, then press Enter.</p>
       ${w ? whereBlock(w) : ""}
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}
