@@ -2,7 +2,7 @@
 // scrollback. Rules only — ./terminal owns the anchors and ./inspectorview draws the rows.
 // In memory only, like a tool payload: a prompt is conversation and never reaches storage.
 
-import type { Prompt } from "./types";
+import type { Prompt, Relay } from "./types";
 
 export interface OutlinePrefs {
   enabled: boolean;
@@ -55,6 +55,54 @@ const ENVELOPES = [
 ];
 export const isEnvelope = (text: string): boolean => ENVELOPES.some((e) => text.startsWith(e));
 
+// A turn another agent submitted. Listed, since the conversation answered it, but as theirs:
+// the frame comes off so the row says who sent what. The transcript adds a preamble the hook lacks.
+const RELAY_HEAD = /^(?:Another Claude session sent a message[^:\n]*:\n)?<(agent-message|cross-session-message)\b([^>]*)>\n?/;
+const HANDBACK = "[Subagent hand-back]";
+const attr = (attrs: string, k: string) => new RegExp(`(?:^|\\s)${k}="([^"]*)"`).exec(attrs)?.[1] ?? "";
+
+export function parseRelay(text: string): { relay: Relay; body: string } | null {
+  const m = RELAY_HEAD.exec(text);
+  if (!m) return null;
+  const kind = m[1] === "agent-message" ? "agent" : "session";
+  const from = attr(m[2], "from");
+  let body = text.slice(m[0].length).replace(new RegExp(`\\s*</${m[1]}>\\s*$`), "");
+  const report = body.startsWith(HANDBACK);
+  if (report) { // the harness's warning, then the report indented two columns so it cannot forge a frame
+    const at = body.indexOf("\n", body.indexOf("The report follows:"));
+    body = (at < 0 ? "" : body.slice(at + 1)).replace(/^ {2}/gm, "");
+  }
+  const name = attr(m[2], "from-name") || (kind === "agent" ? `agent ${from.slice(0, 7)}` : "another session");
+  return { relay: { kind, from, name, report }, body: body.trim() };
+}
+
+/** What a list draws for one message: the relay's own words when it is one, else the text as typed. */
+export function promptFrom(text: string): { text: string; relay?: Relay } {
+  const r = parseRelay(text);
+  return r ? { text: r.body || "(empty message)", relay: r.relay } : { text };
+}
+
+// The outline's rows, oldest first. Only your questions are numbered, and a run of relays (a
+// fan-out's agents reporting back one after another) folds into one row, so they cannot bury them.
+export type OutlineItem =
+  | { kind: "ask"; p: Prompt; n: number }
+  | { kind: "relay"; p: Prompt }
+  | { kind: "relays"; id: string; ps: Prompt[] };
+
+export function outlineItems(list: readonly Prompt[]): OutlineItem[] {
+  const out: OutlineItem[] = [];
+  let n = 0;
+  for (let i = 0; i < list.length;) {
+    const p = list[i];
+    if (!p.relay) { out.push({ kind: "ask", p, n: ++n }); i++; continue; }
+    let j = i;
+    while (j < list.length && list[j].relay) j++;
+    out.push(j - i > 1 ? { kind: "relays", id: p.id, ps: list.slice(i, j) } : { kind: "relay", p });
+    i = j;
+  }
+  return out;
+}
+
 let seq = 0;
 // Guards a resend of one submit (Codex reports a message twice, started and completed),
 // never asking the same thing twice on purpose: a repeat a turn later is its own entry.
@@ -62,11 +110,12 @@ const REPEAT_MS = 1500;
 
 /** Returns the entry so the caller can anchor it; null when there is nothing to list. */
 export function notePrompt(list: Prompt[], raw: unknown, now: number): Prompt | null {
-  const text = cleanPrompt(raw);
-  if (!text || isEnvelope(text)) return null;
+  const clean = cleanPrompt(raw);
+  if (!clean || isEnvelope(clean)) return null;
+  const { text, relay } = promptFrom(clean);
   const last = list[list.length - 1];
   if (last && last.text === text && now - last.at < REPEAT_MS) return null;
-  const p: Prompt = { id: `p${++seq}`, text, at: now };
+  const p: Prompt = { id: `p${++seq}`, text, at: now, ...(relay && { relay }) };
   list.push(p);
   if (list.length > PROMPT_CAP) list.splice(0, list.length - PROMPT_CAP);
   return p;
@@ -91,10 +140,11 @@ export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] 
   const restored: Prompt[] = [];
   for (const m of msgs) {
     if (m.role !== "user") continue;
-    const text = cleanPrompt(m.text);
-    if (!text || isEnvelope(text)) continue;
+    const clean = cleanPrompt(m.text);
+    if (!clean || isEnvelope(clean)) continue;
+    const { text, relay } = promptFrom(clean);
     const at = m.at ? Date.parse(m.at) : NaN;
-    restored.push({ id: `p${++seq}`, text, at: Number.isFinite(at) ? at : 0, restored: true });
+    restored.push({ id: `p${++seq}`, text, at: Number.isFinite(at) ? at : 0, restored: true, ...(relay && { relay }) });
   }
   list.unshift(...restored);
   if (list.length > PROMPT_CAP) list.splice(0, list.length - PROMPT_CAP);

@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **Agent reports no longer pass for your questions.** A subagent's hand-back, a message from
+  an agent and a note from another session used to fill *Your questions* as raw
+  `<agent-message …>` rows. They are now listed as the sender's, with the wrapper stripped, and
+  a run of them folds into one row you can open. Only your own questions are numbered and
+  counted. History and the session mirror mark them the same way.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,
