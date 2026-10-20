@@ -61,7 +61,7 @@ pub(crate) fn scratch_cwd() -> PathBuf {
 /// is reading a developer's day, the model narrates an afternoon it never saw.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Scope {
-    Me, // your sessions and spend; cached locally, never written to a file
+    Me, // your sessions and commits; cached locally, never written to a file
     Project, // commits and pull requests, which everyone has; the committable half
 }
 
@@ -77,9 +77,9 @@ fn prompt_for(scope: Scope, facts: &str) -> String {
     let preamble = match scope {
         Scope::Me =>
             "Below is a factual record of one day of a developer's work — the sessions their \
-AI coding agents ran, the commits that landed, and what it cost.\n\n\
+AI coding agents ran and the commits that landed.\n\n\
 Write ONE plain sentence, at most 18 words, describing what the day was about. Name the \
-dominant project if one clearly dominates.",
+dominant project if one clearly dominates. Never mention cost.",
         // No "they", no time of day: read by a colleague months later, about a repository.
         Scope::Project =>
             "Below is one day of a software project's committed history — the commits that \
@@ -97,10 +97,10 @@ FACTS\n{facts}"
     )
 }
 
-/// `Me` keeps the bare `root\0day` form so summaries already bought stay valid; `Project` adds a segment.
+/// `Me` left the bare `root\0day` form when its facts dropped spend, so no cached line about cost survives.
 fn cache_key(root: &str, day: &str, scope: Scope) -> String {
     match scope {
-        Scope::Me => format!("{root}\u{0}{day}"),
+        Scope::Me => format!("{root}\u{0}{day}\u{0}me"),
         Scope::Project => format!("{root}\u{0}{day}\u{0}project"),
     }
 }
@@ -631,8 +631,8 @@ mod tests {
             cache_key("/w/episko", "2026-07-31", Scope::Project),
         );
         assert_ne!(a, b);
-        // The private one keeps the shape it shipped with.
-        assert_eq!(a, "/w/episko\u{0}2026-07-31");
+        // Not the bare form it shipped with: those entries were written from facts that carried spend.
+        assert_eq!(a, "/w/episko\u{0}2026-07-31\u{0}me");
         // The day segment sits between root and scope, so no root collides with another's project entry.
         assert_ne!(cache_key("/w/a", "2026-07-31\u{0}project", Scope::Me), b);
     }

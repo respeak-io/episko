@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A day's line on the project dashboard says what the day was, not what it cost.** A day with
+  agent spend and nothing else no longer gets a generated sentence about its own emptiness, which
+  used to crowd the days with commits out of the band. Each line now names its date and commit
+  count on the right, and a click lists that day's commits.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,

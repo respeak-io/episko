@@ -903,6 +903,8 @@ export function renderDash(): void {
   // own line first, the project's where you have none.
   const lines: BandLine[] = f.keys.map((k) => ({
     key: k,
+    when: byKey.get(k)?.when ?? 0,
+    commits: byKey.get(k)?.commits.length ?? 0,
     text: summaries.get(k) ?? teamSummaries.get(k) ?? "",
     team: !summaries.has(k) && teamSummaries.has(k),
     writing: writing?.key === k || pending(k),
