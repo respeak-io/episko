@@ -7,6 +7,8 @@ Where interface work happens before it becomes code.
 | `mockkit.css` | Episko's visual language packaged for mockups — tokens, the shell grid, and the components that recur (chips, actions, pills, rows, meters, palette, toast). |
 | `prototype.html` | The Phase-0 cockpit mock. Historical: it is where the current chrome was designed. Not maintained against the app. |
 | `appicon.png` | Source for the bundle icon. |
+| `readme-bento.html` | Source of the README's feature bento (`docs/bento.png`); how to re-render it is in its header comment. |
+| `readme-stub.js`, `readme-shots.mjs` | The README's `docs/shot-*.png`: the real frontend in a browser, its Tauri IPC stubbed and fed made-up sessions, one shot per `window.__SHOT`. The render steps are at the top of `readme-shots.mjs`. |
 
 ## Building a mock
 

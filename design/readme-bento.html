@@ -1,0 +1,196 @@
+<!doctype html>
+<!-- The README's feature bento. Render: open over http from the repo root and element-screenshot
+     #bento at deviceScaleFactor 2 into docs/bento.png. Data is illustrative, like docs/shot-*.png. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Episko bento</title>
+<style>
+@font-face{font-family:'JetBrains Mono';font-weight:400 700;src:url(../site/fonts/jetbrains-mono-latin.woff2) format('woff2');}
+@font-face{font-family:'Space Grotesk';font-weight:400 700;src:url(../site/fonts/space-grotesk-latin.woff2) format('woff2');}
+:root{
+  --bg:#100e15; --bg-2:#0b0a10; --panel:#16141d; --surface:#1b1824; --surface-2:#221e2d;
+  --hair:rgba(255,255,255,.07); --hair-strong:rgba(255,255,255,.12);
+  --text:#efecf5; --muted:#a49eb4; --muted-2:#736d84; --terminal-bg:#0c0b11;
+  --accent:#a78bfa; --accent-ink:color-mix(in srgb,var(--accent) 86%,white 14%);
+  --st-working:#e0a44a; --st-done:#37c98b; --st-attention:#fb6f92; --st-idle:#7b8496; --st-error:#f26d6d; --st-bg:#9d84f5;
+  --tool-read:#7cc7ff; --tool-edit:#c3b0ff; --tool-task:#6ad0b0;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --display:"Space Grotesk",-apple-system,system-ui,sans-serif;
+  --ui:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#08070b;font-family:var(--ui);color:var(--text);-webkit-font-smoothing:antialiased;}
+#bento{width:1000px;padding:26px;display:grid;grid-template-columns:repeat(6,1fr);gap:14px;
+  background:radial-gradient(1200px 500px at 15% -10%,rgba(167,139,250,.13),transparent 60%),var(--bg-2);border-radius:22px;}
+.t{position:relative;background:linear-gradient(180deg,var(--surface),var(--panel));border:1px solid var(--hair);
+  border-radius:16px;padding:18px 18px 16px;overflow:hidden;display:flex;flex-direction:column;}
+.t::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(360px 160px at 100% 0,var(--glow,rgba(167,139,250,.08)),transparent 70%);}
+.s2{grid-column:span 2;} .s3{grid-column:span 3;} .r2{grid-row:span 2;}
+.eb{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);}
+h3{font-family:var(--display);font-weight:600;font-size:20px;letter-spacing:-.02em;line-height:1.2;margin-top:6px;}
+.t p{font-size:13.5px;line-height:1.45;color:var(--muted);margin-top:5px;}
+.viz{margin-top:auto;padding-top:14px;font-family:var(--mono);font-size:12px;}
+.box{background:var(--terminal-bg);border:1px solid var(--hair);border-radius:11px;padding:10px 12px;}
+.row{display:flex;align-items:center;gap:9px;padding:6px 0;}
+.row+.row{border-top:1px solid var(--hair);}
+.gl{width:14px;text-align:center;font-size:13px;}
+.dim{color:var(--muted-2);} .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pill{font-size:10.5px;padding:2px 8px;border-radius:99px;border:1px solid;white-space:nowrap;}
+.btn{font-family:var(--ui);font-size:12px;font-weight:600;padding:7px 0;border-radius:8px;text-align:center;flex:1;
+  border:1px solid var(--hair-strong);color:var(--text);}
+.c-attn{color:var(--st-attention);} .c-work{color:var(--st-working);} .c-done{color:var(--st-done);}
+.c-err{color:var(--st-error);} .c-bg{color:var(--st-bg);} .c-acc{color:var(--accent-ink);}
+
+/* sessions */
+.side{font-family:var(--ui);font-size:13.5px;}
+.proj{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;padding:4px 2px 6px;}
+.proj i{width:16px;height:16px;border-radius:5px;display:inline-block;}
+.sess{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;}
+.sess .m{font-family:var(--mono);font-size:11px;color:var(--muted-2);}
+.sess.on{background:rgba(251,111,146,.09);box-shadow:inset 0 0 0 1px rgba(251,111,146,.28);}
+.badge{position:absolute;top:16px;right:16px;font-size:12px;font-weight:600;padding:5px 11px;border-radius:99px;
+  color:var(--st-attention);background:rgba(251,111,146,.1);border:1px solid rgba(251,111,146,.35);}
+
+/* meters */
+.meter{display:grid;grid-template-columns:62px 1fr 44px;align-items:center;gap:10px;padding:5px 0;}
+.bar{height:7px;border-radius:99px;background:rgba(255,255,255,.06);position:relative;overflow:hidden;}
+.bar b{position:absolute;inset:0 auto 0 0;border-radius:inherit;}
+.bar s{position:absolute;top:0;bottom:0;border-radius:inherit;opacity:.35;}
+
+/* chips */
+.chips{display:flex;flex-wrap:wrap;gap:6px;}
+.chip{font-size:11px;padding:4px 8px;border-radius:7px;border:1px solid var(--hair-strong);background:var(--surface-2);white-space:nowrap;}
+.chip.warn{border-color:rgba(224,164,74,.4);color:#f0c27e;background:rgba(224,164,74,.08);}
+.chip.bad{border-color:rgba(242,109,109,.4);color:#f59a9a;background:rgba(242,109,109,.08);}
+.chip.dup{border-color:rgba(167,139,250,.45);color:var(--accent-ink);background:rgba(167,139,250,.1);}
+.ladder{display:flex;align-items:flex-end;gap:5px;height:34px;margin-top:10px;}
+.ladder i{flex:1;border-radius:3px;background:rgba(255,255,255,.08);}
+.ladder i.done{background:rgba(242,109,109,.45);} .ladder i.next{background:var(--st-working);}
+</style>
+</head>
+<body>
+<div id="bento">
+
+  <div class="t s3 r2" style="--glow:rgba(251,111,146,.10)">
+    <span class="badge">◆ 2 need you</span>
+    <div class="eb">Sessions</div>
+    <h3>Every agent in one window</h3>
+    <p>Each session is the agent's own TUI in a real terminal. Whatever needs you floats to the top.</p>
+    <div class="viz side">
+      <div class="proj"><i style="background:linear-gradient(135deg,#a78bfa,#f472b6)"></i>episko <span class="dim" style="font-weight:400;font-size:12px">4</span></div>
+      <div class="sess on"><span class="gl c-attn">◆</span><span class="grow">fix the flaky auth test</span><span class="m c-attn">allow?</span></div>
+      <div class="sess"><span class="gl c-work">●</span><span class="grow">add attention shortcut</span><span class="m">41%</span></div>
+      <div class="sess"><span class="gl c-bg">◐</span><span class="grow">migrate settings to one page</span><span class="m">3 agents</span></div>
+      <div class="sess"><span class="gl c-done">✓</span><span class="grow">rewrite the README</span><span class="m">72%</span></div>
+      <div class="proj" style="margin-top:8px"><i style="background:linear-gradient(135deg,#38bdf8,#34d399)"></i>respeak-api <span class="dim" style="font-weight:400;font-size:12px">3</span></div>
+      <div class="sess"><span class="gl c-err">✕</span><span class="grow">migrate auth to sessions</span><span class="m c-err">529</span></div>
+      <div class="sess"><span class="gl c-done">⧗</span><span class="grow">watch the CI run</span><span class="m">gh run watch</span></div>
+      <div class="sess"><span class="gl dim">❯</span><span class="grow">shell</span><span class="m">zsh</span></div>
+    </div>
+  </div>
+
+  <div class="t s3" style="--glow:rgba(251,111,146,.09)">
+    <div class="eb">Permissions</div>
+    <h3>Say yes without hunting for the tab</h3>
+    <p>Claude and Codex ask inside Episko and wait while you decide.</p>
+    <div class="viz">
+      <div class="box" style="border-color:rgba(251,111,146,.3)">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px"><span class="c-attn" style="font-weight:600">permission: Bash</span><span class="pill" style="color:var(--st-working);border-color:rgba(224,164,74,.4)">REVIEW</span></div>
+        <div style="color:var(--text)">rm -rf node_modules &amp;&amp; pnpm install</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:9px">
+        <span class="btn" style="background:var(--st-done);border-color:var(--st-done);color:#06150e">Allow</span>
+        <span class="btn">Deny</span><span class="btn">In terminal</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="t s3" style="--glow:rgba(224,164,74,.08)">
+    <div class="eb">Limits</div>
+    <h3>See the wall before you hit it</h3>
+    <p>5-hour and weekly windows, forecast from your burn rate.</p>
+    <div class="viz">
+      <div class="meter"><span class="dim">5h</span><span class="bar"><b style="width:62%;background:var(--st-working)"></b><s style="left:62%;width:26%;background:var(--st-working)"></s></span><span class="c-work">62%</span></div>
+      <div class="meter"><span class="dim">7d</span><span class="bar"><b style="width:38%;background:var(--st-done)"></b></span><span class="c-done">38%</span></div>
+      <div class="meter"><span class="dim">Fable 7d</span><span class="bar"><b style="width:71%;background:var(--accent)"></b></span><span class="c-acc">71%</span></div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(55,201,139,.08)">
+    <div class="eb">Dev servers</div>
+    <h3>Finds the servers agents leave running</h3>
+    <p>Every listening port, traced back to the pane that opened it.</p>
+    <div class="viz box">
+      <div class="row"><span class="c-done">●</span><span class="grow">vite</span><span class="c-acc">:5173</span></div>
+      <div class="row"><span class="c-done">●</span><span class="grow">wrangler dev</span><span class="c-acc">:8787</span></div>
+      <div class="row"><span class="c-err">●</span><span class="grow">next dev</span><span class="c-err">EADDRINUSE</span></div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(167,139,250,.10)">
+    <div class="eb">Code health</div>
+    <h3>A second look at the diff</h3>
+    <p>Flags code the agent duplicated or errors it silenced, then copies the list back to it.</p>
+    <div class="viz">
+      <div class="dim" style="margin-bottom:8px">src/auth/session.ts <span class="c-done">+84</span> <span class="c-err">−12</span></div>
+      <div class="chips">
+        <span class="chip dup">copy of retry.ts:41</span>
+        <span class="chip bad">@ts-ignore</span>
+        <span class="chip warn">cognitive 24</span>
+        <span class="chip">no test changed</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(242,109,109,.08)">
+    <div class="eb">Revive</div>
+    <h3>Carries on after a 3 a.m. 529</h3>
+    <p>Retries on a backoff you set, and never types into a question.</p>
+    <div class="viz box">
+      <div style="display:flex;justify-content:space-between"><span class="c-err">API error 529</span><span class="dim">try 3 of 8</span></div>
+      <div style="margin-top:4px">next try in <span class="c-work">2:14</span></div>
+      <div class="ladder"><i class="done" style="height:18%"></i><i class="done" style="height:30%"></i><i class="next" style="height:46%"></i><i style="height:62%"></i><i style="height:78%"></i><i style="height:90%"></i><i style="height:100%"></i><i style="height:100%"></i></div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(124,199,255,.08)">
+    <div class="eb">Pull requests</div>
+    <h3>Review the PR, hand it to an agent</h3>
+    <p>Threads on their lines, one Submit, and a merge pinned to the head you read.</p>
+    <div class="viz box">
+      <div class="row"><span style="color:var(--tool-read)">#212</span><span class="grow">Claims become leases</span></div>
+      <div class="row"><span class="dim grow">2 threads · checks <span class="c-done">✓</span></span></div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <span class="btn" style="background:var(--accent);border-color:var(--accent);color:#120d22">Approve</span>
+        <span class="btn">→ agent</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(106,208,176,.08)">
+    <div class="eb">Handoff</div>
+    <h3>Send a session to another machine</h3>
+    <p>Brief, code and conversation travel through a sync server you host.</p>
+    <div class="viz box">
+      <div class="row"><span style="color:var(--tool-task)">⇢</span><span class="grow">MacBook Pro to Studio</span></div>
+      <div class="row"><span style="color:var(--tool-task)">⇠</span><span class="grow">fix the flaky auth test</span><span class="dim">brief</span></div>
+      <div style="margin-top:6px;display:flex"><span class="btn" style="background:rgba(106,208,176,.14);border-color:rgba(106,208,176,.45);color:#9ee6cf">Resume here</span></div>
+    </div>
+  </div>
+
+  <div class="t s2" style="--glow:rgba(167,139,250,.09)">
+    <div class="eb">Agents</div>
+    <h3>Claude Code, Codex and 20 more</h3>
+    <p>Two integrated providers stream their state. Every other CLI gets a real terminal pane.</p>
+    <div class="viz chips">
+      <span class="chip dup">Claude Code</span><span class="chip dup">Codex</span>
+      <span class="chip">OpenCode</span><span class="chip">Gemini</span><span class="chip">Cursor</span><span class="chip">Copilot</span>
+      <span class="chip">Amp</span><span class="chip">Qwen</span><span class="chip">Kimi</span><span class="chip dim">+13</span>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

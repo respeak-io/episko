@@ -1,77 +1,84 @@
 # Episko
 
-![Episko: parallel coding-agent sessions, each in its own terminal, with live telemetry](docs/shot-cockpit.png)
+![Episko running several coding-agent sessions, each in its own terminal, with live state in the sidebar and inspector](docs/shot-cockpit.png)
 
-**Run a whole flock of coding-agent sessions at once.** Episko is a native desktop app that gives every agent its own real terminal and, for integrated providers, streams back phase, model, context use, usage, approvals and live activity so a dozen agents are as easy to mind as one chat. Claude Code and Codex are first-class providers; other installed CLIs use the same pane with a terminal-only adapter.
+Episko is a desktop app for running a lot of coding agents at once. Every session is the agent's own TUI in a real terminal, and beside each one Episko shows what that agent is doing right now: thinking, editing a file, waiting on your permission, done or failed. Whatever needs you floats to the top of the sidebar, so with eight sessions across four repos you still know which one to look at next.
+
+Claude Code and Codex are integrated: Episko reads their live state, answers their permission prompts and tracks their usage. Twenty more agent CLIs (OpenCode, Gemini, Cursor, Copilot, Amp, Qwen, Kimi and others) run in the same panes as plain terminals. The name is the Greek *episkopos*, the one who watches over.
 
 **[episko.dev](https://episko.dev)** · [Download](https://github.com/respeak-io/episko/releases/latest) · macOS + Windows · free and open source
 
-> **Status: early, but in daily use.** Episko began as a Phase-0 spike (see [`SPIKE.md`](./SPIKE.md)) proving the two risky pieces: embedding a real terminal and instrumenting Claude Code per launch. It has grown well past that. Expect rough edges and fast-moving internals.
+> Status: early, but in daily use. Internals move fast and you will find rough edges.
 
-## What it does
+![Nine features at a glance: every agent in one window, permission prompts answered in the app, usage limit forecasts, dev servers found by their ports, code health findings on the diff, automatic retry after an API error, pull request review, handing a session to another machine, and twenty more agent CLIs](docs/bento.png)
 
-- **Every session in one view.** A sidebar of projects and their sessions, each with a status glyph and context %, sorted so whatever needs you floats up. Sessions that need a decision are called out in the header and the tray. Projects can be grouped under your own headings (*Work*, *Side*) and a group folds to one line that still carries the most urgent glyph it hides.
-- **Real terminals all the way down.** Each session is a genuine PTY running the provider's actual TUI: type into it, watch it think. Claude can render embedded ([xterm.js](https://xtermjs.org/)) or in Ghostty, Terminal.app or iTerm2; Codex currently stays embedded so its App Server connection remains attached. Plain shell panes too, for when you just need a prompt next to an agent.
-- **Answer permission prompts in-app.** When Claude or Codex asks to run something, Episko surfaces the command with a risk read and lets you allow, deny, or drop into the terminal, instead of hunting for which window is blocked. Starting permission/sandbox policy is stored separately for each integrated agent.
-- **Live telemetry per session.** Model, context window use, time in state, the running tool, and recent activity with latencies. Claude adds exact dollar cost; Codex adds live token usage, an API-equivalent cost estimate and its own rate-limit windows. Both share the git working set and inspector.
-- **A dashboard per project.** Click a project for its week: commits and sessions summarised a day at a time, open issues and pull requests, the repo's checkouts, shared notes, and what it all cost. [See below](#every-project-has-a-homepage).
-- **Send an agent at a GitHub issue.** Dispatch from the dashboard and Episko creates the worktree, sends the prompt, and writes a claim to the issue so a colleague's agent doesn't start the same work twice, then hands the issue back when the session ends.
-- **Usage limits, before you hit them.** The footer follows the selected agent, names whose 5-hour and weekly account windows it is showing, and keeps Claude's burn forecast from amber to red.
-- **A usage dashboard.** Daily spend as a contribution heatmap, tokens by model, token composition (cache reads vs. input vs. output), and cost attributed per project.
-- **Launch into worktrees.** The new-session dialog lists the repo, its worktrees and branches, and can create a worktree on the fly so parallel agents don't fight over one checkout. A session also notices when its agent drifts to *another* checkout mid-task, and offers the repair: follow it there, or move the conversation back.
-- **A commit graph per project.** Right-click a project → *Commit graph…* for its lanes, merges, branch and tag labels. It reads a page at a time and fetches the next as you scroll, so opening it on a huge repo costs the same as on a small one.
-- **Sessions started elsewhere show up too.** Claude Code sessions launched outside Episko are discovered and listed read-only, with jump-to-terminal on macOS (the exact tab) and Windows (the hosting window).
-- **A whole-machine history.** Claude transcripts and Codex App Server threads in one searchable list, scoped by project and day and reopenable where each provider left off. Claude sessions started elsewhere are included too.
-- **Survives a restart.** Episko remembers each provider and resume id, then asks Claude to resume its transcript or Codex to resume its thread. Even a webview reload rebuilds every live agent pane and re-adopts its still-running process, scrollback included.
-- **Run the project's own tasks**: VS Code tasks, a `justfile`, package scripts, a Makefile and more, in the same panes, with a run's exit code as its status. [See below](#run-your-projects-tasks-too).
-- **Other agents, in the same panes.** Which agent a session runs is a setting, not a question you answer every time: pick it in Settings › Launching, override it per project, and `⌘N` obeys. Episko discovers Codex, OpenCode, Gemini, Cursor, Copilot, Grok, Droid, Amp, Qwen, Kimi, Kiro, Antigravity, Devin, Cline, Pi and more. The capability label beside each one says whether its inspector is connected or terminal-only; adding another first-class provider is an adapter, not another session model.
-- **A terminal beside the agent.** `⌘T` splits the stage: the session on the left, a plain shell on the right for the command it just told you to run; a second one stacks under the first. `⌘⌥T` opens one in its own pane instead, and Settings › Launching swaps the default.
-- **Command palette** (`⌘K`), a **settings window** (`⌘,`), per-project accent colours and icons, favourites and drag ordering, a daily cost rollup you can open by project and session, a *What's new* screen after updates, and a `caffeinate` toggle so long runs don't sleep.
+## What makes it different
 
-## Every project has a homepage
+### It hears every agent directly
 
-Click a project in the sidebar and you land on its dashboard, the answer to "what is going on in this repo":
+Episko doesn't scrape terminal output to guess what an agent is doing. For each Claude launch it writes a throwaway `--settings` file whose hooks and status line POST every lifecycle event to a small HTTP server inside the app. Each event carries an id Episko chose before the process started, so the right pane lights up before Claude prints anything, and it stays routed through `/clear`, `/compact` and `/resume`, which all hand Claude a new session id. Nothing in `~/.claude` is modified to make this work, and the settings file goes away with the session. Codex runs against a loopback App Server that Episko and the real `codex --remote` TUI both connect to.
 
-- **The week, a day at a time.** Commits and your sessions per day, each closed day summarised in a sentence (generated with Haiku through your own `claude` CLI, cached and opt-in per project). On days more than one person committed, a second sentence describes what the *project* did, written from the commits and pull requests alone.
-- **A work log the team can share.** That project half can be committed as `.episko/digest.md`, so everyone who pulls reads one generated history instead of each paying to re-derive their own. Your half (session titles, spend) never reaches a file. Notes can be shared the same way (`.episko/notes.toml`).
-- **Issues and pull requests**, with triage suggestions for the ones that have gone quiet, and **claims**: dispatching an agent at an issue assigns it on GitHub so a colleague's agent doesn't start the same work twice. A claim is only ever a hint: it expires, and ends with the session.
-- **Checkouts**: the repo's worktrees with their dirty state, one click from a new session in any of them.
+Permission requests use the one hook that blocks. The server holds Claude's request open while you read the command in Episko and pick Allow, Deny or *In terminal*, so an agent that needs a yes doesn't wait twenty minutes in a tab you weren't watching. Episko also chimes when one arrives, which helps when its window is behind your editor.
 
-The dashboard degrades by what the folder can offer: a GitHub repo gets all of it; a plain git repo everything but the GitHub column (the shared files need git rather than GitHub, so a GitLab or self-hosted remote is this tier); a bare folder still gets sessions, spend and notes.
+### It finds the dev servers your agents forget to mention
 
-## Run your project's tasks, too
+Agents start `pnpm dev` in a background shell and carry on. Episko reads that shell's log for the URL, and it also walks every listening TCP port on the machine back up the process tree to the pane that owns it. A server shows up in the header whether anyone announced it or not, including one you started by hand in a shell pane. Debugger and control sockets are filtered out, so one `wrangler dev` is one row. A server that dies on `EADDRINUSE` two seconds in turns the pill red and stays listed until you dismiss it. Stop asks the agent that started the server to run `TaskStop`, so the agent knows it is gone.
 
-Agents aren't the only thing worth watching. Episko runs the task definitions your project **already ships**, with no new file to write and no editor required, in the same PTY panes it uses for coding-agent sessions:
+Start `just dev` and the popover goes a step further: the task's panes and the repo's Docker Compose containers show as one stack with one state. *Starting* names what it is still waiting for, *failed* names the step or container that broke, and *ready* means every server listens and every health check is green.
 
-`.episko/tasks.toml` · `.vscode/tasks.json` · `.vscode/launch.json` · `package.json` scripts · `justfile` · `Taskfile.yml` · `mise.toml` · `Makefile` · `Cargo.toml`
+### It gets the overnight run going again
 
-Hit **▶ Run** in the header (or `⌘⇧R`, or the **Tasks** group in `⌘K`) and pick one. A task run **is** a session: it inherits the phase state machine, sidebar glyphs, attention badge, tray and `⌘1`–`9`, because a run's exit code is simply its phase (0 → done, non-zero → error). Runs are deliberately un-instrumented (no settings file, no telemetry, no cost) and get their PATH from an *interactive login* shell, the same PATH and version-manager shims your own terminal has. `dependsOn` chains are honoured, and a failed dependency stops the chain, because "build then test" must not test a build that didn't happen. A chain folds into **one sidebar row** carrying the worst step's status, and opens into a tiled stage; closing a tile focuses the next step rather than abandoning the rest.
+A 529 at 3 a.m. ends the turn, and the session sits at its prompt until you're back. Turn on *Carry on after an API error* and Episko sends the carry-on itself, on a backoff ladder you configure (the defaults ride out about half an hour of outage). Each wait gets some jitter, so sessions knocked out by the same outage don't all come back in the same second. It never types into a session that is asking you something, doesn't retry what waiting can't fix (credentials, billing, a malformed request), and holds its attempts while the machine is offline.
 
-A parameterised task starts with what Episko already knows (the values you gave last time, or the definition's own defaults) and the `⋯` button (`⌥⏎`) reopens the prompt when you want to change them; the row's tooltip shows the command as it will actually run. There's also **run on stop**: a per-project rule that launches a task (the build, the tests) when an agent finishes a turn there, so verification happens without you asking for it.
+### It reviews what the agent wrote
 
-Three rules shaped it:
+The working-set diff reads like a pull request. Changed lines are paired by similarity, so an edit with three new comment lines above it still lines up with its original, and only the words that changed are marked. Each file gets a row of findings: code you just added that already exists elsewhere in the project (six lines or more, with the file and line it copies), a new empty `catch`, `as any` or `@ts-ignore`, the complexity and nesting of the functions the change went into, and whether any test changed. Nothing blocks and nothing is scored. *Copy findings* puts the list on the clipboard written for an agent, so the session that wrote the code can fix it. You can commit, stash or discard from the same view, down to a single hunk.
 
-- **Discovery never executes the project.** `just --dump`, `task --list` and `mise tasks ls` all evaluate what they read, so they sit behind a trust gate; Makefiles are parsed statically because `make -qp` would expand `$(shell …)`. Untrusted providers show one blocked row rather than vanishing.
-- **What can't run says so.** A VS Code task needing an editor (`${file}`) is listed greyed with the reason, because a missing row reads as "Episko didn't find my task". `launch.json` runs without a debugger, so `attach` and compound configs are blocked rather than silently started as bare processes.
-- **Personal preference → `localStorage`; project fact → `.episko/tasks.toml`**, which is the only file Episko writes, edited via `toml_edit` so hand-written comments and ordering survive.
+### Pull requests and issues, wired to agents
 
-A task inspector offers re-run / pin / stop / **send output to a session**, so a failing build can go straight to an agent. There's a per-project task panel for pinning, hiding and editing, and a prompt for `${input:…}` values and `just` recipe parameters.
+A GitHub pull request opens on a stage of its own: the diff against the merge base, review threads on their lines, a `+` wherever GitHub will take a comment, and a pending review that goes out in one Submit. The merge is pinned to the head you reviewed. *→ agent* hands a thread, or your whole pending review, to a session on the PR's branch in its own worktree.
 
-## How it works
+From the project dashboard, ▶ on an issue opens a dispatch sheet. Choose where the agent works (this folder, an existing worktree, or a new one on its own branch), read the prompt and send it. Episko writes a claim on the issue so a colleague's agent doesn't start the same work. The claim is a lease: it expires, and it ends with the session.
 
-On each Claude launch Episko writes a throwaway `--settings` file whose `statusLine` command and lifecycle `hooks` POST to a tiny `tiny_http` server bound to an ephemeral localhost port. On each Codex launch it starts a loopback App Server and connects both Episko's observer and the real `codex --remote` TUI. Both transports normalize into the same provider-neutral event reducer; terminal-only providers simply omit capabilities they cannot supply.
+### Hand a session to another machine
 
-Every POST is tagged with the launch id Episko chose, so telemetry routes to the right pane before any output appears, and keeps routing after `/clear`, `/compact` or `/resume`, each of which makes Claude mint a **new** runtime `session_id`. The permission hook is the one blocking call: the server holds the request open until you answer.
+Episko can sync through a server you run yourself, one binary and one SQLite file (or `docker compose up`). With handoff switched on there, *Send to…* stops a Claude session, drafts a short brief and sends the conversation along with the code it was working on. The other machine, yours or a teammate's, reads the brief, picks a checkout and resumes, and the code lands in a new worktree. Nothing is installed until the server confirms the session has changed hands, and permission modes never travel. The send sheet reminds you every time that a transcript carries whatever the agent read.
 
-[`CLAUDE.md`](./CLAUDE.md) is the architecture document: the module map for both sides and the invariants that keep it working; the per-area deep-dive notes live in [`docs/`](./docs/). [`SPIKE.md`](./SPIKE.md) is the original Phase-0 write-up, kept as a historical record of a single-session prototype; it predates most of the app and is not a reference.
+The same server carries your settings, spend, limits and Claude's project memories between your own machines. Nothing else in Episko depends on it.
 
-## Stack
+### Limits you see coming
 
-- **[Tauri v2](https://tauri.app/)**: Rust backend, system WebView frontend
-- **[portable-pty](https://crates.io/crates/portable-pty)**: the PTY (forkpty on macOS, ConPTY on Windows)
-- **[tiny_http](https://crates.io/crates/tiny_http)**: the localhost telemetry receiver
-- **[xterm.js](https://xtermjs.org/)**: terminal rendering
-- Vanilla TypeScript frontend (Vite), no framework
+The footer forecasts your 5-hour and weekly windows from your burn rate and turns amber, then red, before you run out. A premium model's separate weekly allowance (Fable's, for example) isn't in any telemetry, so Episko asks the Claude CLI for it directly, which costs no tokens. Spend is broken down by day, model and project, and by machine once you sync.
+
+### Click a question to go back to it
+
+The inspector lists every prompt you sent a session. Click one and the terminal scrolls back to where you asked it. That works in Claude's fullscreen renderer too, which has no scrollback a terminal can move: there Episko pages the TUI with its own keys until your question is on screen. A resumed session gets its questions back from the transcript.
+
+### It follows an agent that wanders off
+
+When an agent starts writing in a different worktree mid-task, Episko switches the header, the working set and the git buttons to that checkout. The session row still says where it started (*from dev*), and *Move session here* re-homes the conversation if it should stay.
+
+### Your project's tasks, in the same panes
+
+Episko finds the tasks a repo already defines: `.vscode/tasks.json` and `launch.json`, `package.json` scripts, a `justfile`, `Taskfile.yml`, `mise.toml`, a `Makefile`, `Cargo.toml`. A run is a session like any other, and its exit code is its status. Finding them never executes the project: tools whose listing evaluates code wait until you trust the repo, and a task that can't run is listed with the reason. *Run on stop* starts the tests, or anything else, whenever an agent finishes a turn. Switch on Episko's MCP server and a Claude session can run those tasks itself, each in its own pane beside the session where you can watch it.
+
+## Also in the box
+
+- A dashboard for every project: what moved since you last looked, the working set, a small commit graph across branches, and one ranked list of issues, pull requests, Dependabot advisories and notes. Another one covers all your projects at once.
+- Each day's commits summarised in a sentence by Haiku, through your own `claude` CLI. It's opt-in per project, and the team can share one log by committing it as `.episko/digest.md`.
+- Branches in one table wherever their refs live, with sweeps for merged, gone and stale ones. The default branch and locked branches can't be deleted from it.
+- Auto-fetch for the checkout on screen, so "2 behind" is current.
+- History of every Claude and Codex session on the machine, searchable and resumable. Claude sessions running in another terminal show up live and read-only, with a jump to that terminal.
+- Sessions resume after a restart, and a webview reload re-adopts the running processes with their scrollback.
+- `⌘K` palette, `⌘P` file finder, `⌘T` shell beside the agent, back and forward between screens. Every shortcut can be rebound.
+- Sounds for the moments that matter, gated so six sessions finishing together make one sound.
+- Paths in any pane become links once Episko has found the file on disk, and Markdown opens in a built-in reader.
+
+## How it's built
+
+[Tauri v2](https://tauri.app/) with a Rust backend and a vanilla TypeScript frontend, no framework. PTYs come from [portable-pty](https://crates.io/crates/portable-pty) (forkpty on macOS, ConPTY on Windows), the telemetry listener is [tiny_http](https://crates.io/crates/tiny_http), and terminals render with [xterm.js](https://xtermjs.org/). CI runs over 2,000 frontend tests and over 400 Rust tests on macOS and Windows. There is no Episko cloud: the only server is the optional sync server you host.
+
+[`CLAUDE.md`](./CLAUDE.md) is the architecture document, with the module maps and the invariants that keep the app working. The per-area design notes in [`docs/`](./docs/) include the bugs that shaped each rule. [`SPIKE.md`](./SPIKE.md) is the original single-session prototype, kept as history.
 
 ## Install
 
@@ -101,7 +108,7 @@ Episko keeps itself current after install: it checks the latest GitHub release o
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) 18+ and [pnpm](https://pnpm.io/)
+- [Node.js](https://nodejs.org/) 24+ (`.nvmrc` pins the version CI uses) and [pnpm](https://pnpm.io/)
 - [Rust](https://www.rust-lang.org/tools/install) (stable) + the [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your platform
 - At least one supported coding agent on your `PATH` ([Claude Code](https://claude.com/claude-code), Codex, or a terminal-only provider)
 
@@ -113,7 +120,7 @@ pnpm tauri dev        # run the app
 pnpm tauri build      # production bundle
 ```
 
-Then: add a project folder, hit **＋ Session**, accept Claude's workspace-trust prompt the first time in a directory, and ask it something. Watch the sidebar glyph, inspector and footer update live.
+Then add a project folder, hit **＋ Session**, accept Claude's workspace-trust prompt the first time in a directory, and ask it something. The sidebar glyph, inspector and footer update as it works.
 
 Other useful commands:
 
@@ -139,31 +146,31 @@ Release builds target Apple silicon (`aarch64`) and Windows x64. Intel Macs aren
 
 ## More screenshots
 
-<sub>Renders of the interface with representative data.</sub>
+<sub>Rendered from the app itself, with made-up projects and sessions.</sub>
 
-**Answer a permission request without leaving the app**: the command, how risky it looks, and allow / deny / open-in-terminal.
+A permission request in the inspector: the command, how risky it looks, and Allow, Deny or In terminal.
 
 ![Permission request surfaced in the inspector, with Allow, Deny and In terminal buttons](docs/shot-permission.png)
 
-**Every project has a homepage**: the week a day at a time, issues with claims, checkouts and shared notes.
+Every project has a page of its own: the sessions and checkouts on the left, what moved since you last looked in the middle, and one ranked list of what's next on the right.
 
-![Project dashboard with a summary strip, per-day summaries including a team sentence, issues with a claim, checkouts and notes](docs/shot-dashboard.png)
+![Project dashboard with the running sessions and checkouts, a since-you-were-last-here summary, the working set, a commit graph across branches, and a list of issues, pull requests, a Dependabot advisory and a note](docs/shot-dashboard.png)
 
-**Run the project's own tasks**, grouped by where they came from. What can't run is listed with the reason rather than hidden.
+The ▶ Run picker, grouped by where each task came from. A task that can't run says why.
 
 ![Run picker grouped by package.json scripts, justfile, VS Code tasks and Makefile, with blocked entries explained](docs/shot-run.png)
 
-**Jump anywhere with `⌘K`**, with sessions ranked so whatever needs you comes first.
+`⌘K` jumps anywhere, with whatever needs you ranked first.
 
 ![Command palette listing sessions grouped by needs-you, sessions and launch actions](docs/shot-palette.png)
 
-**Start a session on any branch or worktree**, creating one on the fly, with a preview of HEAD and what's uncommitted.
+Start a session on any branch or worktree, or create one on the spot, with a preview of HEAD and what's uncommitted.
 
 ![New-session dialog showing the repo, its worktrees and branches, with worktree details](docs/shot-newsession.png)
 
-**See where the money and tokens went**: daily spend, model mix, token composition, and cost per project.
+Where the money and tokens went: a year of daily spend, tokens by model, and how much of it was cache reads.
 
-![Usage dashboard with a daily spend heatmap, model mix, token composition and per-project attribution](docs/shot-usage.png)
+![Usage and spend window with a daily spend heatmap for the last twelve months, daily tokens by model, the model mix and the token composition](docs/shot-usage.png)
 
 ## License
 
