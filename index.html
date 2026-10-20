@@ -14,7 +14,14 @@
            since a drag would eat the mouseup its click needs. -->
       <header class="top" data-tauri-drag-region="deep">
         <button class="brand" id="brand" data-fleet="1" title="All projects · home"><span class="logo"></span><b>Episko</b></button>
-        <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+        <!-- Back/forward ride beside ⌘K, centred as one group; nothing repaints them but main.ts's renderNav. -->
+        <div class="top-mid">
+          <div class="top-nav">
+            <button class="act icon" id="navBack" data-nav="back" disabled><span class="gl">‹</span></button>
+            <button class="act icon" id="navFwd" data-nav="forward" disabled><span class="gl">›</span></button>
+          </div>
+          <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+        </div>
         <div class="top-right">
           <!-- Hidden unless they have something to say. Telemetry down sits leftmost: with the hook
                server gone every reading is stale, so it must out-shout the panes. Servers ("still up")
@@ -78,11 +85,6 @@
       <!-- A sibling of .stage, not a child, so it owns a grid row spanning the stage and the inspector
            (the `head` area in styles.css): its verbs act on the stage, the inspector starts underneath. -->
       <div class="stage-head">
-        <!-- Outside .st-title, whose parts each stage taker rewrites: nothing repaints these but main.ts's renderNav. -->
-        <div class="st-nav">
-          <button class="act icon" id="navBack" data-nav="back" disabled><span class="gl">‹</span></button>
-          <button class="act icon" id="navFwd" data-nav="forward" disabled><span class="gl">›</span></button>
-        </div>
         <div class="st-title">
           <!-- The avatar and the chip line are the dashboard's; a session leaves both empty and
                the header collapses back to its one line. -->

@@ -125,7 +125,7 @@ the cursor, `sameLoc`, the labels); main.ts holds the driver beside `renderAllNo
   `mod` is ⌘ *or* Ctrl, `comboOf` reads a bare Ctrl on `[`/`]` as no modifier at all, so Ctrl+[
   still reaches a pane as ESC (and Ctrl+] as ^]); and a bracket typed with ⌥ (German, French,
   Nordic layouts put `[` on ⌥5) drops that ⌥, since it is part of the character. Left and right
-  are the only arrows `comboOf` binds. The buttons sit in `.st-nav`, outside `.st-title`, so no
+  are the only arrows `comboOf` binds. The buttons sit in the top bar's `.top-nav`, beside ⌘K, so no
   stage's header paint rewrites them; `renderNav` sets their state and tooltip every pass.
 - **Never ship Alt+←/→ off macOS**: an app chord is matched before xterm, so a pane never sees it,
   and that is the word jump in Codex's composer, Claude's input and every readline shell. The PC

@@ -84,12 +84,17 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .brand.on b { color: var(--accent-ink); }
 .logo { width: 17px; height: 17px; border-radius: 6px; background: conic-gradient(from 210deg, #a78bfa, #38bdf8, #fb923c, #a78bfa); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .brand b { font-weight: 700; letter-spacing: -.01em; font-size: 12.5px; }
-.kbar { margin: 0 auto; width: min(380px, 40vw); height: 26px; border-radius: 999px; cursor: text; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 11px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted-2); box-shadow: inset 0 1px 0 var(--lift); }
+.top-mid { margin: 0 auto; display: flex; align-items: center; gap: 8px; }
+.kbar { width: min(380px, 40vw); height: 26px; border-radius: 999px; cursor: text; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 11px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted-2); box-shadow: inset 0 1px 0 var(--lift); }
 .kbar:hover { border-color: var(--hair-strong); }
 .kbar span { font-size: 11px; }
 .kbd { margin-left: auto; display: flex; gap: 3px; }
 .kbd kbd, .shortpop kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
 .kbar > span:first-child { display: inline-flex; align-items: center; justify-content: center; width: 14px; }
+/* Back/forward (./nav): a pair, so it sits tighter than the verbs and matches the ⌘K bar's height. */
+.top-nav { flex: none; display: flex; gap: 3px; }
+.top-nav .act.icon { width: 24px; height: 26px; }
+.top-nav .act .gl { font-size: 15px; }
 .top-right { display: flex; align-items: center; gap: 7px; }
 /* --rc follows the fleet's most-urgent state via the react-* class renderAttn sets */
 .attn-badge { display: none; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; cursor: pointer; font-size: 11px; font-weight: 650; color: var(--rc, var(--st-attention)); background: color-mix(in srgb, var(--rc, var(--st-attention)) 13%, transparent); border: 1px solid color-mix(in srgb, var(--rc, var(--st-attention)) 32%, transparent); }
@@ -501,10 +506,6 @@ html.win .wctl { display: flex; }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
-/* Back/forward (./nav): a pair, so it sits tighter than the verbs on the right and a step smaller. */
-.st-nav { flex: none; display: flex; gap: 3px; }
-.st-nav .act.icon { width: 23px; }
-.st-nav .act .gl { font-size: 15px; }
 /* the leading glyph rides in a .gl box, shared with .ibtn (see .act .gl) */
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
