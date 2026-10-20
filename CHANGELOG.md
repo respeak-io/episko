@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ **A pull request in the thread reader names its branches, and starts a session on one.**
+  Under the title: which branch it merges into and which it comes from, marked when that is a
+  fork. **Session on branch** opens the agent already on it, or its checkout, or a worktree cut
+  from the remote branch, with no prompt sent and nothing claimed on GitHub.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,

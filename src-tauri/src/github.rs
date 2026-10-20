@@ -831,6 +831,10 @@ pub(crate) struct GhIssueRead {
     pub assignees: Vec<String>,
     pub body: String,
     pub comments: Vec<GhComment>,
+    /// A pull request's branches; `None` for an issue. `same_repo: false` is a fork's head.
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    pub same_repo: bool,
 }
 
 impl GhIssueRead {
@@ -852,6 +856,9 @@ impl GhIssueRead {
             assignees: vec![],
             body: String::new(),
             comments: vec![],
+            head_ref: None,
+            base_ref: None,
+            same_repo: true,
         }
     }
 }
@@ -886,6 +893,7 @@ pub(crate) fn parse_issue_read(json: &str, number: i64, kind: &str) -> Option<Gh
             .map(|a| a.iter().filter_map(|u| u.get("login").and_then(|l| l.as_str()).map(String::from)).collect())
             .unwrap_or_default()
     };
+    let nonempty = |k: &str| o.get(k).and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(String::from);
     Some(GhIssueRead {
         available: true,
         reason: None,
@@ -917,6 +925,9 @@ pub(crate) fn parse_issue_read(json: &str, number: i64, kind: &str) -> Option<Gh
                     .collect()
             })
             .unwrap_or_default(),
+        head_ref: nonempty("headRefName"),
+        base_ref: nonempty("baseRefName"),
+        same_repo: !o.get("isCrossRepository").and_then(serde_json::Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -942,14 +953,13 @@ pub(crate) async fn gh_issue(
             }
         }
         let acct = account.as_deref();
-        // `issue view` and `pr view` take the same field list and answer the same shape; the
-        // subcommand is the only difference, and a kind we do not know is read as an issue.
+        // `issue view` and `pr view` answer the same shape; a PR adds its branches, which
+        // `issue view` would reject, and a kind we do not know is read as an issue.
         let sub = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
-        let out = gh(&root, acct, &[
-            sub, "view", &n,
-            "--json", "number,title,url,state,body,author,assignees,labels,comments,createdAt,updatedAt",
-        ]);
+        let common = "number,title,url,state,body,author,assignees,labels,comments,createdAt,updatedAt";
+        let fields = if sub == "pr" { format!("{common},headRefName,baseRefName,isCrossRepository") } else { common.to_string() };
+        let out = gh(&root, acct, &[sub, "view", &n, "--json", &fields]);
         let result = match out {
             Err(e) => GhIssueRead::unavailable(number, &kind, classify(&e, who_for(acct).as_deref())),
             Ok(json) => parse_issue_read(&json, number, &kind)
@@ -1235,6 +1245,17 @@ mod tests {
         assert!(i.available);
         assert_eq!(i.kind, "pr", "the caller's kind survives, whatever gh sent");
         assert!(i.body.is_empty() && i.comments.is_empty() && i.author.is_none());
+        assert!(i.head_ref.is_none() && i.base_ref.is_none() && i.same_repo);
+    }
+
+    #[test]
+    fn a_pull_request_names_its_branches_and_a_fork() {
+        let i = parse_issue_read(
+            r#"{"number":8,"headRefName":"feat/a11y","baseRefName":"dev","isCrossRepository":true}"#, 8, "pr",
+        ).unwrap();
+        assert_eq!(i.head_ref.as_deref(), Some("feat/a11y"));
+        assert_eq!(i.base_ref.as_deref(), Some("dev"));
+        assert!(!i.same_repo);
     }
 
     #[test]

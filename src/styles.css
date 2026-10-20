@@ -3384,6 +3384,7 @@ select.in-ctl { cursor: pointer; }
 .iss .st.closed { color: var(--muted-2); background: var(--bg-2); }
 .iss .st.merged { color: var(--accent-ink); background: var(--accent-wash); }
 .iss-line { font: 10.5px var(--font-mono); color: var(--muted-2); }
+.iss-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 .iss-lbl { display: flex; flex-wrap: wrap; gap: 5px; }
 .iss-b { display: flex; gap: 7px; padding-bottom: 2px; }
 .iss-c { padding: 10px 12px 4px; border-radius: var(--radius); border: 1px solid var(--hair); background: var(--surface); }

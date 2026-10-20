@@ -22,6 +22,9 @@ export interface GhIssueRead {
   assignees: string[];
   body: string;
   comments: GhComment[];
+  head_ref: string | null; // a pull request's branches; null on an issue
+  base_ref: string | null;
+  same_repo: boolean;      // false: the head lives in a fork
 }
 
 const at = (iso: string): number => {

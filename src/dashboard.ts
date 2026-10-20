@@ -65,7 +65,7 @@ import {
   dayFacts, dayIsClosed, isBotAuthor, projectDayFacts, sharedDay,
   type TrailCommit, type TrailDay,
 } from "./trail";
-import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
+import { isAgent, statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { dayDetail, usageWindow } from "./usage";
 import { digestCover, digestMisses } from "./sync";
 import {
@@ -1383,6 +1383,11 @@ export function wireDashboard(): void {
     // ---- the GitHub half ----
     const rev = t.closest<HTMLElement>("[data-dashreview]");
     if (rev) { host.openReview(name(), root(), +rev.dataset.dashreview!); return; }
+    const prs = t.closest<HTMLElement>("[data-dashprsession]");
+    if (prs) {
+      if (issueData?.number === +prs.dataset.dashprsession!) void prSession(issueData);
+      return;
+    }
     const work = t.closest<HTMLElement>("[data-dashwork]");
     if (work) {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
@@ -1887,6 +1892,42 @@ async function newSessionOn(r: BranchRow): Promise<void> {
   } finally {
     branchBusy = false;
     await loadBranches(true);
+    renderDash();
+  }
+}
+
+/** The reader's *Session on branch*: an agent already on the PR's head, else its checkout, else
+ *  a worktree cut from the remote branch — the ladder ./reviewui's Session takes. */
+async function prSession(i: GhIssueRead): Promise<void> {
+  const r = root(), head = i.head_ref;
+  if (!r || !head || !i.same_repo || branchBusy) return;
+  const live = [...sessions.values()].find((s) => isAgent(s) && !s.external && s.colorKey === r && s.branch === head);
+  if (live) { host.setActive(live.id); return; }
+  const wt = heads.find((h) => h.branch === head);
+  if (wt) {
+    void host.launch(name(), wt.path, { colorKey: r, worktree: wt.is_main ? null : head, branch: head });
+    return;
+  }
+  branchBusy = true;
+  renderDash();
+  const make = () => invoke<string>("create_worktree", { repoDir: r, branch: head, base: `origin/${head}` });
+  try {
+    let path: string;
+    try { path = await make(); } catch (e) {
+      // Nobody has fetched the branch here yet: fetch once, then the remote ref exists.
+      if (!/no such commit/.test(String(e))) throw e;
+      await invoke<GitActionResult>("git_action", { workdir: r, op: "fetch" });
+      path = await make();
+    }
+    if (root() === r) heads = [...heads, { path, branch: head, is_main: false, exists: true }];
+    void host.launch(name(), path, { colorKey: r, worktree: head, branch: head });
+    toast(`Worktree ${head} created`);
+    void host.refreshGit();
+  } catch (e) {
+    dlog("error", `pr #${i.number} · worktree ${head}: ${e}`);
+    toast("worktree: " + e);
+  } finally {
+    branchBusy = false;
     renderDash();
   }
 }
