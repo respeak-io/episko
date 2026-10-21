@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **A background shell no longer turns into somebody else's server on Windows.** Windows hands a
+  dead process's id to a new one, so a server left running days ago could look like a child of
+  a fresh session. A CI watcher there took its address, and the row showed ✓ instead of ⧗. The
+  stop button on that row could also have killed the unrelated server.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,
