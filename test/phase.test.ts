@@ -861,6 +861,14 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
       hook(s, "Stop");
       expect(s.phase).toBe("done");
     });
+    it("does not queue a subagent's report either: it rides the same queue", () => {
+      const s = sess();
+      hook(s, "UserPromptSubmit", { prompt: "fan it out" });
+      hook(s, "PreToolUse", { tool_name: "Agent" });
+      hook(s, "UserPromptSubmit", { prompt: "<agent-message from=\"a23e00d8074b3d756\">\n[Subagent hand-back] The report follows:\n  done" });
+      expect(s.queuedPrompt).toBe(false);
+      expect(s.prompts.at(-1)?.relay?.kind).toBe("agent");
+    });
     it("ignores a prompt typed at a REPL that is not mid-tool-call", () => {
       // Two prompts back to back at an idle REPL are not a queue behind a running turn.
       const s = sess({ phase: "done" });

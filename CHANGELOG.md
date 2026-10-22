@@ -24,6 +24,11 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ **Starting an agent on an issue or pull request types the prompt in and stops.** It used to
   send it straight away, with no chance to say what you actually wanted done. Edit it, then
   press Enter. The Dependencies sheet, where the brief is edited before it starts, still sends.
+~ **Agent reports no longer pass for your questions.** A subagent's hand-back, a message from
+  an agent and a note from another session used to fill *Your questions* as raw
+  `<agent-message …>` rows. They are now listed as the sender's, with the wrapper stripped, and
+  a run of them folds into one row you can open. Only your own questions are numbered and
+  counted. History and the session mirror mark them the same way.
 
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine

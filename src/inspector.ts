@@ -39,6 +39,11 @@ export function setCtxMode(m: string) {
 // App-wide and ephemeral, like the Context card's fold above.
 let outlineAll = false;
 export function toggleOutlineAll() { outlineAll = !outlineAll; repaintActive(); }
+const openRelays = new Set<string>(); // by the run's first prompt id, which is unique app-wide
+export function toggleOutlineGroup(id: string) {
+  if (!openRelays.delete(id)) openRelays.add(id);
+  repaintActive();
+}
 
 // Click a question, land where you asked it. The row carries its own session id: markup
 // outlives the `activeId` that produced it, as with the tool timeline.
@@ -117,7 +122,7 @@ export function renderInspector(s: Sess | null) {
   // `dirtyByFolder` is what separates "still reading" from "not a repo": a null it holds is
   // an answer, an absent key is not one yet. An external-engine pane never gets a card.
   else if (!s.external && s.workdir && !dirtyByFolder.has(s.workdir)) html.push(wsetSkeleton());
-  if (outlinePrefs.enabled) html.push(outlineHtml(s, outlinePrefs, anchoredPrompts(s), outlineAll));
+  if (outlinePrefs.enabled) html.push(outlineHtml(s, outlinePrefs, anchoredPrompts(s), outlineAll, openRelays));
   if (s.todos.length) html.push(planHtml(s));
   html.push(contextHtml(s, openGroups, ctxMode));
   paintInspector(html.join(""));

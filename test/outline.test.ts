@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, notePrompt,
-  OUTLINE_DEFAULTS, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
+  OUTLINE_DEFAULTS, outlineItems, parseRelay, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -245,5 +245,53 @@ describe("which end of the conversation a hunt pages in from", () => {
     const seeded = ask("p1", 0, true), asked = ask("p2", NOW - 1000);
     expect(huntFromTop([seeded, asked], seeded, NOW, true)).toBe(true);
     expect(huntFromTop([seeded, asked], asked, NOW, true)).toBe(false);
+  });
+});
+
+// Verbatim shapes from real transcripts: the hook's prompt, and the transcript's with its preamble.
+const HANDBACK = `<agent-message from="a23e00d8074b3d756">
+[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:
+  ## Summary
+  
+  All three PRs are behind.
+</agent-message>`;
+const SENT = `Another Claude session sent a message:
+<cross-session-message from="uds:/tmp/cc-socks/62703.sock" from-name="feat-zoom-6d" from-mode="prompting">
+Feedback from another session.
+</cross-session-message>`;
+
+describe("a turn another agent submitted is listed as theirs", () => {
+  it("takes the frame off a subagent's report and undoes its indent", () => {
+    expect(parseRelay(HANDBACK)).toEqual({
+      relay: { kind: "agent", from: "a23e00d8074b3d756", name: "agent a23e00d", report: true },
+      body: "## Summary\n\nAll three PRs are behind.",
+    });
+  });
+  it("names another session by the name it sent, preamble or not", () => {
+    const r = parseRelay(SENT);
+    expect(r?.relay).toEqual({ kind: "session", from: "uds:/tmp/cc-socks/62703.sock", name: "feat-zoom-6d", report: false });
+    expect(r?.body).toBe("Feedback from another session.");
+    expect(parseRelay(`<agent-message from="abc1234567">\nplain SendMessage`)?.body).toBe("plain SendMessage");
+  });
+  it("leaves a question that only mentions the tag alone", () => {
+    expect(parseRelay("why does <agent-message> show up?")).toBeNull();
+  });
+  it("keeps it in the list, marked, on both paths", () => {
+    const list: Prompt[] = [];
+    expect(notePrompt(list, HANDBACK, NOW)?.relay?.report).toBe(true);
+    expect(list[0].text).toBe("## Summary\n\nAll three PRs are behind.");
+    expect(seedPrompts([], [{ role: "user", text: SENT }])[0].relay?.name).toBe("feat-zoom-6d");
+  });
+  it("numbers only your questions and folds a run of relays into one row", () => {
+    const list: Prompt[] = [];
+    notePrompt(list, "first", NOW);
+    notePrompt(list, HANDBACK, NOW);
+    notePrompt(list, "second", NOW + 10_000);
+    for (let i = 0; i < 3; i++) notePrompt(list, HANDBACK.replace("behind", `behind ${i}`), NOW + 20_000 + i);
+    notePrompt(list, "third", NOW + 30_000);
+    const items = outlineItems(list);
+    expect(items.map((it) => it.kind)).toEqual(["ask", "relay", "ask", "relays", "ask"]);
+    expect(items.flatMap((it) => it.kind === "ask" ? [it.n] : [])).toEqual([1, 2, 3]);
+    expect(items[3].kind === "relays" && items[3].ps.length).toBe(3);
   });
 });

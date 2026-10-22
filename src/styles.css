@@ -667,6 +667,15 @@ html.win .wctl { display: flex; }
 .ol-row.open .ol-txt { -webkit-line-clamp: unset; line-clamp: unset; }
 /* Its lines have scrolled out of the terminal, so the row still reads but no longer jumps. */
 .ol-row.gone { cursor: default; }
+/* not typed by you: a subagent's report, another session's note. Present, but stepped back */
+.ol-g { color: var(--tool-task); font-size: 10px; }
+.ol-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ol-from { font: 600 9.5px var(--font-mono); color: color-mix(in srgb, var(--tool-task) 80%, var(--muted)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-row.relay .ol-txt { color: var(--muted); font-size: 11px; }
+.ol-gh { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 7px; padding: 5px 6px; border-radius: 7px; cursor: pointer; user-select: none; }
+.ol-gh:hover { background: var(--lift); }
+.ol-gt { font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.ol-gb { margin-left: 9px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--tool-task) 30%, var(--hair)); display: flex; flex-direction: column; gap: 1px; }
 .ol-row.gone .ol-txt { color: var(--muted); }
 .ol-row.gone:hover { background: none; }
 
@@ -2628,6 +2637,9 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user { background: color-mix(in srgb, var(--accent) 13%, transparent); border-radius: 7px; padding: 4px 7px; margin: 0 -7px; }
 .tvgutter { font-family: var(--font-mono); line-height: 1.6; text-align: center; user-select: none; opacity: .9; }
 .tvmsg.user .tvgutter { color: var(--accent); }
+.tvmsg.relay .tvgutter { color: var(--tool-task); }
+.tvmsg.relay .tvtext { color: var(--muted); }
+.tvmsg.relay .ol-from { display: block; }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
 /* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */

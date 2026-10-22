@@ -5,7 +5,6 @@
 import { $, dropScrim, toast } from "./dom";
 import { dlog } from "./debug";
 import { basename, esc, relTime, tilde } from "./format";
-import { abbr } from "./phase";
 import { activeProjectCtx, launch } from "./panes";
 import { accentFor, availAgents } from "./state";
 import { historyProviders, readProviderHistory, type ProviderMessage } from "./providers";
@@ -15,7 +14,7 @@ import {
   histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
   type HistEntry,
 } from "./history";
-import { askedHtml } from "./inspectorview";
+import { askedHtml, tvMsgHtml } from "./inspectorview";
 import { confirmReturned } from "./handoffui";
 
 let histAll: HistEntry[] = [];
@@ -167,10 +166,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
   const asked = loaded ? askedHtml(loaded, ASK_SHOW) : "";
   const preview = loaded
     ? (loaded.length
-        ? `<div class="hist-tv">${loaded.slice(-END_SHOW).map((m) => {
-            const user = m.role === "user";
-            return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(abbr(m.text, 420))}</div></div>`;
-          }).join("")}</div>`
+        ? `<div class="hist-tv">${loaded.slice(-END_SHOW).map((m) => tvMsgHtml(m, h.provider, 420)).join("")}</div>`
         : `<div class="hist-tv tv-empty">No prose in this conversation; it's tool traffic only.</div>`)
     : `<div class="hist-tv tv-empty">Reading the conversation…</div>`;
   return `
