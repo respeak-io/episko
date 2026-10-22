@@ -477,6 +477,7 @@ pub fn run() {
             pty::all_sessions_resources,
             git::create_worktree,
             platform::set_caffeinate,
+            platform::play_wav,
             telemetry::resolve_permission,
             mcp::resolve_mcp,
             agent::resolve_agent_request,

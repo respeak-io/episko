@@ -1,9 +1,11 @@
 // The player: ./sound decides whether and which; this turns a `Tone` into oscillators and is
 // the only file that touches Web Audio, so it is untested by design.
 
+import { invoke } from "@tauri-apps/api/core";
+import { IS_WIN } from "./dom";
 import { soundPrefs } from "./state";
 import {
-  soundFor, SOUND_GATE_IDLE, toneDef, toneMs,
+  renderWav, soundFor, SOUND_GATE_IDLE, toneDef, toneMs,
   type SoundEvent, type SoundGate, type ToneId,
 } from "./sound";
 
@@ -41,7 +43,8 @@ function audio(): AudioContext | null {
 // Autoplay policy: the context starts suspended until a user gesture, and Episko's first
 // sound is often an alert nobody has clicked for. One-shot listeners wake it, in the capture
 // phase so a handler that stops propagation cannot starve them.
-if (typeof document !== "undefined") {
+// Not on Windows, where an AudioContext alone lists the app as MSEDGEWEBVIEW2 in every mixer.
+if (typeof document !== "undefined" && !IS_WIN) {
   const wake = () => { const c = audio(); if (c && c.state === "suspended") void c.resume(); };
   document.addEventListener("pointerdown", wake, { once: true, capture: true });
   document.addEventListener("keydown", wake, { once: true, capture: true });
@@ -50,7 +53,16 @@ if (typeof document !== "undefined") {
 // Loudness is roughly the square of amplitude, so a linear slider wastes its bottom half.
 const amplitude = (volume: number) => Math.pow(Math.max(0, Math.min(100, volume)) / 100, 1.8) * PEAK;
 
+// The host plays it, so the audio session is episko.exe's. One sound at a time: a new one cuts the last.
+function ringHost(id: ToneId, volume: number) {
+  const wav = renderWav(toneDef(id), amplitude(volume));
+  let bin = "";
+  for (let i = 0; i < wav.length; i += 0x8000) bin += String.fromCharCode(...wav.subarray(i, i + 0x8000));
+  invoke("play_wav", { wav: btoa(bin) }).catch((e) => log("warn", `sound: the host could not play it (${String(e)})`));
+}
+
 function ring(id: ToneId, volume: number) {
+  if (IS_WIN) { if (volume > 0) ringHost(id, volume); return; }
   const c = audio();
   if (!c || !master || volume <= 0) return;
   if (c.state === "suspended") void c.resume(); // a WebView may suspend the context at any time

@@ -883,6 +883,38 @@ pub(crate) fn set_caffeinate(state: State<AppState>, active: bool, flags: Vec<St
     Ok(())
 }
 
+// ---------- sound alerts, played by the host ----------
+// Web Audio plays from msedgewebview2.exe, so every mixer named the app after it (docs/sounds.md).
+
+/// `PlaySoundW` reads an `SND_ASYNC | SND_MEMORY` buffer while it plays, so it is held here.
+#[cfg(windows)]
+static PLAYING: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+
+/// Play one base64 WAV from ./sound's `renderWav`, cutting off whatever is still ringing.
+#[tauri::command]
+pub(crate) fn play_wav(wav: String) -> Result<(), String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(wav).map_err(|e| format!("play_wav: {e}"))?;
+    play_wav_bytes(bytes)
+}
+
+#[cfg(windows)]
+fn play_wav_bytes(bytes: Vec<u8>) -> Result<(), String> {
+    use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    let mut held = PLAYING.lock().unwrap_or_else(|e| e.into_inner());
+    // SAFETY: a null sound stops playback synchronously, so the old buffer is free to drop after it.
+    unsafe { PlaySoundW(std::ptr::null(), std::ptr::null_mut(), 0) };
+    let buf = held.insert(bytes);
+    // SAFETY: `buf` lives in PLAYING until the next call has stopped this sound.
+    let ok = unsafe { PlaySoundW(buf.as_ptr().cast(), std::ptr::null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+    if ok == 0 { Err("PlaySoundW refused the sound".into()) } else { Ok(()) }
+}
+
+#[cfg(not(windows))]
+fn play_wav_bytes(_bytes: Vec<u8>) -> Result<(), String> {
+    Err("play_wav is Windows-only; this platform plays through Web Audio".into())
+}
+
 // ---------- one-time recovery of localStorage stranded by a rename ----------
 // macOS keys a WKWebView's localStorage to the bundle id, so `io.respeak.cclauncher`
 // -> `io.respeak.episko` left every `cc-*` key behind. This reads them off the old

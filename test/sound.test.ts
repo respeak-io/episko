@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   clampSoundPrefs, exitSound, hookSound, isDefaultSoundPrefs, limitCrossed,
-  LIMIT_STEPS, soundDefaults, SOUND_EVENTS, SOUND_GAP_MS, SOUND_REPEAT_MS, soundFor,
-  soundSnap, toneDef, toneMs, TONES, VOLUME_RANGE,
+  LIMIT_STEPS, renderWav, soundDefaults, SOUND_EVENTS, SOUND_GAP_MS, SOUND_REPEAT_MS, soundFor,
+  soundSnap, toneDef, toneMs, TONES, VOLUME_RANGE, WAV_RATE,
   type SoundEvent, type SoundGate, type SoundPrefs, type SoundSnap,
 } from "../src/sound";
 import type { Sess } from "../src/types";
@@ -328,5 +328,32 @@ describe("the wiring the app depends on", () => {
     const known = new Set(SOUND_EVENTS.map((d) => d.id));
     for (const ev of raised) expect(known.has(ev), `${ev} is raised but not in the catalogue`).toBe(true);
     expect(raised.length).toBe(SOUND_EVENTS.length);
+  });
+});
+
+describe("renderWav", () => {
+  const pcm = (w: Uint8Array) => new Int16Array(w.slice(44).buffer);
+  it("writes a 16-bit mono header the length of the tone", () => {
+    const w = renderWav(toneDef("ping"), 0.2);
+    const v = new DataView(w.buffer);
+    expect(String.fromCharCode(...w.subarray(0, 4))).toBe("RIFF");
+    expect(String.fromCharCode(...w.subarray(8, 12))).toBe("WAVE");
+    expect(v.getUint32(24, true)).toBe(WAV_RATE);
+    expect(v.getUint16(22, true)).toBe(1);
+    expect(v.getUint32(40, true)).toBe(w.length - 44);
+    expect((w.length - 44) / 2 / WAV_RATE).toBeGreaterThan(toneMs(toneDef("ping")) / 1000);
+  });
+  it("starts and ends near silence, so a play never clicks", () => {
+    for (const t of TONES) {
+      const s = pcm(renderWav(t, 0.22));
+      expect(Math.abs(s[0])).toBeLessThan(10);
+      expect(Math.abs(s[s.length - 1])).toBeLessThan(10);
+    }
+  });
+  it("scales with the amplitude and never clips at full volume", () => {
+    const peak = (a: number) => pcm(renderWav(toneDef("bell"), a)).reduce((m, x) => Math.max(m, Math.abs(x)), 0);
+    expect(peak(0.22)).toBeLessThan(32767);
+    expect(peak(0.11)).toBeLessThan(peak(0.22) * 0.6);
+    expect(peak(0.11)).toBeGreaterThan(0);
   });
 });

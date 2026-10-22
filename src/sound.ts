@@ -205,3 +205,46 @@ export function limitCrossed(before: number | null, after: number | null): numbe
   for (const step of LIMIT_STEPS) if (after >= step && before < step) hit = step;
   return hit;
 }
+
+// ---------- the tone as a file ----------
+// Windows plays from the host (`play_wav`): Web Audio's session belongs to msedgewebview2.exe,
+// which is the name every mixer shows. This mirrors ./chime's envelope sample for sample.
+export const WAV_RATE = 44100;
+const RAMP_FLOOR = 0.0001;
+
+function wave(w: Wave, phase: number): number {
+  const f = phase - Math.floor(phase);
+  if (w === "square") return f < 0.5 ? 1 : -1;
+  if (w === "sawtooth") return 2 * f - 1;
+  if (w === "triangle") return 1 - 4 * Math.abs(f - 0.5);
+  return Math.sin(2 * Math.PI * f);
+}
+
+/** A 16-bit mono PCM WAV of `tone` at peak amplitude `amp` (./chime's curve, not a percentage). */
+export function renderWav(tone: Tone, amp: number, rate = WAV_RATE): Uint8Array {
+  const lead = 0.01; // ./chime's `t0` offset, so the attack never starts on sample 0
+  const n = Math.ceil((lead + toneMs(tone) / 1000 + 0.02) * rate);
+  const mix = new Float64Array(n);
+  for (const st of tone.steps) {
+    const start = lead + st.at / 1000, end = start + st.ms / 1000;
+    const atk = Math.min(0.008, (end - start) * 0.4);
+    const top = Math.max(RAMP_FLOOR, amp * (st.gain ?? 1));
+    for (let i = Math.floor(start * rate); i < Math.min(n, Math.ceil(end * rate)); i++) {
+      const t = i / rate;
+      if (t < start) continue;
+      const g = t < start + atk
+        ? RAMP_FLOOR * Math.pow(top / RAMP_FLOOR, (t - start) / atk)
+        : top * Math.pow(RAMP_FLOOR / top, (t - start - atk) / (end - start - atk));
+      mix[i] += g * wave(st.wave ?? "sine", st.hz * (t - start));
+    }
+  }
+  const out = new Uint8Array(44 + n * 2);
+  const v = new DataView(out.buffer);
+  const tag = (at: number, s: string) => { for (let i = 0; i < 4; i++) out[at + i] = s.charCodeAt(i); };
+  tag(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); tag(8, "WAVE");
+  tag(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  tag(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, mix[i])) * 32767), true);
+  return out;
+}
