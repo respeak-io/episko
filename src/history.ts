@@ -20,11 +20,10 @@ export const histLabel = (h: HistEntry) => h.title || h.last_prompt || "untitled
 // The colorKey the row would have if it were open: what ◧ filters on and a resume launches
 // with. `repo_root` is needed because a worktree usually lives beside its repo, not inside.
 export function histProject(h: HistEntry): { project: string; colorKey: string; worktree: string | null } {
-  const known = [...sessions.values()].find((s) => s.workdir === h.cwd) || dormants.find((d) => d.workdir === h.cwd);
+  const known = knownAt(h.cwd);
   if (known) return { project: known.project, colorKey: known.colorKey, worktree: known.worktree };
   const root = h.repo_root || h.cwd;
-  const fav = FAVORITES.find((f) => f.path === root)
-    || FAVORITES.filter((f) => under(root, f.path)).sort((a, b) => b.path.length - a.path.length)[0];
+  const fav = favFor(root);
   const colorKey = fav ? fav.path : root;
   return {
     project: fav ? fav.name : basename(root),
@@ -34,6 +33,11 @@ export function histProject(h: HistEntry): { project: string; colorKey: string; 
 }
 // Both separators: a cwd carries whichever the recording platform used.
 const under = (p: string, root: string) => p === root || p.startsWith(root + "/") || p.startsWith(root + "\\");
+const knownAt = (cwd: string) =>
+  [...sessions.values()].find((s) => s.workdir === cwd) || dormants.find((d) => d.workdir === cwd);
+// The innermost favourite at or above `path`.
+const favFor = (path: string) => FAVORITES.find((f) => f.path === path)
+  || FAVORITES.filter((f) => under(path, f.path)).sort((a, b) => b.path.length - a.path.length)[0];
 
 // Claude takes no lock on a transcript, so an id live anywhere must not be resumed twice.
 // `backendLive` covers a reload orphan (#47); its rotated id is known only to the roster.
@@ -52,9 +56,22 @@ export function histBusy(h: HistEntry): boolean {
   return h.provider === "claude" && externals.some((e) => e.session_id.toLowerCase() === id);
 }
 
-// On the resolved colorKey so every worktree counts; the path test is the fallback.
+// On the resolved colorKey so every worktree counts. The path test is only for a row nothing
+// resolved: a repo or favourite nested in `root` owns its rows, or a parent folder lists them all.
 export function histInProject(h: HistEntry, root: string): boolean {
-  return histProject(h).colorKey === root || under(h.cwd, root);
+  if (histProject(h).colorKey === root) return true;
+  return !h.repo_root && !knownAt(h.cwd) && !favFor(h.cwd) && under(h.cwd, root);
+}
+
+// Every provider's latest batch as one list, newest first and capped.
+export function histMerge(batches: Iterable<HistEntry[]>, limit: number): HistEntry[] {
+  return [...batches].flat().sort((a, b) => b.last_active - a.last_active).slice(0, limit);
+}
+
+// Where the selected session sits after a refresh reordered the list; the top if it left.
+export function histIndexOf(rows: HistEntry[], key: string | null): number {
+  const i = key ? rows.findIndex((h) => providerSessionKey(h.provider, h.session_id) === key) : -1;
+  return Math.max(0, i);
 }
 
 export function histMatches(h: HistEntry, term: string): boolean {

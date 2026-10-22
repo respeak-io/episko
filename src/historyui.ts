@@ -12,15 +12,17 @@ import { historyProviders, readProviderHistory, type ProviderMessage } from "./p
 import { isEnvelope } from "./outline";
 import { providerSessionKey } from "./types";
 import {
-  histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
+  histBucket, histBusy, histIndexOf, histInProject, histLabel, histMatches, histMerge, histProject,
   type HistEntry,
 } from "./history";
 import { askedHtml } from "./inspectorview";
 import { confirmReturned } from "./handoffui";
 
 let histAll: HistEntry[] = [];
+let histByProvider = new Map<string, HistEntry[]>();
 let histRows: HistEntry[] = [];   // what's on screen, after scope + search
 let histSel = 0;
+let histPicked = false;           // the user moved the selection, so a refresh must keep it
 let histLoadedAt = 0;
 let histScoped = false;           // ◧ narrow to the project on stage
 let histLoading = false;
@@ -40,7 +42,7 @@ export async function openHistory(scoped: boolean) {
   $("scrim").classList.add("show");
   $("histDlg").classList.add("show");
   const q = $("histQ") as HTMLInputElement;
-  q.value = ""; histSel = 0; histPreview = null;
+  q.value = ""; histSel = 0; histPicked = false; histPreview = null;
   histRender();
   setTimeout(() => q.focus(), 30);
   await loadHistory(Date.now() - histLoadedAt > HIST_TTL);
@@ -50,23 +52,36 @@ export function closeHistory() {
   dropScrim();
 }
 // The scan reads real files, so it's cached and refreshed on a TTL or the ⟳ chip; `force` bypasses.
+// Each provider's rows land as they arrive: Codex's list starts an app server (1–3s), Claude's doesn't.
 export async function loadHistory(force: boolean) {
   if (histLoading || (!force && histAll.length)) return;
   histLoading = true;
   histRender();
   try {
-    const batches = await Promise.all(historyProviders(availAgents).map(async (provider) => {
-      try { return await provider.history!.list(HIST_LIMIT); }
-      catch (e) { dlog("warn", `${provider.id} history scan failed: ${e}`); return []; }
+    const providers = historyProviders(availAgents);
+    histByProvider = new Map([...histByProvider].filter(([id]) => providers.some((p) => p.id === id)));
+    await Promise.all(providers.map(async (provider) => {
+      let rows: HistEntry[] = [];
+      try { rows = await provider.history!.list(HIST_LIMIT); }
+      catch (e) { dlog("warn", `${provider.id} history scan failed: ${e}`); }
+      histByProvider.set(provider.id, rows);
+      histReplace(histMerge(histByProvider.values(), HIST_LIMIT));
     }));
-    histAll = batches.flat().sort((a, b) => b.last_active - a.last_active).slice(0, HIST_LIMIT);
     histLoadedAt = Date.now();
   } catch (e) {
     dlog("warn", `history scan failed: ${e}`);
   } finally {
     histLoading = false;
   }
-  if (histOpen()) { histSel = 0; histPreview = null; histRender(); }
+  histReplace(histMerge(histByProvider.values(), HIST_LIMIT));
+}
+// A row the user picked stays picked wherever the new list puts it; otherwise the newest is.
+function histReplace(rows: HistEntry[]) {
+  const sel = histPicked ? histSelected() : undefined;
+  histAll = rows;
+  if (!histOpen()) return;
+  histSel = histIndexOf(histFiltered(), sel ? providerSessionKey(sel.provider, sel.session_id) : null);
+  histRender();
 }
 // null when nothing owns the stage: the chip is then a no-op, not a filter that empties the list.
 const histScopeCtx = () => (histScoped ? activeProjectCtx() : null);
@@ -219,17 +234,17 @@ export function histResume(h: HistEntry | undefined) {
 // `data-histact`, not the `data-resume` that dispatcher already owns for dormant rows.
 export function initHistoryEvents() {
   $("histRefresh").addEventListener("click", () => { void loadHistory(true); ($("histQ") as HTMLInputElement).focus(); });
-  $("histScope").addEventListener("click", () => { histScoped = !histScoped; histSel = 0; histRender(); ($("histQ") as HTMLInputElement).focus(); });
-  $("histQ").addEventListener("input", () => { histSel = 0; histRender(); });
+  $("histScope").addEventListener("click", () => { histScoped = !histScoped; histSel = 0; histPicked = false; histRender(); ($("histQ") as HTMLInputElement).focus(); });
+  $("histQ").addEventListener("input", () => { histSel = 0; histPicked = false; histRender(); });
   $("histQ").addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") { e.preventDefault(); histSel = Math.min(histSel + 1, histRows.length - 1); histRender(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); histSel = Math.max(histSel - 1, 0); histRender(); }
+    if (e.key === "ArrowDown") { e.preventDefault(); histSel = Math.min(histSel + 1, histRows.length - 1); histPicked = true; histRender(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); histSel = Math.max(histSel - 1, 0); histPicked = true; histRender(); }
     else if (e.key === "Enter") { e.preventDefault(); histResume(histSelected()); }
     else if (e.key === "Escape") {
       // stopPropagation: main.ts's global handler also closes History on Esc, and both firing
       // would peel the filter and close the dialog at once. Esc peels the filter first.
       e.preventDefault(); e.stopPropagation();
-      if (($("histQ") as HTMLInputElement).value) { ($("histQ") as HTMLInputElement).value = ""; histSel = 0; histRender(); }
+      if (($("histQ") as HTMLInputElement).value) { ($("histQ") as HTMLInputElement).value = ""; histSel = 0; histPicked = false; histRender(); }
       else closeHistory();
     }
   });
@@ -237,7 +252,7 @@ export function initHistoryEvents() {
     const t = e.target as HTMLElement;
     if (t.closest("[data-histact]")) { histResume(histSelected()); return; }
     const row = t.closest<HTMLElement>("[data-hi]");
-    if (row) { histSel = +row.dataset.hi!; histRender(); ($("histQ") as HTMLInputElement).focus(); }
+    if (row) { histSel = +row.dataset.hi!; histPicked = true; histRender(); ($("histQ") as HTMLInputElement).focus(); }
   });
   // Double-click resumes; the first click of the pair already selected the row.
   $("histList").addEventListener("dblclick", (e) => {

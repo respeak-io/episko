@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **History's project scope keeps to that project.** Scoped to a folder that holds other projects,
+  it also listed every session of the projects inside it.
+! **History lists Claude sessions without waiting for Codex**, and a refresh no longer moves the
+  selection off the session you picked.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,
