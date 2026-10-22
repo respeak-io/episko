@@ -175,6 +175,13 @@ describe("histInProject — what the ◧ chip narrows to", () => {
     expect(histInProject(row({ cwd: "/w/tool", repo_root: "/w/tool" }), "/w")).toBe(false);
     expect(histInProject(row({ cwd: "/w/live", repo_root: null }), "/w")).toBe(false);
   });
+
+  it("keeps a favourite's rows when its owner sits above it, as in a monorepo package", () => {
+    setFavorites([{ name: "pkg", path: "/r/pkg" }]);
+    expect(histInProject(row({ cwd: "/r/pkg/x", repo_root: "/r" }), "/r/pkg")).toBe(true);
+    setFavorites([{ name: "docs", path: "/d" }]);
+    expect(histInProject(row({ cwd: "/d/x/y", repo_root: null }), "/d/x/y")).toBe(true);
+  });
 });
 
 describe("histMerge / histIndexOf — one list from providers that answer at different speeds", () => {

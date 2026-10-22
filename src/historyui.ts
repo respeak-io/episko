@@ -56,6 +56,7 @@ export function closeHistory() {
 export async function loadHistory(force: boolean) {
   if (histLoading || (!force && histAll.length)) return;
   histLoading = true;
+  histPreview = null;   // a refresh re-reads the selected conversation too
   histRender();
   try {
     const providers = historyProviders(availAgents);
@@ -80,7 +81,11 @@ function histReplace(rows: HistEntry[]) {
   const sel = histPicked ? histSelected() : undefined;
   histAll = rows;
   if (!histOpen()) return;
-  histSel = histIndexOf(histFiltered(), sel ? providerSessionKey(sel.provider, sel.session_id) : null);
+  const key = sel ? providerSessionKey(sel.provider, sel.session_id) : null;
+  const list = histFiltered();
+  histSel = histIndexOf(list, key);
+  // The picked row left the list: the fallback top row is not a pick to keep.
+  if (key && list[histSel] && providerSessionKey(list[histSel].provider, list[histSel].session_id) !== key) histPicked = false;
   histRender();
 }
 // null when nothing owns the stage: the chip is then a no-op, not a filter that empties the list.
@@ -237,7 +242,7 @@ export function initHistoryEvents() {
   $("histScope").addEventListener("click", () => { histScoped = !histScoped; histSel = 0; histPicked = false; histRender(); ($("histQ") as HTMLInputElement).focus(); });
   $("histQ").addEventListener("input", () => { histSel = 0; histPicked = false; histRender(); });
   $("histQ").addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") { e.preventDefault(); histSel = Math.min(histSel + 1, histRows.length - 1); histPicked = true; histRender(); }
+    if (e.key === "ArrowDown") { e.preventDefault(); histSel = Math.max(0, Math.min(histSel + 1, histRows.length - 1)); histPicked = true; histRender(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); histSel = Math.max(histSel - 1, 0); histPicked = true; histRender(); }
     else if (e.key === "Enter") { e.preventDefault(); histResume(histSelected()); }
     else if (e.key === "Escape") {

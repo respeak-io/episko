@@ -56,11 +56,13 @@ export function histBusy(h: HistEntry): boolean {
   return h.provider === "claude" && externals.some((e) => e.session_id.toLowerCase() === id);
 }
 
-// On the resolved colorKey so every worktree counts. The path test is only for a row nothing
-// resolved: a repo or favourite nested in `root` owns its rows, or a parent folder lists them all.
+// On the resolved colorKey so every worktree counts. The path test is the fallback, except that
+// a repo, pane or favourite nested inside `root` owns its rows, or a parent folder lists them all.
 export function histInProject(h: HistEntry, root: string): boolean {
   if (histProject(h).colorKey === root) return true;
-  return !h.repo_root && !knownAt(h.cwd) && !favFor(h.cwd) && under(h.cwd, root);
+  if (!under(h.cwd, root)) return false;
+  const owners = [h.repo_root, knownAt(h.cwd)?.colorKey, favFor(h.cwd)?.path];
+  return !owners.some((o) => o && o !== root && under(o, root));
 }
 
 // Every provider's latest batch as one list, newest first and capped.
