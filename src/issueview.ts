@@ -44,7 +44,12 @@ function verbs(i: GhIssueRead, held: Holder | null): string {
   // A pull request is read for its changes first; the agent is the second verb there.
   const review = i.kind === "pr"
     ? `<button class="act primary" data-dashreview="${i.number}" data-tip="Its diff, its review threads and your review, on a stage of their own">${icon("files")}Review changes</button>` : "";
-  return `<div class="iss-b">${review}
+  // A plain session on the head branch, no sheet and no claim: checking a PR out is not taking it.
+  const branch = i.kind === "pr" && i.head_ref
+    ? `<button class="act" data-dashprsession="${i.number}"${i.same_repo ? "" : " disabled"}
+      data-tip="${escAttr(i.same_repo ? `A session on ${i.head_ref}: its worktree if it has one, a new worktree if not`
+        : `${i.head_ref} lives in a fork: check it out with gh pr checkout ${i.number} first`)}">${icon("terminal")}Session on branch</button>` : "";
+  return `<div class="iss-b">${review}${branch}
     <button class="act${review ? "" : " primary"}" data-dashwork="${i.number}" data-tip="${escAttr(tip)}">${go}</button>
     ${i.url ? `<button class="act" data-dashurl="${escAttr(i.url)}"
       data-tip="Open it on github.com in your browser">↗ On GitHub</button>` : ""}</div>`;
@@ -107,6 +112,8 @@ function reader(v: IssueView): string {
     <div class="iss-t"><span class="st ${esc(stateWord(i))}">${esc(stateWord(i))}</span>
       <h3>${esc(i.title)}</h3></div>
     <div class="iss-line">${esc(threadLine(i, v.now))}</div>
+    ${i.head_ref && i.base_ref ? `<div class="iss-ref">into <span class="chip">${esc(i.base_ref)}</span>
+      from <span class="chip">${esc(i.head_ref)}</span>${i.same_repo ? "" : `<span class="chip" data-tip="The branch lives in a fork">fork</span>`}</div>` : ""}
     ${i.labels.length ? `<div class="iss-lbl">${labels(i.labels)}</div>` : ""}
     ${verbs(i, v.held)}
     ${comment(i.author || "", ago(i.created_at, v.now), i.body, " own")}

@@ -17,6 +17,13 @@ Markers: `+` new · `~` changed · `!` fixed
   agent spend and nothing else no longer gets a generated sentence about its own emptiness, which
   used to crowd the days with commits out of the band. Each line now names its date and commit
   count on the right, and a click lists that day's commits.
++ **A pull request in the thread reader names its branches, and starts a session on one.**
+  Under the title: which branch it merges into and which it comes from, marked when that is a
+  fork. **Session on branch** opens the agent already on it, or its checkout, or a worktree cut
+  from the remote branch, with no prompt sent and nothing claimed on GitHub.
+~ **Starting an agent on an issue or pull request types the prompt in and stops.** It used to
+  send it straight away, with no chance to say what you actually wanted done. Edit it, then
+  press Enter. The Dependencies sheet, where the brief is edited before it starts, still sends.
 
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine

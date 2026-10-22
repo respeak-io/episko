@@ -65,7 +65,7 @@ import {
   dayFacts, dayIsClosed, isBotAuthor, projectDayFacts, sharedDay,
   type TrailCommit, type TrailDay,
 } from "./trail";
-import { statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
+import { isAgent, statusKey, type GitActionResult, type WorkingSet, type WtHead } from "./types";
 import { dayDetail, usageWindow } from "./usage";
 import { digestCover, digestMisses } from "./sync";
 import {
@@ -1385,6 +1385,11 @@ export function wireDashboard(): void {
     // ---- the GitHub half ----
     const rev = t.closest<HTMLElement>("[data-dashreview]");
     if (rev) { host.openReview(name(), root(), +rev.dataset.dashreview!); return; }
+    const prs = t.closest<HTMLElement>("[data-dashprsession]");
+    if (prs) {
+      if (issueData?.number === +prs.dataset.dashprsession!) void prSession(issueData);
+      return;
+    }
     const work = t.closest<HTMLElement>("[data-dashwork]");
     if (work) {
       const th = gh.threads.find((x) => x.number === +work.dataset.dashwork!);
@@ -1566,8 +1571,8 @@ function openPrSheet(number: number): void {
   renderDash();
 }
 
-// Sent, not prefilled, like the issue dispatch beside it — and for the same reason: the
-// sheet was the reading. Newlines go as a CR inside ONE chunk (a paste-newline, never a
+// Sent, not prefilled, unlike the issue dispatch beside it: the brief was edited in the sheet,
+// so the sheet was the reading. Newlines go as a CR inside ONE chunk (a paste-newline, never a
 // submit) and the submitting one is a write of its own, a beat behind (./taskrun's contract).
 async function doDepDispatch(): Promise<void> {
   if (sheet?.kind !== "deps") return;
@@ -1893,6 +1898,42 @@ async function newSessionOn(r: BranchRow): Promise<void> {
   }
 }
 
+/** The reader's *Session on branch*: an agent already on the PR's head, else its checkout, else
+ *  a worktree cut from the remote branch — the ladder ./reviewui's Session takes. */
+async function prSession(i: GhIssueRead): Promise<void> {
+  const r = root(), head = i.head_ref;
+  if (!r || !head || !i.same_repo || branchBusy) return;
+  const live = [...sessions.values()].find((s) => isAgent(s) && !s.external && s.colorKey === r && s.branch === head);
+  if (live) { host.setActive(live.id); return; }
+  const wt = heads.find((h) => h.branch === head);
+  if (wt) {
+    void host.launch(name(), wt.path, { colorKey: r, worktree: wt.is_main ? null : head, branch: head });
+    return;
+  }
+  branchBusy = true;
+  renderDash();
+  const make = () => invoke<string>("create_worktree", { repoDir: r, branch: head, base: `origin/${head}` });
+  try {
+    let path: string;
+    try { path = await make(); } catch (e) {
+      // Nobody has fetched the branch here yet: fetch once, then the remote ref exists.
+      if (!/no such commit/.test(String(e))) throw e;
+      await invoke<GitActionResult>("git_action", { workdir: r, op: "fetch" });
+      path = await make();
+    }
+    if (root() === r) heads = [...heads, { path, branch: head, is_main: false, exists: true }];
+    void host.launch(name(), path, { colorKey: r, worktree: head, branch: head });
+    toast(`Worktree ${head} created`);
+    void host.refreshGit();
+  } catch (e) {
+    dlog("error", `pr #${i.number} · worktree ${head}: ${e}`);
+    toast("worktree: " + e);
+  } finally {
+    branchBusy = false;
+    renderDash();
+  }
+}
+
 // Where a session on this row would start: its own worktree, the project's folder when the
 // branch is checked out there, and nowhere at all until one is made.
 const dirOf = (r: BranchRow) => r.wt ? r.wt.path : r.br.current ? root() : "";
@@ -2020,9 +2061,9 @@ async function setKept(number: number, keep: boolean): Promise<void> {
   }
 }
 
-// Start an agent on a thread and say so where colleagues can see it. The prompt is sent,
-// the one exception to "Episko prefills, the human presses Enter": the sheet was the
-// reading. The claim is written after the session exists, never before.
+// Start an agent on a thread and say so where colleagues can see it. The prompt is prefilled,
+// never sent: a thread rarely wants the generic ask as it stands. The claim is written after the
+// session exists, never before.
 async function doDispatch(): Promise<void> {
   if (sheet?.kind !== "dispatch") return;
   const t = sheet.t, r = root(), n = name(), w = where;
@@ -2063,16 +2104,11 @@ async function doDispatch(): Promise<void> {
     });
   }
 
-  // Sent, not prefilled. The `\r` goes in a write of its own, a beat behind the text: a
-  // burst arriving in one chunk is read as a paste, and a `\r` inside a paste is a newline.
   setTimeout(() => {
     const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
-    void typeInto(sid, prompt)
-      .then(() => new Promise((r2) => setTimeout(r2, SUBMIT_MS)))
-      .then(() => invoke("write_pty", { sessionId: sid, data: "\r" }))
-      .catch(() => {});
+    void typeInto(sid, prompt).catch(() => {});
   }, 1400);
-  toast(`Started on #${t.number}`);
+  toast(`Started on #${t.number} and prefilled. Edit it, then press Enter`);
 }
 
 function openDispatch(t: GhThread): void {

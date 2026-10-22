@@ -144,8 +144,8 @@ reason this beats doing it by hand:
   nobody can type). A project that declares none is told to say how it verified instead,
   rather than being handed a command that does not exist.
 
-**The prompt is SENT, and the sheet is the reading** — the same deliberate exception the
-issue dispatch beside it makes, and for the same reason. The whole brief is in an editable
+**The prompt is SENT, and the sheet is the reading** — the deliberate exception to "Episko
+prefills", and the reason the issue dispatch beside it no longer shares it: here the whole brief is in an editable
 textarea before anything starts, and the sheet carries what was edited rather than a row id,
 so re-deriving it on submit cannot discard the edit. Newlines go as `\r` **inside one chunk**
 (a paste-newline, never a submit) and the submitting `\r` is a write of its own a beat behind
