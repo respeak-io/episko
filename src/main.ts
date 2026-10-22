@@ -38,7 +38,7 @@ import {
   setProjectPerm, setProjectFetch, setProjectTools, setAgentTools,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
-  setCmpBase, shelveSessionAsked, tickRevive,
+  setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
   openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
@@ -218,7 +218,7 @@ function openProjectFiles() {
   void openExplorer(wd, basename(wd));
 }
 setPaletteHost({
-  setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
+  setActive, resolvePermission, openPlainTerminal, closeSession: closeSessionAsked, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles, openUsage, openFleet,
   settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
@@ -743,7 +743,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
-  else if (el.dataset.close) closeSession(el.dataset.close);
+  else if (el.dataset.close) void closeSessionAsked(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
   else if (el.dataset.jump) jumpExternal(+el.dataset.jump);
@@ -864,7 +864,7 @@ $("btnClose").addEventListener("click", () => {
   // Anything left on `mirror` is a read-only one (external or shelved): stepping out of it
   // is `leaveMirror`, never `closeSession` — the session it shows is not ours to close.
   if (mirror) { leaveMirror(); renderAll(); return; }
-  if (activeId) closeSession(activeId);
+  if (activeId) void closeSessionAsked(activeId);
 });
 
 $("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
