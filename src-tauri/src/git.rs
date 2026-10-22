@@ -1977,8 +1977,41 @@ pub(crate) struct GitDiff {
 /// Every patch the app reads is cut here (~0.8 MB, ample for a review), on a char boundary.
 pub(crate) const PATCH_CAP: usize = 800_000;
 
-/// Cut `patch` to [`PATCH_CAP`]; true when it was cut. `String::truncate` panics mid-char.
+/// One file's share: a bigger section (a minified JSON fixture) keeps its headers and a
+/// `Large diff not shown: +A -R` line, or it alone would cut every file after it.
+const FILE_PATCH_CAP: usize = 256_000;
+
+fn stub_large_files(patch: &str) -> String {
+    let mut starts: Vec<usize> = std::iter::once(0).chain(patch.match_indices("\ndiff --git ").map(|(i, _)| i + 1)).collect();
+    starts.push(patch.len());
+    let mut out = String::with_capacity(patch.len().min(PATCH_CAP));
+    for w in starts.windows(2) {
+        let sec = &patch[w[0]..w[1]];
+        if sec.len() <= FILE_PATCH_CAP {
+            out.push_str(sec);
+            continue;
+        }
+        let body = sec.find("\n@@").map_or(sec.len(), |i| i + 1);
+        let (mut add, mut del) = (0usize, 0usize);
+        for l in sec[body..].lines() {
+            match l.as_bytes().first() {
+                Some(b'+') => add += 1,
+                Some(b'-') => del += 1,
+                _ => {}
+            }
+        }
+        out.push_str(&sec[..body]);
+        out.push_str(&format!("Large diff not shown: +{add} -{del}\n"));
+    }
+    out
+}
+
+/// Stub oversized files, then cut `patch` to [`PATCH_CAP`]; true when it was cut.
+/// `String::truncate` panics mid-char.
 pub(crate) fn cap_patch(patch: &mut String) -> bool {
+    if patch.len() > FILE_PATCH_CAP {
+        *patch = stub_large_files(patch);
+    }
     if patch.len() <= PATCH_CAP {
         return false;
     }
@@ -3275,6 +3308,16 @@ pub(crate) fn handoff_git_cleanup(workdir: String, id: String, remote_branch: bo
 mod tests {
     use super::*;
     use crate::testutil::{git, scratch_dir};
+
+    #[test]
+    fn one_huge_file_is_stubbed_and_hides_none_after_it() {
+        let file = |name: &str, body: &str| format!("diff --git a/{name} b/{name}\nindex 1..2 100644\n--- a/{name}\n+++ b/{name}\n@@ -1,2 +1,2 @@\n{body}");
+        let huge = format!("-{}\n+{}\n-x\n+y\n", "a".repeat(500_000), "b".repeat(500_000));
+        let mut patch = file("a.txt", "-1\n+2\n") + &file("big.json", &huge) + &file("z.py", "+ok\n");
+        assert!(!cap_patch(&mut patch), "nothing is cut once the big file is a stub");
+        assert!(patch.contains("+++ b/big.json\nLarge diff not shown: +2 -2\ndiff --git a/z.py"), "{}", &patch[..300.min(patch.len())]);
+        assert!(patch.ends_with("+ok\n") && patch.contains("+2\n"), "the files around it are whole");
+    }
 
     #[test]
     fn a_project_is_its_root_commit_on_every_clone() {

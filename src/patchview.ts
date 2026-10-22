@@ -146,6 +146,7 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
   const draw = mode === "split" ? splitHunkHtml : hunkHtml;
   const body = f.binary
     ? `<div class="d-binbody">Binary file, no textual diff.</div>`
+    : f.large !== null ? `<div class="d-binbody">Too large to show here: over 250 KB of diff for this one file.</div>`
     : f.hunks.map((h, hi) => draw(h, acts.hunk(hi), acts.lines)).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
   // Head and chips share one sticky box: a chip walks between marks far apart and must stay reachable.
   return `<section class="dfile ${cls}${open ? "" : " collapsed"}${acts.cls ?? ""}" data-fi="${i}">

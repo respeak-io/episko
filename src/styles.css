@@ -84,12 +84,17 @@ body { overflow: hidden; font-family: var(--font-ui); color: var(--text); backgr
 .brand.on b { color: var(--accent-ink); }
 .logo { width: 17px; height: 17px; border-radius: 6px; background: conic-gradient(from 210deg, #a78bfa, #38bdf8, #fb923c, #a78bfa); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
 .brand b { font-weight: 700; letter-spacing: -.01em; font-size: 12.5px; }
-.kbar { margin: 0 auto; width: min(380px, 40vw); height: 26px; border-radius: 999px; cursor: text; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 11px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted-2); box-shadow: inset 0 1px 0 var(--lift); }
+.top-mid { margin: 0 auto; display: flex; align-items: center; gap: 8px; }
+.kbar { width: min(380px, 40vw); height: 26px; border-radius: 999px; cursor: text; display: flex; align-items: center; gap: 7px; padding: 0 5px 0 11px; background: var(--surface); border: 1px solid var(--hair); color: var(--muted-2); box-shadow: inset 0 1px 0 var(--lift); }
 .kbar:hover { border-color: var(--hair-strong); }
 .kbar span { font-size: 11px; }
 .kbd { margin-left: auto; display: flex; gap: 3px; }
 .kbd kbd, .shortpop kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; line-height: 1; font-family: var(--font-mono); font-size: 9.5px; border-radius: 5px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted-2); }
 .kbar > span:first-child { display: inline-flex; align-items: center; justify-content: center; width: 14px; }
+/* Back/forward (./nav): a pair, so it sits tighter than the verbs and matches the ⌘K bar's height. */
+.top-nav { flex: none; display: flex; gap: 3px; }
+.top-nav .act.icon { width: 24px; height: 26px; }
+.top-nav .act .gl { font-size: 15px; }
 .top-right { display: flex; align-items: center; gap: 7px; }
 /* --rc follows the fleet's most-urgent state via the react-* class renderAttn sets */
 .attn-badge { display: none; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 999px; cursor: pointer; font-size: 11px; font-weight: 650; color: var(--rc, var(--st-attention)); background: color-mix(in srgb, var(--rc, var(--st-attention)) 13%, transparent); border: 1px solid color-mix(in srgb, var(--rc, var(--st-attention)) 32%, transparent); }
@@ -501,10 +506,6 @@ html.win .wctl { display: flex; }
 .st-title .stitle { flex: 0 1 auto; min-width: 0; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
 .st-title .stitle:not(:empty)::before { content: "·"; color: var(--muted-2); margin-right: 7px; }
 .st-actions { flex: none; margin-left: auto; display: flex; gap: 6px; }
-/* Back/forward (./nav): a pair, so it sits tighter than the verbs on the right and a step smaller. */
-.st-nav { flex: none; display: flex; gap: 3px; }
-.st-nav .act.icon { width: 23px; }
-.st-nav .act .gl { font-size: 15px; }
 /* the leading glyph rides in a .gl box, shared with .ibtn (see .act .gl) */
 .act { height: 27px; padding: 0 10px; border-radius: var(--radius-sm); cursor: pointer; font: 600 11px var(--font-ui); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); background: var(--surface); border: 1px solid var(--hair); box-shadow: inset 0 1px 0 var(--lift); }
 .act:hover:not(:disabled) { color: var(--text); border-color: var(--hair-strong); }
@@ -666,6 +667,15 @@ html.win .wctl { display: flex; }
 .ol-row.open .ol-txt { -webkit-line-clamp: unset; line-clamp: unset; }
 /* Its lines have scrolled out of the terminal, so the row still reads but no longer jumps. */
 .ol-row.gone { cursor: default; }
+/* not typed by you: a subagent's report, another session's note. Present, but stepped back */
+.ol-g { color: var(--tool-task); font-size: 10px; }
+.ol-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ol-from { font: 600 9.5px var(--font-mono); color: color-mix(in srgb, var(--tool-task) 80%, var(--muted)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-row.relay .ol-txt { color: var(--muted); font-size: 11px; }
+.ol-gh { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; column-gap: 7px; padding: 5px 6px; border-radius: 7px; cursor: pointer; user-select: none; }
+.ol-gh:hover { background: var(--lift); }
+.ol-gt { font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.ol-gb { margin-left: 9px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--tool-task) 30%, var(--hair)); display: flex; flex-direction: column; gap: 1px; }
 .ol-row.gone .ol-txt { color: var(--muted); }
 .ol-row.gone:hover { background: none; }
 
@@ -2627,6 +2637,9 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user { background: color-mix(in srgb, var(--accent) 13%, transparent); border-radius: 7px; padding: 4px 7px; margin: 0 -7px; }
 .tvgutter { font-family: var(--font-mono); line-height: 1.6; text-align: center; user-select: none; opacity: .9; }
 .tvmsg.user .tvgutter { color: var(--accent); }
+.tvmsg.relay .tvgutter { color: var(--tool-task); }
+.tvmsg.relay .tvtext { color: var(--muted); }
+.tvmsg.relay .ol-from { display: block; }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
 /* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */
@@ -3050,7 +3063,11 @@ select.in-ctl { cursor: pointer; }
 .sb-fig .v { font: 700 19px var(--font-mono); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
 .sb-fig .k { font-size: 11px; color: var(--muted); }
 .sb-fig .d { font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sb-line { margin: 0; max-width: 62ch; font-size: 12.5px; line-height: 1.58; color: var(--text); }
+/* the sentence keeps its reading measure; its day sits at the card's right edge, in line with the ribbon's end */
+.sb-line { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 16px; font-size: 12.5px; line-height: 1.58; color: var(--text); }
+.sb-tx { flex: 1 1 32ch; max-width: 62ch; }
+.sb-day { margin-left: auto; border: 0; background: none; padding: 0; cursor: pointer; font: 10px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.sb-day:hover { color: var(--accent-ink); }
 /* a generated sentence is marked, always: what the app observed vs what a model wrote about it */
 .sb-line .ai { display: inline-block; margin-left: 7px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); vertical-align: 1px; white-space: nowrap; }
 .sb-line .ai-cnr { float: right; margin-left: 9px; font: 8.5px var(--font-mono); letter-spacing: .09em; color: var(--muted-2); }
@@ -3384,6 +3401,7 @@ select.in-ctl { cursor: pointer; }
 .iss .st.closed { color: var(--muted-2); background: var(--bg-2); }
 .iss .st.merged { color: var(--accent-ink); background: var(--accent-wash); }
 .iss-line { font: 10.5px var(--font-mono); color: var(--muted-2); }
+.iss-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font: 10.5px var(--font-mono); color: var(--muted-2); }
 .iss-lbl { display: flex; flex-wrap: wrap; gap: 5px; }
 .iss-b { display: flex; gap: 7px; padding-bottom: 2px; }
 .iss-c { padding: 10px 12px 4px; border-radius: var(--radius); border: 1px solid var(--hair); background: var(--surface); }

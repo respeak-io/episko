@@ -94,6 +94,17 @@ exponential decay instead, and the ramps only ever run to a small positive value
 `exponentialRampToValueAtTime` is undefined at zero. A step shorter than the attack has
 its attack clamped, or it would ramp up past its own end and never come back down.
 
+## On Windows the host plays, not the webview
+
+Web Audio's output stream belongs to `msedgewebview2.exe`, and WebView2 has no API to rename
+it, so every per-app mixer (Windows' own, SteelSeries Sonar, Voicemeeter) listed Episko as
+MSEDGEWEBVIEW2. A routing rule set against that name would also catch every other WebView2 app.
+So on Windows `chime.ts` never opens an `AudioContext`, not even the wake-on-gesture one,
+because the context registers the session before it makes a sound. Instead `renderWav` (./sound,
+tested) renders the same envelope to a WAV and `play_wav` hands it to `PlaySoundW` inside
+`episko.exe`. `PlaySoundW` plays one sound at a time, so a new alert cuts the previous one off.
+The burst gate already makes that rare. macOS keeps Web Audio, where nothing names the process.
+
 ## The settings pane
 
 Every button in Settings › Attention **plays what it does**: changing a tone, switching an

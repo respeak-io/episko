@@ -10,7 +10,7 @@ import {
   liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
-import { isEnvelope, OUTLINE_SHOW, promptLabel, type OutlinePrefs } from "./outline";
+import { isEnvelope, OUTLINE_SHOW, outlineItems, parseRelay, promptLabel, type OutlineItem, type OutlinePrefs } from "./outline";
 import type { ProviderMessage } from "./providers";
 import { fetchedByRepo, sessions } from "./state";
 
@@ -281,33 +281,57 @@ const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: 
 // `lost` on a live row means only that the search missed; its submit marker still jumps.
 function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, prefs: OutlinePrefs): string {
   const gone = !anchored && (!p.restored || !!p.lost);
+  const sent = p.relay ? "Sent" : "Asked";
   const why = anchored ? "Jump to it in the terminal"
     : !p.restored ? "Scrolled out of the terminal"
-    : p.lost ? "Asked before this pane, and not in its scrollback"
-    : "Asked before this pane — click to look for it in the scrollback";
+    : p.lost ? `${sent} before this pane, and not in its scrollback`
+    : `${sent} before this pane — click to look for it in the scrollback`;
   const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
+  const r = p.relay;
+  const from = r ? `${r.name} · ${r.report ? "report" : "message"}` : "";
   // The tooltip is the fold's fallback, not a second copy: a row that unfolds under the pointer
   // is already showing the words a `title` would then cover up.
   const tip = prefs.hover ? why : `${promptLabel(p.text)}\n${why}`;
-  return `<div class="ol-row${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(tip)}">`
-    + `<span class="ol-n">${n}</span>`
-    + `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(p.text)}</div>`
+  const txt = `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(p.text)}</div>`;
+  return `<div class="ol-row${r ? " relay" : ""}${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(r ? `From ${r.name}${r.from ? ` (${r.from})` : ""}, not you\n${tip}` : tip)}">`
+    + (r ? `<span class="ol-n ol-g">${r.kind === "agent" ? "◇" : "⇄"}</span><div class="ol-body"><span class="ol-from">${esc(from)}</span>${txt}</div>`
+      : `<span class="ol-n">${n}</span>${txt}`)
     + `<span class="ol-t">${back}${p.at ? promptClock(p.at) : ""}</span></div>`;
 }
 
-export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean): string {
-  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${s.prompts.length || ""}</span></div>`;
-  if (!s.prompts.length) {
+// A run of relays reads as one line until opened; the senders are named so the run says whose.
+function relaysRow(s: Sess, id: string, ps: Prompt[], open: boolean, anchored: ReadonlySet<string>, prefs: OutlinePrefs): string {
+  const names = [...new Set(ps.map((p) => p.relay!.name))];
+  const who = names.length > 2 ? `${names.slice(0, 2).join(", ")} +${names.length - 2}` : names.join(", ");
+  const reports = ps.every((p) => p.relay!.report);
+  const last = ps[ps.length - 1];
+  const head = `<div class="ol-gh" data-olgrp="${escAttr(id)}" title="${open ? "Fold" : "Show"} these — none of them is from you">`
+    + `<span class="ol-n ol-g">${open ? "▾" : "▸"}</span>`
+    + `<div class="ol-body"><span class="ol-gt">${ps.length} ${reports ? "agent reports" : "messages from agents"}</span><span class="ol-from">${esc(who)}</span></div>`
+    + `<span class="ol-t">${last.at ? promptClock(last.at) : ""}</span></div>`;
+  const body = open ? `<div class="ol-gb">${ps.slice().reverse().map((p) => outlineRow(s, p, 0, anchored.has(p.id), prefs)).join("")}</div>` : "";
+  return `<div class="ol-grp${open ? " open" : ""}">${head}${body}</div>`;
+}
+
+function itemHtml(s: Sess, it: OutlineItem, anchored: ReadonlySet<string>, prefs: OutlinePrefs, groups: ReadonlySet<string>): string {
+  if (it.kind === "relays") return relaysRow(s, it.id, it.ps, groups.has(it.id), anchored, prefs);
+  return outlineRow(s, it.p, it.kind === "ask" ? it.n : 0, anchored.has(it.p.id), prefs);
+}
+
+export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean, groups: ReadonlySet<string>): string {
+  const items = outlineItems(s.prompts);
+  const asks = items.reduce((n, it) => it.kind === "ask" ? it.n : n, 0);
+  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${asks || ""}</span></div>`;
+  if (!items.length) {
     return `<div class="outline">${head}<div class="insp-empty" style="padding:14px 0">Nothing asked yet.</div></div>`;
   }
-  const total = s.prompts.length;
+  const total = items.length;
   const shown = all ? total : Math.min(OUTLINE_SHOW, total);
   const rest = total - shown;
   const more = rest > 0 ? `<button class="fx-more" data-olmore="1">+${rest} earlier</button>`
     : all && total > OUTLINE_SHOW ? `<button class="fx-more" data-olmore="1">Show fewer</button>` : "";
   // Newest first, but numbered from the start of the conversation, so #1 is the first thing asked.
-  const rows = s.prompts.slice(total - shown).reverse()
-    .map((p, i) => outlineRow(s, p, total - i, anchored.has(p.id), prefs)).join("");
+  const rows = items.slice(total - shown).reverse().map((it) => itemHtml(s, it, anchored, prefs, groups)).join("");
   return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
 }
 
@@ -321,7 +345,7 @@ const askClock = (at: string | null | undefined) => {
 };
 export function askedHtml(msgs: readonly ProviderMessage[], show: number, jump = false): string {
   // The index is into the array the caller rendered, envelopes included, or a jump lands elsewhere.
-  const asked = msgs.map((m, i) => ({ m, i })).filter(({ m }) => m.role === "user" && !isEnvelope(m.text.trim()));
+  const asked = msgs.map((m, i) => ({ m, i })).filter(({ m }) => m.role === "user" && !isEnvelope(m.text.trim()) && !parseRelay(m.text.trim()));
   if (!asked.length) return "";
   const shown = asked.slice(-show).reverse();
   const rest = asked.length - shown.length;
@@ -331,6 +355,21 @@ export function askedHtml(msgs: readonly ProviderMessage[], show: number, jump =
     + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
   return `<div class="ol">${rows}</div>`
     + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
+}
+
+// One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody
+// here typed, so it loses the ❯ and the highlight that mean "you".
+export function tvMsgHtml(m: { role: string; text: string }, agent: string, cap = 0): string {
+  const r = m.role === "user" ? parseRelay(m.text.trim()) : null;
+  const text = r ? r.body : m.text;
+  const one = cap ? text.replace(/\s+/g, " ").trim() : text; // a capped preview is one run of prose
+  const shown = esc(cap && one.length > cap ? one.slice(0, cap - 1) + "…" : one);
+  if (r) {
+    return `<div class="tvmsg relay"><span class="tvgutter" title="${escAttr(`From ${r.relay.name}, not you`)}">${r.relay.kind === "agent" ? "◇" : "⇄"}</span>`
+      + `<div class="tvtext"><span class="ol-from">${esc(r.relay.name)} · ${r.relay.report ? "report" : "message"}</span>${shown}</div></div>`;
+  }
+  const user = m.role === "user";
+  return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter" title="${user ? "You" : escAttr(agent)}">${user ? "❯" : "⏺"}</span><div class="tvtext">${shown}</div></div>`;
 }
 
 // ---------- context: what the session has been into ----------

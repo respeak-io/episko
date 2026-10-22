@@ -2,7 +2,7 @@
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
 import { icon } from "./svgicons";
-import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
+import { barRow, basename, esc, escAttr, fmtDay, fmtDayLong, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
   syncState,
@@ -141,15 +141,19 @@ const whoText = (authors: string[]): string => authors.length
   : `<span class="dim">—</span>`;
 
 /** One day's already-generated sentence. The caller picks which; this only says how. */
-export interface BandLine { key: string; text: string; team: boolean; writing: boolean }
+export interface BandLine { key: string; when: number; commits: number; text: string; team: boolean; writing: boolean }
 
 // A generated sentence is always marked: the mark is the only difference between a log and a
 // claim. The shared line says whose day it is, since it is the project's and not yours.
 function bandLine(l: BandLine): string {
   const cnr = l.team && !l.writing ? AI_MARK : ""; // floats right, so it leads the source order
   const inline = l.writing ? aiMark("· writing", "wr") : l.team ? "" : aiMark("· ai");
-  return `<p class="sb-line" title="${escAttr(l.key)}">${cnr}`
-    + (l.team ? `<span class="dim">shared · </span>` : "") + `${esc(l.text)}${inline}</p>`;
+  // The day it is about, and the ribbon's own popover behind it: a sentence must say what it summarises.
+  const tally = l.commits ? ` · ${l.commits} commit${l.commits === 1 ? "" : "s"}` : "";
+  const day = `<button class="sb-day" data-dashday="${escAttr(l.key)}" data-tip="The commits this line is about">`
+    + `${esc(fmtDayLong(l.when))}${tally}</button>`;
+  return `<p class="sb-line"><span class="sb-tx">${cnr}`
+    + (l.team ? `<span class="dim">shared · </span>` : "") + `${esc(l.text)}${inline}</span>${day}</p>`;
 }
 
 // The band's one door out, in both states. `history` is a verb `verbTiles` already offers, so
@@ -1144,7 +1148,7 @@ export function dispatchSheet(t: GhThread, p: ClaimPolicy, allow: ClaimAllow, mo
     <div class="body">
       <p class="sheet-ti">${esc(t.title)}</p>
       ${holder ? `<p class="warn-line">◍ ${esc(holder.who)} ${holder.stale ? "claimed this a while ago, probably stale" : "is already on this"}. Starting a second agent is allowed; a claim is only ever a hint.</p>` : ""}
-      <p>A session in this project, and <b>the prompt is sent</b>, so the agent starts working without waiting for you.</p>
+      <p>A session in this project, with the prompt <b>typed in but not sent</b>: say what you want done, then press Enter.</p>
       ${w ? whereBlock(w) : ""}
       <div class="opts">
         ${sw("assign", p.assign, allow.assign, "assign the issue to me")}

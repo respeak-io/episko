@@ -8,7 +8,7 @@ const iss = (o: Partial<GhIssueRead> = {}): GhIssueRead => ({
   available: true, reason: null, number: 37, kind: "issue", title: "a thing",
   url: "https://github.com/o/r/issues/37", state: "OPEN", author: "tim",
   created_at: back(3 * 86_400_000), updated_at: back(3600_000), labels: [], assignees: [],
-  body: "", comments: [], ...o,
+  body: "", comments: [], head_ref: null, base_ref: null, same_repo: true, ...o,
 });
 
 describe("ago", () => {

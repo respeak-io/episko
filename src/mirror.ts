@@ -11,7 +11,7 @@ import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
-import { askedHtml, wpeekHtml } from "./inspectorview";
+import { askedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
@@ -348,10 +348,7 @@ function renderTranscript(msgs: { role: string; text: string }[], initial: boole
   const body = $("extBody");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   body.innerHTML = msgs.length
-    ? msgs.map((m) => {
-        const user = m.role === "user";
-        return `<div class="tvmsg ${m.role}"><span class="tvgutter" title="${user ? "You" : agent}">${user ? "❯" : "⏺"}</span><div class="tvtext">${esc(m.text)}</div></div>`;
-      }).join("")
+    ? msgs.map((m) => tvMsgHtml(m, agent)).join("")
     : `<div class="ext-empty">No messages in this session yet.</div>`;
   if (initial || nearBottom) body.scrollTop = body.scrollHeight;
 }

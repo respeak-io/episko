@@ -14,7 +14,7 @@ const ctx = (text: string, n = 1): DiffLine => ({ kind: "ctx", text, oldNo: n, n
 const del = (text: string, n = 1): DiffLine => ({ kind: "del", text, oldNo: n, newNo: null });
 
 const file = (path: string, ...lines: DiffLine[]): DiffFile => ({
-  path, oldPath: path, status: "modified", binary: false,
+  path, oldPath: path, status: "modified", binary: false, large: null,
   added: lines.filter((l) => l.kind === "add").length,
   removed: lines.filter((l) => l.kind === "del").length,
   hunks: [{ at: "", header: "", lines }],

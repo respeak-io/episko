@@ -60,8 +60,11 @@ export interface BgServer {
 export interface Todo { content: string; status: string }
 
 // One prompt you sent (./outline); `id` keys ./terminal's marker, `at` is 0 when nothing said.
+// Who submitted a turn that was not typed here: a subagent's report, a SendMessage, another session.
+export interface Relay { kind: "agent" | "session"; from: string; name: string; report: boolean }
 export interface Prompt {
   id: string; text: string; at: number; restored?: boolean;
+  relay?: Relay; // set, and `text` is the message without its frame
   found?: boolean; lost?: boolean; // ./terminal's: the line was located, or its one search missed
 }
 export interface DiffStat {

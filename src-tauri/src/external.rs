@@ -30,6 +30,8 @@ pub(crate) struct ExternalSession {
 pub(crate) struct ProcTable {
     /// pid → (ppid, lowercased process name)
     procs: std::collections::HashMap<u32, (Option<u32>, String)>,
+    /// pid → start time (epoch secs); absent when the OS would not say
+    started: std::collections::HashMap<u32, u64>,
 }
 
 impl ProcTable {
@@ -51,7 +53,26 @@ impl ProcTable {
                 )
             })
             .collect();
-        Self { procs }
+        let started = sys
+            .processes()
+            .iter()
+            .filter(|(_, p)| p.start_time() > 0)
+            .map(|(pid, p)| (pid.as_u32(), p.start_time()))
+            .collect();
+        Self { procs, started }
+    }
+
+    /// `pid`'s parent, or None at the root. Windows keeps a dead parent's pid as the ppid, so a
+    /// parent that started AFTER its child is a reused pid: an unrelated process, not an ancestor.
+    fn parent(&self, pid: u32) -> Option<u32> {
+        let ppid = self.procs.get(&pid)?.0?;
+        if ppid <= 1 || ppid == pid {
+            return None;
+        }
+        match (self.started.get(&pid), self.started.get(&ppid)) {
+            (Some(child), Some(parent)) if parent > child => None,
+            _ => Some(ppid),
+        }
     }
 
     /// Guards stale registry files and pid reuse. Loose match: `claude`, `claude.exe`,
@@ -67,9 +88,9 @@ impl ProcTable {
             if cur == ancestor {
                 return true;
             }
-            match self.procs.get(&cur).and_then(|(ppid, _)| *ppid) {
-                Some(ppid) if ppid > 1 && ppid != cur => cur = ppid,
-                _ => return false,
+            match self.parent(cur) {
+                Some(ppid) => cur = ppid,
+                None => return false,
             }
         }
         false
@@ -361,10 +382,7 @@ fn terminal_window_for(pid: u32, table: &ProcTable, wins: &[Win], hint: &str) ->
         {
             return Some(h);
         }
-        let ppid = table.procs.get(&cur).and_then(|(ppid, _)| *ppid)?;
-        if ppid <= 1 || ppid == cur {
-            return None;
-        }
+        let ppid = table.parent(cur)?;
         if table.procs.get(&ppid).is_some_and(|(_, name)| NOT_A_TERMINAL.contains(&name.as_str())) {
             return None;
         }
@@ -463,6 +481,7 @@ mod tests {
     fn table(entries: &[(u32, Option<u32>, &str)]) -> ProcTable {
         ProcTable {
             procs: entries.iter().map(|&(pid, ppid, name)| (pid, (ppid, name.to_string()))).collect(),
+            started: Default::default(),
         }
     }
 
@@ -558,11 +577,25 @@ mod tests {
         assert!(!t.is_descendant_of(10, 99));
     }
 
+    /// A vite started on the 18th sat under a pane launched on the 21st: its dead parent's pid
+    /// had gone to that pane's MCP launcher, so a gh watcher adopted vite's port as its URL.
+    #[test]
+    fn proc_table_ancestry_rejects_a_parent_younger_than_its_child() {
+        let mut t = table(&[(74328, Some(27252), "node.exe"), (27252, Some(55464), "sh.exe"),
+            (55464, Some(89368), "cmd.exe"), (89368, Some(83984), "claude.exe")]);
+        t.started = [(74328, 100), (27252, 100), (55464, 900), (89368, 895)].into_iter().collect();
+        assert!(!t.is_descendant_of(74328, 89368), "a reused pid is not an ancestor");
+        assert!(t.is_descendant_of(55464, 89368));
+        t.started.remove(&55464); // an unknown start time proves nothing either way
+        assert!(t.is_descendant_of(74328, 89368));
+    }
+
     #[test]
     fn proc_table_snapshot_sees_this_process() {
         let t = ProcTable::snapshot();
         let me = std::process::id();
         assert!(t.procs.contains_key(&me), "own pid missing from process snapshot");
+        assert!(t.started.contains_key(&me), "no start time without a refresh kind asking for one");
         assert!(t.is_descendant_of(me, me));
     }
 

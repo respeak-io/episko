@@ -11,6 +11,25 @@ describe("parsePatch", () => {
     expect(parsePatch("not a diff at all")).toEqual([]);
   });
 
+  it("takes a stubbed large file's counts and blob ids, and the files after it whole", () => {
+    const [big, next] = parsePatch(patch(
+      "diff --git a/snap.json b/snap.json",
+      "index 83db48f..e0c9b5e 100644",
+      "--- a/snap.json",
+      "+++ b/snap.json",
+      "Large diff not shown: +4 -3",
+      "diff --git a/pipeline.py b/pipeline.py",
+      "index 1111111..2222222 100644",
+      "--- a/pipeline.py",
+      "+++ b/pipeline.py",
+      "@@ -1 +1,2 @@",
+      " x",
+      "+y",
+    ));
+    expect(big).toMatchObject({ path: "snap.json", large: "index 83db48f..e0c9b5e 100644", added: 4, removed: 3, hunks: [] });
+    expect(next).toMatchObject({ path: "pipeline.py", large: null, added: 1, removed: 0 });
+  });
+
   it("parses a modified file: counts, hunk, and per-line numbers", () => {
     const [f] = parsePatch(patch(
       "diff --git a/tracked.txt b/tracked.txt",

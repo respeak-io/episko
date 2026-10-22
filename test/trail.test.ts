@@ -131,9 +131,14 @@ describe("summarising", () => {
       sessions: [{ id: "a", title: "Usage forecast colours", project: "episko", colorKey: "k", branch: "dev", cwd: "/w", when: 0, exists: true }],
       commits: [commit({ when: 0, subject: "fix: the thing" })], events: [],
     });
-    expect(facts).toContain("spend: $4.20");
+    expect(facts).not.toContain("spend");
     expect(facts).toContain("session: Usage forecast colours [episko/dev]");
     expect(facts).toContain("commit: fix: the thing");
+  });
+
+  it("hands over nothing for a day that is spend alone", () => {
+    // Told only "spend: $3.88", Haiku wrote "the record names no project and no commits".
+    expect(dayFacts({ key: "k", when: 0, cost: 3.88, tokens: 0, sessions: [], commits: [], events: [] })).toBe("");
   });
 
   it("bounds a heavy day so the prompt cannot grow without limit", () => {

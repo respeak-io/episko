@@ -13,6 +13,23 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ The pull request reader shows which branch a PR merges from and into, and *Session on branch*
+  starts a session on its head branch.
+~ Starting an agent on an issue or pull request types the prompt in and waits for your Enter.
+~ *Your questions* lists agent reports and messages from other sessions under their sender, folded
+  together and unnumbered.
+~ Back and forward moved into the title bar, beside ⌘K.
+~ A pull request opens on its *Conversation* tab, as on GitHub, rather than on *Files*.
+! Dashboard day lines describe the day's work without mentioning cost, and show its date and
+  commit count.
+! On Windows, a background job no longer shows up as a server with another session's address.
+! History's project scope no longer lists sessions from the projects inside that folder.
+! History shows Claude sessions without waiting for Codex, and a refresh keeps the row you picked.
+! One huge file no longer hides the rest of a diff: it is marked as too large to show, and every
+  file after it is listed.
+! On Windows, sound alerts come from Episko itself, so a per-app mixer such as SteelSeries Sonar
+  lists and routes them as Episko rather than MSEDGEWEBVIEW2.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,
