@@ -19,6 +19,7 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ *Your questions* lists agent reports and messages from other sessions under their sender, folded
   together and unnumbered.
 ~ Back and forward moved into the title bar, beside ⌘K.
+~ A pull request opens on its *Conversation* tab, as on GitHub, rather than on *Files*.
 ! Dashboard day lines describe the day's work without mentioning cost, and show its date and
   commit count.
 ! On Windows, a background job no longer shows up as a server with another session's address.
