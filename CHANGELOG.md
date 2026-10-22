@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.37.0 — 2026-10-22
+Pull requests show their branches and open on the conversation tab, agent reports are no longer
+listed as your questions, and History stays within the project you are in.
 + The pull request reader shows which branch a PR merges from and into, and *Session on branch*
   starts a session on its head branch.
 ~ Starting an agent on an issue or pull request types the prompt in and waits for your Enter.
