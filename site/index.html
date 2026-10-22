@@ -692,6 +692,42 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
   .cons circle:nth-of-type(2n){animation-delay:-1.7s}.cons circle:nth-of-type(3n){animation-delay:-2.9s}
   .paused .meteor,.paused .cons circle{animation-play-state:paused}
 }
+/* Life in the hero: birds and butterflies by day, fireflies by night, flowers in the grass either way. */
+:root{--day:1;--night:0;--bird:#46525c;--fly:#f3eea0}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--day:0;--night:1}}
+:root[data-theme="dark"]{--day:0;--night:1}
+.flock-b{position:absolute;left:0;width:120px;height:40px;opacity:var(--day);transform:translateX(-140px)}
+.bird{position:absolute;width:14px}
+.bird svg{display:block;width:100%;height:auto}
+.bird .f2{display:none}
+.bfly{position:absolute;width:12px;opacity:var(--day);z-index:100}
+.bfly svg{display:block;width:100%;height:auto}
+.fly{position:absolute;width:3px;height:3px;background:var(--fly);box-shadow:0 0 6px 2px var(--fly);opacity:0;z-index:100}
+.flower{position:absolute;width:8px;transform-origin:50% 100%;margin-left:-3px}
+.flower svg{display:block;width:100%;height:auto}
+:root[data-theme="dark"] .flower{filter:brightness(.45) saturate(.6)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .flower{filter:brightness(.45) saturate(.6)}}
+.hero .sky,.hero .hills{transition:translate .6s ease-out}
+.hero .sky{translate:calc(var(--px,0) * -10px) calc(var(--py,0) * -6px)}
+.hero .hills{translate:calc(var(--px,0) * -4px) 0}
+@media (prefers-reduced-motion:no-preference){
+  .flock-b{animation:fly var(--d) linear var(--dl) infinite}
+  .bird{animation:bob 1.6s ease-in-out infinite}
+  .bird .f1{animation:flap .5s steps(1) infinite}
+  .bird .f2{display:block;animation:flap .5s steps(1) -.25s infinite;position:absolute;inset:0}
+  .bfly{animation:flutter var(--d) ease-in-out var(--dl) infinite alternate}
+  .bfly svg{animation:wing .3s steps(1) infinite}
+  .fly{animation:wander var(--d) ease-in-out var(--dl) infinite alternate,glow var(--g) ease-in-out var(--dl) infinite}
+  .flower{animation:sway var(--d) ease-in-out var(--dl) infinite alternate}
+  .paused .flock-b,.paused .bird,.paused .bird .f1,.paused .bird .f2,.paused .bfly,.paused .bfly svg,.paused .fly,.paused .flower{animation-play-state:paused}
+}
+@keyframes fly{0%{transform:translateX(-140px)}100%{transform:translateX(calc(100vw + 40px))}}
+@keyframes flap{50%{visibility:hidden}}
+@keyframes wing{50%{transform:scaleX(.45)}}
+@keyframes flutter{0%{translate:0 0}25%{translate:40px -26px}50%{translate:90px 6px}75%{translate:130px -34px}100%{translate:170px -8px}}
+@keyframes wander{0%{translate:0 0}33%{translate:24px -18px}66%{translate:-12px -34px}100%{translate:30px -10px}}
+@keyframes glow{0%,100%{opacity:0}50%{opacity:calc(var(--night) * .95)}}
+@keyframes sway{from{rotate:-6deg}to{rotate:6deg}}
 @keyframes meteor{0%,93%{opacity:0;translate:0 0}94%{opacity:1}100%{opacity:0;translate:-260px 116px}}
 
 /* sections after the bento: the house, the time, the questions */
@@ -1183,6 +1219,49 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   hero.insertBefore(sky,hero.firstChild);
   var hl=document.createElement('div'); hl.className='hills'; hl.dataset.seed='1'; hills(hl,1);
   pasture.insertBefore(hl,pasture.querySelector('.ground'));
+  // By day a few birds cross and butterflies work the meadow; by night fireflies take over. Flowers stay.
+  var phone=matchMedia('(max-width:640px)').matches;
+  var BIRD1=["b.....b",".b...b.","..bbb.."], BIRD2=[".......","bbb.bbb","...b..."];
+  [[9,46,-6],[22,63,-38]].forEach(function(f){
+    var g=document.createElement('div'); g.className='flock-b'; g.style.cssText='top:'+f[0]+'%;--d:'+f[1]+'s;--dl:'+f[2]+'s';
+    [[0,14],[20,4],[34,20],[52,10]].slice(0,phone?3:4).forEach(function(b,i){
+      var el=document.createElement('span'); el.className='bird';
+      el.style.cssText='left:'+b[0]+'px;top:'+b[1]+'px;animation-delay:-'+(i*.4)+'s';
+      el.innerHTML=svg(BIRD1,{b:'var(--bird)'}).replace('<svg','<svg class="f1"')+svg(BIRD2,{b:'var(--bird)'}).replace('<svg','<svg class="f2"');
+      g.appendChild(el);
+    });
+    sky.appendChild(g);
+  });
+  var BFLY=["a.a","aba","a.a"], BCOL=['#e98fb0','#f2c14e','#9ec5ff'];
+  var field0=pasture.querySelector('.field')||field;
+  for(var bi=0;bi<(phone?2:3);bi++){
+    var bf=document.createElement('span'); bf.className='bfly';
+    bf.style.cssText='left:'+rnd(8,70)+'%;bottom:'+rnd(70,150)+'px;--d:'+rnd(9,14).toFixed(1)+'s;--dl:-'+rnd(0,9).toFixed(1)+'s';
+    bf.innerHTML=svg(BFLY,{a:BCOL[bi%3],b:'#3b3226'}); pasture.insertBefore(bf,field0);
+  }
+  for(var fi=0;fi<(phone?8:18);fi++){
+    var fl=document.createElement('i'); fl.className='fly';
+    fl.style.cssText='left:'+rnd(2,97)+'%;bottom:'+rnd(40,200)+'px;--d:'+rnd(6,12).toFixed(1)+'s;--g:'+rnd(2.4,4.5).toFixed(1)+'s;--dl:-'+rnd(0,8).toFixed(1)+'s';
+    pasture.insertBefore(fl,field0);
+  }
+  var FLOWER=[".p.","pcp",".p.",".g.",".g."], FCOL=['#f4f1ea','#f2c14e','#e98fb0','#b7a6ff'];
+  for(var wi=0;wi<(phone?10:22);wi++){
+    var y=rnd(26,96), w=document.createElement('span'); w.className='flower';
+    w.style.cssText='left:'+rnd(1,99)+'%;bottom:'+y+'px;z-index:'+(200-Math.round(y))+';width:'+(9*(1.15-y/96*.4)).toFixed(1)+'px;--d:'+rnd(1.8,3.2).toFixed(1)+'s;--dl:-'+rnd(0,3).toFixed(1)+'s';
+    w.innerHTML=svg(FLOWER,{p:FCOL[wi%4],c:'#e0a44a',g:'#5d7a4a'}); pasture.insertBefore(w,field0);
+  }
+  // The sky leans a little away from the pointer.
+  if(!reduce && matchMedia('(hover:hover)').matches){
+    var pq=0;
+    hero.addEventListener('pointermove',function(e){
+      if(pq) return; pq=requestAnimationFrame(function(){ pq=0;
+        var r=hero.getBoundingClientRect();
+        hero.style.setProperty('--px',((e.clientX-r.left)/r.width*2-1).toFixed(3));
+        hero.style.setProperty('--py',((e.clientY-r.top)/r.height*2-1).toFixed(3));
+      });
+    });
+    hero.addEventListener('pointerleave',function(){ hero.style.setProperty('--px',0); hero.style.setProperty('--py',0) });
+  }
 
   // Further back is smaller and a little darker.
   function putAt(o,x,y,t){
