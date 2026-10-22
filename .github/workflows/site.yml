@@ -1,12 +1,13 @@
 name: site
 
 # Deploys the episko.dev marketing site (site/ -> the episko-site Worker) and keeps
-# its baked-in version label in sync with the latest release. Four ways in:
+# its baked-in release data (version labels, download links, the release strip and
+# cards) in sync with the latest release. The page itself calls no API. Four ways in:
 #
 #   release.yml finished -> stamp its tag, deploy            (the automated path)
 #   release published    -> stamp the release tag, deploy    (a hand-published one)
-#   push to main         -> stamp package.json's version, deploy  (site/ content edits)
-#   manual dispatch      -> optional version input, else package.json
+#   push to main         -> stamp the newest published release, deploy  (site/ content edits)
+#   manual dispatch      -> optional version input, else the newest published release
 #
 # **Why the automated path chains off the workflow instead of the release.** The
 # release is created by tauri-action using GITHUB_TOKEN, and GitHub will not start a
@@ -81,10 +82,12 @@ jobs:
           package-manager-cache: false
 
       # One expression, in trigger order: a hand-published release's tag, then the tag
-      # release.yml built, then a dispatch input. All three are empty on a push (and on
-      # a dispatch with a blank input), leaving the script its package.json fallback —
-      # main already carries the released version by then.
-      - name: Stamp the version into site/index.html
+      # release.yml built, then a dispatch input. A given tag makes the script fail
+      # unless the API already lists it as the newest release; all three are empty on a
+      # push (and on a blank dispatch), which stamps whatever the newest release is.
+      - name: Bake the release data into site/index.html
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/stamp-site-version.mjs "${{ github.event.release.tag_name || github.event.workflow_run.head_branch || inputs.version }}"
 
       # Keeps the repo honest: what's deployed is what's committed. [skip ci] stops
@@ -97,7 +100,7 @@ jobs:
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "site: stamp the version label [skip ci]" -- site/index.html
+          git commit -m "site: stamp the release data [skip ci]" -- site/index.html
           git push origin main
 
       # Opt-in, exactly like the Azure signing gate in release.yml: until the token

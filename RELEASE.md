@@ -738,7 +738,7 @@ cannot pin a release and "always in the newest one" is the equivalent.
       tauri-action creates that with `GITHUB_TOKEN` and GitHub will not start a
       workflow from an event that token raised. It fired for none of v0.10.0 … v0.11.1
       for exactly that reason, so if the chain ever goes quiet again, the fallback is
-      `gh workflow run site.yml -f version=<x.y.z>`. The label the page *fetches* comes
-      from the releases API at runtime, so a stale deploy only shows with JS off or
-      when that unauthenticated API rate-limits — check the served HTML, not the
-      rendered page: `curl -s https://episko.dev | grep -o 'data-ver>v[0-9.]*'`.
+      `gh workflow run site.yml -f version=<x.y.z>`. The page fetches nothing at
+      runtime: the version, the download links and the release cards are baked in by
+      that run, so a stale deploy shows on the page itself:
+      `curl -s https://episko.dev | grep -o 'data-ver>v[0-9.]*'`.
