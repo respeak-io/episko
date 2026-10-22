@@ -59,6 +59,7 @@ let loading = false;
 let full: DiffFile[] = []; // GitHub's diff, merge base → head: what comments and Viewed are measured on
 let shown: DiffFile[] = []; // the view's diff, with any context revealed
 let truncated = false;
+let fullTruncated = false; // the "all" view reuses `full`, and its note with it
 let commentable: Commentable = new Map();
 let range: Range = { kind: "all" };
 let ws = false;
@@ -103,7 +104,7 @@ export function openPrReview(project: string, path: string, number: number): voi
   takeStage("review");
   document.documentElement.style.setProperty("--accent", accentFor(path));
   if (!same) {
-    pr = null; failed = ""; full = []; shown = []; truncated = false; commentable = new Map();
+    pr = null; failed = ""; full = []; shown = []; truncated = false; fullTruncated = false; commentable = new Map();
     range = { kind: "all" }; ws = false; tab = "files"; compose = null; convText = "";
     replies.clear(); threadOpen.clear(); collapsed.clear(); railFolded.clear(); tailDone.clear();
     activeFile = -1; event = "COMMENT"; mergeMethod = ""; seeded = false;
@@ -224,9 +225,10 @@ async function loadDiffs(mine = ++gen): Promise<void> {
       const f = await readDiff({ kind: "all" }, false);
       if (mine !== gen) return;
       full = f.files;
+      fullTruncated = f.truncated;
       commentable = commentableIn(full);
     }
-    const v = range.kind === "all" && !ws ? { files: full, truncated: false } : await readDiff(range, ws);
+    const v = range.kind === "all" && !ws ? { files: full, truncated: fullTruncated } : await readDiff(range, ws);
     if (mine !== gen) return;
     shown = v.files;
     truncated = v.truncated;

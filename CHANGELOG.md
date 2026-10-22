@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **One huge file no longer hides the rest of a diff.** A pull request that touched a minified
+  JSON snapshot showed only the files that sort before it, with no note saying so: the whole
+  patch was cut at 800 KB. A file over 250 KB of diff now shows as *too large to show here* with
+  its line counts, and every other file is listed and drawn, in the review, the working-set
+  viewer and a stash alike. A review that is still cut short says so again.
+
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
 or a teammate through the sync server, and see a whole dev environment, panes and containers,
