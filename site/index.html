@@ -360,7 +360,8 @@ h2{font-family:var(--f-body);font-weight:700;font-size:clamp(28px,3.4vw,40px);li
 @media (max-width:640px){.bento{grid-template-columns:minmax(0,1fr)}.tile,.t-perm{grid-column:auto}}
 .kick{display:flex;align-items:baseline;gap:10px;margin:0;font:12px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .kick .gk{font-size:16px;letter-spacing:0;text-transform:none;color:var(--accent)}
-.tile h3{font-size:22px;line-height:1.2;margin:6px 0 0;letter-spacing:-.015em;text-wrap:balance}
+.tile h3{font-size:22px;line-height:1.2;margin:0;letter-spacing:-.015em;text-wrap:balance}
+.tile .sub{margin:4px 0 0;font-size:15px;line-height:1.4;color:var(--muted)}
 .t-perm h3{font-size:clamp(24px,2.6vw,32px)}
 
 /* the app is always dark, like the real one */
@@ -737,7 +738,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
 #releases{border-top:1px solid var(--rule)}
 .rel{margin-top:40px}
 .rel-track{position:relative;height:74px;border-bottom:2px solid var(--ink)}
-.rtick{position:absolute;bottom:0;left:var(--x);width:12px;margin-left:-6px;height:calc(18px + var(--h) * 1px);padding:0;border:0;background:none;cursor:default}
+.rtick{position:absolute;bottom:0;left:var(--x);width:12px;margin-left:-6px;height:calc(18px + var(--h) * 1px);padding:0;border:0;background:none;cursor:pointer}
 .rtick::before{content:"";position:absolute;left:5px;bottom:0;width:2px;top:8px;background:var(--rule)}
 .rtick::after{content:"";position:absolute;left:5px;top:0;width:9px;height:7px;background:var(--c,var(--muted))}
 .rtick.minor{--c:var(--rule)}
@@ -763,7 +764,10 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
 }
 .rel-latest{list-style:none;margin:30px 0 0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
 @media (max-width:820px){.rel-latest{grid-template-columns:minmax(0,1fr)}}
-.rel-latest li{background:var(--paper);border:1px solid var(--rule);border-radius:10px;padding:16px 18px}
+.rel-latest li{display:flex}
+.rel-latest a{flex:1;display:block;background:var(--paper);border:1px solid var(--rule);border-radius:10px;padding:16px 18px;color:inherit;text-decoration:none;transition:border-color .15s,transform .15s}
+.rel-latest a:hover{border-color:var(--ink);transform:translateY(-1px)}
+.rel-latest .rn{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .rel-latest p{margin:0;font-size:15.5px}
 .rel-latest .rv{display:flex;justify-content:space-between;margin-bottom:6px;font:13px var(--f-mono);color:var(--muted)}
 .rel-latest .rv b{color:var(--ink);font-weight:600}
@@ -836,7 +840,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
           <a class="btn btn-solid" id="dlPrimary" href="https://github.com/respeak-io/episko/releases/latest"><svg class="os" id="icMac" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg><svg class="os" id="icWin" hidden viewBox="0 0 24 24" aria-hidden="true"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg><span id="dlLabel">Download for macOS</span></a>
           <a class="btn btn-line" href="https://github.com/respeak-io/episko">GitHub</a>
         </div>
-        <span class="fine">macOS &amp; Windows · free and open source · <span class="mono" data-ver>v0.36.0</span></span>
+        <span class="fine">macOS &amp; Windows · free and open source · <span class="mono" data-ver>v0.37.0</span></span>
       </div>
     </div>
 
@@ -875,7 +879,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
       <div class="bento" id="bento">
 
         <article class="tile t-perm">
-          <header><p class="kick">Permissions <span class="gk" lang="grc">φύλαξ</span></p><h3>Whoever needs you comes first</h3></header>
+          <header><h3>Permission prompts</h3><p class="sub">Allow or deny every request from one place.</p></header>
           <div class="app split" id="pApp">
             <p class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>Episko</span><span class="ptally" id="pTally"></span></p>
             <ol class="side" id="pSide" aria-label="Sessions"></ol>
@@ -890,7 +894,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-lim">
-          <header><p class="kick">Limits <span class="gk" lang="grc">πρόγνωσις</span></p><h3>See the wall before you hit it</h3></header>
+          <header><h3>Spend and limits</h3><p class="sub">Today's cost, and when you'll hit your limit.</p></header>
           <div class="app lims" id="lims">
             <div class="lim2"><span>5-hour</span><b class="w">62%</b><span class="bar2"><i style="--v:62%;--f:91%;--c:#e0a44a"></i></span></div>
             <div class="lim2"><span>weekly</span><b class="d">38%</b><span class="bar2"><i style="--v:38%;--f:54%;--c:#37c98b"></i></span></div>
@@ -899,7 +903,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-rev">
-          <header><p class="kick">Revive <span class="gk" lang="grc">ἀγρυπνία</span></p><h3>Carries on after a 3 a.m. 529</h3></header>
+          <header><h3>Automatic retries</h3><p class="sub">Restarts a turn the API cut off.</p></header>
           <div class="app revive" id="rv">
             <div class="rv-top"><span class="rv-err" id="rvErr">API error 529</span><span class="rv-try" id="rvTry">try 3 of 8</span></div>
             <div class="rv-line" id="rvLine">next try in <b id="rvCount">0:09</b></div>
@@ -908,7 +912,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-health">
-          <header><p class="kick">Code health <span class="gk" lang="grc">ἔλεγχος</span></p><h3>A second look at what the agent wrote</h3></header>
+          <header><h3>Code checks</h3><p class="sub">Flags risky changes in the agent's diff.</p></header>
           <div class="app diff2" id="diff2">
             <p class="df-h"><span>src/auth/session.ts</span><span><b class="add">+84</b> <b class="del">−12</b></span></p>
             <div class="df-lines">
@@ -924,7 +928,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-srv">
-          <header><p class="kick">Dev servers <span class="gk" lang="grc">θύρα</span></p><h3>Finds the servers agents leave running</h3></header>
+          <header><h3>Dev servers</h3><p class="sub">Every server your agents started, in one list.</p></header>
           <div class="app srv" id="srv">
             <p class="srv-pill" id="srvPill"><i></i><span id="srvN">3 servers</span></p>
             <div class="srv-rows" id="srvRows">
@@ -937,7 +941,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-hand">
-          <header><p class="kick">Handoff <span class="gk" lang="grc">παράδοσις</span></p><h3>Send a session to another machine</h3></header>
+          <header><h3>Session handoff</h3><p class="sub">Move a session to your other machine.</p></header>
           <div class="app hand" id="hand">
             <div class="mach"><span class="scr"></span><small>MacBook</small></div>
             <div class="road"><span class="walker" id="walker"></span></div>
@@ -946,7 +950,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-pr">
-          <header><p class="kick">Pull requests <span class="gk" lang="grc">κρίσις</span></p><h3>Review it, hand the fixes to an agent</h3></header>
+          <header><h3>Pull request reviews</h3><p class="sub">Comment on a PR, send the fixes to an agent.</p></header>
           <div class="app pr2">
             <p class="pr-l"><i>12</i><span class="add">+ const lease = claim(issue, ttl)</span></p>
             <div class="pr-c"><b>you</b> ttl should come from settings<span class="pr-go">→ agent</span></div>
@@ -954,7 +958,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-ag">
-          <header><p class="kick">Agents <span class="gk" lang="grc">ποίμνιον</span></p><h3>Claude Code, Codex and 20 more</h3></header>
+          <header><h3>20+ coding agents</h3><p class="sub">Claude Code and Codex built in, the rest in a terminal.</p></header>
           <div class="app ag">
             <span class="on">Claude Code</span><span class="on">Codex</span><span>OpenCode</span><span>Gemini</span><span>Cursor</span><span>Copilot</span><span>Amp</span><span>Qwen</span><span>Kimi</span><span>+13</span>
           </div>
@@ -1006,10 +1010,10 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         <div class="rel-months" id="relMonths" aria-hidden="true"></div>
       </div>
       <p class="rel-swipe" aria-hidden="true">← swipe for older releases</p>
-      <ol class="rel-latest">
-        <li><p class="rv"><b>0.36.0</b><span>Oct 19</span></p><p>Back and forward between screens, and a session handed to another machine.</p></li>
-        <li><p class="rv"><b>0.35.0</b><span>Oct 15</span></p><p>Review a pull request without leaving Episko.</p></li>
-        <li><p class="rv"><b>0.34.0</b><span>Oct 9</span></p><p>Settings per project, and commit or stash from the diff.</p></li>
+      <ol class="rel-latest" id="relCards">
+        <li><a href="https://github.com/respeak-io/episko/releases/tag/v0.37.0"><p class="rv"><b>0.37.0</b><span>Oct 22</span></p><p class="rn">Pull requests show their branches and open on the conversation tab, agent reports are no longer listed as your questions, and History stays within the project you are in.</p></a></li>
+        <li><a href="https://github.com/respeak-io/episko/releases/tag/v0.36.0"><p class="rv"><b>0.36.0</b><span>Oct 19</span></p><p class="rn">Step back and forward between screens like a browser, hand a Claude session to another machine or a teammate through the sync server, and see a whole dev environment, panes and containers, as one block in the servers popover.</p></a></li>
+        <li><a href="https://github.com/respeak-io/episko/releases/tag/v0.35.0"><p class="rv"><b>0.35.0</b><span>Oct 15</span></p><p class="rn">Review a pull request inside Episko: the diff against its merge base, threads on their lines, one pending review sent as Comment, Approve or Request changes, and a PR link in a pane opens it there.</p></a></li>
       </ol>
       <p class="rel-all"><a href="https://github.com/respeak-io/episko/blob/main/CHANGELOG.md">Every change, in the changelog →</a></p>
     </div>
@@ -1583,14 +1587,21 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   tour.addEventListener('click',function(e){ if(e.target===tour) closeTour() });
   addEventListener('resize',function(){ if(!tour.hidden) go(cur) });
   // Scrolling moves one stop per gesture. A trackpad keeps firing as it coasts, so a step waits for the wheel to go quiet.
-  var wSum=0, wLock=false, wQuiet=null;
+  // Firefox counts a wheel notch in lines, so deltas are normalised to px first. After a step the
+  // wheel is ignored until the gesture ends, or a new one starts over a trackpad's coasting tail
+  // (a delta that jumps up, not one that decays), or a mouse wheel keeps turning.
+  var wSum=0, wLock=false, wIdle=true, wPrev=0, wAt=0, wQuiet=null;
   tour.addEventListener('wheel',function(e){
     e.preventDefault();
-    clearTimeout(wQuiet); wQuiet=setTimeout(function(){ wLock=false; wSum=0 },180);
-    if(wLock) return;
-    wSum+=Math.abs(e.deltaY)>=Math.abs(e.deltaX)?e.deltaY:e.deltaX;
-    if(Math.abs(wSum)<40) return;
-    var n=cur+(wSum>0?1:-1); wLock=true; wSum=0;
+    var u=e.deltaMode===1?33:e.deltaMode===2?innerHeight:1;
+    var d=(Math.abs(e.deltaY)>=Math.abs(e.deltaX)?e.deltaY:e.deltaX)*u, a=Math.abs(d), now=Date.now();
+    clearTimeout(wQuiet); wQuiet=setTimeout(function(){ wIdle=true; wSum=0 },160);
+    var fresh=wIdle || (now-wAt>320 && a>wPrev*1.8 && a>14) || (now-wAt>650 && a>=wPrev && a>=30);
+    wPrev=a; wIdle=false;
+    if(wLock && !fresh) return;
+    wLock=false; wSum+=d;
+    if(Math.abs(wSum)<30) return;
+    var n=cur+(wSum>0?1:-1); wLock=true; wSum=0; wAt=now;
     if(n>=0&&n<STEPS.length){ auto=false; go(n) }
   },{passive:false});
   var tx=null, ty=0;
@@ -1616,9 +1627,9 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   var lan=document.getElementById('lan'); onScreen(lan,function(on){ lan.classList.toggle('on',on) });
 
   // The time: one flag per release, placed by date. Minor and patch releases fly a paler flag.
-  var REL0='0.36.0 2026-10-19|0.35.0 2026-10-15|0.34.0 2026-10-09|0.33.0 2026-10-03|0.32.0 2026-09-29|0.31.0 2026-09-23|0.30.0 2026-09-19|0.29.0 2026-09-17|0.28.0 2026-09-11|0.27.0 2026-09-09|0.26.0 2026-09-08|0.25.1 2026-09-06|0.25.0 2026-09-04|0.24.0 2026-08-28|0.23.0 2026-08-26|0.22.0 2026-08-25|0.21.0 2026-08-21|0.20.0 2026-08-14|0.19.0 2026-08-10|0.18.0 2026-08-10|0.17.0 2026-08-07|0.16.0 2026-08-07|0.15.0 2026-08-05|0.14.0 2026-08-03|0.13.7 2026-08-01|0.13.6 2026-08-01|0.13.5 2026-08-01|0.13.0 2026-07-31|0.12.0 2026-07-31|0.11.1 2026-07-28|0.11.0 2026-07-27|0.10.1 2026-07-23|0.10.0 2026-07-23|0.9.0 2026-07-22|0.8.0 2026-07-21|0.7.0 2026-07-21|0.6.0 2026-07-21|0.5.1 2026-07-20|0.5.0 2026-07-20|0.4.3 2026-07-18'
+  var REL0='0.37.0 2026-10-22|0.36.0 2026-10-19|0.35.0 2026-10-15|0.34.0 2026-10-09|0.33.0 2026-10-03|0.32.0 2026-09-29|0.31.0 2026-09-23|0.30.0 2026-09-19|0.29.0 2026-09-17|0.28.0 2026-09-11|0.27.0 2026-09-09|0.26.0 2026-09-08|0.25.1 2026-09-06|0.25.0 2026-09-04|0.24.0 2026-08-28|0.23.0 2026-08-26|0.22.0 2026-08-25|0.21.0 2026-08-21|0.20.0 2026-08-14|0.19.0 2026-08-10|0.18.0 2026-08-10|0.17.0 2026-08-07|0.16.0 2026-08-07|0.15.0 2026-08-05|0.14.0 2026-08-03|0.13.7 2026-08-01|0.13.6 2026-08-01|0.13.5 2026-08-01|0.13.0 2026-07-31|0.12.0 2026-07-31|0.11.1 2026-07-28|0.11.0 2026-07-27|0.10.1 2026-07-23|0.10.0 2026-07-23|0.9.0 2026-07-22|0.8.0 2026-07-21|0.7.0 2026-07-21|0.6.0 2026-07-21|0.5.1 2026-07-20|0.5.0 2026-07-20|0.4.3 2026-07-18'
     .split('|').map(function(r){ r=r.split(' '); return {v:r[0],d:new Date(r[1]+'T12:00:00Z')} }).reverse();
-  var DAY=864e5, MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var RELURL='https://github.com/respeak-io/episko/releases/tag/v', DAY=864e5, MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   var track=document.getElementById('relTrack'), months=document.getElementById('relMonths');
   function drawRel(REL){
   var t0=REL[0].d.getTime(), t1=REL[REL.length-1].d.getTime(), span=t1-t0||DAY, stackN={};
@@ -1626,7 +1637,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   track.textContent=''; months.textContent='';
   REL.forEach(function(r,i){
     var key=r.d.toISOString().slice(0,10), n=stackN[key]=(stackN[key]||0)+1;
-    var b=document.createElement('span'); b.setAttribute('role','listitem'); b.tabIndex=0;
+    var b=document.createElement('a'); b.setAttribute('role','listitem'); b.href=RELURL+r.v;
     b.className='rtick'+(/\.0$/.test(r.v)?'':' minor')+(i===REL.length-1?' latest':'');
     b.style.cssText='--x:'+at(r.d.getTime())+';--h:'+((n-1)*12)+';--i:'+i;
     b.innerHTML='<span class="tip">'+r.v+' · '+MON[r.d.getUTCMonth()]+' '+r.d.getUTCDate()+'</span>';
@@ -1712,9 +1723,18 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
       var rel=list.map(function(r){ var d=r.published_at.slice(0,10); return {v:r.tag_name.replace(/^v/,''),d:new Date(d+'T12:00:00Z')} })
         .filter(function(r){ return /^\d+\.\d+\.\d+$/.test(r.v) }).reverse();
       if(rel.length>1) drawRel(rel);
+      // The cards: the newest three, each with the intro its release notes open with.
+      var cards=document.getElementById('relCards');
+      cards.innerHTML=list.slice(0,3).map(function(r){
+        var intro=[], lines=(r.body||'').split(/\r?\n/);
+        for(var i=0;i<lines.length && lines[i].trim() && !/^[+~!*#-]\s/.test(lines[i]);i++) intro.push(lines[i].trim());
+        var d=new Date(r.published_at), v=esc(r.tag_name.replace(/^v/,''));
+        return '<li><a href="'+esc(r.html_url)+'"><p class="rv"><b>'+v+'</b><span>'+MON[d.getUTCMonth()]+' '+d.getUTCDate()+'</span></p><p class="rn">'+esc(intro.join(' ').replace(/[*_`]/g,''))+'</p></a></li>';
+      }).join('');
     })
     .catch(function(){});
   }catch(e){}
+  function esc(t){ return String(t).replace(/[&<>"']/g,function(c){ return '&#'+c.charCodeAt(0)+';' }) }
 })();
 </script>
 </body>
