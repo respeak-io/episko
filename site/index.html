@@ -665,13 +665,15 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 .hero{position:relative;overflow:hidden;background:radial-gradient(120% 340px at 50% 100%,var(--glow),transparent 70%),var(--sky)}
 .hero{isolation:isolate;display:flex;flex-direction:column;min-height:calc(100vh - 59px)}
 @supports (height:100svh){.hero{min-height:calc(100svh - 59px - env(safe-area-inset-top,0px))}}
-.hero>.wrap{width:100%}
-.hero .pasture{flex:1 0 310px;margin-top:40px;height:auto}
+/* The pasture keeps its height; the text takes the rest of the screen and sits a little above its middle. */
+.hero>.wrap{width:100%;flex:1 0 auto;display:flex;flex-direction:column;justify-content:center;padding-bottom:4vh}
+.hero .pasture{flex:0 0 310px;margin-top:40px;height:auto}
 @media (max-width:640px){
   .hero{padding-top:28px}
   .hero h1{margin-top:20px}
   .hero .ctas .btn{height:44px;padding:0 16px}
   .hero .pasture{flex-basis:230px;margin-top:24px}
+  .hero>.wrap{padding-bottom:0}
 }
 .hero>.wrap{position:relative;z-index:1}
 .hero .pasture{background:transparent;border-top:0}
