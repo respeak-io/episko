@@ -13,30 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-! **A day's line on the project dashboard says what the day was, not what it cost.** A day with
-  agent spend and nothing else no longer gets a generated sentence about its own emptiness, which
-  used to crowd the days with commits out of the band. Each line now names its date and commit
-  count on the right, and a click lists that day's commits.
-+ **A pull request in the thread reader names its branches, and starts a session on one.**
-  Under the title: which branch it merges into and which it comes from, marked when that is a
-  fork. **Session on branch** opens the agent already on it, or its checkout, or a worktree cut
-  from the remote branch, with no prompt sent and nothing claimed on GitHub.
-~ **Starting an agent on an issue or pull request types the prompt in and stops.** It used to
-  send it straight away, with no chance to say what you actually wanted done. Edit it, then
-  press Enter. The Dependencies sheet, where the brief is edited before it starts, still sends.
-~ **Agent reports no longer pass for your questions.** A subagent's hand-back, a message from
-  an agent and a note from another session used to fill *Your questions* as raw
-  `<agent-message …>` rows. They are now listed as the sender's, with the wrapper stripped, and
-  a run of them folds into one row you can open. Only your own questions are numbered and
-  counted. History and the session mirror mark them the same way.
-! **A background shell no longer turns into somebody else's server on Windows.** Windows hands a
-  dead process's id to a new one, so a server left running days ago could look like a child of
-  a fresh session. A CI watcher there took its address, and the row showed ✓ instead of ⧗. The
-  stop button on that row could also have killed the unrelated server.
-! **History's project scope keeps to that project.** Scoped to a folder that holds other projects,
-  it also listed every session of the projects inside it.
-! **History lists Claude sessions without waiting for Codex**, and a refresh no longer moves the
-  selection off the session you picked.
++ The pull request reader shows which branch a PR merges from and into, and *Session on branch*
+  starts a session on its head branch.
+~ Starting an agent on an issue or pull request types the prompt in and waits for your Enter.
+~ *Your questions* lists agent reports and messages from other sessions under their sender, folded
+  together and unnumbered.
+~ Back and forward moved into the title bar, beside ⌘K.
+! Dashboard day lines describe the day's work without mentioning cost, and show its date and
+  commit count.
+! On Windows, a background job no longer shows up as a server with another session's address.
+! History's project scope no longer lists sessions from the projects inside that folder.
+! History shows Claude sessions without waiting for Codex, and a refresh keeps the row you picked.
 
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
