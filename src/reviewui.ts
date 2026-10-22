@@ -63,7 +63,7 @@ let fullTruncated = false; // the "all" view reuses `full`, and its note with it
 let commentable: Commentable = new Map();
 let range: Range = { kind: "all" };
 let ws = false;
-let tab: RvTab = "files";
+let tab: RvTab = "conversation"; // GitHub opens a PR there too: what it is before what it changed
 let compose: Compose | null = null;
 let convText = "";
 const replies = new Map<string, string>();
@@ -105,7 +105,7 @@ export function openPrReview(project: string, path: string, number: number): voi
   document.documentElement.style.setProperty("--accent", accentFor(path));
   if (!same) {
     pr = null; failed = ""; full = []; shown = []; truncated = false; fullTruncated = false; commentable = new Map();
-    range = { kind: "all" }; ws = false; tab = "files"; compose = null; convText = "";
+    range = { kind: "all" }; ws = false; tab = "conversation"; compose = null; convText = "";
     replies.clear(); threadOpen.clear(); collapsed.clear(); railFolded.clear(); tailDone.clear();
     activeFile = -1; event = "COMMENT"; mergeMethod = ""; seeded = false;
     $("rvBody").scrollTop = 0;

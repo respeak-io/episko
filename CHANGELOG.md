@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ **A pull request opens on its conversation.** The review stage starts on the *Conversation*
+  tab, as GitHub does: what the PR is about before what it changes. *Files* is one click away.
+
 ! **One huge file no longer hides the rest of a diff.** A pull request that touched a minified
   JSON snapshot showed only the files that sort before it, with no note saying so: the whole
   patch was cut at 800 KB. A file over 250 KB of diff now shows as *too large to show here* with
