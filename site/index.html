@@ -204,7 +204,7 @@
 
 *{box-sizing:border-box}
 html{overflow-x:clip}
-body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:17px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:17px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 a{color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
 .wrap{max-width:1160px;margin:0 auto;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
@@ -282,8 +282,7 @@ h1{font-family:var(--f-body);font-weight:700;font-size:clamp(26px,3.4vw,40px);li
   border-left:4px solid var(--c);padding:6px 10px;border-radius:3px;font:500 13px/1.35 var(--f-body);text-align:left;box-shadow:0 8px 20px -10px rgba(0,0,0,.45);
   opacity:0;pointer-events:none;transition:opacity .15s}
 .tag small{display:block;font:500 11px var(--f-mono);color:var(--muted)}
-.agent.edge-r .tag{left:auto;right:0;transform:none}
-.agent.edge-l .tag{left:0;transform:none}
+.agent .tag{transform:translateX(calc(-50% + var(--dx,0px)))}
 .agent:hover .tag,.agent:focus-visible .tag,.agent.show .tag{opacity:1}
 .pop{position:absolute;bottom:calc(100% + 36px);left:50%;transform:translateX(-50%);font:600 12px var(--f-mono);color:var(--st-done);white-space:nowrap;pointer-events:none;opacity:0}
 .pop.go{animation:pop 1.2s ease-out}
@@ -663,7 +662,16 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--glow:rgba(141,156,255,.09)}}
 :root[data-theme="dark"]{--glow:rgba(141,156,255,.09)}
 .hero{position:relative;overflow:hidden;background:radial-gradient(120% 340px at 50% 100%,var(--glow),transparent 70%),var(--sky)}
-.hero{isolation:isolate}
+.hero{isolation:isolate;display:flex;flex-direction:column;min-height:calc(100vh - 59px)}
+@supports (height:100svh){.hero{min-height:calc(100svh - 59px - env(safe-area-inset-top,0px))}}
+.hero>.wrap{width:100%}
+.hero .pasture{flex:1 0 310px;margin-top:40px;height:auto}
+@media (max-width:640px){
+  .hero{padding-top:28px}
+  .hero h1{margin-top:20px}
+  .hero .ctas .btn{height:44px;padding:0 16px}
+  .hero .pasture{flex-basis:230px;margin-top:24px}
+}
 .hero>.wrap{position:relative;z-index:1}
 .hero .pasture{background:transparent;border-top:0}
 .hero .orb{right:7%;top:44px;width:36px;height:36px}
@@ -1120,6 +1128,8 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     {t:'Retry failed webhooks',p:'billing-api',st:'work',x:77,y:56,c:'#c3b0ff'},
     {t:'Proofread the quickstart',p:'docs-site',st:'work',x:88,y:78,c:'#a8d0f0',far:1}
   ];
+  var COLORS=flock.map(function(a){ return a.c });
+  if(matchMedia('(max-width:640px)').matches) flock=[0,2,3,5].map(function(i,k){ var a=flock[i]; a.x=[20,44,64,86][k]; return a });
   var field=document.getElementById('field'), tally=document.getElementById('tally'), pasture=document.getElementById('pasture');
   var timer=null, reduce=matchMedia('(prefers-reduced-motion: reduce)').matches, going=false;
   function rnd(a,b){ return a+Math.random()*(b-a) }
@@ -1172,7 +1182,14 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     var el=o.el; o.x=x; o.y=y;
     el.style.setProperty('--t',(t||0)+'s'); el.style.left=x+'%'; el.style.bottom=y+'px';
     el.style.setProperty('--s',(1.1-(y-40)/52*.4).toFixed(3)); el.style.zIndex=200-Math.round(y);
-    var px=x/100*fw(); el.classList.toggle('edge-r',px>fw()-140); el.classList.toggle('edge-l',px<140);
+  }
+  // A tag that would run off either side of the pasture is nudged back in.
+  function fitTag(el){
+    var tag=el.querySelector('.tag'); if(!tag) return;
+    tag.style.setProperty('--dx','0px');
+    var r=tag.getBoundingClientRect(), p=pasture.getBoundingClientRect(), dx=0;
+    if(r.left<p.left+10) dx=p.left+10-r.left; else if(r.right>p.right-10) dx=p.right-10-r.right;
+    tag.style.setProperty('--dx',dx+'px');
   }
   function fw(){ return field.getBoundingClientRect().width||1000 }
   function walkTo(o,x,y,speed){
@@ -1189,7 +1206,9 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     b.innerHTML='<span class="walk"><span class="tag"><span class="tt"></span><small class="ts"></small></span><span class="pop"></span><span class="bubble"></span>'+svg(AGENT,{b:a.c,d:'#171320',s:'#f0ecf8'})+'</span>';
     a.el=b; a.hx=a.x; field.appendChild(b); putAt(a,a.x,a.y); paint(a);
     b.addEventListener('click',function(){act(a)});
+    b.addEventListener('mouseenter',function(){fitTag(b)}); b.addEventListener('focus',function(){fitTag(b)});
   });
+  count();
   function paint(a){
     a.el.className=a.el.className.replace(/\bs-\w+/g,'').trim()+' s-'+a.st;
     a.el.querySelector('.bubble').textContent=GLYPH[a.st];
@@ -1227,7 +1246,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     if(a){
       var gap=56/fw()*100, side=a.x-gap<3?1:-1, tx=a.x+side*gap;
       if(Math.abs(tx-S.x)<1 && Math.abs(a.y-S.y)<4){
-        S.el.classList.toggle('left',side>0); a.el.classList.add('show');
+        S.el.classList.toggle('left',side>0); a.el.classList.add('show'); fitTag(a.el);
         S.ht=setTimeout(herd,700); return;
       }
       S.ht=setTimeout(herd,walkTo(S,tx,a.y,110)*1000+120); return;
@@ -1645,7 +1664,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   var mShep=document.createElement('div'); mShep.className='shep'; mShep.style.setProperty('--s','1');
   mShep.innerHTML=svg(SHEP,{h:'#4b5563',s:'#e6d3b3',r:'var(--accent)',k:'#b08d57'}); mField.appendChild(mShep);
   [[30,22],[38,56],[43,18],[60,24],[65,58],[71,20],[20,48]].forEach(function(p,i){
-    var c=flock[i].c, el=document.createElement('span'), y=p[1];
+    var c=COLORS[i], el=document.createElement('span'), y=p[1];
     el.className='agent'+(i>4?' far':'');
     el.style.cssText='left:'+p[0]+'%;bottom:'+y+'px;--fx:'+(p[0]<50?-12:112)+'%;--dl:'+(i*.18).toFixed(2)+'s;--s:'+(1.1-(y-14)/70*.4).toFixed(3)+';z-index:'+(200-y);
     el.innerHTML='<span class="walk">'+svg(AGENT,{b:c,d:'#171320',s:'#f0ecf8'})+'</span>';
