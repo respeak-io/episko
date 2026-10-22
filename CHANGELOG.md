@@ -27,6 +27,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! History shows Claude sessions without waiting for Codex, and a refresh keeps the row you picked.
 ! One huge file no longer hides the rest of a diff: it is marked as too large to show, and every
   file after it is listed.
+! On Windows, sound alerts come from Episko itself, so a per-app mixer such as SteelSeries Sonar
+  lists and routes them as Episko rather than MSEDGEWEBVIEW2.
 
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine

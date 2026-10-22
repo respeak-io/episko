@@ -106,6 +106,8 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Console",
   # DPAPI (`CryptProtectData`): the sync token, sealed to this Windows user.
   "Win32_Security_Cryptography",
+  # `PlaySoundW`: sound alerts from episko.exe, not from the webview (platform::play_wav).
+  "Win32_Media_Audio",
 ] }
 
 # macOS-only: read the pre-rename WebKit localStorage SQLite to recover cost/
