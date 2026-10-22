@@ -239,6 +239,7 @@ export function fileSig(f: DiffFile): string {
   let h = 0x811c9dc5;
   const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } };
   feed(`${f.status}\u0000${f.oldPath ?? ""}\u0000${f.path}`);
+  if (f.large !== null) feed(f.large);
   for (const hk of f.hunks) { feed(hk.at); for (const l of hk.lines) feed(l.kind[0] + l.text + "\n"); }
   return h.toString(16);
 }

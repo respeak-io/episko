@@ -4,7 +4,7 @@ import type { DiffFile } from "../src/diff";
 import type { StashEntry } from "../src/types";
 
 const file = (path: string, o: Partial<DiffFile> = {}): DiffFile => ({
-  path, oldPath: null, status: "modified", binary: false, added: 1, removed: 1,
+  path, oldPath: null, status: "modified", binary: false, large: null, added: 1, removed: 1,
   hunks: [{ at: "@@ -1 +1 @@", header: "", lines: [] }], ...o,
 });
 

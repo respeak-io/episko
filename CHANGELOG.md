@@ -24,6 +24,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! On Windows, a background job no longer shows up as a server with another session's address.
 ! History's project scope no longer lists sessions from the projects inside that folder.
 ! History shows Claude sessions without waiting for Codex, and a refresh keeps the row you picked.
+! One huge file no longer hides the rest of a diff: it is marked as too large to show, and every
+  file after it is listed.
 
 ## 0.36.0 — 2026-10-19
 Step back and forward between screens like a browser, hand a Claude session to another machine
