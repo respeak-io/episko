@@ -2,7 +2,7 @@
 // ./dash owns the rules and ./dashboard owns the pane, the IPC and the events.
 
 import { icon } from "./svgicons";
-import { barRow, basename, esc, escAttr, fmtDay, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
+import { barRow, basename, esc, escAttr, fmtDay, fmtDayLong, fmtSince, nameHue, relTime, tilde, uUsd2 } from "./format";
 import { FILE_MANAGER, IS_MAC } from "./dom"; // constants, not DOM access: the *view rule allows it
 import {
   syncState,
@@ -141,15 +141,19 @@ const whoText = (authors: string[]): string => authors.length
   : `<span class="dim">—</span>`;
 
 /** One day's already-generated sentence. The caller picks which; this only says how. */
-export interface BandLine { key: string; text: string; team: boolean; writing: boolean }
+export interface BandLine { key: string; when: number; commits: number; text: string; team: boolean; writing: boolean }
 
 // A generated sentence is always marked: the mark is the only difference between a log and a
 // claim. The shared line says whose day it is, since it is the project's and not yours.
 function bandLine(l: BandLine): string {
   const cnr = l.team && !l.writing ? AI_MARK : ""; // floats right, so it leads the source order
   const inline = l.writing ? aiMark("· writing", "wr") : l.team ? "" : aiMark("· ai");
-  return `<p class="sb-line" title="${escAttr(l.key)}">${cnr}`
-    + (l.team ? `<span class="dim">shared · </span>` : "") + `${esc(l.text)}${inline}</p>`;
+  // The day it is about, and the ribbon's own popover behind it: a sentence must say what it summarises.
+  const tally = l.commits ? ` · ${l.commits} commit${l.commits === 1 ? "" : "s"}` : "";
+  const day = `<button class="sb-day" data-dashday="${escAttr(l.key)}" data-tip="The commits this line is about">`
+    + `${esc(fmtDayLong(l.when))}${tally}</button>`;
+  return `<p class="sb-line"><span class="sb-tx">${cnr}`
+    + (l.team ? `<span class="dim">shared · </span>` : "") + `${esc(l.text)}${inline}</span>${day}</p>`;
 }
 
 // The band's one door out, in both states. `history` is a verb `verbTiles` already offers, so

@@ -259,10 +259,10 @@ Easy to get wrong:
 
 **A day gets TWO generated sentences, and the split is what makes one committable** (`Scope` in `summarize.rs` picks the instruction as well as the record):
 
-- **Yours** (`dayFacts`): your session titles and spend, from *this* machine. Never reaches a file; lives in `trail-summaries.json`; the day's headline.
+- **Yours** (`dayFacts`): your session titles and commit subjects, from *this* machine — never spend, which the band already prints as a figure and which made a spend-only day narrate its own emptiness. Never reaches a file; lives in `trail-summaries.json`; the day's headline.
 - **The project's** (`projectDayFacts`): commit subjects, authors, PR events. Same facts for the whole team, therefore committable, and the half `.episko/digest.md` holds.
 
-Committing the mixture is the bug the split fixes: `write_digest` replaces the day's key, so the committed line becomes whoever wrote last describing their own half; it reads fine and isn't the day. The split also keeps `spend: $…` out of a pushed file.
+Committing the mixture is the bug the split fixes: `write_digest` replaces the day's key, so the committed line becomes whoever wrote last describing their own half; it reads fine and isn't the day.
 
 **Written for every closed day with commits; shown for some**: `sharedDay` shows the box only when more than one *human* committed (`isBotAuthor` filters). It deliberately does **not** ask "did somebody *else* commit", because that needs to know who you are, and `%an` vs `git config user.name` breaks on second machines, spellings, and co-authored commits.
 

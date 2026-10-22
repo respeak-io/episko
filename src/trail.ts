@@ -188,10 +188,10 @@ export function deterministicHeadline(d: TrailDay): string {
 }
 
 // What the summariser is handed: titles and subjects only, never transcript bodies, so
-// no conversation content reaches a model that did not already have it. Bounded.
+// no conversation content reaches a model that did not already have it. Bounded. No spend: the
+// band prints it as a figure, and a sentence about cost says nothing about what the day was.
 export function dayFacts(d: TrailDay, limit = 12): string {
   const lines: string[] = [];
-  if (d.cost > 0) lines.push(`spend: $${d.cost.toFixed(2)}`);
   for (const s of d.sessions.slice(0, limit)) {
     lines.push(`session: ${s.title}${s.project ? ` [${s.project}${s.branch ? `/${s.branch}` : ""}]` : ""}`);
   }
