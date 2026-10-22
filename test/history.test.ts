@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { CLAUDE_CLI, type ExtSession, type Restorable, type Sess } from "../src/types";
+import { CLAUDE_CLI, providerSessionKey, type ExtSession, type Restorable, type Sess } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
 import { sessions, setBackendLive, setDormants, setExternals, setFavorites, setHandoffs } from "../src/state";
 import {
-  histBucket, histBusy, histInProject, histLabel, histMatches, histProject,
+  histBucket, histBusy, histIndexOf, histInProject, histLabel, histMatches, histMerge, histProject,
   type HistEntry,
 } from "../src/history";
 
@@ -162,6 +162,46 @@ describe("histInProject — what the ◧ chip narrows to", () => {
 
   it("does not match a sibling whose path merely shares a prefix", () => {
     expect(histInProject(row({ cwd: "/w/epi-two", repo_root: "/w/epi-two" }), "/w/epi")).toBe(false);
+  });
+
+  it("leaves a project nested inside the scoped folder its own rows", () => {
+    // A folder that holds other projects is a project too; scoped to it, the path test
+    // used to list every session below it (74 of one favourite's, against 5 of its own).
+    setFavorites([{ name: "brain", path: "/w/brain" }]);
+    sessions.set("a", sess({ id: "a", workdir: "/w/live", colorKey: "/w/live" }));
+    expect(histInProject(row({ cwd: "/w", repo_root: null }), "/w")).toBe(true);
+    expect(histInProject(row({ cwd: "/w/brain", repo_root: "/w/brain" }), "/w")).toBe(false);
+    expect(histInProject(row({ cwd: "/w/brain/notes", repo_root: null }), "/w")).toBe(false);
+    expect(histInProject(row({ cwd: "/w/tool", repo_root: "/w/tool" }), "/w")).toBe(false);
+    expect(histInProject(row({ cwd: "/w/live", repo_root: null }), "/w")).toBe(false);
+  });
+
+  it("keeps a favourite's rows when its owner sits above it, as in a monorepo package", () => {
+    setFavorites([{ name: "pkg", path: "/r/pkg" }]);
+    expect(histInProject(row({ cwd: "/r/pkg/x", repo_root: "/r" }), "/r/pkg")).toBe(true);
+    setFavorites([{ name: "docs", path: "/d" }]);
+    expect(histInProject(row({ cwd: "/d/x/y", repo_root: null }), "/d/x/y")).toBe(true);
+  });
+});
+
+describe("histMerge / histIndexOf — one list from providers that answer at different speeds", () => {
+  it("interleaves the batches by recency and caps the result", () => {
+    const claude = [row({ session_id: "c1", last_active: 30 }), row({ session_id: "c2", last_active: 10 })];
+    const codex = [row({ provider: "codex", session_id: "x1", last_active: 20 })];
+    expect(histMerge([claude, codex], 10).map((h) => h.session_id)).toEqual(["c1", "x1", "c2"]);
+    expect(histMerge([claude, codex], 2).map((h) => h.session_id)).toEqual(["c1", "x1"]);
+  });
+
+  it("finds the selected session after a refresh moved it, by provider and id", () => {
+    const rows = [row({ session_id: "new" }), row({ provider: "codex", session_id: "same" }), row({ session_id: "Same" })];
+    expect(histIndexOf(rows, providerSessionKey("claude", "same"))).toBe(2);
+    expect(histIndexOf(rows, providerSessionKey("codex", "same"))).toBe(1);
+  });
+
+  it("falls back to the top when the session left the list or nothing was picked", () => {
+    const rows = [row({ session_id: "a" }), row({ session_id: "b" })];
+    expect(histIndexOf(rows, providerSessionKey("claude", "gone"))).toBe(0);
+    expect(histIndexOf(rows, null)).toBe(0);
   });
 });
 
