@@ -77,7 +77,7 @@ import {
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { copyText, refreshGhAccounts } from "./actions";
-import { typeInto } from "./panes";
+import { freshReady, typeInto } from "./panes";
 
 // What this pane does but does not own; one host object rather than a dozen setters.
 export interface DashHost {
@@ -1991,10 +1991,7 @@ async function dispatchNote(id: string): Promise<void> {
   if (typeof sid !== "string") return;   // a failed launch already toasted; don't eat the note too
   removeNote(id);
   renderDash();
-  // Claude's REPL needs a moment before it accepts input; failing to type is harmless.
-  setTimeout(() => {
-    void typeInto(sid, n.text).catch(() => {});
-  }, 1400);
+  prefillFresh(sid, n.text);
   toast("Dispatched and prefilled. Press Enter to send");
 }
 
@@ -2104,10 +2101,7 @@ async function doDispatch(): Promise<void> {
     });
   }
 
-  setTimeout(() => {
-    const prompt = `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`;
-    void typeInto(sid, prompt).catch(() => {});
-  }, 1400);
+  prefillFresh(sid, `Work on ${t.kind === "pr" ? "PR" : "issue"} #${t.number}: ${t.title}\n${t.url}`);
   toast(`Started on #${t.number} and prefilled. Edit it, then press Enter`);
 }
 
@@ -2218,10 +2212,14 @@ async function toggleShare(id: string): Promise<void> {
 async function dispatchText(text: string): Promise<void> {
   const sid = await host.launch(name(), root(), { colorKey: root() });
   if (typeof sid !== "string") return;
-  setTimeout(() => {
-    void typeInto(sid, text).catch(() => {});
-  }, 1400);
+  prefillFresh(sid, text);
   toast("Dispatched and prefilled. Press Enter to send");
+}
+
+// Failing to type is harmless, but it is logged: a prefill that silently vanished is this bug's history.
+function prefillFresh(sid: string, text: string): void {
+  void freshReady(sid).then(() => typeInto(sid, text))
+    .catch((e) => dlog("warn", `prefill ${sid.slice(0, 8)} failed: ${e}`));
 }
 
 // Start writing the shared work log; asked once per project (see `OK_KEY`). Every closed
