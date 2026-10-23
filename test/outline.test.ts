@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, notePrompt,
+  cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, noteAnswer, notePrompt,
   OUTLINE_DEFAULTS, outlineItems, parseRelay, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
@@ -143,6 +143,48 @@ describe("a resumed pane gets its questions back from the transcript", () => {
     seedPrompts(list, Array.from({ length: PROMPT_CAP + 4 }, (_, i) => msg("user", `q${i}`)));
     expect(list).toHaveLength(PROMPT_CAP);
     expect(list[0].text).toBe("q4");
+  });
+});
+
+describe("each question keeps the agent's closing answer", () => {
+  it("files a Stop under the last question, and the latest word wins", () => {
+    const list: Prompt[] = [];
+    notePrompt(list, "first", NOW);
+    notePrompt(list, "second", NOW + 5000);
+    noteAnswer(list, "  done with the second\n\n", false);
+    expect(list.map((p) => p.answer)).toEqual([undefined, "done with the second"]);
+    noteAnswer(list, "and the tests passed too", false); // a background task's report-back, same question
+    expect(list[1].answer).toBe("and the tests passed too");
+  });
+
+  it("files a queued prompt's Stop one entry back, since it ends the turn before", () => {
+    const list: Prompt[] = [];
+    notePrompt(list, "the running one", NOW);
+    notePrompt(list, "typed while it ran", NOW + 5000);
+    noteAnswer(list, "answer to the running one", true);
+    expect(list[0].answer).toBe("answer to the running one");
+    expect(list[1].answer).toBeUndefined();
+  });
+
+  it("ignores an empty answer, a non-string and an empty list", () => {
+    const list: Prompt[] = [];
+    expect(noteAnswer(list, "orphan", false)).toBeNull();
+    notePrompt(list, "q", NOW);
+    expect(noteAnswer(list, "   ", false)).toBeNull();
+    expect(noteAnswer(list, undefined, false)).toBeNull();
+    expect(list[0].answer).toBeUndefined();
+  });
+
+  it("restores answers from the transcript, an envelope's reply landing on the question before it", () => {
+    const list: Prompt[] = [];
+    const msg = (role: string, text: string) => ({ role, text, at: null });
+    seedPrompts(list, [
+      msg("assistant", "a greeting before anything was asked"),
+      msg("user", "q1"), msg("assistant", "a1"),
+      msg("user", "<task-notification>done</task-notification>"), msg("assistant", "a1, after the task"),
+      msg("user", "q2"),
+    ]);
+    expect(list.map((p) => [p.text, p.answer])).toEqual([["q1", "a1, after the task"], ["q2", undefined]]);
   });
 });
 

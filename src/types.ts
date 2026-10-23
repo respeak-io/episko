@@ -65,6 +65,7 @@ export interface Relay { kind: "agent" | "session"; from: string; name: string; 
 export interface Prompt {
   id: string; text: string; at: number; restored?: boolean;
   relay?: Relay; // set, and `text` is the message without its frame
+  answer?: string; // the agent's last words on it (./outline's noteAnswer)
   found?: boolean; lost?: boolean; // ./terminal's: the line was located, or its one search missed
 }
 export interface DiffStat {

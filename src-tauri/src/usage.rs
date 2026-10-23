@@ -719,6 +719,7 @@ fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
 
 /// Both readers answer with the END of what they found: a mirror shows how a conversation
 /// finished, and an outline seeded with the first 200 questions of one would list the wrong day.
+/// (The asked reader trims by question instead, so each keeps its answer.)
 fn last_n(mut msgs: Vec<TranscriptMsg>, limit: usize) -> Vec<TranscriptMsg> {
     let n = msgs.len();
     if n > limit {
@@ -755,14 +756,29 @@ fn read_asked_in(
     use std::io::BufRead;
     let reader = transcript_reader(base, cwd, session_id, false)?;
     let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    // Only the LAST assistant message before the next question: the answer the Questions
+    // sheet shows, never the running commentary between a turn's tool calls.
+    let mut answer: Option<TranscriptMsg> = None;
     for line in reader.lines() {
         let Ok(line) = line else { continue };
         match transcript_msg(&line) {
-            Some(msg) if msg.role == "user" => msgs.push(msg),
-            _ => {}
+            Some(msg) if msg.role == "user" => {
+                msgs.extend(answer.take());
+                msgs.push(msg);
+            }
+            Some(msg) => answer = Some(msg),
+            None => {}
         }
     }
-    Ok(last_n(msgs, limit))
+    msgs.extend(answer);
+    // `limit` counts questions; each keeps the answer that follows it.
+    let users = msgs.iter().filter(|m| m.role == "user").count();
+    if users > limit {
+        let first_kept = msgs.iter().enumerate().filter(|(_, m)| m.role == "user").nth(users - limit);
+        let cut = first_kept.map(|(i, _)| i).unwrap_or(0);
+        msgs.drain(..cut);
+    }
+    Ok(msgs)
 }
 
 /// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`: the
@@ -2805,6 +2821,35 @@ mod tests {
 
 
     #[test]
+    fn asked_keeps_each_questions_last_answer_and_trims_by_question() {
+        let cwd = "/Users/tim/dev/answers";
+        let (base, proj) = fixture(cwd);
+        let line = |role: &str, text: &str| {
+            serde_json::json!({ "type": role, "message": { "content": [{ "type": "text", "text": text }] } }).to_string()
+        };
+        let tool_result = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        let file = [
+            line("user", "q1"), line("assistant", "let me look"), tool_result.to_string(), line("assistant", "a1"),
+            line("user", "q2"), line("assistant", "a2"),
+            line("user", "q3"),
+        ]
+        .join("
+");
+        std::fs::write(proj.join("sid.jsonl"), file).unwrap();
+
+        let all: Vec<(String, String)> = read_asked_in(&base, cwd, "sid", 10).unwrap()
+            .into_iter().map(|m| (m.role, m.text)).collect();
+        let pair = |r: &str, t: &str| (r.to_string(), t.to_string());
+        assert_eq!(all, vec![pair("user", "q1"), pair("assistant", "a1"), pair("user", "q2"), pair("assistant", "a2"), pair("user", "q3")]);
+
+        // Two questions kept: q1 goes, and its answer with it.
+        let two: Vec<String> = read_asked_in(&base, cwd, "sid", 2).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(two, vec!["q2", "a2", "q3"]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn asked_reads_past_the_tail_the_mirror_stops_at() {
         let cwd = "/Users/tim/dev/long";
         let (base, proj) = fixture(cwd);
@@ -2828,9 +2873,12 @@ mod tests {
         std::fs::write(proj.join("sid.jsonl"), &file).unwrap();
 
         let asked = read_asked_in(&base, cwd, "sid", 100).unwrap();
-        let texts: Vec<&str> = asked.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(texts, vec!["the first thing anybody asked", "and the last one"]);
+        let users: Vec<&str> = asked.iter().filter(|m| m.role == "user").map(|m| m.text.as_str()).collect();
+        assert_eq!(users, vec!["the first thing anybody asked", "and the last one"]);
         assert_eq!(asked[0].at.as_deref(), Some("2026-09-04T18:50:00.000Z"));
+        // Of 700 assistant messages between them, only the last one comes back, as the answer.
+        assert_eq!(asked.len(), 3);
+        assert_eq!(asked[1].role, "assistant");
 
         // The mirror is unchanged and still cannot reach the first question, which is the point.
         let mirror = read_transcript_in(&base, cwd, "sid", 100).unwrap();
