@@ -420,6 +420,20 @@
       </div>
     </div>
 
+    <!-- Every question with the agent's closing answer (questions.ts): what is left of a
+         conversation once the REPL has compacted its scrollback. Index left, the thread right. -->
+    <div class="calldlg qdlg" id="qDlg" role="dialog" aria-modal="true" aria-label="Your questions">
+      <div class="diff-head">
+        <div class="diff-title-wrap"><b id="qTitle"></b><span class="diff-sub" id="qSub"></span></div>
+        <button class="call-copy" type="button" data-qcopyall="1" title="Copy every question and answer as markdown">Copy all</button>
+        <button class="diff-x" id="qClose" title="Close (Esc)">&#10005;</button>
+      </div>
+      <div class="call-body">
+        <div class="call-list" id="qIndex"></div>
+        <div class="q-thread" id="qThread"></div>
+      </div>
+    </div>
+
     <!-- A markdown file read in-app (mdreader.ts): its headings on the left, the document on the right. -->
     <div class="mddlg" id="mdDlg" role="dialog" aria-modal="true" aria-label="Markdown">
       <div class="diff-head">

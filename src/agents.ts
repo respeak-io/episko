@@ -7,6 +7,7 @@ import {
   abbr, beginAgentTurn, closeActivity, finishAgentTurn, noteAgentTouch,
   openActivity, pushHist, recordPrompt, setPhase,
 } from "./phase";
+import { noteAnswer } from "./outline";
 import { addAgentTokenUsage, addUsage, costDelta } from "./usage";
 import { queuePermission, removePermission } from "./permissions";
 import type { AgentRateLimit, AgentTokenUsage, Risk, Sess, Todo, TouchKind } from "./types";
@@ -25,6 +26,7 @@ export type AgentEvent =
   // Your own message. Separate from turn-started: a turn can open without one (a resume,
   // a retry), and the outline lists questions rather than turns.
   | { type: "prompt"; text: string }
+  | { type: "answer"; text: string } // the agent's closing message; the turn's last one wins
   | { type: "turn-completed"; failed: boolean; detail: string; durationMs: number | null }
   | { type: "activity-started"; id: string; tool: string; arg: string; input: string; desc: string }
   | { type: "activity-completed"; id: string; tool: string; input: string; inputData: any; output: string; failed: boolean; files: AgentFileTouch[] }
@@ -54,6 +56,7 @@ export function applyAgentEvent(s: Sess, event: AgentEvent): void {
       break;
     case "turn-started": beginAgentTurn(s); break;
     case "prompt": recordPrompt(s, event.text); break;
+    case "answer": noteAnswer(s.prompts, event.text, false); break;
     case "turn-completed":
       if (event.durationMs != null) s.durMs = event.durationMs;
       finishAgentTurn(s, event.failed, event.detail);

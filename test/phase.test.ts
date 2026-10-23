@@ -826,6 +826,15 @@ await parallel(DIMENSIONS.map((d) => () => agent(d.prompt, { label: \`audit:\${d
   // UserPromptSubmit fires the instant Enter is pressed, even mid-turn (the message is
   // queued), so the outstanding turn's Stop lands AFTER the new prompt.
   describe("a prompt queued behind a running turn", () => {
+    it("files the outstanding turn's answer under the question it answered", () => {
+      const s = sess();
+      hook(s, "UserPromptSubmit", { prompt: "fix the build" });
+      hook(s, "PreToolUse", { tool_name: "Read" });
+      hook(s, "UserPromptSubmit", { prompt: "and then commit" });
+      hook(s, "Stop", { last_assistant_message: "The build is fixed." });
+      hook(s, "Stop", { last_assistant_message: "Committed." });
+      expect(s.prompts.map((p) => p.answer)).toEqual(["The build is fixed.", "Committed."]);
+    });
     it("does not let the outstanding turn's Stop call it your turn", () => {
       const s = sess();
       hook(s, "UserPromptSubmit");                                  // turn 1 starts

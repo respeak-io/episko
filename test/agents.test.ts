@@ -51,6 +51,14 @@ describe("Codex provider adapter", () => {
       .toMatchObject({ type: "permission", id: "ask-1", tool: "Bash", risk: "high" });
   });
 
+  it("files Codex's completed agent message as the question's answer, never a started one", () => {
+    const s = sess();
+    for (const ev of codexEvents(raw("item/completed", { item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "why?" }] } }))) applyAgentEvent(s, ev);
+    expect(codexEvents(raw("item/started", { item: { type: "agentMessage", id: "a1", text: "partial" } }))).toEqual([]);
+    for (const ev of codexEvents(raw("item/completed", { item: { type: "agentMessage", id: "a1", text: "Because." } }))) applyAgentEvent(s, ev);
+    expect(s.prompts.map((p) => [p.text, p.answer])).toEqual([["why?", "Because."]]);
+  });
+
   // Asserts on `apiErr`, not on `failed`: any apiErr is what ./revive's watchdog retries
   // against, so a stopped turn stamped with one would be typed back in and re-run.
   it("treats a turn somebody stopped as done, not as a failure to be revived", () => {

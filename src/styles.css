@@ -1114,6 +1114,38 @@ html.win .wctl { display: flex; }
 .call-pre.dim { color: var(--muted-2); font-style: italic; }
 .call-empty { color: var(--muted); font-size: 12px; padding: 26px 18px; text-align: center; }
 
+/* --- the Questions sheet (modal): the call sheet's frame, the outline's rows, answers as prose */
+.qdlg .diff-head .call-copy { margin-left: auto; margin-right: 8px; }
+.ol-open { margin-left: auto; align-self: center; width: 20px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--muted-2); cursor: pointer; font-size: 11px; line-height: 1; }
+.ol-open:hover, .ol-open:focus-visible { color: var(--text); border-color: var(--hair-strong); background: var(--surface-2); }
+.q-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 8px; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; font: inherit; }
+.q-row:hover { background: var(--lift); }
+.q-row.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.q-rn { font: 10px var(--font-mono); color: var(--muted-2); text-align: right; font-variant-numeric: tabular-nums; }
+.q-rt { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-row.relay .q-rt { color: var(--muted); }
+.q-rc { color: var(--muted-2); font-size: 12px; } /* · = no answer recorded */
+.q-thread { overflow-y: auto; padding: 8px 22px 40px; min-width: 0; }
+.q-ent { padding: 16px 0 18px; border-bottom: 1px solid var(--hair); }
+.q-ent:last-child { border-bottom: 0; }
+.q-h { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.q-n { font: 650 11px var(--font-mono); color: var(--accent-ink); }
+.q-who { font: 11px var(--font-mono); color: var(--muted); }
+.q-t { font: 10.5px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.q-b { margin-right: 4px; }
+.q-h .q-act:first-of-type { margin-left: auto; }
+.q-act { font: 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; cursor: pointer; opacity: .6; }
+.q-ent:hover .q-act { opacity: 1; border-color: var(--hair); }
+.q-act:hover, .q-act:focus-visible { color: var(--text); opacity: 1; border-color: var(--hair-strong); background: var(--surface-2); }
+/* Your words: the outline's own highlight, kept as typed */
+.q-ask { padding: 10px 13px; border-radius: var(--radius-sm); background: var(--accent-wash); border: 1px solid var(--accent-line); font: 13px/1.55 var(--font-ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.q-ent.relay .q-ask { background: var(--surface); border-color: var(--hair); color: var(--muted); }
+.q-ans.mdr { --mdr-fs: 13px; margin: 10px 0 0; padding: 2px 2px 0 14px; max-width: none; border-left: 2px solid var(--hair-strong); }
+.q-ans.mdr > :last-child { margin-bottom: 0; }
+.q-ans.mdr h1.mdr-h, .q-ans.mdr h2.mdr-h { font-size: 1.2em; padding-bottom: 0; border-bottom: 0; }
+.q-none { margin-top: 9px; padding-left: 14px; font-size: 12px; font-style: italic; color: var(--muted-2); }
+.q-none.run { color: var(--st-working); }
+
 /* --- project commit graph (modal). .grow's height MUST equal ROW_H in graph.ts (lane lines are
    drawn edge-to-edge per row), so nothing may add to a row's box: selection is a background,
    "current" an inset shadow. */

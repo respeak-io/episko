@@ -27,6 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
+import { closeQuestions, openQuestions, questionsOpen, renderQuestions } from "./questions";
 import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
@@ -424,6 +425,7 @@ function renderAllNow() {
     renderInspector(s); renderHeader(s);
   }
   renderCallSheet(); // no-op when closed; guarded inside against reassigning a selection
+  renderQuestions(); // likewise
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
   tourTick(); // last: it re-measures the anchor the renderers above just replaced
@@ -734,7 +736,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -783,6 +785,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.oljump) jumpToPrompt(el.dataset.olsid || activeId || "", el.dataset.oljump);
   else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.olgrp) toggleOutlineGroup(el.dataset.olgrp);
+  else if (el.dataset.olopen) openQuestions(el.dataset.olopen);
   else if (el.dataset.pastq) jumpPastMessage(el.dataset.pastq);
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
@@ -867,7 +870,7 @@ $("btnClose").addEventListener("click", () => {
   if (activeId) closeSession(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeQuestions(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -907,6 +910,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && callSheetOpen()) { e.preventDefault(); closeCallSheet(); }
+  else if (e.key === "Escape" && questionsOpen()) { e.preventDefault(); closeQuestions(); }
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && projSettingsOpen()) { e.preventDefault(); closeProjectSettings(); }
