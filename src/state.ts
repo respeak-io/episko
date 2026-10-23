@@ -276,6 +276,9 @@ export function setTermSplit(on: boolean) { termSplit = on; }
 // A github.com PR link in a pane opens the review stage when a project here is that repo.
 export let prLinksInApp: boolean = localStorage.getItem("cc-pr-links") !== "0";
 export function setPrLinksInApp(on: boolean) { prLinksInApp = on; }
+// Settings › Sidebar: shelved rows under their checkout's ⑃ header rather than below the project.
+export let shelvedInTree: boolean = localStorage.getItem("cc-shelved-tree") === "1";
+export function setShelvedInTree(on: boolean) { shelvedInTree = on; }
 export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
 export function setDriftAuto(on: boolean) { driftAuto = on; }
 // Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.

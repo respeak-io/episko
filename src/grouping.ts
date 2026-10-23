@@ -65,6 +65,20 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
 // reflows under the pointer. A pending removal keeps its row until the roster says it is gone.
 export const clusterIsLive = (c: WtCluster): boolean =>
   c.sessions.length + c.externals.length > 0 || removingWt.has(c.key);
+// Settings › Sidebar's "under their checkout": each shelved row joins the cluster its workdir
+// resolves to; one whose checkout is no longer listed stays in `rest`, below the project.
+export function placeDormants(p: ProjGroup, cl: WtCluster[]): { by: Map<string, Restorable[]>; rest: Restorable[] } {
+  const keys = new Set(cl.map((c) => c.key));
+  const roster = worktreesByRepo.get(p.path) ?? [];
+  const by = new Map<string, Restorable[]>();
+  const rest: Restorable[] = [];
+  for (const d of p.dormants) {
+    const k = checkoutDir(d.workdir || p.path, roster);
+    if (keys.has(k)) by.set(k, [...(by.get(k) ?? []), d]);
+    else rest.push(d);
+  }
+  return { by, rest };
+}
 // toplevel mode: one group per worktree; the root checkout keeps the project's identity.
 export function splitByWorktree(list: ProjGroup[], keep: readonly string[] = []): ProjGroup[] {
   const out: ProjGroup[] = [];
