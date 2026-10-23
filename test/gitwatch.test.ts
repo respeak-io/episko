@@ -479,4 +479,8 @@ describe("driftRepair", () => {
     expect(driftRepair(cwd, false)).toBeNull();
     expect(driftRepair(null, true)).toBeNull();
   });
+  it("leaves a drift alone while subagents run, since their writes arrive under the parent", () => {
+    expect(driftRepair(write, true, true)).toBeNull();
+    expect(driftRepair(cwd, true, true)).toBeNull();
+  });
 });
