@@ -28,6 +28,7 @@ import {
   setRailLayout, worktreesByRepo,
 } from "./state";
 import { readObj } from "./store";
+import { freshReady } from "./panes";
 import { isAgent, type GitActionResult } from "./types";
 
 // What the stage does but does not own, as one host object (the FleetHost precedent).
@@ -44,7 +45,6 @@ let host: ReviewHost = {
 export function setReviewHost(h: ReviewHost) { host = h; }
 
 const METHOD_ICON: Record<string, IconName> = { merge: "merge", squash: "squash", rebase: "rebase" };
-const PREFILL_MS = 1400; // a fresh session's REPL is not reading yet; the dashboard's dispatch waits as long
 const EXPAND_STEP = 20;
 const OPEN_ALL_UNDER = 60; // past this many files a review opens folded, as a list to work down
 
@@ -751,7 +751,7 @@ async function toAgent(text: string | null) {
   if (!dir) return;
   const sid = await host.launch(name(), dir, { colorKey: root(), worktree: p.head_ref, branch: p.head_ref });
   if (typeof sid !== "string" || !text) return;
-  setTimeout(() => prefill(sid, text), PREFILL_MS);
+  void freshReady(sid).then(() => prefill(sid, text));
 }
 
 // ---------- the view's own switches ----------

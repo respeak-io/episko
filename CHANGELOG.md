@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! **Claim & start puts the prompt in the new session again.** A fresh Claude session redraws its
+  input box about half a second after it first appears, and anything typed into it at that moment
+  was thrown away. The prefill was typed on a fixed timer that often landed right then, so the
+  session sometimes opened empty. Episko now waits until the session has really started before
+  typing. The same goes for dispatching a note and for handing review feedback to a new session.
+
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
 listed as your questions, and History stays within the project you are in.

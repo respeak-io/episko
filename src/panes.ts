@@ -13,7 +13,7 @@ import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
-  phaseText, providerCapabilities, providerSessionKey, resumeAgent,
+  isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -136,6 +136,19 @@ export async function typeInto(sid: string, text: string, size = 240, gapMs = 50
     await invoke("write_pty", { sessionId: sid, data: chars.slice(i, i + size).join("") });
     await new Promise((r) => setTimeout(r, gapMs));
   }
+}
+
+// A fresh Claude REPL draws its prompt, then remounts its input (raw mode off and on) ~0.5s later;
+// text typed across that remount is lost, and a fixed 1.4s raced it. Its first statusLine (`durMs`)
+// lands after the remount, so wait for that. Other providers keep the plain delay.
+const PREFILL_MIN_MS = 1400, PREFILL_SETTLE_MS = 300, PREFILL_CAP_MS = 15000;
+export async function freshReady(sid: string): Promise<void> {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await wait(PREFILL_MIN_MS);
+  const s = sessions.get(sid);
+  if (!s || !isClaude(s)) return;
+  for (let t = PREFILL_MIN_MS; t < PREFILL_CAP_MS && sessions.get(sid) === s && s.durMs == null; t += 100) await wait(100);
+  await wait(PREFILL_SETTLE_MS);
 }
 
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
