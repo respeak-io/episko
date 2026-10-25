@@ -73,13 +73,13 @@ pub(crate) struct AppState {
     /// (read, written) of sessions that have exited, so closing a pane does not walk the
     /// app-wide total backwards.
     io_retired: Mutex<(u64, u64)>,
-    /// (pid, port) → pane id of every listener the last `session_ports` poll attributed, so
+    /// (pid, port) → pane id of every listener the last `process_poll` attributed, so
     /// a server that outlives its pane stays listed (and killable) as an orphan.
     seen_ports: Mutex<HashMap<(u32, u16), String>>,
     /// pid → the pane every process was last seen under, so one that outlives it is found.
     seen_procs: Mutex<HashMap<u32, external::SeenProc>>,
-    /// The trees the last `left_behind` reported (pid → start time): all `kill_left_behind` kills.
-    left_last: Mutex<HashMap<u32, u64>>,
+    /// Every process the last `process_poll` reported (pid → start time): all `kill_proc_tree` kills.
+    proc_last: Mutex<HashMap<u32, u64>>,
     /// Where the last background-shell log resolved, so each poll does not re-walk the
     /// ladder; `pty::BgRootState` says why the root is remembered and the file never is.
     bg_root: Mutex<pty::BgRootState>,
@@ -307,7 +307,7 @@ pub fn run() {
                 io_retired: Mutex::new((0, 0)),
                 seen_ports: Mutex::new(HashMap::new()),
                 seen_procs: Mutex::new(HashMap::new()),
-                left_last: Mutex::new(HashMap::new()),
+                proc_last: Mutex::new(HashMap::new()),
                 bg_root: Mutex::new(pty::BgRootState::default()),
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
@@ -461,10 +461,9 @@ pub fn run() {
             pty::live_sessions,
             pty::read_scrollback,
             pty::read_bg_log,
-            external::session_ports,
+            external::process_poll,
             external::kill_listener,
-            external::left_behind,
-            external::kill_left_behind,
+            external::kill_proc_tree,
             git::git_branch,
             git::git_head,
             git::git_diffstat,

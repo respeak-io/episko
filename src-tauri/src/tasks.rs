@@ -1457,7 +1457,7 @@ fn find_task_index(arr: &toml_edit::ArrayOfTables, id: &str) -> Option<usize> {
 }
 
 /// Create or update a task. `id` is `None` for a new one. Returns its id.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_episko_task(
     workdir: String,
     id: Option<String>,
@@ -1494,7 +1494,7 @@ pub fn save_episko_task(
 
 /// Write `[override."<id>"]` for a task another provider declared. `run` is written
 /// verbatim so a `${input:…}` the user typed survives; discovery re-derives the prompt.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_task_override(
     workdir: String,
     id: String,

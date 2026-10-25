@@ -858,7 +858,7 @@ fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntr
 /// The whole catalogue, each entry saying whether it is installed. Never a filtered list:
 /// an agent that silently fails to appear is indistinguishable from Episko not supporting
 /// it. What can't be used says why rather than vanishing (the `tasks.rs` rule).
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_agents() -> Vec<AgentInfo> {
     let providers = provider_manifest();
     AGENTS
@@ -1059,13 +1059,13 @@ pub(crate) fn spawn_ghostty(
 
 /// Which external terminals are installed (the embedded one is always available). Empty on Windows.
 #[cfg(windows)]
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn available_terminals() -> Vec<String> {
     Vec::new()
 }
 
 #[cfg(not(windows))]
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn available_terminals() -> Vec<String> {
     let mut v = Vec::new();
     if find_ghostty().is_some() {
@@ -1410,7 +1410,7 @@ fn version_files_in(dir: &std::path::Path) -> Vec<InstallFile> {
 /// Where a pane's process is right now. `Session.workdir` is where it was launched and never
 /// moves, which is wrong for a shell that has `cd`ed; the link resolver asks here first. The
 /// pid is the PTY child itself, so this is what `pwd` would say. `None` once it has exited.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn session_cwd(state: State<AppState>, session_id: String) -> Option<String> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let pid = state.sessions.lock().unwrap().get(&session_id)?.pid?;
@@ -2090,7 +2090,7 @@ fn read_bg_log_announced<R: tauri::Runtime>(
 /// path AS IT STOOD when the shell spawned (see `BgServer` in types.ts). Errors are states
 /// a row can draw. `known_len` keeps the poll cheap: the log is append-only, so an unchanged
 /// length means one `metadata()` call instead of a 32 KiB read; pass 0 to force a read.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_bg_log(
     app: AppHandle,
     state: State<crate::AppState>,

@@ -6,6 +6,37 @@ export const $ = (id: string) => document.getElementById(id)!;
 let toastT: number | undefined; // one element: a second toast replaces the first rather than stacking
 export function toast(m: string) { const el = $("toast"); el.textContent = m; el.classList.add("show"); clearTimeout(toastT); toastT = window.setTimeout(() => el.classList.remove("show"), 1900); }
 
+export interface ToastAction { label: string; run: () => void; danger?: boolean }
+
+// A toast you can act on: longer-lived, paused while the pointer is on it, and built with
+// textContent so a process name can never become markup. One at a time, like `toast`.
+let actT: number | undefined;
+export function actToast(m: string, actions: ToastAction[] = [], ms = 9000) {
+  const el = $("actToast");
+  const hide = () => { clearTimeout(actT); el.classList.remove("show"); };
+  const arm = () => { clearTimeout(actT); actT = window.setTimeout(hide, ms); };
+  const msg = document.createElement("span");
+  msg.className = "at-msg";
+  msg.textContent = m;
+  const btns = actions.map((a) => {
+    const b = document.createElement("button");
+    b.className = a.danger ? "at-btn danger" : "at-btn";
+    b.textContent = a.label;
+    b.onclick = () => { hide(); a.run(); };
+    return b;
+  });
+  const x = document.createElement("button");
+  x.className = "at-x";
+  x.title = "Dismiss";
+  x.textContent = "✕";
+  x.onclick = hide;
+  el.replaceChildren(msg, ...btns, x);
+  el.onmouseenter = () => clearTimeout(actT);
+  el.onmouseleave = arm;
+  el.classList.add("show");
+  arm();
+}
+
 // Overlays sharing #scrim; the last one to close clears it. ./confirm has its own
 // backdrop and must stay off this list.
 const SCRIM_DLGS = ["palette", "wtDlg", "diffDlg", "expDlg", "graphDlg", "setDlg", "usageDlg", "projDlg", "histDlg", "callDlg", "mdDlg", "handoffDlg"];

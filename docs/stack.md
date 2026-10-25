@@ -76,8 +76,24 @@ A process outlives its pane in two ways. The pane closes and something under it 
 - **Seen, then lost.** Each poll records every process under a live pane, keyed by pid **and start time** (`AppState.seen_procs`), and forgets one that exited or whose pid was reused. A recorded process that no live pane holds any more is left behind; the popover shows each orphaned tree once, at its top (`track_left`).
 - **Found by folder**, for a stray from before this run or from another terminal: a *runtime* (`RUNTIMES`: node, python, bun…) whose parent is gone and whose command line or cwd lies in a checkout Episko knows. Only runtimes, because an editor's own processes carry the project path too and must never be accused.
 - **Not news:** a tree younger than `LEFT_GRACE_MS` (a closing pane takes a beat to die) and the daemons that outlive their parent by design and retire on their own (`DAEMONS`: git's fsmonitor, MSBuild nodes, the Gradle daemon…).
-- **✕ asks, then kills the tree.** `kill_left_behind` refuses unless its last poll reported that pid with that start time, then names every member, since POSIX `kill -pid` reaches only a group leader's group.
+- **✕ asks, then kills the tree.** `kill_proc_tree` refuses unless its last poll reported that pid with that start time, then names every member, since POSIX `kill -pid` reaches only a group leader's group.
 - **Closing a pane on Windows kills its tree first** (`kill_session`, `taskkill /T` while the root still links it), which is what POSIX's hangup already did. A process that dies on its own still leaves its children, and those are what the section lists.
+
+## Running in your panes
+
+The same poll lists what every live pane is running now, as a table per pane with a ✕ per process. Two folds keep it readable, because a Claude pane on Windows carries about thirty processes before it has done anything: six MCP servers, each behind `cmd /c`, `npx` and a console host.
+
+- **Started with the agent** (`splitLaunch`): a branch whose top began within `AT_LAUNCH_S` of the pane's root, and is not a shell, is the agent's own helpers, its MCP servers. Measured: up to 35s after `claude.exe` on a busy Windows machine. A shell branch (`bash`, `zsh`, `pwsh`) is how the agent runs a command, so it is work however early it began. A pane running only those is folded into one line at the end of the section. Only an agent pane is split; everything under a shell counts as work.
+- **Wrappers** (`isPlumbing`: shells, console hosts, `npx`/`pnpm`/`uvx` launchers) are hidden and their children lifted to their depth (`procRows`), so `cmd /c npx vite` reads as `vite`. *Show wrappers* puts them back.
+
+## Toasts
+
+- **Closing or shelving a pane** says what went with it, from the last poll's view of its tree (`paneClosing`, before `kill_session`). Only work started since the pane opened is named; the agent's MCP servers are expected to go.
+- **A tree that outlived what started it** is announced once (`newlyLeft`), with *Kill* and *Show*. A folder match never is: it was found at startup, not seen leaving.
+
+## One poll, off the main thread
+
+`process_poll` takes one process snapshot for the ports, the pane trees and the left-behind trees. On Windows the snapshot costs ~45ms, the socket table ~30ms and the command/memory read ~30ms, measured. It is `#[tauri::command(async)]`: a plain `#[tauri::command]` runs on the main thread, which on Windows is the one that drags and paints the window, and `session_ports` used to run there every 4s.
 
 ## Not yet
 

@@ -19,7 +19,7 @@ fn notes_path(root: &str) -> PathBuf {
 
 /// A missing or malformed file reads as an empty list, never an error: one bad edit must
 /// not take the feature away from the whole team (the stance `tasks.rs` takes too).
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_shared_notes(root: String) -> Vec<SharedNote> {
     let Ok(text) = std::fs::read_to_string(notes_path(&root)) else { return vec![] };
     let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return vec![] };
@@ -42,7 +42,7 @@ pub(crate) fn list_shared_notes(root: String) -> Vec<SharedNote> {
 
 /// Promote a note into the project (`share = true`) or take it back out. `create` gates
 /// the first write: a new committable file in someone's repo is a real side effect.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn set_shared_note(
     root: String, id: String, text: String, who: String, at: String, share: bool, create: bool,
 ) -> Result<(), String> {

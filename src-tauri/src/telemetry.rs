@@ -348,7 +348,7 @@ mod tests {
             io_retired: Mutex::new((0, 0)),
             seen_ports: Mutex::new(HashMap::new()),
             seen_procs: Mutex::new(HashMap::new()),
-            left_last: Mutex::new(HashMap::new()),
+            proc_last: Mutex::new(HashMap::new()),
             bg_root: Mutex::new(crate::pty::BgRootState::default()),
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),

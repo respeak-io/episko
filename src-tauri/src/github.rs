@@ -1023,7 +1023,7 @@ pub(crate) fn parse_allow(toml_text: &str) -> ClaimAllow {
 }
 
 /// The project's claim policy; a missing or unreadable file is "everything allowed".
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn claim_policy(root: String) -> ClaimAllow {
     std::path::Path::new(&root)
         .join(".episko")
@@ -1050,7 +1050,7 @@ pub(crate) struct KeptIssue {
 }
 
 /// Issues this project has decided to keep, so triage stops suggesting them.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_kept(root: String) -> Vec<KeptIssue> {
     let Ok(text) = std::fs::read_to_string(episko_toml(&root)) else { return vec![] };
     let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else { return vec![] };
@@ -1071,7 +1071,7 @@ pub(crate) fn list_kept(root: String) -> Vec<KeptIssue> {
 
 /// Add or remove one. `create` gates the very first write, as the digest's does: a new
 /// committable file in someone's repo is a real side effect.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn set_kept(
     root: String, number: i64, who: String, at: String, keep: bool, create: bool,
 ) -> Result<(), String> {

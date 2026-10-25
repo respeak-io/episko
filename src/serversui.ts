@@ -6,15 +6,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ask } from "./confirm";
-import { $, FILE_MANAGER, toast } from "./dom";
+import { $, actToast, FILE_MANAGER, toast } from "./dom";
 import { basename, esc, escAttr, fmtMb } from "./format";
 import { FAVORITES, sessions, activeId, worktreesByRepo } from "./state";
 import {
   applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
-  failedServers, forgetServer, leftKey, leftLead, leftMem, leftShown, liveServers, markKilled, portOf,
-  procLabel, reconcilePorts, servingUrls, shownServers, usefulPort, type BgRead, type LeftBehind, type SessionPort,
+  branchLabels, failedServers, forgetServer, hasWork, isPlumbing, leftKey, leftLead, leftMem, leftShown, liveServers,
+  markKilled, memOf, nameList, newlyLeft, portOf, procLabel, procRows, reconcilePorts, servingUrls, shownServers,
+  splitLaunch, usefulPort, type BgRead, type LeftBehind, type PaneProcs, type ProcInfo, type ProcPoll, type SessionPort,
 } from "./servers";
-import { isClaude, type BgServer, type Sess } from "./types";
+import { isAgent, isClaude, isExited, type BgServer, type Sess } from "./types";
 import { buildStacks, stackTally, type Checkout, type Container, type PaneIn, type Stack, type StackCfg } from "./stack";
 import { stackHtml } from "./stackview";
 import { discoverTasks, launchWithDeps } from "./tasks";
@@ -22,13 +23,14 @@ import { discoverTasks, launchWithDeps } from "./tasks";
 // A row: "bg" is a shell an agent backgrounded (the record is all there is), "task" a
 // runnable Episko launched (the pane is the server), "port" a socket nothing announced. A
 // port row's pane may be closed already (`orphan`), so it carries its own id and project.
-// "left" is a process tree still running after its pane closed or its parent died; `sid`
-// is null for one found by its folder, which no pane of this run ever held.
+// "left" is a tree that outlived its pane or parent (`sid` null: found by its folder); "pane"
+// is what a live pane runs beyond what its agent launched with itself.
 type Row =
   | { kind: "bg"; s: Sess; at: number; b: BgServer }
   | { kind: "task"; s: Sess; at: number }
   | { kind: "port"; sid: string; project: string; at: number; port: number; name: string; pid: number; orphan: boolean }
-  | { kind: "left"; sid: string | null; project: string; at: number; g: LeftBehind };
+  | { kind: "left"; sid: string | null; project: string; at: number; g: LeftBehind }
+  | { kind: "pane"; sid: string; project: string; at: number; t: PaneProcs };
 
 interface LoosePort { port: number; name: string; pid: number; orphan: boolean; at: number }
 
@@ -49,9 +51,37 @@ const paneProject = new Map<string, string>();
 // What the last `left_behind` found, past the grace, and when each tree was first seen.
 let leftTrees: LeftBehind[] = [];
 const leftSeen = new Map<string, number>();
+const leftTold = new Set<string>(); // trees a toast has already announced
 
-const sidOf = (r: Row) => r.kind === "port" ? r.sid : r.kind === "left" ? r.sid ?? "" : r.s.id;
-const projectOf = (r: Row) => r.kind === "port" || r.kind === "left" ? r.project : r.s.project;
+// What each live pane runs, as of the last poll. A pane running only what its agent launched
+// with itself (MCP servers) is folded unless `showQuiet`; wrappers are hidden unless `showAll`.
+let paneTrees: PaneProcs[] = [];
+let showQuiet = false, showAll = false;
+
+const sidOf = (r: Row) => r.kind === "port" || r.kind === "pane" ? r.sid : r.kind === "left" ? r.sid ?? "" : r.s.id;
+const projectOf = (r: Row) => r.kind === "port" || r.kind === "left" || r.kind === "pane" ? r.project : r.s.project;
+
+function paneSplit(t: PaneProcs) {
+  const s = sessions.get(t.sessionId);
+  return splitLaunch(t, !!s && isAgent(s));
+}
+
+// A pane with work started since its launch is listed; a quiet one only when asked for.
+function paneRows(): Row[] {
+  const out: Row[] = [];
+  for (const t of paneTrees) {
+    const s = sessions.get(t.sessionId);
+    if (!s) continue;
+    const { later } = paneSplit(t);
+    const busy = hasWork(later);
+    if (!busy && !(showQuiet && hasWork(t.procs))) continue;
+    const since = busy ? Math.min(...later.map((p) => p.started)) : t.started;
+    out.push({ kind: "pane", sid: t.sessionId, project: s.project, at: since * 1000, t });
+  }
+  return out;
+}
+
+const quietPanes = () => paneTrees.filter((t) => sessions.has(t.sessionId) && !hasWork(paneSplit(t).later) && hasWork(t.procs));
 
 function taskRows(): Row[] {
   const out: Row[] = [];
@@ -82,6 +112,7 @@ function allRows(): Row[] {
       || (g.root ? basename(g.root) : "unknown project");
     out.push({ kind: "left", sid: g.sessionId, project, at: leftSeen.get(leftKey(g)) ?? Date.now(), g });
   }
+  out.push(...paneRows());
   out.push(...taskRows());
   return out.sort((a, b) => a.at - b.at); // oldest first: the forgotten server must not scroll off
 }
@@ -101,7 +132,7 @@ let lastPop = "";
 // A task or loose port is always a server; an agent's shell splits on its URL alone (`bgKind`).
 // Never guess from `dev`/`serve` in the command: that fires on `npm ci`, `pytest`, `gh run watch`.
 // A left-behind tree has its own heading: it holds no port, or it would be a port row.
-const isServerRow = (r: Row) => r.kind === "left" ? false : r.kind !== "bg" || bgKind(r.b) === "server";
+const isServerRow = (r: Row) => r.kind === "left" || r.kind === "pane" ? false : r.kind !== "bg" || bgKind(r.b) === "server";
 
 // Hidden when nothing is running, so a forgotten server is what catches the eye.
 export function renderServers() {
@@ -129,7 +160,7 @@ export function renderServers() {
   // One line per row, jobs prefixed, so the hover list and the number agree.
   el.title = [
     ...stacks.map((st) => `stack · ${st.project}${st.label ? ` · ${st.label}` : ""}: ${st.why || st.state}`),
-    ...shown.map((r) => `${isServerRow(r) ? "" : r.kind === "left" ? "left behind · " : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
+    ...shown.map((r) => `${isServerRow(r) ? "" : r.kind === "left" ? "left behind · " : r.kind === "pane" ? "running · " : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
   ].join("\n");
   el.classList.toggle("serving", serving > 0 && !failed); // failure wins the colour
   el.classList.toggle("failed", failed > 0);
@@ -144,6 +175,7 @@ function rowTitle(r: Row): string {
   if (r.kind === "task") return `${r.s.run?.url} (${r.s.run?.label ?? "task"})`;
   if (r.kind === "port") return `localhost:${r.port} (${r.name || "listening"})`;
   if (r.kind === "left") return ` ${procLabel(leftLead(r.g))} (${fmtMb(leftMem(r.g) / 1048576)})`;
+  if (r.kind === "pane") return ` ${nameList(branchLabels(paneShown(r.t)))} (${fmtMb(memOf(r.t.procs) / 1048576)})`;
   return r.b.ended ? bgOutcome(r.b) : (r.b.url || cmdLabel(r.b.cmd));
 }
 
@@ -151,12 +183,28 @@ function rowKey(r: Row): string {
   if (r.kind === "task") return `t:${r.s.id}`;
   if (r.kind === "port") return `p:${r.sid}:${r.port}`;
   if (r.kind === "left") return `l:${leftKey(r.g)}`;
+  if (r.kind === "pane") return `r:${r.sid}`;
   return `b:${r.b.taskId}`;
 }
 
 // The per-source facts a row draws, resolved once. An agent's row shows the command; a
 // task's shows the name you picked, marked with the app's own ▶ Run glyph.
+// What a pane row is named after: its later work, or for a quiet pane what it launched with.
+function paneShown(t: PaneProcs): ProcInfo[] {
+  const { later } = paneSplit(t);
+  return hasWork(later) ? later : t.procs;
+}
+
 function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?: string[]; label: string; x: string; go: string; note?: string } {
+  if (r.kind === "pane") {
+    return {
+      url: "", dead: false, outcome: "",
+      label: `<span class="sv-src sv-obs" title="Running under this pane now">≡</span>${esc(nameList(branchLabels(paneShown(r.t))))}`,
+      x: `<span class="sv-stop sv-none"></span>`,
+      go: "Go to this pane",
+      note: fmtMb(memOf(r.t.procs) / 1048576),
+    };
+  }
   if (r.kind === "left") {
     const g = r.g, n = g.procs.length;
     const why = g.sessionId
@@ -166,7 +214,6 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
       : `No pane of this Episko run started it; it runs in ${g.root}`;
     return {
       url: "", dead: false, outcome: "",
-      tail: g.procs.map((p) => `${String(p.pid).padStart(6)}  ${fmtMb(p.mem / 1048576).padStart(9)}  ${p.cmd.join(" ") || p.name}`),
       label: `<span class="sv-src sv-obs" title="${escAttr(why)}">⊘</span>${esc(procLabel(leftLead(g)))}${n > 1 ? ` <span class="sv-orphan">+${n - 1}</span>` : ""}`,
       x: `<button class="sv-stop sv-kill" data-svleft="${leftKey(g)}" title="Kill pid ${g.pid} and the ${n === 1 ? "process" : `${n} processes`} in its tree">✕</button>`,
       go: "Go to the pane that started this",
@@ -224,12 +271,46 @@ function bgKiller(s: Sess, b: BgServer): string | null {
 
 const canAsk = (s: Sess) => isClaude(s) && s.phase !== "ended";
 
+// A tree as a table: one row per process with its own ✕, the command line in the tooltip.
+function procTable(parts: { title: string; procs: ProcInfo[] }[]): string {
+  let hidden = 0, body = "";
+  for (const part of parts) {
+    if (!part.procs.length) continue;
+    const rows = procRows(part.procs, showAll);
+    hidden += part.procs.length - rows.length;
+    if (part.title && rows.length) body += `<tr class="sub"><td colspan="4">${esc(part.title)}</td></tr>`;
+    body += rows.map(({ p, depth }) => {
+      const tip = `${p.cmd.join(" ") || p.name}${p.cwd ? `\nin ${p.cwd}` : ""}`;
+      return `<tr title="${escAttr(tip)}"><td class="pn${isPlumbing(p) ? " pw" : ""}" style="--d:${depth}">${esc(procLabel(p, 70))}</td>`
+        + `<td>${p.pid}</td><td>${fmtMb(p.mem / 1048576)}</td>`
+        + `<td class="x"><button class="sv-stop sv-kill" data-svproc="${p.pid}:${p.started}" title="Kill pid ${p.pid} and everything it started">✕</button></td></tr>`;
+    }).join("");
+  }
+  const toggle = showAll || hidden
+    ? `<button class="sv-pall" data-svall="1">${showAll ? "Hide the wrappers" : `Show ${hidden} wrapper${hidden === 1 ? "" : "s"} (shells, npx, console hosts)`}</button>`
+    : "";
+  return `<table class="sv-ptbl"><tr><th>Process</th><th>pid</th><th>Memory</th><th></th></tr>${body}</table>${toggle}`;
+}
+
+function treeHtml(r: Row): string {
+  if (r.kind === "left") return procTable([{ title: "", procs: r.g.procs }]);
+  if (r.kind !== "pane") return "";
+  const { launch, later } = paneSplit(r.t);
+  return procTable([
+    { title: launch.length && later.length ? "Started since the pane opened" : "", procs: later },
+    { title: "Started with the agent (MCP servers)", procs: launch },
+  ]);
+}
+
 function rowHtml(r: Row, open: boolean): string {
   const sid = sidOf(r);
   const { url, dead, outcome, tail, label, x, go, note } = rowFacts(r);
+  const tree = r.kind === "left" || r.kind === "pane";
   // An empty peek says which silence this is: `bgPeekEmpty` carries the backend's reason.
   // A task or a port has no log file, so those keep the literal.
-  const peek = open && tail?.length
+  const peek = open && tree
+    ? treeHtml(r)
+    : open && tail?.length
     ? `<pre class="sv-log">${esc(tail.join("\n"))}</pre>`
     : open
       ? `<pre class="sv-log sv-log-empty">${esc(r.kind === "bg" ? bgPeekEmpty(r.b) : "no output yet")}</pre>`
@@ -247,12 +328,12 @@ function rowHtml(r: Row, open: boolean): string {
   const mid = dead
     ? `<span class="sv-url sv-dead">${esc(outcome)}</span>`
     : note
-      ? `<span class="sv-url sv-pending" title="Memory held by the whole tree">${esc(note)}</span>`
+      ? `<span class="sv-url sv-pending" title="Memory the whole tree holds">${esc(note)}</span>`
     : url
       ? `<button class="sv-url" data-svopen="${escAttr(url)}" title="Open ${escAttr(url)}">${esc(url.replace(/^https?:\/\//, ""))}</button>`
       : `<span class="sv-url sv-pending">starting…</span>`;
   return `<div class="sv-row${open ? " open" : ""}${dead ? " dead" : ""}">
-    <button class="sv-head" data-svtoggle="${escAttr(rowKey(r))}" title="Show the last lines of this output">
+    <button class="sv-head" data-svtoggle="${escAttr(rowKey(r))}" title="${tree ? "Show its processes" : "Show the last lines of this output"}">
       <span class="sv-dot${dead ? " down" : url ? " up" : ""}"></span>
       <span class="sv-main">
         <span class="sv-proj">${esc(projectOf(r))}</span>
@@ -273,8 +354,15 @@ function renderServersPop() {
   const pop = $("svrPop");
   // Partitioned here so `rows()` stays the single ordering, and it holds within each section.
   const servers = shown.filter(isServerRow);
-  const jobs = shown.filter((r) => !isServerRow(r) && r.kind !== "left");
+  const jobs = shown.filter((r) => !isServerRow(r) && r.kind !== "left" && r.kind !== "pane");
   const left = shown.filter((r) => r.kind === "left");
+  const panes = shown.filter((r) => r.kind === "pane");
+  const quiet = quietPanes();
+  const quietBtn = quiet.length
+    ? `<button class="sv-quiet" data-svquiet="1">${showQuiet
+      ? "Fold the panes that run only what their agent started with"
+      : `+ ${quiet.length} pane${quiet.length === 1 ? "" : "s"} running only their agent's MCP servers (${fmtMb(memOf(quiet.flatMap((t) => t.procs)) / 1048576)})`}</button>`
+    : "";
   // The servers heading stands at zero: "Running servers 0" over a list of jobs answers the pill.
   const stackPart = stacks.length
     ? `<div class="sv-h">Stacks<span class="sv-hn">${stacks.length}</span></div>`
@@ -291,7 +379,11 @@ function renderServersPop() {
         ? `<div class="sv-h sv-h2">Left behind<span class="sv-hn">${left.length}</span></div>`
           + left.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
         : "")
-      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout. ⊘ is left behind: still running after its pane closed or the process that started it died, as a watcher does on Windows; ✕ kills it and everything it started.</div>`
+      + (panes.length || quiet.length
+        ? `<div class="sv-h sv-h2">Running in your panes<span class="sv-hn">${panes.length}</span></div>`
+          + panes.map((r) => rowHtml(r, rowKey(r) === openRow)).join("") + quietBtn
+        : "")
+      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout. ⊘ is left behind: still running after its pane closed or the process that started it died, as a watcher does on Windows; ✕ kills it and everything it started. ≡ is what a pane is running now; the MCP servers an agent starts with itself are folded.</div>`
     : "");
   // innerHTML guard: an assignment between mousedown and mouseup drops the click (docs/architecture.md).
   if (html === lastPop) return;
@@ -453,13 +545,7 @@ async function stackDown(key: string) {
 
 // Ask the kernel which ports our panes hold and reconcile against what the panes said. This
 // needs no hook, log or output format, so it is what lists a `pnpm dev` typed by hand.
-async function refreshPorts(): Promise<boolean> {
-  let seen: SessionPort[];
-  try {
-    seen = await invoke<SessionPort[]>("session_ports");
-  } catch {
-    return false; // keep the last answer rather than blanking the list on one bad poll
-  }
+function applyPorts(seen: SessionPort[]): boolean {
   const now = Date.now();
   portsBySid = new Map();
   for (const p of seen) portsBySid.set(p.sessionId, [...(portsBySid.get(p.sessionId) ?? []), p.port]);
@@ -506,27 +592,32 @@ async function refreshPorts(): Promise<boolean> {
   return changed;
 }
 
-// Re-read every live log: the only thing that fills in a URL, a peek or an ended state, and
-// a disk read per server, so slower than anything on the telemetry path.
-// Process trees our panes left running (docs/stack.md). The folders are every checkout we
-// know, so a stray from before this run is found by where it runs.
-async function refreshLeft(): Promise<boolean> {
-  let got: LeftBehind[];
+// One snapshot, off the main thread, answers all three: ports, what panes run, what they left.
+// The folders are every checkout we know, so a stray from before this run is found by where it runs.
+async function refreshProcs(): Promise<boolean> {
+  let got: ProcPoll;
   try {
-    got = await invoke<LeftBehind[]>("left_behind", { roots: checkouts().map((c) => c.path) });
+    got = await invoke<ProcPoll>("process_poll", { roots: checkouts().map((c) => c.path) });
   } catch {
-    return false;
+    return false; // keep the last answer rather than blanking the list on one bad poll
   }
-  const next = leftShown(got, leftSeen, Date.now());
+  let changed = applyPorts(got.ports);
+  const next = leftShown(got.left, leftSeen, Date.now());
   const sig = (l: LeftBehind[]) => l.map((g) => `${leftKey(g)}/${g.procs.length}`).join("|");
-  const moved = sig(next) !== sig(leftTrees);
+  if (sig(next) !== sig(leftTrees)) changed = true;
   leftTrees = next;
-  return moved;
+  const psig = (l: PaneProcs[]) => l.map((t) => `${t.sessionId}:${t.procs.map((p) => p.pid).join(",")}`).join("|");
+  if (psig(got.panes) !== psig(paneTrees)) changed = true;
+  paneTrees = got.panes;
+  for (const g of newlyLeft(leftTrees, leftTold)) announceLeft(g);
+  // Memory moves every poll; an open popover repaints, behind its own innerHTML guard.
+  return changed || $("svrPop").classList.contains("show");
 }
 
+// Re-read every live log: the only thing that fills in a URL, a peek or an ended state, and
+// a disk read per server, so slower than anything on the telemetry path.
 export async function pollServers() {
-  let changed = await refreshPorts();
-  if (await refreshLeft()) changed = true;
+  let changed = await refreshProcs();
   if (await refreshContainers()) changed = true;
   const live = livePolled();
   if (!live.length) { if (changed) repaint(); return; }
@@ -573,6 +664,12 @@ $("svrPop").addEventListener("click", (e) => {
   if (port) { e.stopPropagation(); void killPort(port.dataset.svsid!, port.dataset.svport!); return; }
   const left = t.closest<HTMLElement>("[data-svleft]");
   if (left) { e.stopPropagation(); void killLeft(left.dataset.svleft!); return; }
+  const one = t.closest<HTMLElement>("[data-svproc]");
+  if (one) { e.stopPropagation(); void killProc(one.dataset.svproc!); return; }
+  const all = t.closest<HTMLElement>("[data-svall]");
+  if (all) { e.stopPropagation(); showAll = !showAll; lastPop = ""; renderServersPop(); return; }
+  const qt = t.closest<HTMLElement>("[data-svquiet]");
+  if (qt) { e.stopPropagation(); showQuiet = !showQuiet; lastPop = ""; renderServersPop(); return; }
   const kill = t.closest<HTMLElement>("[data-svkill]");
   if (kill) { e.stopPropagation(); stopTask(kill.dataset.svkill!); return; }
   const stk = t.closest<HTMLElement>("[data-svstack]");
@@ -624,7 +721,7 @@ function stopTask(sessionId: string) {
   const label = s.run?.label ?? "task";
   closePane(sessionId);
   lastPop = "";
-  toast(`Stopped ${label}`);
+  if (toldClose !== sessionId) toast(`Stopped ${label}`); // the close's own toast already said more
 }
 
 // The one stop Episko makes behind an agent's back, so it asks first. The backend re-checks
@@ -660,15 +757,70 @@ async function killLeft(key: string) {
     { title: `Kill pid ${g.pid}`, kind: "warning", okLabel: "Kill", cancelLabel: "Cancel" },
   );
   if (!ok) return;
+  await killTree(g.pid, g.started);
+}
+
+// The backend kills only what its last poll reported with this very start time.
+async function killTree(pid: number, started: number) {
   try {
-    const all = await invoke<boolean>("kill_left_behind", { pid: g.pid, started: g.started });
-    toast(all ? `Killed pid ${g.pid}` : `Killed pid ${g.pid}, but part of its tree is still running`);
+    const all = await invoke<boolean>("kill_proc_tree", { pid, started });
+    toast(all ? `Killed pid ${pid}` : `Killed pid ${pid}, but part of its tree is still running`);
   } catch (err) {
     toast(String(err));
   }
   lastPop = "";
   await pollServers();
   repaint();
+}
+
+// One process from a tree's table. Asked first: under a live pane, an agent may be relying on it.
+async function killProc(v: string) {
+  const [pid, started] = v.split(":").map(Number);
+  const t = paneTrees.find((x) => x.procs.some((p) => p.pid === pid));
+  const all = t?.procs ?? leftTrees.find((g) => g.procs.some((q) => q.pid === pid))?.procs ?? [];
+  const p = all.find((q) => q.pid === pid);
+  if (!p) { toast("That process has already gone"); return; }
+  const sub = new Set([pid]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const q of all) if (q.ppid != null && sub.has(q.ppid) && !sub.has(q.pid)) { sub.add(q.pid); grew = true; }
+  }
+  const under = t && sessions.get(t.sessionId);
+  const ok = await ask(
+    `Kill ${procLabel(p, 80)} and everything it started?\n\nIt holds ${fmtMb(memOf(all.filter((q) => sub.has(q.pid))) / 1048576)}.${under ? ` It runs under ${under.project}; an agent there may still be relying on it.` : ""}`,
+    { title: `Kill pid ${pid}`, kind: "warning", okLabel: "Kill", cancelLabel: "Cancel" },
+  );
+  if (ok) await killTree(pid, started);
+}
+
+// ---------- toasts ----------
+
+let toldClose = "";
+
+/** A pane is closing: say what went with it, from the last poll's view of its tree. Only work
+ *  started since the pane opened counts; the agent's own MCP servers are expected to go. */
+export function paneClosing(id: string) {
+  const t = paneTrees.find((x) => x.sessionId === id), s = sessions.get(id);
+  if (!t || !s) return;
+  const { later } = paneSplit(t);
+  const names = branchLabels(later);
+  if (!names.length) return;
+  toldClose = id;
+  actToast(`Closed ${s.project}, and with it ${nameList(names)} (${fmtMb(memOf(later) / 1048576)})`, [], 5000);
+}
+
+// A tree outlived what started it: say so once, with the two things worth doing about it.
+function announceLeft(g: LeftBehind) {
+  const s = g.sessionId ? sessions.get(g.sessionId) : undefined;
+  const project = s?.project ?? (g.sessionId && paneProject.get(g.sessionId)) ?? "a closed pane";
+  const what = `${procLabel(leftLead(g), 48)} (${fmtMb(leftMem(g) / 1048576)})`;
+  const msg = s && !isExited(s)
+    ? `${what} is still running in ${project}, though what started it has exited`
+    : `${what} is still running after ${project} closed`;
+  actToast(msg, [
+    { label: "Kill", danger: true, run: () => void killTree(g.pid, g.started) },
+    { label: "Show", run: () => { openRow = `l:${leftKey(g)}`; openServersPop(); } },
+  ], 12_000);
 }
 
 // `forgetServer` re-checks that the row has ended rather than trusting the markup.

@@ -381,19 +381,28 @@ export function cmdLabel(cmd: string, max = 52): string {
   return c.length > max ? c.slice(0, max - 1) + "…" : c;
 }
 
-// ---------- what a pane left running ----------
+// ---------- what panes run, and what they left running ----------
 
-/** One process of a tree `left_behind` found running without its pane (`mem` in bytes). */
-export interface LeftProc { pid: number; ppid: number | null; name: string; cmd: string[]; cwd: string; mem: number }
+/** One process `process_poll` reported: `mem` in bytes, `started` in epoch seconds. */
+export interface ProcInfo { pid: number; ppid: number | null; started: number; name: string; cmd: string[]; cwd: string; mem: number }
 /** `sessionId` null: no poll saw it under a pane; it was found by the folder it runs in (`root`). */
-export interface LeftBehind { pid: number; started: number; sessionId: string | null; root: string | null; procs: LeftProc[] }
+export interface LeftBehind { pid: number; started: number; sessionId: string | null; root: string | null; procs: ProcInfo[] }
+/** Everything under one live pane, its root left out; `started` is the root's. */
+export interface PaneProcs { sessionId: string; started: number; procs: ProcInfo[] }
+export interface ProcPoll { ports: SessionPort[]; panes: PaneProcs[]; left: LeftBehind[] }
 
 export const LEFT_GRACE_MS = 8_000; // a closing pane's tree takes a beat to die; never flash it
+// An agent starts its MCP servers with itself: measured up to 35s after the agent on a busy
+// Windows machine, so the window is generous, and a shell branch is work whenever it began.
+export const AT_LAUNCH_S = 120;
+// How an agent runs a command (Claude's Bash tool, a `!` line); MCP servers go via `cmd /c` or directly.
+const TOOL_SHELLS = /^(sh|bash|zsh|fish|dash|powershell|pwsh)(\.exe)?$/i;
 
 const SHELLS = /^(sh|bash|zsh|fish|dash|cmd|conhost|openconsole|powershell|pwsh|winpty-agent)(\.exe)?$/i;
 const INTERPRETERS = /^(node|bun|deno|python[\d.]*|pythonw|ruby|php)(\.exe)?$/i;
 // A package manager's own script only waits on the child that does the work.
 const LAUNCHER = /[\\/](npm|pnpm|yarn|npx|corepack)(-cli)?(\.c?js|\.mjs)?$/i;
+const LAUNCHER_EXE = /^(uvx?|npx|pnpx)(\.exe)?$/i;
 
 // Outlives its parent by design and retires on its own idle timer; listing it teaches you to
 // ignore the section (the ./health rule about ordinary code).
@@ -402,7 +411,7 @@ const DAEMONS = [/fsmonitor--daemon/, /VBCSCompiler/i, /MSBuild(\.exe)?\b.*nodem
 const base = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
 
 // `node …/node_modules/.bin/../vite/bin/vite.js build --watch` → `vite build --watch`.
-export function procLabel(p: LeftProc, max = 52): string {
+export function procLabel(p: ProcInfo, max = 52): string {
   const args = [...p.cmd];
   if (!args.length) return p.name;
   if (INTERPRETERS.test(base(args[0]))) args.shift();
@@ -414,15 +423,19 @@ export function procLabel(p: LeftProc, max = 52): string {
   return cmdLabel(args.join(" ") || p.name, max);
 }
 
-const isPlumbing = (p: LeftProc) => SHELLS.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "");
+/** A wrapper that only waits on the process doing the work: a shell, a console host, `npx`. */
+export const isPlumbing = (p: ProcInfo) =>
+  SHELLS.test(p.name) || LAUNCHER_EXE.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "");
 
-/** The process a row is named after: the biggest one doing real work, else the top. */
-export function leftLead(g: LeftBehind): LeftProc {
-  const work = g.procs.filter((p) => !isPlumbing(p)).sort((a, b) => b.mem - a.mem);
-  return work[0] ?? g.procs.find((p) => p.pid === g.pid) ?? g.procs[0];
+/** The process a set is named after: the biggest one doing real work, else `top`. */
+export function leadOf(procs: ProcInfo[], top?: number): ProcInfo {
+  const work = procs.filter((p) => !isPlumbing(p)).sort((a, b) => b.mem - a.mem);
+  return work[0] ?? procs.find((p) => p.pid === top) ?? procs[0];
 }
 
-export const leftMem = (g: LeftBehind) => g.procs.reduce((n, p) => n + p.mem, 0);
+export const leftLead = (g: LeftBehind) => leadOf(g.procs, g.pid);
+export const memOf = (procs: ProcInfo[]) => procs.reduce((n, p) => n + p.mem, 0);
+export const leftMem = (g: LeftBehind) => memOf(g.procs);
 
 export function isDaemon(g: LeftBehind): boolean {
   const lead = leftLead(g);
@@ -438,4 +451,84 @@ export function leftShown(groups: LeftBehind[], firstSeen: Map<string, number>, 
   for (const k of [...firstSeen.keys()]) if (!live.has(k)) firstSeen.delete(k);
   for (const g of groups) if (!firstSeen.has(leftKey(g))) firstSeen.set(leftKey(g), now);
   return groups.filter((g) => !isDaemon(g) && now - firstSeen.get(leftKey(g))! >= LEFT_GRACE_MS);
+}
+
+/** Trees a pane left that nobody has been told about yet; marks them told. A folder match is
+ *  never news: it was found at startup, not seen leaving. */
+export function newlyLeft(shown: LeftBehind[], told: Set<string>): LeftBehind[] {
+  const live = new Set(shown.map(leftKey));
+  for (const k of [...told]) if (!live.has(k)) told.delete(k);
+  const fresh = shown.filter((g) => g.sessionId && !told.has(leftKey(g)));
+  for (const g of fresh) told.add(leftKey(g));
+  return fresh;
+}
+
+// Each process's ancestor directly under the set's top (its ppid is outside the set).
+function topsOf(procs: ProcInfo[]): Map<number, ProcInfo> {
+  const by = new Map(procs.map((p) => [p.pid, p]));
+  const out = new Map<number, ProcInfo>();
+  for (const p of procs) {
+    let cur = p;
+    for (let i = 0; i < 32 && cur.ppid != null && by.has(cur.ppid); i++) cur = by.get(cur.ppid)!;
+    out.set(p.pid, cur);
+  }
+  return out;
+}
+
+/** A pane's processes split into what the agent launched with itself (its MCP servers: a
+ *  non-shell branch begun within `AT_LAUNCH_S`) and work. A shell pane's are all work. */
+export function splitLaunch(pane: PaneProcs, agent: boolean): { launch: ProcInfo[]; later: ProcInfo[] } {
+  if (!agent || !pane.started) return { launch: [], later: pane.procs };
+  const tops = topsOf(pane.procs);
+  const launch: ProcInfo[] = [], later: ProcInfo[] = [];
+  for (const p of pane.procs) {
+    const top = tops.get(p.pid)!;
+    (!TOOL_SHELLS.test(top.name) && top.started - pane.started <= AT_LAUNCH_S ? launch : later).push(p);
+  }
+  return { launch, later };
+}
+
+export const hasWork = (procs: ProcInfo[]) => procs.some((p) => !isPlumbing(p));
+
+/** One name per branch, biggest first: what a close stopped or a row is running. */
+export function branchLabels(procs: ProcInfo[]): string[] {
+  const tops = topsOf(procs);
+  const branches = new Map<number, ProcInfo[]>();
+  for (const p of procs) {
+    const t = tops.get(p.pid)!.pid;
+    branches.set(t, [...(branches.get(t) ?? []), p]);
+  }
+  const named = [...branches.values()].filter(hasWork).sort((a, b) => memOf(b) - memOf(a));
+  return [...new Set(named.map((b) => procLabel(leadOf(b), 40)))];
+}
+
+/** `a, b and 2 more`. */
+export function nameList(names: string[], max = 2): string {
+  if (names.length <= max) return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
+}
+
+/** A tree as table rows, parents before children. A hidden wrapper's children move up to its
+ *  depth, so `cmd /c npx vite` reads as `vite` unless `all` asks for the wrappers too. */
+export function procRows(procs: ProcInfo[], all = false): { p: ProcInfo; depth: number }[] {
+  const by = new Map(procs.map((p) => [p.pid, p]));
+  const kids = new Map<number | null, ProcInfo[]>();
+  for (const p of procs) {
+    const up = p.ppid != null && by.has(p.ppid) && p.ppid !== p.pid ? p.ppid : null;
+    kids.set(up, [...(kids.get(up) ?? []), p]);
+  }
+  for (const l of kids.values()) l.sort((a, b) => a.started - b.started || a.pid - b.pid);
+  const out: { p: ProcInfo; depth: number }[] = [];
+  const seen = new Set<number>();
+  const walk = (parent: number | null, depth: number) => {
+    for (const c of kids.get(parent) ?? []) {
+      if (seen.has(c.pid)) continue;
+      seen.add(c.pid);
+      const shown = all || !isPlumbing(c);
+      if (shown) out.push({ p: c, depth });
+      walk(c.pid, shown ? depth + 1 : depth);
+    }
+  };
+  walk(null, 0);
+  return out;
 }

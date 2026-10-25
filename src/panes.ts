@@ -54,6 +54,9 @@ import { providerPermissionMode } from "./providers";
 // The app-wide repaint belongs to main.ts, which wires this at startup.
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
+// Told before a pane is killed, while the last poll still knows what ran under it (./serversui).
+let onPaneClose: (id: string) => void = () => {};
+export function setPanesOnClose(fn: (id: string) => void) { onPaneClose = fn; }
 
 function launchPermission(agent: AgentCli, colorKey: string) {
   if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
@@ -499,6 +502,7 @@ export function closeSession(id: string) {
   const groupNext = wasActive && gid && stageGroup === gid
     ? nextInGroup(groupMembers(gid), id)
     : null;
+  onPaneClose(id);
   invoke("kill_session", { sessionId: id }).catch(() => {});
   // term.dispose() alone does not return the pooled GL slot (terminal.ts).
   detachWebgl(s);

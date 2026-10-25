@@ -126,16 +126,13 @@ fn dedupe_ports(mut found: Vec<SessionPort>) -> Vec<SessionPort> {
 /// the only one that sees a server nobody announced. A listener whose pane has since exited
 /// is kept as an orphan only if a poll saw it under that pane first (`AppState.seen_ports`),
 /// since ancestry dies with the pane. Spawn-free on every OS, because it is polled.
-#[tauri::command]
-pub(crate) fn session_ports(state: State<AppState>) -> Vec<SessionPort> {
-    let roster = pane_roots(&state);
+fn session_ports(state: &AppState, roster: &[(String, u32)], table: &ProcTable) -> Vec<SessionPort> {
     let mut seen = state.seen_ports.lock().unwrap();
     // With no panes and nothing remembered the whole scan is skipped.
     if roster.is_empty() && seen.is_empty() {
         return Vec::new();
     }
     let Ok(all) = listeners::get_all() else { return Vec::new() };
-    let table = ProcTable::snapshot();
     let mut found = Vec::new();
     for l in all {
         // Listening TCP only: SSDP, NetBIOS and mDNS are UDP and would read as dev servers.
@@ -225,14 +222,25 @@ pub(crate) struct LeftBehind {
     started: u64,
     session_id: Option<String>,
     root: Option<String>,
-    procs: Vec<LeftProc>,
+    procs: Vec<ProcInfo>,
+}
+
+/// Everything running under one live pane, its own root process left out. `started` is the
+/// root's, so the frontend can tell what the agent launched with itself from what came later.
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PaneProcs {
+    session_id: String,
+    started: u64,
+    procs: Vec<ProcInfo>,
 }
 
 #[derive(serde::Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LeftProc {
+pub(crate) struct ProcInfo {
     pid: u32,
     ppid: Option<u32>,
+    started: u64,
     name: String,
     cmd: Vec<String>,
     cwd: String,
@@ -292,18 +300,40 @@ fn track_left(table: &ProcTable, roster: &[(String, u32)], seen: &mut HashMap<u3
     tops
 }
 
-/// What every pane has left running (docs/stack.md). Two sources: a tree a poll saw under a
-/// pane, and a runtime whose parent is gone and whose command or cwd lies in one of `roots`,
-/// which is what catches a stray from before this run of Episko or from another terminal.
+/// The servers popover's one poll (docs/stack.md): the ports panes listen on, what each pane
+/// runs, and what panes left running, all off one process snapshot. `async` keeps its ~100ms
+/// on Windows off the main thread, which is the one that moves and paints the window.
+#[derive(serde::Serialize)]
+pub(crate) struct ProcPoll {
+    ports: Vec<SessionPort>,
+    panes: Vec<PaneProcs>,
+    left: Vec<LeftBehind>,
+}
+
 #[tauri::command(async)]
-pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<LeftBehind> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+pub(crate) fn process_poll(state: State<AppState>, roots: Vec<String>) -> ProcPoll {
     let roster = pane_roots(&state);
     let table = ProcTable::snapshot();
+    let ports = session_ports(&state, &roster, &table);
+    let (panes, left) = pane_procs(&state, &roster, &table, &roots);
+    ProcPoll { ports, panes, left }
+}
+
+/// What each pane runs, and what panes have left running. A left-behind tree comes from two
+/// sources: one a poll saw under a pane, and a runtime whose parent is gone and whose command or
+/// cwd lies in one of `roots`, which catches a stray from before this run or another terminal.
+fn pane_procs(
+    state: &AppState,
+    roster: &[(String, u32)],
+    table: &ProcTable,
+    roots: &[String],
+) -> (Vec<PaneProcs>, Vec<LeftBehind>) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let us = std::process::id();
+    let started = |pid: u32| table.started.get(&pid).copied().unwrap_or(0);
     let mut seen = state.seen_procs.lock().unwrap();
     let mut groups: Vec<(u32, Option<String>)> =
-        track_left(&table, &roster, &mut seen).into_iter().map(|p| (p, Some(seen[&p].session_id.clone()))).collect();
+        track_left(table, roster, &mut seen).into_iter().map(|p| (p, Some(seen[&p].session_id.clone()))).collect();
     drop(seen);
     let candidates: Vec<u32> = table
         .procs
@@ -314,15 +344,20 @@ pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<Lef
         .map(|(pid, _)| *pid)
         .filter(|&pid| pid != us && !table.is_descendant_of(pid, us))
         .collect();
+    let live: Vec<(&str, u32, Vec<u32>)> = roster
+        .iter()
+        .map(|(id, root)| (id.as_str(), *root, table.subtree(*root).into_iter().filter(|p| p != root).collect()))
+        .collect();
     let wanted: Vec<Pid> = groups
         .iter()
         .flat_map(|(t, _)| table.subtree(*t))
         .chain(candidates.iter().flat_map(|c| table.subtree(*c)))
+        .chain(live.iter().flat_map(|(_, _, pids)| pids.iter().copied()))
         .map(Pid::from_u32)
         .collect();
     if wanted.is_empty() {
-        state.left_last.lock().unwrap().clear();
-        return Vec::new();
+        state.proc_last.lock().unwrap().clear();
+        return (Vec::new(), Vec::new());
     }
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -330,11 +365,12 @@ pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<Lef
         true,
         ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_cwd(UpdateKind::Always).with_memory(),
     );
-    let detail = |pid: u32| -> Option<LeftProc> {
+    let detail = |pid: u32| -> Option<ProcInfo> {
         let p = sys.process(Pid::from_u32(pid))?;
-        Some(LeftProc {
+        Some(ProcInfo {
             pid,
             ppid: table.procs.get(&pid).and_then(|x| x.0),
+            started: started(pid),
             name: p.name().to_string_lossy().to_string(),
             cmd: p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect(),
             cwd: p.cwd().map(|c| norm_path(&c.to_string_lossy())).unwrap_or_default(),
@@ -342,7 +378,7 @@ pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<Lef
         })
     };
     let roots: Vec<std::path::PathBuf> = roots.iter().filter(|r| !r.is_empty()).map(|r| norm_path(r).into()).collect();
-    let root_of = |lp: &LeftProc| {
+    let root_of = |lp: &ProcInfo| {
         let hit = |s: &str| roots.iter().find(|r| crate::platform::under(std::path::Path::new(s), r));
         hit(&lp.cwd).or_else(|| lp.cmd.iter().find_map(|a| hit(a))).map(|r| r.to_string_lossy().to_string())
     };
@@ -351,27 +387,38 @@ pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<Lef
             groups.push((c, None));
         }
     }
-    let out: Vec<LeftBehind> = groups
+    let left: Vec<LeftBehind> = groups
         .into_iter()
         .filter_map(|(top, session_id)| {
-            let procs: Vec<LeftProc> = table.subtree(top).into_iter().filter_map(detail).collect();
+            let procs: Vec<ProcInfo> = table.subtree(top).into_iter().filter_map(detail).collect();
             if procs.is_empty() {
                 return None; // exited between the snapshot and the detail read
             }
             let root = procs.iter().find_map(root_of);
-            Some(LeftBehind { pid: top, started: table.started.get(&top).copied().unwrap_or(0), session_id, root, procs })
+            Some(LeftBehind { pid: top, started: started(top), session_id, root, procs })
         })
         .collect();
-    *state.left_last.lock().unwrap() = out.iter().map(|g| (g.pid, g.started)).collect();
-    out
+    let panes: Vec<PaneProcs> = live
+        .into_iter()
+        .map(|(id, root, pids)| PaneProcs {
+            session_id: id.to_string(),
+            started: started(root),
+            procs: pids.into_iter().filter_map(detail).collect(),
+        })
+        .filter(|p| !p.procs.is_empty())
+        .collect();
+    let reported = panes.iter().flat_map(|p| &p.procs).chain(left.iter().flat_map(|g| &g.procs));
+    *state.proc_last.lock().unwrap() = reported.map(|p| (p.pid, p.started)).collect();
+    (panes, left)
 }
 
-/// Kill a tree `left_behind` reported, and every process in it. Refused unless that poll
-/// reported this very pid with this start time, so a stale row cannot kill a reused pid.
+/// Kill a process `process_poll` reported, and everything under it. Refused unless the last
+/// poll reported this very pid with this start time, so a stale row cannot kill a reused pid;
+/// a pane's own root is never reported, so its ✕ stays the only way to end a pane.
 #[tauri::command]
-pub(crate) async fn kill_left_behind(state: State<'_, AppState>, pid: u32, started: u64) -> Result<bool, String> {
-    if state.left_last.lock().unwrap().get(&pid) != Some(&started) {
-        return Err(format!("pid {pid} is no longer one Episko found left behind"));
+pub(crate) async fn kill_proc_tree(state: State<'_, AppState>, pid: u32, started: u64) -> Result<bool, String> {
+    if state.proc_last.lock().unwrap().get(&pid) != Some(&started) {
+        return Err(format!("pid {pid} is no longer one Episko is showing"));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let table = ProcTable::snapshot();

@@ -15,6 +15,12 @@ Markers: `+` new · `~` changed · `!` fixed
 + The servers menu lists processes left running under *Left behind*: anything still going after
   its pane closed, or after the script that started it died, with the memory it holds and a ✕ that
   stops it and everything it started.
++ The servers menu shows what each pane is running now, as a table with a ✕ per process. The MCP
+  servers an agent starts with itself, and the shells and `npx` wrappers around everything, are folded.
++ Closing or shelving a pane says what stopped with it, and a process that outlives its pane is
+  announced once, with *Kill* and *Show*.
+! The four-second check of which ports and processes your panes hold, link hovers, diffs and icon
+  reads no longer run on the thread that moves and paints the window.
 ! On Windows, closing a pane stops everything it started, not only its top process.
 
 ## 0.37.0 — 2026-10-22
