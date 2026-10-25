@@ -2,6 +2,8 @@
 // at `~/.claude/sessions/<pid>.json`. Ours are filtered out by pid, never by session id, which
 // /resume and /clear rewrite. Listing is portable via `ProcTable`; only focusing is per OS.
 
+use std::collections::{HashMap, HashSet};
+
 use tauri::State;
 
 // Only the macOS focus path uses `ps_one`; an unconditional import is unused on Windows.
@@ -198,6 +200,193 @@ pub(crate) async fn kill_listener(state: State<'_, AppState>, pid: u32, port: u1
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         Ok(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ---------- processes a pane left behind ----------
+
+/// A process once seen under a pane. The start time is what tells it from a later process
+/// that reused its pid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SeenProc {
+    session_id: String,
+    started: u64,
+}
+
+/// A process tree still running after it lost its pane: the pane closed, or the parent
+/// that tied it to one died (Windows never kills a child with its parent). `session_id` is
+/// None for one no poll saw under a pane, found by its folder instead (`root`).
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LeftBehind {
+    pid: u32, // the top of the tree; killing it with its descendants ends the lot
+    started: u64,
+    session_id: Option<String>,
+    root: Option<String>,
+    procs: Vec<LeftProc>,
+}
+
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LeftProc {
+    pid: u32,
+    ppid: Option<u32>,
+    name: String,
+    cmd: Vec<String>,
+    cwd: String,
+    mem: u64, // bytes resident
+}
+
+/// Runtimes a stray dev process is made of. Only these are matched by folder, since an
+/// editor's own processes carry the project path too and must never be accused.
+const RUNTIMES: &[&str] = &[
+    "node", "bun", "deno", "python", "python3", "pythonw", "ruby", "java", "dotnet", "cargo", "go", "php", "esbuild",
+];
+
+fn is_runtime(name: &str) -> bool {
+    let stem = name.strip_suffix(".exe").unwrap_or(name);
+    RUNTIMES.contains(&stem)
+}
+
+impl ProcTable {
+    /// The pane a process currently runs under, never the pane's own root process.
+    fn pane_of<'a>(&self, pid: u32, roster: &'a [(String, u32)]) -> Option<&'a str> {
+        roster
+            .iter()
+            .find(|(_, root)| pid != *root && self.is_descendant_of(pid, *root))
+            .map(|(id, _)| id.as_str())
+    }
+
+    /// Lost its parent: the recorded ppid is dead or reused, or (POSIX) init adopted it.
+    fn orphaned(&self, pid: u32) -> bool {
+        match self.procs.get(&pid).and_then(|p| p.0) {
+            Some(ppid) if ppid <= 1 => cfg!(not(windows)),
+            Some(_) => self.parent(pid).is_none_or(|pp| !self.procs.contains_key(&pp)),
+            None => false,
+        }
+    }
+
+    fn subtree(&self, top: u32) -> Vec<u32> {
+        let mut out: Vec<u32> = self.procs.keys().copied().filter(|&p| self.is_descendant_of(p, top)).collect();
+        out.sort_unstable();
+        out
+    }
+}
+
+/// Records every process now under a pane, forgets the ones that exited (or whose pid was
+/// reused), and returns the tops of the recorded trees no live pane holds any more.
+fn track_left(table: &ProcTable, roster: &[(String, u32)], seen: &mut HashMap<u32, SeenProc>) -> Vec<u32> {
+    let started = |pid: u32| table.started.get(&pid).copied().unwrap_or(0);
+    for &pid in table.procs.keys() {
+        if let Some(id) = table.pane_of(pid, roster) {
+            seen.insert(pid, SeenProc { session_id: id.to_string(), started: started(pid) });
+        }
+    }
+    seen.retain(|&pid, s| table.procs.contains_key(&pid) && started(pid) == s.started);
+    let left: HashSet<u32> = seen.keys().copied().filter(|&p| table.pane_of(p, roster).is_none()).collect();
+    let mut tops: Vec<u32> =
+        left.iter().copied().filter(|&p| table.parent(p).is_none_or(|pp| !left.contains(&pp))).collect();
+    tops.sort_unstable();
+    tops
+}
+
+/// What every pane has left running (docs/stack.md). Two sources: a tree a poll saw under a
+/// pane, and a runtime whose parent is gone and whose command or cwd lies in one of `roots`,
+/// which is what catches a stray from before this run of Episko or from another terminal.
+#[tauri::command(async)]
+pub(crate) fn left_behind(state: State<AppState>, roots: Vec<String>) -> Vec<LeftBehind> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let roster = pane_roots(&state);
+    let table = ProcTable::snapshot();
+    let us = std::process::id();
+    let mut seen = state.seen_procs.lock().unwrap();
+    let mut groups: Vec<(u32, Option<String>)> =
+        track_left(&table, &roster, &mut seen).into_iter().map(|p| (p, Some(seen[&p].session_id.clone()))).collect();
+    drop(seen);
+    let candidates: Vec<u32> = table
+        .procs
+        .iter()
+        .filter(|(pid, (_, name))| {
+            is_runtime(name) && table.orphaned(**pid) && !groups.iter().any(|(t, _)| t == *pid)
+        })
+        .map(|(pid, _)| *pid)
+        .filter(|&pid| pid != us && !table.is_descendant_of(pid, us))
+        .collect();
+    let wanted: Vec<Pid> = groups
+        .iter()
+        .flat_map(|(t, _)| table.subtree(*t))
+        .chain(candidates.iter().flat_map(|c| table.subtree(*c)))
+        .map(Pid::from_u32)
+        .collect();
+    if wanted.is_empty() {
+        state.left_last.lock().unwrap().clear();
+        return Vec::new();
+    }
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&wanted),
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_cwd(UpdateKind::Always).with_memory(),
+    );
+    let detail = |pid: u32| -> Option<LeftProc> {
+        let p = sys.process(Pid::from_u32(pid))?;
+        Some(LeftProc {
+            pid,
+            ppid: table.procs.get(&pid).and_then(|x| x.0),
+            name: p.name().to_string_lossy().to_string(),
+            cmd: p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect(),
+            cwd: p.cwd().map(|c| norm_path(&c.to_string_lossy())).unwrap_or_default(),
+            mem: p.memory(),
+        })
+    };
+    let roots: Vec<std::path::PathBuf> = roots.iter().filter(|r| !r.is_empty()).map(|r| norm_path(r).into()).collect();
+    let root_of = |lp: &LeftProc| {
+        let hit = |s: &str| roots.iter().find(|r| crate::platform::under(std::path::Path::new(s), r));
+        hit(&lp.cwd).or_else(|| lp.cmd.iter().find_map(|a| hit(a))).map(|r| r.to_string_lossy().to_string())
+    };
+    for &c in &candidates {
+        if detail(c).as_ref().and_then(root_of).is_some() {
+            groups.push((c, None));
+        }
+    }
+    let out: Vec<LeftBehind> = groups
+        .into_iter()
+        .filter_map(|(top, session_id)| {
+            let procs: Vec<LeftProc> = table.subtree(top).into_iter().filter_map(detail).collect();
+            if procs.is_empty() {
+                return None; // exited between the snapshot and the detail read
+            }
+            let root = procs.iter().find_map(root_of);
+            Some(LeftBehind { pid: top, started: table.started.get(&top).copied().unwrap_or(0), session_id, root, procs })
+        })
+        .collect();
+    *state.left_last.lock().unwrap() = out.iter().map(|g| (g.pid, g.started)).collect();
+    out
+}
+
+/// Kill a tree `left_behind` reported, and every process in it. Refused unless that poll
+/// reported this very pid with this start time, so a stale row cannot kill a reused pid.
+#[tauri::command]
+pub(crate) async fn kill_left_behind(state: State<'_, AppState>, pid: u32, started: u64) -> Result<bool, String> {
+    if state.left_last.lock().unwrap().get(&pid) != Some(&started) {
+        return Err(format!("pid {pid} is no longer one Episko found left behind"));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let table = ProcTable::snapshot();
+        if table.started.get(&pid).copied().unwrap_or(0) != started {
+            return Err(format!("pid {pid} has already exited"));
+        }
+        // POSIX `kill -pid` only reaches a group leader's group, so every member is named too.
+        let tree = table.subtree(pid);
+        crate::platform::kill_pid_tree(pid);
+        for p in tree.iter().filter(|&&p| p != pid) {
+            crate::platform::kill_pid_tree(*p);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let after = ProcTable::snapshot();
+        Ok(tree.iter().all(|p| after.started.get(p) != table.started.get(p) || !after.procs.contains_key(p)))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -483,6 +672,102 @@ mod tests {
             procs: entries.iter().map(|&(pid, ppid, name)| (pid, (ppid, name.to_string()))).collect(),
             started: Default::default(),
         }
+    }
+
+    /// (pid, ppid, start time): `parent` refuses a parent that started after its child.
+    fn timed(entries: &[(u32, Option<u32>, u64)]) -> ProcTable {
+        ProcTable {
+            procs: entries.iter().map(|&(pid, ppid, _)| (pid, (ppid, "node.exe".to_string()))).collect(),
+            started: entries.iter().map(|&(pid, _, t)| (pid, t)).collect(),
+        }
+    }
+
+    fn pane(id: &str, root: u32) -> Vec<(String, u32)> {
+        vec![(id.to_string(), root)]
+    }
+
+    /// The shape that leaked nine `vite build --watch` on Windows: an agent's dev script
+    /// died, its watcher grandchild did not, and the pane above it is still open.
+    #[test]
+    fn a_watcher_whose_parent_died_is_left_behind_under_a_live_pane() {
+        let mut seen = HashMap::new();
+        // pane 10 > sh 11 > dev.mjs 12 > cmd 13 > vite 14
+        let all = timed(&[(10, None, 1), (11, Some(10), 2), (12, Some(11), 3), (13, Some(12), 4), (14, Some(13), 5)]);
+        assert!(track_left(&all, &pane("a", 10), &mut seen).is_empty(), "everything still hangs off the pane");
+        assert_eq!(seen.len(), 4, "the pane's root is never recorded, every process below it is");
+        let after = timed(&[(10, None, 1), (11, Some(10), 2), (14, Some(13), 5)]);
+        assert_eq!(track_left(&after, &pane("a", 10), &mut seen), vec![14]);
+        assert_eq!(seen[&14].session_id, "a");
+    }
+
+    /// A closed pane leaves one tree, reported once at its top rather than once per process.
+    #[test]
+    fn a_closed_pane_reports_the_top_of_its_tree_only() {
+        let mut seen = HashMap::new();
+        let all = timed(&[(10, None, 1), (11, Some(10), 2), (12, Some(11), 3), (13, Some(12), 4)]);
+        track_left(&all, &pane("a", 10), &mut seen);
+        let gone = timed(&[(11, Some(10), 2), (12, Some(11), 3), (13, Some(12), 4)]);
+        assert_eq!(track_left(&gone, &[], &mut seen), vec![11]);
+    }
+
+    /// A pid reused by an unrelated process must never inherit the pane of the one before.
+    #[test]
+    fn a_reused_pid_is_forgotten_not_reported() {
+        let mut seen = HashMap::new();
+        track_left(&timed(&[(10, None, 1), (11, Some(10), 2)]), &pane("a", 10), &mut seen);
+        assert!(track_left(&timed(&[(11, Some(900), 50)]), &[], &mut seen).is_empty());
+        assert!(seen.is_empty());
+    }
+
+    /// Only what a poll saw under a pane is tracked: an orphan nobody saw is not ours to name.
+    #[test]
+    fn a_process_never_seen_under_a_pane_is_not_tracked() {
+        let mut seen = HashMap::new();
+        assert!(track_left(&timed(&[(40, Some(39), 5)]), &pane("a", 10), &mut seen).is_empty());
+    }
+
+    #[test]
+    fn orphaned_means_a_dead_or_reused_parent() {
+        let t = timed(&[(1000, None, 1), (20, Some(1000), 5), (21, Some(77), 5), (22, Some(23), 5), (23, None, 9)]);
+        assert!(!t.orphaned(20), "live parent");
+        assert!(t.orphaned(21), "parent pid is gone");
+        assert!(t.orphaned(22), "parent pid now belongs to a process younger than its child");
+        assert!(!t.orphaned(1000), "no recorded parent at all is a root, not an orphan");
+    }
+
+    #[test]
+    fn only_runtimes_are_matched_by_folder() {
+        for n in ["node.exe", "node", "python3", "bun.exe"] {
+            assert!(is_runtime(n), "{n}");
+        }
+        for n in ["code.exe", "explorer.exe", "nodemon-helper", "pwsh.exe"] {
+            assert!(!is_runtime(n), "{n}");
+        }
+    }
+
+    /// The real leak on real processes: `cmd` starts a background child and exits, and the
+    /// child runs on, its ppid naming a dead process. Windows only, which is where it leaks.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_grandchild_outliving_its_parent_is_found() {
+        let mut cmd = std::process::Command::new("cmd")
+            .args(["/c", "start /b ping -n 20 127.0.0.1 >nul & ping -n 5 127.0.0.1 >nul"])
+            .spawn()
+            .unwrap();
+        let root = cmd.id();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let mut seen = HashMap::new();
+        assert!(track_left(&ProcTable::snapshot(), &pane("a", root), &mut seen).is_empty());
+        assert!(seen.len() >= 2, "both pings were seen under the pane: {seen:?}");
+        cmd.wait().unwrap();
+        let t = ProcTable::snapshot();
+        let tops = track_left(&t, &[], &mut seen);
+        for p in &tops {
+            crate::platform::kill_pid_tree(*p);
+        }
+        assert_eq!(tops.len(), 1, "only the backgrounded ping outlived cmd: {tops:?}");
+        assert!(t.procs[&tops[0]].1.starts_with("ping"));
+        assert!(t.orphaned(tops[0]), "its parent is gone");
     }
 
     fn sp(session: &str, port: u16, pid: u32) -> SessionPort {

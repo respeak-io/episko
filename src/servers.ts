@@ -380,3 +380,62 @@ export function cmdLabel(cmd: string, max = 52): string {
   c = c.replace(/\s*(?:\d?>>?|2>&1)\s*(?:"[^"]*"|'[^']*'|\S+)?\s*/g, " ").trim();
   return c.length > max ? c.slice(0, max - 1) + "…" : c;
 }
+
+// ---------- what a pane left running ----------
+
+/** One process of a tree `left_behind` found running without its pane (`mem` in bytes). */
+export interface LeftProc { pid: number; ppid: number | null; name: string; cmd: string[]; cwd: string; mem: number }
+/** `sessionId` null: no poll saw it under a pane; it was found by the folder it runs in (`root`). */
+export interface LeftBehind { pid: number; started: number; sessionId: string | null; root: string | null; procs: LeftProc[] }
+
+export const LEFT_GRACE_MS = 8_000; // a closing pane's tree takes a beat to die; never flash it
+
+const SHELLS = /^(sh|bash|zsh|fish|dash|cmd|conhost|openconsole|powershell|pwsh|winpty-agent)(\.exe)?$/i;
+const INTERPRETERS = /^(node|bun|deno|python[\d.]*|pythonw|ruby|php)(\.exe)?$/i;
+// A package manager's own script only waits on the child that does the work.
+const LAUNCHER = /[\\/](npm|pnpm|yarn|npx|corepack)(-cli)?(\.c?js|\.mjs)?$/i;
+
+// Outlives its parent by design and retires on its own idle timer; listing it teaches you to
+// ignore the section (the ./health rule about ordinary code).
+const DAEMONS = [/fsmonitor--daemon/, /VBCSCompiler/i, /MSBuild(\.exe)?\b.*nodemode/i, /GradleDaemon/, /\bsccache\b/, /mspdbsrv/i, /\b(ssh|gpg)-agent\b/];
+
+const base = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
+
+// `node …/node_modules/.bin/../vite/bin/vite.js build --watch` → `vite build --watch`.
+export function procLabel(p: LeftProc, max = 52): string {
+  const args = [...p.cmd];
+  if (!args.length) return p.name;
+  if (INTERPRETERS.test(base(args[0]))) args.shift();
+  if (args.length) {
+    const s = args[0].replace(/[\\/]+/g, "/");
+    const pkg = /node_modules\/(?:\.bin\/\.\.\/)?((?:@[^/]+\/)?[^/.][^/]*)\/[^]*$/.exec(s);
+    args[0] = pkg ? pkg[1] : base(s).replace(/\.(c?js|mjs|exe)$/i, "");
+  }
+  return cmdLabel(args.join(" ") || p.name, max);
+}
+
+const isPlumbing = (p: LeftProc) => SHELLS.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "");
+
+/** The process a row is named after: the biggest one doing real work, else the top. */
+export function leftLead(g: LeftBehind): LeftProc {
+  const work = g.procs.filter((p) => !isPlumbing(p)).sort((a, b) => b.mem - a.mem);
+  return work[0] ?? g.procs.find((p) => p.pid === g.pid) ?? g.procs[0];
+}
+
+export const leftMem = (g: LeftBehind) => g.procs.reduce((n, p) => n + p.mem, 0);
+
+export function isDaemon(g: LeftBehind): boolean {
+  const lead = leftLead(g);
+  return DAEMONS.some((re) => re.test(lead.cmd.join(" ") || lead.name));
+}
+
+export const leftKey = (g: LeftBehind) => `${g.pid}:${g.started}`;
+
+// The rows worth drawing: no daemon, nothing younger than the grace. `firstSeen` is the
+// caller's, stamped here and pruned of every tree that has gone.
+export function leftShown(groups: LeftBehind[], firstSeen: Map<string, number>, now: number): LeftBehind[] {
+  const live = new Set(groups.map(leftKey));
+  for (const k of [...firstSeen.keys()]) if (!live.has(k)) firstSeen.delete(k);
+  for (const g of groups) if (!firstSeen.has(leftKey(g))) firstSeen.set(leftKey(g), now);
+  return groups.filter((g) => !isDaemon(g) && now - firstSeen.get(leftKey(g))! >= LEFT_GRACE_MS);
+}

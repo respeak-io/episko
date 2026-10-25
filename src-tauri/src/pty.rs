@@ -1272,12 +1272,22 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
     let killed = state.sessions.lock().unwrap().remove(&session_id);
     if let Some(mut s) = killed {
         log::info!("kill session · {session_id}");
-        let _ = s.killer.kill();
-        agent::stop_runtime(&state, &session_id);
-        crate::mcp::forget_session(&state, &session_id);
         if let Some(p) = s.pid {
             state.owned_pids.lock().unwrap().remove(&p);
         }
+        // Windows kills no child with its parent, so the tree goes first, while the root still
+        // links it; off the main thread, since taskkill takes a beat (docs/stack.md).
+        #[cfg(windows)]
+        std::thread::spawn(move || {
+            if let Some(p) = s.pid {
+                crate::platform::kill_pid_tree(p);
+            }
+            let _ = s.killer.kill();
+        });
+        #[cfg(not(windows))]
+        let _ = s.killer.kill();
+        agent::stop_runtime(&state, &session_id);
+        crate::mcp::forget_session(&state, &session_id);
     }
     Ok(())
 }

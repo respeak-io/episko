@@ -4,7 +4,8 @@ import {
   bgPeekEmpty, bgRetire, bgSentinel, bgStopId, bgTaskId, bgTimedOut, cmdLabel, endBg,
   failedServers, forgetServer, isJob, markKilled, liveServers, logLines, logTail, serverUrl,
   foldPages, pageName, portOf, reconcilePorts, servingUrls, shownServers, usefulPort,
-  type BgRead,
+  isDaemon, LEFT_GRACE_MS, leftLead, leftMem, leftShown, procLabel,
+  type BgRead, type LeftBehind, type LeftProc,
 } from "../src/servers";
 import type { BgMissReason, BgServer } from "../src/types";
 
@@ -695,5 +696,65 @@ describe("cmdLabel", () => {
 
   it("truncates rather than wrapping a row", () => {
     expect(cmdLabel("pnpm --filter @acme/web dev --host --port 5173 --strictPort", 20)).toHaveLength(20);
+  });
+});
+
+// ---------- left behind ----------
+
+const proc = (pid: number, name: string, cmd: string[], mem = 1e6, ppid: number | null = null): LeftProc =>
+  ({ pid, ppid, name, cmd, cwd: "", mem });
+
+// Captured off the real leak: `scripts/dev.mjs` → `cmd /c` → vite, one worktree of PuttyParty.
+const WATCHER = proc(55028, "node.exe", ["node", String.raw`E:\Programming\projects\.cc-worktrees\PuttyParty\feat-playable\node_modules\.bin\\..\vite\bin\vite.js`, "build", "--config", "src/app-spa/vite.config.ts", "--watch"], 1.7e9, 34832);
+const tree = (procs: LeftProc[], pid = procs[0].pid): LeftBehind => ({ pid, started: 100, sessionId: "a", root: null, procs });
+
+describe("procLabel", () => {
+  it("names a package's bin script by its package, through .bin/.. and doubled backslashes", () => {
+    expect(procLabel(WATCHER, 80)).toBe("vite build --config src/app-spa/vite.config.ts --watch");
+  });
+  it("keeps a scoped package whole", () => {
+    expect(procLabel(proc(1, "node", ["node", "/r/node_modules/@scope/tool/dist/cli.js", "serve"]))).toBe("@scope/tool serve");
+  });
+  it("names a plain script by its file, without the interpreter", () => {
+    expect(procLabel(proc(1, "node.exe", ["node", "scripts/dev.mjs", "--port", "8812"]))).toBe("dev --port 8812");
+    expect(procLabel(proc(1, "python3", ["/usr/bin/python3", "-m", "http.server"]))).toBe("-m http.server");
+  });
+  it("falls back to the process name when the OS gave no command line", () => {
+    expect(procLabel(proc(1, "esbuild.exe", []))).toBe("esbuild.exe");
+  });
+});
+
+describe("leftLead", () => {
+  it("names the row after the biggest process doing work, never the shell or the package manager", () => {
+    const g = tree([
+      proc(10, "sh.exe", ["sh", "-c", "pnpm dev"], 5e6),
+      proc(11, "node.exe", ["node", String.raw`C:\pnpm\bin\pnpm.cjs`, "dev"], 9e9),
+      proc(12, "cmd.exe", ["cmd", "/c", "vite build --watch"], 4e6),
+      WATCHER,
+    ]);
+    expect(leftLead(g).pid).toBe(55028);
+    expect(leftMem(g)).toBe(5e6 + 9e9 + 4e6 + 1.7e9);
+  });
+  it("falls back to the top when the tree is all plumbing", () => {
+    expect(leftLead(tree([proc(7, "cmd.exe", ["cmd"]), proc(8, "conhost.exe", [])], 7)).pid).toBe(7);
+  });
+});
+
+describe("leftShown", () => {
+  it("holds a tree back for the grace, then shows it, then forgets it once gone", () => {
+    const seen = new Map<string, number>();
+    const g = tree([WATCHER]);
+    expect(leftShown([g], seen, 0)).toEqual([]);
+    expect(leftShown([g], seen, LEFT_GRACE_MS)).toEqual([g]);
+    expect(leftShown([], seen, LEFT_GRACE_MS + 1)).toEqual([]);
+    expect(seen.size).toBe(0);
+    expect(leftShown([g], seen, LEFT_GRACE_MS + 2)).toEqual([]); // back again is new again
+  });
+  it("never shows a daemon that outlives its parent by design", () => {
+    const seen = new Map<string, number>();
+    const fsm = tree([proc(3, "git.exe", ["git", "fsmonitor--daemon", "run", "--detach"])]);
+    expect(isDaemon(fsm)).toBe(true);
+    leftShown([fsm], seen, 0);
+    expect(leftShown([fsm], seen, LEFT_GRACE_MS * 2)).toEqual([]);
   });
 });

@@ -69,6 +69,16 @@ Two doors, one agent. The **▶ Run picker** carries a *Dev stack* strip, since 
 
 **It never syncs.** `up` and `down` name tasks Episko runs, the same class as `tasks.toml`, which docs/sync.md keeps in git: a value that arrived through the server would change what ⏹ runs with no commit anyone reviewed.
 
+## Left behind
+
+A process outlives its pane in two ways. The pane closes and something under it ignores the hangup, or, on **Windows, which never kills a child with its parent**, a dev script dies and its watcher grandchild runs on. The second leaked nine `vite build --watch` (about 13 GB) over three days. None held a port, so the orphan port rows could not see them.
+
+- **Seen, then lost.** Each poll records every process under a live pane, keyed by pid **and start time** (`AppState.seen_procs`), and forgets one that exited or whose pid was reused. A recorded process that no live pane holds any more is left behind; the popover shows each orphaned tree once, at its top (`track_left`).
+- **Found by folder**, for a stray from before this run or from another terminal: a *runtime* (`RUNTIMES`: node, python, bun…) whose parent is gone and whose command line or cwd lies in a checkout Episko knows. Only runtimes, because an editor's own processes carry the project path too and must never be accused.
+- **Not news:** a tree younger than `LEFT_GRACE_MS` (a closing pane takes a beat to die) and the daemons that outlive their parent by design and retire on their own (`DAEMONS`: git's fsmonitor, MSBuild nodes, the Gradle daemon…).
+- **✕ asks, then kills the tree.** `kill_left_behind` refuses unless its last poll reported that pid with that start time, then names every member, since POSIX `kill -pid` reaches only a group leader's group.
+- **Closing a pane on Windows kills its tree first** (`kill_session`, `taskkill /T` while the root still links it), which is what POSIX's hangup already did. A process that dies on its own still leaves its children, and those are what the section lists.
+
 ## Not yet
 
 Closing a stack's pane is still the single SIGHUP every pane gets, so a recipe's own `trap` cleanup may not run; sending Ctrl+C to the foreground group first is the next step. Container logs are not shown yet. Agents cannot see stacks until the MCP tools grow `stack_status` and `ensure_stack`.

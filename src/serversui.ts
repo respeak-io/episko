@@ -7,12 +7,12 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ask } from "./confirm";
 import { $, FILE_MANAGER, toast } from "./dom";
-import { basename, esc, escAttr } from "./format";
+import { basename, esc, escAttr, fmtMb } from "./format";
 import { FAVORITES, sessions, activeId, worktreesByRepo } from "./state";
 import {
   applyBgLog, applyBgMiss, bgKind, bgLogPath, bgOutcome, bgPeekEmpty, bgRetire, cmdLabel,
-  failedServers, forgetServer, liveServers, markKilled, portOf,
-  reconcilePorts, servingUrls, shownServers, usefulPort, type BgRead, type SessionPort,
+  failedServers, forgetServer, leftKey, leftLead, leftMem, leftShown, liveServers, markKilled, portOf,
+  procLabel, reconcilePorts, servingUrls, shownServers, usefulPort, type BgRead, type LeftBehind, type SessionPort,
 } from "./servers";
 import { isClaude, type BgServer, type Sess } from "./types";
 import { buildStacks, stackTally, type Checkout, type Container, type PaneIn, type Stack, type StackCfg } from "./stack";
@@ -22,10 +22,13 @@ import { discoverTasks, launchWithDeps } from "./tasks";
 // A row: "bg" is a shell an agent backgrounded (the record is all there is), "task" a
 // runnable Episko launched (the pane is the server), "port" a socket nothing announced. A
 // port row's pane may be closed already (`orphan`), so it carries its own id and project.
+// "left" is a process tree still running after its pane closed or its parent died; `sid`
+// is null for one found by its folder, which no pane of this run ever held.
 type Row =
   | { kind: "bg"; s: Sess; at: number; b: BgServer }
   | { kind: "task"; s: Sess; at: number }
-  | { kind: "port"; sid: string; project: string; at: number; port: number; name: string; pid: number; orphan: boolean };
+  | { kind: "port"; sid: string; project: string; at: number; port: number; name: string; pid: number; orphan: boolean }
+  | { kind: "left"; sid: string | null; project: string; at: number; g: LeftBehind };
 
 interface LoosePort { port: number; name: string; pid: number; orphan: boolean; at: number }
 
@@ -43,8 +46,12 @@ let portPids = new Map<string, number>();
 // Pane id → project, kept past the pane: an orphan's row still has to say whose it was.
 const paneProject = new Map<string, string>();
 
-const sidOf = (r: Row) => r.kind === "port" ? r.sid : r.s.id;
-const projectOf = (r: Row) => r.kind === "port" ? r.project : r.s.project;
+// What the last `left_behind` found, past the grace, and when each tree was first seen.
+let leftTrees: LeftBehind[] = [];
+const leftSeen = new Map<string, number>();
+
+const sidOf = (r: Row) => r.kind === "port" ? r.sid : r.kind === "left" ? r.sid ?? "" : r.s.id;
+const projectOf = (r: Row) => r.kind === "port" || r.kind === "left" ? r.project : r.s.project;
 
 function taskRows(): Row[] {
   const out: Row[] = [];
@@ -70,6 +77,11 @@ function allRows(): Row[] {
     const project = sessions.get(sid)?.project ?? paneProject.get(sid) ?? "closed pane";
     for (const p of list) out.push({ kind: "port", sid, project, ...p });
   }
+  for (const g of leftTrees) {
+    const project = (g.sessionId && (sessions.get(g.sessionId)?.project ?? paneProject.get(g.sessionId)))
+      || (g.root ? basename(g.root) : "unknown project");
+    out.push({ kind: "left", sid: g.sessionId, project, at: leftSeen.get(leftKey(g)) ?? Date.now(), g });
+  }
   out.push(...taskRows());
   return out.sort((a, b) => a.at - b.at); // oldest first: the forgotten server must not scroll off
 }
@@ -88,7 +100,8 @@ let lastPop = "";
 
 // A task or loose port is always a server; an agent's shell splits on its URL alone (`bgKind`).
 // Never guess from `dev`/`serve` in the command: that fires on `npm ci`, `pytest`, `gh run watch`.
-const isServerRow = (r: Row) => r.kind !== "bg" || bgKind(r.b) === "server";
+// A left-behind tree has its own heading: it holds no port, or it would be a port row.
+const isServerRow = (r: Row) => r.kind === "left" ? false : r.kind !== "bg" || bgKind(r.b) === "server";
 
 // Hidden when nothing is running, so a forgotten server is what catches the eye.
 export function renderServers() {
@@ -103,7 +116,7 @@ export function renderServers() {
     serving += servingUrls(s2.servers).length;
     failed += failedServers(s2.servers).length;
   }
-  serving += shown.filter((r) => r.kind !== "bg").length; // task and port rows are serving by definition
+  serving += shown.filter((r) => r.kind === "task" || r.kind === "port").length; // serving by definition
   serving += tally.serving;
   if (tally.failed) failed++;
   const servers = shown.filter(isServerRow).length + tally.serving;
@@ -116,7 +129,7 @@ export function renderServers() {
   // One line per row, jobs prefixed, so the hover list and the number agree.
   el.title = [
     ...stacks.map((st) => `stack · ${st.project}${st.label ? ` · ${st.label}` : ""}: ${st.why || st.state}`),
-    ...shown.map((r) => `${isServerRow(r) ? "" : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
+    ...shown.map((r) => `${isServerRow(r) ? "" : r.kind === "left" ? "left behind · " : "job · "}${projectOf(r)} ·${rowTitle(r)}`),
   ].join("\n");
   el.classList.toggle("serving", serving > 0 && !failed); // failure wins the colour
   el.classList.toggle("failed", failed > 0);
@@ -130,18 +143,36 @@ let openRow = ""; // the expanded row, by key rather than index so a finishing s
 function rowTitle(r: Row): string {
   if (r.kind === "task") return `${r.s.run?.url} (${r.s.run?.label ?? "task"})`;
   if (r.kind === "port") return `localhost:${r.port} (${r.name || "listening"})`;
+  if (r.kind === "left") return ` ${procLabel(leftLead(r.g))} (${fmtMb(leftMem(r.g) / 1048576)})`;
   return r.b.ended ? bgOutcome(r.b) : (r.b.url || cmdLabel(r.b.cmd));
 }
 
 function rowKey(r: Row): string {
   if (r.kind === "task") return `t:${r.s.id}`;
   if (r.kind === "port") return `p:${r.sid}:${r.port}`;
+  if (r.kind === "left") return `l:${leftKey(r.g)}`;
   return `b:${r.b.taskId}`;
 }
 
 // The per-source facts a row draws, resolved once. An agent's row shows the command; a
 // task's shows the name you picked, marked with the app's own ▶ Run glyph.
-function rowFacts(r: Row) {
+function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?: string[]; label: string; x: string; go: string; note?: string } {
+  if (r.kind === "left") {
+    const g = r.g, n = g.procs.length;
+    const why = g.sessionId
+      ? sessions.has(g.sessionId)
+        ? "Started under this pane, and still running after the process that started it died"
+        : "Still running after the pane that started it closed"
+      : `No pane of this Episko run started it; it runs in ${g.root}`;
+    return {
+      url: "", dead: false, outcome: "",
+      tail: g.procs.map((p) => `${String(p.pid).padStart(6)}  ${fmtMb(p.mem / 1048576).padStart(9)}  ${p.cmd.join(" ") || p.name}`),
+      label: `<span class="sv-src sv-obs" title="${escAttr(why)}">⊘</span>${esc(procLabel(leftLead(g)))}${n > 1 ? ` <span class="sv-orphan">+${n - 1}</span>` : ""}`,
+      x: `<button class="sv-stop sv-kill" data-svleft="${leftKey(g)}" title="Kill pid ${g.pid} and the ${n === 1 ? "process" : `${n} processes`} in its tree">✕</button>`,
+      go: "Go to the pane that started this",
+      note: fmtMb(leftMem(g) / 1048576),
+    };
+  }
   if (r.kind === "port") {
     // A socket the kernel says is open under this pane; the process holding it is all we know.
     const seen = r.orphan
@@ -195,7 +226,7 @@ const canAsk = (s: Sess) => isClaude(s) && s.phase !== "ended";
 
 function rowHtml(r: Row, open: boolean): string {
   const sid = sidOf(r);
-  const { url, dead, outcome, tail, label, x, go } = rowFacts(r);
+  const { url, dead, outcome, tail, label, x, go, note } = rowFacts(r);
   // An empty peek says which silence this is: `bgPeekEmpty` carries the backend's reason.
   // A task or a port has no log file, so those keep the literal.
   const peek = open && tail?.length
@@ -215,6 +246,8 @@ function rowHtml(r: Row, open: boolean): string {
   // A dead row shows its outcome as plain text: a chip that opens a dead tab is worse than none.
   const mid = dead
     ? `<span class="sv-url sv-dead">${esc(outcome)}</span>`
+    : note
+      ? `<span class="sv-url sv-pending" title="Memory held by the whole tree">${esc(note)}</span>`
     : url
       ? `<button class="sv-url" data-svopen="${escAttr(url)}" title="Open ${escAttr(url)}">${esc(url.replace(/^https?:\/\//, ""))}</button>`
       : `<span class="sv-url sv-pending">starting…</span>`;
@@ -228,7 +261,7 @@ function rowHtml(r: Row, open: boolean): string {
     </button>
     ${mid}
     ${logs}
-    <button class="sv-go" data-svgo="${sid}" title="${go}">◨</button>
+    ${sid && sessions.has(sid) ? `<button class="sv-go" data-svgo="${sid}" title="${go}">◨</button>` : `<span class="sv-go sv-none"></span>`}
     ${x}
     ${peek}
   </div>`;
@@ -240,7 +273,8 @@ function renderServersPop() {
   const pop = $("svrPop");
   // Partitioned here so `rows()` stays the single ordering, and it holds within each section.
   const servers = shown.filter(isServerRow);
-  const jobs = shown.filter((r) => !isServerRow(r));
+  const jobs = shown.filter((r) => !isServerRow(r) && r.kind !== "left");
+  const left = shown.filter((r) => r.kind === "left");
   // The servers heading stands at zero: "Running servers 0" over a list of jobs answers the pill.
   const stackPart = stacks.length
     ? `<div class="sv-h">Stacks<span class="sv-hn">${stacks.length}</span></div>`
@@ -253,7 +287,11 @@ function renderServersPop() {
         ? `<div class="sv-h sv-h2">Background jobs<span class="sv-hn">${jobs.length}</span></div>`
           + jobs.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
         : "")
-      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout.</div>`
+      + (left.length
+        ? `<div class="sv-h sv-h2">Left behind<span class="sv-hn">${left.length}</span></div>`
+          + left.map((r) => rowHtml(r, rowKey(r) === openRow)).join("")
+        : "")
+      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout. ⊘ is left behind: still running after its pane closed or the process that started it died, as a watcher does on Windows; ✕ kills it and everything it started.</div>`
     : "");
   // innerHTML guard: an assignment between mousedown and mouseup drops the click (docs/architecture.md).
   if (html === lastPop) return;
@@ -470,8 +508,25 @@ async function refreshPorts(): Promise<boolean> {
 
 // Re-read every live log: the only thing that fills in a URL, a peek or an ended state, and
 // a disk read per server, so slower than anything on the telemetry path.
+// Process trees our panes left running (docs/stack.md). The folders are every checkout we
+// know, so a stray from before this run is found by where it runs.
+async function refreshLeft(): Promise<boolean> {
+  let got: LeftBehind[];
+  try {
+    got = await invoke<LeftBehind[]>("left_behind", { roots: checkouts().map((c) => c.path) });
+  } catch {
+    return false;
+  }
+  const next = leftShown(got, leftSeen, Date.now());
+  const sig = (l: LeftBehind[]) => l.map((g) => `${leftKey(g)}/${g.procs.length}`).join("|");
+  const moved = sig(next) !== sig(leftTrees);
+  leftTrees = next;
+  return moved;
+}
+
 export async function pollServers() {
   let changed = await refreshPorts();
+  if (await refreshLeft()) changed = true;
   if (await refreshContainers()) changed = true;
   const live = livePolled();
   if (!live.length) { if (changed) repaint(); return; }
@@ -516,6 +571,8 @@ $("svrPop").addEventListener("click", (e) => {
   if (forget) { e.stopPropagation(); dismiss(forget.dataset.svsid!, forget.dataset.svforget!); return; }
   const port = t.closest<HTMLElement>("[data-svport]");
   if (port) { e.stopPropagation(); void killPort(port.dataset.svsid!, port.dataset.svport!); return; }
+  const left = t.closest<HTMLElement>("[data-svleft]");
+  if (left) { e.stopPropagation(); void killLeft(left.dataset.svleft!); return; }
   const kill = t.closest<HTMLElement>("[data-svkill]");
   if (kill) { e.stopPropagation(); stopTask(kill.dataset.svkill!); return; }
   const stk = t.closest<HTMLElement>("[data-svstack]");
@@ -584,6 +641,28 @@ async function killPort(sid: string, pidPort: string) {
     const s = sessions.get(sid);
     if (s) markKilled(s.servers, port, Date.now());
     toast(freed ? `Killed pid ${pid}: port ${port} is free` : `Killed pid ${pid}, but port ${port} is still taken`);
+  } catch (err) {
+    toast(String(err));
+  }
+  lastPop = "";
+  await pollServers();
+  repaint();
+}
+
+// Asked first, like a port kill. The backend kills only a tree its last poll reported with
+// this very start time, so a pid reused since cannot be hit.
+async function killLeft(key: string) {
+  const g = leftTrees.find((x) => leftKey(x) === key);
+  if (!g) { toast("That process has already gone"); return; }
+  const n = g.procs.length;
+  const ok = await ask(
+    `Kill ${procLabel(leftLead(g), 80)}${n > 1 ? ` and the ${n - 1} other process${n === 2 ? "" : "es"} in its tree` : ""}?\n\nIt holds ${fmtMb(leftMem(g) / 1048576)}. Nothing in Episko is attached to it any more.`,
+    { title: `Kill pid ${g.pid}`, kind: "warning", okLabel: "Kill", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  try {
+    const all = await invoke<boolean>("kill_left_behind", { pid: g.pid, started: g.started });
+    toast(all ? `Killed pid ${g.pid}` : `Killed pid ${g.pid}, but part of its tree is still running`);
   } catch (err) {
     toast(String(err));
   }

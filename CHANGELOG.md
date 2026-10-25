@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ The servers menu lists processes left running under *Left behind*: anything still going after
+  its pane closed, or after the script that started it died, with the memory it holds and a ✕ that
+  stops it and everything it started.
+! On Windows, closing a pane stops everything it started, not only its top process.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

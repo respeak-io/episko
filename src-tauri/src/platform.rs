@@ -95,7 +95,7 @@ pub(crate) struct PathHolder {
 }
 
 /// `p` is `root` or beneath it; case-insensitive on Windows, where the filesystem is.
-fn under(p: &std::path::Path, root: &std::path::Path) -> bool {
+pub(crate) fn under(p: &std::path::Path, root: &std::path::Path) -> bool {
     let (a, b) = (p.to_string_lossy(), root.to_string_lossy());
     let (a, b) = if cfg!(windows) {
         (norm_path(&a).to_lowercase(), norm_path(&b).to_lowercase())

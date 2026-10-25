@@ -82,7 +82,7 @@ Three hard constraints shape this code:
 | `telemetry.rs` | `write_instrument_settings`, `run_telemetry_server` + the `serve_telemetry` supervisor that re-binds it, `resolve_permission` |
 | `mcp.rs` | the Episko MCP server a Claude pane is launched with: the per-launch `--mcp-config` and its bearer token, the JSON-RPC handshake on the telemetry listener's `/mcp`, and `resolve_mcp`, which answers a held `tools/call` (docs/mcp.md) |
 | `platform.rs` | OS leaves (top half, incl. `norm_path`/`physical_cwd` and the `path_holders`/`remove_tree` group) + OS integrations (bottom half) |
-| `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus, `session_ports` (which TCP ports a pane's process tree is listening on) |
+| `external.rs` | the `~/.claude/sessions` registry, `ProcTable`, terminal focus, `session_ports` (which TCP ports a pane's process tree is listening on), `left_behind`/`kill_left_behind` (process trees still running after their pane closed or their parent died; docs/stack.md) |
 | `github.rs` | `gh`: issues/PRs, one thread read in full (body + comments) behind the queue's ⤢, the claim writes, closing, the committed keep list, the merged-PR evidence behind the broom's force; `gh()`/`classify()` are `pub(crate)` so `deps.rs` shares one account-and-token path rather than a second copy |
 | `review.rs` | one pull request under review (docs/review.md): the whole PR in one GraphQL read (threads, reviews, checks, commits), its diff against the merge base with any missing commits fetched by oid and no ref written, a file at an oid for expanding context, and the writes: a review with its comments in one call, reply, resolve, a conversation comment, ready/draft and a merge pinned to the head you saw |
 | `deps.rs` | Dependabot alerts, the update bots' PRs with their check rollup, what the manifests declare (read, never run), and the one command this app runs in your project: `<pm> outdated` (docs/dependencies.md) |
@@ -145,7 +145,7 @@ What `main.ts` still holds, deliberately: the imports and the whole of the `setX
 | `tasks.ts` | the frontend half of Runnables: `stopRuleBlocked`, `launchWithDeps` (dep memoisation), `findDepCycle`, `applyRunner`, `${input:…}` glue |
 | `mcptools.ts` | what the Episko MCP tools tell an agent: which runnables it may start (`refuseRun`), whose value fills an input, and a run's output folded the way a terminal leaves it (`appendOutput`) (docs/mcp.md) |
 | `history.ts` | History's rules: `histProject` (regrafting a row onto a project), `histBusy`, the scope/search predicates, day buckets |
-| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died, and what the row says when the log was never found), telling a *server* from a *job* Claude auto-backgrounded at its 120s timeout (`timedOut`, `isJob`, `bgKind`), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`) |
+| `servers.ts` | the dev servers running behind the header pill, from all three sources: recognising an agent's backgrounded shell off its PostToolUse payload and reading its log file (the URL, the peek, the sentinel that says it died, and what the row says when the log was never found), telling a *server* from a *job* Claude auto-backgrounded at its 120s timeout (`timedOut`, `isJob`, `bgKind`), latching the URL an Episko task announces as its output streams, and reconciling both against the ports the kernel actually reports (`usefulPort`, `reconcilePorts`), plus what a left-behind tree is called and whether it is news (`procLabel`, `leftLead`, `leftShown`: a grace, and no daemon that outlives its parent by design) |
 | `gitwatch.ts` | `gitMutates`: whether a shell command an agent ran is worth re-reading git for; `driftTarget`/`driftUpdate`: which checkout its work has moved to, from writes, `cwd`, and the `cd` of a shell-only agent that calls no write tool |
 | `autofetch.ts` | when the checkout on stage is due a `git fetch`: the cadence, the repo-keyed record of the last one, and how far a remote that cannot be reached is backed off |
 | `graph.ts` | the commit graph: `layoutGraph`'s lanes, what names a lane (`lineRef`, `lineTip`), `parseRefs`, the geometry and `rowSvg`/`rowSvgAt`, and `foldBots` — why bot work is *folded* rather than filtered out, in the two shapes it arrives in (a run down one lane, a fan of branch tips) |
@@ -601,6 +601,12 @@ And the things that hold however the files are arranged:
   sockets, of which four are Node's inspector and kernel-assigned control channels, so
   an unfiltered scan puts four pieces of noise in front of one useful row. And
   **`reconcilePorts` mutates**, so it belongs to the poll and never to a render pass.
+- **A process tree that outlived its pane is listed, not guessed at** (docs/stack.md). Windows
+  kills no child with its parent, so a dead dev script leaves its `vite build --watch` running
+  with no port to find it by; nine of them held 13 GB once. Each poll records every process under
+  a pane by pid **and start time** (`seen_procs`), and one no live pane holds any more is shown
+  under *Left behind*. A folder match only ever accuses a runtime, never an editor's process.
+  Closing a pane on Windows kills its tree first (`kill_session`).
 - **The header lists three sources on different rules, because it is for what is
   otherwise invisible.** An agent's background shell has no pane, no row, nothing on screen, so
   **every** one is listed, but only one with an address is called a *server*: `bgKind`
