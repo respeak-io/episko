@@ -337,6 +337,8 @@ export function applyStatusline(s: Sess, data: any) {
   // A statusLine only fires from a live REPL, so it un-ends a pane SessionEnd marked on /clear or /compact.
   if (s.phase === "ended") setPhase(s, "idle");
   if (data.model?.display_name) s.model = data.model.display_name;
+  // Absent when the model takes no effort setting, so a stale level must not outlive a /model.
+  if (data.model) s.effort = typeof data.effort?.level === "string" ? data.effort.level : null;
   const ctx = data.context_window?.used_percentage;
   if (typeof ctx === "number") { s.ctxPct = ctx; pushHist(s.ctxHist, ctx); }
   const tok = data.context_window?.used_tokens ?? data.context_window?.tokens;
