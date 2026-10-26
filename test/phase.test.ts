@@ -5,7 +5,7 @@ import {
   type BgServer, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
-import { rl, rlSamples, fcLog, midSnap } from "../src/rl";
+import { rl, rlSamples, fcLog, midSnap, resetAccount, rlAccts } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
@@ -1130,6 +1130,34 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
     it("ignores a window the payload doesn't mention", () => {
       applyStatusline(sess(), { rate_limits: { five_hour: { used_percentage: 10, resets_at: NOW_S + HOUR } } });
       expect(rl.d7).toBeNull();
+    });
+    describe("after a /login to another account", () => {
+      beforeEach(() => { resetAccount(); for (const k of Object.keys(rlAccts)) delete rlAccts[k]; });
+      const A = { id: "acct-a", tier: "default_claude_max_20x" }, B = { id: "acct-b", tier: "default_claude_max_5x" };
+      const line = (acct: object, api: number, d7: number, d7Reset: number) => ({
+        episko_account: acct, cost: { total_api_duration_ms: api },
+        rate_limits: { seven_day: { used_percentage: d7, resets_at: d7Reset } },
+      });
+      it("drops a pane's figures until it has reached the API as the new account", () => {
+        const idle = sess({ id: "idle" }), busy = sess({ id: "busy" });
+        applyStatusline(idle, line(A, 1000, 99, NOW_S + 86400));
+        vi.setSystemTime(NOW_MS + 60_000);
+        applyStatusline(busy, line(B, 500, 3, NOW_S + 3 * 86400));
+        expect(rl).toMatchObject({ d7: 3, d7Reset: NOW_S + 3 * 86400 });
+        vi.setSystemTime(NOW_MS + 70_000);
+        // Its API clock has not moved since the switch: those are the old account's numbers.
+        applyStatusline(idle, line(B, 1000, 99, NOW_S + 5 * 86400));
+        expect(rl).toMatchObject({ d7: 3, d7Reset: NOW_S + 3 * 86400 });
+        applyStatusline(idle, line(B, 1400, 4, NOW_S + 3 * 86400));
+        expect(rl.d7).toBe(4);
+        expect(fcLog).toEqual([]);
+      });
+      it("still reads a CLI whose statusLine carries no API clock", () => {
+        applyStatusline(sess(), { episko_account: A, rate_limits: { five_hour: { used_percentage: 50, resets_at: NOW_S + HOUR } } });
+        vi.setSystemTime(NOW_MS + 60_000);
+        applyStatusline(sess(), { episko_account: B, rate_limits: { five_hour: { used_percentage: 2, resets_at: NOW_S + 2 * HOUR } } });
+        expect(rl.h5).toBe(2);
+      });
     });
   });
 });

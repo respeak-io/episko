@@ -138,6 +138,12 @@ pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: A
         }
 
         let kind = if url.contains("statusline") { "statusline" } else { "hook" };
+        // Its `rate_limits` are the logged-in account's, and `/login` can change which mid-run.
+        if kind == "statusline" && data.is_object() {
+            if let Some(acct) = crate::usage::current_account() {
+                data["episko_account"] = serde_json::to_value(acct).unwrap_or_default();
+            }
+        }
         let _ = app.emit("telemetry", serde_json::json!({ "kind": kind, "data": data }));
         let _ = request.respond(tiny_http::Response::from_string(""));
     }

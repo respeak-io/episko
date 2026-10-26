@@ -85,7 +85,7 @@ import {
   toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
-import { rl, setRlLogger } from "./rl";
+import { account, rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } from "./diffview";
@@ -649,12 +649,13 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   // Sounds read ./phase's verdict, not the payload: snapshot, apply, compare, so there
   // is no second copy of the done/error decision here to drift.
   const before = soundSnap(s);
-  const rlBefore = { h5: rl.h5, d7: rl.d7 };
+  const rlBefore = { h5: rl.h5, d7: rl.d7, acct: account?.id };
   if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
   const ev = hookSound(before, soundSnap(s));
   if (ev) playSound(ev);
   // Account-wide, so outside the per-session branch: one crossing, one chime.
-  if (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null) playSound("limit");
+  // A `/login` restoring another account's 90% is a switch, not a crossing.
+  if (rlBefore.acct === account?.id && (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null)) playSound("limit");
   queueRosterSave();
   renderAll();
 });

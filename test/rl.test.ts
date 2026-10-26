@@ -4,6 +4,8 @@ import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
   rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
   lastClosed, H5_LEN, applyPlanLimits, rlScoped, scopedForecasts,
+  account, accountName, applyRlReadings, loadAccts, mergePeerRl, noteAccount, otherAccounts, planName,
+  resetAccount, rlAccts,
 } from "../src/rl";
 
 // A fixed epoch so "one hour before the reset" is a number. 2027-01-15T08:00:00Z.
@@ -22,8 +24,9 @@ beforeEach(() => {
   midSnap.h5 = midSnap.d7 = null;
   lastClosed.h5 = lastClosed.d7 = null;
   setRlLogger(() => {});
-  rlScoped.wins = []; rlScoped.at = 0; rlScoped.avail = true;
+  rlScoped.wins = []; rlScoped.at = 0; rlScoped.avail = true; rlScoped.acct = null;
   store.clear();
+  resetAccount(); for (const k of Object.keys(rlAccts)) delete rlAccts[k];
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -507,5 +510,85 @@ describe("per-model weekly windows", () => {
     expect(scopedForecasts()[0].forecast.used).toBe(96);
     tick(2);
     expect(scopedForecasts()[0].forecast).toMatchObject({ used: 0, resetTs: null });
+  });
+});
+
+describe("accounts — a /login swaps the meters, never reads as a reset", () => {
+  const DAY = 86400;
+  const A = { id: "acct-a", tier: "default_claude_max_20x", kind: "claude_max", email: "old@x.io" };
+  const B = { id: "acct-b", tier: "default_claude_max_5x", kind: "claude_max", email: "new@x.io" };
+  const reading = (h5: number, h5Reset: number, d7: number, d7Reset: number) => ({
+    five_hour: { used_percentage: h5, resets_at: h5Reset }, seven_day: { used_percentage: d7, resets_at: d7Reset },
+  });
+  // The account in use was out of its week; the new one's week resets sooner than the old one's.
+  function onAThenB() {
+    noteAccount(A);
+    applyRlReadings(reading(40, NOW_S + HOUR, 99, NOW_S + 5 * DAY));
+    tick(5);
+    expect(noteAccount(B)).toBe(true);
+    applyRlReadings(reading(2, NOW_S + 5 * HOUR, 0, NOW_S + 2 * DAY));
+  }
+
+  it("shows the new account even when its week ends before the old one's", () => {
+    onAThenB();
+    expect(rl).toMatchObject({ h5: 2, d7: 0, d7Reset: NOW_S + 2 * DAY });
+    expect(fcLog).toEqual([]); // the switch closed nothing
+  });
+  it("restores the old account's figures on the way back, without logging its rotation", () => {
+    onAThenB();
+    tick(10);
+    expect(noteAccount(A)).toBe(true);
+    expect(rl).toMatchObject({ h5: 40, d7: 99, d7Reset: NOW_S + 5 * DAY });
+    vi.setSystemTime((NOW_S + 5 * DAY + 60) * 1000);
+    applyRlReadings(reading(1, NOW_S + 5 * DAY + 5 * HOUR, 1, NOW_S + 12 * DAY));
+    expect(rl.d7).toBe(1);
+    expect(fcLog).toEqual([]);
+  });
+  it("keeps burn samples to one account", () => {
+    onAThenB();
+    expect(rlSamples.d7.map((x) => x.pct)).toEqual([0]);
+  });
+  it("is quiet when the same account is reported again, and on the first sighting", () => {
+    expect(noteAccount(A)).toBe(false);
+    expect(noteAccount({ ...A, email: "renamed@x.io" })).toBe(false);
+    expect(account?.email).toBe("renamed@x.io");
+    expect(noteAccount(null)).toBe(false);
+    expect(noteAccount({ id: "" })).toBe(false);
+  });
+  it("drops a held per-model reading that was another account's", () => {
+    rlScoped.wins = [{ label: "Fable", pct: 80, resetTs: NOW_S + DAY }]; rlScoped.at = 5; rlScoped.acct = A.id;
+    noteAccount(B);
+    expect(rlScoped.wins).toEqual([]);
+  });
+  it("lists the other account with the figures it had, and survives a restart", () => {
+    onAThenB();
+    expect(otherAccounts().map((o) => [o.acct.id, o.d7.used])).toEqual([["acct-a", 99]]);
+    for (const k of Object.keys(rlAccts)) delete rlAccts[k];
+    loadAccts();
+    expect(Object.keys(rlAccts).sort()).toEqual(["acct-a", "acct-b"]);
+    expect(rlAccts["acct-a"].d7).toBe(99);
+  });
+  it("files a synced reading under the account it came from", () => {
+    onAThenB();
+    expect(mergePeerRl({ acct: "acct-a", h5: 60, h5Reset: NOW_S + HOUR, d7: 100, d7Reset: NOW_S + 5 * DAY })).toBe(true);
+    expect(rl.d7).toBe(0);
+    expect(rlAccts["acct-a"].d7).toBe(100);
+    expect(mergePeerRl({ acct: "acct-z", d7: 50, d7Reset: NOW_S + DAY })).toBe(false);
+    expect(mergePeerRl({ d7: 7, d7Reset: NOW_S + 2 * DAY })).toBe(true); // an older peer, untagged
+    expect(rl.d7).toBe(7);
+  });
+  it("tags a forecast-log entry with its account", () => {
+    noteAccount(B);
+    applyRlReadings(reading(10, NOW_S + 60, 0, NOW_S + 2 * DAY));
+    tick(2);
+    applyRlReadings(reading(1, NOW_S + 5 * HOUR, 0, NOW_S + 2 * DAY));
+    expect(fcLog.map((e) => [e.w, e.acct])).toEqual([["h5", "acct-b"]]);
+  });
+  it("names the plan from the server's tier", () => {
+    expect(planName(B)).toBe("Max 5x");
+    expect(planName({ id: "p", tier: null, kind: "claude_pro", email: null })).toBe("Pro");
+    expect(planName({ id: "p", tier: null, kind: null, email: null })).toBeNull();
+    expect(accountName(A)).toBe("Max 20x · old@x.io");
+    expect(accountName({ id: "0123456789", tier: null, kind: null, email: null })).toBe("01234567");
   });
 });

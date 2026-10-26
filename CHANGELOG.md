@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! Switching Claude accounts with `/login` no longer reads as both limit windows resetting. Each
+  account keeps its own meters, and the limits popover names the account and shows the other one's.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
