@@ -22,6 +22,7 @@ const GHA = "github-actions"; // a source that sees ci.failing-since
 const det = (sources: string[], o: Partial<Detection> = {}): Detection => ({
   repoRoot: "/r", forge: { kind: "unknown", host: null, path: null, by: "none" }, sources, markers: [],
   config: { readable: true, forge: null, off: [], sources: {}, bots: [], trunk: null, tagPattern: null, sarif: [], params: {}, thresholds: {} },
+  deploy: null,
   ...o,
 });
 const ok = (source: string, facts: Facts, o: Partial<SourceReport> = {}): SourceReport => ({

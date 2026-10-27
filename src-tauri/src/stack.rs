@@ -2,7 +2,7 @@
 //! `[stack]` table of `.episko/episko.toml`. Facts only; which pane and container make one
 //! stack, and what state it is in, is `stack.ts`'s (docs/stack.md).
 
-use crate::platform::{augmented_path, resolve_claude, sys_command};
+use crate::platform::{augmented_path, sys_command};
 
 /// One container Compose made. Matched to a checkout by `working_dir`, the directory
 /// `docker compose` ran in, which is the one label that says whose a container is.
@@ -152,7 +152,7 @@ struct RawFile {
 }
 
 /// Forgiving like `[health]`: a broken file means "no table", never an error a stack cannot show.
-fn parse_stack(text: &str) -> StackConfig {
+pub(crate) fn parse_stack(text: &str) -> StackConfig {
     toml::from_str::<RawFile>(text).ok().and_then(|f| f.stack).unwrap_or_default()
 }
 
@@ -197,44 +197,20 @@ struct RawProposal {
     run: std::collections::BTreeMap<String, RunInfo>,
 }
 
-/// The answer is a fenced `toml` block, then `WHY` and one `- ` line per value; anything around
-/// them is ignored. No block, or one that does not parse, is a failure the dialog reports.
+/// The answer is `deploy::fenced`'s block and reasons. No block, or one that does not parse, is a
+/// failure the dialog reports.
 fn parse_proposal(out: &str) -> Result<StackProposal, String> {
-    let start = out.find("```toml").ok_or("the agent answered without a proposal")? + "```toml".len();
-    let len = out[start..].find("```").ok_or("the agent's proposal was cut off")?;
-    let raw: RawProposal = toml::from_str(&out[start..start + len]).map_err(|e| format!("the proposal is not valid TOML: {e}"))?;
-    let rest = &out[start + len + 3..];
-    let why = rest
-        .lines()
-        .skip_while(|l| l.trim() != "WHY")
-        .filter_map(|l| l.trim().strip_prefix("- ").map(str::to_string))
-        .collect();
+    let (block, why) = crate::deploy::fenced(out)?;
+    let raw: RawProposal = toml::from_str(&block).map_err(|e| format!("the proposal is not valid TOML: {e}"))?;
     Ok(StackProposal { stack: raw.stack.unwrap_or_default(), run: raw.run, tasks: raw.task, why })
 }
 
-const PROPOSE_SECS: u64 = 300;
-
-/// Ask a headless Claude to read the project and propose `[stack]`, the way the day summary
-/// asks for a sentence: `-p`, no PTY, no session. `--restricted` plus `--tools Read,Glob,Grep`
-/// means it can look and nothing else: no shell, no edits, no web, no MCP, none of the user's
-/// settings (whose allow rules could otherwise reopen Bash). It runs in the project, read-only.
+/// The headless read-only describer (`deploy::propose_toml`), asked about tasks and the stack.
 #[tauri::command]
 pub(crate) async fn propose_stack(dir: String, prompt: String) -> Result<StackProposal, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = sys_command(resolve_claude());
-        cmd.env("PATH", augmented_path()).current_dir(&dir).args([
-            "-p", &prompt, "--model", "sonnet", "--restricted", "--tools", "Read,Glob,Grep",
-            "--strict-mcp-config", "--no-session-persistence",
-        ]);
-        let o = crate::deps::run_capped(cmd, PROPOSE_SECS)
-            .map_err(|e| if e.starts_with("no answer") { format!("no proposal after {PROPOSE_SECS}s") } else { format!("could not start claude: {e}") })?;
-        if !o.status.success() {
-            return Err(format!("claude exited {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
-        }
-        parse_proposal(&String::from_utf8_lossy(&o.stdout))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || parse_proposal(&crate::deploy::propose_toml(&dir, &prompt)?))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Write `[stack]` as accepted, through `toml_edit` so every other table and comment survives.
