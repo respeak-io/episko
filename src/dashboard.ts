@@ -35,9 +35,10 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciFlows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, projectBand, releaseRows, tabFindings, type MaintInput,
+  ciFlows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, probeRows, prodChecks, projectBand, releaseRows,
+  tabFindings, type MaintInput,
 } from "./maint";
-import { maintInput, maintOf, scanProject } from "./maintscan";
+import { askingFor, maintInput, maintOf, scanProject } from "./maintscan";
 import { maintClick, type MaintHost } from "./maintui";
 import { DASH_CARD, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import { discoverTasks, execCmd } from "./tasks";
@@ -1276,6 +1277,7 @@ function maintNow(now: number): MaintDash {
     hygiene: hygieneOf(inp, th, now), staleDays: th.staleBranchDays,
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
     deploy: inp.det?.deploy ?? null, detected: !!inp.det,
+    probes: probeRows(inp, th, now), prod: { projects: prodChecks(inp).length ? 1 : 0, checking: askingFor(r) },
   };
 }
 
@@ -1310,6 +1312,7 @@ const maintHost: MaintHost = {
   openView: (v) => openDashView(v),
   openAcross: (sub) => host.openFleetMaint(sub),
   deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
+  roots: () => [root()],
 };
 
 // ---------- events ----------

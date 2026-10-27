@@ -3039,6 +3039,14 @@ select.in-ctl { cursor: pointer; }
 .mt-rn { flex: none; max-width: 24%; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .mt-rn:hover { color: var(--accent-ink); }
 .mt-gaps em { color: var(--muted-2); }
+/* Hosts are not projects: a row each, below the cards, the worst Prod cell of what it runs. */
+.mt-hosts { margin-top: 10px; padding-bottom: 6px; }
+.mt-host { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-host:last-child { border-bottom: 0; }
+.mt-host .hn { flex: none; max-width: 30%; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-host .hl { flex: 1; min-width: 0; font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-host .mt-rn { max-width: none; font-size: 11px; }
+.mt-host .mt-v { flex: none; max-width: 35%; }
 @media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; } }
 
 /* The project dashboard's two tabs. The Today columns are hidden behind Maintenance, never
@@ -3069,6 +3077,11 @@ select.in-ctl { cursor: pointer; }
 .mt-li .d { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .mt-cov .mt-v { flex: none; max-width: 55%; }
+.mt-probe { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
+.mt-probe .k { flex: none; max-width: 30%; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-probe .u { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-probe .mt-v { flex: none; max-width: 30%; }
+.mt-probe .mt-v:empty { display: none; }
 .mt-fix { display: block; margin: 0 7px 5px 105px; font: 10.5px var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1080px) { .mt-dgrid { grid-template-columns: minmax(0, 1fr); } .mt-dhead { flex-wrap: wrap; } }
 

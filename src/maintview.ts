@@ -6,7 +6,7 @@ import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
   FACET_TAB, MAINT_TABS, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
-  type MaintTab, type TabCount, type Verb,
+  type MaintTab, type ProbeRow, type TabCount, type Verb,
 } from "./maint";
 import { FACETS, facetDef, type Facet, type MaintCap } from "./maintsources";
 import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
@@ -26,6 +26,10 @@ export interface MaintCard {
 }
 export interface MaintTally { needs: number; drifting: number; quiet: number; unread: number; cantCheck: number }
 export interface MaintSoon { name: string; what: string; at: number } // at: unix secs
+/** A host row: `[deploy] host` joined to every project that names it. */
+export interface MaintHostRow { host: string; projects: { root: string; name: string }[]; level: Level; text: string }
+/** What *Check prod* would ask: projects with an address in `[deploy]`, and whether a check is out. */
+export interface MaintProd { projects: number; checking: boolean }
 export interface MaintView {
   cards: MaintCard[]; // rankMaint's order
   chip: MaintChip; quietOpen: boolean;
@@ -41,6 +45,8 @@ export interface MaintView {
   read: number; // projects the open tab reached a verdict on
   unset: number; // projects with none of it set up: a fact, not a gap
   gaps: MaintGap[]; // its cells that do not know, so an empty tab never reads as clear
+  hosts: MaintHostRow[]; // hostRows' order, over the filter
+  prod: MaintProd;
 }
 export type MaintRow = Finding & { name: string };
 export interface MaintGap { name: string; facet: Facet; text: string }
@@ -61,7 +67,18 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "sec.dependency": "advisories in dependencies", "sec.code": "code scanning findings", "sec.secret": "committed secrets",
   "deps.update-prs": "open update pull requests", "deps.pr-checks": "the checks on each update pull request",
   "work.issues": "open issues", "work.prs": "open pull requests", "work.review-requested": "reviews requested of you",
+  "prod.status": "whether each [deploy] address answers", "prod.cert": "when its certificate expires",
+  "prod.host": "the host itself: disk, updates, containers",
 };
+
+// Remote, so never part of a scan: the button names what leaves this machine (docs/maintenance.md).
+const PROD_TIP = "Request each [deploy] address once, from this machine, and read its certificate. Nothing else connects";
+function prodHtml(p: MaintProd, root?: string): string {
+  if (!p.projects) return "";
+  if (p.checking) return `<span class="fl-when mono">checking prod…</span>`;
+  const n = root === undefined ? ` of ${plural(p.projects, "project")}` : "";
+  return `<button class="aslink" data-mtprod="${escAttr(root ?? "")}" data-tip="${escAttr(PROD_TIP.replace("address", `address${n}`))}">Check prod</button>`;
+}
 
 // ---------- the head ----------
 
@@ -73,7 +90,7 @@ export function maintWhenHtml(v: MaintView): string {
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
   }
   return `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>
-    <button class="aslink" data-mtscan="force" data-tip="Check every project again, past every cache">⟳</button>`;
+    <button class="aslink" data-mtscan="force" data-tip="Check every project again, past every cache">⟳</button>${prodHtml(v.prod)}`;
 }
 
 const tile = (label: string, value: string, sub: string, cls = "") =>
@@ -141,6 +158,22 @@ function cardHtml(c: MaintCard, compact: boolean): string {
   const finds = !compact && c.findings.length
     ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f)).join("")}</div>` : "";
   return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}">${id}${cells}${finds}</article>`;
+}
+
+// ---------- hosts ----------
+
+// No host fact is read yet (that is ssh, later), so a row is its projects' Prod cells, the worst one.
+function hostsHtml(hosts: readonly MaintHostRow[]): string {
+  if (!hosts.length) return "";
+  const rows = hosts.map((h) => {
+    const v = h.level === "ok" && !h.text ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(h.text);
+    const runs = h.projects.map((p) => `<span class="mt-rn" data-mtproj="${escAttr(p.root)}" data-mtname="${escAttr(p.name)}"`
+      + ` data-tip="${escAttr(`Open ${p.name}`)}">${esc(p.name)}</span>`).join(", ");
+    const tip = `${h.host}: the worst Prod cell of the projects it runs. Disk, updates and containers are not read yet`;
+    return `<div class="mt-host"><span class="hn mono" data-tip="${escAttr(tip)}">${esc(h.host)}</span>`
+      + `<span class="hl">runs ${runs}</span><span class="mt-v ${LEVEL_CLS[h.level]}">${v}</span></div>`;
+  }).join("");
+  return `<section class="mt-sec mt-hosts"><div class="mt-sec-h label">Hosts</div>${rows}</section>`;
 }
 
 // ---------- the body ----------
@@ -214,7 +247,7 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
     ? `<div class="mt-soon mt-gaps"><span class="label">Not read</span>${v.gaps.map((g) =>
       `<span>${esc(v.filter ? facetDef(g.facet).label : `${g.name} · ${facetDef(g.facet).label}`)} <em class="mono">${esc(g.text)}</em></span>`).join("")}</div>` : "";
   return (only ? `<div class="mt-top">${only}</div>` : "")
-    + (sections || `<p class="fl-none">${esc(none)}</p>`) + gaps;
+    + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + gaps;
 }
 
 export function maintBodyHtml(v: MaintView): string {
@@ -240,7 +273,8 @@ export function maintBodyHtml(v: MaintView): string {
   }
   return `<div class="mt-body">${bar}<div class="mt-top">${chipsHtml(v)}</div>`
     + (allClear && v.chip === "all" ? clearHtml(v) : "")
-    + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div></div>`;
+    + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div>`
+    + (v.chip === "all" ? hostsHtml(v.hosts) : "") + `</div>`;
 }
 
 // ---------- the project dashboard's tab ----------
@@ -261,6 +295,8 @@ export interface MaintDash {
   hygiene: Hygiene | null; staleDays: number;
   cover: CoverRow[]; forge: string; unreadable: boolean;
   deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
+  probes: { at: number | null; rows: ProbeRow[] } | null; // null until Check prod answered
+  prod: MaintProd;
 }
 
 /** Which card a cell scrolls to on the dashboard: its fleet tab's, by the same map. */
@@ -361,16 +397,33 @@ function runsCard(v: MaintDash): string {
     return dcard("runs", "Runs on", "", across("servers"),
       `<p class="ac-empty">No [deploy] table, so Episko does not know where this project runs.</p><p class="ac-empty">${ask}</p>`);
   }
+  // An address shows its last answer once one exists; until then it is the table's value.
+  const probe = (n: string | null, u: string) => v.probes?.rows.find((r) => (n === null || r.name === n) && r.url === u);
+  const addr = (n: string | null, u: string, label = n ?? u) => {
+    const p = probe(n, u);
+    return p ? probeHtml(label, p) : kv(label, u);
+  };
+  const named = Object.entries(d.urls);
+  // DeployConfig::targets asks a version_url that is also a named url once, under that name.
+  const versionName = named.some(([, u]) => u === d.versionUrl) ? null : named.some(([n]) => n === "version") ? "version_url" : "version";
   const rows = [
     d.host ? kv("Host", `${d.host} · ssh alias`) : "",
     d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
-    ...Object.entries(d.urls).map(([n, u]) => kv(n, u)),
+    ...named.map(([n, u]) => addr(n, u)),
     d.sentry ? kv("Errors", d.sentry) : "",
-    d.versionUrl ? kv("Version from", d.versionUrl) : "",
+    d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
   ].join("");
-  const doors = door("file", "Open file", "Open .episko/episko.toml") + " · " + ask;
+  const checked = !v.prod.projects ? "" : v.prod.checking ? "" : v.probes?.at ? ` · checked ${relTime(v.probes.at * 1000)}` : " · never checked";
+  const doors = [prodHtml(v.prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
   return dcard("runs", "Runs on", "from [deploy]", across("servers"),
-    rows + `<p class="ac-empty">Nothing connects until you ask. ${doors}</p>`);
+    rows + `<p class="ac-empty">Nothing connects until you ask${esc(checked)}. ${doors}</p>`);
+}
+
+function probeHtml(label: string, p: ProbeRow): string {
+  const tip = [p.url, p.err].filter(Boolean).join("\n");
+  return `<div class="mt-probe" data-tip="${escAttr(tip)}"><span class="k">${esc(label)}</span><span class="u mono">${esc(p.url)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[p.level]}">${esc(p.status)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[p.certLevel]}">${esc(p.cert)}</span></div>`;
 }
 
 // Amber only where a fix exists or a read broke; every other state is a fact, muted.

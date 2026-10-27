@@ -170,19 +170,17 @@ pub(crate) struct ForgeRelease {
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code, reason = "made by http-probe; the wire fixture pins it now")]
 pub(crate) struct Probe {
-    name: String,
-    url: String,
-    code: Option<u16>,
-    ms: Option<u32>,
-    cert_not_after: Option<u64>,
-    err: Option<String>,
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) code: Option<u16>,
+    pub(crate) ms: Option<u32>,
+    pub(crate) cert_not_after: Option<u64>, // the leaf's; None is unknown, never fine
+    pub(crate) err: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
-#[allow(dead_code, reason = "http-probe makes Probes in a later slice")]
 pub(crate) enum Facts {
     CiRuns { branch: String, runs: Vec<CiRun> },
     Advisories { items: Vec<Advisory> },
@@ -305,11 +303,19 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
     "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
     "sec.dependency", "sec.code", "sec.secret", "deps.update-prs", "deps.pr-checks",
-    "work.issues", "work.prs", "work.review-requested",
+    "work.issues", "work.prs", "work.review-requested", "prod.status", "prod.cert", "prod.host",
 ];
 
-/// The `[maintenance]` keys a manifest `needs` may name; `MaintConfig::has` reads each.
-const NEEDS: &[&str] = &["sarif"];
+/// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and
+/// `deploy.urls`, an address in `[deploy]`.
+const NEEDS: &[&str] = &["sarif", "deploy.urls"];
+
+fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
+    match key {
+        "deploy.urls" => deploy.is_some_and(|d| !d.targets().is_empty()),
+        k => cfg.has(k),
+    }
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -579,11 +585,12 @@ fn detect_now(root: &str) -> Detection {
         .map(String::as_str)
         .collect();
     let probes = probe(Path::new(&repo_root), &entries);
+    let deploy = crate::deploy::read(&repo_root);
     let sources: Vec<String> = SOURCES.iter()
         .filter(|d| {
             let m = &MANIFEST.sources[d.id];
             applies(&m.forge, &m.detect, forge.kind, &probes).is_some()
-                && m.needs.iter().all(|n| config.has(n))
+                && m.needs.iter().all(|n| needs_met(n, &config, deploy.as_ref()))
                 && enabled(&config, d.id, m.facet)
         })
         .map(|d| d.id.to_string())
@@ -596,7 +603,6 @@ fn detect_now(root: &str) -> Detection {
                 .map(|found| Marker { facet: m.facet, label: m.label.replace("{host}", &host), found })
         })
         .collect();
-    let deploy = crate::deploy::read(&repo_root);
     // A table nothing reads yet must not be drawn as "no deploy": it is found, and said so.
     let prod_read = sources.iter().any(|id| MANIFEST.sources[id.as_str()].facet == Facet::Prod);
     if deploy.is_some() && !prod_read && !facet_off(&config, Facet::Prod) {
@@ -644,7 +650,7 @@ pub(crate) fn forget_detection(root: &str) {
 pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "only gh and glab are called yet; the tool and remote adapters of later slices call the rest")]
+    #![allow(dead_code, reason = "tool, ssh and a token's http are called by the adapters of later slices")]
 
     use std::time::Duration;
 
@@ -670,12 +676,14 @@ pub(crate) mod exec {
     }
 
     /// GET without a body, POST with one. `token` is `(header prefix, env name)`: the value goes
-    /// to curl on stdin, never on argv, and only a name on `ENV_TOKENS` is ever read.
+    /// to curl on stdin, never on argv, and only a name on `ENV_TOKENS` is ever read. `report`
+    /// sends nothing and answers curl's own `%{json}` then `%{certs}` as the body, with `code` 0.
     pub(crate) struct HttpReq {
         pub(crate) url: String,
         pub(crate) body: Option<String>,
         pub(crate) token: Option<(&'static str, &'static str)>,
         pub(crate) secs: u64,
+        pub(crate) report: bool,
     }
 
     #[derive(Debug)]
@@ -717,6 +725,30 @@ pub(crate) mod exec {
     const CURL: &str = r"C:\Windows\System32\curl.exe";
     #[cfg(not(windows))]
     const CURL: &str = "/usr/bin/curl";
+    #[cfg(windows)]
+    pub(crate) const NULL_DEV: &str = "NUL";
+    #[cfg(not(windows))]
+    pub(crate) const NULL_DEV: &str = "/dev/null";
+
+    /// A probe: the body is thrown away, and a failed transfer is still a report, since `%{json}`
+    /// carries curl's exit code and message. `-g`: a `[1-9]` in a committed URL is one address.
+    pub(crate) fn report_cmd(req: &HttpReq) -> Result<std::process::Command, String> {
+        if req.body.is_some() || req.token.is_some() {
+            return Err("a report sends nothing".into());
+        }
+        let mut cmd = sys_command(CURL);
+        cmd.args(["-sSg", "-o", NULL_DEV, "--max-time"]).arg(req.secs.to_string());
+        cmd.args(["-w", r"%{json}\n%{certs}"]).arg(&req.url);
+        Ok(cmd)
+    }
+
+    fn report(req: &HttpReq) -> Result<HttpResp, String> {
+        let out = run_fed(report_cmd(req)?, None, req.secs + 5)?;
+        if out.stdout.trim().is_empty() {
+            return Err(format!("curl printed no report: {}", out.stderr.trim()));
+        }
+        Ok(HttpResp { code: 0, body: out.stdout })
+    }
 
     /// A value from data on argv: one whole element, never a flag (`ssh_hostname`'s rule).
     pub(crate) fn data_arg(v: &str) -> Result<&str, String> {
@@ -791,11 +823,15 @@ pub(crate) mod exec {
 
         fn http(&self, req: &HttpReq) -> Result<HttpResp, String> {
             self.trust("curl")?;
-            if !(req.url.starts_with("https://") || req.url.starts_with("http://")) {
+            let scheme = req.url.get(..8).unwrap_or(&req.url).to_ascii_lowercase();
+            if !(scheme.starts_with("https://") || scheme.starts_with("http://")) {
                 return Err(format!("{} is not an http(s) URL", req.url));
             }
+            if req.report {
+                return report(req);
+            }
             let mut cmd = sys_command(CURL);
-            cmd.args(["-sS", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
+            cmd.args(["-sSg", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
             let mut input = None;
             if let Some((head, env)) = req.token {
                 if !ENV_TOKENS.contains(&env) {
@@ -906,7 +942,8 @@ pub(crate) mod exec {
             self.answer(Self::argv(bin, args)).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
         }
         fn http(&self, req: &HttpReq) -> Result<HttpResp, String> {
-            self.answer(Self::argv("curl", &[&req.url])).map(|body| HttpResp { code: 200, body })
+            let mode: &[&str] = if req.report { &["--report"] } else { &[] };
+            self.answer(Self::argv("curl", &[&[req.url.as_str()][..], mode].concat())).map(|body| HttpResp { code: 200, body })
         }
         fn ssh(&self, alias: &str, _script: &str, _secs: u64) -> Result<Output, String> {
             self.answer(Self::argv("ssh", &[alias])).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
@@ -965,6 +1002,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-releases", read: crate::maint_repo::github_releases },
     SourceDef { id: "github-work", read: crate::maint_repo::github_work },
     SourceDef { id: "gitlab-work", read: crate::maint_repo::gitlab_work },
+    SourceDef { id: "http-probe", read: crate::deploy::http_probe },
 ];
 
 /// The cost classes, enforced here rather than at a call site: a scan never runs a program in
@@ -1186,7 +1224,7 @@ mod tests {
         git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1.0"]);
         commit(&dir, "two");
         write(&dir, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n+ a thing\n\n## 1.0 — 2026-10-01\n+ first\n");
-        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n");
+        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nurls = { app = \"https://app.example.com\" }\n");
         write(&dir, "reports/scan.sarif", "{\"version\": \"2.1.0\", \"runs\": []}");
         dir
     }
@@ -1401,10 +1439,14 @@ mod tests {
         assert!(SysExec { cost: Cost::Forge }.tool(root, "npm", &["audit"], 5).unwrap_err().contains("not trusted"));
         assert!(SysExec { cost: Cost::Tool }.tool(root, "rm", &["-rf", "."], 5).unwrap_err().contains("not trusted"));
         assert!(SysExec { cost: Cost::Tool }.ssh("prod", "uptime", 5).unwrap_err().contains("not trusted"));
-        let req = HttpReq { url: "file:///etc/passwd".into(), body: None, token: None, secs: 5 };
+        let req = HttpReq { url: "file:///etc/passwd".into(), body: None, token: None, secs: 5, report: false };
         assert!(SysExec { cost: Cost::Remote }.http(&req).is_err(), "only http(s)");
-        let req = HttpReq { url: "https://x.example".into(), body: None, token: Some(("Authorization: Bearer ", "HOME")), secs: 5 };
+        let req = HttpReq { url: "https://x.example".into(), body: None, token: Some(("Authorization: Bearer ", "HOME")), secs: 5, report: false };
         assert!(SysExec { cost: Cost::Remote }.http(&req).unwrap_err().contains("not a token"), "only allowlisted env names");
+        assert!(SysExec { cost: Cost::Remote }.http(&HttpReq { report: true, ..req }).unwrap_err().contains("sends nothing"));
+        let probe = HttpReq { url: "HTTPS://x.example/[1-3]".into(), body: None, token: None, secs: 5, report: true };
+        let argv: Vec<_> = exec::report_cmd(&probe).unwrap().get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(argv, ["-sSg", "-o", exec::NULL_DEV, "--max-time", "5", "-w", r"%{json}\n%{certs}", "HTTPS://x.example/[1-3]"], "no glob, no body");
         for bad in ["-oProxyCommand=x", "a b", ""] {
             assert!(data_arg(bad).is_err(), "{bad:?}");
         }
@@ -1592,6 +1634,31 @@ host = \"-oProxyCommand=x\"
 ");
         let d = detect(&s(&dir), true);
         assert!(d.deploy.is_none() && !labels(&d).contains(&"[deploy]".to_string()), "nothing safe is no table");
+        // An address is what http-probe reads: then it is a source, and the marker steps aside.
+        write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\nurls = { app = \"https://app.example.com\" }\n");
+        let d = detect(&s(&dir), true);
+        assert!(d.sources.iter().any(|x| x == "http-probe") && !labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+    }
+
+    /// A scan never touches the user's infrastructure, forced or with the public opt-in; a click does.
+    #[test]
+    fn http_probe_makes_no_http_call_in_a_scan() {
+        let root = s(&fixture_repo());
+        let det = detect(&root, true);
+        assert!(det.sources.iter().any(|x| x == "http-probe"), "{:?}", det.sources);
+        let (meta, def) = meta_of("http-probe").unwrap();
+        assert_eq!(meta.cost, Cost::Remote);
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
+        let ex = FakeExec::recorded("curl-openssl.txt");
+        for public in [false, true] {
+            let rep = read_cached(&root, "http-probe", meta, def.read, &ctx, &ex, Mode::Scan, public, true, None);
+            assert_eq!(rep.coverage, Coverage::NotRun);
+        }
+        assert!(ex.calls().is_empty(), "{:?}", ex.calls());
+        let rep = read_cached(&root, "http-probe", meta, def.read, &ctx, &ex, Mode::Explicit, false, true, None);
+        assert_eq!((rep.coverage.clone(), ex.calls()), (Coverage::Ok, vec![vec!["curl".to_string(), "https://app.example.com".into(), "--report".into()]]));
+        let later = read_cached(&root, "http-probe", meta, def.read, &ctx, &ex, Mode::Scan, false, true, None);
+        assert_eq!((later, ex.calls().len()), (rep, 1), "a scan shows the click's answer and asks nothing");
     }
 
     #[test]

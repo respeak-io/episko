@@ -120,13 +120,24 @@ export async function scanFleet(roots: readonly string[], force: boolean): Promi
   paint();
 }
 
+const asking = new Map<string, number>(); // per root: click-only reads still out
+/** Whether a click-only read of this project is still out, so its button can say so. */
+export const askingFor = (root: string): boolean => (asking.get(root) ?? 0) > 0;
+
 /** A click-only source, run once on a person's ask (`explicit`, the class that may execute). */
 export async function runSource(root: string, id: string): Promise<SourceReport> {
   const g = forgotten.get(root) ?? 0;
-  const r = await slot(() => readOne(root, id, "explicit", true));
-  const e = cache.get(root);
-  if (e && (forgotten.get(root) ?? 0) === g) { e.reports[id] = r; paint(); }
-  return r;
+  asking.set(root, (asking.get(root) ?? 0) + 1);
+  paint();
+  try {
+    const r = await slot(() => readOne(root, id, "explicit", true));
+    const e = cache.get(root);
+    if (e && (forgotten.get(root) ?? 0) === g) e.reports[id] = r;
+    return r;
+  } finally {
+    asking.set(root, (asking.get(root) ?? 1) - 1);
+    paint();
+  }
 }
 
 const forgotten = new Map<string, number>(); // per root: an answer asked before a forget is the other identity's

@@ -17,10 +17,11 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally, type MaintInput,
+  clampMaint, comingUp, facetCells, findings, hostRows, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
+  type Cell, type MaintInput,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
-import { fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, scanFleet } from "./maintscan";
+import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, scanFleet } from "./maintscan";
 import { maintClick, maintChip, quietOpen, type MaintHost } from "./maintui";
 import {
   maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintRow, type MaintSub, type MaintView,
@@ -363,6 +364,8 @@ function buildMaint(now: number): MaintView {
   const byRoot = new Map<string, ProjGroup>();
   for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
   const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [];
+  const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
+  let prodProjects = 0, prodChecking = false;
   const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
   // Once anything was checked, a root nobody read (added since, or forgotten on an account
   // switch) is an unread card: leaving it out would let the all-clear speak for it.
@@ -380,6 +383,8 @@ function buildMaint(now: number): MaintView {
       if (r.coverage.state === "ok") for (const c of d.sees) sees.add(c);
     }
     read.push({ root, inp });
+    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod") });
+    if (prodChecks(inp).length) { prodProjects++; prodChecking ||= askingFor(root); }
     const fs = findings(root, inp, th, now);
     for (const f of [...fs, ...tabExtras(root, inp, th, now)]) rows.push({ ...f, name: p.name });
     cards.push({
@@ -404,6 +409,10 @@ function buildMaint(now: number): MaintView {
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
     tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only) : [],
     read: cov.read, unset: cov.unset, gaps: cov.gaps.map((g) => ({ name: byRoot.get(g.path)?.name ?? basename(g.path), facet: g.facet, text: g.text })),
+    hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
+      ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
+    })),
+    prod: { projects: prodProjects, checking: prodChecking },
   };
 }
 
@@ -499,6 +508,7 @@ const maintHost: MaintHost = {
   openDashboard: (name, path, tab) => host.openDashboard(name, path, tab),
   openTab: (sub, root) => setMaintTab(sub, root),
   render: () => renderFleet(),
+  roots: () => maintRoots(),
 };
 
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.

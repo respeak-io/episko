@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, FACET_TAB, tabFindings } from "./maint";
+import { clampMaint, FACET_TAB, prodChecks, tabFindings } from "./maint";
 import { briefFor } from "./maintbrief";
 import { maintInput, runSource, scanProject } from "./maintscan";
 import { FACETS, type Facet } from "./maintsources";
@@ -26,6 +26,7 @@ export interface MaintHost {
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
   deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
+  roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -61,12 +62,23 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   host.prefill(name, root, text);
 }
 
+// Every address of every project asked, each project's checks as one click-only read per source.
+async function checkProd(roots: readonly string[]): Promise<void> {
+  const jobs = roots.flatMap((r) => { const inp = maintInput(r); return inp ? prodChecks(inp).map((id) => [r, id] as const) : []; });
+  if (!jobs.length) { toast("No project here names an address in [deploy]"); return; }
+  const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
+  const failed = reps.filter((x) => x.coverage.state !== "ok").length;
+  if (failed) toast(`Prod: ${failed} of ${reps.length} checks could not run. The Prod cell says why`);
+}
+
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
 
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   const scan = t.closest<HTMLElement>("[data-mtscan]");
   if (scan) { host.scan(scan.dataset.mtscan === "force"); return true; }
+  const prod = t.closest<HTMLElement>("[data-mtprod]");
+  if (prod) { void checkProd(prod.dataset.mtprod ? [prod.dataset.mtprod] : host.roots()); return true; }
   const chip = t.closest<HTMLElement>("[data-mtchip]");
   if (chip) {
     if (chip.getAttribute("aria-disabled") !== "true") { setMaintChip(chip.dataset.mtchip as MaintChip); host.render(); }

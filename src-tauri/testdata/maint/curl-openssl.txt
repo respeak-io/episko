@@ -1,0 +1,25 @@
+{"certs":"Subject:CN = app.example.com\nIssuer:C = US, O = Let's Encrypt, CN = R11\nVersion:2\nSerial Number:04a1b2c3d4e5f6\nSignature Algorithm:sha256WithRSAEncryption\nStart date:Sep  1 08:12:44 2026 GMT\nExpire date:Nov 30 08:12:43 2026 GMT\nPublic Key Algorithm:rsaEncryption\nRSA Public Key:2048\n-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\nSubject:C = US, O = Let's Encrypt, CN = R11\nIssuer:C = US, O = Internet Security Research Group, CN = ISRG Root X1\nVersion:2\nSerial Number:8a7d3e13d62f30ef2386bd29076b34f8\nSignature Algorithm:sha256WithRSAEncryption\nStart date:Mar 13 00:00:00 2024 GMT\nExpire date:Mar 12 23:59:59 2027 GMT\nPublic Key Algorithm:rsaEncryption\nRSA Public Key:2048\n-----BEGIN CERTIFICATE-----\nMIIBdummy2\n-----END CERTIFICATE-----\n","errormsg":null,"exitcode":0,"http_code":200,"response_code":200,"num_certs":2,"scheme":"https","time_total":0.141907,"url":"https://app.example.com","curl_version":"libcurl/8.5.0 OpenSSL/3.0.13 zlib/1.3"}
+Subject:CN = app.example.com
+Issuer:C = US, O = Let's Encrypt, CN = R11
+Version:2
+Serial Number:04a1b2c3d4e5f6
+Signature Algorithm:sha256WithRSAEncryption
+Start date:Sep  1 08:12:44 2026 GMT
+Expire date:Nov 30 08:12:43 2026 GMT
+Public Key Algorithm:rsaEncryption
+RSA Public Key:2048
+-----BEGIN CERTIFICATE-----
+MIIBdummy
+-----END CERTIFICATE-----
+Subject:C = US, O = Let's Encrypt, CN = R11
+Issuer:C = US, O = Internet Security Research Group, CN = ISRG Root X1
+Version:2
+Serial Number:8a7d3e13d62f30ef2386bd29076b34f8
+Signature Algorithm:sha256WithRSAEncryption
+Start date:Mar 13 00:00:00 2024 GMT
+Expire date:Mar 12 23:59:59 2027 GMT
+Public Key Algorithm:rsaEncryption
+RSA Public Key:2048
+-----BEGIN CERTIFICATE-----
+MIIBdummy2
+-----END CERTIFICATE-----

@@ -85,6 +85,11 @@
       "facet": "work", "label": "GitLab issues", "cost": "forge", "forge": ["gitlab"], "detect": [],
       "sees": ["work.issues", "work.prs", "work.review-requested"],
       "blind": []
+    },
+    "http-probe": {
+      "facet": "prod", "label": "URL checks", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.urls"],
+      "sees": ["prod.status", "prod.cert"],
+      "blind": ["prod.host"]
     }
   },
   "markers": [

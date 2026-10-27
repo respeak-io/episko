@@ -2,7 +2,7 @@
 // means — a facet's cell, the findings under a card, a project's band and the order cards stand
 // in. Facts in, words out: no DOM, no Tauri, and no vendor named, so the next adapter needs none.
 
-import { FACETS, COSTS, facetDef, findSource, type Cost, type Facet } from "./maintsources";
+import { FACETS, COSTS, facetDef, findSource, permitted, type Cost, type Facet } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
@@ -454,7 +454,9 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const notes = ranked.filter((r) => r.coverage.state !== "ok").map((r) => `${labelOf(r.source)}: ${covText(r.coverage)}`);
   const fix = ranked.map((r) => fixOf(r.coverage)).find((f) => f) ?? null;
   const ok = reps.filter((r) => r.coverage.state === "ok" && r.facts);
-  if (!ok.length) return cell("cantCheck", "muted", "can't check", [...head, ...notes, ...found], fix);
+  // A click-only source nobody clicked is not one that cannot answer: one click reads it.
+  const unasked = reps.every((r) => r.coverage.state === "notRun");
+  if (!ok.length) return cell("cantCheck", "muted", unasked ? "not checked" : "can't check", [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
   const asOf = j.asOf ?? null;
@@ -661,6 +663,15 @@ function wantsSetup(facet: "ci" | "deps", inp: MaintInput, th: MaintThresholds, 
 
 const SETUP_DETAIL = { ci: "nothing runs the checks on the default branch", deps: "nothing opens dependency updates" };
 
+/** What *Check prod* runs here: the prod sources a scan may never run, so only a click asks them. */
+export function prodChecks(inp: MaintInput): string[] {
+  if (inp.det?.config.off.includes("prod")) return [];
+  return (inp.det?.sources ?? []).filter((id) => {
+    const d = findSource(id);
+    return d?.facet === "prod" && !permitted(d.cost, "scan", false) && !inp.skip?.includes(id);
+  });
+}
+
 /** What a tab lists beyond a card's lines: open work, and a facet nobody set up. Each has its verb. */
 export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] {
   const out: Finding[] = [];
@@ -674,6 +685,13 @@ export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = M
     if (!wantsSetup(facet, inp, th, now)) continue;
     out.push({ root, facet, key: `${facet}:setup`, level: "info", text: facetDef(facet).none, detail: SETUP_DETAIL[facet],
       verb: "setup", source: "", ref: null });
+  }
+  // A source only a click runs, which nobody has clicked here: Run is that click.
+  for (const id of inp.det?.sources ?? []) {
+    const r = inp.reports[id], facet = findSource(id)?.facet;
+    if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
+    out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: not checked`,
+      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: null });
   }
   return out;
 }
@@ -833,12 +851,54 @@ export function comingUp(projects: readonly { root: string; inp: MaintInput }[],
   return out.sort((a, b) => a.at - b.at || a.root.localeCompare(b.root));
 }
 
-export interface HostRow { host: string; projects: string[] }
+// ---------- prod ----------
 
-/** Servers are not projects: one row per host, joined many-to-many on `[deploy] host`. */
-export function hostRows(projects: readonly { path: string; hosts: readonly string[] }[]): HostRow[] {
-  const by = new Map<string, Set<string>>();
-  for (const p of projects) for (const h of p.hosts) if (h) by.set(h, (by.get(h) ?? new Set()).add(p.path));
-  return [...by].map(([host, set]) => ({ host, projects: [...set].sort((a, b) => a.localeCompare(b)) }))
-    .sort((a, b) => a.host.localeCompare(b.host));
+export interface ProbeRow {
+  name: string; url: string; err: string | null;
+  status: string; level: Level; // "200 · 140ms", "no answer"
+  cert: string; certLevel: Level; // "" for plain http, where there is no certificate to read
+}
+
+/** The Runs on card's addresses as last checked, or null when nothing was; prodRule's levels, row by row. */
+export function probeRows(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): { at: number | null; rows: ProbeRow[] } | null {
+  if (inp.det?.config.off.includes("prod")) return null;
+  const reps = (inp.det?.sources ?? []).map((id) => inp.reports[id])
+    .filter((r): r is SourceReport => r?.coverage.state === "ok" && r.facts?.kind === "probes" && !inp.skip?.includes(r.source));
+  if (!reps.length) return null;
+  const sec = now / 1000;
+  const rows = reps.flatMap((r) => r.facts!.kind === "probes" ? r.facts!.items : []).map((p): ProbeRow => {
+    const down = p.err !== null || p.code === null || p.code >= 500;
+    const left = p.certNotAfter === null ? null : p.certNotAfter - sec;
+    const [cert, certLevel]: [string, Level] = left === null ? (p.url.startsWith("https:") ? ["cert unknown", "muted"] : ["", "ok"])
+      : left <= 0 ? ["cert expired", "bad"] : [`cert ${span(left)}`, left < th.certWarnDays * DAY ? "warn" : "ok"];
+    return { name: p.name, url: p.url, err: p.err,
+      status: p.code === null ? "no answer" : `${p.code}${p.ms !== null ? ` · ${p.ms}ms` : ""}`,
+      level: down ? "bad" : p.code! >= 400 ? "warn" : "ok", cert, certLevel };
+  });
+  return { at: Math.max(...reps.map((r) => r.at ?? 0)) || null, rows };
+}
+
+export interface HostRow { host: string; projects: string[]; level: Level; text: string }
+const HOST_RANK: Level[] = ["bad", "warn", "info", "muted", "unread", "ok"];
+const byRank = (a: { level: Level }, b: { level: Level }) => HOST_RANK.indexOf(a.level) - HOST_RANK.indexOf(b.level);
+
+/** Servers are not projects: one row per host, joined many-to-many on `[deploy] host`, worst first.
+ *  A host is fine only when every project it runs was read fine; a known problem outranks the unknown. */
+export function hostRows(projects: readonly { path: string; hosts: readonly string[]; prod?: Cell }[]): HostRow[] {
+  const by = new Map<string, Map<string, Cell | undefined>>();
+  for (const p of projects) {
+    for (const h of p.hosts) {
+      if (!h) continue;
+      const e = by.get(h) ?? new Map<string, Cell | undefined>();
+      e.set(p.path, p.prod);
+      by.set(h, e);
+    }
+  }
+  return [...by].map(([host, e]) => {
+    const read = [...e.values()].filter((c): c is Cell => c?.state === "read").sort(byRank);
+    const worst: Cell | undefined = read[0];
+    const [level, text]: [Level, string] = worst && (byRank(worst, { level: "muted" }) < 0 || read.length === e.size)
+      ? [worst.level, worst.text] : ["muted", read.length ? `${read.length} of ${e.size} checked` : "not checked"];
+    return { host, projects: [...e.keys()].sort((a, b) => a.localeCompare(b)), level, text };
+  }).sort((a, b) => byRank(a, b) || a.host.localeCompare(b.host));
 }
