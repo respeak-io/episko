@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciFlows, ciRows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, probeRows, prodChecks, projectBand, releaseRows,
+  ciFlows, ciRows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, offers, probeRows, prodChecks, projectBand, releaseRows,
   tabFindings, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -1270,7 +1270,7 @@ function maintNow(now: number): MaintDash {
       path: r, name: name(), accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
     },
-    rows, checked: e?.at ?? 0, flows: ciFlows(inp, now), release: releaseRows(inp, now),
+    rows, offers: offers(r, inp), checked: e?.at ?? 0, flows: ciFlows(inp, now), release: releaseRows(inp, now),
     deps: depSilent(tally, depTools) && !depLoading ? null : {
       adv: dn.adv, prs: dn.prs, tally, scanned: depScanned !== "", loading: depLoading,
       tool: depTools.find((x) => !x.blocked)?.label ?? null,
