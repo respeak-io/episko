@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, SEVERITIES,
+  ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   ciFailures, clampMaint, comingUp, facetCell, facetCells, findings, hostRows, mergeAdvisories, narrowDetection,
-  narrowMaint, projectBand, rankMaint, span,
+  narrowMaint, projectBand, rankMaint, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
+import { briefFor } from "../src/maintbrief";
 import { FACETS, type Facet } from "../src/maintsources";
 
 // Unknown is never green: every rule here that fails, fails by drawing a healthy dot over a fact
@@ -393,6 +394,111 @@ describe("bands and rank", () => {
 
   it("opens each facet's tab", () => {
     expect(FACET_TAB).toEqual({ ci: "delivery", release: "delivery", security: "security", deps: "security", git: "code", prod: "servers", work: "work" });
+  });
+});
+
+describe("the cross-project tabs", () => {
+  const gh = { kind: "github", host: "github.com", path: "o/r", by: "table" as const };
+  const on = (root: string, ...reps: SourceReport[]): MaintInput =>
+    ({ ...input(...reps), det: det(reps.map((r) => r.source), { repoRoot: root, forge: gh }) });
+  const work = (o: Partial<Extract<Facts, { kind: "work" }>> = {}): Facts => ({ kind: "work", issues: 3, prs: 1, reviewRequested: 0, ...o });
+
+  it("sends every facet to exactly one tab, and every tab is some facet's", () => {
+    for (const f of FACETS) expect(MAINT_TABS, f).toContain(FACET_TAB[f]);
+    expect(new Set(Object.values(FACET_TAB))).toEqual(new Set(MAINT_TABS));
+    expect(Object.keys(FACET_TAB).sort()).toEqual([...FACETS].sort());
+  });
+
+  it("gives the Work cell's amber a line, and lists open work only in the tab", () => {
+    const inp = on("/r", ok("w", work({ reviewRequested: 2 })));
+    expect(findings("/r", inp, MAINT_DEFAULTS, NOW).map((f) => [f.key, f.level, f.verb])).toEqual([["work:review", "warn", "review"]]);
+    const open = (i: MaintInput) => tabExtras("/r", i, MAINT_DEFAULTS, NOW).filter((x) => x.facet === "work").map((x) => [x.key, x.text]);
+    expect(open(inp)).toEqual([["work:open", "3 open issues · 1 open pull request"]]);
+    expect(open(on("/r", ok("w", work({ issues: 0, prs: 0 }))))).toEqual([]);
+  });
+
+  it("offers Set up only where nothing could ever have read the facet", () => {
+    const keys = (inp: MaintInput) => tabExtras("/r", inp, MAINT_DEFAULTS, NOW).map((f) => [f.key, f.verb]);
+    const silentBot = ok("d", prs(0, { configured: false }));
+    expect(keys(on("/r", silentBot))).toEqual([["ci:setup", "setup"], ["deps:setup", "setup"]]);
+    expect(keys(on("/r", ok("d", prs(0))))).toEqual([["ci:setup", "setup"]]); // configured: silent, not absent
+    const marked = { ...on("/r", silentBot) };
+    marked.det = { ...marked.det!, markers: [{ facet: "ci", label: "Jenkins", found: ["Jenkinsfile"] }] };
+    expect(keys(marked), "a CI we cannot read is not a missing one").toEqual([["deps:setup", "setup"]]);
+    const local = { ...on("/r", silentBot) };
+    local.det = { ...local.det!, forge: { kind: "none", host: null, path: null, by: "none" } };
+    expect(keys(local), "nowhere to run it").toEqual([]);
+    expect(keys({ det: null, reports: {} }), "unread is never none").toEqual([]);
+  });
+
+  it("answers every row's verb: an agent's verb has a brief, from the facts alone", () => {
+    const inp = on("/r",
+      ok(GHA, ci(run("e2e", "fail", S - 2 * D))),
+      ok("s", { kind: "advisories", items: [adv()] }), ok("d", prs(2)), ok("t", rel({ since: 3 })),
+      ok("g", hyg({ unpushed: 1, merged: ["x"] })), ok("w", work({ reviewRequested: 1 })),
+    );
+    const rows = tabFindings("/r", inp, MAINT_DEFAULTS, NOW);
+    expect(rows.length).toBeGreaterThan(6);
+    for (const f of rows.filter((x) => !["review", "fetch", "run"].includes(x.verb))) {
+      expect(briefFor(f, inp, { project: "r", verify: [], now: NOW }), f.key).not.toBeNull();
+    }
+    const setup = tabFindings("/r", on("/r"), MAINT_DEFAULTS, NOW).find((f) => f.key === "ci:setup")!;
+    expect(briefFor(setup, on("/r"), { project: "r", verify: [], now: NOW })).toContain("no CI");
+    const bare = on("/r", ok("d", prs(0, { configured: false })));
+    const bot = tabFindings("/r", bare, MAINT_DEFAULTS, NOW).find((f) => f.key === "deps:setup")!;
+    expect(briefFor(bot, bare, { project: "r", verify: [], now: NOW })).toContain("no update bot");
+  });
+
+  const f = (root: string, facet: Finding["facet"], level: Finding["level"], key: string): Finding =>
+    ({ root, facet, level, key, text: key, detail: "", verb: "fix", source: "s", ref: null });
+  const all = [
+    f("/b", "ci", "bad", "ci:x"), f("/a", "release", "warn", "release"), f("/a", "ci", "bad", "ci:y"),
+    f("/a", "ci", "bad", "ci:x"), f("/c", "ci", "info", "ci:setup"), f("/a", "git", "warn", "git:unpushed"),
+    f("/b", "security", "bad", "security:A"),
+  ];
+
+  it("keeps a tab's own facets, worst first, ending on the path and the key, whatever order they came in", () => {
+    const once = tabRows("delivery", all).map((r) => `${r.root} ${r.key}`);
+    expect(once).toEqual(["/a ci:x", "/a ci:y", "/b ci:x", "/a release", "/c ci:setup"]);
+    expect(tabRows("delivery", [...all].reverse()).map((r) => `${r.root} ${r.key}`)).toEqual(once);
+    expect(all[0].root, "a copy, never in place").toBe("/b");
+  });
+
+  it("narrows to one project when a cell asked for it", () => {
+    expect(tabRows("delivery", all, "/a").map((r) => r.key)).toEqual(["ci:x", "ci:y", "release"]);
+    expect(tabRows("delivery", all, "/nowhere")).toEqual([]);
+  });
+
+  it("counts each tab with its worst row, over the filter", () => {
+    expect(tabTally(all)).toEqual({
+      security: { n: 1, level: "bad" }, delivery: { n: 5, level: "bad" }, code: { n: 1, level: "warn" },
+      servers: { n: 0, level: null }, work: { n: 0, level: null },
+    });
+    expect(tabTally(all, "/c").delivery).toEqual({ n: 1, level: "info" });
+  });
+
+  it("says what an empty tab read and what it could not, never an all-clear over nothing", () => {
+    const card = (path: string, inp: MaintInput) => ({ path, cells: facetCells(inp, MAINT_DEFAULTS, NOW) });
+    const cards = [
+      card("/b", { det: null, reports: {} }),
+      card("/a", on("/a", ok(GHA, ci(run("e2e", "pass", S - D))), not("t", "release", { state: "error", reason: "x" }))),
+    ];
+    expect(tabGaps("delivery", cards)).toEqual({ read: 1, unset: 0, gaps: [
+      { path: "/a", facet: "release", text: "can't check" },
+      { path: "/b", facet: "ci", text: "not read yet" }, { path: "/b", facet: "release", text: "not read yet" },
+    ] });
+    expect(tabGaps("delivery", cards, "/b").read).toBe(0);
+    expect(tabGaps("servers", cards, "/a"), "no deploy is a fact, not a gap").toEqual({ read: 0, unset: 1, gaps: [] });
+  });
+
+  it("counts a cell that does not know as a gap, never as read", () => {
+    const card = (path: string, inp: MaintInput) => ({ path, cells: facetCells(inp, MAINT_DEFAULTS, NOW) });
+    const unknown = [card("/a", on("/a", ok("w", work({ issues: 0, prs: 0, reviewRequested: null }))))];
+    expect(tabGaps("work", unknown)).toEqual({ read: 0, unset: 0, gaps: [{ path: "/a", facet: "work", text: "reviews unknown" }] });
+    const never = [card("/a", on("/a", ok(GHA, ci())))];
+    expect(tabGaps("delivery", never).gaps.map((g) => g.text)).toContain("never ran");
+    const bare = [card("/a", on("/a", ok("d", prs(0, { configured: false }))))];
+    expect(tabGaps("security", bare), "no bot found is the facet's none").toMatchObject({ read: 0, gaps: [] });
   });
 });
 

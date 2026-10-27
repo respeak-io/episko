@@ -99,7 +99,7 @@ import {
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
+  closeFleet, fleetEscape, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
 import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
@@ -925,7 +925,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
-  else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
+  // fleetEscape, not closeFleet: a Maintenance tab narrowed to one project widens first.
+  else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); fleetEscape(); renderAll(); }
   // prReviewEscape, not closePrReview: a comment being written goes first.
   else if (e.key === "Escape" && reviewMirror()) { e.preventDefault(); prReviewEscape(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.

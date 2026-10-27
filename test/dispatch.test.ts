@@ -385,6 +385,27 @@ describe("Maintenance's own dispatcher", () => {
     expect(probed.indexOf("proj"), "[data-mtproj] must be probed last").toBe(probed.length - 1);
   });
 
+  it("wires the facet tabs: a tab, a cell, the filter's ✕, each probed and each before the door", () => {
+    for (const k of ["tab", "cell", "clear"]) {
+      expect(emitted, `data-mt${k} is never emitted`).toContain(k);
+      expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
+    }
+    // A tab row's name is the project's door, and the verb beside it must win over it.
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("proj"));
+  });
+
+  it("steps out of a project filter on Escape before it leaves the fleet", () => {
+    const arm = MAIN.split("\n").find((l) => /e\.key === "Escape" && fleetMirror\(\)/.test(l)) ?? "";
+    expect(arm).toContain("fleetEscape()");
+    expect(arm).not.toContain("closeFleet()");
+    const from = FLEETUI.indexOf("export function fleetEscape");
+    const esc = FLEETUI.slice(from, FLEETUI.indexOf("\n}", from));
+    expect(esc, "Escape must widen the filter").toContain("maintFilter = null");
+    // The guard asks what is drawn: a lapsed filter must not swallow the first Escape.
+    expect(esc).toMatch(/fleetView === "maint" && liveFilter\(\) !== null/);
+    expect(esc.indexOf("maintFilter = null")).toBeLessThan(esc.indexOf("closeFleet()"));
+  });
+
   it("is asked before the fleet's own probes, so a card's click never reaches a data-fl* row", () => {
     const pane = FLEETUI.slice(FLEETUI.indexOf('$("fleetPane").addEventListener("click"'));
     const ask = pane.indexOf("if (maintClick(t, ");

@@ -2995,7 +2995,9 @@ select.in-ctl { cursor: pointer; }
 .mt-sub { font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-card.quiet .mt-sub { display: none; }
 .mt-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 2px 8px; min-width: 0; }
-.mt-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 3px 6px; border-radius: 6px; cursor: default; }
+.mt-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 3px 6px; border-radius: 6px; cursor: pointer;
+  border: 0; background: none; font: inherit; color: inherit; text-align: left; }
+.mt-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mt-cell:hover { background: var(--lift); }
 .mt-cell .fk { font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .mt-v { font: 11px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
@@ -3024,7 +3026,20 @@ select.in-ctl { cursor: pointer; }
 .mt-ring { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--muted-2); color: var(--muted); font-size: 15px; }
 .mt-soon { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; font-size: 11.5px; color: var(--muted); }
 .mt-soon em { font-style: normal; color: var(--text); margin-left: 4px; }
-@media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } }
+/* the cross-project tabs: colour only for what needs you, as on the cards */
+.mt-tabs { flex-wrap: wrap; padding: 0 0 8px; border-bottom: 1px solid var(--hair); }
+.bvtab .n.l-bad, .bvtab.on .n.l-bad { color: var(--st-error); }
+.bvtab .n.l-warn, .bvtab.on .n.l-warn { color: var(--st-working); }
+.mt-only { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); padding: 2px 4px 2px 10px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); }
+.mt-only b { color: var(--text); font-weight: 600; }
+.mt-x { border: 0; background: none; color: var(--muted); font-size: 11px; padding: 1px 5px; border-radius: 5px; cursor: pointer; }
+.mt-x:hover { color: var(--text); background: var(--lift); }
+.mt-sec { display: flex; flex-direction: column; padding: 8px 12px 2px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
+.mt-sec .mt-finds { margin-top: 4px; }
+.mt-rn { flex: none; max-width: 24%; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.mt-rn:hover { color: var(--accent-ink); }
+.mt-gaps em { color: var(--muted-2); }
+@media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; } }
 
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card
    never pushes another off screen. Column B is a query container: the lite graph collapses against
