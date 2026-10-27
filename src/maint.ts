@@ -529,6 +529,8 @@ const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: bo
     .map((r) => ({ source: r.source, truncated: r.truncated, facts: r.facts! }));
 
 const LEVEL_RANK = { bad: 0, warn: 1, info: 2 } as const;
+const workFacts = (inp: MaintInput) => okFacts(inp, "work")
+  .flatMap((r) => r.facts.kind === "work" ? [{ source: r.source, facts: r.facts }] : []);
 
 /** Every finding for one project, worst first. Each carries the verb that answers it. */
 export function findings(root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] {
@@ -585,6 +587,11 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
     add("git", { key: "git:fetch", level: "warn", text: `last fetch ${span(sec - fetched.at)} ago`,
       detail: "release and branch counts are as old as it", verb: "fetch", source: fetched.source, ref: null });
   }
+  // The Work cell's amber, so it has a line under it like every other.
+  const work = workFacts(inp);
+  const asked = work.reduce((n, w) => n + (w.facts.reviewRequested ?? 0), 0);
+  if (asked) add("work", { key: "work:review", level: "warn", text: `${plural(asked, "review")} requested of you`,
+    detail: "pull requests waiting on your review", verb: "review", source: work[0].source, ref: null });
   for (const { source, facts } of okFacts(inp, "prod")) {
     if (facts.kind !== "probes") continue;
     for (const p of facts.items) {
@@ -621,11 +628,85 @@ export function rankMaint<T extends { path: string; band: Band; findings: readon
     || n(b, "bad") - n(a, "bad") || n(b, "warn") - n(a, "warn") || a.path.localeCompare(b.path));
 }
 
-export type MaintTab = "security" | "delivery" | "code" | "servers" | "work";
+// ---------- the cross-project tabs ----------
+
+export const MAINT_TABS = ["security", "delivery", "code", "servers", "work"] as const;
+export type MaintTab = (typeof MAINT_TABS)[number];
 /** Which cross-project tab a cell opens: a tab is a kind of work you batch in one sitting. */
 export const FACET_TAB: Record<Facet, MaintTab> = {
   ci: "delivery", release: "delivery", security: "security", deps: "security", git: "code", prod: "servers", work: "work",
 };
+
+// A facet nothing could ever have read: no remote, or a bot nobody configured and that opened nothing.
+function wantsSetup(facet: "ci" | "deps", inp: MaintInput, th: MaintThresholds, now: number): boolean {
+  const forge = inp.det?.forge.kind;
+  if (!forge || forge === "none" || inp.det!.markers.some((m) => m.facet === facet)) return false;
+  const state = facetCell(facet, inp, th, now).state;
+  if (state === "none") return true;
+  const ups = okFacts(inp, "deps").flatMap((r) => r.facts.kind === "updatePrs" ? [r.facts] : []);
+  return facet === "deps" && state === "read" && ups.length > 0 && ups.every((u) => !u.prs.length && !u.configured);
+}
+
+const SETUP_DETAIL = { ci: "nothing runs the checks on the default branch", deps: "nothing opens dependency updates" };
+
+/** What a tab lists beyond a card's lines: open work, and a facet nobody set up. Each has its verb. */
+export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] {
+  const out: Finding[] = [];
+  const work = workFacts(inp);
+  const issues = work.reduce((n, w) => n + w.facts.issues, 0), prs = work.reduce((n, w) => n + w.facts.prs, 0);
+  if (issues + prs) {
+    out.push({ root, facet: "work", key: "work:open", level: "info", verb: "review", source: work[0].source, ref: null,
+      text: [issues && plural(issues, "open issue"), prs && plural(prs, "open pull request")].filter(Boolean).join(" · "), detail: "" });
+  }
+  for (const facet of ["ci", "deps"] as const) {
+    if (!wantsSetup(facet, inp, th, now)) continue;
+    out.push({ root, facet, key: `${facet}:setup`, level: "info", text: facetDef(facet).none, detail: SETUP_DETAIL[facet],
+      verb: "setup", source: "", ref: null });
+  }
+  return out;
+}
+
+/** Every row a verb can be asked of: the card's lines and the tabs' own. */
+export const tabFindings = (root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] =>
+  [...findings(root, inp, th, now), ...tabExtras(root, inp, th, now)];
+
+/** One tab's rows across projects, `root` narrowing it to one: worst first, ending on the path and
+ *  the key, so a repaint never reorders. */
+export function tabRows<T extends Finding>(tab: MaintTab, rows: readonly T[], root: string | null = null): T[] {
+  return rows.filter((f) => FACET_TAB[f.facet] === tab && (root === null || f.root === root))
+    .sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)
+      || a.root.localeCompare(b.root) || a.key.localeCompare(b.key));
+}
+
+export interface TabCount { n: number; level: Finding["level"] | null } // level: the worst row's
+export function tabTally(rows: readonly Finding[], root: string | null = null): Record<MaintTab, TabCount> {
+  return Object.fromEntries(MAINT_TABS.map((t) => {
+    const r = tabRows(t, rows, root);
+    return [t, { n: r.length, level: r[0]?.level ?? null }];
+  })) as Record<MaintTab, TabCount>;
+}
+
+export interface TabGap { path: string; facet: Facet; text: string }
+// Muted is unknown ("never ran", "reviews unknown"), except a read that found the facet's none.
+const isNone = (x: Cell) => x.state === "none" || x.state === "off" || (x.state === "read" && x.level === "muted" && x.text === facetDef(x.facet).none);
+const isVerdict = (x: Cell) => x.state === "read" && x.level !== "muted" && x.level !== "unread";
+
+/** What an empty tab may claim: projects it reached a verdict on, projects with none of it set up,
+ *  and each cell that does not know. */
+export function tabGaps(tab: MaintTab, cards: readonly { path: string; cells: readonly Cell[] }[], root: string | null = null): { read: number; unset: number; gaps: TabGap[] } {
+  let read = 0, unset = 0;
+  const gaps: TabGap[] = [];
+  for (const c of cards) {
+    if (root !== null && c.path !== root) continue;
+    const cells = c.cells.filter((x) => FACET_TAB[x.facet] === tab);
+    if (cells.some(isVerdict)) read++;
+    else if (cells.length && cells.every(isNone)) unset++;
+    for (const x of cells) {
+      if (!isVerdict(x) && !isNone(x)) gaps.push({ path: c.path, facet: x.facet, text: x.text || "not read yet" });
+    }
+  }
+  return { read, unset, gaps: gaps.sort((a, b) => a.path.localeCompare(b.path) || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)) };
+}
 
 // ---------- the all-clear's two lists ----------
 

@@ -553,6 +553,11 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 - [ ] **A project nobody read stays on screen.** After a check, switch one project's GitHub
       account (or add a project) and switch back to Maintenance within ten minutes. Its card must
       stay, every cell a dash, *not checked yet* under its name, and *Nothing needs you* must not show.
+- [ ] **A cell opens its tab, narrowed; a row's verb prefills and never sends.** Click a red CI
+      cell: *Delivery* opens with *only <project>* and that project's rows. Press Esc once: every
+      project's rows come back and the fleet stays. Press it again: the fleet closes (when a session
+      is open). On any tab, a row's *Fix ↗* / *Patch ↗* / *Set up ↗* starts an agent with the brief
+      typed and **not sent**, and *Review* on a Work row opens that project's dashboard.
 
 ### Sessions Episko doesn't own
 

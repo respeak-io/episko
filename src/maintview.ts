@@ -4,11 +4,13 @@
 
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
-import type { Band, Cell, Finding, Level, Verb } from "./maint";
-import { facetDef, type MaintCap } from "./maintsources";
+import { FACET_TAB, MAINT_TABS, type Band, type Cell, type Finding, type Level, type MaintTab, type TabCount, type Verb } from "./maint";
+import { FACETS, facetDef, type Facet, type MaintCap } from "./maintsources";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
+export const MAINT_SUBS = ["overview", ...MAINT_TABS] as const;
+export type MaintSub = (typeof MAINT_SUBS)[number];
 
 /** One project's card. `sub` is the host's wording (where it lives, or why nothing is known). */
 export interface MaintCard {
@@ -27,7 +29,16 @@ export interface MaintView {
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
   soon: MaintSoon[];
+  sub: MaintSub;
+  filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell
+  tabs: Record<MaintTab, TabCount>; // over the filter, so a narrowed tab bar says where that project stands
+  rows: MaintRow[]; // the open tab's, in tabRows' order
+  read: number; // projects the open tab reached a verdict on
+  unset: number; // projects with none of it set up: a fact, not a gap
+  gaps: MaintGap[]; // its cells that do not know, so an empty tab never reads as clear
 }
+export type MaintRow = Finding & { name: string };
+export interface MaintGap { name: string; facet: Facet; text: string }
 
 const DASH = `<span class="dim">—</span>`;
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -85,9 +96,10 @@ function cellHtml(c: Cell, card: MaintCard): string {
   const v = c.level === "unread"
     ? card.reading ? sk("54px", 9) : DASH
     : c.level === "ok" && !c.text ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(c.text);
-  const tip = [label, ...c.tip, ...(c.fix ? [`fix: ${c.fix}`] : [])].join("\n");
-  return `<span class="mt-cell" data-tip="${escAttr(tip)}"><span class="fk">${esc(label)}</span>`
-    + `<span class="mt-v ${LEVEL_CLS[c.level]}">${v}</span></span>`;
+  const go = `Click: ${TAB_TEXT[FACET_TAB[c.facet]][0]} for ${card.name}`;
+  const tip = [label, ...c.tip, ...(c.fix ? [`fix: ${c.fix}`] : []), go].join("\n");
+  return `<button class="mt-cell" data-mtcell="${c.facet}" data-mtroot="${escAttr(card.path)}" data-tip="${escAttr(tip)}">`
+    + `<span class="fk">${esc(label)}</span><span class="mt-v ${LEVEL_CLS[c.level]}">${v}</span></button>`;
 }
 
 const VERB: Record<Verb, [string, string]> = {
@@ -99,9 +111,12 @@ const VERB: Record<Verb, [string, string]> = {
 };
 const AGENT_TIP = "Start an agent with a brief written from these facts. It is prefilled, never sent: you press Enter";
 
-function findingHtml(f: Finding): string {
+// A tab's row names its project, and the name is that project's door, as a card's is.
+function findingHtml(f: Finding, name?: string): string {
   const [label, tip] = VERB[f.verb];
-  return `<div class="mt-find l-${f.level}"><i class="mt-sev"></i>
+  const who = name === undefined ? ""
+    : `<span class="mt-rn" data-mtproj="${escAttr(f.root)}" data-mtname="${escAttr(name)}" data-tip="${escAttr(`Open ${name}`)}">${esc(name)}</span>`;
+  return `<div class="mt-find l-${f.level}"><i class="mt-sev"></i>${who}
     <span class="t">${esc(f.text)}</span><span class="d mono">${esc(f.detail)}</span>
     <button class="mt-verb" data-mtverb="${escAttr(f.key)}" data-mtroot="${escAttr(f.root)}"
       data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button></div>`;
@@ -111,7 +126,7 @@ const avatar = (c: MaintCard) => c.icon
   ? `<span class="fc-av"><img class="picon" src="${escAttr(c.icon)}" alt="" /></span>`
   : `<span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>`;
 
-// The name is the door to the project; the cells only explain, so a stray click on one opens nothing.
+// The name opens the project; a cell opens its facet's tab narrowed to this project.
 function cardHtml(c: MaintCard, compact: boolean): string {
   const sub = c.err ? `could not read: ${c.err}` : c.sub;
   const id = `<div class="mt-id" data-mtproj="${escAttr(c.path)}" data-mtname="${escAttr(c.name)}"
@@ -119,7 +134,7 @@ function cardHtml(c: MaintCard, compact: boolean): string {
       <span class="mt-sub mono">${esc(sub)}</span></div>`;
   const cells = `<div class="mt-cells">${c.cells.map((x) => cellHtml(x, c)).join("")}</div>`;
   const finds = !compact && c.findings.length
-    ? `<div class="mt-finds">${c.findings.map(findingHtml).join("")}</div>` : "";
+    ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f)).join("")}</div>` : "";
   return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}">${id}${cells}${finds}</article>`;
 }
 
@@ -152,13 +167,60 @@ function clearHtml(v: MaintView): string {
     <div class="mt-soon"><span class="label">Coming up</span>${soon}</div></div>`;
 }
 
+// ---------- the tabs ----------
+
+const TAB_TEXT: Record<MaintSub, [string, string]> = {
+  overview: ["Overview", "One card per project, worst first"],
+  security: ["Security", "Advisories, scanner findings and update pull requests, across every project"],
+  delivery: ["Delivery", "CI on the default branch and unreleased work, across every project"],
+  code: ["Code", "Unpushed work, branches to tidy and stale fetches, across every project"],
+  servers: ["Servers", "Where the projects run and whether it answers, across every project"],
+  work: ["Work", "Open issues, pull requests and reviews waiting on you, across every project"],
+};
+const SECTION: Record<Facet, string> = {
+  ci: "CI on the default branch", release: "Unreleased work", security: "Advisories and findings",
+  deps: "Update pull requests", git: "Branches and pushes", prod: "Endpoints", work: "Open work",
+};
+
+// Only red and amber light a count; everything else stays muted, as on the cards.
+function tabsHtml(v: MaintView): string {
+  return `<div class="bvtabs mt-tabs" role="tablist">` + MAINT_SUBS.map((id) => {
+    const c = id === "overview" ? null : v.tabs[id];
+    const n = c?.n ? `<span class="n${c.level === "bad" ? " l-bad" : c.level === "warn" ? " l-warn" : ""}">${c.n}</span>` : "";
+    return `<button class="bvtab${id === v.sub ? " on" : ""}" role="tab" aria-selected="${id === v.sub}" data-mttab="${id}"`
+      + ` data-tip="${escAttr(TAB_TEXT[id][1])}">${esc(TAB_TEXT[id][0])}${n}</button>`;
+  }).join("") + `</div>`;
+}
+
+function tabHtml(v: MaintView, tab: MaintTab): string {
+  const label = TAB_TEXT[tab][0];
+  const only = v.filter
+    ? `<span class="mt-only">only <b>${esc(v.filter.name)}</b><button class="mt-x" data-mtclear="${tab}"`
+      + ` data-tip="Every project again (Esc)" aria-label="Show every project">✕</button></span>` : "";
+  const sections = FACETS.filter((f) => FACET_TAB[f] === tab).flatMap((f) => {
+    const rows = v.rows.filter((r) => r.facet === f);
+    return rows.length ? [`<section class="mt-sec"><div class="mt-sec-h label">${esc(SECTION[f])}</div>`
+      + `<div class="mt-finds">${rows.map((r) => findingHtml(r, v.filter ? undefined : r.name)).join("")}</div></section>`] : [];
+  }).join("");
+  const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
+    : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
+    : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
+  const gaps = v.gaps.length
+    ? `<div class="mt-soon mt-gaps"><span class="label">Not read</span>${v.gaps.map((g) =>
+      `<span>${esc(v.filter ? facetDef(g.facet).label : `${g.name} · ${facetDef(g.facet).label}`)} <em class="mono">${esc(g.text)}</em></span>`).join("")}</div>` : "";
+  return (only ? `<div class="mt-top">${only}</div>` : "")
+    + (sections || `<p class="fl-none">${esc(none)}</p>`) + gaps;
+}
+
 export function maintBodyHtml(v: MaintView): string {
+  const bar = tabsHtml(v);
   if (!v.cards.length) {
     const why = v.scanning ? "Reading every project…"
       : "Not checked this session. Check reads every project once; nothing runs in them, and the answer stays until you check again.";
-    return `<div class="mt-body"><p class="fl-none">${esc(why)}</p>${v.scanning ? ""
+    return `<div class="mt-body">${bar}<p class="fl-none">${esc(why)}</p>${v.scanning ? ""
       : `<button class="aslink" data-mtscan="check">Check every project</button>`}</div>`;
   }
+  if (v.sub !== "overview") return `<div class="mt-body">${bar}${tabHtml(v, v.sub)}</div>`;
   const quiet = v.cards.filter((c) => c.band === "quiet");
   const shown = v.chip === "all" ? v.cards.filter((c) => c.band !== "quiet")
     : v.chip === "quiet" ? quiet : v.cards.filter((c) => c.band === v.chip);
@@ -171,7 +233,7 @@ export function maintBodyHtml(v: MaintView): string {
         + `<button class="mt-fold" data-mtfold="0">Fold the ${esc(plural(quiet.length, "quiet project"))}</button>`
       : `<button class="mt-fold" data-mtfold="1">+ ${esc(plural(quiet.length, "quiet project"))}, nothing to do · ${esc(names)}</button>`;
   }
-  return `<div class="mt-body"><div class="mt-top">${chipsHtml(v)}</div>`
+  return `<div class="mt-body">${bar}<div class="mt-top">${chipsHtml(v)}</div>`
     + (allClear && v.chip === "all" ? clearHtml(v) : "")
     + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div></div>`;
 }

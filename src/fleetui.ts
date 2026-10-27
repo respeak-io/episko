@@ -16,11 +16,15 @@ import {
   type FleetExtra, type FleetLayout, type FleetModel, type FleetResume, type FleetRow,
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
-import { clampMaint, comingUp, facetCells, findings, projectBand, rankMaint, type MaintInput } from "./maint";
+import {
+  clampMaint, comingUp, facetCells, findings, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally, type MaintInput,
+} from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import { fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, scanFleet } from "./maintscan";
 import { maintClick, maintChip, quietOpen, type MaintHost } from "./maintui";
-import { maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintView } from "./maintview";
+import {
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintRow, type MaintSub, type MaintView,
+} from "./maintview";
 import {
   allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
@@ -110,6 +114,18 @@ export function setFleetView(v: FleetViewKind) {
   renderFleet();
 }
 const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
+// Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a nav
+// field: `{kind:"fleet"}` stays field-less, so no mirror read site changes (docs/maintenance.md).
+let maintSub: MaintSub = "overview";
+let maintFilter: string | null = null;
+// A project removed since its cell was clicked narrows to nothing, so its filter lapses everywhere.
+const liveFilter = () => maintFilter !== null && maintRoots().includes(maintFilter) ? maintFilter : null;
+function setMaintTab(sub: MaintSub, root?: string | null): void {
+  maintSub = sub;
+  if (root !== undefined) maintFilter = root;
+  if (sub === "overview") maintFilter = null; // the cards are every project's or nothing
+  renderFleet();
+}
 function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
 
 // ---------- what the reads left behind ----------
@@ -340,7 +356,7 @@ function whereSub(inp: MaintInput): string {
 function buildMaint(now: number): MaintView {
   const byRoot = new Map<string, ProjGroup>();
   for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
-  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
+  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [];
   const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
   // Once anything was checked, a root nobody read (added since, or forgotten on an account
   // switch) is an unread card: leaving it out would let the all-clear speak for it.
@@ -358,14 +374,19 @@ function buildMaint(now: number): MaintView {
       if (r.coverage.state === "ok") for (const c of d.sees) sees.add(c);
     }
     read.push({ root, inp });
+    const fs = findings(root, inp, th, now);
+    for (const f of [...fs, ...tabExtras(root, inp, th, now)]) rows.push({ ...f, name: p.name });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path), sub: e ? whereSub(inp) : "not checked yet",
-      cells, findings: findings(root, inp, th, now), band: projectBand(cells),
+      cells, findings: fs, band: projectBand(cells),
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });
   }
   const ranked = rankMaint(cards);
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
+  const only = liveFilter();
+  const tab = maintSub === "overview" ? null : maintSub;
+  const cov = tab ? tabGaps(tab, ranked, only) : { read: 0, unset: 0, gaps: [] };
   return {
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
     tally: {
@@ -374,6 +395,9 @@ function buildMaint(now: number): MaintView {
     },
     sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
+    sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
+    tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only) : [],
+    read: cov.read, unset: cov.unset, gaps: cov.gaps.map((g) => ({ name: byRoot.get(g.path)?.name ?? basename(g.path), facet: g.facet, text: g.text })),
   };
 }
 
@@ -445,6 +469,12 @@ export function openFleet(force = false): void {
   void refreshDirtyStates(true);
 }
 
+// Escape steps out of a project filter before it steps off the stage; ✕ always leaves.
+export function fleetEscape(): void {
+  if (fleetView === "maint" && liveFilter() !== null) { maintFilter = null; renderFleet(); return; }
+  closeFleet();
+}
+
 // ✕ and Escape, and neither can empty the stage: with no session to go back to this screen
 // IS the home stage, so it stays and `renderFleetHeader` offers no ✕ at all.
 export function closeFleet(): void {
@@ -461,6 +491,7 @@ const maintHost: MaintHost = {
   nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
   prefill: (project, path, text) => host.prefill(project, path, text),
   openDashboard: (name, path, tab) => host.openDashboard(name, path, tab),
+  openTab: (sub, root) => setMaintTab(sub, root),
   render: () => renderFleet(),
 };
 
