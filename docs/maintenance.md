@@ -36,7 +36,7 @@ Every report carries a `Coverage`, and only `ok` carries facts.
 6. At least one `ok` → the facet rule over the `ok` facts. **`ok` needs positive evidence**: CI with zero runs on the default branch is *never ran*, not a pass (the `prReady` rule); Security is clean only if a security source answered; a bot that is configured but has opened nothing for 30 days is *silent*, not healthy.
 7. Partial coverage is stated, never hidden: *Dependabot clean · npm audit never run*. A list that hit its page cap (`truncated`) prints its count as `100+`.
 
-Release and Git counts are as old as the last fetch, and Maintenance never fetches (that is `autofetch.ts`'s job). Their facts carry `fetched_at`, the mtime of `.git/FETCH_HEAD`, and the tip says *as of last fetch 3d ago*; past a week it drifts on its own.
+Release and Git counts are as old as the last fetch, and Maintenance never fetches (that is `autofetch.ts`'s job). Their facts carry `fetched_at`, the newest `FETCH_HEAD` mtime of the repo and its worktrees (each checkout writes its own), and the tip says *as of last fetch 3d ago*; past a week it drifts on its own.
 
 ## Cost classes: nothing runs until asked
 
@@ -62,10 +62,11 @@ A test reads the source of those six functions and fails if any of them reaches 
 
 ## Detection
 
-`maint_detect(root)` reads the remote, the files and `.episko/episko.toml`, and spawns nothing beyond the git remote read `project_facts` already does. It is cached per root for 30 s, so `maint_read`'s own applicability check (a stale frontend list must not run a source that no longer applies) does not walk the tree once per source.
+`maint_detect(root)` reads the remote, the files and `.episko/episko.toml`, and spawns nothing beyond the git remote read `project_facts` already does (plus, with no `origin`, the `git remote` listing that finds the primary remote, so the forge and the trunk come from one remote). It is cached per root for 30 s, so `maint_read`'s own applicability check (a stale frontend list must not run a source that no longer applies) does not walk the tree once per source.
 
 - **The forge is decided before files.** `.github/workflows/` means GitHub Actions on github.com and Forgejo Actions on Codeberg; Renovate runs on every forge. Order: the `[maintenance] forge` pin, then a known-host table (`github.com`, `gitlab.com`, `codeberg.org` → forgejo, `bitbucket.org`, `dev.azure.com`/`*.visualstudio.com`), then a host containing `gitlab`/`gitea`/`forgejo`, then `unknown`. No network probe: a self-hosted host that names nothing stays `unknown` until pinned, and the tip says how. `git::split_remote` is already `pub(crate)`; `ssh_hostname` becomes it. The forge's `path` is everything after the host, not two segments: GitLab subgroups are `group/sub/repo`.
-- **Files are probed, never executed**: a fixed list of paths at depth ≤ 2 under `SKIP_DIRS`, where a trailing `/` means a non-empty directory and `file#key` means a key inside a JSON file (`package.json#renovate`). The list is the union of the manifest's `detect` entries.
+- **Files are probed, never executed**: a fixed list of paths at depth ≤ 2 under `SKIP_DIRS`, where a trailing `/` means a non-empty directory and `file#key` means a key inside a JSON file (`package.json#renovate`). The list is the union of the manifest's `detect` entries. An entry holding a `/` or starting with `.` is anchored at the root (GitHub reads `.github/workflows/` there and nowhere else); a bare name (`Jenkinsfile`, `Cargo.lock`) is also looked for one directory down, never inside a dot directory or `SKIP_DIRS`.
+- **The git sources detect `.git`**, which is how a folder that is not a repo gets *not a git repository* rather than a Git cell that cannot answer. `[maintenance] off` and `sources` are applied in detection too, so `maint_read` refuses a source the file switched off (`unsupported`, *switched off in .episko/episko.toml*) and an off facet carries no markers.
 - **Worktrees collapse to the repo root.** Facts are keyed by `repoRoot ?? path` (as `loadFleet` keys heads); a card is one per project.
 
 ## The manifest: `src/maintmanifest.json`
@@ -94,7 +95,9 @@ One checked-in file read by both sides, the `providers/manifest.json` precedent:
 }
 ```
 
-- `forge` restricts a source to the forges it can talk to; empty means any. An empty `detect` means "applies whenever the forge matches".
+- `facets` lists the seven in card order, each with its label and its *none* phrase (*no CI*, *no update bot*), so both sides phrase step 3 of `facetCell` from one place.
+- `forge` restricts a source or a marker to the forges it can talk to; empty means any. An empty `detect` means "applies whenever the forge matches", so a marker needs at least one of the two or it would claim every project. A marker label may hold `{host}` (*CI on {host}*), filled from the remote.
+- Rust parses the file with `deny_unknown_fields` and `Manifest::check` refuses it at load (the `providers/manifest.json` precedent): the seven facets in order, source ids equal to `SOURCES`, kebab-case ids, known forge ids, relative `detect` paths, every capability in `MAINT_CAPS`, and a complete `bots` row. A field the manifest does not define (an `argv`) fails the build's tests.
 - `sees`/`blind` are a **closed capability vocabulary** (`MAINT_CAPS`). TS's `capsOf()` throws on an unknown one and Rust mirrors the list, the `providerCapabilities` rule: a misspelt capability must fail, not quietly drop a line from the coverage card.
 - `bots` is the update-bot table that replaces `deps::bot_of`'s match and its dead TS twin `isBotPr`. `[maintenance] bots` adds logins for self-hosted Renovate; a closed match silently files their PRs on the human Open-work board.
 - **Only the compiled-in manifest defines what runs.** No argv, binary or authenticated URL ever comes from `.episko/episko.toml`: a committed table may select, disable and parameterise built-in ids, so a teammate's commit cannot make your Episko run a binary.
@@ -107,7 +110,7 @@ Rust, `#[serde(rename_all = "camelCase")]`, tagged enums:
 #[serde(tag = "state")] enum Coverage { Ok, Off { reason }, NoAccess { reason, fix: Option<String> },
     NoTool { tool, fix: Option<String> }, Unsupported { reason }, NotRun, Error { reason } }
 
-struct SourceReport { source: String, facet: Facet, cost: Cost, coverage: Coverage,
+struct SourceReport { source: String, facet: Option<Facet>, cost: Option<Cost>, coverage: Coverage, // None: an id the manifest does not know
     at: Option<u64>,      // unix secs the read finished; a cache hit keeps the original
     truncated: bool,      // a list hit its page cap: counts are floors
     gaps: Vec<String>,    // honest partial support: "yarn.lock not read"
@@ -120,7 +123,8 @@ struct SourceReport { source: String, facet: Facet, cost: Cost, coverage: Covera
     Release    { trunk: Option<String>, tag: Option<String>, tag_at: Option<u64>, since: u32,
                  oldest_unreleased_at: Option<u64>, tags_seen: u32, fetched_at: Option<u64> },
     Releases   { latest: Option<ForgeRelease>, count: u32 },
-    Hygiene    { trunk: Option<String>, unpushed: u32, local_only: Vec<String>, merged: Vec<String>,
+    Changelog  { unreleased: Option<u32>, latest: Option<String>, latest_at: Option<u64> }, // None: no Unreleased section
+    Hygiene    { trunk: Option<String>, unpushed: Option<u32>, local_only: Vec<String>, merged: Vec<String>,
                  gone: Vec<String>, branches: Vec<BranchAge>, worktrees: Vec<WtAge>, fetched_at: Option<u64> },
     Work       { issues: u32, prs: u32, review_requested: u32 },
     Probes     { items: Vec<Probe> } }
@@ -130,10 +134,18 @@ struct Advisory { id, aliases: Vec<String>, kind /* dependency|code|secret|confi
                   version, severity /* critical|high|medium|low|unknown */, raw_severity, summary,
                   fixed, location, url, tool }
 struct Probe    { name, url, code: Option<u16>, ms: Option<u32>, cert_not_after: Option<u64>, err: Option<String> }
+struct UpdatePr { number, title, url, branch, draft, at: Option<u64>, checks: CiStatus }
+struct ForgeRelease { tag, name, at: Option<u64>, url: Option<String> }
 
+struct Forge     { kind /* github|gitlab|forgejo|gitea|bitbucket|azure|unknown|none */, host: Option<String>,
+                   path: Option<String>, by /* pin|table|name|none */ }   // none: no remote at all
+struct Marker    { facet, label, found: Vec<String> }                   // found: the paths that matched
 struct Detection { repo_root, forge: Forge, sources: Vec<String>, markers: Vec<Marker>,
-                   config: MaintConfig /* incl. readable: bool */, deploy: Option<DeployConfig> }
+                   config: MaintConfig /* incl. readable: bool */, deploy: Option<DeployConfig> /* slice 10 */ }
 ```
+
+- `Forge.by` says how the kind was decided, so a tip can say *pin it in `[maintenance] forge`* exactly when nothing else could tell. The host stays as the remote spells it: an ssh alias resolves for the decision and is shown as written.
+- `Changelog` is its own kind because an *Unreleased* section is neither a tag nor a published release. Its entries are top-level bullets (`-`, `*`, and this repo's `+ ~ !`), with prose and no bullet counting as one.
 
 - **One CI vocabulary.** `maint_ci::norm_status(raw)` is the only map from a vendor's status to `CiRun.status`; `review::normalise_check` and `deps::roll_checks` are rewritten on top of it. Today they disagree on `NEUTRAL`, `CANCELLED` and `STALE`, so the slice that unifies them pins today's outcomes in fixtures first and records every changed verdict in the CHANGELOG.
 - **`Advisory.id` is generic** (GHSA, CVE, OSV, RUSTSEC) and `aliases` carries the rest, so `mergeAdvisories` folds Dependabot, OSV and `cargo audit` reporting one CVE into one row at the worst severity.
@@ -152,13 +164,13 @@ struct Detection { repo_root, forge: Forge, sources: Vec<String>, markers: Vec<M
 | `maint_git.rs` | `git_local`, `git_tags`, `changelog`: thin wrappers over git.rs's readers |
 | `lockfile.rs` | pure lockfile parsers for OSV (`Cargo.lock`, `package-lock.json` v2/v3, `pnpm-lock.yaml`), reporting a gap for an unrecognised version rather than dropping packages |
 | `deploy.rs` | `[deploy]` read/propose/write, `propose_toml` (factored out of `propose_stack`), `http_probe` |
-| `git.rs` (+) | `hygiene(dir)` and `release_facts(dir, pattern, trunk)`: readers, not commands, because they need git.rs's private `git_cmd`, `remote_default`, `primary_remote` and `list_protected_branches` |
+| `git.rs` (+) | `maint_trunk(dir, asked)`, `hygiene(dir, trunk)` and `release_facts(dir, pattern, trunk)`: readers, not commands, because they need git.rs's private `git_cmd`, `remote_default`, `primary_remote` and `list_protected_branches`; `remote_parts` (the whole path after the host, which `split_remote` now builds on) |
 | `deps.rs` (refactor) | `alerts_read`/`bot_prs_read` split out with their own caches; `dep_report` keeps composing them and its wire does not change; `coverage_of(err)` beside `classify_deps` |
 
 ```rust
-struct Ctx<'a> { root: &'a str, account: Option<&'a str>, forge: &'a Forge, cfg: &'a MaintConfig,
-                 det: &'a Detection, force: bool }
+struct Ctx<'a> { root: &'a str, cfg: &'a MaintConfig }   // account, forge, det, force join with the first adapter that reads them
 struct SourceDef { id: &'static str, read: fn(&Ctx, &dyn Exec) -> Result<Read, Coverage> }
+struct Read { facts: Facts, truncated: bool, gaps: Vec<String> }   // a Facts kind outside the source's facet is an `error`
 
 trait Exec: Sync {
     fn gh(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String>;
@@ -170,7 +182,7 @@ trait Exec: Sync {
 }
 ```
 
-- **`Exec` is the only side-effect seam.** `SysExec` wraps `github::gh`, `forge::glab`, `deps::run_capped`, `platform::sys_command` + `augmented_path`, and the absolute curl paths `telemetry.rs` already uses (a GUI app's PATH is stripped). Tests use `FakeExec`, which answers argv prefixes from recorded output in `src-tauri/testdata/maint/` and records every call. Local git sources go through git.rs and are tested against `testutil::git` repos instead.
+- **`Exec` is the only side-effect seam**, in the inline `maint::exec` module. `Output` is maint's own (`code`, `stdout`, `stderr`) so `FakeExec` can build one. Until the first forge adapter calls through it, that module carries the one `dead_code` allow; `SysExec::glab` refuses until `forge::glab` exists, and `ENV_TOKENS` is empty until an adapter needs a token. `SysExec` wraps `github::gh`, `forge::glab`, `deps::run_capped`, `platform::sys_command` + `augmented_path`, and the absolute curl paths `telemetry.rs` already uses (a GUI app's PATH is stripped). Tests use `FakeExec`, which answers argv prefixes from recorded output in `src-tauri/testdata/maint/` and records every call. Local git sources go through git.rs and are tested against `testutil::git` repos instead.
 - **`TRUSTED_BINS` per cost class** is enforced inside `SysExec::tool`: `forge` may reach `gh`/`glab`, `tool` the audit binaries, `remote` `curl`/`ssh`. Argv is always an array; a value from data is a whole element and is refused when it starts with `-` or holds whitespace (`ssh_hostname`'s rule).
 - **Env tokens go on curl's stdin** (`-H @-`), never in argv, and only names on a fixed allowlist are read. An absent one is `noAccess` *token not visible to Episko*, never *not configured*: a Finder-launched app gets none of `~/.zshrc`'s exports.
 - **Reads degrade, writes fail loudly.** `read` never panics into the IPC layer; a failing source never erases another's report (the `dep_report` rule).
@@ -278,9 +290,9 @@ cert_warn_days = 21
 
 | id | facet | cost | reads |
 |---|---|---|---|
-| `git-local` | git | local | unpushed commits on any branch (`rev-list --count --branches --not --remotes`), local-only and gone branches, merged into trunk minus current/trunk/default/protected, branch and worktree ages (worktree `logs/HEAD` mtimes, no spawn) |
-| `git-tags` | release | local | the latest tag reachable from trunk matching `tag_pattern`, commits since, the oldest unreleased commit; no tags → `tag: None`, never "0 unreleased" |
-| `changelog` | release | local | an *Unreleased* section in `CHANGELOG.md` |
+| `git-local` | git | local | unpushed commits on any branch (`rev-list --count --branches --not --remotes`; `None` with no remote, since nowhere to push is not "all unpushed"), local-only and gone branches, merged into trunk minus trunk/default/protected and any branch checked out in a worktree (a fresh session's branch is "merged"), branch and worktree ages (worktree `logs/HEAD` mtimes, no spawn). No trunk, or an unreadable `episko.toml`, is a gap (*merged branches not read*), not the cell |
+| `git-tags` | release | local | the nearest tag by ancestry from trunk matching `tag_pattern` (`for-each-ref --merged` + `describe`, since `--simplify-by-decoration` drops a tagged root), commits since, the oldest unreleased commit; no tags → `tag: None`, never "0 unreleased"; no trunk → `unsupported` |
+| `changelog` | release | local | an *Unreleased* section in the root's `CHANGELOG.md` (detected as `./CHANGELOG.md`, so a package's own is not it): its entry count and the newest released heading and date (`Changelog` facts) |
 | `github-actions` | ci | forge | `gh run list --branch <default>`, newest per workflow, `failing since` from consecutive failures, disabled workflows from `gh workflow list --all` |
 | `forge-commit-status` | ci | forge | commit status + check-runs on the trunk head: every CI that reports back to GitHub (CircleCI, Woodpecker, Jenkins, Azure, Buildkite) with no credential of its own |
 | `gitlab-ci` | ci | forge | `glab api projects/:fullpath/pipelines?ref=<default>` |
@@ -293,6 +305,10 @@ cert_warn_days = 21
 | `github-releases` | release | forge | `gh release list`: the last published release, beside `git-tags`' unreleased count |
 | `github-work`, `gitlab-work` | work | forge | real totals (GraphQL `totalCount`, `issues_statistics`), not `gh_threads`' floor of 60 |
 | `http-probe` | prod | remote | `[deploy] urls` and `version_url` through curl `-w %{json}` and `%{certs}`; a curl that cannot print the certificate leaves cert *unknown*, never fine |
+
+Built: `git-local`, `git-tags`, `changelog` (slice 1). Every other row is a marker in `src/maintmanifest.json` until its slice promotes it. `forge-commit-status`, `sarif-files` and `http-probe` have none: a marker with no file to find would claim CI on every GitHub repo, so step 3's *no CI* could never be drawn, and the other two read what config names rather than what is on disk.
+
+The trunk is `[maintenance] trunk` when it resolves to a commit (a typo is reported, never replaced by `main`), else the primary remote's default branch (origin, else the first remote; the forge is read from the same one). There is no local guess: a repo with no remote and no pinned trunk gets the tip *set [maintenance] trunk*.
 
 Markers in v1: Woodpecker, CircleCI, Azure Pipelines, Jenkins, Forgejo/Gitea Actions, Bitbucket Pipelines, Drone, Snyk, Depfu, Mend, and *CI on <host>* for workflows on an `unknown` forge. Later, behind the same shape: ssh host facts (one `ssh -o BatchMode=yes` round trip per host), Sentry, GitLab MRs for Renovate, Gitea/Forgejo via token, pip-audit, osv-scanner, trivy, grype, snyk, govulncheck, endoflife.date.
 

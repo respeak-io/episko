@@ -1,0 +1,386 @@
+{
+  "detection": {
+    "config": {
+      "bots": [
+        "acme-renovate"
+      ],
+      "forge": "github",
+      "off": [
+        "prod"
+      ],
+      "params": {
+        "woodpecker_server": "https://ci.example.com"
+      },
+      "readable": true,
+      "sarif": [
+        "reports/*.sarif"
+      ],
+      "sources": {
+        "ci": [
+          "woodpecker"
+        ]
+      },
+      "tagPattern": "v*",
+      "thresholds": {
+        "ci_failing_hours": 24.0
+      },
+      "trunk": "main"
+    },
+    "forge": {
+      "by": "table",
+      "host": "github.com",
+      "kind": "github",
+      "path": "acme/app"
+    },
+    "markers": [
+      {
+        "facet": "ci",
+        "found": [
+          ".woodpecker.yml"
+        ],
+        "label": "Woodpecker"
+      }
+    ],
+    "repoRoot": "/repo",
+    "sources": [
+      "git-local",
+      "git-tags"
+    ]
+  },
+  "reports": [
+    {
+      "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "ci",
+      "facts": {
+        "branch": "main",
+        "kind": "ciRuns",
+        "runs": [
+          {
+            "at": 1790000000,
+            "raw": "timed_out",
+            "sha": "abc1234",
+            "status": "fail",
+            "url": "https://github.com/acme/app/actions/runs/1",
+            "workflow": "ci"
+          }
+        ]
+      },
+      "gaps": [],
+      "source": "github-actions",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "public",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "security",
+      "facts": {
+        "items": [
+          {
+            "aliases": [
+              "CVE-2026-0001"
+            ],
+            "ecosystem": "npm",
+            "fixed": "4.17.21",
+            "id": "GHSA-xxxx-yyyy-zzzz",
+            "kind": "dependency",
+            "location": "package-lock.json",
+            "pkg": "lodash",
+            "rawSeverity": "HIGH",
+            "severity": "high",
+            "summary": "Prototype pollution",
+            "tool": "osv",
+            "url": null,
+            "version": "4.17.20"
+          }
+        ],
+        "kind": "advisories"
+      },
+      "gaps": [],
+      "source": "osv",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "deps",
+      "facts": {
+        "bot": "renovate",
+        "configured": true,
+        "dashboard": 7,
+        "kind": "updatePrs",
+        "prs": [
+          {
+            "at": 1790000000,
+            "branch": "renovate/serde",
+            "checks": "pass",
+            "draft": false,
+            "number": 42,
+            "title": "Update serde",
+            "url": "https://github.com/acme/app/pull/42"
+          }
+        ]
+      },
+      "gaps": [],
+      "source": "renovate-prs",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "local",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "release",
+      "facts": {
+        "fetchedAt": 1790000000,
+        "kind": "release",
+        "oldestUnreleasedAt": 1789100000,
+        "since": 12,
+        "tag": "v1.2.0",
+        "tagAt": 1789000000,
+        "tagsSeen": 9,
+        "trunk": "origin/main"
+      },
+      "gaps": [],
+      "source": "git-tags",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "release",
+      "facts": {
+        "count": 9,
+        "kind": "releases",
+        "latest": {
+          "at": 1789000000,
+          "name": "1.2.0",
+          "tag": "v1.2.0",
+          "url": null
+        }
+      },
+      "gaps": [],
+      "source": "github-releases",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "local",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "release",
+      "facts": {
+        "kind": "changelog",
+        "latest": "1.2.0",
+        "latestAt": 1788998400,
+        "unreleased": 3
+      },
+      "gaps": [],
+      "source": "changelog",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "local",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "git",
+      "facts": {
+        "branches": [
+          {
+            "at": 1790000000,
+            "name": "wip"
+          }
+        ],
+        "fetchedAt": null,
+        "gone": [
+          "gone"
+        ],
+        "kind": "hygiene",
+        "localOnly": [
+          "wip"
+        ],
+        "merged": [
+          "old"
+        ],
+        "trunk": "origin/main",
+        "unpushed": 2,
+        "worktrees": [
+          {
+            "at": null,
+            "branch": "wip",
+            "path": "/repo-wt"
+          }
+        ]
+      },
+      "gaps": [],
+      "source": "git-local",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "work",
+      "facts": {
+        "issues": 12,
+        "kind": "work",
+        "prs": 3,
+        "reviewRequested": 1
+      },
+      "gaps": [],
+      "source": "github-work",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "remote",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "prod",
+      "facts": {
+        "items": [
+          {
+            "certNotAfter": 1795000000,
+            "code": 200,
+            "err": null,
+            "ms": 120,
+            "name": "app",
+            "url": "https://app.example.com"
+          }
+        ],
+        "kind": "probes"
+      },
+      "gaps": [],
+      "source": "http-probe",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "reason": "no analysis found",
+        "state": "off"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "github-code-scanning",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "gh auth refresh -h github.com -s security_events",
+        "reason": "token lacks security_events",
+        "state": "noAccess"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "dependabot-alerts",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "cargo install cargo-audit",
+        "state": "noTool",
+        "tool": "cargo-audit"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "cargo-audit",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "reason": "no default branch known",
+        "state": "unsupported"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "gitlab-ci",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "state": "notRun"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "npm-audit",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "reason": "HTTP 502",
+        "state": "error"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "github-secret-scanning",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "public",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "security",
+      "facts": {
+        "items": [],
+        "kind": "advisories"
+      },
+      "gaps": [
+        "yarn.lock not read"
+      ],
+      "source": "osv",
+      "truncated": true
+    },
+    {
+      "at": null,
+      "cost": null,
+      "coverage": {
+        "reason": "nope is not a maintenance source",
+        "state": "error"
+      },
+      "facet": null,
+      "facts": null,
+      "gaps": [],
+      "source": "nope",
+      "truncated": false
+    }
+  ]
+}

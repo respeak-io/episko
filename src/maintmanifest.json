@@ -1,0 +1,69 @@
+{
+  "facets": [
+    { "id": "ci", "label": "CI", "none": "no CI" },
+    { "id": "security", "label": "Security", "none": "no security source" },
+    { "id": "deps", "label": "Dependencies", "none": "no update bot" },
+    { "id": "release", "label": "Release", "none": "no release" },
+    { "id": "git", "label": "Git", "none": "not a git repository" },
+    { "id": "prod", "label": "Prod", "none": "no deploy" },
+    { "id": "work", "label": "Work", "none": "no issue tracker" }
+  ],
+  "sources": {
+    "git-local": {
+      "facet": "git", "label": "local branches", "cost": "local", "forge": [], "detect": [".git"],
+      "sees": ["git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age"],
+      "blind": ["git.squash-merged"]
+    },
+    "git-tags": {
+      "facet": "release", "label": "git tags", "cost": "local", "forge": [], "detect": [".git"],
+      "sees": ["rel.unreleased", "rel.last"],
+      "blind": ["rel.published"]
+    },
+    "changelog": {
+      "facet": "release", "label": "CHANGELOG.md", "cost": "local", "forge": [], "detect": ["./CHANGELOG.md"],
+      "sees": ["rel.changelog"],
+      "blind": []
+    }
+  },
+  "markers": [
+    { "facet": "ci", "label": "GitHub Actions", "forge": ["github"], "detect": [".github/workflows/"] },
+    { "facet": "ci", "label": "GitLab CI", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"] },
+    { "facet": "ci", "label": "Forgejo/Gitea Actions", "forge": ["forgejo", "gitea"], "detect": [".forgejo/workflows/", ".gitea/workflows/", ".github/workflows/"] },
+    { "facet": "ci", "label": "CI on {host}", "forge": ["unknown"], "detect": [".github/workflows/", ".forgejo/workflows/", ".gitea/workflows/", ".gitlab-ci.yml"] },
+    { "facet": "ci", "label": "Woodpecker", "forge": [], "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/"] },
+    { "facet": "ci", "label": "CircleCI", "forge": [], "detect": [".circleci/config.yml"] },
+    { "facet": "ci", "label": "Azure Pipelines", "forge": [], "detect": ["azure-pipelines.yml", "azure-pipelines.yaml"] },
+    { "facet": "ci", "label": "Jenkins", "forge": [], "detect": ["Jenkinsfile"] },
+    { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
+    { "facet": "ci", "label": "Drone", "forge": [], "detect": [".drone.yml", ".drone.yaml"] },
+    { "facet": "security", "label": "Dependabot alerts", "forge": ["github"], "detect": [] },
+    { "facet": "security", "label": "GitHub code scanning", "forge": ["github"], "detect": [] },
+    { "facet": "security", "label": "GitHub secret scanning", "forge": ["github"], "detect": [] },
+    { "facet": "security", "label": "OSV.dev", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"] },
+    { "facet": "security", "label": "npm audit", "forge": [], "detect": ["package-lock.json"] },
+    { "facet": "security", "label": "pnpm audit", "forge": [], "detect": ["pnpm-lock.yaml"] },
+    { "facet": "security", "label": "cargo audit", "forge": [], "detect": ["Cargo.lock"] },
+    { "facet": "security", "label": "Snyk", "forge": [], "detect": [".snyk"] },
+    { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
+    { "facet": "deps", "label": "Dependabot", "forge": ["github"], "detect": [".github/dependabot.yml", ".github/dependabot.yaml"] },
+    { "facet": "deps", "label": "Renovate", "forge": [], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
+    { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] },
+    { "facet": "release", "label": "GitHub releases", "forge": ["github"], "detect": [] },
+    { "facet": "work", "label": "GitHub issues", "forge": ["github"], "detect": [] },
+    { "facet": "work", "label": "GitLab issues", "forge": ["gitlab"], "detect": [] }
+  ],
+  "bots": [
+    {
+      "id": "dependabot",
+      "logins": ["dependabot[bot]", "app/dependabot", "dependabot", "dependabot-preview[bot]", "app/dependabot-preview", "dependabot-preview"],
+      "branch": "dependabot/", "dashboard": null,
+      "config": [".github/dependabot.yml", ".github/dependabot.yaml"]
+    },
+    {
+      "id": "renovate",
+      "logins": ["renovate[bot]", "app/renovate", "renovate-bot"],
+      "branch": "renovate/", "dashboard": "Dependency Dashboard",
+      "config": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"]
+    }
+  ]
+}
