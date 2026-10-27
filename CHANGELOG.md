@@ -18,6 +18,9 @@ Markers: `+` new · `~` changed · `!` fixed
   failed).
 ~ A check state Episko does not recognise, or a finished check with no conclusion, reads as still
   running in both places, never as neutral or failed.
+~ The Dependencies card files pull requests from the bot logins `[maintenance] bots` names in
+  `.episko/episko.toml` (a self-hosted Renovate) as update-bot PRs, not as open work, and the
+  brief it sends an agent speaks of security advisories rather than naming Dependabot.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

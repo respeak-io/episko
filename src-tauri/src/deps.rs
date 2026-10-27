@@ -4,11 +4,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::github::{classify, gh, who_for};
-use crate::maint::CiStatus;
+use crate::github::{classify, who_for};
+use crate::maint::{gh_coverage, CiStatus, Cost, Coverage, Exec, SysExec};
 use crate::maint_ci::check_status;
 use crate::platform::{augmented_path, sys_command};
 
@@ -83,13 +83,91 @@ impl DepReport {
     }
 }
 
-struct Cached { at: Instant, report: DepReport }
-static CACHE: Mutex<Option<HashMap<String, Cached>>> = Mutex::new(None);
+// ---------- the shared reads ----------
+// Each half has its own cache, shared by `dep_report` and the Maintenance sources: a scan's two
+// bot sources ask for one `gh pr list` together, forced or not, and the second waits on the first.
+
+type Key = (String, String, String); // root, the repo as gh is told it, account
+type Slot<T> = Arc<OnceLock<Result<T, String>>>;
+type Entries<T> = HashMap<Key, (Instant, Slot<T>)>;
+struct Shared<T>(Mutex<Option<Entries<T>>>);
+
+static ALERTS: Shared<(Vec<DepAlert>, bool)> = Shared(Mutex::new(None));
+static BOT_PRS: Shared<(Vec<DepPr>, bool)> = Shared(Mutex::new(None));
+
+/// How old an answer a forced read still takes as its own: a ⟳ scan's two bot sources start
+/// seconds apart behind its in-flight limit, and must still share one `gh pr list`.
+const FORCE_JOIN: Duration = Duration::from_secs(15);
+
+fn shared<T: Clone>(cache: &Shared<T>, key: Key, force: bool, fill: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let fresh = if force { FORCE_JOIN } else { TTL };
+    let slot = {
+        let Ok(mut g) = cache.0.lock() else { return fill() };
+        let m = g.get_or_insert_with(HashMap::new);
+        match m.get(&key) {
+            Some((at, s)) if s.get().is_none() || at.elapsed() < fresh => s.clone(),
+            _ => {
+                let s: Slot<T> = Arc::default();
+                m.insert(key, (Instant::now(), s.clone()));
+                s
+            }
+        }
+    };
+    slot.get_or_init(fill).clone()
+}
+
+fn forget<T>(cache: &Shared<T>, root: &str) {
+    if let Ok(mut g) = cache.0.lock() {
+        if let Some(m) = g.as_mut() {
+            m.retain(|(r, _, _), _| r != root);
+        }
+    }
+}
+
+fn key(root: &str, repo: Option<&str>, account: Option<&str>) -> Key {
+    (root.to_string(), repo.unwrap_or("").to_string(), account.unwrap_or("").to_string())
+}
+
+/// An answer that is not a JSON list is a failure, never an empty one: "" must not read as clean.
+fn json_list(json: String, what: &str) -> Result<String, String> {
+    match serde_json::from_str::<serde_json::Value>(&json) {
+        Ok(v) if v.is_array() => Ok(json),
+        _ => Err(format!("{what} answered something that is not the JSON list it promises")),
+    }
+}
+
+/// Whether the page came back full, counted on the raw rows: a row the parser drops still took a place.
+fn full_page(json: &str, cap: usize) -> bool {
+    serde_json::from_str::<serde_json::Value>(json).ok().and_then(|v| v.as_array().map(Vec::len)).unwrap_or(0) >= cap
+}
+
+const ALERT_CAP: usize = 100;
+
+/// The open Dependabot alerts and whether the page filled. `repo` names the repository; `None` lets
+/// `gh` substitute it from cwd.
+pub(crate) fn alerts_read(ex: &dyn Exec, root: &str, repo: Option<&str>, account: Option<&str>, force: bool) -> Result<(Vec<DepAlert>, bool), String> {
+    shared(&ALERTS, key(root, repo, account), force, || {
+        let path = format!("repos/{}/dependabot/alerts?state=open&per_page={ALERT_CAP}", repo.unwrap_or("{owner}/{repo}"));
+        let json = json_list(ex.gh(root, account, &["api", &path])?, "gh api")?;
+        Ok((parse_alerts(&json), full_page(&json, ALERT_CAP)))
+    })
+}
+
+/// Every open PR a bot in the table (or `extra`, from `[maintenance] bots`) opened, and whether the
+/// page filled, which makes every count a floor.
+pub(crate) fn bot_prs_read(ex: &dyn Exec, root: &str, repo: Option<&str>, account: Option<&str>, extra: &[String], force: bool) -> Result<(Vec<DepPr>, bool), String> {
+    shared(&BOT_PRS, key(root, repo, account), force, || {
+        let cap = PR_CAP.to_string();
+        let mut args = vec!["pr", "list", "--state", "open", "--limit", &cap, "--json", PR_FIELDS];
+        if let Some(r) = repo {
+            args.extend(["--repo", r]);
+        }
+        let json = json_list(ex.gh(root, account, &args)?, "gh pr list")?;
+        Ok((parse_bot_prs(&json, extra)?, full_page(&json, PR_CAP)))
+    })
+}
 
 // ---------- alerts ----------
-
-/// `gh api` substitutes `{owner}`/`{repo}` from the repo in cwd, so no slug is parsed here.
-const ALERTS_PATH: &str = "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=100";
 
 pub(crate) fn parse_alerts(json: &str) -> Vec<DepAlert> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
@@ -151,17 +229,26 @@ pub(crate) fn parse_alerts(json: &str) -> Vec<DepAlert> {
 // ---------- the bots' pull requests ----------
 
 const PR_FIELDS: &str = "number,title,url,author,labels,updatedAt,headRefName,isDraft,mergeable,mergeStateStatus,statusCheckRollup";
+const PR_CAP: usize = 60;
+/// Whose row a `[maintenance] bots` login joins: the docs call those logins self-hosted Renovate.
+const SELF_HOSTED: &str = "renovate";
 
-/// `dependabot[bot]`, `app/renovate`, `renovate-bot` — one name per bot, "" for a human.
-pub(crate) fn bot_of(login: &str) -> String {
-    let l = login.to_lowercase();
-    let l = l.strip_suffix("[bot]").unwrap_or(&l);
-    let l = l.strip_prefix("app/").unwrap_or(l);
-    match l {
-        "dependabot" | "dependabot-preview" => "dependabot".into(),
-        "renovate" | "renovate-bot" => "renovate".into(),
-        _ => String::new(),
+/// The bots-table row a login belongs to, or `None` for a person. `[bot]` and `app/` are how
+/// one App spells itself in REST and in `gh`, so they never decide.
+pub(crate) fn bot_of(login: &str, extra: &[String]) -> Option<&'static str> {
+    let norm = |l: &str| {
+        let l = l.trim().to_lowercase();
+        let l = l.strip_suffix("[bot]").unwrap_or(&l);
+        l.strip_prefix("app/").unwrap_or(l).to_string()
+    };
+    let me = norm(login);
+    if me.is_empty() {
+        return None;
     }
+    if let Some(b) = crate::maint::bots().iter().find(|b| b.logins.iter().any(|l| norm(l) == me)) {
+        return Some(b.id.as_str());
+    }
+    extra.iter().any(|l| norm(l) == me).then_some(SELF_HOSTED)
 }
 
 /// A check run's `status` and `conclusion`, or a commit status's `state`: both shapes share one
@@ -183,20 +270,18 @@ fn roll_checks(v: Option<&serde_json::Value>) -> ChecksRollup {
     r
 }
 
-pub(crate) fn parse_bot_prs(json: &str) -> Vec<DepPr> {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return vec![] };
-    let Some(arr) = v.as_array() else { return vec![] };
-    arr.iter()
+pub(crate) fn parse_bot_prs(json: &str, extra: &[String]) -> Result<Vec<DepPr>, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("gh pr list: {e}"))?;
+    let arr = v.as_array().ok_or("gh pr list answered no list")?;
+    Ok(arr.iter()
         .filter_map(|o| {
             let author = o
                 .get("author")
                 .and_then(|a| a.get("login"))
                 .and_then(|x| x.as_str())
                 .unwrap_or("");
-            let bot = bot_of(author);
-            if bot.is_empty() {
-                return None; // a human's PR belongs on the Open work board, not here
-            }
+            // A human's PR belongs on the Open work board, not here.
+            let bot = bot_of(author, extra)?;
             let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
             Some(DepPr {
                 number: o.get("number")?.as_i64()?,
@@ -214,40 +299,31 @@ pub(crate) fn parse_bot_prs(json: &str) -> Vec<DepPr> {
                 mergeable: s("mergeable"),
                 merge_state: s("mergeStateStatus"),
                 checks: roll_checks(o.get("statusCheckRollup")),
-                bot,
+                bot: bot.to_string(),
             })
         })
-        .collect()
+        .collect())
 }
 
-/// Alerts and the bots' PRs, cached for TTL. Degrades to `available: false` plus a reason,
-/// like every other gh read; `force` is an explicit refresh, never a repaint.
+/// Alerts and the bots' PRs, each through its shared cache. Degrades to `available: false` plus a
+/// reason, like every other gh read; `force` is an explicit refresh, never a repaint.
 #[tauri::command]
 pub(crate) async fn dep_report(root: String, force: bool, account: Option<String>) -> DepReport {
     tauri::async_runtime::spawn_blocking(move || {
-        if !force {
-            if let Ok(guard) = CACHE.lock() {
-                if let Some(hit) = guard.as_ref().and_then(|m| m.get(&root)) {
-                    if hit.at.elapsed() < TTL {
-                        return hit.report.clone();
-                    }
-                }
-            }
-        }
         let acct = account.as_deref();
+        let ex = SysExec { cost: Cost::Forge };
+        let extra = crate::maint::read_config(&root).bots().to_vec();
         // Two processes and two round trips that need nothing from each other, as `gh_threads` does.
         let (alerts, prs) = std::thread::scope(|s| {
-            let a = s.spawn(|| gh(&root, acct, &["api", ALERTS_PATH]));
-            let p = s.spawn(|| {
-                gh(&root, acct, &["pr", "list", "--state", "open", "--limit", "60", "--json", PR_FIELDS])
-            });
+            let a = s.spawn(|| alerts_read(&ex, &root, None, acct, force));
+            let p = s.spawn(|| bot_prs_read(&ex, &root, None, acct, &extra, force));
             (
                 a.join().unwrap_or_else(|_| Err("gh api panicked".into())),
                 p.join().unwrap_or_else(|_| Err("gh pr list panicked".into())),
             )
         });
-        let bot_prs = prs.map(|j| parse_bot_prs(&j)).unwrap_or_default();
-        let report = match alerts {
+        let bot_prs = prs.map(|(p, _)| p).unwrap_or_default();
+        match alerts {
             // A PR list that answered is still a board: the alert half is the one that
             // needs a scope most people's gh has never been granted.
             Err(e) => DepReport {
@@ -257,44 +333,53 @@ pub(crate) async fn dep_report(root: String, force: bool, account: Option<String
                 prs: bot_prs,
                 enabled: false,
             },
-            Ok(json) => DepReport {
-                available: true,
-                reason: None,
-                alerts: parse_alerts(&json),
-                prs: bot_prs,
-                enabled: true,
-            },
-        };
-        if let Ok(mut guard) = CACHE.lock() {
-            guard.get_or_insert_with(HashMap::new)
-                .insert(root.clone(), Cached { at: Instant::now(), report: report.clone() });
+            Ok((alerts, _)) => DepReport { available: true, reason: None, alerts, prs: bot_prs, enabled: true },
         }
-        report
     })
     .await
     .unwrap_or_else(|e| DepReport::unavailable(format!("gh task failed: {e}")))
+}
+
+const SCOPE_FIX: &str = "gh auth refresh -h github.com -s security_events";
+
+fn needs_scope(e: &str) -> bool {
+    e.contains("security_events") || e.contains("admin:repo_hook") || e.contains("not authorized")
+}
+
+fn switched_off(e: &str) -> bool {
+    e.contains("dependabot alerts are disabled") || e.contains("advanced security")
 }
 
 /// The alerts endpoint fails in two ways nothing else does, and both read as "not found"
 /// unless they are named: a token without `security_events`, and a repo with the feature off.
 pub(crate) fn classify_deps(err: &str, who: Option<&str>) -> String {
     let e = err.to_lowercase();
-    if e.contains("security_events") || e.contains("admin:repo_hook") || e.contains("not authorized") {
-        return "gh's token cannot read security alerts — run `gh auth refresh -h github.com -s security_events`".into();
+    if needs_scope(&e) {
+        return format!("gh's token cannot read security alerts — run `{SCOPE_FIX}`");
     }
-    if e.contains("dependabot alerts are disabled") || e.contains("advanced security") {
+    if switched_off(&e) {
         return "Dependabot alerts are switched off for this repository".into();
     }
     classify(err, who)
 }
 
+/// `classify_deps` as a coverage: the scope is an access fix, the feature switched off is `off`,
+/// and both are named before `gh_coverage`, whose 403 rule would blame the account.
+pub(crate) fn coverage_of(err: &str, account: Option<&str>) -> Coverage {
+    let e = err.to_lowercase();
+    if needs_scope(&e) {
+        return Coverage::NoAccess { reason: "gh's token cannot read security alerts".into(), fix: Some(SCOPE_FIX.into()) };
+    }
+    if switched_off(&e) {
+        return Coverage::Off { reason: "Dependabot alerts are switched off for this repository".into() };
+    }
+    gh_coverage(err, account)
+}
+
 #[tauri::command]
 pub(crate) fn dep_invalidate(root: String) {
-    if let Ok(mut guard) = CACHE.lock() {
-        if let Some(m) = guard.as_mut() {
-            m.remove(&root);
-        }
-    }
+    forget(&ALERTS, &root);
+    forget(&BOT_PRS, &root);
 }
 
 // ---------- what the manifests declare ----------
@@ -874,7 +959,7 @@ mod tests {
            "statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"FAILURE"},
              {"status":"IN_PROGRESS"},{"status":"COMPLETED","conclusion":"SKIPPED"}]},
           {"number":2,"author":{"login":"a-human"},"headRefName":"feat/x","title":"t","labels":[]}]"#;
-        let prs = parse_bot_prs(json);
+        let prs = parse_bot_prs(json, &[]).unwrap();
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].bot, "dependabot");
         assert_eq!(prs[0].checks, ChecksRollup { total: 4, passed: 1, failed: 1, pending: 1, skipped: 1 });
@@ -948,9 +1033,86 @@ mod tests {
     }
 
     #[test]
-    fn tells_a_bot_from_a_person() {
-        assert_eq!(bot_of("dependabot[bot]"), "dependabot");
-        assert_eq!(bot_of("app/renovate"), "renovate");
-        assert_eq!(bot_of("FAbrahamDev"), "");
+    fn tells_a_bot_from_a_person_by_the_bots_table() {
+        let mine = vec!["acme-renovate".to_string()];
+        assert_eq!(bot_of("dependabot[bot]", &[]), Some("dependabot"));
+        assert_eq!(bot_of("renovate[bot]", &[]), Some("renovate"));
+        assert_eq!(bot_of("app/renovate", &[]), Some("renovate"));
+        assert_eq!(bot_of("acme-renovate[bot]", &mine), Some("renovate"), "a configured self-hosted login");
+        assert_eq!(bot_of("acme-renovate", &[]), None, "only when configured");
+        assert_eq!(bot_of("FAbrahamDev", &mine), None);
+        assert_eq!(bot_of("", &mine), None);
+        assert!(crate::maint::bots().iter().any(|b| b.id == SELF_HOSTED));
+        let json = r#"[{"number":3,"author":{"login":"app/acme-renovate"},"headRefName":"renovate/x"},
+                       {"number":4,"author":{"login":"a-human"}}]"#;
+        let prs = parse_bot_prs(json, &mine).unwrap();
+        assert_eq!(prs.iter().map(|p| (p.number, p.bot.as_str())).collect::<Vec<_>>(), [(3, "renovate")]);
+        assert!(parse_bot_prs("", &[]).is_err() && parse_bot_prs("{}", &[]).is_err(), "no list is no answer");
+    }
+
+    #[test]
+    fn an_alert_failure_is_a_coverage_with_its_fix() {
+        let Coverage::NoAccess { fix, .. } = coverage_of("HTTP 403: You are not authorized to perform this operation. Needs security_events", Some("me")) else { panic!() };
+        assert_eq!(fix.as_deref(), Some(SCOPE_FIX));
+        let off = coverage_of("HTTP 403: Dependabot alerts are disabled for this repository.", None);
+        assert!(matches!(off, Coverage::Off { .. }), "{off:?}");
+        assert!(matches!(coverage_of("HTTP 502: Bad Gateway", None), Coverage::Error { .. }));
+    }
+
+    #[test]
+    fn two_readers_of_one_key_share_one_call() {
+        use crate::maint::exec::FakeExec;
+        use std::sync::{Arc, Mutex};
+        let root = "/deps-test/shared";
+        for force in [false, true] {
+            let gate = Arc::new(Mutex::new(()));
+            let held = gate.lock().unwrap();
+            let ex = FakeExec::answering(Ok("[]")).gated(gate.clone());
+            std::thread::scope(|s| {
+                for _ in 0..4 {
+                    s.spawn(|| bot_prs_read(&ex, root, Some(&format!("a/{force}")), None, &[], force).unwrap());
+                }
+                std::thread::sleep(Duration::from_millis(100)); // every reader is waiting on the slot
+                drop(held);
+            });
+            assert_eq!(ex.calls().len(), 1, "force {force}: {:?}", ex.calls());
+        }
+        let ex = FakeExec::answering(Ok("[]"));
+        bot_prs_read(&ex, root, Some("a/b"), None, &[], false).unwrap();
+        bot_prs_read(&ex, root, Some("a/b"), Some("bob"), &[], false).unwrap();
+        assert!(ex.calls()[0].ends_with(&["--repo".to_string(), "a/b".to_string()]));
+        bot_prs_read(&ex, root, Some("a/b"), None, &[], true).unwrap();
+        assert_eq!(ex.calls().len(), 2, "another account reads again; a force joins a fresh answer");
+        age(&BOT_PRS, root, FORCE_JOIN);
+        bot_prs_read(&ex, root, Some("a/b"), None, &[], true).unwrap();
+        assert_eq!(ex.calls().len(), 3, "and reads past an older one");
+        let bad = FakeExec::answering(Ok(""));
+        assert!(alerts_read(&bad, root, Some("a/b"), None, true).is_err(), "an empty answer is no answer");
+        assert!(held_for(&ALERTS, root));
+        dep_invalidate(root.into());
+        assert!(!held_for(&BOT_PRS, root) && !held_for(&ALERTS, root), "both halves forgotten");
+    }
+
+    fn age<T>(cache: &Shared<T>, root: &str, by: Duration) {
+        let mut g = cache.0.lock().unwrap();
+        for ((r, _, _), (at, _)) in g.as_mut().unwrap().iter_mut() {
+            if r == root {
+                *at = at.checked_sub(by).unwrap();
+            }
+        }
+    }
+
+    fn held_for<T>(cache: &Shared<T>, root: &str) -> bool {
+        cache.0.lock().unwrap().as_ref().is_some_and(|m| m.keys().any(|(r, _, _)| r == root))
+    }
+
+    #[test]
+    fn a_full_alert_page_is_full_even_when_a_row_is_dropped() {
+        use crate::maint::exec::FakeExec;
+        let mut rows = vec![serde_json::json!({"number": 1}); ALERT_CAP - 1];
+        rows.push(serde_json::json!({"no": "number"}));
+        let ex = FakeExec::answering(Ok(&serde_json::to_string(&rows).unwrap()));
+        let (alerts, full) = alerts_read(&ex, "/deps-test/full", Some("a/b"), None, false).unwrap();
+        assert_eq!((alerts.len(), full), (ALERT_CAP - 1, true));
     }
 }

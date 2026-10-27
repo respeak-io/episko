@@ -21,6 +21,21 @@
       "sees": ["ci.default-branch", "ci.external"],
       "blind": ["ci.failing-since", "ci.other-branches"]
     },
+    "dependabot-alerts": {
+      "facet": "security", "label": "Dependabot alerts", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "dependabot-prs": {
+      "facet": "deps", "label": "Dependabot", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["deps.update-prs", "deps.pr-checks"],
+      "blind": []
+    },
+    "renovate-prs": {
+      "facet": "deps", "label": "Renovate", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["deps.update-prs", "deps.pr-checks"],
+      "blind": []
+    },
     "git-local": {
       "facet": "git", "label": "local branches", "cost": "local", "forge": [], "detect": [".git"],
       "sees": ["git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age"],
@@ -47,7 +62,6 @@
     { "facet": "ci", "label": "Jenkins", "forge": ["!github"], "detect": ["Jenkinsfile"] },
     { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
     { "facet": "ci", "label": "Drone", "forge": ["!github"], "detect": [".drone.yml", ".drone.yaml"] },
-    { "facet": "security", "label": "Dependabot alerts", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "GitHub code scanning", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "GitHub secret scanning", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "OSV.dev", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"] },
@@ -56,8 +70,7 @@
     { "facet": "security", "label": "cargo audit", "forge": [], "detect": ["Cargo.lock"] },
     { "facet": "security", "label": "Snyk", "forge": [], "detect": [".snyk"] },
     { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
-    { "facet": "deps", "label": "Dependabot", "forge": ["github"], "detect": [".github/dependabot.yml", ".github/dependabot.yaml"] },
-    { "facet": "deps", "label": "Renovate", "forge": [], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
+    { "facet": "deps", "label": "Renovate", "forge": ["!github"], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
     { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] },
     { "facet": "release", "label": "GitHub releases", "forge": ["github"], "detect": [] },
     { "facet": "work", "label": "GitHub issues", "forge": ["github"], "detect": [] },

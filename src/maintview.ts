@@ -42,6 +42,8 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "git.worktree-age": "idle worktrees", "git.squash-merged": "squash-merged branches",
   "rel.unreleased": "unreleased commits", "rel.last": "the last release tag", "rel.published": "published releases",
   "rel.changelog": "the changelog's Unreleased section",
+  "sec.dependency": "advisories in dependencies", "sec.code": "code scanning findings", "sec.secret": "committed secrets",
+  "deps.update-prs": "open update pull requests", "deps.pr-checks": "the checks on each update pull request",
 };
 
 // ---------- the head ----------

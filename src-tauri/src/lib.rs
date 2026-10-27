@@ -15,6 +15,8 @@ mod icons;
 mod maint;
 mod maint_ci;
 mod maint_git;
+mod maint_repo;
+mod maint_sec;
 mod mcp;
 mod notes;
 mod platform;

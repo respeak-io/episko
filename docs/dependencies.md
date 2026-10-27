@@ -20,11 +20,24 @@ Four sources, on three different gates, and they do **not** all need GitHub:
 
 - **Dependabot alerts** — `gh api repos/{owner}/{repo}/dependabot/alerts`. GitHub tier only.
 - **The bots' pull requests** — one `gh pr list` with `statusCheckRollup`, `mergeable` and
-  `mergeStateStatus`, filtered to `dependabot`/`renovate` in Rust (`bot_of`). GitHub tier.
+  `mergeStateStatus`, filtered in Rust by `bot_of` over the `bots` table in
+  `src/maintmanifest.json`, plus the logins `[maintenance] bots` names for a self-hosted
+  Renovate. A bot the table does not know files its PRs on the human Open work board, so a
+  new bot is a manifest row, never a second match somewhere. GitHub tier.
 - **What the manifests declare** — read off disk, no process, any tier. This is the half
   that makes a *verdict* possible, and it is why the card is useful on a GitLab remote.
 - **What a package manager says is out of date** — `pnpm/npm/yarn outdated`, `cargo
   outdated`, `go list -m -u`, `pip list --outdated`. Any tier, and **only when asked**.
+
+**The two GitHub halves are shared reads** (`alerts_read`, `bot_prs_read`), each with its own
+2-minute cache keyed by root, repository and account, because Maintenance's
+`dependabot-alerts`, `dependabot-prs` and `renovate-prs` read the same two things
+(docs/maintenance.md). An entry is one read in flight: a second reader of the same key waits
+for the first one's answer, so a scan's two bot sources cost one `gh pr list`. A forced read
+(⟳) still joins an answer under 15 s old (`FORCE_JOIN`), since a forced scan's two bot sources
+start seconds apart behind its in-flight limit. An answer that is not a JSON list is a failure,
+never an empty board, and a page that came back full is a floor, counted on its raw rows.
+`dep_invalidate` drops both.
 
 **Renovate's dashboard issue is linked, never reimplemented.** It is already in the board's
 own issue list (`renovateDashboard` finds it there for free), its checkboxes are how you ask
@@ -43,7 +56,10 @@ dependencies; putting them in a card called Dependencies would make the word mea
 - **Dependabot alerts are switched off for the repository**, which answers with its own
   prose and is a *project* setting rather than a token one. Same treatment, different fix.
   Everything else falls through to `github.rs`'s `classify`, including the wrong-account
-  case, which this shares because it shares `gh()`.
+  case, which this shares because it shares `gh()`. `coverage_of` is the same two cases as
+  Maintenance's typed coverage: the scope is `noAccess` with the refresh command as its fix,
+  the feature switched off is `off`, and both are matched before `gh_coverage`, whose 403
+  rule would blame the account.
 
 **A failed alert read does not take the PR list down with it.** They are separate `gh`
 calls in one `thread::scope`, and the scope 403 is much commoner than a gh outage — so the
@@ -131,9 +147,10 @@ is a read, so this one is fenced:
 ## The brief is the product
 
 `advisoryBrief` / `outdatedBrief` / `prBrief`. An agent is only as good as what it was told,
-and "fix the dependabot alerts" is not a brief. Each carries the advisory and its packages,
-the declared range beside the patched version, the verdict, and then two blocks that are the
-reason this beats doing it by hand:
+and "fix the dependabot alerts" is not a brief. It says *security advisories* and never names
+who reported them, so the same brief serves any reporter. Each carries the advisory and its
+packages, the declared range beside the patched version, the verdict, and then two blocks
+that are the reason this beats doing it by hand:
 
 - **Before you change anything** — read the release notes between the installed and the
   target version; treat a major as breaking until the changelog *and* our call sites say

@@ -43,7 +43,7 @@ export interface DepPr {
   mergeable: string; // MERGEABLE | CONFLICTING | UNKNOWN
   mergeState: string; // CLEAN | BLOCKED | DIRTY | BEHIND | UNSTABLE | HAS_HOOKS | UNKNOWN
   checks: { total: number; passed: number; failed: number; pending: number; skipped: number };
-  bot: string; // dependabot | renovate | ""; "" never reaches this list
+  bot: string; // a bots-table id from ./maintmanifest.json; a person's PR never reaches this list
 }
 
 /// What one manifest declares, read off disk without running anything. `ranges` is
@@ -414,12 +414,6 @@ export function renovateDashboard(threads: GhThread[]): GhThread | null {
     && (t.author ?? "").toLowerCase().startsWith("renovate")) ?? null;
 }
 
-export const isBotPr = (login: string): string => {
-  const l = (login || "").toLowerCase().replace(/\[bot\]$/, "").replace(/^app\//, "");
-  if (l === "dependabot" || l === "dependabot-preview") return "dependabot";
-  return l === "renovate" || l === "renovate-bot" ? "renovate" : "";
-};
-
 // ---------- what is merely out of date ----------
 
 export interface OutRow extends Outdated {
@@ -495,7 +489,7 @@ function advisoryLines(a: Advisory, m: DepManifest[]): string[] {
 export function advisoryBrief(picked: Advisory[], ctx: BriefCtx): string {
   const n = picked.length;
   return [
-    `Work through ${n} Dependabot ${n === 1 ? "advisory" : "advisories"} in ${ctx.slug || ctx.project}.`,
+    `Work through ${n} security ${n === 1 ? "advisory" : "advisories"} in ${ctx.slug || ctx.project}.`,
     "",
     ...picked.flatMap((a) => advisoryLines(a, ctx.manifests)),
     ...compatBlock(),
