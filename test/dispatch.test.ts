@@ -323,6 +323,11 @@ describe("the fleet dashboard's own dispatcher", () => {
     expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-fl${k}`).join(", ")}`).toEqual([]);
   });
 
+  it("switches the view from the head's own segment", () => {
+    expect(emitted).toContain("view");
+    expect(probed).toContain("view");
+  });
+
   it("probes a session row's ✕ BEFORE the row that contains it", () => {
     // The ✕ is a child of the row that carries data-flsel, so a row-first probe ships a close
     // button that selects the session instead of closing it.
@@ -337,6 +342,54 @@ describe("the fleet dashboard's own dispatcher", () => {
       probed.indexOf("proj"),
       `[data-flproj] is probed at position ${probed.indexOf("proj")} of ${probed.length}; everything after it (${probed.slice(probed.indexOf("proj") + 1).join(", ")}) is unreachable`,
     ).toBe(probed.length - 1);
+  });
+});
+
+// Maintenance's cards sit on the fleet (and, from slice 8, the dashboard), so their clicks are
+// neither pane's: `maintview.ts` writes `data-mt*`, `maintui.ts`'s `maintClick` is the one prober,
+// and each host's listener calls it first. The name block is a card's door, so it goes last.
+
+const MAINTVIEW = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
+const MAINTUI = readFileSync(new URL("../src/maintui.ts", import.meta.url), "utf8");
+
+describe("Maintenance's own dispatcher", () => {
+  // Read off an element that already matched: a verb's project and a card's name.
+  const PAYLOAD = new Set(["root", "name"]);
+  const emitted = [...new Set([...MAINTVIEW.matchAll(/data-mt([a-z]+)="/g)].map((m) => m[1]))];
+  const probed = [...MAINTUI.matchAll(/closest<HTMLElement>\("\[data-mt([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves", () => {
+    expect(emitted.length).toBeGreaterThan(4);
+    expect(probed.length).toBeGreaterThan(4);
+  });
+
+  it("keeps the dashboard's and the fleet's prefixes out of its markup", () => {
+    expect(MAINTVIEW).not.toContain("data-dash");
+    expect(MAINTVIEW).not.toContain("data-fl");
+    expect(FLEETVIEW).not.toContain("data-mt");
+  });
+
+  it("emits no attribute it never probes for — that is a button that does nothing", () => {
+    const dead = emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k));
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-mt${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-mt${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a card's verbs BEFORE the card's door, and the door LAST", () => {
+    expect(probed).toContain("verb");
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("proj"));
+    expect(probed.indexOf("proj"), "[data-mtproj] must be probed last").toBe(probed.length - 1);
+  });
+
+  it("is asked before the fleet's own probes, so a card's click never reaches a data-fl* row", () => {
+    const pane = FLEETUI.slice(FLEETUI.indexOf('$("fleetPane").addEventListener("click"'));
+    const ask = pane.indexOf("if (maintClick(t, ");
+    expect(ask).toBeGreaterThan(0);
+    expect(ask).toBeLessThan(pane.indexOf('closest<HTMLElement>("[data-fl'));
   });
 });
 

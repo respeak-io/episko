@@ -16,6 +16,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-copy-chord": "pref", "cc-close-ask": "pref",
   "cc-agent": "pref", "cc-diff-mode": "pref", "cc-diff-tree": "pref", "cc-scrollback": "pref", "cc-sort": "pref",
   "cc-fleet-sort": "pref", "cc-fleet-layout": "pref", "cc-fleet-group": "pref", "cc-fleet-range": "pref",
+  "cc-fleet-view": "pref", "cc-maint-chip": "pref",
   "cc-peek": "pref", "cc-outline": "pref", "cc-markdown": "pref", "cc-pr-links": "pref", "cc-shelved-tree": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
 
   "cc-usage": "account", "cc-usage-detail": "account",
@@ -34,7 +35,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-forecast-log": "local", "cc-rl-accounts": "local",
   // The tokens behind these labels live in this machine's keychain and nowhere else.
   "cc-claude-accounts": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
-  "cc-dash-seen": "local",
+  "cc-dash-seen": "local", "cc-maint-prefs": "local",
   // A handoff is between two named machines; the server, not sync, carries its outcome.
   "cc-handoff": "local",
   // The memory stream's switch is this machine's to throw; what it holds is the stream's own.
@@ -403,7 +404,8 @@ export const PREF_LABEL: Readonly<Record<string, string>> = {
   "cc-term-split": "Shell beside a session", "cc-drift-auto": "Follow a session's checkout",
   "cc-copy-chord": "Ctrl+Shift+C copies", "cc-close-ask": "Ask before closing a finished session", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout", "cc-diff-tree": "Changed files as a tree",
   "cc-scrollback": "Scrollback", "cc-sort": "Sidebar sort", "cc-fleet-sort": "Fleet sort", "cc-fleet-layout": "Fleet layout",
-  "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-peek": "Hover to reveal",
+  "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-fleet-view": "Fleet view",
+  "cc-maint-chip": "Maintenance filter", "cc-peek": "Hover to reveal",
   "cc-outline": "Conversation outline", "cc-markdown": "Markdown reader", "cc-pr-links": "Pull request links", "cc-shelved-tree": "Shelved sessions under their checkout", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
 };
 export const prefLabel = (key: string) => PREF_LABEL[key] ?? key.replace(/^cc-/, "");

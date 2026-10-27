@@ -357,3 +357,40 @@ describe("coming up and hosts", () => {
       .toEqual([{ host: "pi", projects: ["/a"] }, { host: "prod-1", projects: ["/a", "/b"] }]);
   });
 });
+
+// docs/maintenance.md's trigger rule, read off the source: the fleet is the home stage, so these run
+// at boot and on every exit from a pane, and a sweep reached from any of them is one nobody asked for.
+describe("nothing scans until a person asks", () => {
+  const FLEETUI = readFileSync(new URL("../src/fleetui.ts", import.meta.url), "utf8")
+    .replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+  // Inverted on purpose: every ./maintscan or ./maintui binding counts as a scan unless it is
+  // listed here as a cache read, so a new import has to be argued into this list.
+  const READS = ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"];
+  const imported = [...FLEETUI.matchAll(/import\s*\{([^}]*)\}\s*from\s*"\.\/(?:maintscan|maintui)"/g)]
+    .flatMap((m) => m[1].split(",").map((x) => x.trim().replace(/^type\s+/, "")).filter(Boolean));
+  const SCANS = [...imported.filter((n) => !READS.includes(n)), "maint_read", "maint_detect"];
+  // Each top-level declaration runs to the next one; good enough for a call graph over one file.
+  const decl = /^(?:export\s+)?(?:async\s+)?(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)/gm;
+  const heads = [...FLEETUI.matchAll(decl)];
+  const bodies = new Map(heads.map((m, i) => [m[1], FLEETUI.slice(m.index!, heads[i + 1]?.index ?? FLEETUI.length)]));
+  const reaches = (from: string): string[] => {
+    const seen = new Set([from]), queue = [from], hit = new Set<string>();
+    while (queue.length) {
+      for (const w of bodies.get(queue.shift()!)!.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+        if (SCANS.includes(w)) hit.add(w);
+        else if (bodies.has(w) && !seen.has(w)) { seen.add(w); queue.push(w); }
+      }
+    }
+    return [...hit];
+  };
+
+  it("finds the functions it is about, and a walk that can see a scan", () => {
+    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(bodies.has(f), f).toBe(true);
+    expect(reaches("setFleetView")).toContain("scanFleet"); // the switch is the ask
+    expect(SCANS).toEqual(expect.arrayContaining(["scanFleet", "maintClick"]));
+  });
+
+  it("never reaches a scan from openFleet, loadFleet, renderFleet or buildView", () => {
+    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView"]) expect(reaches(f), f).toEqual([]);
+  });
+});
