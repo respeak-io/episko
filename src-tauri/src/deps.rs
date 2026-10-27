@@ -627,7 +627,7 @@ pub(crate) async fn dep_tools(root: String) -> Vec<DepTool> {
     .unwrap_or_default()
 }
 
-fn on_path(bin: &str) -> bool {
+pub(crate) fn on_path(bin: &str) -> bool {
     let probe = if cfg!(windows) { "where" } else { "which" };
     sys_command(probe)
         .env("PATH", augmented_path())

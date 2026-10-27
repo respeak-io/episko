@@ -2688,12 +2688,12 @@ pub(crate) struct ProjectFacts {
     pub slug: Option<String>,
 }
 
-/// Host and `owner/repo` out of a git remote URL. Pure: `git@host:owner/repo.git` has no
-/// scheme and a colon where a slash belongs, while ssh:// and https:// are ordinary URLs.
-pub(crate) fn split_remote(url: &str) -> (Option<String>, Option<String>) {
+/// Host and the whole path after it (`group/sub/repo` on GitLab) out of a git remote URL.
+/// Pure: `git@host:owner/repo.git` has no scheme and a colon where a slash belongs.
+pub(crate) fn remote_parts(url: &str) -> Option<(String, String)> {
     let u = url.trim();
     if u.is_empty() {
-        return (None, None);
+        return None;
     }
     // scp-like `[user@]host:path`, told apart from a scheme by the absence of "://".
     let rest = if let Some((_, after)) = u.split_once("://") {
@@ -2701,20 +2701,25 @@ pub(crate) fn split_remote(url: &str) -> (Option<String>, Option<String>) {
     } else if let Some((hostish, path)) = u.split_once(':') {
         // A Windows drive letter or a plain relative path is not a remote host.
         if hostish.contains('/') || hostish.chars().count() <= 1 {
-            return (None, None);
+            return None;
         }
         format!("{hostish}/{path}")
     } else {
-        return (None, None);
+        return None;
     };
     let rest = rest.split_once('@').map_or(rest.as_str(), |(_, r)| r); // strip user[:pass]@
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     // Strip a port: `git@host:2222/o/r` and `ssh://host:2222/o/r` are both legal.
     let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
     if host.is_empty() {
-        return (None, None);
+        return None;
     }
-    let path = path.trim_matches('/').trim_end_matches(".git");
+    Some((host, path.trim_matches('/').trim_end_matches(".git").to_string()))
+}
+
+/// Host and `owner/repo` out of a git remote URL; [`remote_parts`] keeps the whole path.
+pub(crate) fn split_remote(url: &str) -> (Option<String>, Option<String>) {
+    let Some((host, path)) = remote_parts(url) else { return (None, None) };
     let mut seg = path.split('/').filter(|s| !s.is_empty());
     let owner_repo = match (seg.next(), seg.next()) {
         (Some(o), Some(r)) => Some(format!("{o}/{r}")),
@@ -2751,7 +2756,7 @@ static SSH_HOSTS: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(No
 /// The real hostname behind an `~/.ssh/config` `Host` alias, or None. `ssh -G` prints the
 /// applicable config without connecting, and it, not a half-parser, owns `Include`,
 /// wildcards and `Match`. No ssh on PATH is None.
-fn ssh_hostname(alias: &str) -> Option<String> {
+pub(crate) fn ssh_hostname(alias: &str) -> Option<String> {
     // The name goes to ssh as an argument, so it must not read as a flag.
     if alias.starts_with('-')
         || alias.is_empty()
@@ -2823,6 +2828,209 @@ pub(crate) fn project_facts(dir: String) -> ProjectFacts {
         .filter(|s| !s.is_empty());
     let (host, slug) = origin.as_deref().map_or((None, None), parse_remote);
     ProjectFacts { is_repo: true, root: Some(root), origin, host, slug }
+}
+
+// ---------- what Maintenance reads of a repo (docs/maintenance.md) ----------
+// Facts only, each as old as the last fetch; `maint.ts` decides what is stale.
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BranchAge {
+    pub(crate) name: String,
+    pub(crate) at: u64, // committer date of the tip, unix secs
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WtAge {
+    pub(crate) path: String,
+    pub(crate) branch: String,
+    pub(crate) at: Option<u64>, // `logs/HEAD`'s mtime: when the checkout last moved
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Hygiene {
+    pub(crate) trunk: Option<String>,
+    pub(crate) unpushed: Option<u32>, // commits no remote ref holds; None with no remote to push to
+    pub(crate) local_only: Vec<String>,
+    pub(crate) merged: Vec<String>, // contained in the trunk, minus trunk/default/checked-out/protected
+    pub(crate) gone: Vec<String>,
+    pub(crate) branches: Vec<BranchAge>,
+    pub(crate) worktrees: Vec<WtAge>, // linked ones only
+    pub(crate) fetched_at: Option<u64>,
+    #[serde(skip)]
+    pub(crate) gaps: Vec<String>, // what was left unread and why; the source's report carries them
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReleaseFacts {
+    pub(crate) trunk: Option<String>,
+    pub(crate) tag: Option<String>,
+    pub(crate) tag_at: Option<u64>,
+    pub(crate) since: u32,
+    pub(crate) oldest_unreleased_at: Option<u64>,
+    pub(crate) tags_seen: u32,
+    pub(crate) fetched_at: Option<u64>,
+}
+
+fn mtime_secs(p: &std::path::Path) -> Option<u64> {
+    let t = std::fs::metadata(p).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+/// FETCH_HEAD is per worktree, and autofetch fetches in whichever checkout is on stage.
+fn fetched_at(dir: &str) -> Option<u64> {
+    let (_, common) = git_dirs(dir)?;
+    let linked = std::fs::read_dir(common.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path());
+    std::iter::once(common.clone()).chain(linked).filter_map(|d| mtime_secs(&d.join("FETCH_HEAD"))).max()
+}
+
+/// The URL of the remote Maintenance measures against: origin, else the first listed.
+pub(crate) fn primary_remote_url(dir: &str) -> Option<String> {
+    let remotes = remotes_of(dir);
+    if remotes.is_empty() {
+        return None;
+    }
+    git_out(dir, &["remote", "get-url", primary_remote(&remotes)]).ok().filter(|s| !s.is_empty())
+}
+
+/// What Maintenance measures against: `[maintenance] trunk` when it resolves (a typo must not
+/// quietly measure against `main`), else the primary remote's default. Never a local guess.
+pub(crate) fn maint_trunk(dir: &str, asked: Option<&str>) -> Result<String, String> {
+    if let Some(t) = asked.map(str::trim).filter(|t| !t.is_empty()) {
+        let ok = !t.starts_with('-')
+            && !t.contains(char::is_whitespace)
+            && git_cmd(dir, &["rev-parse", "--verify", "--quiet", &format!("{t}^{{commit}}")])
+                .output()
+                .is_ok_and(|o| o.status.success());
+        return if ok { Ok(t.to_string()) } else { Err(format!("[maintenance] trunk {t:?} names no commit here")) };
+    }
+    let remotes = remotes_of(dir);
+    if remotes.is_empty() {
+        return Err("no remote, so no default branch: set [maintenance] trunk".into());
+    }
+    remote_default(dir, primary_remote(&remotes)).ok_or_else(|| "no default branch known: set [maintenance] trunk".into())
+}
+
+fn lines_of(s: &str) -> impl Iterator<Item = &str> {
+    s.lines().map(str::trim).filter(|l| !l.is_empty())
+}
+
+/// Branch hygiene, `None` for a folder that is not a repo. Without a trunk `merged` stays
+/// empty: ancestry against a guessed trunk makes every branch look (un)merged.
+pub(crate) fn hygiene(dir: &str, trunk: Option<&str>) -> Result<Option<Hygiene>, String> {
+    if repo_root_of(dir).is_none() {
+        return Ok(None);
+    }
+    let remotes = remotes_of(dir);
+    let unpushed = if remotes.is_empty() {
+        None
+    } else {
+        Some(git_out(dir, &["rev-list", "--count", "--branches", "--not", "--remotes"])?.parse().unwrap_or(0))
+    };
+    let heads = git_out(dir, &[
+        "for-each-ref", "--sort=-committerdate",
+        "--format=%(refname:short)\t%(committerdate:unix)\t%(upstream)\t%(upstream:track,nobracket)",
+        "refs/heads",
+    ])?;
+    // `lstrip=3` drops `refs/remotes/<remote>/`, leaving the branch a remote holds.
+    let held = git_out(dir, &["for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes"])?;
+    let held: std::collections::HashSet<&str> = lines_of(&held).collect();
+    let mut h = Hygiene { trunk: trunk.map(str::to_string), unpushed, ..Default::default() };
+    if remotes.is_empty() {
+        h.gaps.push("no remote, so nothing counts as unpushed".into());
+    }
+    for line in lines_of(&heads) {
+        let mut p = line.split('\t');
+        let name = p.next().unwrap_or("").to_string();
+        let at = p.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let upstream = p.next().unwrap_or("");
+        if p.next() == Some("gone") {
+            h.gone.push(name.clone());
+        } else if upstream.is_empty() && !held.contains(name.as_str()) {
+            h.local_only.push(name.clone());
+        }
+        if h.branches.len() < BRANCH_LIST_CAP {
+            h.branches.push(BranchAge { name, at });
+        }
+    }
+    let protect = list_protected_branches(dir.to_string());
+    match trunk {
+        // An unreadable protect list must not turn the branches it guards into Tidy candidates.
+        Some(_) if !protect.readable => h.gaps.push("merged branches not read: .episko/episko.toml unreadable".into()),
+        Some(t) => {
+            let half = |r: &str| remotes.iter().find_map(|m| r.strip_prefix(&format!("{m}/")).map(str::to_string));
+            let default = (!remotes.is_empty()).then(|| remote_default(dir, primary_remote(&remotes))).flatten();
+            let skip: Vec<String> = [Some(t.to_string()), half(t), default.as_deref().and_then(half)].into_iter().flatten().collect();
+            // Checked out anywhere is never offered: a fresh session worktree is "merged" too.
+            let merged = git_out(dir, &["branch", "--format=%(refname:short)\t%(worktreepath)", "--merged", t])?;
+            // `git_out` trims, so the last row may have lost its empty worktree column.
+            h.merged = lines_of(&merged)
+                .map(|l| l.split_once('\t').unwrap_or((l, "")))
+                .filter(|(b, wt)| wt.trim().is_empty() && !skip.iter().any(|s| s == b) && protected_by(&protect, b).is_empty())
+                .map(|(b, _)| b.trim().to_string())
+                .collect();
+        }
+        None => {}
+    }
+    if let Some((_, common)) = git_dirs(dir) {
+        for e in std::fs::read_dir(common.join("worktrees")).into_iter().flatten().flatten() {
+            let bk = e.path();
+            let Ok(gd) = std::fs::read_to_string(bk.join("gitdir")) else { continue };
+            let Some(checkout) = std::path::Path::new(gd.trim()).parent() else { continue };
+            h.worktrees.push(WtAge {
+                path: norm_path(&checkout.to_string_lossy()),
+                branch: head_branch(&bk.join("HEAD")).unwrap_or_default(),
+                at: mtime_secs(&bk.join("logs").join("HEAD")),
+            });
+        }
+        h.worktrees.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+    h.fetched_at = fetched_at(dir);
+    Ok(Some(h))
+}
+
+/// The newest tag on `trunk` matching `pattern` (any tag when `None`), and what came after.
+/// No tag is `tag: None`, never "0 unreleased": `since` then counts the whole trunk.
+pub(crate) fn release_facts(dir: &str, pattern: Option<&str>, trunk: &str) -> Result<ReleaseFacts, String> {
+    let pat = pattern.map(str::trim).filter(|p| !p.is_empty() && !p.starts_with('-'));
+    // `%(*…)` is an annotated tag's commit, the plain field a lightweight one's; one is empty.
+    let listed = git_out(dir, &[
+        "for-each-ref", &format!("--merged={trunk}"),
+        "--format=%(refname:lstrip=2)\t%(*committerdate:unix)%(committerdate:unix)", "refs/tags",
+    ])?;
+    // `lstrip=2`, not `short`: a branch of the same name makes `short` print `tags/1.0`.
+    let tags: HashMap<&str, Option<u64>> = lines_of(&listed)
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(n, _)| pat.is_none_or(|p| glob_match(p, n)))
+        .map(|(n, at)| (n, at.parse().ok().filter(|&t| t > 0)))
+        .collect();
+    // The nearest by ancestry, not by date: describe walks from trunk back to the first match.
+    let latest = if tags.is_empty() {
+        None
+    } else {
+        let only = pat.map(|p| format!("--match={p}"));
+        let mut args = vec!["describe", "--tags", "--abbrev=0"];
+        args.extend(only.as_deref());
+        args.push(trunk);
+        let name = git_out(dir, &args)?;
+        let at = tags.get(name.as_str()).copied().flatten();
+        Some((name, at))
+    };
+    let mut f = ReleaseFacts { trunk: Some(trunk.to_string()), tags_seen: tags.len() as u32, fetched_at: fetched_at(dir), ..Default::default() };
+    match latest {
+        Some((tag, at)) => {
+            let times = git_out(dir, &["log", "--format=%ct", &format!("refs/tags/{tag}..{trunk}"), "--"])?;
+            let times: Vec<u64> = lines_of(&times).filter_map(|l| l.parse().ok()).collect();
+            f.since = times.len() as u32;
+            f.oldest_unreleased_at = times.iter().min().copied();
+            (f.tag, f.tag_at) = (Some(tag), at);
+        }
+        None => f.since = git_out(dir, &["rev-list", "--count", trunk, "--"])?.parse().unwrap_or(0),
+    }
+    Ok(f)
 }
 
 // ---------- a session's code handed to another machine (docs/handoff.md) ----------
@@ -3494,6 +3702,137 @@ canonicalizehostname false
         let f = project_facts(repo.to_string_lossy().to_string());
         assert_eq!(f.slug, Some("example-org/thing".into()));
         assert_eq!(f.host, Some("github.com".into()));
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    /// Maintenance's Git facet on a clone: what is unpushed, gone, local-only and merged.
+    #[test]
+    fn hygiene_reads_a_clone_and_never_offers_the_trunk() {
+        let up = scratch_dir();
+        git(&up, &["init", "-q", "-b", "main"]);
+        commit(&up, "base");
+        let top = scratch_dir();
+        git(&top, &["clone", "-q", &up.to_string_lossy(), "c"]);
+        let dir = top.join("c");
+        let d = dir.to_string_lossy().to_string();
+        git(&dir, &["checkout", "-q", "-b", "gone-one"]);
+        git(&dir, &["push", "-q", "-u", "origin", "gone-one"]);
+        git(&up, &["branch", "-q", "-D", "gone-one"]);
+        git(&dir, &["fetch", "-q", "--prune"]);
+        for b in ["merged-a", "keep-me", "cur"] {
+            git(&dir, &["branch", b, "main"]);
+        }
+        git(&dir, &["checkout", "-q", "-b", "wip", "main"]);
+        commit(&dir, "unpushed");
+        git(&dir, &["checkout", "-q", "cur"]);
+        let wt = scratch_dir().join("wt");
+        git(&dir, &["worktree", "add", "-q", "-b", "wt-branch", &wt.to_string_lossy()]);
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        std::fs::write(dir.join(".episko/episko.toml"), "[branches]\nprotect = [\"keep-me\"]\n").unwrap();
+
+        let trunk = maint_trunk(&d, None).unwrap();
+        assert_eq!(trunk, "origin/main");
+        let h = hygiene(&d, Some(&trunk)).unwrap().expect("a repo");
+        assert_eq!((h.unpushed, h.gone.clone()), (Some(1), vec!["gone-one".to_string()]));
+        assert_eq!(sorted(h.local_only.clone()), ["cur", "keep-me", "merged-a", "wip", "wt-branch"]);
+        // main is the trunk, cur and wt-branch are checked out, keep-me is protected, wip is ahead.
+        assert_eq!(sorted(h.merged.clone()), ["gone-one", "merged-a"]);
+        assert!(h.gaps.is_empty(), "{:?}", h.gaps);
+        assert!(h.fetched_at.is_some(), "a fetch leaves FETCH_HEAD");
+        assert_eq!(h.worktrees.len(), 1);
+        assert_eq!(h.worktrees[0].branch, "wt-branch");
+        assert!(h.worktrees[0].at.is_some());
+        assert!(h.branches.iter().any(|b| b.name == "wip" && b.at > 0));
+
+        assert!(hygiene(&d, None).unwrap().unwrap().merged.is_empty(), "no trunk, no merged");
+        assert_eq!(hygiene(&scratch_dir().to_string_lossy(), None).unwrap(), None, "not a repo");
+        assert!(maint_trunk(&d, Some("nope")).is_err(), "a trunk that names nothing is an error");
+        assert!(maint_trunk(&d, Some("--all")).is_err(), "and never a flag");
+        assert_eq!(maint_trunk(&d, Some("main")), Ok("main".into()));
+
+        std::fs::write(dir.join(".episko/episko.toml"), "[branches\nprotect = [\n").unwrap();
+        let h = hygiene(&d, Some(&trunk)).unwrap().unwrap();
+        assert!(h.merged.is_empty(), "an unreadable protect list offers nothing: {:?}", h.merged);
+        assert!(h.gaps.iter().any(|g| g.contains("unreadable")), "{:?}", h.gaps);
+    }
+
+    #[test]
+    fn hygiene_without_a_remote_counts_nothing_as_unpushed() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "one");
+        let h = hygiene(&dir.to_string_lossy(), Some("main")).unwrap().unwrap();
+        assert_eq!(h.unpushed, None, "nowhere to push is not 'everything is unpushed'");
+        assert_eq!(h.gaps.len(), 1, "{:?}", h.gaps);
+    }
+
+    /// FETCH_HEAD is per worktree: a fetch made only in a linked checkout still counts.
+    #[test]
+    fn a_fetch_from_a_linked_worktree_is_seen() {
+        let up = scratch_dir();
+        git(&up, &["init", "-q", "-b", "main"]);
+        commit(&up, "base");
+        let top = scratch_dir();
+        git(&top, &["clone", "-q", &up.to_string_lossy(), "c"]);
+        let dir = top.join("c");
+        let wt = scratch_dir().join("wt");
+        git(&dir, &["worktree", "add", "-q", "-b", "w", &wt.to_string_lossy()]);
+        assert_eq!(fetched_at(&dir.to_string_lossy()), None, "a clone writes no FETCH_HEAD");
+        git(&wt, &["fetch", "-q"]);
+        assert!(!dir.join(".git/FETCH_HEAD").exists(), "git wrote it under worktrees/");
+        assert!(fetched_at(&dir.to_string_lossy()).is_some());
+        assert_eq!(fetched_at(&wt.to_string_lossy()), fetched_at(&dir.to_string_lossy()));
+    }
+
+    #[test]
+    fn primary_remote_url_falls_back_from_origin() {
+        let dir = scratch_dir();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        assert_eq!(primary_remote_url(&dir.to_string_lossy()), None);
+        git(&dir, &["remote", "add", "upstream", "https://github.com/a/b.git"]);
+        assert_eq!(primary_remote_url(&dir.to_string_lossy()).as_deref(), Some("https://github.com/a/b.git"));
+        git(&dir, &["remote", "add", "origin", "https://gitlab.com/a/b.git"]);
+        assert_eq!(primary_remote_url(&dir.to_string_lossy()).as_deref(), Some("https://gitlab.com/a/b.git"));
+    }
+
+    #[test]
+    fn release_facts_find_the_newest_matching_tag_on_trunk() {
+        let dir = scratch_dir();
+        let d = dir.to_string_lossy().to_string();
+        let tag = |t: &str| git(&dir, &["-c", "tag.gpgsign=false", "tag", t]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        commit(&dir, "one");
+        tag("v1.0");
+        commit(&dir, "two");
+        tag("nightly");
+        commit(&dir, "three");
+        git(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "off trunk");
+        tag("v9.9");
+        git(&dir, &["checkout", "-q", "main"]);
+
+        let r = release_facts(&d, Some("v*"), "main").unwrap();
+        assert_eq!((r.tag.as_deref(), r.since, r.tags_seen), (Some("v1.0"), 2, 1), "v9.9 is not on trunk");
+        assert!(r.tag_at.is_some() && r.oldest_unreleased_at.is_some());
+        let r = release_facts(&d, None, "main").unwrap();
+        assert_eq!((r.tag.as_deref(), r.since, r.tags_seen), (Some("nightly"), 1, 2));
+        let r = release_facts(&d, Some("release-*"), "main").unwrap();
+        // No tag is None, never "0 unreleased": `since` counts the whole trunk.
+        assert_eq!((r.tag, r.since, r.tags_seen, r.oldest_unreleased_at), (None, 3, 0, None));
+        assert_eq!((r.trunk.as_deref(), r.fetched_at), (Some("main"), None));
+
+        // Annotated (how most projects release) and shadowed by a branch of the same name.
+        commit(&dir, "four");
+        git(&dir, &["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "tag.gpgsign=false", "tag", "-a", "v1.1", "-m", "x"]);
+        git(&dir, &["branch", "v1.1"]);
+        let ct = String::from_utf8_lossy(&Command::new("git").current_dir(&dir).args(["log", "-1", "--format=%ct"]).output().unwrap().stdout)
+            .trim().parse::<u64>().unwrap();
+        let r = release_facts(&d, Some("v*"), "main").unwrap();
+        assert_eq!((r.tag.as_deref(), r.tag_at, r.since, r.tags_seen), (Some("v1.1"), Some(ct), 0, 2));
     }
 
     use std::path::{Path, PathBuf};

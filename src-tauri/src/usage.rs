@@ -134,7 +134,7 @@ impl TranscriptMeta {
 
 /// Days since 1970-01-01 for a civil date (Howard Hinnant's `days_from_civil`); the only
 /// calendar arithmetic here, not worth a `chrono` dependency.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = y - i64::from(m <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]

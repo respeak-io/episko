@@ -6,11 +6,14 @@ mod agent;
 mod deps;
 mod external;
 mod files;
+mod forge;
 mod git;
 mod handoff;
 mod health;
 mod github;
 mod icons;
+mod maint;
+mod maint_git;
 mod mcp;
 mod notes;
 mod platform;
@@ -505,6 +508,9 @@ pub fn run() {
             deps::dep_manifests,
             deps::dep_tools,
             deps::dep_outdated,
+            maint::maint_detect,
+            maint::maint_read,
+            maint::maint_invalidate,
             stack::compose_containers,
             stack::compose_stop,
             stack::stack_config,
