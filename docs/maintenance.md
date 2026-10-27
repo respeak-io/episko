@@ -216,7 +216,7 @@ One command per capability, not per source: every `invoke` stays a literal the `
 |---|---|---|
 | `maintsources.ts` | tested logic | the manifest; `FACETS`, `MAINT_CAPS`, `COSTS`; `sourceDef(id)` (throws on unknown); `runnable(det, prefs, mode)`; `facetSources` |
 | `maint.ts` | tested logic | wire mirrors and `narrowMaint`; `MAINT_DEFAULTS` + `clampMaint` (a 0 threshold is refused); `facetCell`; `findings`; `projectBand` (`needs`/`drifting`/`quiet`/`unread`); `rankMaint` (worst first, ending on `path.localeCompare`, so a repaint never reorders); `FACET_TAB`; `mergeAdvisories`; `comingUp`; `hostRows`; the tab row builders |
-| `maintbrief.ts` | tested logic | one pure `briefFor` per finding kind, from facts only; advisory and PR briefs delegate to `deps.ts`, whose `advisoryBrief` stops saying *Dependabot* |
+| `maintbrief.ts` | tested logic | one pure `briefFor` per finding kind, from facts only; advisory and PR briefs reuse `deps.ts`'s `compatBlock`/`verifyBlock` (slice 2), and slice 5 makes `advisoryBrief` itself stop saying *Dependabot* |
 | `deploy.ts` | tested logic | `deployPrompt`, `checkDeploy`, `deployText`, `deploySummary` |
 | `maintscan.ts` | behaviour | the ONE cache shared by fleet and dashboard (`Map<repoRoot, ProjectMaint>`); `scanProject`, `scanFleet` (at most 6 `maint_read`s in flight, a `maintSeq` guard copied from `loadFleet`), `runSource`; `setMaintRender` (no-op default). Imports state, never fleetui or dashboard |
 | `maintview.ts` | markup | strip, card, finding lines, quiet fold, host rows, the five tabs, the dashboard tab's cards, the all-clear; emits **only `data-mt*`** |
@@ -226,7 +226,7 @@ Direction: `maintsources ← maint ← maintbrief` (logic) ← `maintview` ← `
 
 **The `data-mt*` contract** is a new `dispatch.test.ts` block: emitted in `maintview.ts` == probed in `maintui.ts` in both directions, nested verbs before their row, `data-mtproj` last, and `maintview.ts` emits neither `data-dash` nor `data-fl`. A maintenance card is never nested inside an `fl*`/`dash*` clickable row, or one click fires both listeners.
 
-**Findings → verbs.** A finding is `{root, facet, key, level, text, verb, source, ref}`. *Fix* (CI, prod), *Patch* (advisory), *Rotate* (secret), *Release*, *Push*, *Tidy* (merged branches) prefill an agent via `host.launch` + `typeInto`, **with no newline** — the two places Episko presses Enter stay two. *Review* on bot PRs opens the existing `deps` overlay; *Run* is a `maint_read` in `explicit` mode, not an agent; *Set up* prefills a brief to add CI or Renovate, or starts `proposeDeploy`.
+**Findings → verbs.** A finding is `{root, facet, key, level, text, verb, source, ref}`. *Fix* (CI, prod), *Patch* (advisory), *Rotate* (secret), *Release*, *Push*, *Tidy* (merged branches) prefill an agent via `host.launch` + `typeInto`, **with no newline** — the two places Episko presses Enter stay two. *Review* on bot PRs opens the existing `deps` overlay; *Fetch* (a stale last fetch) is `git_action(op:"fetch")`, and *Run* a `maint_read` in `explicit` mode, neither an agent; *Set up* prefills a brief to add CI or an update bot (`briefFor` answers it for `ci` and `deps`), or starts `proposeDeploy` for `prod`.
 
 **Preferences** (`sync.ts` classifies each, `store.ts` reads JSON):
 
@@ -264,13 +264,16 @@ sarif = ["reports/*.sarif"]
 [maintenance.params]                      # values a built-in source needs; a URL must be http(s)
 woodpecker_server = "https://ci.example.com"
 [maintenance.thresholds]                  # raw data; clampMaint applies them over the defaults
-ci_failing_hours = 24
 unreleased_commits = 30
 unreleased_days = 21
 stale_branch_days = 30
 cert_warn_days = 21
+bot_silent_days = 30                      # a configured bot whose newest open PR is older is *silent*
+bot_pr_backlog = 5                        # open update PRs that count as a pile
+fetch_stale_days = 7                      # release and git counts drift once the last fetch is older
 ```
 
+- A red default branch is broken from its first failing run, however young: CI has no threshold. Every threshold is `MAINT_DEFAULTS` until the file says otherwise, and a stale fetch lifts a Git or Release cell to drifting with its own `git:fetch` finding, so amber always has a line under it.
 - Read forgivingly, by every owner's own `RawFile` that ignores other tables. A file that exists and does not parse is `readable: false`, and the tips say *episko.toml unreadable* rather than quietly applying defaults (`ProtectList.readable`'s rule).
 - `[deploy]` is written only by `write_deploy`: `toml_edit` read-modify-write, tmp file then rename, no write when unchanged (the file is committed and churn lands in a diff), the table removed when empty, `create` gating a new file. It is reached from the Apply dialog after `propose_deploy` (the restricted headless agent `propose_stack` uses, through the shared `propose_toml`; `checkDeploy` refuses non-http URLs, a `-`-leading alias and a bad `org/project`), or by hand through *Open file*. `[maintenance]` has no writer in v1.
 - A round-trip test writes `[deploy]` and `[maintenance]` into a file holding every other table and runs `parse_stack`, `parse_protect`, `parse_allow` and `parse_health_policy` over it.

@@ -22,7 +22,7 @@
       },
       "tagPattern": "v*",
       "thresholds": {
-        "ci_failing_hours": 24.0
+        "stale_branch_days": 24.0
       },
       "trunk": "main"
     },

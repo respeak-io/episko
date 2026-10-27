@@ -1236,13 +1236,13 @@ mod tests {
             "[branches]\nprotect = [\"main\"]\n[maintenance]\nforge = \"gitlab\"\noff = [\"prod\", 3]\ntrunk = 7\n\
              sources = { ci = [\"woodpecker\"], nonsense = [\"x\"] }\n\
              [maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\nsneaky = \"file:///etc/passwd\"\n\
-             [maintenance.thresholds]\nci_failing_hours = 24\nunreleased_days = 2.5\nbad = \"x\"\n",
+             [maintenance.thresholds]\nstale_branch_days = 24\nunreleased_days = 2.5\nbad = \"x\"\n",
         );
         assert!(c.readable);
         assert_eq!((c.forge.as_deref(), c.off.clone(), c.trunk.clone()), (Some("gitlab"), vec!["prod".to_string()], None));
         assert_eq!(c.sources.keys().collect::<Vec<_>>(), ["ci"], "only facets restrict");
         assert_eq!(c.params.keys().collect::<Vec<_>>(), ["woodpecker_server"], "a param URL must be http(s)");
-        assert_eq!(c.thresholds.get("ci_failing_hours"), Some(&24.0));
+        assert_eq!(c.thresholds.get("stale_branch_days"), Some(&24.0));
         assert_eq!(c.thresholds.len(), 2);
         assert_eq!(parse_maint("[stack]\nup = \"x\"\n"), MaintConfig::default(), "no table is defaults");
     }
@@ -1420,7 +1420,7 @@ mod tests {
             },
             report("nope", None, Coverage::Error { reason: "nope is not a maintenance source".into() }),
         ];
-        let cfg = parse_maint("[maintenance]\nforge = \"github\"\noff = [\"prod\"]\nsources = { ci = [\"woodpecker\"] }\nbots = [\"acme-renovate\"]\ntrunk = \"main\"\ntag_pattern = \"v*\"\nsarif = [\"reports/*.sarif\"]\n[maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\n[maintenance.thresholds]\nci_failing_hours = 24\n");
+        let cfg = parse_maint("[maintenance]\nforge = \"github\"\noff = [\"prod\"]\nsources = { ci = [\"woodpecker\"] }\nbots = [\"acme-renovate\"]\ntrunk = \"main\"\ntag_pattern = \"v*\"\nsarif = [\"reports/*.sarif\"]\n[maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\n[maintenance.thresholds]\nstale_branch_days = 24\n");
         let det = Detection {
             repo_root: "/repo".into(),
             forge: Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table },
