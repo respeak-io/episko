@@ -3015,6 +3015,7 @@ select.in-ctl { cursor: pointer; }
 .mt-sev { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); align-self: center; }
 .l-bad > .mt-sev, .mt-sev.l-bad { background: var(--st-error); }
 .l-warn > .mt-sev, .mt-sev.l-warn { background: var(--st-working); }
+.mt-find.past .t { font-weight: 500; color: var(--muted-2); }
 .mt-verb { flex: none; border: 1px solid transparent; background: none; color: var(--muted-2); font: 10.5px var(--font-mono); padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .mt-find:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
 .mt-fold { align-self: stretch; text-align: left; border: 1px dashed var(--hair-strong); background: none; color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3293,6 +3294,10 @@ select.in-ctl { cursor: pointer; }
 .qrow.q-deps .k { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 13%, transparent); }
 .qrow.q-deps .k.adv { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); }
 .qrow.q-note .k { color: var(--accent-ink); background: var(--accent-wash); }
+/* A red default branch is red; the last check's copy of one is muted, since nobody re-read it. */
+.qrow.q-ci .k { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); }
+.qrow.q-ci.past .k { color: var(--muted-2); background: var(--bg-2); }
+.qrow.q-ci.past .ti { color: var(--muted-2); }
 .qrow .mid { min-width: 0; flex: 1; }
 .qrow .ti { display: block; min-width: 0; font-size: 11.5px; line-height: 1.35; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qrow:hover .ti { color: var(--text); }

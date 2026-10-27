@@ -3,6 +3,7 @@ import { filterQueue, foldQueue, groupKey, plainRows, queueTally, rankQueue, sea
 import type { Advisory, DepAlert, DepPr, OutRow } from "../src/deps";
 import type { GhThread, Holder } from "../src/ghwork";
 import type { Note, SharedNote } from "../src/notes";
+import type { CiRow } from "../src/maint";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
 const ago = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
@@ -44,8 +45,12 @@ const sharedNote = (o: Partial<SharedNote> = {}): SharedNote =>
   ({ id: "s1", text: "theirs", who: "sam", at: "2026-07-30", ...o });
 
 const input = (o: Partial<QueueInput> = {}): QueueInput => ({
-  threads: [], stale: [], adv: [], prs: [], out: [], notes: [], shared: [],
+  threads: [], stale: [], adv: [], prs: [], out: [], notes: [], shared: [], ci: [],
   holder: () => null, now: NOW, ...o,
+});
+
+const red = (o: Partial<CiRow> = {}): CiRow => ({
+  key: "ci:build", text: "CI failing 3d", detail: "build on main · first red at abcdef1", since: NOW - 3 * 86_400_000, asOf: null, ...o,
 });
 
 describe("rankQueue — the ladder", () => {
@@ -153,7 +158,7 @@ describe("rankQueue — a bot's pull request", () => {
       prs: [pr({ number: 7 })],
     }));
     expect(items.map((i) => i.key)).toEqual(["deps:pr:7"]);
-    expect(queueTally(items)).toEqual({ all: 1, iss: 0, pr: 1, deps: 0, note: 0, quiet: 0 });
+    expect(queueTally(items)).toEqual({ all: 1, iss: 0, pr: 1, deps: 0, note: 0, quiet: 0, ci: 0 });
   });
 
   it("leaves every other thread alone, PR or issue", () => {
@@ -192,6 +197,36 @@ describe("rankQueue — the tie-breaks", () => {
   });
 });
 
+describe("rankQueue — a red default branch", () => {
+  it("leads the top rank, ahead of a critical advisory however recent", () => {
+    const items = rankQueue(input({ adv: [adv({ ghsa: "GHSA-crit", severity: "critical", alerts: [alert({ updatedAt: ago(0) })] })], ci: [red()] }));
+    expect(items.map((i) => [i.key, i.rank])).toEqual([["ci:build", 0], ["deps:adv:GHSA-crit", 0]]);
+    expect(items[0]).toMatchObject({ kind: "ci", title: "CI failing 3d", sub: "build on main · first red at abcdef1" });
+  });
+
+  it("leaves the advisories' ranks, chips and rows exactly as they were", () => {
+    const advs = [adv({ ghsa: "GHSA-high" }), adv({ ghsa: "GHSA-low", severity: "low" })];
+    const without = rankQueue(input({ adv: advs, prs: [pr()] }));
+    const withCi = rankQueue(input({ adv: advs, prs: [pr()], ci: [red()] }));
+    expect(withCi.filter((i) => i.kind !== "ci")).toEqual(without);
+    expect(queueTally(withCi)).toEqual({ ...queueTally(without), all: without.length + 1, ci: 1 });
+  });
+
+  it("has a chip of its own that no other row answers, and is never folded", () => {
+    const items = rankQueue(input({ threads: [th()], adv: [adv()], notes: [note()], ci: [red(), red({ key: "ci:lint", detail: "lint on main" }), red({ key: "ci:e2e", detail: "e2e on main" })] }));
+    expect(filterQueue(items, "ci").map((i) => i.key)).toEqual(["ci:build", "ci:e2e", "ci:lint"]);
+    for (const f of ["iss", "pr", "deps", "note", "quiet"] as const) expect(filterQueue(items, f).some((i) => i.kind === "ci"), f).toBe(false);
+    expect(foldQueue(items, new Set()).filter((r) => r.kind === "item" && r.item.kind === "ci")).toHaveLength(3);
+    expect(searchQueue(items, "ci build").map((i) => i.key)).toEqual(["ci:build"]);
+  });
+
+  it("says how old the last check's copy is rather than passing for this session's read", () => {
+    const [i] = rankQueue(input({ ci: [red({ detail: "build", since: null, asOf: NOW - 2 * 3_600_000 })] }));
+    expect(i.sub).toBe("build · as of 2h ago");
+    expect(i.rank).toBe(0);
+  });
+});
+
 describe("rankQueue — notes", () => {
   it("carries a colleague's shared note beside your own", () => {
     const items = rankQueue(input({ notes: [note()], shared: [sharedNote()] }));
@@ -220,15 +255,15 @@ describe("queueTally", () => {
     const items = rankQueue(input({
       threads: [th({ number: 1 }), th({ number: 2 })], adv: [adv()], notes: [note()],
     }));
-    expect(queueTally(items)).toEqual({ all: 4, iss: 2, pr: 0, deps: 1, note: 1, quiet: 0 });
-    expect(queueTally(filterQueue(items, "iss"))).toEqual({ all: 2, iss: 2, pr: 0, deps: 0, note: 0, quiet: 0 });
+    expect(queueTally(items)).toEqual({ all: 4, iss: 2, pr: 0, deps: 1, note: 1, quiet: 0, ci: 0 });
+    expect(queueTally(filterQueue(items, "iss"))).toEqual({ all: 2, iss: 2, pr: 0, deps: 0, note: 0, quiet: 0, ci: 0 });
   });
 });
 
 describe("an empty queue", () => {
   it("fabricates no row and no count", () => {
     expect(rankQueue(input())).toEqual([]);
-    expect(queueTally([])).toEqual({ all: 0, iss: 0, pr: 0, deps: 0, note: 0, quiet: 0 });
+    expect(queueTally([])).toEqual({ all: 0, iss: 0, pr: 0, deps: 0, note: 0, quiet: 0, ci: 0 });
   });
 });
 
@@ -266,7 +301,7 @@ describe("searchQueue", () => {
 
   it("is the pool the chips then count over", () => {
     // The tally is of what the search left, so a chip still says what it would reveal.
-    expect(queueTally(searchQueue(items, "axios"))).toEqual({ all: 1, iss: 0, pr: 0, deps: 1, note: 0, quiet: 0 });
+    expect(queueTally(searchQueue(items, "axios"))).toEqual({ all: 1, iss: 0, pr: 0, deps: 1, note: 0, quiet: 0, ci: 0 });
   });
 
   it("hands back the list untouched when nothing was typed", () => {

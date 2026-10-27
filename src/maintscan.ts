@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
-import { narrowDetection, narrowMaint, type Detection, type MaintInput, type SourceReport } from "./maint";
+import { clampSnaps, narrowDetection, narrowMaint, takeSnap, type Detection, type MaintInput, type MaintSnap, type SourceReport } from "./maint";
 import { findSource, MAINT_PREFS_DEFAULT, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
 import { readObj } from "./store";
@@ -48,6 +48,18 @@ export function setMaintPublic(id: string, on: boolean): void {
   localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
 }
 
+// The last finished scan per root, for a boot that has asked nothing yet. Local: another
+// machine's checkout is not this one's, and it is only ever drawn muted and as of then.
+let snaps = clampSnaps(readObj<unknown>("cc-maint"));
+export const maintSnap = (root: string): MaintSnap | undefined => snaps[root];
+function keepSnap(e: ProjectMaint): void {
+  const inp = maintInput(e.root);
+  if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at) });
+}
+const saveSnaps = () => {
+  try { localStorage.setItem("cc-maint", JSON.stringify(snaps)); } catch (err) { dlog("warn", `maint: snapshot not kept: ${err}`); }
+};
+
 /** What ./maint's rules take for one project, or null before anything was asked. */
 export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
@@ -79,7 +91,8 @@ function readOne(root: string, id: string, mode: Mode, force: boolean): Promise<
 
 // Every detected source is asked, skipped ones aside: Rust's cost gate answers `notRun`, or the
 // result a click left, for what a scan may not run, so no facet waits on a read nobody makes.
-async function scanOne(root: string, force: boolean): Promise<void> {
+// `save` false: a fleet sweep writes the snapshot once, when the last of its projects is in.
+async function scanOne(root: string, force: boolean, save = true): Promise<void> {
   const prev = cache.get(root);
   const e: ProjectMaint = {
     root, det: prev?.det ?? null, reports: { ...prev?.reports }, detecting: true, out: 0,
@@ -109,7 +122,11 @@ async function scanOne(root: string, force: boolean): Promise<void> {
     e.out--;
     paint();
   })));
-  if (live()) { e.at = Date.now(); paint(); }
+  if (!live()) return;
+  e.at = Date.now();
+  keepSnap(e);
+  if (save) saveSnaps();
+  paint();
 }
 
 /** One project, as the dashboard's tab and a finding's Fetch ask for it. */
@@ -120,8 +137,9 @@ export async function scanFleet(roots: readonly string[], force: boolean): Promi
   const seq = ++maintSeq;
   fleetScanning = true;
   paint();
-  await Promise.all([...new Set(roots)].map((r) => scanOne(r, force)));
+  await Promise.all([...new Set(roots)].map((r) => scanOne(r, force, false)));
   if (seq !== maintSeq) return; // a newer sweep took the flag; it clears it and stamps its own time
+  saveSnaps();
   fleetScanning = false;
   fleetCheckedAt = Date.now();
   paint();
@@ -157,6 +175,7 @@ const forgotten = new Map<string, number>(); // per root: an answer asked before
 /** An account switch: what the other identity answered must not be drawn as this one's. */
 export function forgetMaint(root: string): void {
   cache.delete(root);
+  if (snaps[root]) { delete snaps[root]; saveSnaps(); }
   forgotten.set(root, (forgotten.get(root) ?? 0) + 1);
   paint();
 }

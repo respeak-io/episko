@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  ciFailures, ciFlows, clampMaint, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   narrowMaint, probeRows, prodChecks, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
@@ -663,6 +663,118 @@ describe("the project tab's cards", () => {
   });
 });
 
+describe("the cold-boot snapshot (cc-maint)", () => {
+  const red = () => input(ok(GHA, ci(run("build", "fail", S - 3 * D), run("build", "pass", S - 4 * D))),
+    ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
+    ok("h", { kind: "probes", items: [{ name: "app", url: "https://app.example/health", code: 503, ms: 90, certNotAfter: null, err: null }] }),
+    ok("git-local", hyg()));
+  const stored = (o: Record<string, unknown> = {}) => ({
+    at: NOW, cells: FACETS.map((facet) => ({ facet, level: "ok", text: "" })), findings: [], ...o,
+  });
+
+  it("round-trips a finished scan through the store unchanged", () => {
+    const snap = takeSnap("/r", red(), NOW);
+    expect(clampSnaps(JSON.parse(JSON.stringify({ "/r": snap })))).toEqual({ "/r": snap });
+    expect(snap.cells.map((c) => c.facet)).toEqual([...FACETS]);
+    expect(snap.findings.map((f) => f.key)).toContain("ci:build");
+  });
+
+  it("writes only what it will read back: long words are cut, an overlong key is left out, the root survives", () => {
+    const probe = (name: string) => ({ name, url: "https://app.example/h", code: 503, ms: 90, certNotAfter: null, err: null });
+    const long = "a".repeat(SNAP_TEXT + 20), huge = "b".repeat(SNAP_KEY + 1);
+    const snap = takeSnap("/r", input(ok("h", { kind: "probes", items: [probe(long), probe(huge)] })), NOW);
+    const back = clampSnaps(JSON.parse(JSON.stringify({ "/r": snap })))["/r"];
+    expect(back).toEqual(snap);
+    const texts = [...back.cells, ...back.findings].map((x) => x.text);
+    expect(texts.every((t) => t.length <= SNAP_TEXT)).toBe(true);
+    expect(texts.some((t) => t.length === SNAP_TEXT), "a long text was cut, not dropped").toBe(true);
+    expect(back.findings.map((f) => f.key)).toEqual([`prod:${long}`]);
+  });
+
+  it("keeps a card's words and never an advisory's payload or a URL", () => {
+    const json = JSON.stringify(takeSnap("/r", red(), NOW));
+    expect(json).not.toContain("https://");
+    expect(json).not.toContain("Prototype pollution");
+    expect(json).not.toContain("lodash");
+  });
+
+  it("drops a root of the wrong shape on its own and keeps the rest", () => {
+    const missing = stored({ cells: FACETS.slice(1).map((facet) => ({ facet, level: "ok", text: "" })) });
+    const twice = stored({ cells: [...stored().cells, { facet: "ci", level: "bad", text: "x" }] });
+    const bad = [missing, twice, stored({ at: "now" }), stored({ at: -1 }), stored({ cells: "seven" }), stored({ findings: null }),
+      stored({ cells: stored().cells.map((c, i) => i ? c : { ...c, level: "green" }) }), "[]", null, 7];
+    const raw = Object.fromEntries([...bad.map((v, i) => [`/bad${i}`, v]), ["/good", stored()]]);
+    expect(Object.keys(clampSnaps(raw))).toEqual(["/good"]);
+    for (const v of [null, "[]", [stored()], 3]) expect(clampSnaps(v)).toEqual({});
+  });
+
+  it("refuses oversize: a long text drops its root, a line past twelve and a root past two hundred are cut", () => {
+    const long = stored({ cells: stored().cells.map((c, i) => i ? c : { ...c, text: "x".repeat(SNAP_TEXT + 1) }) });
+    expect(clampSnaps({ "/long": long })).toEqual({});
+    const lines = Array.from({ length: 20 }, (_, i) => ({ facet: "git", key: `git:${i}`, level: "info", text: `l${i}` }));
+    const cut = clampSnaps({ "/r": stored({ findings: [{ facet: "ci", key: "ci:x", level: "ok", text: "not a level" }, ...lines] }) });
+    expect(cut["/r"].findings.map((f) => f.key)).toEqual(lines.slice(0, SNAP_FINDINGS).map((f) => f.key));
+    const many = Object.fromEntries(Array.from({ length: SNAP_ROOTS + 5 }, (_, i) => [`/p${i}`, stored({ at: NOW - i })]));
+    const kept = Object.keys(clampSnaps(many));
+    expect(kept).toHaveLength(SNAP_ROOTS);
+    expect(kept).not.toContain(`/p${SNAP_ROOTS}`); // the oldest go
+  });
+
+  it("rebuilds every entry field by field, so a hand-added field never survives", () => {
+    const raw = { "/r": { ...stored(), url: "https://x", findings: [{ facet: "ci", key: "ci:b", level: "bad", text: "t", url: "https://y" }] } };
+    expect(JSON.stringify(clampSnaps(raw))).not.toContain("https://");
+  });
+
+  it("never yields a live dot: every cell is muted, worded and as of then", () => {
+    const snap = clampSnaps({ "/r": stored({ at: NOW - 2 * H * 1000, cells: FACETS.map((facet, i) =>
+      ({ facet, level: ["ok", "bad", "warn", "info", "muted", "unread", "ok"][i], text: i === 6 ? "v1.0" : i === 1 ? "failing 3d" : "" })) }) })["/r"];
+    const cells = pastCells(snap, NOW);
+    for (const c of cells) {
+      expect(c.level).toBe("muted");
+      expect(c.state).toBe("past");
+      expect(c.text).not.toBe("");
+    }
+    expect(cells.map((c) => c.text)).toEqual(["fine", "failing 3d", "not read", "not read", "not read", "not read", "v1.0"]);
+    expect(cells[0].tip[0]).toBe("as of the last check, 2h ago");
+    expect(projectBand(cells)).toBe("unread"); // never quiet: nothing was read this session
+    expect(tabGaps("delivery", [{ path: "/r", cells }]).gaps.map((g) => g.text)).toEqual(["not checked this session", "not checked this session"]);
+  });
+});
+
+describe("Today's red default branch", () => {
+  const failing = () => input(ok(GHA, ci(run("build", "fail", S - 3 * D), run("build", "pass", S - 4 * D))));
+  const snap = { at: NOW - 5 * H * 1000, cells: [], findings: [
+    { facet: "ci" as const, key: "ci:deploy", level: "bad" as const, text: "CI failing 1d" },
+    { facet: "git" as const, key: "git:tidy", level: "info" as const, text: "2 branches to tidy" },
+  ] };
+
+  it("reads this session's CI once its cell has an answer, dated by the first red run", () => {
+    expect(ciRows("/r", failing(), snap, NOW)).toEqual([
+      { key: "ci:build", text: "CI failing 3d", detail: "build on main · first red at abcdef1", since: (S - 3 * D) * 1000, asOf: null },
+    ]);
+    expect(ciRows("/r", input(ok(GHA, ci(run("build", "pass", S - D)))), snap, NOW)).toEqual([]); // green beats the snapshot
+  });
+
+  it("falls back to the last check's lines while the cell is unread, and says when that was", () => {
+    const reading: MaintInput = { det: det([GHA]), reports: {} };
+    for (const inp of [null, reading]) {
+      expect(ciRows("/r", inp, snap, NOW)).toEqual([{ key: "ci:deploy", text: "CI failing 1d", detail: "deploy", since: null, asOf: snap.at }]);
+    }
+    expect(ciRows("/r", null, undefined, NOW)).toEqual([]);
+  });
+
+  it("keeps the last known red when this session's read failed: a failed read is no verdict", () => {
+    const past = [{ key: "ci:deploy", text: "CI failing 1d", detail: "deploy", since: null, asOf: snap.at }];
+    for (const cov of [{ state: "error", reason: "HTTP 502" }, { state: "noAccess", reason: "auth expired" }] as Coverage[]) {
+      expect(ciRows("/r", input(not(GHA, "ci", cov)), snap, NOW)).toEqual(past);
+    }
+    const marked: MaintInput = { det: det([], { markers: [{ facet: "ci", label: "GitLab CI", found: [".gitlab-ci.yml"] }] }), reports: {} };
+    expect(ciRows("/r", marked, snap, NOW)).toEqual(past);
+    const noCi: MaintInput = { det: det([]), reports: {} };
+    expect(ciRows("/r", noCi, snap, NOW), "no CI at all is a verdict").toEqual([]);
+  });
+});
+
 // docs/maintenance.md's trigger rule, read off the source: the fleet is the home stage, so these run
 // at boot and on every exit from a pane, and a sweep reached from any of them is one nobody asked for.
 // The dashboard paints on every renderAll frame, so the same holds for its render path.
@@ -693,9 +805,9 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
+    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "askingFor", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);

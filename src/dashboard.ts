@@ -35,10 +35,10 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciFlows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, probeRows, prodChecks, projectBand, releaseRows,
+  ciFlows, ciRows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, probeRows, prodChecks, projectBand, releaseRows,
   tabFindings, type MaintInput,
 } from "./maint";
-import { askingFor, maintInput, maintOf, scanProject } from "./maintscan";
+import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
 import { maintClick, type MaintHost } from "./maintui";
 import { DASH_CARD, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import { discoverTasks, execCmd } from "./tasks";
@@ -980,6 +980,8 @@ export function renderDash(): void {
   const items = rankQueue({
     threads: gh.threads, stale, adv: dn.adv, prs: dn.prs, out: dn.out,
     notes: noteList(root()), shared: theirs, holder, now,
+    // The cache and the snapshot only: Today never scans, so a red branch is as old as the last check.
+    ci: ciRows(root(), maintInput(root()), maintSnap(root()), now),
   });
   // The search is the pool and the chips narrow it: the tally is of everything the search
   // left, never of what the filter left, so a chip still says what it would reveal.

@@ -418,6 +418,7 @@ export function checkoutCard(
 
 const QFILTERS: { id: QueueFilter; label: string; tip: string }[] = [
   { id: "all", label: "All", tip: "Everything waiting on this project" },
+  { id: "ci", label: "CI", tip: "Checks failing on the default branch" },
   { id: "iss", label: "Issues", tip: "Open issues only" },
   { id: "pr", label: "PRs", tip: "Open pull requests only" },
   { id: "deps", label: "Deps", tip: "Advisories, bot pull requests and out-of-date packages" },
@@ -429,7 +430,7 @@ const QFILTERS: { id: QueueFilter; label: string; tip: string }[] = [
 // carrying a reason — so its own ⤢ rides the rows that have one. "All" is not here: it has no
 // board, so `enlarge` below picks one that can hold rows.
 const QVIEW: Record<QueueFilter, string> = {
-  all: "work", iss: "work", pr: "work", deps: "deps", note: "notes", quiet: "triage",
+  all: "work", iss: "work", pr: "work", deps: "deps", note: "notes", quiet: "triage", ci: "maint",
 };
 
 function qrow(cls: string, attrs: string, lead: string, i: QueueItem, right: string, tip = ""): string {
@@ -500,8 +501,16 @@ function qNoteRow(i: QueueItem): string {
     + `<button class="nb" data-dashdispatch="${escAttr(n.id)}" data-tip="Start an agent on this note">▶</button>`);
 }
 
+// The whole row opens Maintenance, as an advisory's opens GitHub: its To do line carries the Fix,
+// and the tab's first look re-reads a line that only the last check's snapshot knew.
+function qCiRow(i: QueueItem): string {
+  const past = !!i.ci && i.ci.asOf !== null;
+  return qrow(`q-ci${past ? " past" : ""}`, ` data-dashtab="maint"`, `<span class="k">ci</span>`, i, "",
+    past ? "Last known from an earlier check. Open Maintenance to check it again" : "Open Maintenance, where an agent can be started on it");
+}
+
 const qRow = (i: QueueItem, reading: number | null): string =>
-  i.kind === "work" ? qWorkRow(i, reading) : i.kind === "deps" ? qDepsRow(i) : qNoteRow(i);
+  i.kind === "work" ? qWorkRow(i, reading) : i.kind === "deps" ? qDepsRow(i) : i.kind === "ci" ? qCiRow(i) : qNoteRow(i);
 
 // The whole row toggles, so the chevron says the state rather than being a second control
 // beside it. An open fold keeps its head: that head is how you close it again.
@@ -526,7 +535,9 @@ export function queueCard(
 ): string {
   // A count of nought is not a filter worth arming: the chip stays, greyed, so the list's
   // shape is still readable — "no PRs open" is an answer.
-  const chips = QFILTERS.map((c) => {
+  // CI is drawn only while it holds a row: a red default branch is rare, and a greyed chip on
+  // every project would teach the eye to skip it.
+  const chips = QFILTERS.filter((c) => c.id !== "ci" || tally.ci || filter === "ci").map((c) => {
     const off = c.id !== "all" && !tally[c.id];
     return `<button class="qchip${c.id === filter ? " on" : ""}${c.id === "quiet" ? " facet" : ""}`
       + `${off ? " off" : ""}"${off ? ` aria-disabled="true"` : ""} data-dashqfilter="${c.id}"`
@@ -555,7 +566,7 @@ export function queueCard(
   // The head stays on screen while the list scrolls under it: the search and the chips are
   // how you get back out of a narrowed list.
   return `<div class="qsec"><div class="qhead"><div class="asec-h"><span class="label">What&#39;s next</span>
-      <button class="aslink" data-dashopen-view="${enlarge}"
+      <button class="aslink" ${enlarge === "maint" ? `data-dashtab="maint"` : `data-dashopen-view="${enlarge}"`}
         data-tip="${escAttr(`Open ${QLABEL[enlarge] ?? "all of it"} in full`)}">${esc(QLABEL[enlarge] ?? "All")} ⤢</button></div>
     <div class="qfind"><input class="qq" id="dashQ" type="search" spellcheck="false" autocomplete="off"
       placeholder="Search what&#39;s next…" aria-label="Search what's next"
@@ -567,7 +578,7 @@ export function queueCard(
 }
 
 const QLABEL: Record<string, string> = {
-  work: "Open work", deps: "Dependencies", notes: "Notes", triage: "Triage",
+  work: "Open work", deps: "Dependencies", notes: "Notes", triage: "Triage", maint: "Maintenance",
 };
 
 // The one-time offer to start a shared work log, under the sentences it talks about.

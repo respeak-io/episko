@@ -17,11 +17,11 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, hostRows, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
+  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
   type Cell, type MaintInput,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
-import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, scanFleet } from "./maintscan";
+import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
 import { maintClick, maintChip, quietOpen, type MaintHost } from "./maintui";
 import {
   maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintRow, type MaintSub, type MaintView,
@@ -371,11 +371,12 @@ function buildMaint(now: number): MaintView {
   // switch) is an unread card: leaving it out would let the all-clear speak for it.
   const asked = fleetCheckedAt > 0 || [...byRoot.keys()].some((r) => maintOf(r));
   for (const [root, p] of byRoot) {
-    const e = maintOf(root);
-    const inp = maintInput(root) ?? (asked ? { det: null, reports: {}, skip: [] } : null);
+    // Not asked this session: the last finished scan's card, muted and as of then (docs/maintenance.md).
+    const e = maintOf(root), snap = e ? undefined : maintSnap(root);
+    const inp = maintInput(root) ?? (asked || snap ? { det: null, reports: {}, skip: [] } : null);
     if (!inp) continue;
     const th = clampMaint(inp.det?.config.thresholds);
-    const cells = facetCells(inp, th, now);
+    const cells = snap ? pastCells(snap, now) : facetCells(inp, th, now);
     for (const r of Object.values(inp.reports)) {
       const d = findSource(r.source);
       if (!d || !inp.det?.sources.includes(r.source)) continue;
@@ -389,8 +390,9 @@ function buildMaint(now: number): MaintView {
     const fs = findings(root, inp, th, now);
     for (const f of [...fs, ...tabExtras(root, inp, th, now)]) rows.push({ ...f, name: p.name });
     cards.push({
-      path: root, name: p.name, accent: p.accent, icon: iconFor(p.path), sub: e ? whereSub(inp) : "not checked yet",
-      cells, findings: fs, band: projectBand(cells),
+      path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
+      sub: e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
+      cells, findings: fs, band: projectBand(cells), past: snap,
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });
   }
