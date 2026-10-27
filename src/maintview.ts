@@ -44,6 +44,7 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "rel.changelog": "the changelog's Unreleased section",
   "sec.dependency": "advisories in dependencies", "sec.code": "code scanning findings", "sec.secret": "committed secrets",
   "deps.update-prs": "open update pull requests", "deps.pr-checks": "the checks on each update pull request",
+  "work.issues": "open issues", "work.prs": "open pull requests", "work.review-requested": "reviews requested of you",
 };
 
 // ---------- the head ----------

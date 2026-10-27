@@ -47,7 +47,7 @@ export type Facts =
   | { kind: "changelog"; unreleased: number | null; latest: string | null; latestAt: number | null }
   | { kind: "hygiene"; trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[];
       gone: string[]; branches: BranchAge[]; worktrees: WtAge[]; fetchedAt: number | null }
-  | { kind: "work"; issues: number; prs: number; reviewRequested: number }
+  | { kind: "work"; issues: number; prs: number; reviewRequested: number | null } // null: the search failed
   | { kind: "probes"; items: Probe[] };
 export type FactKind = Facts["kind"];
 type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
@@ -106,7 +106,7 @@ const FACT_SHAPES: Record<FactKind, Is> = {
     trunk: opt(str), unpushed: opt(num), localOnly: list(str), merged: list(str), gone: list(str),
     branches: list(shape({ name: str, at: num })), worktrees: list(shape({ path: str, branch: str, at: opt(num) })), fetchedAt: opt(num),
   }),
-  work: shape({ issues: num, prs: num, reviewRequested: num }),
+  work: shape({ issues: num, prs: num, reviewRequested: opt(num) }),
   probes: shape({ items: list(isProbe) }),
 };
 
@@ -307,7 +307,7 @@ const sevRank = (s: Severity) => SEVERITIES.indexOf(s);
 const securityRule: Rule = (facts, c) => {
   const merged = mergeAdvisories(kinds(facts, "advisories").map((f) => f.items));
   if (!merged.length) return { level: "ok", text: "", tip: ["no open advisories"] };
-  const tip = merged.map((a) => `${a.severity} · ${a.id}${a.pkgs.length ? ` · ${a.pkgs.join(", ")}` : ""}`);
+  const tip = merged.map((a) => [a.severity, a.id, a.pkgs.join(", ") || a.items[0]?.location].filter(Boolean).join(" · "));
   const secrets = merged.filter((a) => a.kind === "secret").length;
   if (secrets) return { level: "bad", text: `${count(secrets, c)} secret${secrets === 1 ? "" : "s"}`, tip };
   const worst = merged[0].severity;
@@ -395,10 +395,12 @@ const prodRule: Rule = (facts, c) => {
 
 const workRule: Rule = (facts, c) => {
   const w = kinds(facts, "work");
-  const sum = (k: "issues" | "prs" | "reviewRequested") => w.reduce((n, x) => n + x[k], 0);
+  const sum = (k: "issues" | "prs" | "reviewRequested") => w.reduce((n, x) => n + (x[k] ?? 0), 0);
   const tip = [`${plural(sum("issues"), "open issue")}`, `${plural(sum("prs"), "open pull request")}`];
   if (sum("reviewRequested")) return { level: "warn", text: `${count(sum("reviewRequested"), c)} to review`, tip };
-  return sum("issues") ? { level: "info", text: `${count(sum("issues"), c)} open`, tip } : { level: "ok", text: "", tip };
+  if (sum("issues")) return { level: "info", text: `${count(sum("issues"), c)} open`, tip };
+  // The one figure that turns this amber was never read, so nothing here may be grey.
+  return w.some((x) => x.reviewRequested === null) ? { level: "muted", text: "reviews unknown", tip } : { level: "ok", text: "", tip };
 };
 
 const RULES: Record<Facet, Rule> = {
@@ -462,37 +464,53 @@ export const facetCells = (inp: MaintInput, th = MAINT_DEFAULTS, now = Date.now(
 // ---------- advisories, one row per vulnerability ----------
 
 export interface MergedAdvisory {
+  key: string; // the row's identity: the id, and for a finding in code also where it is
   id: string; aliases: string[]; kind: AdvisoryKind; severity: Severity; summary: string;
   url: string | null; pkgs: string[]; tools: string[];
   fixed: string | null; // only when the row is one package: another package's fix is not this one's
   items: Advisory[]; // every report behind the row, as reported
 }
 
-/** Reporters naming one vulnerability by any shared id or alias fold into one row at its worst severity. */
+// A dependency advisory is one vulnerability wherever it lands; a rule firing in two files is two findings.
+const placeOf = (a: Advisory) => a.kind === "dependency" ? "" : `@${a.location ?? ""}`;
+const keysOf = (a: Advisory) => [a.id, ...a.aliases].map((k) => k.toUpperCase() + placeOf(a));
+
+/** Every reporter's rows, folded where any id or alias is shared (case-blind, so `cve-` meets `CVE-`),
+ *  one row per vulnerability at its worst severity. */
 export function mergeAdvisories(lists: readonly (readonly Advisory[])[]): MergedAdvisory[] {
-  const groups: Advisory[][] = [];
+  const groups: { keys: Set<string>; items: Advisory[] }[] = [];
   for (const a of lists.flat()) {
-    const keys = new Set([a.id, ...a.aliases]);
-    const hits = groups.filter((g) => g.some((x) => keys.has(x.id) || x.aliases.some((k) => keys.has(k))));
-    const into = hits[0] ?? [];
+    const keys = keysOf(a);
+    const hits = groups.filter((g) => keys.some((k) => g.keys.has(k)));
+    const into = hits[0] ?? { keys: new Set<string>(), items: [] };
     if (!hits.length) groups.push(into);
-    for (const g of hits.slice(1)) { into.push(...g); groups.splice(groups.indexOf(g), 1); }
-    into.push(a);
+    for (const g of hits.slice(1)) {
+      into.items.push(...g.items);
+      for (const k of g.keys) into.keys.add(k);
+      groups.splice(groups.indexOf(g), 1);
+    }
+    into.items.push(a);
+    for (const k of keys) into.keys.add(k);
   }
-  return groups.map((items) => {
+  return groups.map(({ items }) => {
     const worst = [...items].sort((a, b) => sevRank(a.severity) - sevRank(b.severity))[0];
     const ids = [...new Set(items.map((x) => x.id))].sort();
-    const all = new Set(items.flatMap((x) => [x.id, ...x.aliases]));
+    const spelled = new Map<string, string>(); // one spelling per name, the first reported
+    for (const k of items.flatMap((x) => [x.id, ...x.aliases])) if (!spelled.has(k.toUpperCase())) spelled.set(k.toUpperCase(), k);
+    spelled.delete(ids[0].toUpperCase());
     const pkgs = [...new Set(items.flatMap((x) => x.pkg ? [`${x.ecosystem ?? ""}:${x.pkg}`] : []))];
     return {
-      id: ids[0], aliases: [...all].filter((k) => k !== ids[0]).sort(), kind: worst.kind, severity: worst.severity,
+      key: ids[0] + placeOf(worst),
+      id: ids[0], aliases: [...spelled.values()].sort(), kind: worst.kind, severity: worst.severity,
       summary: worst.summary || (items.find((x) => x.summary)?.summary ?? ""),
       url: items.find((x) => x.url)?.url ?? null, fixed: pkgs.length === 1 ? items.find((x) => x.fixed)?.fixed ?? null : null,
       pkgs: [...new Set(items.flatMap((x) => x.pkg ? [x.pkg] : []))].sort(),
       tools: [...new Set(items.map((x) => x.tool))].sort(), items,
     };
-  }).sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || a.id.localeCompare(b.id));
+  }).sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || a.key.localeCompare(b.key));
 }
+
+const FINDING_TEXT: Record<AdvisoryKind, string> = { dependency: "advisory", code: "code finding", config: "misconfiguration", secret: "secret" };
 
 // ---------- findings, the lines under a card ----------
 
@@ -526,13 +544,15 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
   }
   const advs = okFacts(inp, "security");
   for (const a of mergeAdvisories(advs.map((r) => r.facts.kind === "advisories" ? r.facts.items : []))) {
-    const secret = a.kind === "secret";
+    const secret = a.kind === "secret", dep = a.kind === "dependency";
     const lvl = secret ? "bad" : SEV_LEVEL[a.severity];
     const source = advs.find((r) => r.facts.kind === "advisories" && r.facts.items.some((i) => a.items.includes(i)))?.source ?? "";
-    add("security", { key: `security:${a.id}`, level: lvl === "bad" ? "bad" : lvl === "warn" ? "warn" : "info",
-      text: secret ? "secret reported" : `${a.severity} advisory`,
-      detail: [a.pkgs.join(", ") || a.items[0]?.location, a.fixed ? `fixed in ${a.fixed}` : a.items.some((x) => x.fixed) ? "" : "no fix published", a.summary].filter(Boolean).join(" · "),
-      verb: secret ? "rotate" : "patch", source, ref: a.id });
+    // Only a dependency has a published fix to name; code is fixed in place, and a secret is rotated.
+    const fix = !dep ? "" : a.fixed ? `fixed in ${a.fixed}` : a.items.some((x) => x.fixed) ? "" : "no fix published";
+    add("security", { key: `security:${a.key}`, level: lvl === "bad" ? "bad" : lvl === "warn" ? "warn" : "info",
+      text: secret ? "secret reported" : `${a.severity === "unknown" ? "" : `${a.severity} `}${FINDING_TEXT[a.kind]}`,
+      detail: [a.pkgs.join(", ") || a.items[0]?.location, fix, a.summary].filter(Boolean).join(" · "),
+      verb: secret ? "rotate" : dep ? "patch" : "fix", source, ref: a.key });
   }
   for (const { source, facts } of okFacts(inp, "deps")) {
     if (facts.kind !== "updatePrs" || !facts.prs.length) continue;

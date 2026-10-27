@@ -1,0 +1,53 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "invocations": [{ "executionSuccessful": true, "toolExecutionNotifications": [] }],
+      "results": [
+        {
+          "fingerprints": { "matchBasedId/v1": "4c1f9e" },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "app/views.py", "uriBaseId": "%SRCROOT%" },
+            "region": { "startLine": 17, "startColumn": 5, "endLine": 17, "endColumn": 40, "snippet": { "text": "cursor.execute(q)" } } } }],
+          "message": { "text": "Detected user input used to manually construct a SQL string.\nUse parameterized queries instead." },
+          "properties": {},
+          "ruleId": "python.django.security.injection.tainted-sql-string.tainted-sql-string"
+        },
+        {
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "app/debug.py", "uriBaseId": "%SRCROOT%" }, "region": { "startLine": 4 } } }],
+          "message": { "text": "Debug mode is enabled." },
+          "ruleId": "python.flask.security.audit.debug-enabled.debug-enabled"
+        },
+        {
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "app/legacy.py", "uriBaseId": "%SRCROOT%" }, "region": { "startLine": 9 } } }],
+          "message": { "text": "Detected user input used to manually construct a SQL string." },
+          "ruleId": "python.django.security.injection.tainted-sql-string.tainted-sql-string",
+          "suppressions": [{ "kind": "inSource" }]
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Semgrep OSS",
+          "semanticVersion": "1.95.0",
+          "rules": [
+            {
+              "id": "python.django.security.injection.tainted-sql-string.tainted-sql-string",
+              "name": "python.django.security.injection.tainted-sql-string.tainted-sql-string",
+              "defaultConfiguration": { "level": "error" },
+              "shortDescription": { "text": "Semgrep Finding: python.django.security.injection.tainted-sql-string.tainted-sql-string" },
+              "helpUri": "https://semgrep.dev/r/python.django.security.injection.tainted-sql-string.tainted-sql-string",
+              "properties": { "precision": "very-high", "tags": ["CWE-89: SQL Injection", "OWASP-A03:2021 - Injection", "security"] }
+            },
+            {
+              "id": "python.flask.security.audit.debug-enabled.debug-enabled",
+              "name": "python.flask.security.audit.debug-enabled.debug-enabled",
+              "defaultConfiguration": { "level": "warning" },
+              "shortDescription": { "text": "Semgrep Finding: python.flask.security.audit.debug-enabled.debug-enabled" },
+              "properties": { "precision": "very-high", "tags": ["CWE-489: Active Debug Code", "security"] }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

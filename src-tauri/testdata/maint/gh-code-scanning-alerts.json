@@ -1,0 +1,47 @@
+[
+  {
+    "number": 7,
+    "created_at": "2026-10-20T09:12:44Z",
+    "url": "https://api.github.com/repos/acme/app/code-scanning/alerts/7",
+    "html_url": "https://github.com/acme/app/security/code-scanning/7",
+    "state": "open",
+    "rule": {
+      "id": "js/sql-injection",
+      "severity": "error",
+      "description": "Database query built from user-controlled sources",
+      "name": "js/sql-injection",
+      "tags": ["external/cwe/cwe-089", "security"],
+      "security_severity_level": "high"
+    },
+    "tool": { "name": "CodeQL", "guid": null, "version": "2.19.1" },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "state": "open",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+      "message": { "text": "This query string depends on a user-provided value." },
+      "location": { "path": "src/db.js", "start_line": 42, "end_line": 42, "start_column": 9, "end_column": 31 },
+      "classifications": []
+    }
+  },
+  {
+    "number": 9,
+    "created_at": "2026-10-22T10:00:00Z",
+    "html_url": "https://github.com/acme/app/security/code-scanning/9",
+    "state": "open",
+    "rule": {
+      "id": "js/unused-local-variable",
+      "severity": "note",
+      "description": "Unused variable, import, function or class",
+      "name": "js/unused-local-variable",
+      "tags": ["maintainability"],
+      "security_severity_level": null
+    },
+    "tool": { "name": "CodeQL", "guid": null, "version": "2.19.1" },
+    "most_recent_instance": {
+      "ref": "refs/heads/main",
+      "state": "open",
+      "message": { "text": "Unused variable tmp." },
+      "location": { "path": "src/util.js", "start_line": 3 }
+    }
+  }
+]

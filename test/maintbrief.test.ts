@@ -64,7 +64,7 @@ describe("briefFor", () => {
 
   it("carries the evidence each verb needs", () => {
     expect(brief("ci:e2e")).toMatch(/e2e workflow, red for 2d[\s\S]*https:\/\/ci\.example\/runs\/9[\s\S]*4f2a91c0ffee/);
-    expect(brief("security:K-1")).toMatch(/API test key[\s\S]*scripts\/seed\.ts/);
+    expect(brief("security:K-1@scripts/seed.ts")).toMatch(/API test key[\s\S]*scripts\/seed\.ts/);
     expect(brief("deps:renovate")).toContain("#42 Update serde · checks fail · https://forge.example/pr/42");
     expect(brief("release")).toContain("git log v1.2.0..origin/main");
     expect(brief("git:unpushed")).toMatch(/9 commits in acme[\s\S]*feat\/map[\s\S]*Never force-push/);
@@ -98,6 +98,20 @@ describe("briefFor", () => {
     expect(setup("ci")).toMatch(/acme has no CI[\s\S]*git\.example\.org[\s\S]*\.some-ci\.yml[\s\S]*pnpm test/);
     expect(setup("deps")).toMatch(/no update bot[\s\S]*git\.example\.org/);
     expect(setup("deps")).not.toContain(".some-ci.yml");
+  });
+
+  it("asks for a scanner's finding in code to be judged where it is, one place per finding", () => {
+    const code = (location: string) => ({ id: "js/sql-injection", aliases: [], kind: "code" as const, pkg: null, ecosystem: null,
+      version: null, severity: "high" as const, rawSeverity: "8.8", summary: "Query built from user input", fixed: null, location, url: null, tool: "t" });
+    const two = input(ok("a", { kind: "advisories", items: [code("src/db.js:42"), code("src/q.js:7")] }), ok("b", { kind: "advisories", items: [code("src/db.js:42")] }));
+    const f = findings("/r", two, MAINT_DEFAULTS, NOW);
+    expect(f.map((x) => [x.key, x.verb, x.text, x.detail])).toEqual([
+      ["security:js/sql-injection@src/db.js:42", "fix", "high code finding", "src/db.js:42 · Query built from user input"],
+      ["security:js/sql-injection@src/q.js:7", "fix", "high code finding", "src/q.js:7 · Query built from user input"],
+    ]);
+    const b = briefFor(f[0], two, ctx)!;
+    expect(b).toMatch(/js\/sql-injection, high[\s\S]*at src\/db\.js:42[\s\S]*false positive[\s\S]*pnpm test/);
+    expect(b).not.toContain("src/q.js");
   });
 
   it("never hands one package another package's fix", () => {

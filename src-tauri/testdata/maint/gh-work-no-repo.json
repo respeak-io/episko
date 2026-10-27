@@ -1,0 +1,1 @@
+{"data":{"repository":null,"search":{"issueCount":0}},"errors":[{"type":"NOT_FOUND","path":["repository"],"locations":[{"line":1,"column":51}],"message":"Could not resolve to a Repository with the name 'acme/app'."}]}
