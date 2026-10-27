@@ -12,6 +12,12 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ Pull request checks and update-bot checks read GitHub's states through one vocabulary. In the
+  review pane a check GitHub marked *stale* now counts as failed (it showed as neutral); on the
+  Dependencies card a required status that has not reported yet counts as running (it counted as
+  failed).
+~ A check state Episko does not recognise, or a finished check with no conclusion, reads as still
+  running in both places, never as neutral or failed.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

@@ -9,6 +9,18 @@
     { "id": "work", "label": "Work", "none": "no issue tracker" }
   ],
   "sources": {
+    "github-actions": {
+      "facet": "ci", "label": "GitHub Actions", "cost": "forge", "forge": ["github"], "detect": [".github/workflows/"],
+      "sees": ["ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled"],
+      "blind": ["ci.other-branches", "ci.external"]
+    },
+    "forge-commit-status": {
+      "facet": "ci", "label": "commit statuses", "cost": "forge", "forge": ["github"],
+      "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/", ".circleci/config.yml", "azure-pipelines.yml", "azure-pipelines.yaml",
+                 "Jenkinsfile", ".drone.yml", ".drone.yaml", ".buildkite/", ".travis.yml", "appveyor.yml"],
+      "sees": ["ci.default-branch", "ci.external"],
+      "blind": ["ci.failing-since", "ci.other-branches"]
+    },
     "git-local": {
       "facet": "git", "label": "local branches", "cost": "local", "forge": [], "detect": [".git"],
       "sees": ["git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age"],
@@ -26,16 +38,15 @@
     }
   },
   "markers": [
-    { "facet": "ci", "label": "GitHub Actions", "forge": ["github"], "detect": [".github/workflows/"] },
     { "facet": "ci", "label": "GitLab CI", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"] },
     { "facet": "ci", "label": "Forgejo/Gitea Actions", "forge": ["forgejo", "gitea"], "detect": [".forgejo/workflows/", ".gitea/workflows/", ".github/workflows/"] },
     { "facet": "ci", "label": "CI on {host}", "forge": ["unknown"], "detect": [".github/workflows/", ".forgejo/workflows/", ".gitea/workflows/", ".gitlab-ci.yml"] },
-    { "facet": "ci", "label": "Woodpecker", "forge": [], "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/"] },
-    { "facet": "ci", "label": "CircleCI", "forge": [], "detect": [".circleci/config.yml"] },
-    { "facet": "ci", "label": "Azure Pipelines", "forge": [], "detect": ["azure-pipelines.yml", "azure-pipelines.yaml"] },
-    { "facet": "ci", "label": "Jenkins", "forge": [], "detect": ["Jenkinsfile"] },
+    { "facet": "ci", "label": "Woodpecker", "forge": ["!github"], "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/"] },
+    { "facet": "ci", "label": "CircleCI", "forge": ["!github"], "detect": [".circleci/config.yml"] },
+    { "facet": "ci", "label": "Azure Pipelines", "forge": ["!github"], "detect": ["azure-pipelines.yml", "azure-pipelines.yaml"] },
+    { "facet": "ci", "label": "Jenkins", "forge": ["!github"], "detect": ["Jenkinsfile"] },
     { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
-    { "facet": "ci", "label": "Drone", "forge": [], "detect": [".drone.yml", ".drone.yaml"] },
+    { "facet": "ci", "label": "Drone", "forge": ["!github"], "detect": [".drone.yml", ".drone.yaml"] },
     { "facet": "security", "label": "Dependabot alerts", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "GitHub code scanning", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "GitHub secret scanning", "forge": ["github"], "detect": [] },

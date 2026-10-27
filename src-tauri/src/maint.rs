@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::forge::{Forge, ForgeKind};
 use crate::git::{Hygiene, ReleaseFacts};
+use crate::github::{classify, who_for};
 use crate::platform::norm_path;
 
 // ---------- the wire ----------
@@ -73,7 +74,7 @@ pub(crate) enum Mode {
 /// Only `Ok` carries facts; every other state says why there are none, and none of them is green.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "state", rename_all = "camelCase")]
-#[allow(dead_code, reason = "the forge and tool adapters of later slices raise these")]
+#[allow(dead_code, reason = "`Off` is raised by the security adapters of later slices")]
 pub(crate) enum Coverage {
     Ok,
     Off { reason: String },
@@ -84,9 +85,9 @@ pub(crate) enum Coverage {
     Error { reason: String },
 }
 
+/// One vocabulary for every CI (`maint_ci::norm_status` is the only map into it).
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code, reason = "made by the CI adapters; the wire fixture pins it now")]
 pub(crate) enum CiStatus {
     Pass,
     Fail,
@@ -99,14 +100,13 @@ pub(crate) enum CiStatus {
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code, reason = "made by the CI adapters; the wire fixture pins it now")]
 pub(crate) struct CiRun {
-    workflow: String,
-    status: CiStatus,
-    raw: String, // the vendor's own word, beside the normalised one
-    sha: String,
-    at: Option<u64>,
-    url: Option<String>,
+    pub(crate) workflow: String,
+    pub(crate) status: CiStatus,
+    pub(crate) raw: String, // the vendor's own word, beside the normalised one
+    pub(crate) sha: String,
+    pub(crate) at: Option<u64>,
+    pub(crate) url: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
@@ -288,6 +288,7 @@ impl MaintConfig {
 
 /// The closed capability vocabulary `sees`/`blind` may use; `maint.ts`'s `MAINT_CAPS` mirrors it.
 pub(crate) const MAINT_CAPS: &[&str] = &[
+    "ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled", "ci.external", "ci.other-branches",
     "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
     "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
 ];
@@ -345,8 +346,11 @@ fn kebab(s: &str) -> bool {
 }
 
 fn well_formed(who: &str, forge: &[String], detect: &[String]) -> Result<(), String> {
-    if let Some(f) = forge.iter().find(|f| ForgeKind::from_id(f).is_none()) {
+    if let Some(f) = forge.iter().find(|f| ForgeKind::from_id(f.strip_prefix('!').unwrap_or(f)).is_none()) {
         return Err(format!("{who}: unknown forge {f:?}"));
+    }
+    if forge.iter().any(|f| f.starts_with('!')) && !forge.iter().all(|f| f.starts_with('!')) {
+        return Err(format!("{who}: a forge list either names forges or excludes them, never both"));
     }
     if let Some(d) = detect.iter().find(|d| d.is_empty() || d.starts_with('/') || d.contains("..") || d.contains('\\')) {
         return Err(format!("{who}: detect entry {d:?} must be a relative path"));
@@ -515,8 +519,14 @@ fn probe(root: &Path, entries: &BTreeSet<&str>) -> BTreeMap<String, Vec<String>>
     out
 }
 
+/// Whether a manifest `forge` list admits `kind`: empty is any forge, `!x` is any but x.
+fn forge_admits(forge: &[String], kind: ForgeKind) -> bool {
+    let not = forge.iter().any(|f| f.starts_with('!'));
+    forge.is_empty() || (forge.iter().any(|f| f.strip_prefix('!').unwrap_or(f) == kind.id()) != not)
+}
+
 fn applies(forge: &[String], detect: &[String], kind: ForgeKind, probes: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
-    if !forge.is_empty() && !forge.iter().any(|f| f == kind.id()) {
+    if !forge_admits(forge, kind) {
         return None;
     }
     let found: Vec<String> = detect.iter().filter_map(|d| probes.get(d)).flatten().cloned().collect();
@@ -584,7 +594,7 @@ pub(crate) fn detect(root: &str, force: bool) -> Detection {
 pub(crate) use exec::{Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "no adapter calls out until the forge slice")]
+    #![allow(dead_code, reason = "only gh is called yet; the GitLab, tool and remote adapters of later slices call the rest")]
 
     use std::time::Duration;
 
@@ -763,29 +773,45 @@ pub(crate) mod exec {
         }
     }
 
-    /// Answers argv prefixes from fixed text or `src-tauri/testdata/maint/`, and records every call.
+    /// Answers argv prefixes from fixed text or `src-tauri/testdata/maint/`, and records every
+    /// call, with the account each `gh` ran as.
     #[cfg(test)]
     pub(crate) struct FakeExec {
         answers: Vec<(Vec<String>, Result<String, String>)>,
         fallback: Result<String, String>,
         calls: std::sync::Mutex<Vec<Vec<String>>>,
+        accounts: std::sync::Mutex<Vec<Option<String>>>,
     }
 
     #[cfg(test)]
     impl FakeExec {
         pub(crate) fn answering(fallback: Result<&str, &str>) -> Self {
             let fallback = fallback.map(str::to_string).map_err(str::to_string);
-            Self { answers: vec![], fallback, calls: std::sync::Mutex::new(vec![]) }
+            Self { answers: vec![], fallback, calls: Default::default(), accounts: Default::default() }
+        }
+
+        pub(crate) fn testdata(file: &str) -> String {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("maint").join(file);
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
         }
 
         pub(crate) fn recorded(file: &str) -> Self {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("maint").join(file);
-            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            Self { answers: vec![], fallback: Ok(text), calls: std::sync::Mutex::new(vec![]) }
+            Self { fallback: Ok(Self::testdata(file)), ..Self::answering(Ok("")) }
+        }
+
+        /// Answers a call whose argv starts with `prefix`; the first matching rule wins.
+        pub(crate) fn on(mut self, prefix: &[&str], answer: Result<&str, &str>) -> Self {
+            let answer = answer.map(str::to_string).map_err(str::to_string);
+            self.answers.push((prefix.iter().map(|s| s.to_string()).collect(), answer));
+            self
         }
 
         pub(crate) fn calls(&self) -> Vec<Vec<String>> {
             self.calls.lock().unwrap().clone()
+        }
+
+        pub(crate) fn gh_accounts(&self) -> Vec<Option<String>> {
+            self.accounts.lock().unwrap().clone()
         }
 
         fn answer(&self, argv: Vec<String>) -> Result<String, String> {
@@ -801,7 +827,8 @@ pub(crate) mod exec {
 
     #[cfg(test)]
     impl Exec for FakeExec {
-        fn gh(&self, _root: &str, _account: Option<&str>, args: &[&str]) -> Result<String, String> {
+        fn gh(&self, _root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+            self.accounts.lock().unwrap().push(account.map(str::to_string));
             self.answer(Self::argv("gh", args))
         }
         fn glab(&self, _root: &str, args: &[&str]) -> Result<String, String> {
@@ -824,10 +851,12 @@ pub(crate) mod exec {
 
 // ---------- the registry, the gate and the cache ----------
 
-/// What a read gets besides its `Exec`.
+/// What a read gets besides its `Exec`. `account` is the project's GitHub pin, passed to every `gh`.
 pub(crate) struct Ctx<'a> {
     pub(crate) root: &'a str,
     pub(crate) cfg: &'a MaintConfig,
+    pub(crate) forge: &'a Forge,
+    pub(crate) account: Option<&'a str>,
 }
 
 pub(crate) struct Read {
@@ -851,6 +880,8 @@ pub(crate) struct SourceDef {
 
 /// One row per manifest source; a marker has no row until it is promoted (docs/maintenance.md).
 pub(crate) static SOURCES: &[SourceDef] = &[
+    SourceDef { id: "github-actions", read: crate::maint_ci::github_actions },
+    SourceDef { id: "forge-commit-status", read: crate::maint_ci::forge_commit_status },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
     SourceDef { id: "git-tags", read: crate::maint_git::git_tags },
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
@@ -948,7 +979,7 @@ fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, acco
         };
         return report(id, Some(meta), Coverage::Unsupported { reason: reason.into() });
     }
-    let ctx = Ctx { root: &det.repo_root, cfg: &det.config };
+    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account };
     read_cached(&det.repo_root, id, meta, def.read, &ctx, &SysExec { cost: meta.cost }, mode, public, force, account)
 }
 
@@ -963,6 +994,35 @@ fn invalidate(key: &str) {
             m.retain(|(root, _, _), _| root != key);
         }
     }
+}
+
+// ---------- forge errors ----------
+
+/// A `gh` failure as a coverage: a missing or signed-out CLI and an account that cannot see the
+/// repository each carry their fix; anything else is the reason verbatim.
+pub(crate) fn gh_coverage(err: &str, account: Option<&str>) -> Coverage {
+    let e = err.to_lowercase();
+    let pick = Some("pick the GitHub account that can see it from the project menu".to_string());
+    if e.contains("is not logged in as") {
+        return Coverage::NoAccess { reason: err.to_string(), fix: Some("gh auth login".into()) };
+    }
+    // A private repository answers 404 to an account that may not see it.
+    if e.contains("could not resolve to a repository") || e.contains("http 404") {
+        let reason = classify("could not resolve to a repository", who_for(account).as_deref());
+        return Coverage::NoAccess { reason, fix: pick };
+    }
+    // Before `classify`, whose "token" match would send an SSO or PAT refusal to `gh auth login`.
+    if e.contains("http 403") && !e.contains("rate limit") {
+        return Coverage::NoAccess { reason: err.to_string(), fix: pick };
+    }
+    let said = classify(err, who_for(account).as_deref());
+    if said == "GitHub CLI (gh) is not installed" {
+        return Coverage::NoTool { tool: "gh".into(), fix: Some("install the GitHub CLI from https://cli.github.com".into()) };
+    }
+    if said.contains("gh auth login") || e.contains("http 401") || e.contains("bad credentials") {
+        return Coverage::NoTool { tool: "gh".into(), fix: Some("gh auth login".into()) };
+    }
+    Coverage::Error { reason: err.to_string() }
 }
 
 // ---------- commands ----------
@@ -1041,6 +1101,8 @@ mod tests {
         dir
     }
 
+    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None };
+
     fn garbage() -> Vec<FakeExec> {
         vec![FakeExec::answering(Err("boom")), FakeExec::answering(Ok("")), FakeExec::recorded("html-error.html")]
     }
@@ -1066,12 +1128,36 @@ mod tests {
         }
     }
 
+    /// A marker says "nothing reads it yet", which is a lie wherever a source of its facet reads
+    /// the same file on the same forge.
+    #[test]
+    fn no_marker_claims_a_file_a_source_reads() {
+        let meet = |a: &[String], b: &[String]| crate::forge::KINDS.iter().any(|(k, _)| forge_admits(a, *k) && forge_admits(b, *k));
+        for m in &MANIFEST.markers {
+            for (id, s) in MANIFEST.sources.iter().filter(|(_, s)| s.facet == m.facet && meet(&s.forge, &m.forge)) {
+                assert!(!m.detect.iter().any(|d| s.detect.contains(d)), "marker {} overlaps source {id}", m.label);
+            }
+        }
+        let jenkins = [("Jenkinsfile", "pipeline {}")];
+        let d = detect(&s(&repo_with("https://github.com/a/b.git", &jenkins)), true);
+        assert!(d.sources.iter().any(|x| x == "forge-commit-status") && !labels(&d).contains(&"Jenkins".to_string()));
+        let d = detect(&s(&repo_with("https://gitlab.com/a/b.git", &jenkins)), true);
+        assert!(labels(&d).contains(&"Jenkins".to_string()), "off GitHub it is still a marker");
+        // No CI file on GitHub must still draw "no CI": the status read never claims every repo.
+        let bare = detect(&s(&repo_with("https://github.com/a/b.git", &[])), true);
+        assert!(!bare.sources.iter().any(|x| MANIFEST.sources[x].facet == Facet::Ci), "{:?}", bare.sources);
+    }
+
     #[test]
     fn a_bad_manifest_row_is_refused() {
         let bad = r#"{"facets": [], "sources": {}, "markers": [], "bots": []}"#;
         assert!(serde_json::from_str::<Manifest>(bad).unwrap().check().is_err(), "the facets are the seven");
         let typo = include_str!("../../src/maintmanifest.json").replace("\"rel.last\"", "\"rel.lats\"");
         assert!(serde_json::from_str::<Manifest>(&typo).unwrap().check().unwrap_err().contains("rel.lats"));
+        let mixed = include_str!("../../src/maintmanifest.json").replacen("[\"!github\"]", "[\"gitlab\", \"!github\"]", 1);
+        assert!(serde_json::from_str::<Manifest>(&mixed).unwrap().check().unwrap_err().contains("never both"));
+        let ok = |f: &[&str], k| forge_admits(&f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), k);
+        assert!(ok(&["!github"], ForgeKind::None) && !ok(&["!github"], ForgeKind::Github) && ok(&[], ForgeKind::Github));
         let extra = include_str!("../../src/maintmanifest.json").replace("\"facet\": \"git\",", "\"facet\": \"git\", \"argv\": [\"rm\"],");
         assert!(serde_json::from_str::<Manifest>(&extra).is_err(), "no field the manifest does not define");
     }
@@ -1079,8 +1165,8 @@ mod tests {
     #[test]
     fn no_source_answers_ok_on_garbage() {
         let root = s(&rich_repo());
-        let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let det = detect(&root, true);
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None };
         for def in SOURCES {
             let meta = &MANIFEST.sources[def.id];
             for ex in garbage() {
@@ -1101,7 +1187,7 @@ mod tests {
     fn every_source_answers_facts_of_its_own_facet() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
         let mut oks = 0;
         for def in SOURCES {
             // The raw read, not `run`: `run` would turn a crossed facet into an error and hide it.
@@ -1131,7 +1217,7 @@ mod tests {
                 for public in [false, true] {
                     let root = format!("/maint-test/gate/{n}/{m}/{public}");
                     let ex = FakeExec::answering(Ok("[]"));
-                    let ctx = Ctx { root: &root, cfg: &cfg };
+                    let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
                     let rep = read_cached(&root, "t", &meta(Facet::Security, cost), calls_tool, &ctx, &ex, mode, public, true, None);
                     let ran = !ex.calls().is_empty();
                     assert_eq!(ran, permitted(cost, mode, public), "{cost:?} {mode:?} public={public}");
@@ -1149,7 +1235,7 @@ mod tests {
     fn registry_sources_make_no_call_in_a_scan_their_class_forbids() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
         for def in SOURCES {
             let m = &MANIFEST.sources[def.id];
             if permitted(m.cost, Mode::Scan, false) {
@@ -1166,8 +1252,8 @@ mod tests {
     #[test]
     fn every_call_uses_a_bin_trusted_for_its_cost() {
         let root = s(&rich_repo());
-        let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let det = detect(&root, true);
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None };
         for def in SOURCES {
             let m = &MANIFEST.sources[def.id];
             let ex = FakeExec::answering(Ok(""));
@@ -1201,7 +1287,7 @@ mod tests {
     fn the_report_cache_is_keyed_by_account() {
         let root = "/maint-test/cache-by-account";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None };
         let ex = FakeExec::answering(Ok("{}"));
         let m = meta(Facet::Work, Cost::Forge);
         let go = |acct: Option<&str>, force: bool| read_cached(root, "t", &m, counts_gh, &ctx, &ex, Mode::Scan, false, force, acct);
@@ -1222,7 +1308,7 @@ mod tests {
     fn a_refused_class_shows_its_last_explicit_run() {
         let root = "/maint-test/tool-as-of";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None };
         let ex = FakeExec::answering(Ok("[]"));
         let m = meta(Facet::Security, Cost::Tool);
         let ran = read_cached(root, "t", &m, calls_tool, &ctx, &ex, Mode::Explicit, false, false, None);
@@ -1278,9 +1364,10 @@ mod tests {
         assert_eq!(d.forge.kind, ForgeKind::Forgejo);
         assert!(labels(&d).contains(&"Forgejo/Gitea Actions".to_string()), "{:?}", labels(&d));
         assert!(!labels(&d).iter().any(|l| l.starts_with("GitHub")), "{:?}", labels(&d));
+        assert!(!d.sources.iter().any(|x| x == "github-actions"));
         let d = detect(&s(&repo_with("https://github.com/a/b.git", &wf)), true);
-        let gha = d.markers.iter().find(|m| m.label == "GitHub Actions").expect("GitHub Actions");
-        assert_eq!(gha.found, [".github/workflows/"]);
+        assert!(d.sources.iter().any(|x| x == "github-actions"), "{:?}", d.sources);
+        assert!(d.markers.iter().all(|m| m.facet != Facet::Ci), "a source, not a marker: {:?}", labels(&d));
         let d = detect(&s(&repo_with("https://git.acme.io/a/b.git", &wf)), true);
         assert_eq!((d.forge.kind, d.forge.by), (ForgeKind::Unknown, ForgeBy::None));
         assert!(labels(&d).contains(&"CI on git.acme.io".to_string()), "{:?}", labels(&d));
@@ -1373,11 +1460,10 @@ mod tests {
             source: id.into(), facet: Some(Facet::Security), cost: Some(Cost::Forge), coverage, at: None,
             truncated: false, gaps: vec![], facts: None,
         };
+        let (gh_runs, _) = crate::maint_ci::parse_runs(&FakeExec::testdata("gh-run-list.json")).unwrap();
         let reports = vec![
-            ok("github-actions", Facet::Ci, Cost::Forge, Facts::CiRuns { branch: "main".into(), runs: vec![CiRun {
-                workflow: "ci".into(), status: CiStatus::Fail, raw: "timed_out".into(), sha: "abc1234".into(),
-                at: Some(1_790_000_000), url: Some("https://github.com/acme/app/actions/runs/1".into()),
-            }] }),
+            // The recorded list as parsed, so maint.test.ts dates failing-since over the real join.
+            ok("github-actions", Facet::Ci, Cost::Forge, Facts::CiRuns { branch: "main".into(), runs: gh_runs }),
             ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![Advisory {
                 id: "GHSA-xxxx-yyyy-zzzz".into(), aliases: vec!["CVE-2026-0001".into()], kind: AdvisoryKind::Dependency,
                 pkg: Some("lodash".into()), ecosystem: Some("npm".into()), version: Some("4.17.20".into()),

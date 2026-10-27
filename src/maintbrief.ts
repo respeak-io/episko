@@ -2,7 +2,7 @@
 // vendor's name for it. Each is prefilled and never sent: Episko presses Enter in two places only.
 
 import { compatBlock, verifyBlock } from "./deps";
-import { ciFailures, mergeAdvisories, span, type Facts, type Finding, type MaintInput, type Verb } from "./maint";
+import { ciFailures, mergeAdvisories, redFor, span, type Facts, type Finding, type MaintInput, type Verb } from "./maint";
 
 export interface MaintBriefCtx {
   project: string;
@@ -30,14 +30,15 @@ function advisoryOf(f: Finding, inp: MaintInput) {
 
 const ciBrief: Brief = (f, inp, ctx) => {
   const facts = factsOf(f, inp, "ciRuns");
-  const x = facts && ciFailures([facts]).find((w) => w.workflow === f.ref);
+  const x = facts && ciFailures([inp.reports[f.source]]).find((w) => w.workflow === f.ref);
   if (!facts || !x) return null;
   const runs = facts.runs.filter((r) => r.workflow === x.workflow).slice(0, 8);
+  const red = redFor(x, (ctx.now ?? Date.now()) / 1000);
   return [
-    `CI is failing on ${x.branch} in ${ctx.project}: the ${x.workflow} workflow${x.since !== null ? `, red for ${ago(x.since, ctx)}` : ""}.`,
+    `CI is failing on ${x.branch} in ${ctx.project}: the ${x.workflow} workflow${red ? `, red for ${red}` : ""}.`,
     ...(x.url ? [x.url] : []),
     "",
-    bullet(`first failing commit: ${x.sha}`),
+    bullet(x.sha ? `first failing commit: ${x.sha}` : `failing at ${x.branch}'s head, ${runs[0].sha}; this CI reports no history`),
     bullet(`recent runs, newest first: ${runs.map((r) => r.status).join(", ")}`),
     "",
     "Read the failing run's log at the link above and find the cause before changing anything:",

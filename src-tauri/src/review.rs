@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 
 use crate::git::{cap_patch, git_cmd, git_run, split_remote};
 use crate::github::{classify, gh, gh_input, gh_invalidate, who_for, GhComment};
+use crate::maint::CiStatus;
+use crate::maint_ci::check_status;
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 pub(crate) struct PrCheck {
@@ -360,17 +362,16 @@ fn parse_check(n: &Value) -> Option<PrCheck> {
     Some(PrCheck { name: name.to_string(), state: normalise_check("", &s(n, "state")).into(), url: s(n, "targetUrl"), workflow: String::new() })
 }
 
-/// A CheckRun's `status` + `conclusion`, or a StatusContext's `state` alone (status empty).
+/// A CheckRun's `status` + `conclusion`, or a StatusContext's `state` alone (status empty), as
+/// the five words the review draws. The vocabulary is `maint_ci::check_status`'s, shared with deps.rs.
 pub(crate) fn normalise_check(status: &str, conclusion: &str) -> &'static str {
-    if !status.is_empty() && status != "COMPLETED" {
-        return "pending";
-    }
-    match conclusion {
-        "SUCCESS" => "pass",
-        "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => "fail",
-        "PENDING" | "EXPECTED" => "pending",
-        "SKIPPED" => "skip",
-        _ => "neutral",
+    match check_status(status, conclusion) {
+        CiStatus::Pass => "pass",
+        CiStatus::Fail | CiStatus::Cancelled => "fail",
+        CiStatus::Skip => "skip",
+        CiStatus::Neutral => "neutral",
+        // A word nobody taught us is no verdict: it waits rather than passing.
+        CiStatus::Running | CiStatus::Unknown => "pending",
     }
 }
 

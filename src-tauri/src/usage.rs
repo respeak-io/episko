@@ -145,7 +145,7 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 /// `2026-08-17T08:08:18.686Z` -> epoch seconds, `None` for any other shape: the caller's
 /// mtime fallback beats a misparsed date. The offset is ignored, since Claude writes UTC.
-fn iso_epoch_secs(ts: &str) -> Option<u64> {
+pub(crate) fn iso_epoch_secs(ts: &str) -> Option<u64> {
     let b = ts.as_bytes();
     if b.len() < 19
         || b[4] != b'-'

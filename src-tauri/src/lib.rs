@@ -13,6 +13,7 @@ mod health;
 mod github;
 mod icons;
 mod maint;
+mod maint_ci;
 mod maint_git;
 mod mcp;
 mod notes;

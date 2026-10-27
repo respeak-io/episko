@@ -34,6 +34,9 @@ const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? o
 
 // A record over the closed vocabulary, so a new capability fails to compile until it has words.
 const CAP_TEXT: Record<MaintCap, string> = {
+  "ci.default-branch": "CI on the default branch", "ci.per-workflow": "each workflow's newest run",
+  "ci.failing-since": "how long a workflow has been failing", "ci.disabled": "disabled workflows",
+  "ci.external": "statuses other CIs report", "ci.other-branches": "CI on other branches",
   "git.unpushed": "unpushed commits", "git.local-only": "branches only on this machine",
   "git.merged": "merged branches", "git.gone": "branches whose upstream is gone", "git.branch-age": "branch ages",
   "git.worktree-age": "idle worktrees", "git.squash-merged": "squash-merged branches",

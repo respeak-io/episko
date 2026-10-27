@@ -1,0 +1,23 @@
+[
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"}, "review": "pass", "roll": "passed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "NEUTRAL"}, "review": "neutral", "roll": "passed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "CANCELLED"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SKIPPED"}, "review": "skip", "roll": "skipped"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "TIMED_OUT"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "STALE"}, "review": "fail", "roll": "failed", "reviewWas": "neutral"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "STARTUP_FAILURE"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": null}, "review": "pending", "roll": "pending", "reviewWas": "neutral"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SOMETHING_NEW"}, "review": "pending", "roll": "pending", "reviewWas": "neutral", "rollWas": "failed"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "QUEUED", "conclusion": null}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "IN_PROGRESS", "conclusion": null}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "WAITING", "conclusion": null}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "REQUESTED", "conclusion": null}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "CheckRun", "name": "build", "status": "PENDING", "conclusion": null}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "StatusContext", "context": "ci/jenkins", "state": "SUCCESS"}, "review": "pass", "roll": "passed"},
+  {"node": {"__typename": "StatusContext", "context": "ci/jenkins", "state": "FAILURE"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "StatusContext", "context": "ci/jenkins", "state": "ERROR"}, "review": "fail", "roll": "failed"},
+  {"node": {"__typename": "StatusContext", "context": "ci/jenkins", "state": "PENDING"}, "review": "pending", "roll": "pending"},
+  {"node": {"__typename": "StatusContext", "context": "ci/jenkins", "state": "EXPECTED"}, "review": "pending", "roll": "pending", "rollWas": "failed"}
+]

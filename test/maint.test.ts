@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, SEVERITIES,
-  clampMaint, comingUp, facetCell, facetCells, findings, hostRows, mergeAdvisories, narrowDetection,
+  ciFailures, clampMaint, comingUp, facetCell, facetCells, findings, hostRows, mergeAdvisories, narrowDetection,
   narrowMaint, projectBand, rankMaint, span,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
@@ -16,6 +16,7 @@ const wire = JSON.parse(readFileSync(new URL("./fixtures/maint-wire.json", impor
 };
 
 const NOW = 1_790_000_000_000, S = NOW / 1000, H = 3600, D = 86_400;
+const GHA = "github-actions"; // a source that sees ci.failing-since
 
 const det = (sources: string[], o: Partial<Detection> = {}): Detection => ({
   repoRoot: "/r", forge: { kind: "unknown", host: null, path: null, by: "none" }, sources, markers: [],
@@ -86,7 +87,7 @@ describe("the wire", () => {
     expect(bad({ ...good, facts: null })).toBe("error");
     expect(bad({ ...good, facts: { kind: "ciRuns", branch: "main", runs: "lots" } })).toBe("error");
     expect(bad({ ...good, facts: { kind: "work", issues: 1, prs: 0, reviewRequested: 0 } }), "facts outside the facet").toBe("error");
-    expect(narrowMaint({ ...good, facts: null }, "github-actions")).toMatchObject({ facet: "ci", cost: null, facts: null });
+    expect(narrowMaint({ ...good, facts: null }, "github-actions")).toMatchObject({ facet: "ci", cost: "forge", facts: null });
     const off = narrowMaint({ ...good, coverage: { state: "notRun" } }, "github-actions");
     expect(off.facts, "only ok carries facts").toBeNull();
   });
@@ -168,16 +169,38 @@ describe("facetCell: unknown is never green", () => {
 
 describe("facet rules over ok facts", () => {
   it("CI with zero runs never ran; skips alone are no pass", () => {
-    expect(cell("ci", input(ok("c", ci())))).toMatchObject({ level: "muted", text: "never ran" });
-    expect(cell("ci", input(ok("c", ci(run("w", "skip", S - H)))))).toMatchObject({ level: "muted", text: "no passing run" });
-    expect(cell("ci", input(ok("c", ci(run("w", "pass", S - H)))))).toMatchObject({ level: "ok", text: "" });
-    expect(cell("ci", input(ok("c", ci(run("w", "running", S), run("w", "pass", S - H)))))).toMatchObject({ level: "info", text: "running" });
+    expect(cell("ci", input(ok(GHA, ci())))).toMatchObject({ level: "muted", text: "never ran" });
+    expect(cell("ci", input(ok(GHA, ci(run("w", "skip", S - H)))))).toMatchObject({ level: "muted", text: "no passing run" });
+    expect(cell("ci", input(ok(GHA, ci(run("w", "pass", S - H)))))).toMatchObject({ level: "ok", text: "" });
+    expect(cell("ci", input(ok(GHA, ci(run("w", "running", S), run("w", "pass", S - H)))))).toMatchObject({ level: "info", text: "running" });
   });
 
   it("CI failing is dated from the first red of the unbroken run, and broken however young", () => {
-    const c = cell("ci", input(ok("c", ci(run("w", "fail", S - H), run("w", "fail", S - 2 * D), run("w", "pass", S - 3 * D), run("v", "pass", S)))));
+    const c = cell("ci", input(ok(GHA, ci(run("w", "fail", S - H), run("w", "fail", S - 2 * D), run("w", "pass", S - 3 * D), run("v", "pass", S)))));
     expect(c).toMatchObject({ level: "bad", text: "failing 2d" });
-    expect(cell("ci", input(ok("c", ci(run("w", "fail", S - 4 * H)))))).toMatchObject({ level: "bad", text: "failing 4h" });
+    expect(cell("ci", input(ok(GHA, ci(run("w", "fail", S - 4 * H)))))).toMatchObject({ level: "bad", text: "failing 4h" });
+  });
+
+  it("a streak that runs off a capped page is a floor, and only that one", () => {
+    const capped = (...runs: ReturnType<typeof run>[]) => cell("ci", input(ok(GHA, ci(...runs), { truncated: true })));
+    expect(capped(run("w", "fail", S - H), run("w", "fail", S - 3 * D))).toMatchObject({ text: "failing 3d+" });
+    expect(capped(run("w", "fail", S - 3 * D), run("w", "pass", S - 4 * D)).text).toBe("failing 3d");
+  });
+
+  it("a source blind to failing-since never dates the red or names a first red commit", () => {
+    const c = cell("ci", input(ok("forge-commit-status", ci(run("ci/jenkins", "fail", S - 2 * D)))));
+    expect(c).toMatchObject({ level: "bad", text: "failing" });
+    expect(c.tip.join(" ")).not.toMatch(/first red|2d/);
+    const f = findings("/r", input(ok("forge-commit-status", ci(run("ci/jenkins", "fail", S - 2 * D)))), MAINT_DEFAULTS, NOW);
+    expect(f[0]).toMatchObject({ key: "ci:ci/jenkins", text: "CI failing", detail: "ci/jenkins on main" });
+  });
+
+  it("dates failing-since over the recorded gh run list as Rust parsed it", () => {
+    const gha = narrowMaint(wire.reports.find((r) => r.source === GHA)!, GHA);
+    const f = findings("/r", input(gha), MAINT_DEFAULTS, NOW).filter((x) => x.facet === "ci");
+    expect(f.map((x) => x.ref)).toEqual(["ci"]); // site passed last, lint is running, Dependabot is no CI
+    expect(f[0].detail).toBe("ci on main · first red at aaaa003");
+    expect(ciFailures([gha])[0].since).toBe(Date.parse("2026-10-24T09:00:00Z") / 1000);
   });
 
   it("security names its worst, and a capped list is a floor", () => {
@@ -282,7 +305,7 @@ describe("mergeAdvisories", () => {
 
 describe("findings → verbs", () => {
   const inp = input(
-    ok("c", ci(run("e2e", "fail", S - 2 * D), run("e2e", "pass", S - 3 * D))),
+    ok(GHA, ci(run("e2e", "fail", S - 2 * D), run("e2e", "pass", S - 3 * D))),
     ok("s", { kind: "advisories", items: [adv({ id: "A", severity: "critical" }), adv({ id: "K", kind: "secret", pkg: null, location: "seed.ts" })] }),
     ok("d", prs(1, {}, "fail")),
     ok("t", rel({ since: 40 })),
