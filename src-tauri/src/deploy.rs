@@ -293,8 +293,10 @@ pub(crate) async fn propose_deploy(dir: String, prompt: String) -> Result<Deploy
 /// `write_deploy`'s refusal when the file is missing and `create` is false; deploy.ts matches it.
 pub(crate) const NO_FILE: &str = "no .episko/episko.toml here yet";
 
-/// Only what changed is replaced, so a hand-written value and its comment survive an Apply.
-fn set_deploy(doc: &mut toml_edit::DocumentMut, old: &DeployConfig, d: &DeployConfig) -> Result<(), String> {
+/// Only what changed is replaced, so a hand-written value and its comment survive an Apply. `raw` is
+/// the table as written: what `keep` drops was never shown, so no proposal can mean to remove it.
+fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployConfig) -> Result<(), String> {
+    let old = &keep(raw.clone()).0;
     if doc.get("deploy").is_some_and(|i| !i.is_table_like()) {
         return Err("deploy in .episko/episko.toml is not a table".into());
     }
@@ -306,21 +308,27 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, old: &DeployConfig, d: &DeployCo
     }
     let t = doc["deploy"].as_table_like_mut().ok_or("deploy is not a table")?;
     let mut put = |k: &str, same: bool, v: Option<toml_edit::Item>| match v {
+        _ if same => {}
         None => {
             t.remove(k);
         }
-        Some(_) if same => {}
         Some(i) => {
             t.insert(k, i);
         }
     };
     let word = |v: &Option<String>| v.as_deref().map(toml_edit::value);
     put("host", old.host == d.host, word(&d.host));
-    let list = (!d.compose.is_empty()).then(|| toml_edit::value(d.compose.iter().map(String::as_str).collect::<toml_edit::Array>()));
+    let mut compose = d.compose.clone();
+    compose.extend(raw.compose.iter().filter(|c| !old.compose.contains(c) && !d.compose.contains(c)).cloned());
+    let list = (!compose.is_empty()).then(|| toml_edit::value(compose.iter().map(String::as_str).collect::<toml_edit::Array>()));
     put("compose", old.compose == d.compose, list);
-    let urls = (!d.urls.is_empty()).then(|| {
+    let mut urls = d.urls.clone();
+    for (k, v) in raw.urls.iter().filter(|(k, _)| !old.urls.contains_key(*k)) {
+        urls.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    let urls = (!urls.is_empty()).then(|| {
         let mut m = toml_edit::InlineTable::new();
-        for (k, v) in &d.urls {
+        for (k, v) in &urls {
             m.insert(k, v.as_str().into());
         }
         toml_edit::value(m)
@@ -457,6 +465,27 @@ mod tests {
         assert!(text.starts_with("# team settings\n[branches]\nprotect = [\"dev\"]"), "{text}");
         assert!(text.contains("host = \"old\" # the box under the desk"), "an unchanged value keeps its comment: {text}");
         assert_eq!(parse_deploy(&text), Some(d));
+    }
+
+    #[test]
+    fn a_value_the_read_dropped_survives_an_apply() {
+        let dir = scratch_dir();
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        let before = "[deploy]\nhost = \"-x\"\ncompose = [\"api\", \"a b\"]\n\
+                      urls = { app = \"https://app.example.com\", staging = \"staging.example.com\" } # staging lacks a scheme\n";
+        std::fs::write(path_of(&s(&dir)), before).unwrap();
+        let shown = read(&s(&dir)).unwrap();
+        assert_eq!((shown.host.as_deref(), shown.urls.len(), shown.compose.len()), (None, 1, 1), "the proposal never sees them");
+        write_deploy(s(&dir), DeployConfig { sentry: Some("acme/api".into()), ..shown.clone() }, false).unwrap();
+        let text = std::fs::read_to_string(path_of(&s(&dir))).unwrap();
+        assert!(text.starts_with(before), "an unchanged key keeps its dropped value and comment: {text}");
+        let mut more = shown;
+        more.urls.insert("docs".into(), "https://docs.example.com".into());
+        more.compose.push("db".into());
+        write_deploy(s(&dir), more, false).unwrap();
+        let raw = raw_deploy(&std::fs::read_to_string(path_of(&s(&dir))).unwrap()).unwrap();
+        assert_eq!(raw.urls.keys().collect::<Vec<_>>(), ["app", "docs", "staging"], "a rewritten table carries what was never shown");
+        assert_eq!((raw.compose, raw.host.as_deref()), (vec!["api".to_string(), "db".into(), "a b".into()], Some("-x")));
     }
 
     #[test]

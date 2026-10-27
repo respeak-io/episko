@@ -102,9 +102,11 @@ const tile = (label: string, value: string, sub: string, cls = "") =>
 export function maintTilesHtml(v: MaintView): string {
   const t = v.tally, known = v.checked > 0 || v.cards.some((c) => !c.past);
   const n = (x: number) => known ? String(x) : DASH;
+  // A zero over unread projects is not an all-clear, the rule `allClear` keeps below.
+  const unread = t.unread ? `${plural(t.unread, "project")} not checked` : "";
   return `<div class="fl-tiles">`
-    + tile("Needs you", n(t.needs), t.needs ? "something is broken" : "nothing broken", t.needs ? "s-bad" : "")
-    + tile("Drifting", n(t.drifting), t.drifting ? "going stale" : "nothing going stale", t.drifting ? "s-warn" : "")
+    + tile("Needs you", n(t.needs), t.needs ? "something is broken" : unread || "nothing broken", t.needs ? "s-bad" : "")
+    + tile("Drifting", n(t.drifting), t.drifting ? "going stale" : unread || "nothing going stale", t.drifting ? "s-warn" : "")
     + tile("Quiet", n(t.quiet), "nothing to do")
     + tile("Can't check", n(t.cantCheck), "facets nothing here can read yet")
     + `</div>`;

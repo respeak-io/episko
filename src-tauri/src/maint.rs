@@ -704,7 +704,7 @@ pub(crate) mod exec {
 
     pub(crate) trait Exec: Sync {
         fn gh(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String>;
-        /// `gh api graphql`, keeping a `data` that arrived beside `errors[]` (`github::gh_graphql`).
+        /// `gh api graphql`, keeping a `data` that arrived beside `errors[]` (`github::gh_capped`).
         fn gh_graphql(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
             self.gh(root, account, args)
         }
@@ -812,10 +812,18 @@ pub(crate) mod exec {
             return Err(format!("{a:?} is not a safe argument"));
         }
         let file = resolve_bin(bin, path).ok_or_else(|| format!("{bin} is not on PATH"))?;
-        let mut cmd = sys_command(file);
+        let mut cmd = sys_command(&file);
         // A shim's own `node` lookup would otherwise try the project's folder first.
         #[cfg(windows)]
         cmd.env("NoDefaultCurrentDirectoryInExePath", "1");
+        // npm.cmd runs `<prefix>\node_modules\npm\bin\npm-cli.js` when one exists, and a project's
+        // `.npmrc` may name the prefix; env outranks it, and this folder's is the shim's own npm.
+        #[cfg(windows)]
+        if bin == "npm" {
+            if let Some(dir) = file.parent() {
+                cmd.env("npm_config_prefix", dir);
+            }
+        }
         cmd.env("PATH", path).args(args);
         Ok(cmd)
     }
@@ -838,12 +846,12 @@ pub(crate) mod exec {
     impl Exec for SysExec {
         fn gh(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
             self.trust("gh")?;
-            crate::github::gh(root, account, args)
+            crate::github::gh_capped(root, account, args, false)
         }
 
         fn gh_graphql(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
             self.trust("gh")?;
-            crate::github::gh_graphql(root, account, args)
+            crate::github::gh_capped(root, account, args, true)
         }
 
         fn glab(&self, root: &str, args: &[&str]) -> Result<String, String> {
@@ -1594,6 +1602,26 @@ mod tests {
         }
         assert!(exec::tool_cmd("npm", &["audit"], ".").is_err(), "a relative PATH entry is never searched");
         assert!(exec::resolve_bin("npm", &path).is_some_and(|p| p.starts_with(&bin)));
+    }
+
+    /// The real shim, executed: a project `.npmrc` naming a prefix that holds its own npm-cli.js.
+    #[cfg(windows)]
+    #[test]
+    fn npm_never_runs_the_npm_cli_a_project_prefix_names() {
+        let path = crate::platform::augmented_path();
+        if exec::resolve_bin("npm", &path).is_none() {
+            eprintln!("npm is not installed here; skipped");
+            return;
+        }
+        let proj = scratch_dir();
+        let cli = proj.join("evil").join("node_modules").join("npm").join("bin");
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(cli.join("npm-cli.js"), "console.log('PLANTED')\n").unwrap();
+        std::fs::write(proj.join(".npmrc"), "prefix=evil\n").unwrap();
+        std::fs::write(proj.join("package.json"), "{\"name\":\"x\",\"version\":\"1.0.0\"}\n").unwrap();
+        let out = exec::tool_cmd("npm", &["--version"], &path).unwrap().current_dir(&proj).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(!said.contains("PLANTED") && said.trim().starts_with(|c: char| c.is_ascii_digit()), "{said}");
     }
 
     fn counts_gh(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
