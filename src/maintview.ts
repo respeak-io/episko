@@ -283,7 +283,7 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
   const gaps = v.gaps.length
-    ? `<div class="mt-soon mt-gaps"><span class="label">Not read</span>${v.gaps.map((g) =>
+    ? `<div class="mt-soon mt-gaps"><span class="label">No verdict</span>${v.gaps.map((g) =>
       `<span>${esc(v.filter ? facetDef(g.facet).label : `${g.name} · ${facetDef(g.facet).label}`)} <em class="mono">${esc(g.text)}</em></span>`).join("")}</div>` : "";
   return (only ? `<div class="mt-top">${only}</div>` : "")
     + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + gaps
