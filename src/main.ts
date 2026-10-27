@@ -1005,6 +1005,17 @@ $("dbgClear").addEventListener("click", () => { dbgLog.length = 0; telem.rx = te
 $("dbgCopy").addEventListener("click", async () => {
   try { await writeText(JSON.stringify(dbgSnapshot(), null, 2)); toast("Debug snapshot copied"); } catch { toast("copy failed"); }
 });
+// A stuck dialog: did the key leave Episko, and does the other Esc encoding get through?
+$("dbgKeys").addEventListener("click", async () => {
+  if (!activeId) { toast("No pane on stage"); return; }
+  try { const r = await invoke<string>("pty_key_report", { sessionId: activeId }); await writeText(r); toast("Key report copied and logged"); }
+  catch (e) { toast(`Key report failed: ${e}`); }
+});
+$("dbgEsc").addEventListener("click", async () => {
+  if (!activeId) { toast("No pane on stage"); return; }
+  try { const how = await invoke<string>("send_esc_record", { sessionId: activeId }); dlog("info", `sent ${how} · ${activeId.slice(0, 8)}`); toast(`Sent ${how}`); }
+  catch (e) { toast(`Esc failed: ${e}`); }
+});
 window.addEventListener("error", (e) => dlog("error", `js error: ${e.message} @ ${(e.filename || "").split("/").pop()}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => dlog("error", `unhandled rejection: ${String((e as PromiseRejectionEvent).reason)}`));
 dlog("info", "app started");

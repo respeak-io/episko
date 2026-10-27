@@ -185,6 +185,7 @@ pub(crate) fn spawn_claude(
             provider: Some("claude".into()),
             scrollback: scroll.clone(),
             win32_input: win32.clone(),
+            keys: KeyTrail::new(),
         },
     );
 
@@ -251,6 +252,135 @@ fn pty_payload<'a>(win32_input: &AtomicBool, data: &'a str) -> std::borrow::Cow<
     } else {
         std::borrow::Cow::Borrowed(data)
     }
+}
+
+/// What `write_pty` sent lately, for the 🐞 console's key report: the one place that can say
+/// whether a keystroke left Episko. Printable text is kept as a count, never the characters,
+/// since a pane may be typing a secret.
+pub(crate) struct KeyTrail {
+    entries: VecDeque<(std::time::Instant, String)>,
+}
+
+const KEY_TRAIL_MAX: usize = 120;
+
+impl KeyTrail {
+    pub(crate) fn new() -> Self {
+        KeyTrail { entries: VecDeque::new() }
+    }
+    fn push(&mut self, what: String) {
+        if self.entries.len() == KEY_TRAIL_MAX {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((std::time::Instant::now(), what));
+    }
+}
+
+/// One write, readable: escape sequences and control bytes spelled out, text as `text×N`.
+fn describe_input(data: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut text = 0usize;
+    let mut it = data.chars().peekable();
+    let flush = |parts: &mut Vec<String>, text: &mut usize| {
+        if *text > 0 {
+            parts.push(format!("text×{text}"));
+            *text = 0;
+        }
+    };
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            flush(&mut parts, &mut text);
+            let mut seq = String::new();
+            copy_escape(&mut it, &mut seq);
+            parts.push(if seq.is_empty() { "ESC".into() } else { format!("ESC{}", seq.escape_debug()) });
+        } else if (c as u32) < 0x20 || c == '\x7f' {
+            flush(&mut parts, &mut text);
+            parts.push(match c {
+                '\r' => "CR".into(),
+                '\x7f' => "DEL".into(),
+                _ => format!("^{}", ((c as u8) + 0x40) as char),
+            });
+        } else {
+            text += 1;
+        }
+    }
+    flush(&mut parts, &mut text);
+    parts.join(" ")
+}
+
+/// The private modes (`CSI ? n h/l`) and kitty keyboard flags (`CSI > u`, `CSI < u`) the child
+/// set in `out`, last write wins. Only what is still in the scrollback, hence "seen".
+fn modes_seen(out: &[u8]) -> String {
+    let s = String::from_utf8_lossy(out);
+    let mut modes: std::collections::BTreeMap<u32, bool> = Default::default();
+    let (mut kitty_push, mut kitty_pop) = (0, 0);
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] != 0x1b || b[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let start = i + 2;
+        let mut j = start;
+        while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
+            j += 1;
+        }
+        if j >= b.len() {
+            break;
+        }
+        let params = &s[start..j];
+        match (params.as_bytes().first(), b[j]) {
+            (Some(b'?'), f @ (b'h' | b'l')) => {
+                for n in params[1..].split(';').filter_map(|n| n.parse().ok()) {
+                    modes.insert(n, f == b'h');
+                }
+            }
+            (Some(b'>'), b'u') => kitty_push += 1,
+            (Some(b'<'), b'u') => kitty_pop += 1,
+            _ => {}
+        }
+        i = j + 1;
+    }
+    let mut parts: Vec<String> = modes.iter().map(|(n, on)| format!("{n}{}", if *on { "+" } else { "-" })).collect();
+    if kitty_push + kitty_pop > 0 {
+        parts.push(format!("kitty push×{kitty_push} pop×{kitty_pop}"));
+    }
+    parts.join(" ")
+}
+
+/// The 🐞 console's key report for one pane, also written to `episko.log`.
+#[tauri::command]
+pub(crate) fn pty_key_report(state: State<AppState>, session_id: String) -> Result<String, String> {
+    let map = state.sessions.lock().unwrap();
+    let s = map.get(&session_id).ok_or("no live PTY for this pane")?;
+    let now = std::time::Instant::now();
+    let (out, _) = s.scrollback.lock().unwrap().snapshot();
+    let mut r = format!(
+        "key report {} · win32 input {} · modes seen {}\n",
+        &session_id[..session_id.len().min(8)],
+        if s.win32_input.load(Ordering::Relaxed) { "on" } else { "off" },
+        modes_seen(&out)
+    );
+    for (t, what) in &s.keys.entries {
+        r.push_str(&format!("  -{:.1}s  {what}\n", now.duration_since(*t).as_secs_f32()));
+    }
+    log::info!("{r}");
+    Ok(r)
+}
+
+/// Esc as Windows Terminal sends it: a key-down/up record pair when ConPTY asked for records
+/// (VK_ESCAPE, scan 1), a bare ESC otherwise. The 🐞 console's way out of a stuck dialog.
+#[tauri::command]
+pub(crate) fn send_esc_record(state: State<AppState>, session_id: String) -> Result<String, String> {
+    let mut map = state.sessions.lock().unwrap();
+    let s = map.get_mut(&session_id).ok_or("no live PTY for this pane")?;
+    let rec = s.win32_input.load(Ordering::Relaxed);
+    let payload = if rec { "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_" } else { "\x1b" };
+    s.writer.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+    s.writer.flush().map_err(|e| e.to_string())?;
+    let what = if rec { "ESC as win32 record (🐞)" } else { "ESC (🐞, win32 input off)" };
+    s.keys.push(what.into());
+    Ok(what.into())
 }
 
 /// Copy one escape sequence through untouched (ESC already emitted); its inside is never rewritten.
@@ -463,6 +593,7 @@ pub(crate) fn spawn_shell(
             provider: None,
             scrollback: scroll.clone(),
             win32_input: win32.clone(),
+            keys: KeyTrail::new(),
         },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -635,6 +766,7 @@ pub(crate) fn spawn_task(
             provider: None,
             scrollback: scroll.clone(),
             win32_input: win32.clone(),
+            keys: KeyTrail::new(),
         },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -969,6 +1101,7 @@ pub(crate) fn spawn_agent(
             provider: Some(spec.id.into()),
             scrollback: scroll.clone(),
             win32_input: win32.clone(),
+            keys: KeyTrail::new(),
         },
     );
     stream_pty_session(app, session_id, reader, child, child_pid, scroll, win32);
@@ -1242,6 +1375,7 @@ pub(crate) fn write_pty(
             .write_all(payload.as_bytes())
             .map_err(|e| e.to_string())?;
         s.writer.flush().map_err(|e| e.to_string())?;
+        s.keys.push(describe_input(&data));
     }
     Ok(())
 }
@@ -2188,6 +2322,20 @@ mod tests {
             flag.load(Ordering::Relaxed),
             "a split announcement was missed"
         );
+    }
+
+    #[test]
+    fn the_key_trail_spells_keys_and_never_text() {
+        assert_eq!(describe_input("\x1b"), "ESC");
+        assert_eq!(describe_input("\x1b[D"), "ESC[D");
+        assert_eq!(describe_input("hunter2\r"), "text×7 CR");
+        assert_eq!(describe_input("\x03ä\x7f"), "^C text×1 DEL");
+    }
+
+    #[test]
+    fn modes_seen_keeps_the_last_write_of_each() {
+        let out = b"\x1b[?1049h\x1b[?1003;1006h x \x1b[?1003l\x1b[>1u\x1b[<u\x1b[?9001h";
+        assert_eq!(modes_seen(out), "1003- 1006+ 1049+ 9001+ kitty push×1 pop×1");
     }
 
     // ---------- the round trip, over a real PTY ----------

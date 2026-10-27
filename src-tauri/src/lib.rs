@@ -54,6 +54,8 @@ pub(crate) struct Session {
     /// Latched by the reader when ConPTY asks for win32 input records (`ESC[?9001h`);
     /// `write_pty` reads it. Never set off Windows. See `pty::win32_input_encode`.
     win32_input: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What `write_pty` sent lately, for the 🐞 console's key report.
+    keys: pty::KeyTrail,
 }
 
 pub(crate) struct AppState {
@@ -450,6 +452,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pty::spawn_claude,
             pty::write_pty,
+            pty::pty_key_report,
+            pty::send_esc_record,
             pty::resize_pty,
             pty::kill_session,
             pty::live_sessions,
