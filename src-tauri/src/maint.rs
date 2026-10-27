@@ -344,6 +344,8 @@ pub(crate) struct SourceMeta {
     detect: Vec<String>, // empty applies whenever the forge matches
     #[serde(default)]
     needs: Vec<String>, // `[maintenance]` keys that must be set: a source that reads what config names
+    #[serde(default)]
+    sends: Option<String>, // what a `public` source sends, which every door to it discloses
     sees: Vec<String>,
     blind: Vec<String>,
 }
@@ -408,6 +410,9 @@ impl Manifest {
             }
             if let Some(n) = s.needs.iter().find(|n| !NEEDS.contains(&n.as_str())) {
                 return Err(format!("{id}: needs an unknown [maintenance] key {n:?}"));
+            }
+            if (s.cost == Cost::Public) != s.sends.as_deref().is_some_and(|x| !x.trim().is_empty()) {
+                return Err(format!("{id}: a public source says what it sends, and only a public one"));
             }
             well_formed(id, &s.forge, &s.detect)?;
         }
@@ -561,7 +566,12 @@ fn forge_admits(forge: &[String], kind: ForgeKind) -> bool {
 
 /// Whether any of these detect entries is present under `root`, by `probe`'s own rules.
 pub(crate) fn found_any(root: &str, entries: &[String]) -> bool {
-    !probe(Path::new(root), &entries.iter().map(String::as_str).collect()).is_empty()
+    !found_paths(root, entries).is_empty()
+}
+
+/// Where each of these detect entries was found under `root`, relative and `/`-separated.
+pub(crate) fn found_paths<S: AsRef<str>>(root: &str, entries: &[S]) -> Vec<String> {
+    probe(Path::new(root), &entries.iter().map(AsRef::as_ref).collect()).into_values().flatten().collect()
 }
 
 fn applies(forge: &[String], detect: &[String], kind: ForgeKind, probes: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
@@ -650,7 +660,7 @@ pub(crate) fn forget_detection(root: &str) {
 pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "tool, ssh and a token's http are called by the adapters of later slices")]
+    #![allow(dead_code, reason = "ssh and a token's http are called by the adapters of later slices")]
 
     use std::time::Duration;
 
@@ -710,7 +720,7 @@ pub(crate) mod exec {
         (Cost::Local, &[]),
         (Cost::Forge, &["gh", "glab"]),
         (Cost::Public, &["curl"]),
-        (Cost::Tool, &["npm", "pnpm", "cargo"]),
+        (Cost::Tool, &["npm", "pnpm", "cargo-audit"]),
         (Cost::Remote, &["curl", "ssh"]),
     ];
 
@@ -783,6 +793,33 @@ pub(crate) mod exec {
         }
     }
 
+    #[cfg(windows)]
+    const BIN_EXTS: &[&str] = &[".com", ".exe", ".bat", ".cmd"]; // PATHEXT's default order
+    #[cfg(not(windows))]
+    const BIN_EXTS: &[&str] = &[""];
+
+    /// `bin` in `path`'s absolute folders only: cmd.exe, and a bare name on Windows, look in the
+    /// current folder first, where a cloned repository can plant its own `npm.cmd`.
+    pub(crate) fn resolve_bin(bin: &str, path: &str) -> Option<std::path::PathBuf> {
+        std::env::split_paths(path).filter(|d| d.is_absolute())
+            .find_map(|d| BIN_EXTS.iter().map(|e| d.join(format!("{bin}{e}"))).find(|p| p.is_file()))
+    }
+
+    /// The resolved file itself; std runs a `.cmd` shim through cmd.exe with its own escaping, and
+    /// no argument may carry what cmd.exe would read as syntax anyway.
+    pub(crate) fn tool_cmd(bin: &str, args: &[&str], path: &str) -> Result<std::process::Command, String> {
+        if let Some(a) = args.iter().find(|a| a.contains(['&', '|', '<', '>', '^', '%', '"', '\n'])) {
+            return Err(format!("{a:?} is not a safe argument"));
+        }
+        let file = resolve_bin(bin, path).ok_or_else(|| format!("{bin} is not on PATH"))?;
+        let mut cmd = sys_command(file);
+        // A shim's own `node` lookup would otherwise try the project's folder first.
+        #[cfg(windows)]
+        cmd.env("NoDefaultCurrentDirectoryInExePath", "1");
+        cmd.env("PATH", path).args(args);
+        Ok(cmd)
+    }
+
     /// The real seam, made per read with that source's cost.
     pub(crate) struct SysExec {
         pub(crate) cost: Cost,
@@ -816,8 +853,8 @@ pub(crate) mod exec {
 
         fn tool(&self, root: &str, bin: &str, args: &[&str], secs: u64) -> Result<Output, String> {
             self.trust(bin)?;
-            let mut cmd = sys_command(bin);
-            cmd.env("PATH", augmented_path()).current_dir(root).args(args).env("NO_COLOR", "1").env("CI", "1");
+            let mut cmd = tool_cmd(bin, args, &augmented_path())?;
+            cmd.current_dir(root).env("NO_COLOR", "1").env("CI", "1");
             crate::deps::run_capped(cmd, secs).map(Output::from)
         }
 
@@ -864,7 +901,7 @@ pub(crate) mod exec {
         }
 
         fn on_path(&self, bin: &str) -> bool {
-            crate::deps::on_path(bin)
+            resolve_bin(bin, &augmented_path()).is_some()
         }
     }
 
@@ -877,13 +914,19 @@ pub(crate) mod exec {
         calls: std::sync::Mutex<Vec<Vec<String>>>,
         accounts: std::sync::Mutex<Vec<Option<String>>>,
         gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
+        exit: (i32, String),  // what every `tool` exits with, and its stderr
+        missing: Vec<String>, // bins `on_path` cannot find
+        fail_in: Option<(String, String)>, // a `tool` run in a folder ending so fails with this
     }
 
     #[cfg(test)]
     impl FakeExec {
         pub(crate) fn answering(fallback: Result<&str, &str>) -> Self {
             let fallback = fallback.map(str::to_string).map_err(str::to_string);
-            Self { answers: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None }
+            Self {
+                answers: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None,
+                exit: (0, String::new()), missing: vec![], fail_in: None,
+            }
         }
 
         /// Holds every `gh` until the test drops its guard on `gate`, so readers provably overlap.
@@ -905,6 +948,19 @@ pub(crate) mod exec {
             let answer = answer.map(str::to_string).map_err(str::to_string);
             self.answers.push((prefix.iter().map(|s| s.to_string()).collect(), answer));
             self
+        }
+
+        /// Every `tool` exits with `code` and prints `stderr`, beside whatever answers its stdout.
+        pub(crate) fn exiting(self, code: i32, stderr: &str) -> Self {
+            Self { exit: (code, stderr.to_string()), ..self }
+        }
+
+        pub(crate) fn failing_in(self, dir: &str, err: &str) -> Self {
+            Self { fail_in: Some((dir.to_string(), err.to_string())), ..self }
+        }
+
+        pub(crate) fn without(self, bins: &[&str]) -> Self {
+            Self { missing: bins.iter().map(|b| b.to_string()).collect(), ..self }
         }
 
         pub(crate) fn calls(&self) -> Vec<Vec<String>> {
@@ -938,18 +994,27 @@ pub(crate) mod exec {
         fn glab(&self, _root: &str, args: &[&str]) -> Result<String, String> {
             self.answer(Self::argv("glab", args))
         }
-        fn tool(&self, _root: &str, bin: &str, args: &[&str], _secs: u64) -> Result<Output, String> {
-            self.answer(Self::argv(bin, args)).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
+        fn tool(&self, root: &str, bin: &str, args: &[&str], _secs: u64) -> Result<Output, String> {
+            if let Some((_, err)) = self.fail_in.as_ref().filter(|(d, _)| root.ends_with(d.as_str())) {
+                self.calls.lock().unwrap().push(Self::argv(bin, args));
+                return Err(err.clone());
+            }
+            let (code, stderr) = self.exit.clone();
+            self.answer(Self::argv(bin, args)).map(|stdout| Output { code: Some(code), stdout, stderr })
         }
         fn http(&self, req: &HttpReq) -> Result<HttpResp, String> {
-            let mode: &[&str] = if req.report { &["--report"] } else { &[] };
+            let mode: &[&str] = match (&req.body, req.report) {
+                (_, true) => &["--report"],
+                (Some(b), _) => &["--data", b],
+                _ => &[],
+            };
             self.answer(Self::argv("curl", &[&[req.url.as_str()][..], mode].concat())).map(|body| HttpResp { code: 200, body })
         }
         fn ssh(&self, alias: &str, _script: &str, _secs: u64) -> Result<Output, String> {
             self.answer(Self::argv("ssh", &[alias])).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
         }
-        fn on_path(&self, _bin: &str) -> bool {
-            true
+        fn on_path(&self, bin: &str) -> bool {
+            !self.missing.iter().any(|m| m == bin)
         }
     }
 }
@@ -994,6 +1059,10 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-code-scanning", read: crate::maint_sec::gh_code_scanning },
     SourceDef { id: "github-secret-scanning", read: crate::maint_sec::gh_secret_scanning },
     SourceDef { id: "sarif-files", read: crate::maint_sec::sarif_files },
+    SourceDef { id: "osv", read: crate::maint_sec::osv },
+    SourceDef { id: "npm-audit", read: crate::maint_sec::npm_audit },
+    SourceDef { id: "pnpm-audit", read: crate::maint_sec::pnpm_audit },
+    SourceDef { id: "cargo-audit", read: crate::maint_sec::cargo_audit },
     SourceDef { id: "dependabot-prs", read: crate::maint_repo::dependabot_prs },
     SourceDef { id: "renovate-prs", read: crate::maint_repo::renovate_prs },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
@@ -1245,7 +1314,7 @@ mod tests {
                     _ if dir.join(path).exists() => {}
                     Some(k) => write(&dir, path, &format!("{{\"{k}\": {{}}}}")),
                     None if path.ends_with('/') => write(&dir, &format!("{path}x"), ""),
-                    None => write(&dir, path, ""),
+                    None => write(&dir, path, &lock_sample(path)),
                 }
             }
             let det = detect(&s(&dir), true);
@@ -1256,6 +1325,16 @@ mod tests {
         let all: BTreeSet<&str> = repos.iter().flat_map(|(_, d)| d.sources.iter().map(String::as_str)).collect();
         assert_eq!(all.len(), SOURCES.len(), "some source is read on no fixture forge");
         repos
+    }
+
+    /// A lockfile with packages in it, so a source that reads one gets as far as its `Exec`.
+    fn lock_sample(path: &str) -> String {
+        match path {
+            "Cargo.lock" => FakeExec::testdata("lock-cargo.lock"),
+            "package-lock.json" => FakeExec::testdata("lock-npm-v3.json"),
+            "pnpm-lock.yaml" => FakeExec::testdata("lock-pnpm-v9.yaml"),
+            _ => String::new(),
+        }
     }
 
     const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None, api: None };
@@ -1317,6 +1396,13 @@ mod tests {
         let mixed = include_str!("../../src/maintmanifest.json").replacen("[\"!github\"]", "[\"gitlab\", \"!github\"]", 1);
         assert!(serde_json::from_str::<Manifest>(&mixed).unwrap().check().unwrap_err().contains("never both"));
         let needs = include_str!("../../src/maintmanifest.json").replace("\"needs\": [\"sarif\"]", "\"needs\": [\"sarfi\"]");
+        let man = include_str!("../../src/maintmanifest.json");
+        let mut m: Manifest = serde_json::from_str(man).unwrap();
+        m.sources.get_mut("osv").unwrap().sends = None;
+        assert!(m.check().unwrap_err().contains("says what it sends"), "a public source must disclose");
+        let mut m: Manifest = serde_json::from_str(man).unwrap();
+        m.sources.get_mut("git-tags").unwrap().sends = Some("x".into());
+        assert!(m.check().is_err(), "and only a public one");
         assert!(serde_json::from_str::<Manifest>(&needs).unwrap().check().unwrap_err().contains("sarfi"), "a key config cannot set");
         let ok = |f: &[&str], k| forge_admits(&f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), k);
         assert!(ok(&["!github"], ForgeKind::None) && !ok(&["!github"], ForgeKind::Github) && ok(&[], ForgeKind::Github));
@@ -1368,7 +1454,7 @@ mod tests {
     }
 
     fn meta(facet: Facet, cost: Cost) -> SourceMeta {
-        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sees: vec![], blind: vec![] }
+        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, sees: vec![], blind: vec![] }
     }
 
     fn calls_tool(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
@@ -1417,6 +1503,35 @@ mod tests {
         }
     }
 
+    /// No scan runs a program in the project, forced or opted in; only an opted-in one sends to a
+    /// public service. Every such source is reached on a rich repo, so none slips past unasked.
+    #[test]
+    fn a_scan_runs_no_tool_and_sends_nothing_public_without_the_opt_in() {
+        let mut seen = BTreeSet::new();
+        for (root, det) in rich_repos() {
+            for (def, ctx) in detected(&root, &det) {
+                let m = &MANIFEST.sources[def.id];
+                if !matches!(m.cost, Cost::Tool | Cost::Public) {
+                    continue;
+                }
+                seen.insert(def.id);
+                for public in [false, true] {
+                    let ex = FakeExec::answering(Ok(""));
+                    let key = format!("{root}/scan/{}/{public}", def.id);
+                    let rep = read_cached(&key, def.id, m, def.read, &ctx, &ex, Mode::Scan, public, true, None);
+                    let ran = !ex.calls().is_empty();
+                    assert_eq!(ran, m.cost == Cost::Public && public, "{} public={public}: {:?}", def.id, ex.calls());
+                    if !ran {
+                        assert_eq!(rep.coverage, Coverage::NotRun, "{}", def.id);
+                    }
+                }
+            }
+        }
+        let want: BTreeSet<&str> = MANIFEST.sources.iter().filter(|(_, s)| matches!(s.cost, Cost::Tool | Cost::Public)).map(|(id, _)| id.as_str()).collect();
+        assert_eq!(seen, want);
+        assert!(want.contains("osv") && want.contains("cargo-audit"), "{want:?}");
+    }
+
     #[test]
     fn every_call_uses_a_bin_trusted_for_its_cost() {
         let repos = rich_repos();
@@ -1451,6 +1566,34 @@ mod tests {
             assert!(data_arg(bad).is_err(), "{bad:?}");
         }
         assert_eq!(data_arg("prod-1"), Ok("prod-1"));
+    }
+
+    /// Executed, not read: what cmd.exe picks is the hazard, and only running it shows which.
+    #[test]
+    fn a_tool_is_the_file_on_path_never_one_the_project_planted() {
+        let (proj, bin) = (scratch_dir(), scratch_dir());
+        #[cfg(windows)]
+        let (name, planted, real) = ("npm.cmd", "@echo PLANTED %*\r\n", "@echo REAL %*\r\n");
+        #[cfg(not(windows))]
+        let (name, planted, real) = ("npm", "#!/bin/sh\necho PLANTED \"$@\"\n", "#!/bin/sh\necho REAL \"$@\"\n");
+        for (dir, text) in [(&proj, planted), (&bin, real)] {
+            std::fs::write(dir.join(name), text).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(dir.join(name), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::join_paths([Path::new("."), &bin]).unwrap().to_string_lossy().to_string();
+        let mut cmd = exec::tool_cmd("npm", &["audit", "--json"], &path).unwrap();
+        assert_eq!(cmd.get_program(), bin.join(name).as_os_str(), "the absolute file, so nothing searches the project");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, ["audit", "--json"]);
+        let out = cmd.current_dir(&proj).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(said.contains("REAL audit --json") && !said.contains("PLANTED"), "{said}");
+        for bad in ["a&b", "%PATH%", "\"x", "a\nb", "a|b"] {
+            assert!(exec::tool_cmd("npm", &[bad], &path).is_err(), "{bad:?}");
+        }
+        assert!(exec::tool_cmd("npm", &["audit"], ".").is_err(), "a relative PATH entry is never searched");
+        assert!(exec::resolve_bin("npm", &path).is_some_and(|p| p.starts_with(&bin)));
     }
 
     fn counts_gh(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {

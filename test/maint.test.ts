@@ -552,6 +552,9 @@ describe("prod, coming up and hosts", () => {
     expect(cell("prod", inp)).toMatchObject({ state: "cantCheck", level: "muted", text: "not checked" });
     const run = tabExtras("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run");
     expect(run.map((f) => [f.key, f.facet, f.source, f.text])).toEqual([["run:http-probe", "prod", "http-probe", "URL checks: not checked"]]);
+    expect(run[0].busy, "nothing out yet").toBeUndefined();
+    const out = tabExtras("/r", { ...inp, asking: ["http-probe"] }, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run");
+    expect(out[0].busy, "a read already out is not a button to start another").toBe(true);
     const answered = { ...inp, reports: { ...inp.reports, "http-probe": ok("http-probe", probes(p("app", 90))) } };
     expect(tabExtras("/r", answered, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run"), "asked once is no longer a row").toEqual([]);
   });

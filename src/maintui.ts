@@ -6,10 +6,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, FACET_TAB, prodChecks, tabFindings } from "./maint";
+import { clampMaint, covText, FACET_TAB, prodChecks, tabFindings } from "./maint";
 import { briefFor } from "./maintbrief";
-import { maintInput, runSource, scanProject } from "./maintscan";
-import { FACETS, type Facet } from "./maintsources";
+import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
+import { FACETS, findSource, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, type MaintChip, type MaintSub } from "./maintview";
 import { discoverTasks, execCmd } from "./tasks";
 import type { GitActionResult } from "./types";
@@ -52,7 +52,14 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
     void scanProject(root, true);
     return;
   }
-  if (f.verb === "run") { void runSource(root, f.source); return; }
+  if (f.verb === "run") {
+    if (askingFor(root, [f.source])) return; // already out: two audits would share one folder
+    const label = findSource(f.source)?.label ?? f.source;
+    toast(`${label} for ${name}…`);
+    const r = await runSource(root, f.source);
+    if (r.coverage.state !== "ok") toast(`${name}: ${label}: ${covText(r.coverage)}`);
+    return;
+  }
   // Open work lives in Today's queue; the rest of what Review means is the Maintenance tab's.
   if (f.verb === "review") { host.openDashboard(name, root, f.facet === "work" ? "today" : "maint"); return; }
   const tasks = await discoverTasks(root).catch((e) => { dlog("warn", `maint: tasks for ${root}: ${e}`); return []; });

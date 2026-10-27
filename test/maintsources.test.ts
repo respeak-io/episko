@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  BOTS, COSTS, FACETS, FACET_DEFS, MAINT_CAPS, MAINT_PREFS_DEFAULT, MARKERS, SOURCES, capsOf, facetDef,
+  BOTS, COSTS, FACETS, FACET_DEFS, MAINT_CAPS, MAINT_PREFS_DEFAULT, MARKERS, SOURCES, capsOf, disclosure, facetDef,
   facetSources, findSource, permitted, runnable, sourceDef, type Cost, type Mode,
 } from "../src/maintsources";
 import { ADVISORY_KINDS, CI_STATUSES, FORGE_BY, SEVERITIES } from "../src/maint";
@@ -91,6 +91,24 @@ describe("what a mode may run", () => {
     const det = { sources: ["git-tags", "nope", "git-local", "changelog"] };
     expect(runnable(det, MAINT_PREFS_DEFAULT, "scan")).toEqual(["git-tags", "git-local", "changelog"]);
     expect(runnable(det, { public: [], off: ["git-local"] }, "explicit")).toEqual(["git-tags", "changelog"]);
+  });
+
+  it("offers a public source to a scan only on a machine that opted in, and a tool never", () => {
+    const pub = SOURCES.filter((s) => s.cost === "public").map((s) => s.id);
+    const tools = SOURCES.filter((s) => s.cost === "tool").map((s) => s.id);
+    expect(pub).toContain("osv");
+    expect(tools.length).toBeGreaterThan(0);
+    const det = { sources: ["git-tags", ...pub, ...tools] };
+    expect(runnable(det, MAINT_PREFS_DEFAULT, "scan")).toEqual(["git-tags"]);
+    expect(runnable(det, { public: ["osv"], off: [] }, "scan")).toEqual(["git-tags", "osv"]);
+    expect(runnable(det, { public: [...pub, ...tools], off: [] }, "scan"), "an opt-in names public sources only").toEqual(["git-tags", ...pub]);
+    expect(runnable(det, MAINT_PREFS_DEFAULT, "explicit")).toEqual(det.sources);
+    expect(runnable(det, { public: ["osv"], off: ["osv"] }, "scan"), "skipped beats opted in").toEqual(["git-tags"]);
+  });
+
+  it("gives every public source, and only those, a disclosure naming what it sends", () => {
+    for (const s of SOURCES) expect(disclosure(s) !== null, s.id).toBe(s.cost === "public");
+    expect(disclosure(sourceDef("osv"))).toMatch(/^OSV\.dev receives .*lockfiles\. Nothing else leaves this machine\.$/);
   });
 });
 

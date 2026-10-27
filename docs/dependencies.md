@@ -134,7 +134,10 @@ would mark every advisory as handled.
 ## The one thing on this pane that runs a command
 
 `dep_outdated` spawns the project's own package manager. Everything else on the dashboard
-is a read, so this one is fenced:
+is a read, so this one is fenced. It is a `tool`-class command in Maintenance's terms
+(docs/maintenance.md § Cost classes), and so are `npm audit`, `pnpm audit` and `cargo audit`
+there: what decides whether a program runs in your project is its class, never its call site,
+and the class allows a click and nothing else. The rules below hold for all of them:
 
 - **It is never on a load path.** No click on a project runs it; the Out of date tab opens
   empty and says so. `dep_tools` — which manifests exist, which binaries are on PATH — is
@@ -147,7 +150,12 @@ is a read, so this one is fenced:
 - **A tool that applies and cannot run says why** (`blocked`), greyed with the reason, the
   rule `tasks.rs` already follows: `cargo-outdated` is a separate install, and a row that
   simply vanished would read as "nothing to update here".
-- **120s and then killed**, since this resolves against a registry.
+- **120s and then killed**, since this resolves against a registry (an audit gets 180s:
+  `cargo audit` clones its advisory database on a first run).
+- **The binary is the one on PATH, never one the project ships.** An audit spawns the
+  absolute file `resolve_bin` found (cmd.exe would look in the project folder first, where a
+  clone can plant `npm.cmd`), and `cargo audit` is run as `cargo-audit audit`, since a
+  project's `.cargo/config.toml` may alias `audit` (docs/maintenance.md).
 - **The answer is kept apart from the reads** (`depRun`/`depScanned`), and a scan that
   outlives the stage is dropped: it was an answer about another folder's lockfile.
 

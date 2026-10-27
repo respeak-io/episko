@@ -384,7 +384,8 @@ function buildMaint(now: number): MaintView {
     }
     read.push({ root, inp });
     hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod") });
-    if (prodChecks(inp).length) { prodProjects++; prodChecking ||= askingFor(root); }
+    const prod = prodChecks(inp);
+    if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
     const fs = findings(root, inp, th, now);
     for (const f of [...fs, ...tabExtras(root, inp, th, now)]) rows.push({ ...f, name: p.name });
     cards.push({

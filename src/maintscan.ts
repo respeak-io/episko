@@ -39,12 +39,19 @@ export function setMaintRender(f: () => void) { paint = f; }
 // Which public sources this machine may call and which it skips. Never synced: it changes what runs.
 const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 const stored = readObj<unknown>("cc-maint-prefs");
-const prefs: MaintPrefs = { ...MAINT_PREFS_DEFAULT, public: strs(stored.public), off: strs(stored.off) };
+export let maintPrefs: MaintPrefs = { ...MAINT_PREFS_DEFAULT, public: strs(stored.public), off: strs(stored.off) };
+
+/** Settings' switch for one public source. The next scan reads it; nothing is asked now. */
+export function setMaintPublic(id: string, on: boolean): void {
+  const rest = maintPrefs.public.filter((x) => x !== id);
+  maintPrefs = { ...maintPrefs, public: on ? [...rest, id] : rest };
+  localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
+}
 
 /** What ./maint's rules take for one project, or null before anything was asked. */
 export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
-  return e ? { det: e.det, reports: e.reports, skip: prefs.off } : null;
+  return e ? { det: e.det, reports: e.reports, skip: maintPrefs.off, asking: askingIds(root) } : null;
 }
 
 let running = 0;
@@ -66,7 +73,7 @@ const failed = (id: string, reason: string): SourceReport => ({
 
 function readOne(root: string, id: string, mode: Mode, force: boolean): Promise<SourceReport> {
   return invoke<unknown>("maint_read", {
-    root, source: id, mode, public: prefs.public.includes(id), force, account: ghAccountFor(root),
+    root, source: id, mode, public: maintPrefs.public.includes(id), force, account: ghAccountFor(root),
   }).then((raw) => narrowMaint(raw, id), (e) => failed(id, String(e)));
 }
 
@@ -93,7 +100,7 @@ async function scanOne(root: string, force: boolean): Promise<void> {
     paint();
     return;
   }
-  const ids = det.sources.filter((id) => !prefs.off.includes(id));
+  const ids = det.sources.filter((id) => !maintPrefs.off.includes(id));
   e.out = ids.length;
   paint();
   await Promise.all(ids.map((id) => slot(async () => live() ? readOne(root, id, "scan", force) : null).then((r) => {
@@ -120,14 +127,19 @@ export async function scanFleet(roots: readonly string[], force: boolean): Promi
   paint();
 }
 
-const asking = new Map<string, number>(); // per root: click-only reads still out
-/** Whether a click-only read of this project is still out, so its button can say so. */
-export const askingFor = (root: string): boolean => (asking.get(root) ?? 0) > 0;
+const asking = new Map<string, number>(); // per root and source: click-only reads still out
+const askKey = (root: string, id: string) => `${root}\n${id}`;
+/** Whether a click-only read of this project (of these sources, if named) is still out, so its button can say so. */
+const askingIds = (root: string): string[] =>
+  [...asking].filter(([k, n]) => n > 0 && k.startsWith(`${root}\n`)).map(([k]) => k.slice(root.length + 1));
+export const askingFor = (root: string, ids?: readonly string[]): boolean =>
+  askingIds(root).some((id) => !ids || ids.includes(id));
 
 /** A click-only source, run once on a person's ask (`explicit`, the class that may execute). */
 export async function runSource(root: string, id: string): Promise<SourceReport> {
   const g = forgotten.get(root) ?? 0;
-  asking.set(root, (asking.get(root) ?? 0) + 1);
+  const k = askKey(root, id);
+  asking.set(k, (asking.get(k) ?? 0) + 1);
   paint();
   try {
     const r = await slot(() => readOne(root, id, "explicit", true));
@@ -135,7 +147,7 @@ export async function runSource(root: string, id: string): Promise<SourceReport>
     if (e && (forgotten.get(root) ?? 0) === g) e.reports[id] = r;
     return r;
   } finally {
-    asking.set(root, (asking.get(root) ?? 1) - 1);
+    asking.set(k, (asking.get(k) ?? 1) - 1);
     paint();
   }
 }
