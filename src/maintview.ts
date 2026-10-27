@@ -10,6 +10,7 @@ import {
 } from "./maint";
 import { FACETS, facetDef, type Facet, type MaintCap } from "./maintsources";
 import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
+import type { DeployCfg } from "./deploy";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
@@ -259,12 +260,13 @@ export interface MaintDash {
   deps: MaintDeps | null; // null: nothing to say and nothing to offer (depSilent)
   hygiene: Hygiene | null; staleDays: number;
   cover: CoverRow[]; forge: string; unreadable: boolean;
+  deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
 }
 
 /** Which card a cell scrolls to on the dashboard: its fleet tab's, by the same map. */
 export const DASH_CARD: Record<MaintTab, [string, string]> = {
   delivery: ["delivery", "Delivery"], security: ["deps", "Dependencies"], code: ["git", "Git hygiene"],
-  servers: ["cover", "Coverage"], work: ["todo", "To do"],
+  servers: ["runs", "Runs on"], work: ["todo", "To do"],
 };
 
 const across = (sub: MaintSub) => `<button class="aslink mt-across" data-mtacross="${sub}"`
@@ -342,6 +344,35 @@ function gitCard(v: MaintDash): string {
     grow("branches", "Open Branches, where merged branches are swept") + across("code"), body);
 }
 
+// The doors are the project settings row's: an agent proposes, a person applies, the file is git's.
+function runsCard(v: MaintDash): string {
+  const d = v.deploy;
+  const door = (what: "propose" | "file", label: string, tip: string) =>
+    `<button class="aslink" data-mtdeploy="${what}" data-mtroot="${escAttr(v.card.path)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`;
+  const ask = door("propose", d ? "Re-check…" : "Propose with an agent",
+    "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard");
+  // A failed detection is not a loading one: say so, and keep the door the card exists for.
+  if (!v.detected) {
+    return dcard("runs", "Runs on", "", across("servers"), v.card.err && !v.card.reading
+      ? `<p class="ac-empty">Could not read this project, so its [deploy] table is unknown.</p><p class="ac-empty">${ask}</p>`
+      : said(undefined));
+  }
+  if (!d) {
+    return dcard("runs", "Runs on", "", across("servers"),
+      `<p class="ac-empty">No [deploy] table, so Episko does not know where this project runs.</p><p class="ac-empty">${ask}</p>`);
+  }
+  const rows = [
+    d.host ? kv("Host", `${d.host} · ssh alias`) : "",
+    d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
+    ...Object.entries(d.urls).map(([n, u]) => kv(n, u)),
+    d.sentry ? kv("Errors", d.sentry) : "",
+    d.versionUrl ? kv("Version from", d.versionUrl) : "",
+  ].join("");
+  const doors = door("file", "Open file", "Open .episko/episko.toml") + " · " + ask;
+  return dcard("runs", "Runs on", "from [deploy]", across("servers"),
+    rows + `<p class="ac-empty">Nothing connects until you ask. ${doors}</p>`);
+}
+
 // Amber only where a fix exists or a read broke; every other state is a fact, muted.
 const COVER_CLS: Partial<Record<CoverRow["state"], string>> = { noAccess: "l-warn", noTool: "l-warn", error: "l-warn" };
 function coverCard(v: MaintDash): string {
@@ -365,5 +396,5 @@ export function maintDashHtml(v: MaintDash): string {
   return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
     + `<div class="mt-dwhen">${when}</div></div>${err}`
     + `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}${deliveryCard(v)}${v.deps ? depsCard(v.deps) : ""}</div>`
-    + `<div class="mt-dcol">${gitCard(v)}${coverCard(v)}</div></div>`;
+    + `<div class="mt-dcol">${runsCard(v)}${gitCard(v)}${coverCard(v)}</div></div>`;
 }

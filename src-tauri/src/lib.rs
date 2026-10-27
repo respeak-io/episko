@@ -3,6 +3,7 @@
 //! `claude --session-id`, instrumented per launch via `--settings` (CLAUDE.md).
 
 mod agent;
+mod deploy;
 mod deps;
 mod external;
 mod files;
@@ -520,6 +521,9 @@ pub fn run() {
             stack::run_infos,
             stack::propose_stack,
             stack::write_stack,
+            deploy::deploy_config,
+            deploy::propose_deploy,
+            deploy::write_deploy,
             github::gh_threads,
             github::gh_issue,
             github::gh_accounts,

@@ -26,6 +26,18 @@
       },
       "trunk": "main"
     },
+    "deploy": {
+      "compose": [
+        "api",
+        "worker"
+      ],
+      "host": "prod-1",
+      "sentry": "acme/api",
+      "urls": {
+        "app": "https://app.example.com"
+      },
+      "versionUrl": "https://app.example.com/version"
+    },
     "forge": {
       "by": "table",
       "host": "github.com",

@@ -16,6 +16,7 @@ import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
 import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
 import { checkRun, describePrompt, runSummaryText, taskCmd, type RunInfo } from "./runinfo";
+import { checkDeploy, deployPrompt, deployText, isEmptyDeploy, narrowDeploy, NO_FILE, type DeployCfg, type DeployProposal } from "./deploy";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -76,7 +77,7 @@ import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
 import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
 import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
-import { forgetMaint } from "./maintscan";
+import { forgetMaint, maintOf, scanProject } from "./maintscan";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -781,6 +782,49 @@ export async function proposeStack(root: string): Promise<void> {
     toast(`Described ${n} task${n === 1 ? "" : "s"}${p.tasks.length ? ` and added ${p.tasks.length}` : ""}. Commit .episko/ to share it`);
   } catch (e) {
     toast(`No dev stack proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
+}
+
+// ---------- where it runs ----------
+
+// A new committable file is asked about once more: Apply answered for the table, not the file.
+async function writeDeploy(root: string, deploy: DeployCfg): Promise<boolean> {
+  try {
+    await invoke("write_deploy", { dir: root, deploy, create: false });
+    return true;
+  } catch (e) {
+    if (String(e) !== NO_FILE) throw e;
+  }
+  const make = await ask(`${basename(root)} has no \`.episko/episko.toml\` yet. Create it to hold \`[deploy]\`? It is a new file to commit.`,
+    { title: "Create .episko/episko.toml", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+  if (make) await invoke("write_deploy", { dir: root, deploy, create: true });
+  return make;
+}
+
+// The stack describer's agent with a narrower question, read-only and headless; nothing is
+// written until Apply, and nothing connects anywhere until a click (docs/maintenance.md).
+export async function proposeDeploy(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project to find where it runs. This can take a minute or two");
+  try {
+    const current = await invoke<unknown>("deploy_config", { dir: root }).then(narrowDeploy, () => null);
+    const p = await invoke<DeployProposal>("propose_deploy", { dir: root, prompt: deployPrompt(current) });
+    const checked = checkDeploy(p);
+    const text = deployText(p, checked, current);
+    if (isEmptyDeploy(checked.deploy)) {
+      await ask(text, { title: "Nowhere to point at", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    if (!await ask(text, { title: `Where ${basename(root)} runs`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    if (!await writeDeploy(root, checked.deploy)) return;
+    toast("[deploy] written. Commit .episko/ to share it");
+    // Only a project Maintenance already read: the write dropped Rust's detection, every report stays.
+    if (maintOf(root)) void scanProject(root, false);
+  } catch (e) {
+    toast(`No deploy proposal: ${e}`);
   } finally {
     proposing.delete(root);
   }

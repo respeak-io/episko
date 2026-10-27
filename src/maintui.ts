@@ -25,6 +25,7 @@ export interface MaintHost {
   render: () => void;
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
+  deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -81,6 +82,8 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   if (view) { host.openView?.(view.dataset.mtview === "branches" ? "branches" : "deps"); return true; }
   const across = t.closest<HTMLElement>("[data-mtacross]");
   if (across) { host.openAcross?.(subOf(across.dataset.mtacross)); return true; }
+  const dep = t.closest<HTMLElement>("[data-mtdeploy]");
+  if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   const cell = t.closest<HTMLElement>("[data-mtcell]");

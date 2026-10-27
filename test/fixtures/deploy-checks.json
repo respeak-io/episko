@@ -1,0 +1,24 @@
+{
+  "note": "One table for deploy.rs's keep and deploy.ts's checkDeploy: `refused` is the line both must say, null keeps the value. A url case is named app.",
+  "cases": [
+    { "field": "url", "value": "https://app.example.com", "refused": null },
+    { "field": "url", "value": "HTTPS://x.example", "refused": null },
+    { "field": "url", "value": "https://", "refused": "url app = \"https://\" is not an http(s) address" },
+    { "field": "url", "value": "https://a b", "refused": "url app = \"https://a b\" is not an http(s) address" },
+    { "field": "url", "value": "javascript:alert(1)", "refused": "url app = \"javascript:alert(1)\" is not an http(s) address" },
+    { "field": "url", "value": "file:///etc/passwd", "refused": "url app = \"file:///etc/passwd\" is not an http(s) address" },
+    { "field": "version_url", "value": "http://v.example/version", "refused": null },
+    { "field": "version_url", "value": "ftp://v.example", "refused": "version_url = \"ftp://v.example\" is not an http(s) address" },
+    { "field": "host", "value": "prod-1", "refused": null },
+    { "field": "host", "value": "-oProxyCommand=x", "refused": "host = \"-oProxyCommand=x\" is not an ssh alias or host name" },
+    { "field": "host", "value": "two words", "refused": "host = \"two words\" is not an ssh alias or host name" },
+    { "field": "compose", "value": "api", "refused": null },
+    { "field": "compose", "value": "--all", "refused": "compose service \"--all\" is not a name" },
+    { "field": "compose", "value": "two words", "refused": "compose service \"two words\" is not a name" },
+    { "field": "sentry", "value": "acme-co/api.web", "refused": null },
+    { "field": "sentry", "value": "acme", "refused": "sentry = \"acme\" is not org/project" },
+    { "field": "sentry", "value": "a/b/c", "refused": "sentry = \"a/b/c\" is not org/project" },
+    { "field": "sentry", "value": "-a/b", "refused": "sentry = \"-a/b\" is not org/project" },
+    { "field": "sentry", "value": "acme/", "refused": "sentry = \"acme/\" is not org/project" }
+  ]
+}

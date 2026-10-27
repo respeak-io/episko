@@ -3,6 +3,7 @@
 // in. Facts in, words out: no DOM, no Tauri, and no vendor named, so the next adapter needs none.
 
 import { FACETS, COSTS, facetDef, findSource, type Cost, type Facet } from "./maintsources";
+import { narrowDeploy, type DeployCfg } from "./deploy";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
 
@@ -72,7 +73,8 @@ export interface MaintConfig {
   trunk: string | null; tagPattern: string | null; sarif: string[]; params: Record<string, string>;
   thresholds: Record<string, number>;
 }
-export interface Detection { repoRoot: string; forge: Forge; sources: string[]; markers: Marker[]; config: MaintConfig }
+/** `deploy` is `[deploy]` with its unsafe values dropped, or null without one. */
+export interface Detection { repoRoot: string; forge: Forge; sources: string[]; markers: Marker[]; config: MaintConfig; deploy: DeployCfg | null }
 
 // ---------- narrowing ----------
 
@@ -165,6 +167,7 @@ export function narrowDetection(raw: unknown): Detection | null {
       bots: strs(c.bots), trunk: strOr(c.trunk), tagPattern: strOr(c.tagPattern), sarif: strs(c.sarif),
       params: record(c.params, str), thresholds: record(c.thresholds, num),
     },
+    deploy: narrowDeploy(raw.deploy),
   };
 }
 

@@ -13,6 +13,7 @@ const input = (...reps: SourceReport[]): MaintInput => ({
   det: {
     repoRoot: "/r", forge: { kind: "unknown", host: null, path: null, by: "none" }, sources: reps.map((r) => r.source), markers: [],
     config: { readable: true, forge: null, off: [], sources: {}, bots: [], trunk: null, tagPattern: null, sarif: [], params: {}, thresholds: {} },
+    deploy: null,
   },
   reports: Object.fromEntries(reps.map((r) => [r.source, r])),
 });

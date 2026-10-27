@@ -67,6 +67,8 @@ Two doors, one agent. The **▶ Run picker** carries a *Dev stack* strip, since 
 
 **Nothing is written until Apply.** `checkProposal` drops any `up`/`down` that names no task the project has or the proposal adds, and says so; the review dialog shows each value with its reason. Apply writes the proposed tasks to `.episko/tasks.toml` first (a `down` may name one), then `[stack]` through `toml_edit` (`write_stack`), keeping every other table and comment. Nothing is committed. Creating `.episko/episko.toml` needs no second question: the dialog was it.
 
+**The same agent answers `[deploy]`.** `propose_toml` (deploy.rs) is the one headless read-only run and `fenced` the one reader of its answer's block and `WHY` lines; `propose_stack` and `propose_deploy` each add only their question and their table. Where a project runs is Maintenance's (docs/maintenance.md), and unlike this dialog its Apply asks once more before creating `.episko/episko.toml`.
+
 **It never syncs.** `up` and `down` name tasks Episko runs, the same class as `tasks.toml`, which docs/sync.md keeps in git: a value that arrived through the server would change what ⏹ runs with no commit anyone reviewed.
 
 ## Not yet

@@ -125,6 +125,9 @@ export interface DashHost {
   setGhAccount: (root: string, login: string | null) => void;
   // A Maintenance card's way across projects: the fleet's Maintenance, on that tab, unfiltered.
   openFleetMaint: (sub: MaintSub) => void;
+  // The Runs on card's doors: the `[deploy]` proposal (actions.ts) and the committed file itself.
+  proposeDeploy: (root: string) => void;
+  openConfig: (root: string) => void;
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
@@ -133,7 +136,7 @@ let host: DashHost = {
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
-  setGhAccount: () => {}, openFleetMaint: () => {},
+  setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, openConfig: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
 
@@ -1272,6 +1275,7 @@ function maintNow(now: number): MaintDash {
     },
     hygiene: hygieneOf(inp, th, now), staleDays: th.staleBranchDays,
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
+    deploy: inp.det?.deploy ?? null, detected: !!inp.det,
   };
 }
 
@@ -1305,6 +1309,7 @@ const maintHost: MaintHost = {
   render: () => renderDash(),
   openView: (v) => openDashView(v),
   openAcross: (sub) => host.openFleetMaint(sub),
+  deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
 };
 
 // ---------- events ----------

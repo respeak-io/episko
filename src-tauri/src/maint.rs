@@ -240,6 +240,7 @@ pub(crate) struct Detection {
     sources: Vec<String>, // the ids that apply here, in `SOURCES` order
     markers: Vec<Marker>,
     config: MaintConfig,
+    deploy: Option<crate::deploy::DeployConfig>, // `[deploy]`, its unsafe values dropped; None without one
 }
 
 /// `[maintenance]` as read. A file that exists and does not parse is `readable: false`, so
@@ -578,7 +579,7 @@ fn detect_now(root: &str) -> Detection {
         .map(String::as_str)
         .collect();
     let probes = probe(Path::new(&repo_root), &entries);
-    let sources = SOURCES.iter()
+    let sources: Vec<String> = SOURCES.iter()
         .filter(|d| {
             let m = &MANIFEST.sources[d.id];
             applies(&m.forge, &m.detect, forge.kind, &probes).is_some()
@@ -588,20 +589,26 @@ fn detect_now(root: &str) -> Detection {
         .map(|d| d.id.to_string())
         .collect();
     let host = forge.host.clone().unwrap_or_else(|| "this host".into());
-    let markers = MANIFEST.markers.iter()
+    let mut markers: Vec<Marker> = MANIFEST.markers.iter()
         .filter(|m| !facet_off(&config, m.facet))
         .filter_map(|m| {
             applies(&m.forge, &m.detect, forge.kind, &probes)
                 .map(|found| Marker { facet: m.facet, label: m.label.replace("{host}", &host), found })
         })
         .collect();
-    Detection { repo_root, forge, sources, markers, config }
+    let deploy = crate::deploy::read(&repo_root);
+    // A table nothing reads yet must not be drawn as "no deploy": it is found, and said so.
+    let prod_read = sources.iter().any(|id| MANIFEST.sources[id.as_str()].facet == Facet::Prod);
+    if deploy.is_some() && !prod_read && !facet_off(&config, Facet::Prod) {
+        markers.push(Marker { facet: Facet::Prod, label: "[deploy]".into(), found: vec![".episko/episko.toml".into()] });
+    }
+    Detection { repo_root, forge, sources, markers, config, deploy }
 }
 
 type Cache<K, V> = Mutex<Option<HashMap<K, (Instant, V)>>>;
 static DETECTIONS: Cache<String, Detection> = Mutex::new(None);
 
-fn root_key(root: &str) -> String {
+pub(crate) fn root_key(root: &str) -> String {
     crate::git::repo_root_of(root).unwrap_or_else(|| norm_path(root))
 }
 
@@ -621,6 +628,15 @@ pub(crate) fn detect(root: &str, force: bool) -> Detection {
         g.get_or_insert_with(HashMap::new).insert(key, (Instant::now(), d.clone()));
     }
     d
+}
+
+/// A `[deploy]` write's: the next detection reads the file again, while every report stays cached.
+pub(crate) fn forget_detection(root: &str) {
+    if let Ok(mut g) = DETECTIONS.lock() {
+        if let Some(m) = g.as_mut() {
+            m.remove(&root_key(root));
+        }
+    }
 }
 
 // ---------- Exec: the only side-effect seam ----------
@@ -1558,6 +1574,27 @@ mod tests {
     }
 
     #[test]
+    fn a_deploy_table_nothing_reads_is_found_not_none() {
+        let dir = repo_with("https://github.com/a/b.git", &[(".episko/episko.toml", "[deploy]
+host = \"prod-1\"
+")]);
+        let d = detect(&s(&dir), true);
+        assert!(d.deploy.is_some());
+        assert!(labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+        write(&dir, ".episko/episko.toml", "[deploy]
+host = \"prod-1\"
+[maintenance]
+off = [\"prod\"]
+");
+        assert!(!labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "an off facet has no markers");
+        write(&dir, ".episko/episko.toml", "[deploy]
+host = \"-oProxyCommand=x\"
+");
+        let d = detect(&s(&dir), true);
+        assert!(d.deploy.is_none() && !labels(&d).contains(&"[deploy]".to_string()), "nothing safe is no table");
+    }
+
+    #[test]
     fn the_forge_comes_from_the_remote_the_git_sources_use() {
         let dir = scratch_dir();
         git(&dir, &["init", "-q", "-b", "main"]);
@@ -1653,6 +1690,13 @@ mod tests {
             sources: vec!["git-local".into(), "git-tags".into()],
             markers: vec![Marker { facet: Facet::Ci, label: "Woodpecker".into(), found: vec![".woodpecker.yml".into()] }],
             config: cfg,
+            deploy: crate::deploy::parse_deploy("[deploy]
+host = \"prod-1\"
+compose = [\"api\", \"worker\"]
+urls = { app = \"https://app.example.com\" }
+sentry = \"acme/api\"
+version_url = \"https://app.example.com/version\"
+"),
         };
         (det, reports)
     }

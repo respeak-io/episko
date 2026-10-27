@@ -342,3 +342,30 @@ describe("what a command returns", () => {
     expect(wire).toEqual(["ambiguous", "badId", "none", "noRoot", "notYet", "unreadable"]);
   });
 });
+
+// `[deploy]` crosses both ways: `write_deploy` deserialises the same struct `deploy_config` sends,
+// so a field renamed on one side alone is a table that silently loses a value on Apply.
+const DEPLOY_RS = read(RS, "deploy.rs");
+const DEPLOY_TS = read(SRC, "deploy.ts");
+const cfgHead = /pub\(crate\)\s+struct\s+DeployConfig\s*\{/.exec(DEPLOY_RS);
+
+describe("where a project runs", () => {
+  it("reads the three [deploy] calls as literals", () => {
+    for (const cmd of ["deploy_config", "propose_deploy", "write_deploy"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+    expect(cmds.get("write_deploy")!.required).toEqual(["dir", "deploy", "create"]);
+  });
+
+  it("names in DeployCfg exactly what DeployConfig carries, camelCased both ways", () => {
+    expect(cfgHead).not.toBeNull();
+    expect(attrsAbove(DEPLOY_RS, cfgHead!.index)).toMatch(/rename_all\s*=\s*"camelCase"/);
+    const rs = rustFields(declBody(DEPLOY_RS, cfgHead!.index + cfgHead![0].length - 1)).map(camel);
+    expect(sorted(rs)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployCfg\s*\{/))));
+    expect(sorted(rs)).toEqual(["compose", "host", "sentry", "urls", "versionUrl"]);
+    const prop = rustFields(bodyOf(DEPLOY_RS, /pub\(crate\)\s+struct\s+DeployProposal\s*\{/));
+    expect(sorted(prop)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployProposal\s*\{/))));
+  });
+});
