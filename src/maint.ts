@@ -220,6 +220,7 @@ export interface MaintInput {
   det: Detection | null;
   reports: Readonly<Record<string, SourceReport>>;
   skip?: readonly string[]; // sources this machine skips (`MaintPrefs.off`)
+  asking?: readonly string[]; // click-only sources whose read is still out
 }
 
 const DAY = 86_400, HOUR = 3_600;
@@ -534,6 +535,7 @@ export interface Finding {
   text: string; detail: string; verb: Verb;
   source: string; // the report it came from
   ref: string | null; // what in that report: a workflow, an advisory id, a bot, a tag, a probe
+  busy?: boolean; // a Run row whose read is out, so a second click cannot start it again
 }
 
 const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; facts: Facts }[] =>
@@ -691,7 +693,7 @@ export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = M
     const r = inp.reports[id], facet = findSource(id)?.facet;
     if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
     out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: not checked`,
-      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: null });
+      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: null, ...(inp.asking?.includes(id) ? { busy: true } : {}) });
   }
   return out;
 }

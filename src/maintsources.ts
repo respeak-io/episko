@@ -26,6 +26,7 @@ export interface FacetDef { id: Facet; label: string; none: string }
 export interface SourceDef {
   id: string; facet: Facet; label: string; cost: Cost;
   forge: string[]; detect: string[]; sees: MaintCap[]; blind: MaintCap[];
+  sends: string | null; // what a public source sends; maint.rs refuses a public one without it
 }
 export interface MarkerDef { facet: Facet; label: string; forge: string[]; detect: string[] }
 export interface BotDef { id: string; logins: string[]; branch: string; dashboard: string | null; config: string[] }
@@ -55,6 +56,7 @@ export const FACET_DEFS: readonly FacetDef[] = FACETS.map((id, i) => {
 export const SOURCES: readonly SourceDef[] = Object.entries(manifest.sources).map(([id, s]) => ({
   id, facet: among(FACETS, s.facet, "facet"), label: s.label, cost: among(COSTS, s.cost, "cost"),
   forge: s.forge, detect: s.detect, sees: capsOf(s.sees), blind: capsOf(s.blind),
+  sends: "sends" in s && typeof s.sends === "string" ? s.sends : null,
 }));
 
 export const MARKERS: readonly MarkerDef[] = manifest.markers.map((m) => ({
@@ -77,6 +79,10 @@ export function sourceDef(id: string): SourceDef {
 }
 
 export const facetDef = (f: Facet): FacetDef => FACET_DEFS[FACETS.indexOf(f)];
+
+/** The sentence every door to a public source carries: who receives what, and that nothing else leaves. */
+export const disclosure = (s: SourceDef): string | null =>
+  s.sends ? `${s.label} receives ${s.sends}. Nothing else leaves this machine.` : null;
 export const facetSources = (f: Facet): SourceDef[] => SOURCES.filter((s) => s.facet === f);
 
 // maint.rs's `permitted`, mirrored for the buttons. Rust refuses on its own; this only decides what to offer.

@@ -1277,7 +1277,7 @@ function maintNow(now: number): MaintDash {
     hygiene: hygieneOf(inp, th, now), staleDays: th.staleBranchDays,
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
     deploy: inp.det?.deploy ?? null, detected: !!inp.det,
-    probes: probeRows(inp, th, now), prod: { projects: prodChecks(inp).length ? 1 : 0, checking: askingFor(r) },
+    probes: probeRows(inp, th, now), prod: { projects: prodChecks(inp).length ? 1 : 0, checking: askingFor(r, prodChecks(inp)) },
   };
 }
 

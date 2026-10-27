@@ -13,6 +13,7 @@ mod handoff;
 mod health;
 mod github;
 mod icons;
+mod lockfile;
 mod maint;
 mod maint_ci;
 mod maint_git;

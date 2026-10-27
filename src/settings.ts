@@ -75,6 +75,8 @@ import {
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
 import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
+import { disclosure, SOURCES } from "./maintsources";
+import { maintPrefs, setMaintPublic } from "./maintscan";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -557,6 +559,15 @@ const SET_TABS: SetTab[] = [
         more: "The session's row, header and inspector say which folder it started in. Move session here restarts it in the new folder, so its conversation lives there too; that is never done for you. Off, the inspector asks each time.",
         aliases: ["drift", "worktree", "moved", "track", "show it here", "checkout", "branch"], since: "0.34.0",
         on: () => driftAuto, isDefault: () => driftAuto, reset: () => host.setDriftAuto(true) },
+      // One per public source, its disclosure as the hint: the switch says what it sends (docs/maintenance.md).
+      ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
+        kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
+        hint: disclosure(src) ?? "",
+        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same list goes then. This machine only: the switch never syncs, because it changes what leaves it.`,
+        aliases: ["maintenance", "vulnerability", "advisory", "lockfile", "cve", "security", "public", "privacy", "dependencies"],
+        on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
+        reset: () => applySetting(`maintpub:${src.id}`, "0"),
+      })),
       // Set from the project's task panel; reviewed and revoked here.
       { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
         hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
@@ -1723,6 +1734,7 @@ function applySetting(set: string, val: string) {
   else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
   else if (set === "agenttools") host.setAgentTools(val === "1");
+  else if (set.startsWith("maintpub:")) setMaintPublic(set.slice("maintpub:".length), val === "1");
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });

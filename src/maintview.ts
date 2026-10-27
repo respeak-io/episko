@@ -8,7 +8,7 @@ import {
   FACET_TAB, MAINT_TABS, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
   type MaintTab, type ProbeRow, type TabCount, type Verb,
 } from "./maint";
-import { FACETS, facetDef, type Facet, type MaintCap } from "./maintsources";
+import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
 import type { DeployCfg } from "./deploy";
 
@@ -133,15 +133,23 @@ const VERB: Record<Verb, [string, string]> = {
 };
 const AGENT_TIP = "Start an agent with a brief written from these facts. It is prefilled, never sent: you press Enter";
 
+// A click-only check names what it runs, and a public one says what leaves the machine, on the row.
+function runText(f: Finding): [string, string, string] {
+  const d = findSource(f.source), said = d && disclosure(d);
+  if (said) return [`Check with ${d.label}`, `${said} Asked once, now`, said];
+  if (d?.cost === "tool") return [`Run ${d.label}`, `Run ${d.label} in this project once, on this machine`, f.detail];
+  return [...VERB.run, f.detail];
+}
+
 // A tab's row names its project, and the name is that project's door, as a card's is.
 function findingHtml(f: Finding, name?: string): string {
-  const [label, tip] = VERB[f.verb];
+  const [label, tip, detail] = f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
   const who = name === undefined ? ""
     : `<span class="mt-rn" data-mtproj="${escAttr(f.root)}" data-mtname="${escAttr(name)}" data-tip="${escAttr(`Open ${name}`)}">${esc(name)}</span>`;
   return `<div class="mt-find l-${f.level}"><i class="mt-sev"></i>${who}
-    <span class="t">${esc(f.text)}</span><span class="d mono">${esc(f.detail)}</span>
-    <button class="mt-verb" data-mtverb="${escAttr(f.key)}" data-mtroot="${escAttr(f.root)}"
-      data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button></div>`;
+    <span class="t">${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
+    ${f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
+      data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button>`}</div>`;
 }
 
 const avatar = (c: MaintCard) => c.icon

@@ -1,16 +1,19 @@
 //! The security facet (docs/maintenance.md § Adapters): `dependabot-alerts` through `dep_report`'s
-//! shared cache, GitHub's code and secret scanning, and the SARIF files a project names. Every
-//! finding becomes a reporter-neutral `Advisory`; `mergeAdvisories` folds them in `maint.ts`.
+//! shared cache, GitHub's code and secret scanning, the SARIF files a project names, OSV.dev over
+//! the lockfiles and the audit tools. Every finding becomes a reporter-neutral `Advisory`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Mutex;
 
 use serde_json::Value;
 
 use crate::deps::{alerts_read, coverage_of, DepAlert};
 use crate::git::glob_match;
 use crate::github::who_for;
-use crate::maint::{github_repo, Advisory, AdvisoryKind, Coverage, Ctx, Exec, Facts, Read, Severity, SKIP_DIRS};
+use crate::lockfile::{Pkg, LOCKFILES};
+use crate::maint::exec::HttpReq;
+use crate::maint::{found_paths, github_repo, Advisory, AdvisoryKind, Coverage, Ctx, Exec, Facts, Read, Severity, SKIP_DIRS};
 
 /// A reporter's severity word, case-blind; GraphQL's `MODERATE` is REST's `medium`. A word nobody
 /// taught us is `Unknown`, and the raw one rides beside it.
@@ -425,6 +428,394 @@ pub(crate) fn sarif_files(ctx: &Ctx, _ex: &dyn Exec) -> Result<Read, Coverage> {
     Ok(Read { facts: Facts::Advisories { items }, truncated, gaps })
 }
 
+// ---------- versions and CVSS, as the lockfile reporters need them ----------
+
+/// A version's numeric core (`1.6.0-rc.1` is `1.6.0`): enough to place an installed version
+/// between an advisory's bounds, which is all it is asked.
+fn ver(v: &str) -> [u64; 4] {
+    let mut out = [0; 4];
+    let core = v.trim().trim_start_matches(['v', '=']).split(['-', '+']).next().unwrap_or("");
+    for (slot, part) in out.iter_mut().zip(core.split('.')) {
+        *slot = part.parse().unwrap_or(0);
+    }
+    out
+}
+
+/// A CVSS 3.x base score from its vector, by FIRST's formula; `None` for any other version.
+fn cvss3(vector: &str) -> Option<f64> {
+    let mut parts = vector.split('/');
+    if !parts.next()?.starts_with("CVSS:3") {
+        return None;
+    }
+    let m: std::collections::HashMap<&str, &str> = parts.filter_map(|p| p.split_once(':')).collect();
+    let changed = *m.get("S")? == "C";
+    let av = match *m.get("AV")? { "N" => 0.85, "A" => 0.62, "L" => 0.55, "P" => 0.2, _ => return None };
+    let ac = match *m.get("AC")? { "L" => 0.77, "H" => 0.44, _ => return None };
+    let pr = match (*m.get("PR")?, changed) {
+        ("N", _) => 0.85, ("L", false) => 0.62, ("L", true) => 0.68, ("H", false) => 0.27, ("H", true) => 0.5, _ => return None,
+    };
+    let ui = match *m.get("UI")? { "N" => 0.85, "R" => 0.62, _ => return None };
+    let cia = |k: &str| match m.get(k).copied() { Some("H") => Some(0.56), Some("L") => Some(0.22), Some("N") => Some(0.0), _ => None };
+    let iss: f64 = 1.0 - (1.0 - cia("C")?) * (1.0 - cia("I")?) * (1.0 - cia("A")?);
+    let impact = if changed { 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15) } else { 6.42 * iss };
+    if impact <= 0.0 {
+        return Some(0.0);
+    }
+    let base = (impact + 8.22 * av * ac * pr * ui) * if changed { 1.08 } else { 1.0 };
+    // CVSS 3.1's Roundup: up to one decimal, done in integers so 4.0 stays 4.0.
+    let i = (base.min(10.0) * 100_000.0).round() as u64;
+    Some(if i.is_multiple_of(10_000) { i as f64 / 100_000.0 } else { (i / 10_000 + 1) as f64 / 10.0 })
+}
+
+/// A word if the reporter has one, else a CVSS 3 vector scored in GitHub's bands, the raw beside it.
+fn graded(word: &str, vector: &str) -> (Severity, String) {
+    if !word.is_empty() {
+        return (norm_severity(word), word.to_string());
+    }
+    (cvss3(vector).map_or(Severity::Unknown, score_severity), vector.to_string())
+}
+
+fn strs(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+}
+
+// ---------- osv ----------
+
+const OSV_API: &str = "https://api.osv.dev/v1";
+const OSV_BATCH: usize = 1000; // querybatch's own limit
+const OSV_PKGS: usize = 5000;
+const OSV_DETAILS: usize = 40; // records fetched per read, GHSA first; the rest are named without a severity
+const OSV_SECS: u64 = 30;
+const OSV_KEEP: usize = 2000;
+const LOCK_BYTES: u64 = 64 * 1024 * 1024;
+
+/// A vulnerability's record while its `modified` stands: querybatch names both, so a repeat
+/// read fetches only what changed.
+static OSV_RECORDS: Mutex<BTreeMap<String, (String, Value)>> = Mutex::new(BTreeMap::new());
+
+/// Every package the lockfiles here install, once each, with the lockfile that named it first.
+fn installed(root: &str, gaps: &mut Vec<String>) -> Result<Vec<(Pkg, String)>, Coverage> {
+    let files = found_paths(root, LOCKFILES);
+    if files.is_empty() {
+        return Err(Coverage::Unsupported { reason: format!("no lockfile to ask about ({})", LOCKFILES.join(", ")) });
+    }
+    let (mut out, mut read, mut broken) = (BTreeMap::new(), 0, false);
+    for f in &files {
+        let path = Path::new(root).join(f);
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOCK_BYTES) {
+            gaps.push(format!("{f} is too large to read"));
+            continue;
+        }
+        match std::fs::read_to_string(&path).map_err(|e| format!("{f}: {e}")).and_then(|t| crate::lockfile::parse(f, &t)) {
+            Ok(p) => {
+                // A version no parser knows read nothing, however cleanly.
+                read += usize::from(!p.pkgs.is_empty() || p.gaps.is_empty());
+                gaps.extend(p.gaps);
+                for pkg in p.pkgs {
+                    out.entry(pkg).or_insert_with(|| f.clone());
+                }
+            }
+            Err(e) => {
+                broken = true;
+                gaps.push(e);
+            }
+        }
+    }
+    gaps.extend(found_paths(root, &["yarn.lock"]).into_iter().map(|f| format!("{f} not read")));
+    match read {
+        0 if broken => Err(Coverage::Error { reason: gaps.join("; ") }),
+        0 => Err(Coverage::Unsupported { reason: gaps.join("; ") }),
+        _ => Ok(out.into_iter().collect()),
+    }
+}
+
+fn osv_call(ex: &dyn Exec, url: String, body: Option<String>) -> Result<Value, String> {
+    let r = ex.http(&HttpReq { url, body, token: None, secs: OSV_SECS, report: false })?;
+    if r.code != 200 {
+        return Err(format!("OSV.dev answered HTTP {}", r.code));
+    }
+    serde_json::from_str(&r.body).map_err(|_| "OSV.dev answered something that is not JSON".to_string())
+}
+
+/// An id goes into a URL path, so it is held to the characters OSV ids use.
+fn osv_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c))
+}
+
+/// The fix for the range the installed version is in: `introduced` opens one, `fixed` closes it.
+fn osv_fixed(r: &Value, p: &Pkg) -> Option<String> {
+    let have = ver(&p.version);
+    let mine = r.get("affected").and_then(Value::as_array).into_iter().flatten()
+        .filter(|a| text(a, "/package/name") == p.name && text(a, "/package/ecosystem") == p.ecosystem);
+    for range in mine.flat_map(|a| a.get("ranges").and_then(Value::as_array).into_iter().flatten()) {
+        let mut from = None;
+        for e in range.get("events").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(i) = e.get("introduced").and_then(Value::as_str) {
+                from = Some(ver(i));
+            } else if let Some(f) = e.get("fixed").and_then(Value::as_str) {
+                if from.is_some_and(|lo| lo <= have) && have < ver(f) {
+                    return Some(f.to_string());
+                }
+                from = None;
+            }
+        }
+    }
+    None
+}
+
+/// One package's hit; with no record (past the per-read cap, or a lookup that failed) it is
+/// still a finding, named with no severity.
+fn osv_advisory(p: &Pkg, at: &str, id: &str, rec: Option<&Value>) -> Advisory {
+    let r = rec.unwrap_or(&Value::Null);
+    // GitHub's reviewed word where the record is GitHub's; else the record's or its package's vector.
+    let vector = r.get("severity").and_then(Value::as_array).into_iter().flatten()
+        .find(|s| text(s, "/type").starts_with("CVSS_V3")).map(|s| text(s, "/score"))
+        .or_else(|| r.pointer("/affected/0/database_specific/cvss").and_then(Value::as_str)).unwrap_or("");
+    let (severity, raw_severity) = graded(text(r, "/database_specific/severity"), vector);
+    Advisory {
+        id: id.to_string(),
+        aliases: strs(r.get("aliases")).into_iter().filter(|a| a != id).collect(),
+        kind: AdvisoryKind::Dependency,
+        pkg: Some(p.name.clone()),
+        ecosystem: Some(p.ecosystem.to_string()),
+        version: Some(p.version.clone()),
+        severity,
+        raw_severity,
+        summary: summary_of([text(r, "/summary"), text(r, "/details")].into_iter().find(|s| !s.trim().is_empty()).unwrap_or("")),
+        fixed: osv_fixed(r, p),
+        location: Some(at.to_string()),
+        url: Some(format!("https://osv.dev/vulnerability/{id}")),
+        tool: "OSV.dev".into(),
+    }
+}
+
+/// The lockfiles' packages to OSV.dev's querybatch, then each vulnerability's record by id: a
+/// `public` read, so a scan makes it only on a machine that opted in.
+pub(crate) fn osv(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    let mut gaps = vec![];
+    let mut pkgs = installed(ctx.root, &mut gaps)?;
+    let mut truncated = pkgs.len() > OSV_PKGS;
+    pkgs.truncate(OSV_PKGS);
+    let mut hits: Vec<(usize, String, String)> = vec![]; // (package, id, modified)
+    for (n, chunk) in pkgs.chunks(OSV_BATCH).enumerate() {
+        let queries: Vec<Value> = chunk.iter()
+            .map(|(p, _)| serde_json::json!({ "package": { "name": p.name, "ecosystem": p.ecosystem }, "version": p.version }))
+            .collect();
+        let body = serde_json::json!({ "queries": queries }).to_string();
+        let v = osv_call(ex, format!("{OSV_API}/querybatch"), Some(body)).map_err(|reason| Coverage::Error { reason })?;
+        let results = v.get("results").and_then(Value::as_array).filter(|r| r.len() == chunk.len())
+            .ok_or_else(|| Coverage::Error { reason: "OSV.dev did not answer one result per package".into() })?;
+        for (i, r) in results.iter().enumerate() {
+            truncated |= r.get("next_page_token").is_some(); // more vulnerabilities than one page
+            for x in r.get("vulns").and_then(Value::as_array).into_iter().flatten().filter(|x| osv_id(text(x, "/id"))) {
+                hits.push((n * OSV_BATCH + i, text(x, "/id").to_string(), text(x, "/modified").to_string()));
+            }
+        }
+    }
+    let want: BTreeMap<&str, &str> = hits.iter().map(|(_, id, m)| (id.as_str(), m.as_str())).collect();
+    let mut records: BTreeMap<String, Value> = BTreeMap::new();
+    if let Ok(seen) = OSV_RECORDS.lock() {
+        records.extend(want.iter().filter_map(|(id, m)| seen.get(*id).filter(|(was, _)| was == m).map(|(_, v)| (id.to_string(), v.clone()))));
+    }
+    let (mut asked, mut unasked) = (0, 0);
+    let mut missing: Vec<(&str, &str)> = want.into_iter().filter(|(id, _)| !records.contains_key(*id)).collect();
+    // GitHub's records carry a reviewed severity word, so the cap is spent on them first.
+    missing.sort_by_key(|(id, _)| !id.starts_with("GHSA-"));
+    for (id, modified) in missing {
+        if asked == OSV_DETAILS {
+            unasked += 1;
+            continue;
+        }
+        asked += 1;
+        match osv_call(ex, format!("{OSV_API}/vulns/{id}"), None) {
+            Ok(v) => {
+                if let Ok(mut seen) = OSV_RECORDS.lock() {
+                    if seen.len() >= OSV_KEEP {
+                        seen.clear();
+                    }
+                    seen.insert(id.to_string(), (modified.to_string(), v.clone()));
+                }
+                records.insert(id.to_string(), v);
+            }
+            Err(e) => gaps.push(format!("{id}: {e}")),
+        }
+    }
+    if unasked > 0 {
+        gaps.push(format!("{unasked} more advisories than are looked up in one check: their severity is unknown until the next"));
+    }
+    let items = hits.iter().map(|(i, id, _)| osv_advisory(&pkgs[*i].0, &pkgs[*i].1, id, records.get(id))).collect();
+    Ok(Read { facts: Facts::Advisories { items }, truncated, gaps })
+}
+
+// ---------- npm-audit, pnpm-audit, cargo-audit ----------
+
+const AUDIT_SECS: u64 = 180; // cargo audit clones its advisory database on a first run
+const AUDIT_DIRS: usize = 4;
+
+/// One audit tool: run in each folder holding its lockfile, its JSON read whatever it exits
+/// with, since these exit non-zero precisely when they found something (`run_capped`'s rule).
+struct Audit {
+    lock: &'static str,
+    bin: &'static str,
+    args: &'static [&'static str],
+    tool: &'static str,
+    fix: &'static str,
+    parse: fn(&str, &str, &str) -> Result<Vec<Advisory>, String>,
+}
+
+const NPM_AUDIT: Audit = Audit {
+    lock: "package-lock.json", bin: "npm", args: &["audit", "--json"], tool: "npm audit",
+    fix: "install Node.js, which brings npm: https://nodejs.org", parse: parse_npm_audit,
+};
+const PNPM_AUDIT: Audit = Audit {
+    lock: "pnpm-lock.yaml", bin: "pnpm", args: &["audit", "--json"], tool: "pnpm audit",
+    fix: "corepack enable pnpm", parse: parse_npm_audit,
+};
+// The subcommand's own binary, never `cargo audit`: a project's `.cargo/config.toml` may alias `audit`.
+const CARGO_AUDIT: Audit = Audit {
+    lock: "Cargo.lock", bin: "cargo-audit", args: &["audit", "--json"], tool: "cargo audit",
+    fix: "cargo install cargo-audit --locked", parse: parse_cargo_audit,
+};
+
+fn ghsa_of(url: &str) -> Option<String> {
+    url.trim_end_matches('/').rsplit('/').next().filter(|s| s.starts_with("GHSA-")).map(str::to_string)
+}
+
+/// `>=1.2.6` as the version it names; any other range shape is kept as written.
+fn floor_of(range: &str) -> Option<String> {
+    let r = range.trim();
+    match r.strip_prefix(">=").map(str::trim) {
+        Some(v) if !v.contains([' ', ',', '<', '|']) => Some(v.to_string()),
+        _ if r.is_empty() || r == "<0.0.0" => None, // npm's way of saying no fix exists
+        _ => Some(r.to_string()),
+    }
+}
+
+/// npm 7+'s report (`vulnerabilities`, the advisory objects in each `via`) and the older shape
+/// pnpm still prints (`advisories`), into one row per advisory and package.
+pub(crate) fn parse_npm_audit(json: &str, lock: &str, tool: &str) -> Result<Vec<Advisory>, String> {
+    let v: Value = serde_json::from_str(json).map_err(|_| format!("{tool} printed no JSON report"))?;
+    if let Some(e) = v.get("error") {
+        return Err([text(e, "/summary"), text(e, "/code")].into_iter().find(|s| !s.is_empty()).unwrap_or("failed").to_string());
+    }
+    let row = |id: String, aliases, pkg: &str, version: Option<String>, sev: &str, title: &str, fixed, url: &str| Advisory {
+        id, aliases, kind: AdvisoryKind::Dependency, pkg: some(pkg), ecosystem: Some("npm".into()), version,
+        severity: norm_severity(sev), raw_severity: sev.to_string(), summary: summary_of(title), fixed,
+        location: Some(lock.to_string()), url: some(url), tool: tool.to_string(),
+    };
+    let mut out: Vec<Advisory> = vec![];
+    if let Some(vulns) = v.get("vulnerabilities").and_then(Value::as_object) {
+        for e in vulns.values() {
+            let fix = e.get("fixAvailable").filter(|f| f.is_object());
+            // A string `via` points at another package's entry, which carries the advisory itself.
+            for via in e.get("via").and_then(Value::as_array).into_iter().flatten().filter(|x| x.is_object()) {
+                let (url, pkg) = (text(via, "/url"), text(via, "/name"));
+                let id = ghsa_of(url).unwrap_or_else(|| format!("npm-{}", via.get("source").map_or(String::new(), Value::to_string)));
+                let fixed = fix.filter(|f| text(f, "/name") == pkg).and_then(|f| some(text(f, "/version")));
+                out.push(row(id, vec![], pkg, None, text(via, "/severity"), text(via, "/title"), fixed, url));
+            }
+        }
+    } else if let Some(advs) = v.get("advisories").and_then(Value::as_object) {
+        for a in advs.values() {
+            let url = text(a, "/url");
+            let id = some(text(a, "/github_advisory_id")).or_else(|| ghsa_of(url))
+                .unwrap_or_else(|| format!("npm-{}", a.get("id").map_or(String::new(), Value::to_string)));
+            let version = some(text(a, "/findings/0/version"));
+            out.push(row(id, strs(a.get("cves")), text(a, "/module_name"), version, text(a, "/severity"), text(a, "/title"),
+                floor_of(text(a, "/patched_versions")), url));
+        }
+    } else {
+        return Err(format!("{tool} printed something that is not an audit report"));
+    }
+    let mut seen = BTreeSet::new();
+    out.retain(|a| seen.insert((a.id.clone(), a.pkg.clone())));
+    Ok(out)
+}
+
+/// The lowest patched floor above what is installed: `>=0.6.14, <1.0.0` and `>=1.6.1` for 1.6.0 is 1.6.1.
+fn patched_for(installed: &str, patched: &[String]) -> Option<String> {
+    let have = ver(installed);
+    patched.iter().filter_map(|p| p.split(',').next().and_then(|c| c.trim().strip_prefix(">=")).map(str::trim))
+        .filter(|v| ver(v) > have).min_by_key(|v| ver(v)).map(str::to_string)
+}
+
+/// cargo audit's `--json` report: its vulnerabilities, each a RUSTSEC id with its aliases. The
+/// warnings (unmaintained, yanked) are not vulnerabilities and are left to the tool.
+pub(crate) fn parse_cargo_audit(json: &str, lock: &str, tool: &str) -> Result<Vec<Advisory>, String> {
+    let v: Value = serde_json::from_str(json).map_err(|_| format!("{tool} printed no JSON report"))?;
+    let list = v.pointer("/vulnerabilities/list").and_then(Value::as_array)
+        .ok_or_else(|| format!("{tool} printed something that is not an audit report"))?;
+    Ok(list.iter().filter_map(|x| {
+        let a = x.get("advisory")?;
+        let id = some(text(a, "/id"))?;
+        let installed = text(x, "/package/version");
+        let (severity, raw_severity) = graded("", text(a, "/cvss"));
+        Some(Advisory {
+            aliases: strs(a.get("aliases")),
+            kind: AdvisoryKind::Dependency,
+            pkg: some(text(x, "/package/name")),
+            ecosystem: Some("crates.io".into()),
+            version: some(installed),
+            severity,
+            raw_severity,
+            summary: summary_of([text(a, "/title"), text(a, "/description")].into_iter().find(|s| !s.trim().is_empty()).unwrap_or("")),
+            fixed: patched_for(installed, &strs(x.pointer("/versions/patched"))),
+            location: Some(lock.to_string()),
+            url: Some(format!("https://rustsec.org/advisories/{id}.html")),
+            tool: tool.to_string(),
+            id,
+        })
+    }).collect())
+}
+
+fn audit(ctx: &Ctx, ex: &dyn Exec, a: &Audit) -> Result<Read, Coverage> {
+    let locks = found_paths(ctx.root, &[a.lock]);
+    if locks.is_empty() {
+        return Err(Coverage::Unsupported { reason: format!("no {} here", a.lock) });
+    }
+    if !ex.on_path(a.bin) {
+        return Err(Coverage::NoTool { tool: a.bin.into(), fix: Some(a.fix.into()) });
+    }
+    let (mut items, mut gaps, mut read) = (vec![], vec![], 0);
+    for lock in locks.iter().take(AUDIT_DIRS) {
+        let dir = lock.rsplit_once('/').map_or(ctx.root.to_string(), |(d, _)| Path::new(ctx.root).join(d).to_string_lossy().to_string());
+        // A folder that timed out is a gap, as one that printed no report is: the others still answered.
+        let out = match ex.tool(&dir, a.bin, a.args, AUDIT_SECS) {
+            Ok(out) => out,
+            Err(e) => {
+                gaps.push(format!("{lock}: {e}"));
+                continue;
+            }
+        };
+        match (a.parse)(&out.stdout, lock, a.tool) {
+            Ok(found) => {
+                read += 1;
+                items.extend(found);
+            }
+            Err(e) => {
+                let said = out.stderr.lines().map(str::trim).find(|l| !l.is_empty()).filter(|_| out.stdout.trim().is_empty());
+                gaps.push(format!("{lock}: {}", said.unwrap_or(&e)));
+            }
+        }
+    }
+    if read == 0 {
+        return Err(Coverage::Error { reason: gaps.join("; ") });
+    }
+    Ok(Read { facts: Facts::Advisories { items }, truncated: locks.len() > AUDIT_DIRS, gaps })
+}
+
+pub(crate) fn npm_audit(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    audit(ctx, ex, &NPM_AUDIT)
+}
+
+pub(crate) fn pnpm_audit(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    audit(ctx, ex, &PNPM_AUDIT)
+}
+
+pub(crate) fn cargo_audit(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    audit(ctx, ex, &CARGO_AUDIT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +1043,168 @@ mod tests {
         let many: Vec<(&str, &str)> = many.iter().map(|(p, t)| (p.as_str(), *t)).collect();
         let (root, cfg) = sarif_repo("[maintenance]\nsarif = [\"r/*.sarif\"]\n", &many);
         assert!(read_sarif(&root, &cfg).unwrap().truncated, "more files than are read");
+    }
+
+    #[test]
+    fn cvss3_scores_by_firsts_formula() {
+        let s = |v: &str| cvss3(&format!("CVSS:3.1/{v}"));
+        assert_eq!(s("AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
+        assert_eq!(s("AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H"), Some(7.2));
+        assert_eq!(s("AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(8.1));
+        assert_eq!(s("AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"), Some(5.3));
+        assert_eq!(s("AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"), Some(6.1), "a changed scope");
+        assert_eq!(s("AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"), Some(0.0));
+        assert_eq!(cvss3("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"), None, "another version is not guessed at");
+        assert_eq!(cvss3("CVSS:3.1/AV:X"), None);
+    }
+
+    fn lock_repo(files: &[(&str, &str)]) -> String {
+        sarif_repo("", files).0
+    }
+
+    fn read_at(root: &str, f: ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
+        f(&Ctx { root, cfg: &MaintConfig::default(), forge: &github(), account: None, force: true }, ex)
+    }
+
+    const OSV_NPM: &str = r#"{"lockfileVersion": 3, "packages": {"": {}, "node_modules/minimist": {"version": "1.2.5"}}}"#;
+
+    fn osv_answers() -> FakeExec {
+        let mut ex = FakeExec::answering(Err("no such record"))
+            .on(&["curl", "https://api.osv.dev/v1/querybatch"], Ok(&FakeExec::testdata("osv-querybatch.json")));
+        for id in ["GHSA-43w2-9j62-hq99", "RUSTSEC-2021-0003", "GHSA-xvch-5gv4-984h"] {
+            ex = ex.on(&["curl", &format!("https://api.osv.dev/v1/vulns/{id}")], Ok(&FakeExec::testdata(&format!("osv-{id}.json"))));
+        }
+        ex
+    }
+
+    #[test]
+    fn osv_asks_once_per_package_and_reads_each_record_with_githubs_severity() {
+        let root = lock_repo(&[("Cargo.lock", &FakeExec::testdata("lock-cargo.lock")), ("web/package-lock.json", OSV_NPM), ("yarn.lock", "")]);
+        let ex = osv_answers();
+        let r = read_at(&root, osv, &ex).unwrap();
+        let sent = &ex.calls()[0];
+        assert_eq!(sent[..3], ["curl", "https://api.osv.dev/v1/querybatch", "--data"]);
+        let body: Value = serde_json::from_str(&sent[3]).unwrap();
+        assert_eq!(body["queries"][1], serde_json::json!({ "package": { "name": "smallvec", "ecosystem": "crates.io" }, "version": "1.6.0" }));
+        assert_eq!(body["queries"].as_array().unwrap().len(), 3, "names and versions, nothing else");
+        let got: Vec<_> = items(&r).iter()
+            .map(|a| (a.id.as_str(), a.pkg.as_deref(), a.severity, a.raw_severity.as_str(), a.fixed.as_deref(), a.location.as_deref()))
+            .collect();
+        let vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+        assert_eq!(got, [
+            ("GHSA-43w2-9j62-hq99", Some("smallvec"), Severity::Critical, "CRITICAL", Some("1.6.1"), Some("Cargo.lock")),
+            ("RUSTSEC-2021-0003", Some("smallvec"), Severity::Critical, vector, Some("1.6.1"), Some("Cargo.lock")),
+            ("GHSA-xvch-5gv4-984h", Some("minimist"), Severity::Critical, "CRITICAL", Some("1.2.6"), Some("web/package-lock.json")),
+        ], "GitHub's word where the record is GitHub's, a scored vector where it is not, the fix for the installed range");
+        assert_eq!(items(&r)[1].aliases, ["CVE-2021-25900", "GHSA-43w2-9j62-hq99"], "so the two fold into one row");
+        assert_eq!(items(&r)[2].version.as_deref(), Some("1.2.5"));
+        assert_eq!(r.gaps, ["yarn.lock not read"]);
+        assert!(!r.truncated);
+
+        // A record whose `modified` stands is not fetched again.
+        let again = osv_answers();
+        read_at(&root, osv, &again).unwrap();
+        assert_eq!(again.calls().len(), 1, "{:?}", again.calls());
+    }
+
+    #[test]
+    fn osv_caps_its_follow_ups_and_says_what_a_page_left_out() {
+        let mut ids: Vec<String> = (0..=OSV_DETAILS).map(|n| format!(r#"{{"id":"CAP-{n}","modified":"m"}}"#)).collect();
+        ids.push(r#"{"id":"GHSA-zzzz-zzzz-zzzz","modified":"m"}"#.into()); // sorts after every CAP-
+        let batch = format!(r#"{{"results":[{{"vulns":[{}],"next_page_token":"x"}}]}}"#, ids.join(","));
+        let ex = FakeExec::answering(Ok("{}")).on(&["curl", "https://api.osv.dev/v1/querybatch"], Ok(&batch));
+        let root = lock_repo(&[("package-lock.json", OSV_NPM)]);
+        let r = read_at(&root, osv, &ex).unwrap();
+        let asked: Vec<_> = ex.calls().into_iter().filter(|c| c[1].contains("/vulns/")).map(|c| c[1].clone()).collect();
+        assert_eq!(asked.len(), OSV_DETAILS);
+        assert!(asked[0].ends_with("/vulns/GHSA-zzzz-zzzz-zzzz"), "GitHub's word is asked for first: {asked:?}");
+        assert_eq!(items(&r).len(), OSV_DETAILS + 2, "the ones past the cap are still findings");
+        assert_eq!(items(&r).iter().filter(|a| a.severity == Severity::Unknown).count(), OSV_DETAILS + 2);
+        assert!(r.gaps.iter().any(|g| g.starts_with("2 more advisories")), "{:?}", r.gaps);
+        assert!(r.truncated, "a package with another page of vulnerabilities is a floor");
+
+        let wrong = FakeExec::answering(Ok(r#"{"results":[]}"#));
+        assert!(matches!(read_at(&root, osv, &wrong), Err(Coverage::Error { .. })), "not one result per package");
+        assert!(matches!(read_at(&lock_repo(&[]), osv, &wrong), Err(Coverage::Unsupported { .. })), "no lockfile is nothing to ask");
+        let v1 = lock_repo(&[("package-lock.json", r#"{"lockfileVersion": 1}"#)]);
+        let Err(Coverage::Unsupported { reason }) = read_at(&v1, osv, &wrong) else { panic!() };
+        assert!(reason.contains("lockfileVersion 1"), "a lockfile no parser knows is never a clean one: {reason}");
+        assert_eq!(wrong.calls().len(), 1, "nothing is sent for a lockfile that was not read");
+    }
+
+    #[test]
+    fn an_audit_that_exits_1_with_its_report_found_something() {
+        let npm = lock_repo(&[("package-lock.json", "{}")]);
+        let ex = FakeExec::answering(Ok(&FakeExec::testdata("npm-audit.json"))).exiting(1, "");
+        let r = read_at(&npm, npm_audit, &ex).unwrap();
+        assert_eq!(ex.calls(), [["npm", "audit", "--json"]]);
+        let a = items(&r).iter().find(|a| a.id == "GHSA-xvch-5gv4-984h").unwrap();
+        assert_eq!((a.pkg.as_deref(), a.severity, a.fixed.as_deref(), a.tool.as_str()), (Some("minimist"), Severity::Critical, Some("1.2.8"), "npm audit"));
+        let lodash = items(&r).iter().filter(|a| a.pkg.as_deref() == Some("lodash")).map(|a| (a.id.as_str(), a.severity)).collect::<Vec<_>>();
+        assert_eq!(lodash.len(), 5);
+        assert!(lodash.contains(&("GHSA-29mw-wpgm-hmr9", Severity::Medium)), "moderate is medium");
+
+        let pnpm = lock_repo(&[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")]);
+        let ex = FakeExec::answering(Ok(&FakeExec::testdata("pnpm-audit.json"))).exiting(1, "");
+        let r = read_at(&pnpm, pnpm_audit, &ex).unwrap();
+        let a = items(&r).iter().find(|a| a.id == "GHSA-xvch-5gv4-984h").unwrap();
+        assert_eq!((a.aliases.clone(), a.version.as_deref(), a.fixed.as_deref()), (vec!["CVE-2021-44906".to_string()], Some("1.2.5"), Some("1.2.6")));
+        assert_eq!(items(&r).len(), 6);
+
+        let cargo = lock_repo(&[("Cargo.lock", &FakeExec::testdata("lock-cargo.lock"))]);
+        let ex = FakeExec::answering(Ok(&FakeExec::testdata("cargo-audit.json"))).exiting(1, "");
+        let r = read_at(&cargo, cargo_audit, &ex).unwrap();
+        assert_eq!(ex.calls(), [["cargo-audit", "audit", "--json"]], "never `cargo audit`, which a project alias can take");
+        let got: Vec<_> = items(&r).iter().map(|a| (a.id.as_str(), a.severity, a.version.as_deref(), a.fixed.as_deref())).collect();
+        assert_eq!(got, [("RUSTSEC-2021-0003", Severity::Critical, Some("1.6.0"), Some("1.6.1"))], "a warning is not a vulnerability");
+        assert_eq!(items(&r)[0].aliases, ["CVE-2021-25900", "GHSA-43w2-9j62-hq99"]);
+    }
+
+    #[test]
+    fn an_audit_tool_that_is_not_there_says_how_to_get_it() {
+        let npm = lock_repo(&[("package-lock.json", "{}")]);
+        let ex = FakeExec::answering(Ok("{}")).without(&["npm"]);
+        let Err(Coverage::NoTool { tool, fix }) = read_at(&npm, npm_audit, &ex) else { panic!() };
+        assert_eq!((tool.as_str(), fix.is_some(), ex.calls().len()), ("npm", true, 0));
+        let cargo = lock_repo(&[("Cargo.lock", "")]);
+        let ex = FakeExec::answering(Ok("")).without(&["cargo-audit"]);
+        let Err(Coverage::NoTool { tool, fix }) = read_at(&cargo, cargo_audit, &ex) else { panic!() };
+        assert_eq!((tool.as_str(), fix.as_deref()), ("cargo-audit", Some("cargo install cargo-audit --locked")));
+        let offline = FakeExec::answering(Ok(r#"{"error": {"code": "ENOTFOUND", "summary": "request to registry failed"}}"#)).exiting(1, "");
+        let Err(Coverage::Error { reason }) = read_at(&npm, npm_audit, &offline) else { panic!() };
+        assert!(reason.contains("request to registry failed"), "{reason}");
+        assert!(matches!(read_at(&lock_repo(&[]), npm_audit, &offline), Err(Coverage::Unsupported { .. })));
+    }
+
+    #[test]
+    fn a_folder_whose_audit_timed_out_is_a_gap_beside_the_folders_that_answered() {
+        let two = lock_repo(&[("package-lock.json", "{}"), ("web/package-lock.json", "{}")]);
+        let ex = FakeExec::recorded("npm-audit.json").failing_in("web", "no answer after 180s");
+        let r = read_at(&two, npm_audit, &ex).unwrap();
+        assert!(!items(&r).is_empty(), "the root's findings survive");
+        assert_eq!(r.gaps, ["web/package-lock.json: no answer after 180s"]);
+        let slow = FakeExec::answering(Err("no answer after 180s"));
+        let Err(Coverage::Error { reason }) = read_at(&two, npm_audit, &slow) else { panic!() };
+        assert!(reason.contains("no answer after 180s") && reason.contains("web/package-lock.json"), "{reason}");
+    }
+
+    #[test]
+    fn the_files_detection_offers_these_sources_on_are_the_files_they_read() {
+        let man: Value = serde_json::from_str(include_str!("../../src/maintmanifest.json")).unwrap();
+        let detect = |id: &str| -> BTreeSet<String> { strs(man.pointer(&format!("/sources/{id}/detect"))).into_iter().collect() };
+        assert_eq!(detect("osv"), LOCKFILES.iter().map(|s| s.to_string()).collect(), "a lockfile with no parser, or one never offered");
+        for (id, a) in [("npm-audit", NPM_AUDIT), ("pnpm-audit", PNPM_AUDIT), ("cargo-audit", CARGO_AUDIT)] {
+            assert_eq!(detect(id), BTreeSet::from([a.lock.to_string()]), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_patched_range_names_the_floor_above_what_is_installed() {
+        let p = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(patched_for("1.6.0", &p(&[">=0.6.14, <1.0.0", ">=1.6.1"])).as_deref(), Some("1.6.1"));
+        assert_eq!(patched_for("0.6.5", &p(&[">=0.6.14, <1.0.0", ">=1.6.1"])).as_deref(), Some("0.6.14"));
+        assert_eq!(patched_for("2.0.0", &p(&[">=1.6.1"])), None);
+        assert_eq!((floor_of(">=1.2.6").as_deref(), floor_of("<0.0.0")), (Some("1.2.6"), None), "npm's no-fix range");
+        assert_eq!(floor_of(">=1.0.0 <2.0.0").as_deref(), Some(">=1.0.0 <2.0.0"), "kept as written");
     }
 }

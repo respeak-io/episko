@@ -46,6 +46,27 @@
       "sees": ["sec.code", "sec.secret"],
       "blind": []
     },
+    "osv": {
+      "facet": "security", "label": "OSV.dev", "cost": "public", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"],
+      "sends": "the name and version of every package in this project's lockfiles",
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "npm-audit": {
+      "facet": "security", "label": "npm audit", "cost": "tool", "forge": [], "detect": ["package-lock.json"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "pnpm-audit": {
+      "facet": "security", "label": "pnpm audit", "cost": "tool", "forge": [], "detect": ["pnpm-lock.yaml"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "cargo-audit": {
+      "facet": "security", "label": "cargo audit", "cost": "tool", "forge": [], "detect": ["Cargo.lock"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
     "dependabot-prs": {
       "facet": "deps", "label": "Dependabot", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["deps.update-prs", "deps.pr-checks"],
@@ -101,10 +122,6 @@
     { "facet": "ci", "label": "Jenkins", "forge": ["!github"], "detect": ["Jenkinsfile"] },
     { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
     { "facet": "ci", "label": "Drone", "forge": ["!github"], "detect": [".drone.yml", ".drone.yaml"] },
-    { "facet": "security", "label": "OSV.dev", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"] },
-    { "facet": "security", "label": "npm audit", "forge": [], "detect": ["package-lock.json"] },
-    { "facet": "security", "label": "pnpm audit", "forge": [], "detect": ["pnpm-lock.yaml"] },
-    { "facet": "security", "label": "cargo audit", "forge": [], "detect": ["Cargo.lock"] },
     { "facet": "security", "label": "Snyk", "forge": [], "detect": [".snyk"] },
     { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
     { "facet": "deps", "label": "Renovate", "forge": ["!github"], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
