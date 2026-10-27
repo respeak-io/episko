@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::forge::{Forge, ForgeKind};
+use crate::forge::{Forge, ForgeBy, ForgeKind};
 use crate::git::{Hygiene, ReleaseFacts};
 use crate::github::{classify, who_for};
 use crate::platform::norm_path;
@@ -74,7 +74,6 @@ pub(crate) enum Mode {
 /// Only `Ok` carries facts; every other state says why there are none, and none of them is green.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "state", rename_all = "camelCase")]
-#[allow(dead_code, reason = "`Off` is raised by the security adapters of later slices")]
 pub(crate) enum Coverage {
     Ok,
     Off { reason: String },
@@ -111,7 +110,6 @@ pub(crate) struct CiRun {
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code, reason = "made by the security adapters; the wire fixture pins it now")]
 pub(crate) enum Severity {
     Critical,
     High,
@@ -122,7 +120,7 @@ pub(crate) enum Severity {
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code, reason = "made by the security adapters; the wire fixture pins it now")]
+#[allow(dead_code, reason = "code, secret and config findings arrive with the scanning adapters")]
 pub(crate) enum AdvisoryKind {
     Dependency,
     Code,
@@ -134,34 +132,32 @@ pub(crate) enum AdvisoryKind {
 /// from three reporters fold into one row.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code, reason = "made by the security adapters; the wire fixture pins it now")]
 pub(crate) struct Advisory {
-    id: String,
-    aliases: Vec<String>,
-    kind: AdvisoryKind,
-    pkg: Option<String>,
-    ecosystem: Option<String>,
-    version: Option<String>,
-    severity: Severity,
-    raw_severity: String,
-    summary: String,
-    fixed: Option<String>,
-    location: Option<String>,
-    url: Option<String>,
-    tool: String,
+    pub(crate) id: String,
+    pub(crate) aliases: Vec<String>,
+    pub(crate) kind: AdvisoryKind,
+    pub(crate) pkg: Option<String>,
+    pub(crate) ecosystem: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) severity: Severity,
+    pub(crate) raw_severity: String,
+    pub(crate) summary: String,
+    pub(crate) fixed: Option<String>,
+    pub(crate) location: Option<String>,
+    pub(crate) url: Option<String>,
+    pub(crate) tool: String,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code, reason = "made by the update-bot adapters; the wire fixture pins it now")]
 pub(crate) struct UpdatePr {
-    number: u64,
-    title: String,
-    url: String,
-    branch: String,
-    draft: bool,
-    at: Option<u64>,
-    checks: CiStatus,
+    pub(crate) number: u64,
+    pub(crate) title: String,
+    pub(crate) url: String,
+    pub(crate) branch: String,
+    pub(crate) draft: bool,
+    pub(crate) at: Option<u64>, // last updated: a bot rebasing its PRs is a bot still running
+    pub(crate) checks: CiStatus,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -282,6 +278,11 @@ impl MaintConfig {
     pub(crate) fn tag_pattern(&self) -> Option<&str> {
         self.tag_pattern.as_deref()
     }
+
+    /// Self-hosted update-bot logins, beside the manifest's own.
+    pub(crate) fn bots(&self) -> &[String] {
+        &self.bots
+    }
 }
 
 // ---------- the manifest ----------
@@ -291,6 +292,7 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled", "ci.external", "ci.other-branches",
     "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
     "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
+    "sec.dependency", "sec.code", "sec.secret", "deps.update-prs", "deps.pr-checks",
 ];
 
 #[derive(serde::Deserialize)]
@@ -333,12 +335,12 @@ struct MarkerDef {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BotDef {
-    id: String,
-    logins: Vec<String>,
+pub(crate) struct BotDef {
+    pub(crate) id: String,
+    pub(crate) logins: Vec<String>,
     branch: String,
     dashboard: Option<String>,
-    config: Vec<String>,
+    pub(crate) config: Vec<String>, // what says it is set up here: detect entries
 }
 
 fn kebab(s: &str) -> bool {
@@ -406,6 +408,11 @@ static MANIFEST: LazyLock<Manifest> = LazyLock::new(|| {
     }
     m
 });
+
+/// The update-bot table `deps::bot_of` reads.
+pub(crate) fn bots() -> &'static [BotDef] {
+    &MANIFEST.bots
+}
 
 fn meta_of(id: &str) -> Option<(&'static SourceMeta, &'static SourceDef)> {
     Some((MANIFEST.sources.get(id)?, SOURCES.iter().find(|d| d.id == id)?))
@@ -525,6 +532,11 @@ fn forge_admits(forge: &[String], kind: ForgeKind) -> bool {
     forge.is_empty() || (forge.iter().any(|f| f.strip_prefix('!').unwrap_or(f) == kind.id()) != not)
 }
 
+/// Whether any of these detect entries is present under `root`, by `probe`'s own rules.
+pub(crate) fn found_any(root: &str, entries: &[String]) -> bool {
+    !probe(Path::new(root), &entries.iter().map(String::as_str).collect()).is_empty()
+}
+
 fn applies(forge: &[String], detect: &[String], kind: ForgeKind, probes: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> {
     if !forge_admits(forge, kind) {
         return None;
@@ -591,7 +603,7 @@ pub(crate) fn detect(root: &str, force: bool) -> Detection {
 
 // ---------- Exec: the only side-effect seam ----------
 
-pub(crate) use exec::{Exec, SysExec};
+pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
     #![allow(dead_code, reason = "only gh is called yet; the GitLab, tool and remote adapters of later slices call the rest")]
@@ -781,13 +793,19 @@ pub(crate) mod exec {
         fallback: Result<String, String>,
         calls: std::sync::Mutex<Vec<Vec<String>>>,
         accounts: std::sync::Mutex<Vec<Option<String>>>,
+        gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     }
 
     #[cfg(test)]
     impl FakeExec {
         pub(crate) fn answering(fallback: Result<&str, &str>) -> Self {
             let fallback = fallback.map(str::to_string).map_err(str::to_string);
-            Self { answers: vec![], fallback, calls: Default::default(), accounts: Default::default() }
+            Self { answers: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None }
+        }
+
+        /// Holds every `gh` until the test drops its guard on `gate`, so readers provably overlap.
+        pub(crate) fn gated(self, gate: std::sync::Arc<std::sync::Mutex<()>>) -> Self {
+            Self { gate: Some(gate), ..self }
         }
 
         pub(crate) fn testdata(file: &str) -> String {
@@ -828,6 +846,9 @@ pub(crate) mod exec {
     #[cfg(test)]
     impl Exec for FakeExec {
         fn gh(&self, _root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+            if let Some(g) = &self.gate {
+                drop(g.lock());
+            }
             self.accounts.lock().unwrap().push(account.map(str::to_string));
             self.answer(Self::argv("gh", args))
         }
@@ -851,12 +872,14 @@ pub(crate) mod exec {
 
 // ---------- the registry, the gate and the cache ----------
 
-/// What a read gets besides its `Exec`. `account` is the project's GitHub pin, passed to every `gh`.
+/// What a read gets besides its `Exec`. `account` is the project's GitHub pin, passed to every `gh`;
+/// `force` reaches past a cache the read shares with another surface (`deps.rs`'s).
 pub(crate) struct Ctx<'a> {
     pub(crate) root: &'a str,
     pub(crate) cfg: &'a MaintConfig,
     pub(crate) forge: &'a Forge,
     pub(crate) account: Option<&'a str>,
+    pub(crate) force: bool,
 }
 
 pub(crate) struct Read {
@@ -882,6 +905,9 @@ pub(crate) struct SourceDef {
 pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-actions", read: crate::maint_ci::github_actions },
     SourceDef { id: "forge-commit-status", read: crate::maint_ci::forge_commit_status },
+    SourceDef { id: "dependabot-alerts", read: crate::maint_sec::dependabot_alerts },
+    SourceDef { id: "dependabot-prs", read: crate::maint_repo::dependabot_prs },
+    SourceDef { id: "renovate-prs", read: crate::maint_repo::renovate_prs },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
     SourceDef { id: "git-tags", read: crate::maint_git::git_tags },
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
@@ -979,7 +1005,7 @@ fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, acco
         };
         return report(id, Some(meta), Coverage::Unsupported { reason: reason.into() });
     }
-    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account };
+    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account, force };
     read_cached(&det.repo_root, id, meta, def.read, &ctx, &SysExec { cost: meta.cost }, mode, public, force, account)
 }
 
@@ -1023,6 +1049,22 @@ pub(crate) fn gh_coverage(err: &str, account: Option<&str>) -> Coverage {
         return Coverage::NoTool { tool: "gh".into(), fix: Some("gh auth login".into()) };
     }
     Coverage::Error { reason: err.to_string() }
+}
+
+/// `owner/repo` on github.com. A host pinned as GitHub that is not github.com is refused, since
+/// the same name there could be someone else's repository.
+pub(crate) fn github_repo<'a>(ctx: &Ctx<'a>) -> Result<&'a str, Coverage> {
+    let f = ctx.forge;
+    if f.kind != ForgeKind::Github {
+        return Err(Coverage::Unsupported { reason: "not a GitHub repository".into() });
+    }
+    if f.by == ForgeBy::Pin && f.host.as_deref() != Some("github.com") {
+        return Err(Coverage::Unsupported { reason: "only github.com is read, and this host is pinned as GitHub".into() });
+    }
+    f.path.as_deref()
+        .filter(|p| p.split('/').count() == 2)
+        .and_then(|p| data_arg(p).ok())
+        .ok_or_else(|| Coverage::Unsupported { reason: "the remote names no owner/repo".into() })
 }
 
 // ---------- commands ----------
@@ -1121,10 +1163,13 @@ mod tests {
         // Every capability is used, so the vocabulary stays closed in both directions.
         let used: BTreeSet<&str> = MANIFEST.sources.values().flat_map(|s| s.sees.iter().chain(&s.blind)).map(String::as_str).collect();
         assert_eq!(used, MAINT_CAPS.iter().copied().collect::<BTreeSet<&str>>());
-        // A bot's config files are what its deps marker detects; the two lists must not drift.
+        // Every bot is read as `<id>-prs`; where a marker stands in for it off that source's forges,
+        // the marker detects exactly the bot's config files.
         for b in &MANIFEST.bots {
-            let m = MANIFEST.markers.iter().find(|m| m.facet == Facet::Deps && m.label.to_lowercase() == b.id);
-            assert_eq!(m.map(|m| &m.detect), Some(&b.config), "bot {}", b.id);
+            assert!(MANIFEST.sources.contains_key(&format!("{}-prs", b.id)), "bot {} has no source", b.id);
+            if let Some(m) = MANIFEST.markers.iter().find(|m| m.facet == Facet::Deps && m.label.to_lowercase() == b.id) {
+                assert_eq!(&m.detect, &b.config, "bot {}", b.id);
+            }
         }
     }
 
@@ -1166,10 +1211,11 @@ mod tests {
     fn no_source_answers_ok_on_garbage() {
         let root = s(&rich_repo());
         let det = detect(&root, true);
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None };
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
         for def in SOURCES {
             let meta = &MANIFEST.sources[def.id];
             for ex in garbage() {
+                crate::deps::dep_invalidate(root.clone()); // a forced read still joins a fresh shared answer
                 let rep = run(def.id, meta, def.read, &ctx, &ex);
                 if meta.cost == Cost::Local {
                     assert!(ex.calls().is_empty(), "{}: a local source never reads the Exec", def.id);
@@ -1187,7 +1233,7 @@ mod tests {
     fn every_source_answers_facts_of_its_own_facet() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
         let mut oks = 0;
         for def in SOURCES {
             // The raw read, not `run`: `run` would turn a crossed facet into an error and hide it.
@@ -1217,7 +1263,7 @@ mod tests {
                 for public in [false, true] {
                     let root = format!("/maint-test/gate/{n}/{m}/{public}");
                     let ex = FakeExec::answering(Ok("[]"));
-                    let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
+                    let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
                     let rep = read_cached(&root, "t", &meta(Facet::Security, cost), calls_tool, &ctx, &ex, mode, public, true, None);
                     let ran = !ex.calls().is_empty();
                     assert_eq!(ran, permitted(cost, mode, public), "{cost:?} {mode:?} public={public}");
@@ -1235,7 +1281,7 @@ mod tests {
     fn registry_sources_make_no_call_in_a_scan_their_class_forbids() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
         for def in SOURCES {
             let m = &MANIFEST.sources[def.id];
             if permitted(m.cost, Mode::Scan, false) {
@@ -1253,10 +1299,11 @@ mod tests {
     fn every_call_uses_a_bin_trusted_for_its_cost() {
         let root = s(&rich_repo());
         let det = detect(&root, true);
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None };
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
         for def in SOURCES {
             let m = &MANIFEST.sources[def.id];
             let ex = FakeExec::answering(Ok(""));
+            crate::deps::dep_invalidate(root.clone());
             let _ = (def.read)(&ctx, &ex);
             assert_eq!(ex.calls().is_empty(), m.cost == Cost::Local, "{}: only a local source makes no call", def.id);
             for call in ex.calls() {
@@ -1287,7 +1334,7 @@ mod tests {
     fn the_report_cache_is_keyed_by_account() {
         let root = "/maint-test/cache-by-account";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
         let ex = FakeExec::answering(Ok("{}"));
         let m = meta(Facet::Work, Cost::Forge);
         let go = |acct: Option<&str>, force: bool| read_cached(root, "t", &m, counts_gh, &ctx, &ex, Mode::Scan, false, force, acct);
@@ -1308,7 +1355,7 @@ mod tests {
     fn a_refused_class_shows_its_last_explicit_run() {
         let root = "/maint-test/tool-as-of";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
         let ex = FakeExec::answering(Ok("[]"));
         let m = meta(Facet::Security, Cost::Tool);
         let ran = read_cached(root, "t", &m, calls_tool, &ctx, &ex, Mode::Explicit, false, false, None);
@@ -1396,11 +1443,12 @@ mod tests {
 
     #[test]
     fn sources_follow_files_and_config() {
+        let gh = ["dependabot-alerts", "dependabot-prs", "renovate-prs"];
         let dir = repo_with("https://github.com/a/b.git", &[("CHANGELOG.md", "# Changelog\n")]);
-        assert_eq!(detect(&s(&dir), true).sources, ["git-local", "git-tags", "changelog"]);
+        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "git-tags", "changelog"]].concat());
         write(&dir, ".episko/episko.toml", "[maintenance]\nsources = { release = [\"changelog\"] }\n");
-        assert_eq!(detect(&s(&dir), true).sources, ["git-local", "changelog"]);
-        write(&dir, ".episko/episko.toml", "[maintenance]\noff = [\"release\", \"git-local\", \"ci\"]\n");
+        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "changelog"]].concat());
+        write(&dir, ".episko/episko.toml", "[maintenance]\noff = [\"release\", \"git-local\", \"ci\", \"security\", \"deps\"]\n");
         let d = detect(&s(&dir), true);
         assert!(d.sources.is_empty(), "{:?}", d.sources);
         assert!(d.markers.iter().all(|m| m.facet != Facet::Ci), "an off facet has no markers either");
@@ -1413,7 +1461,7 @@ mod tests {
         assert_eq!((d.forge.kind, d.sources.len()), (ForgeKind::None, 0), "a folder that is not a repo");
 
         // `changelog` reads the root's file, so a package's one level down must not detect it.
-        let mono = repo_with("https://github.com/a/b.git", &[("pkg/CHANGELOG.md", "# pkg\n")]);
+        let mono = repo_with("https://gitlab.com/a/b.git", &[("pkg/CHANGELOG.md", "# pkg\n")]);
         assert_eq!(detect(&s(&mono), true).sources, ["git-local", "git-tags"]);
     }
 

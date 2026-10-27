@@ -5,9 +5,8 @@ use std::collections::HashSet;
 
 use serde_json::Value;
 
-use crate::forge::{ForgeBy, ForgeKind};
 use crate::maint::exec::data_arg;
-use crate::maint::{gh_coverage, CiRun, CiStatus, Coverage, Ctx, Exec, Facts, Read};
+use crate::maint::{gh_coverage, github_repo, CiRun, CiStatus, Coverage, Ctx, Exec, Facts, Read};
 use crate::usage::iso_epoch_secs;
 
 /// The only map from a vendor's word to `CiStatus`, case-blind. A word it does not know is
@@ -41,22 +40,6 @@ fn text<'a>(v: &'a Value, k: &str) -> &'a str {
 
 fn not_json(what: &str) -> Coverage {
     Coverage::Error { reason: format!("{what} answered something that is not the JSON it promises") }
-}
-
-/// `owner/repo` on github.com. A host pinned as GitHub that is not github.com is refused, since
-/// the same name there could be someone else's repository.
-fn github_repo<'a>(ctx: &Ctx<'a>) -> Result<&'a str, Coverage> {
-    let f = ctx.forge;
-    if f.kind != ForgeKind::Github {
-        return Err(Coverage::Unsupported { reason: "not a GitHub repository".into() });
-    }
-    if f.by == ForgeBy::Pin && f.host.as_deref() != Some("github.com") {
-        return Err(Coverage::Unsupported { reason: "only github.com is read, and this host is pinned as GitHub".into() });
-    }
-    f.path.as_deref()
-        .filter(|p| p.split('/').count() == 2)
-        .and_then(|p| data_arg(p).ok())
-        .ok_or_else(|| Coverage::Unsupported { reason: "the remote names no owner/repo".into() })
 }
 
 fn gh(ctx: &Ctx, ex: &dyn Exec, args: &[&str]) -> Result<String, Coverage> {
@@ -222,7 +205,7 @@ pub(crate) fn forge_commit_status(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Cove
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::Forge;
+    use crate::forge::{Forge, ForgeBy, ForgeKind};
     use crate::maint::exec::FakeExec;
     use crate::maint::MaintConfig;
 
@@ -232,7 +215,7 @@ mod tests {
 
     fn read_with(forge: &Forge, account: Option<&str>, read: crate::maint::ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
         let cfg = MaintConfig::default();
-        read(&Ctx { root: "/maint-test/ci", cfg: &cfg, forge, account }, ex)
+        read(&Ctx { root: "/maint-test/ci", cfg: &cfg, forge, account, force: true }, ex)
     }
 
     fn runs_of(r: &Read) -> (&str, &[CiRun]) {
@@ -276,7 +259,7 @@ mod tests {
                 crate::review::normalise_check(text(n, "status"), text(n, "conclusion"))
             };
             let pr = serde_json::json!([{ "number": 1, "author": { "login": "dependabot[bot]" }, "statusCheckRollup": [n] }]);
-            let c = &crate::deps::parse_bot_prs(&pr.to_string())[0].checks;
+            let c = &crate::deps::parse_bot_prs(&pr.to_string(), &[]).unwrap()[0].checks;
             let roll = match (c.passed, c.failed, c.pending, c.skipped) {
                 (1, 0, 0, 0) => "passed",
                 (0, 1, 0, 0) => "failed",

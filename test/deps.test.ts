@@ -296,6 +296,16 @@ describe("the brief the agent is sent", () => {
     expect(b).not.toContain("pnpm test");
   });
 
+  it("names the work, never who reported it", () => {
+    const url = "https://github.com/respeak-io/episko/security/dependabot/7";
+    const b = advisoryBrief(groupAdvisories([alert({ url }), alert({ ghsa: "GHSA-b" })], ctx.manifests), ctx);
+    expect(b.split("\n")[0]).toBe("Work through 2 security advisories in respeak-io/episko.");
+    expect(advisoryBrief(groupAdvisories([alert()], ctx.manifests), ctx)).toMatch(/^Work through 1 security advisory in/);
+    // The link is the reporter's own page; only the prose is held to the rule.
+    expect(b).toContain(url);
+    expect(b.replace(/https?:\/\/\S+/g, "")).not.toMatch(/dependabot|renovate/i);
+  });
+
   it("says out loud when nothing declares the package", () => {
     const adv = groupAdvisories([alert({ pkg: "@vitest/mocker", relationship: "transitive" })], ctx.manifests);
     expect(advisoryBrief(adv, ctx)).toContain("not declared directly");
