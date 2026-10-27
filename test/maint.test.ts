@@ -34,7 +34,7 @@ const input = (...reps: SourceReport[]): MaintInput =>
   ({ det: det(reps.map((r) => r.source)), reports: Object.fromEntries(reps.map((r) => [r.source, r])) });
 
 const run = (workflow: string, status: (typeof CI_STATUSES)[number], at: number, sha = "abcdef1234") =>
-  ({ workflow, status, raw: status, sha, at, url: `https://ci.example/${workflow}/${at}` });
+  ({ workflow, status, raw: status as string, sha, at, url: `https://ci.example/${workflow}/${at}` });
 const ci = (...runs: ReturnType<typeof run>[]): Facts => ({ kind: "ciRuns", branch: "main", runs });
 const adv = (o: Partial<Advisory> = {}): Advisory => ({
   id: "A-1", aliases: [], kind: "dependency", pkg: "lodash", ecosystem: "npm", version: "4.17.20", severity: "high",
@@ -174,6 +174,8 @@ describe("facet rules over ok facts", () => {
     expect(cell("ci", input(ok(GHA, ci(run("w", "skip", S - H)))))).toMatchObject({ level: "muted", text: "no passing run" });
     expect(cell("ci", input(ok(GHA, ci(run("w", "pass", S - H)))))).toMatchObject({ level: "ok", text: "" });
     expect(cell("ci", input(ok(GHA, ci(run("w", "running", S), run("w", "pass", S - H)))))).toMatchObject({ level: "info", text: "running" });
+    const gated = cell("ci", input(ok(GHA, ci({ ...run("pipeline", "neutral", S), raw: "manual" }))));
+    expect(gated).toMatchObject({ level: "muted", text: "no passing run", tip: ["pipeline: neutral (manual)"] });
   });
 
   it("CI failing is dated from the first red of the unbroken run, and broken however young", () => {

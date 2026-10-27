@@ -292,10 +292,11 @@ const ciRule: Rule = (facts, c) => {
     const tip = fail.map((x) => [`${x.workflow}: failing ${age(x)}`.trim(), x.sha && `first red at ${x.sha.slice(0, 7)}`].filter(Boolean).join(", "));
     return { level: "bad", text: `failing ${age(fail[0])}`.trim(), tip };
   }
-  const latest = new Map<string, CiStatus>();
-  for (const r of runs) if (!latest.has(r.workflow)) latest.set(r.workflow, r.status);
-  const st = [...latest.values()];
-  const tip = [...latest].map(([w, s]) => `${w}: ${s}`);
+  const latest = new Map<string, CiRun>();
+  for (const r of runs) if (!latest.has(r.workflow)) latest.set(r.workflow, r);
+  const st = [...latest.values()].map((r) => r.status);
+  // `neutral` hides why (a pipeline held at a manual job, say); the raw word says it.
+  const tip = [...latest].map(([w, r]) => `${w}: ${r.status}${r.status === "neutral" && r.raw && r.raw !== r.status ? ` (${r.raw})` : ""}`);
   if (st.includes("running")) return { level: "info", text: "running", tip };
   if (st.includes("pass")) return { level: "ok", text: "", tip: [`${plural(latest.size, "workflow")} on ${branch}`, ...tip] };
   return { level: "muted", text: "no passing run", tip };

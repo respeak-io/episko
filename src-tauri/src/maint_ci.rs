@@ -1,12 +1,13 @@
 //! The CI facet (docs/maintenance.md § Adapters): one vocabulary for every vendor's status, and
-//! the GitHub reads, `github-actions` and `forge-commit-status`, on the default branch only.
+//! the forge reads, `github-actions`, `forge-commit-status` and `gitlab-ci`, on the default branch only.
 
 use std::collections::HashSet;
 
 use serde_json::Value;
 
+use crate::forge::{classify_glab, pct};
 use crate::maint::exec::data_arg;
-use crate::maint::{gh_coverage, github_repo, CiRun, CiStatus, Coverage, Ctx, Exec, Facts, Read};
+use crate::maint::{gh_coverage, github_repo, gitlab_project, CiRun, CiStatus, Coverage, Ctx, Exec, Facts, Read};
 use crate::usage::iso_epoch_secs;
 
 /// The only map from a vendor's word to `CiStatus`, case-blind. A word it does not know is
@@ -14,12 +15,15 @@ use crate::usage::iso_epoch_secs;
 pub(crate) fn norm_status(raw: &str) -> CiStatus {
     match raw.trim().to_ascii_lowercase().as_str() {
         "success" => CiStatus::Pass,
-        "failure" | "error" | "timed_out" | "startup_failure" | "action_required" => CiStatus::Fail,
+        "failure" | "error" | "timed_out" | "startup_failure" | "action_required" | "failed" => CiStatus::Fail,
         // GitHub marks a check `stale` once it stops waiting for it: stopped, with no verdict.
-        "cancelled" | "stale" => CiStatus::Cancelled,
+        "cancelled" | "stale" | "canceled" | "canceling" => CiStatus::Cancelled,
         "skipped" => CiStatus::Skip,
         "neutral" => CiStatus::Neutral,
         "queued" | "in_progress" | "waiting" | "requested" | "pending" | "expected" => CiStatus::Running,
+        "created" | "preparing" | "waiting_for_resource" | "waiting_for_callback" | "running" | "scheduled" => CiStatus::Running,
+        // GitLab's pipeline held at a blocking manual job: nothing failed, nothing runs, no verdict.
+        "manual" => CiStatus::Neutral,
         _ => CiStatus::Unknown,
     }
 }
@@ -68,7 +72,7 @@ fn default_branch(ctx: &Ctx, ex: &dyn Exec, repo: &str) -> Result<String, Covera
 /// Per workflow, every run back to and including its newest pass: the unbroken streak of
 /// failures `maint.ts` dates *failing since* by, and nothing from before a pass reset it.
 /// The flag says some workflow kept found no pass, so its history may go on past the page.
-fn since_last_pass(runs: Vec<CiRun>) -> (Vec<CiRun>, bool) {
+fn since_last_pass(runs: Vec<CiRun>, ends: fn(CiStatus) -> bool) -> (Vec<CiRun>, bool) {
     let (mut green, mut seen) = (HashSet::new(), HashSet::new());
     let kept: Vec<CiRun> = runs.into_iter()
         .filter(|r| {
@@ -76,7 +80,7 @@ fn since_last_pass(runs: Vec<CiRun>) -> (Vec<CiRun>, bool) {
                 return false;
             }
             seen.insert(r.workflow.clone());
-            if r.status == CiStatus::Pass {
+            if ends(r.status) {
                 green.insert(r.workflow.clone());
             }
             true
@@ -103,7 +107,7 @@ pub(crate) fn parse_runs(json: &str) -> Result<(Vec<CiRun>, bool), Coverage> {
         })
         .collect();
     runs.sort_by_key(|r| std::cmp::Reverse(r.at)); // stable, so gh's own order breaks a tie
-    let (runs, open) = since_last_pass(runs);
+    let (runs, open) = since_last_pass(runs, |s| s == CiStatus::Pass);
     Ok((runs, open && arr.len() >= RUN_CAP))
 }
 
@@ -202,6 +206,66 @@ pub(crate) fn forge_commit_status(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Cove
     parse_rollup(&gh(ctx, ex, &["api", "graphql", "-f", &q, "-f", &o, "-f", &n])?)
 }
 
+// ---------- gitlab-ci ----------
+
+// A merge request's pipeline is the PR run of GitHub; the rest are GitLab's own scans, never CI.
+const NOT_CI_SOURCES: &[&str] = &["merge_request_event", "external_pull_request_event", "security_orchestration_policy",
+    "ondemand_dast_scan", "ondemand_dast_validation", "container_registry_push"];
+
+/// GitLab's project record names the default branch; an empty repository names none.
+pub(crate) fn parse_default_branch(json: &str) -> Result<String, Coverage> {
+    let v: Value = serde_json::from_str(json).map_err(|_| not_json("glab api"))?;
+    if !v.is_object() {
+        return Err(not_json("glab api"));
+    }
+    match v.get("default_branch").and_then(Value::as_str).filter(|b| !b.is_empty()) {
+        Some(b) => data_arg(b).map(str::to_string).map_err(|reason| Coverage::Error { reason }),
+        None => Err(Coverage::Unsupported { reason: "no default branch: the repository is empty".into() }),
+    }
+}
+
+/// A pipeline is the whole config, so its stream is its trigger: a push's red is not cleared by a
+/// run by hand. Schedules share one, as the list names no schedule (`ci.per-workflow`'s blind spot).
+fn stream(source: &str) -> String {
+    match source {
+        "push" | "" => "pipeline".into(),
+        "schedule" => "scheduled pipeline".into(),
+        "parent_pipeline" => "child pipeline".into(),
+        "pipeline" => "multi-project pipeline".into(),
+        s => format!("pipeline ({s})"),
+    }
+}
+
+/// `projects/<path>/pipelines`, newest first, cut per stream at its newest pass as GitHub's are,
+/// or at one held at a manual job, which reached its gate without a failure.
+pub(crate) fn parse_pipelines(json: &str) -> Result<(Vec<CiRun>, bool), Coverage> {
+    let v: Value = serde_json::from_str(json).map_err(|_| not_json("glab api"))?;
+    let arr = v.as_array().ok_or_else(|| not_json("glab api"))?;
+    let mut runs: Vec<CiRun> = arr.iter()
+        .filter(|o| !NOT_CI_SOURCES.contains(&text(o, "source")))
+        .map(|o| CiRun {
+            workflow: stream(text(o, "source")),
+            status: norm_status(text(o, "status")),
+            raw: text(o, "status").to_string(),
+            sha: text(o, "sha").to_string(),
+            at: iso_epoch_secs(text(o, "created_at")),
+            url: Some(text(o, "web_url").to_string()).filter(|u| !u.is_empty()),
+        })
+        .collect();
+    runs.sort_by_key(|r| std::cmp::Reverse(r.at));
+    let (runs, open) = since_last_pass(runs, |s| matches!(s, CiStatus::Pass | CiStatus::Neutral));
+    Ok((runs, open && arr.len() >= RUN_CAP))
+}
+
+pub(crate) fn gitlab_ci(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    let (host, path) = gitlab_project(ctx)?;
+    let project = format!("projects/{}", pct(path));
+    let glab = |endpoint: &str| ex.glab(ctx.root, &["api", "--hostname", host, endpoint]).map_err(|e| classify_glab(&e, host));
+    let branch = parse_default_branch(&glab(&project)?)?;
+    let (runs, truncated) = parse_pipelines(&glab(&format!("{project}/pipelines?ref={}&per_page={RUN_CAP}", pct(&branch)))?)?;
+    Ok(Read { truncated, ..Read::of(Facts::CiRuns { branch, runs }) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,7 +274,7 @@ mod tests {
     use crate::maint::MaintConfig;
 
     fn github() -> Forge {
-        Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table }
+        Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table, api: None }
     }
 
     fn read_with(forge: &Forge, account: Option<&str>, read: crate::maint::ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
@@ -396,5 +460,122 @@ mod tests {
         let empty = r#"{"data":{"repository":{"defaultBranchRef":null}}}"#;
         assert!(matches!(parse_rollup(empty), Err(Coverage::Unsupported { .. })), "an empty repository");
         assert!(matches!(parse_rollup(r#"{"data":{"repository":null}}"#), Err(Coverage::Error { .. })));
+    }
+
+    fn gitlab() -> Forge {
+        Forge { kind: ForgeKind::Gitlab, host: Some("gitlab.com".into()), path: Some("gitlab-org/cli".into()), by: ForgeBy::Table, api: None }
+    }
+
+    #[test]
+    fn every_gitlab_word_has_one_status() {
+        use CiStatus::*;
+        let table = [
+            ("success", Pass), ("failed", Fail), ("canceled", Cancelled), ("canceling", Cancelled), ("skipped", Skip),
+            ("created", Running), ("waiting_for_resource", Running), ("preparing", Running), ("waiting_for_callback", Running),
+            ("pending", Running), ("running", Running), ("scheduled", Running), ("manual", Neutral),
+        ];
+        for (raw, want) in table {
+            assert_eq!(norm_status(raw), want, "{raw:?}");
+        }
+    }
+
+    /// The recording is gitlab-org/cli's real `main` list; a slice of it is the list as it stood earlier.
+    fn pipelines_from(skip: usize) -> (Vec<CiRun>, bool) {
+        let all: Vec<Value> = serde_json::from_str(&FakeExec::testdata("glab-pipelines.json")).unwrap();
+        parse_pipelines(&serde_json::to_string(&all[skip..]).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn gitlab_pipelines_keep_each_trigger_back_to_its_pass() {
+        let (runs, truncated) = pipelines_from(0);
+        assert!(!truncated, "a full page whose streams all passed in it is the whole story");
+        let got: Vec<(&str, CiStatus)> = runs.iter().map(|r| (r.workflow.as_str(), r.status)).collect();
+        assert_eq!(got, [("pipeline", CiStatus::Pass), ("scheduled pipeline", CiStatus::Pass)]);
+        assert_eq!(runs[0].url.as_deref(), Some("https://gitlab.com/gitlab-org/cli/-/pipelines/2995406019"));
+
+        let (runs, _) = pipelines_from(1);
+        let push: Vec<(CiStatus, &str)> = runs.iter().filter(|r| r.workflow == "pipeline").map(|r| (r.status, r.raw.as_str())).collect();
+        assert_eq!(push, [(CiStatus::Fail, "failed"), (CiStatus::Pass, "success")], "a schedule's pass does not end a push streak");
+        assert_eq!(runs[0].at, iso_epoch_secs("2026-10-27T15:17:57.002Z"));
+        let (runs, _) = pipelines_from(8);
+        assert_eq!((runs[0].status, runs[0].raw.as_str()), (CiStatus::Cancelled, "canceled"));
+        // At 28 a security policy's pipeline leads the list; it is GitLab's scan, so 29 is the newest run.
+        let (runs, _) = pipelines_from(28);
+        assert_eq!(runs[0].url.as_deref(), Some("https://gitlab.com/gitlab-org/cli/-/pipelines/2980941350"), "{:?}", runs[0]);
+
+        let red = serde_json::json!({ "status": "failed", "source": "push", "created_at": "2026-10-27T15:17:57Z" });
+        assert!(parse_pipelines(&serde_json::to_string(&vec![red; RUN_CAP]).unwrap()).unwrap().1, "a full red page is a floor");
+        assert_eq!(parse_pipelines("[]").unwrap(), (vec![], false), "no pipeline is never ran, not a pass");
+        assert!(parse_pipelines("<html>").is_err() && parse_pipelines("{}").is_err());
+    }
+
+    fn pipeline(source: &str, status: &str, at: &str) -> Value {
+        serde_json::json!({ "status": status, "source": source, "created_at": format!("2026-10-{at}T00:00:00Z") })
+    }
+
+    fn streams(rows: &[Value]) -> Vec<(String, CiStatus)> {
+        parse_pipelines(&serde_json::to_string(rows).unwrap()).unwrap().0.into_iter().map(|r| (r.workflow, r.status)).collect()
+    }
+
+    #[test]
+    fn a_gitlab_trigger_never_clears_another_and_a_manual_gate_ends_a_streak() {
+        use CiStatus::*;
+        let got = streams(&[pipeline("web", "success", "27"), pipeline("merge_request_event", "success", "26"),
+            pipeline("push", "failed", "25"), pipeline("push", "success", "24")]);
+        let want = [("pipeline (web)", Pass), ("pipeline", Fail), ("pipeline", Pass)];
+        assert_eq!(got, want.map(|(w, s)| (w.to_string(), s)), "a merge request's pass is dropped, not an end");
+        let gated = vec![pipeline("push", "manual", "27"); RUN_CAP];
+        let (runs, truncated) = parse_pipelines(&serde_json::to_string(&gated).unwrap()).unwrap();
+        assert_eq!((runs.len(), truncated), (1, false), "a deploy gate on every pipeline is no endless streak");
+        let got = streams(&[pipeline("push", "failed", "27"), pipeline("push", "manual", "26"), pipeline("push", "failed", "25")]);
+        assert_eq!(got, [("pipeline".to_string(), Fail), ("pipeline".to_string(), Neutral)]);
+    }
+
+    #[test]
+    fn the_default_branch_is_gitlabs_answer() {
+        assert_eq!(parse_default_branch(&FakeExec::testdata("glab-project.json")), Ok("main".to_string()));
+        assert!(matches!(parse_default_branch(r#"{"id": 1, "default_branch": null}"#), Err(Coverage::Unsupported { .. })), "an empty repository");
+        assert!(matches!(parse_default_branch(r#"{"default_branch": "-x"}"#), Err(Coverage::Error { .. })), "never a flag on argv");
+        for bad in ["[]", "<html>", ""] {
+            assert!(matches!(parse_default_branch(bad), Err(Coverage::Error { .. })), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn gitlab_ci_asks_the_projects_host_for_its_default_branch() {
+        let ex = FakeExec::answering(Err("unexpected call"))
+            .on(&["glab", "api", "--hostname", "gitlab.com", "projects/gitlab-org%2Fcli/pipelines?ref=main&per_page=50"], Ok(&FakeExec::testdata("glab-pipelines.json")))
+            .on(&["glab", "api", "--hostname", "gitlab.com", "projects/gitlab-org%2Fcli"], Ok(&FakeExec::testdata("glab-project.json")));
+        let r = read_with(&gitlab(), None, gitlab_ci, &ex).unwrap();
+        assert_eq!(runs_of(&r).0, "main");
+        assert_eq!(ex.calls().len(), 2, "the project, then its default branch's pipelines");
+
+        let aliased = Forge { host: Some("gitlab-work".into()), api: Some("gitlab.acme.io".into()), ..gitlab() };
+        let ex = FakeExec::answering(Err("glab: 404 Project Not Found (HTTP 404)"));
+        let Err(Coverage::NoAccess { fix, .. }) = read_with(&aliased, None, gitlab_ci, &ex) else { panic!() };
+        assert_eq!(fix.as_deref(), Some("glab auth login --hostname gitlab.acme.io"), "the alias's real host");
+        assert_eq!(ex.calls()[0][3], "gitlab.acme.io");
+
+        let ex = FakeExec::answering(Ok("[]"));
+        for f in [github(), Forge { path: Some("solo".into()), ..gitlab() }, Forge { host: None, ..gitlab() }] {
+            assert!(matches!(read_with(&f, None, gitlab_ci, &ex), Err(Coverage::Unsupported { .. })), "{f:?}");
+        }
+        assert!(ex.calls().is_empty());
+    }
+
+    /// Spends no tokens, but needs `glab` on PATH and the network: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "needs glab and gitlab.com"]
+    fn live_glab_reads_a_public_gitlab_project() {
+        let root = crate::testutil::scratch_dir().to_string_lossy().to_string();
+        let cfg = MaintConfig::default();
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &gitlab(), account: None, force: true };
+        let ex = crate::maint::SysExec { cost: crate::maint::Cost::Forge };
+        let r = gitlab_ci(&ctx, &ex).unwrap_or_else(|c| panic!("{c:?}"));
+        let (branch, runs) = runs_of(&r);
+        assert_eq!(branch, "main");
+        assert!(!runs.is_empty() && runs.iter().all(|r| r.status != CiStatus::Unknown), "{runs:?}");
+        let w = crate::maint_repo::gitlab_work(&ctx, &ex).unwrap_or_else(|c| panic!("{c:?}"));
+        assert!(matches!(w.facts, Facts::Work { issues, .. } if issues > 0), "{:?}", w.facts);
     }
 }

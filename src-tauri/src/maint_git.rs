@@ -104,7 +104,7 @@ mod tests {
     use crate::maint::{read_config, MaintConfig};
     use crate::testutil::{git, scratch_dir};
 
-    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None };
+    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None, api: None };
 
     fn changelog_of(text: &str) -> (Option<u32>, Option<String>, Option<u64>) {
         match parse_changelog(text) {

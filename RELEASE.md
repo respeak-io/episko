@@ -129,6 +129,15 @@ part, the other claims, fetches, completes and must end with the same bytes, bot
 the app and server agree on the handoff channel. No tokens; a few seconds. Invites are single-use, so mint fresh
 ones for every run.
 
+`live_glab_reads_a_public_gitlab_project` is GitLab's half of Maintenance: it reads
+`gitlab-org/cli` through the real `glab` exactly as a scan does, and asserts that the REST
+shapes `gitlab-ci` parses (the project's default branch, its pipeline list) and the GraphQL
+answer `gitlab-work` parses still come back, with the `-f` variables passed through. A
+GitLab or glab release can change any of those, and every one fails silently into a muted
+cell. **It needs `glab` on PATH and network access to gitlab.com, and no sign-in**: the
+project is public and a signed-out glab costs only the review count. Without glab, add
+`--skip live_glab_` to the pass rather than reading its failure as a regression.
+
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through
 below.

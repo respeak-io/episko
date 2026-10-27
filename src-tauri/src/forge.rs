@@ -1,8 +1,11 @@
 //! Which forge a remote lives on (docs/maintenance.md § Detection), decided before any file:
 //! the `[maintenance] forge` pin, a known-host table, a host that names its software, else
 //! `unknown`. No network probe, so a self-hosted host that names nothing waits for a pin.
+//! Also GitLab's transport, `glab`, the twin of `github::gh`.
 
 use crate::git::{remote_parts, ssh_hostname};
+use crate::maint::Coverage;
+use crate::platform::{augmented_path, sys_command};
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -56,6 +59,28 @@ pub(crate) struct Forge {
     pub(crate) host: Option<String>, // as the remote spells it; an ssh alias stays an alias
     pub(crate) path: Option<String>, // everything after the host: `group/sub/repo` on GitLab
     pub(crate) by: ForgeBy,
+    #[serde(skip)]
+    pub(crate) api: Option<String>, // where an API is asked when `host` is not it: an alias's real host, a web port
+}
+
+impl Forge {
+    /// The hostname a forge CLI is pointed at: `api` when the remote's own spelling is not it.
+    pub(crate) fn api_host(&self) -> Option<&str> {
+        self.api.as_deref().or(self.host.as_deref())
+    }
+}
+
+/// `host:port` for an http(s) remote off its scheme's port, since glab keys a login by both.
+fn web_port(url: &str, host: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let default = match scheme.to_ascii_lowercase().as_str() {
+        "https" => "443",
+        "http" => "80",
+        _ => return None,
+    };
+    let auth = rest.split('/').next().unwrap_or(rest);
+    let port = auth.rsplit_once('@').map_or(auth, |(_, a)| a).rsplit_once(':')?.1;
+    (!port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port != default).then(|| format!("{host}:{port}"))
 }
 
 fn known_host(h: &str) -> Option<ForgeKind> {
@@ -86,23 +111,88 @@ pub(crate) fn forge_with(url: Option<&str>, pin: Option<&str>, resolve: impl Fn(
         .filter(|k| !matches!(k, ForgeKind::Unknown | ForgeKind::None));
     let Some(h) = host.clone() else {
         let (kind, by) = pinned.map_or((ForgeKind::None, ForgeBy::None), |k| (k, ForgeBy::Pin));
-        return Forge { kind, host, path, by };
+        return Forge { kind, host, path, by, api: None };
     };
     let ssh = url.is_some_and(|u| !u.trim_start().to_ascii_lowercase().starts_with("http"));
-    let real = if known_host(&h).is_none() && ssh { resolve(&h) } else { None };
-    let names = [Some(h.as_str()), real.as_deref()];
+    let resolved = if known_host(&h).is_none() && ssh { resolve(&h) } else { None };
+    let names = [Some(h.as_str()), resolved.as_deref()];
     let decided = names.iter().flatten().find_map(|n| known_host(n)).map(|k| (k, ForgeBy::Table))
         .or_else(|| names.iter().flatten().find_map(|n| named_host(n)).map(|k| (k, ForgeBy::Name)));
+    // An alias is a bare name or one only the table knows resolved; a dotted host whose ssh
+    // merely goes elsewhere (an IP, an ssh endpoint) is still the web host.
+    let api = resolved.filter(|r| !h.contains('.') || known_host(r).is_some())
+        .or_else(|| url.and_then(|u| web_port(u, &h)));
     // A pin the host table agrees with is the table's answer, so an ssh alias of github.com stays github.com.
     if let Some(kind) = pinned.filter(|k| decided != Some((*k, ForgeBy::Table))) {
-        return Forge { kind, host, path, by: ForgeBy::Pin };
+        return Forge { kind, host, path, by: ForgeBy::Pin, api };
     }
     let (kind, by) = decided.unwrap_or((ForgeKind::Unknown, ForgeBy::None));
-    Forge { kind, host, path, by }
+    Forge { kind, host, path, by, api }
 }
 
 pub(crate) fn forge_of(url: Option<&str>, pin: Option<&str>) -> Forge {
     forge_with(url, pin, ssh_hostname)
+}
+
+// ---------- GitLab through `glab` ----------
+
+const GLAB_SECS: u64 = 60;
+
+/// One `glab` call. Its credential is glab's own, per host, so the caller names the host with
+/// `--hostname`; a GraphQL answer that carries `data` is kept beside its `errors[]`.
+pub(crate) fn glab(root: &str, args: &[&str]) -> Result<String, String> {
+    let mut cmd = sys_command("glab");
+    cmd.env("PATH", augmented_path())
+        .current_dir(root)
+        .args(args)
+        .env("GLAB_NO_PROMPT", "1") // no terminal here: never prompt or open a browser
+        .env("GLAB_CHECK_UPDATE", "false")
+        .env("NO_COLOR", "1");
+    let out = crate::deps::run_capped(cmd, GLAB_SECS).map_err(|e| {
+        if e.starts_with("no answer") { format!("glab gave no answer after {GLAB_SECS}s") } else { format!("glab not available: {e}") }
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() || crate::github::graphql_answered(&stdout) {
+        return Ok(stdout);
+    }
+    let said = |s: &str| s.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string);
+    Err(said(&String::from_utf8_lossy(&out.stderr)).or_else(|| said(&stdout)).unwrap_or_else(|| "glab failed".into()))
+}
+
+/// A `glab` failure as a coverage, each fix naming the host glab must be signed in to:
+/// missing or signed out is `noTool`, an account that cannot see the project is `noAccess`.
+pub(crate) fn classify_glab(err: &str, host: &str) -> Coverage {
+    let e = err.to_lowercase();
+    let login = Some(format!("glab auth login --hostname {host}"));
+    if e.contains("glab not available") {
+        return Coverage::NoTool { tool: "glab".into(), fix: Some("install the GitLab CLI from https://gitlab.com/gitlab-org/cli".into()) };
+    }
+    if e.contains("rate limit") || e.contains("http 429") || e.contains("429 too many") {
+        return Coverage::Error { reason: err.to_string() };
+    }
+    if e.contains("401") || e.contains("unauthorized") || e.contains("invalid_token") || e.contains("glab auth login") {
+        return Coverage::NoTool { tool: "glab".into(), fix: login };
+    }
+    // GitLab answers a project an account may not see exactly like one that does not exist.
+    if e.contains("404") || e.contains("project not found") {
+        let reason = format!("the account glab uses on {host} cannot see this project");
+        return Coverage::NoAccess { reason, fix: login };
+    }
+    if e.contains("403") || e.contains("forbidden") || e.contains("insufficient_scope") {
+        return Coverage::NoAccess { reason: err.to_string(), fix: login };
+    }
+    Coverage::Error { reason: err.to_string() }
+}
+
+/// Percent-encodes everything but RFC 3986's unreserved characters: a project path is one
+/// segment of a GitLab URL (`group%2Fsub%2Frepo`), and a branch is one query value.
+pub(crate) fn pct(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -159,6 +249,16 @@ mod tests {
         let resolve = |a: &str| (a == "github.com-work").then(|| "github.com".to_string());
         let f = forge_with(Some("git@github.com-work:acme/app.git"), None, resolve);
         assert_eq!((f.kind, f.by, f.host.as_deref()), (ForgeKind::Github, ForgeBy::Table, Some("github.com-work")));
+        assert_eq!(f.api_host(), Some("github.com"), "an API is asked at the real host");
+        assert_eq!(of("https://gitlab.acme.io/x/y").api_host(), Some("gitlab.acme.io"));
+        let elsewhere = |a: &str| Some(if a == "gitlab-work" { "gitlab.acme.io" } else { "10.1.2.3" }.to_string());
+        assert_eq!(forge_with(Some("git@gitlab-work:g/r.git"), None, elsewhere).api_host(), Some("gitlab.acme.io"), "a bare alias");
+        let f = forge_with(Some("git@gitlab.acme.io:g/r.git"), None, elsewhere);
+        assert_eq!((f.kind, f.api_host()), (ForgeKind::Gitlab, Some("gitlab.acme.io")), "ssh routed to an IP keeps the web host");
+        let ported = |u: &str| of(u).api_host().map(str::to_string);
+        assert_eq!(ported("https://u:p@gitlab.acme.io:8443/g/r.git").as_deref(), Some("gitlab.acme.io:8443"), "glab keys a login by its port");
+        assert_eq!(ported("https://gitlab.acme.io:443/g/r.git").as_deref(), Some("gitlab.acme.io"), "the scheme's own port is no port");
+        assert_eq!(ported("ssh://git@gitlab.acme.io:2222/g/r.git").as_deref(), Some("gitlab.acme.io"), "an ssh port is not the web's");
         let pinned = forge_with(Some("git@github.com-work:acme/app.git"), Some("github"), resolve);
         assert_eq!((pinned.kind, pinned.by), (ForgeKind::Github, ForgeBy::Table), "a pin the alias confirms is the table's");
         // An https host is a real hostname: no alias lookup, no `ssh -G` spawned for it.
@@ -175,5 +275,34 @@ mod tests {
         for k in KINDS.map(|(k, _)| k) {
             assert_eq!(ForgeKind::from_id(k.id()), Some(k));
         }
+    }
+
+    #[test]
+    fn glab_failures_carry_a_fix_for_their_host() {
+        let login = Some("glab auth login --hostname gitlab.acme.io".to_string());
+        let tool = |fix: Option<String>| Coverage::NoTool { tool: "glab".into(), fix };
+        let install = Some("install the GitLab CLI from https://gitlab.com/gitlab-org/cli".to_string());
+        let unseen = "the account glab uses on gitlab.acme.io cannot see this project".to_string();
+        let table: [(&str, Coverage); 9] = [
+            ("glab not available: program not found", tool(install)),
+            ("glab: 401 Unauthorized (HTTP 401)", tool(login.clone())),
+            ("glab: invalid_token: Token is expired. You can either do re-authorization or token refresh.", tool(login.clone())),
+            ("none of the git remotes configured for this repository points to a known GitLab host. Please use `glab auth login` to authenticate", tool(login.clone())),
+            ("glab: 404 Project Not Found (HTTP 404)", Coverage::NoAccess { reason: unseen, fix: login.clone() }),
+            ("glab: insufficient_scope (HTTP 403)", Coverage::NoAccess { reason: "glab: insufficient_scope (HTTP 403)".into(), fix: login.clone() }),
+            ("glab: 403 Forbidden (HTTP 403)", Coverage::NoAccess { reason: "glab: 403 Forbidden (HTTP 403)".into(), fix: login }),
+            ("glab: 429 Too Many Requests (HTTP 429)", Coverage::Error { reason: "glab: 429 Too Many Requests (HTTP 429)".into() }),
+            ("glab: 502 Bad Gateway (HTTP 502)", Coverage::Error { reason: "glab: 502 Bad Gateway (HTTP 502)".into() }),
+        ];
+        for (err, want) in table {
+            assert_eq!(classify_glab(err, "gitlab.acme.io"), want, "{err}");
+        }
+    }
+
+    #[test]
+    fn a_path_and_a_branch_are_one_url_part_each() {
+        assert_eq!(pct("group/sub/repo"), "group%2Fsub%2Frepo");
+        assert_eq!(pct("feat/ä b&c=d"), "feat%2F%C3%A4%20b%26c%3Dd");
+        assert_eq!(pct("v1.2_x-y~z"), "v1.2_x-y~z");
     }
 }
