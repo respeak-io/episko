@@ -54,7 +54,7 @@ let snaps = clampSnaps(readObj<unknown>("cc-maint"));
 export const maintSnap = (root: string): MaintSnap | undefined => snaps[root];
 function keepSnap(e: ProjectMaint): void {
   const inp = maintInput(e.root);
-  if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at) });
+  if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at, snaps[e.root]) });
 }
 const saveSnaps = () => {
   try { localStorage.setItem("cc-maint", JSON.stringify(snaps)); } catch (err) { dlog("warn", `maint: snapshot not kept: ${err}`); }

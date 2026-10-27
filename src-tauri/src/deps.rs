@@ -98,6 +98,8 @@ static BOT_PRS: Shared<(Vec<DepPr>, bool)> = Shared(Mutex::new(None));
 /// How old an answer a forced read still takes as its own: a ⟳ scan's two bot sources start
 /// seconds apart behind its in-flight limit, and must still share one `gh pr list`.
 const FORCE_JOIN: Duration = Duration::from_secs(15);
+/// Past `gh`'s own deadline, a read still in flight is stuck, and is no longer joined.
+const STALLED: Duration = Duration::from_secs(crate::github::GH_SECS + 30);
 
 fn shared<T: Clone>(cache: &Shared<T>, key: Key, force: bool, fill: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let fresh = if force { FORCE_JOIN } else { TTL };
@@ -105,7 +107,7 @@ fn shared<T: Clone>(cache: &Shared<T>, key: Key, force: bool, fill: impl FnOnce(
         let Ok(mut g) = cache.0.lock() else { return fill() };
         let m = g.get_or_insert_with(HashMap::new);
         match m.get(&key) {
-            Some((at, s)) if s.get().is_none() || at.elapsed() < fresh => s.clone(),
+            Some((at, s)) if at.elapsed() < if s.get().is_none() { STALLED } else { fresh } => s.clone(),
             _ => {
                 let s: Slot<T> = Arc::default();
                 m.insert(key, (Instant::now(), s.clone()));
@@ -1091,6 +1093,25 @@ mod tests {
         assert!(held_for(&ALERTS, root));
         dep_invalidate(root.into());
         assert!(!held_for(&BOT_PRS, root) && !held_for(&ALERTS, root), "both halves forgotten");
+    }
+
+    #[test]
+    fn a_read_stuck_past_the_deadline_is_not_joined() {
+        use crate::maint::exec::FakeExec;
+        use std::sync::{Arc, Mutex};
+        let root = "/deps-test/stalled";
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().unwrap();
+        let stuck = FakeExec::answering(Ok("[]")).gated(gate.clone());
+        std::thread::scope(|s| {
+            s.spawn(|| bot_prs_read(&stuck, root, Some("a/b"), None, &[], false).unwrap());
+            std::thread::sleep(Duration::from_millis(100)); // the first read is in flight
+            age(&BOT_PRS, root, STALLED);
+            let fresh = FakeExec::answering(Ok("[]"));
+            bot_prs_read(&fresh, root, Some("a/b"), None, &[], true).unwrap();
+            assert_eq!(fresh.calls().len(), 1, "a ⟳ starts its own read");
+            drop(held);
+        });
     }
 
     fn age<T>(cache: &Shared<T>, root: &str, by: Duration) {

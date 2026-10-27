@@ -84,6 +84,23 @@ pub(crate) fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<Str
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// How long a read nobody clicked waits on `gh`: a shared cache slot every later read joins
+/// must not hang on one stalled connection for the life of the app.
+pub(crate) const GH_SECS: u64 = 60;
+
+/// [`gh`] with [`GH_SECS`] as its deadline. `graphql`: a read that can half-answer, since gh exits 1
+/// on any `errors[]` while `data` still arrives beside them, and what it costs is the caller's to judge.
+pub(crate) fn gh_capped(root: &str, account: Option<&str>, args: &[&str], graphql: bool) -> Result<String, String> {
+    let out = crate::deps::run_capped(gh_command(root, account, args)?, GH_SECS).map_err(|e| {
+        if e.starts_with("no answer") { format!("gh gave no answer after {GH_SECS}s") } else { format!("gh not available: {e}") }
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() || (graphql && graphql_answered(&stdout)) {
+        return Ok(stdout);
+    }
+    Err(first_line(&String::from_utf8_lossy(&out.stderr)))
+}
+
 /// [`gh`] with `stdin` piped in, for `gh api --input -`: a JSON body never rides on argv.
 /// A failed API call prints GitHub's own `errors` on stdout, and that half is the actionable one.
 pub(crate) fn gh_input(root: &str, account: Option<&str>, args: &[&str], stdin: &str) -> Result<String, String> {
@@ -108,17 +125,6 @@ pub(crate) fn gh_input(root: &str, account: Option<&str>, args: &[&str], stdin: 
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-/// [`gh`] for a GraphQL read that can half-answer: gh exits 1 on any `errors[]`, but `data`
-/// still arrives on stdout beside them, and what it costs is the caller's to judge.
-pub(crate) fn gh_graphql(root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
-    let out = gh_command(root, account, args)?.output().map_err(|e| format!("gh not available: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    if out.status.success() || graphql_answered(&stdout) {
-        return Ok(stdout);
-    }
-    Err(first_line(&String::from_utf8_lossy(&out.stderr)))
 }
 
 /// A GraphQL body that carries a `data` object, whatever errors ride beside it.

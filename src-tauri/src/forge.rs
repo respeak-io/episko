@@ -138,9 +138,12 @@ pub(crate) fn forge_of(url: Option<&str>, pin: Option<&str>) -> Forge {
 
 const GLAB_SECS: u64 = 60;
 
-/// One `glab` call. Its credential is glab's own, per host, so the caller names the host with
-/// `--hostname`; a GraphQL answer that carries `data` is kept beside its `errors[]`.
-pub(crate) fn glab(root: &str, args: &[&str]) -> Result<String, String> {
+/// glab sends any of these to whatever `--hostname` names, ahead of the login it keeps for that
+/// host, and the host comes from a cloned repository's remote or its committed pin.
+const GLAB_ENV_TOKENS: &[&str] =
+    &["GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN", "GLAB_IS_OAUTH2", "CI_JOB_TOKEN", "GITLAB_CI", "GLAB_ENABLE_CI_AUTOLOGIN"];
+
+fn glab_cmd(root: &str, args: &[&str]) -> std::process::Command {
     let mut cmd = sys_command("glab");
     cmd.env("PATH", augmented_path())
         .current_dir(root)
@@ -148,7 +151,16 @@ pub(crate) fn glab(root: &str, args: &[&str]) -> Result<String, String> {
         .env("GLAB_NO_PROMPT", "1") // no terminal here: never prompt or open a browser
         .env("GLAB_CHECK_UPDATE", "false")
         .env("NO_COLOR", "1");
-    let out = crate::deps::run_capped(cmd, GLAB_SECS).map_err(|e| {
+    for name in GLAB_ENV_TOKENS {
+        cmd.env_remove(name);
+    }
+    cmd
+}
+
+/// One `glab` call. Its credential is glab's own login for the host the caller names with
+/// `--hostname`, never an env token; a GraphQL answer that carries `data` is kept beside its `errors[]`.
+pub(crate) fn glab(root: &str, args: &[&str]) -> Result<String, String> {
+    let out = crate::deps::run_capped(glab_cmd(root, args), GLAB_SECS).map_err(|e| {
         if e.starts_with("no answer") { format!("glab gave no answer after {GLAB_SECS}s") } else { format!("glab not available: {e}") }
     })?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -274,6 +286,15 @@ mod tests {
         assert_eq!(of("/srv/git/app.git").kind, ForgeKind::None, "a local path is no forge");
         for k in KINDS.map(|(k, _)| k) {
             assert_eq!(ForgeKind::from_id(k.id()), Some(k));
+        }
+    }
+
+    #[test]
+    fn glab_never_inherits_an_env_token() {
+        let cmd = glab_cmd(".", &["api", "--hostname", "git.example.dev", "user"]);
+        let removed: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k.to_string_lossy().to_string()).collect();
+        for name in GLAB_ENV_TOKENS {
+            assert!(removed.iter().any(|r| r.eq_ignore_ascii_case(name)), "{name} reaches glab");
         }
     }
 

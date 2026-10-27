@@ -302,8 +302,11 @@ const ciRule: Rule = (facts, c) => {
   // `neutral` hides why (a pipeline held at a manual job, say); the raw word says it.
   const tip = [...latest].map(([w, r]) => `${w}: ${r.status}${r.status === "neutral" && r.raw && r.raw !== r.status ? ` (${r.raw})` : ""}`);
   if (st.includes("running")) return { level: "info", text: "running", tip };
-  if (st.includes("pass")) return { level: "ok", text: "", tip: [`${plural(latest.size, "workflow")} on ${branch}`, ...tip] };
-  return { level: "muted", text: "no passing run", tip };
+  if (!st.includes("pass")) return { level: "muted", text: "no passing run", tip };
+  // One workflow's pass never vouches for another whose newest run was cancelled or unknown.
+  const odd = st.filter((s) => s !== "pass" && s !== "skip");
+  if (!odd.length) return { level: "ok", text: "", tip: [`${plural(latest.size, "workflow")} on ${branch}`, ...tip] };
+  return { level: "muted", text: `${odd.length} ${new Set(odd).size === 1 ? odd[0] : "not passing"}`, tip };
 };
 
 const SEV_LEVEL: Record<Severity, Level> = { critical: "bad", high: "bad", medium: "warn", low: "info", unknown: "info" };
@@ -909,26 +912,41 @@ export function hostRows(projects: readonly { path: string; hosts: readonly stri
 
 export const SNAP_ROOTS = 200, SNAP_FINDINGS = 12, SNAP_TEXT = 80, SNAP_KEY = 300;
 const LEVELS: readonly Level[] = ["bad", "warn", "info", "ok", "muted", "unread"];
-/** What a finished scan leaves for the next boot: a card's words, never an advisory's payload or a URL. */
-export interface SnapCell { facet: Facet; level: Level; text: string }
-export interface SnapFinding { facet: Facet; key: string; level: Finding["level"]; text: string }
+/** What a finished scan leaves for the next boot: a card's words, never an advisory's payload or a URL.
+ *  `at` (ms) only on what an older scan left, when it differs from the snapshot's own. */
+export interface SnapCell { facet: Facet; level: Level; text: string; at?: number }
+export interface SnapFinding { facet: Facet; key: string; level: Finding["level"]; text: string; at?: number }
 export interface MaintSnap { at: number; cells: SnapCell[]; findings: SnapFinding[] } // at: ms
 export type MaintSnaps = Record<string, MaintSnap>;
 
-/** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished. */
-export function takeSnap(root: string, inp: MaintInput, now = Date.now()): MaintSnap {
+const VERDICT: readonly CellState[] = ["read", "none", "off"];
+const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
+
+/** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
+ *  A facet this scan reached no verdict on keeps `prev`'s cell and lines, dated as then: a failed read
+ *  must not erase the last known red. */
+export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
-  return {
-    at: now,
-    cells: facetCells(inp, th, now).map((c) => ({ facet: c.facet, level: c.level, text: c.text.slice(0, SNAP_TEXT) })),
-    findings: findings(root, inp, th, now).filter((f) => f.key.length <= SNAP_KEY).slice(0, SNAP_FINDINGS)
-      .map((f) => ({ facet: f.facet, key: f.key, level: f.level, text: f.text.slice(0, SNAP_TEXT) })),
-  };
+  const live = facetCells(inp, th, now);
+  const kept = new Set(prev ? live.filter((c) => !VERDICT.includes(c.state)).map((c) => c.facet) : []);
+  const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
+  const cells = live.map((c): SnapCell => {
+    const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;
+    return old ? dated(old) : { facet: c.facet, level: c.level, text: c.text.slice(0, SNAP_TEXT) };
+  });
+  const fresh = findings(root, inp, th, now).filter((f) => !kept.has(f.facet) && f.key.length <= SNAP_KEY)
+    .map((f): SnapFinding => ({ facet: f.facet, key: f.key, level: f.level, text: f.text.slice(0, SNAP_TEXT) }));
+  const carried = (prev?.findings ?? []).filter((f) => kept.has(f.facet)).map(dated);
+  const all = [...fresh, ...carried].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
+    || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
+  return { at: now, cells, findings: all.slice(0, SNAP_FINDINGS) };
 }
 
 const short = (n: number): Is => (v) => typeof v === "string" && v.length <= n;
-const isSnapCell = shape({ facet: oneOf(FACETS), level: oneOf(LEVELS), text: short(SNAP_TEXT) });
-const isSnapFinding = shape({ facet: oneOf(FACETS), key: short(SNAP_KEY), level: oneOf(["bad", "warn", "info"]), text: short(SNAP_TEXT) });
+const optAt: Is = (v) => v === undefined || (num(v) && (v as number) > 0);
+const isSnapCell = shape({ facet: oneOf(FACETS), level: oneOf(LEVELS), text: short(SNAP_TEXT), at: optAt });
+const isSnapFinding = shape({ facet: oneOf(FACETS), key: short(SNAP_KEY), level: oneOf(FINDING_RANK), text: short(SNAP_TEXT), at: optAt });
+const withAt = (at: number | undefined) => at === undefined ? {} : { at };
 
 /** `cc-maint` narrowed: a root of the wrong shape is dropped on its own, and past twelve lines or two
  *  hundred roots (the oldest go) is cut. Rebuilt field by field, so a hand-added URL never survives. */
@@ -938,9 +956,10 @@ export function clampSnaps(raw: unknown): MaintSnaps {
     if (!root || !isObj(v) || !num(v.at) || (v.at as number) <= 0 || !Array.isArray(v.cells) || !Array.isArray(v.findings)) return [];
     // Seven facets, each once: a card with a hole would draw a cell nobody stored.
     if (!v.cells.every(isSnapCell) || FACETS.some((f) => (v.cells as SnapCell[]).filter((c) => c.facet === f).length !== 1)) return [];
-    const cells = FACETS.map((f) => (v.cells as SnapCell[]).find((c) => c.facet === f)!).map(({ facet, level, text }) => ({ facet, level, text }));
+    const cells = FACETS.map((f) => (v.cells as SnapCell[]).find((c) => c.facet === f)!)
+      .map(({ facet, level, text, at }) => ({ facet, level, text, ...withAt(at) }));
     const fs = (v.findings.filter(isSnapFinding) as SnapFinding[]).slice(0, SNAP_FINDINGS)
-      .map(({ facet, key, level, text }) => ({ facet, key, level, text }));
+      .map(({ facet, key, level, text, at }) => ({ facet, key, level, text, ...withAt(at) }));
     return [[root, { at: v.at as number, cells, findings: fs }]];
   });
   return Object.fromEntries(kept.sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0])).slice(0, SNAP_ROOTS));
@@ -948,9 +967,9 @@ export function clampSnaps(raw: unknown): MaintSnaps {
 
 /** A snapshot's cells as a card draws them: muted and as of then, never a dot, whatever they said. */
 export function pastCells(s: MaintSnap, now = Date.now()): Cell[] {
-  const tip = [`as of the last check, ${span((now - s.at) / 1000)} ago`, "not checked this session"];
+  const tip = (at: number) => [`as of the last check, ${span((now - at) / 1000)} ago`, "not checked this session"];
   return s.cells.map((c): Cell => ({ facet: c.facet, state: "past", level: "muted",
-    text: c.text || (c.level === "ok" ? "fine" : "not read"), tip, fix: null, asOf: null }));
+    text: c.text || (c.level === "ok" ? "fine" : "not read"), tip: tip(c.at ?? s.at), fix: null, asOf: null }));
 }
 
 /** A red default branch as Today's queue takes it; `asOf` (ms) marks the snapshot's, `since` (ms) the first red run. */
@@ -970,5 +989,5 @@ export function ciRows(root: string, inp: MaintInput | null, snap: MaintSnap | n
   }
   // The key is findings' own `ci:<workflow>`, and the workflow is all of a line's detail a snapshot keeps.
   return (snap?.findings ?? []).filter((f) => f.facet === "ci")
-    .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:/, ""), since: null, asOf: snap!.at }));
+    .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:/, ""), since: null, asOf: f.at ?? snap!.at }));
 }

@@ -180,6 +180,13 @@ describe("facet rules over ok facts", () => {
     expect(gated).toMatchObject({ level: "muted", text: "no passing run", tip: ["pipeline: neutral (manual)"] });
   });
 
+  it("CI is only healthy when every workflow's newest run passed or skipped", () => {
+    const mixed = (...more: ReturnType<typeof run>[]) => cell("ci", input(ok(GHA, ci(run("test", "pass", S - H), ...more))));
+    expect(mixed(run("lint", "skip", S - H))).toMatchObject({ level: "ok", text: "" });
+    expect(mixed(run("deploy", "cancelled", S - H))).toMatchObject({ level: "muted", text: "1 cancelled" });
+    expect(mixed(run("deploy", "unknown", S - H), run("docs", "neutral", S - H))).toMatchObject({ level: "muted", text: "2 not passing" });
+  });
+
   it("CI failing is dated from the first red of the unbroken run, and broken however young", () => {
     const c = cell("ci", input(ok(GHA, ci(run("w", "fail", S - H), run("w", "fail", S - 2 * D), run("w", "pass", S - 3 * D), run("v", "pass", S)))));
     expect(c).toMatchObject({ level: "bad", text: "failing 2d" });
@@ -772,6 +779,20 @@ describe("Today's red default branch", () => {
     expect(ciRows("/r", marked, snap, NOW)).toEqual(past);
     const noCi: MaintInput = { det: det([]), reports: {} };
     expect(ciRows("/r", noCi, snap, NOW), "no CI at all is a verdict").toEqual([]);
+  });
+
+  it("a scan whose CI read failed keeps the last known red in the snapshot it leaves, dated as then", () => {
+    const red = takeSnap("/r", failing(), NOW - 2 * D * 1000);
+    const failed = input(not(GHA, "ci", { state: "noAccess", reason: "auth expired", fix: null }));
+    const next = clampSnaps(JSON.parse(JSON.stringify({ "/r": takeSnap("/r", failed, NOW, red) })))["/r"];
+    expect(next.at).toBe(NOW);
+    expect(next.cells.find((c) => c.facet === "ci")).toEqual({ ...red.cells.find((c) => c.facet === "ci"), at: red.at });
+    const line = red.findings.find((f) => f.key === "ci:build")!;
+    expect(ciRows("/r", null, next, NOW)).toEqual([{ key: "ci:build", text: line.text, detail: "build", since: null, asOf: red.at }]);
+    expect(pastCells(next, NOW).find((c) => c.facet === "ci")!.tip[0]).toBe("as of the last check, 2d ago");
+    const green = takeSnap("/r", input(ok(GHA, ci(run("build", "pass", S - H)))), NOW, red);
+    expect(green.findings.filter((f) => f.facet === "ci")).toEqual([]); // a verdict replaces it
+    expect(green.cells.every((c) => c.at === undefined)).toBe(true);
   });
 });
 

@@ -2996,6 +2996,10 @@ pub(crate) fn hygiene(dir: &str, trunk: Option<&str>) -> Result<Option<Hygiene>,
 /// No tag is `tag: None`, never "0 unreleased": `since` then counts the whole trunk.
 pub(crate) fn release_facts(dir: &str, pattern: Option<&str>, trunk: &str) -> Result<ReleaseFacts, String> {
     let pat = pattern.map(str::trim).filter(|p| !p.is_empty() && !p.starts_with('-'));
+    // `describe --match` reads these as wildmatch and `glob_match` as text: one pattern, two answers.
+    if let Some(p) = pat.filter(|p| p.contains(['?', '[', ']', '\\'])) {
+        return Err(format!("tag_pattern {p:?}: only * is special here, so write it with * alone (v* rather than v[0-9]*)"));
+    }
     // `%(*…)` is an annotated tag's commit, the plain field a lightweight one's; one is empty.
     let listed = git_out(dir, &[
         "for-each-ref", &format!("--merged={trunk}"),
@@ -3833,6 +3837,10 @@ canonicalizehostname false
             .trim().parse::<u64>().unwrap();
         let r = release_facts(&d, Some("v*"), "main").unwrap();
         assert_eq!((r.tag.as_deref(), r.tag_at, r.since, r.tags_seen), (Some("v1.1"), Some(ct), 0, 2));
+        // git's own syntax would read as "never released" here and match in describe: refused instead.
+        for p in ["v[0-9]*", "v?.*", r"v\*"] {
+            assert!(release_facts(&d, Some(p), "main").unwrap_err().contains("only * is special"), "{p}");
+        }
     }
 
     use std::path::{Path, PathBuf};

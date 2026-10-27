@@ -667,8 +667,11 @@ const NPM_AUDIT: Audit = Audit {
     lock: "package-lock.json", bin: "npm", args: &["audit", "--json"], tool: "npm audit",
     fix: "install Node.js, which brings npm: https://nodejs.org", parse: parse_npm_audit,
 };
+// pnpm loads a project's `.pnpmfile.cjs` and switches to its `packageManager` version; only a CLI
+// flag outranks a `pnpm-workspace.yaml` that asks for either (env does not).
+const PNPM_SAFE: [&str; 2] = ["--config.ignore-pnpmfile=true", "--config.manage-package-manager-versions=false"];
 const PNPM_AUDIT: Audit = Audit {
-    lock: "pnpm-lock.yaml", bin: "pnpm", args: &["audit", "--json"], tool: "pnpm audit",
+    lock: "pnpm-lock.yaml", bin: "pnpm", args: &["audit", "--json", PNPM_SAFE[0], PNPM_SAFE[1]], tool: "pnpm audit",
     fix: "corepack enable pnpm", parse: parse_npm_audit,
 };
 // The subcommand's own binary, never `cargo audit`: a project's `.cargo/config.toml` may alias `audit`.
@@ -1147,6 +1150,7 @@ mod tests {
         let pnpm = lock_repo(&[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n")]);
         let ex = FakeExec::answering(Ok(&FakeExec::testdata("pnpm-audit.json"))).exiting(1, "");
         let r = read_at(&pnpm, pnpm_audit, &ex).unwrap();
+        assert_eq!(ex.calls(), [["pnpm", "audit", "--json", PNPM_SAFE[0], PNPM_SAFE[1]]]);
         let a = items(&r).iter().find(|a| a.id == "GHSA-xvch-5gv4-984h").unwrap();
         assert_eq!((a.aliases.clone(), a.version.as_deref(), a.fixed.as_deref()), (vec!["CVE-2021-44906".to_string()], Some("1.2.5"), Some("1.2.6")));
         assert_eq!(items(&r).len(), 6);
@@ -1158,6 +1162,25 @@ mod tests {
         let got: Vec<_> = items(&r).iter().map(|a| (a.id.as_str(), a.severity, a.version.as_deref(), a.fixed.as_deref())).collect();
         assert_eq!(got, [("RUSTSEC-2021-0003", Severity::Critical, Some("1.6.0"), Some("1.6.1"))], "a warning is not a vulnerability");
         assert_eq!(items(&r)[0].aliases, ["CVE-2021-25900", "GHSA-43w2-9j62-hq99"]);
+    }
+
+    /// The real pnpm, executed: its pnpmfile is project code. `config get` reads no registry.
+    #[test]
+    fn pnpm_never_loads_the_projects_pnpmfile() {
+        let path = crate::platform::augmented_path();
+        if crate::maint::exec::resolve_bin("pnpm", &path).is_none() {
+            eprintln!("pnpm is not installed here; skipped");
+            return;
+        }
+        let proj = lock_repo(&[("pnpm-lock.yaml", "lockfileVersion: '9.0'\n"), ("package.json", "{\"name\":\"x\",\"version\":\"1.0.0\"}\n")]);
+        let proj = std::path::PathBuf::from(proj);
+        std::fs::write(proj.join(".pnpmfile.cjs"), "console.error('PLANTED'); console.log('PLANTED'); module.exports = {}\n").unwrap();
+        // A workspace may ask for the pnpmfile back; only the CLI flag outranks it.
+        std::fs::write(proj.join("pnpm-workspace.yaml"), "packages: ['.']\nignorePnpmfile: false\n").unwrap();
+        let args = ["config", "get", "registry", PNPM_SAFE[0], PNPM_SAFE[1]];
+        let out = crate::maint::exec::tool_cmd("pnpm", &args, &path).unwrap().current_dir(&proj).env("CI", "1").output().unwrap();
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(!said.contains("PLANTED") && said.contains("http"), "{said}");
     }
 
     #[test]
