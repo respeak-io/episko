@@ -118,6 +118,14 @@
           </div>
           <!-- The project dashboard: three columns, empty and hidden until ./dashboard fills them. -->
           <div class="dash-view" id="dashPane" hidden>
+            <!-- Static, like the composer: switching tabs hides the columns rather than rebuilding
+                 them, so a draft note and Landed's fit both survive a look at Maintenance. -->
+            <div class="bvtabs db-tabs" id="dashTabs" role="tablist" aria-label="Project dashboard">
+              <button class="bvtab on" type="button" role="tab" aria-selected="true" data-dashtab="today"
+                data-tip="What is running, what moved and what is next">Today</button>
+              <button class="bvtab" type="button" role="tab" aria-selected="false" data-dashtab="maint"
+                data-tip="What is rotting while nobody looks: CI, security, dependencies, releases, git">Maintenance<span class="n" id="dashMaintN"></span></button>
+            </div>
             <div class="dash db-cols">
               <div class="db-col db-col-a" id="dashHere"></div>
               <div class="db-col db-col-b" id="dashMoved"></div>
@@ -137,6 +145,7 @@
                 </form>
               </div>
             </div>
+            <div class="db-maint" id="dashMaint"></div>
             <div class="ovl" id="dashOverlay"></div>
             <!-- Both writes this pane can make to GitHub are public, so neither
                  happens without a sheet showing exactly what will be written. -->

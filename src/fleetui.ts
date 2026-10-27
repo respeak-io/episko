@@ -127,6 +127,12 @@ function setMaintTab(sub: MaintSub, root?: string | null): void {
   renderFleet();
 }
 function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
+/** A dashboard card's "all projects": Maintenance on that tab, unfiltered. Choosing it is the ask. */
+export function showFleetMaint(sub: MaintSub): void {
+  maintSub = sub;
+  maintFilter = null;
+  setFleetView("maint");
+}
 
 // ---------- what the reads left behind ----------
 let commits: TrailCommit[] = [];

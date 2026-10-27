@@ -98,12 +98,12 @@ import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from ".
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, openDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashToday, openDashboard,
   refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, fleetEscape, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
+  closeFleet, fleetEscape, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
 } from "./fleetui";
 import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
@@ -287,6 +287,7 @@ setTourHost({
     const app = $("app");
     if (need === "rail" && app.classList.contains("rail-mini")) toggleRail();
     if (need === "inspector" && app.classList.contains("insp-off")) toggleInsp();
+    if (need === "today") dashToday();
   },
   renderAll,
 });
@@ -312,6 +313,7 @@ setDashHost({
   openReview: (project, root, number) => { openPrReview(project, root, number); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
+  openFleetMaint: (sub) => { showFleetMaint(sub); openFleet(); },
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
@@ -327,7 +329,6 @@ setDashHost({
 wireDashboard();
 // The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
 setFleetHost({
-  // The dashboard has no Maintenance tab before slice 8, so `tab` is accepted and not yet read.
   setActive, closeSession, openDashboard, renderAll,
   openUsage, openHistory: () => { void openHistory(true); },
   refreshUsage: () => { void refreshTokens().then(renderAll); },

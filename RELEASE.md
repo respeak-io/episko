@@ -558,6 +558,15 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       project's rows come back and the fleet stays. Press it again: the fleet closes (when a session
       is open). On any tab, a row's *Fix ↗* / *Patch ↗* / *Set up ↗* starts an agent with the brief
       typed and **not sent**, and *Review* on a Work row opens that project's dashboard.
+- [ ] **The project tab hides Today, never rebuilds it.** On a project dashboard, type a note in
+      *What's next here?* without sending it, open *Maintenance*, wait for its cards, go back to
+      *Today*: the draft is still there, and *Landed* draws as many rows as before (not three).
+      On Maintenance, ◨ is greyed and ⌘I does nothing; on Today it folds the queue again.
+- [ ] **Switching project mid-scan shows no foreign findings.** Open Maintenance on a GitHub
+      project and, while its cells still shimmer, open another project from the sidebar: it lands on
+      *Today*. Switch it to Maintenance: every line and card names that project only, and a cell
+      click scrolls to its card. A Dependencies ⤢ opens the overlay; Git hygiene's ⤢ opens Branches;
+      *all projects* opens the fleet's Maintenance on that tab.
 
 ### Sessions Episko doesn't own
 

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  ciFailures, clampMaint, comingUp, facetCell, facetCells, findings, hostRows, mergeAdvisories, narrowDetection,
-  narrowMaint, projectBand, rankMaint, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
+  ciFailures, ciFlows, clampMaint, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  narrowMaint, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
@@ -518,39 +518,124 @@ describe("coming up and hosts", () => {
   });
 });
 
+describe("the project tab's cards", () => {
+  it("lists every workflow once, the red ones first, with its run strip oldest first", () => {
+    const flows = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H), run("test", "fail", S - H), run("test", "fail", S - 3 * D), run("test", "pass", S - 4 * D)))), NOW);
+    expect(flows.branch).toBe("main");
+    expect(flows.rows.map((r) => [r.workflow, r.status, r.red])).toEqual([["test", "fail", "3d"], ["lint", "pass", null]]);
+    expect(flows.rows[0].runs).toEqual(["pass", "fail", "fail"]);
+    expect(ciFlows(input(not(GHA, "ci", { state: "notRun" })), NOW)).toEqual({ branch: null, rows: [] });
+  });
+
+  it("marks a failure its source cannot date red with no age, caps the strip, and merges two reports", () => {
+    const undated = ciFlows(input(ok("forge-commit-status", ci(run("build", "fail", S - H)))), NOW);
+    expect(undated.rows.map((r) => [r.workflow, r.red])).toEqual([["build", ""]]);
+    const many = Array.from({ length: 10 }, (_, i) => run("lint", i === 7 || i === 9 ? "fail" : "pass", S - i * H));
+    expect(ciFlows(input(ok(GHA, ci(...many))), NOW).rows[0].runs).toEqual(["fail", ...Array(7).fill("pass")]);
+    const two = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H))),
+      ok("forge-commit-status", { kind: "ciRuns", branch: "trunk", runs: [run("deploy", "pass", S - H)] })), NOW);
+    expect(two.branch).toBe("main");
+    expect(two.rows.map((r) => r.workflow)).toEqual(["deploy", "lint"]);
+  });
+
+  it("says nothing about a release no source read, and names the tag, the count and the fetch", () => {
+    expect(releaseRows(input(not("git-tags", "release", { state: "notRun" })), NOW)).toEqual([]);
+    expect(releaseRows(input(ok("git-tags", rel({ since: 4 }))), NOW)).toEqual([
+      { k: "Last tag", v: "v1.0 · 2d ago · 4 commits since" }, { k: "As of", v: "last fetch 1h ago" },
+    ]);
+    expect(releaseRows(input(ok("git-tags", rel({ tag: null, fetchedAt: null }))), NOW)).toEqual([{ k: "Last tag", v: "no release tag on origin/main" }]);
+  });
+
+  it("counts hygiene with the same age rule as the cell, and null until it was read", () => {
+    expect(hygieneOf(input(not("git-local", "git", { state: "notRun" })), MAINT_DEFAULTS, NOW)).toBeNull();
+    const h = hygieneOf(input(ok("git-local", hyg({
+      localOnly: ["old", "new"], branches: [{ name: "old", at: S - 40 * D }, { name: "new", at: S - D }, { name: "pushed", at: S - 90 * D }],
+      worktrees: [{ path: "/w", branch: "x", at: S - 40 * D }, { path: "/v", branch: "y", at: null }],
+    }))), MAINT_DEFAULTS, NOW)!;
+    expect(h).toMatchObject({ stale: ["old"], idle: 1, unpushed: 0 });
+    const git = cell("git", input(ok("git-local", hyg({
+      localOnly: ["old", "new"], branches: [{ name: "old", at: S - 40 * D }, { name: "new", at: S - D }, { name: "pushed", at: S - 90 * D }],
+      worktrees: [{ path: "/w", branch: "x", at: S - 40 * D }, { path: "/v", branch: "y", at: null }],
+    }))));
+    expect(git.tip).toEqual(expect.arrayContaining([
+      `untouched ${MAINT_DEFAULTS.staleBranchDays}d+: ${h.stale.join(", ")}`, `${h.idle} worktree idle ${MAINT_DEFAULTS.staleBranchDays}d+`,
+    ]));
+  });
+
+  it("names the forge, a missing remote, and how to pin one nobody could name", () => {
+    const at = (forge: Detection["forge"]): MaintInput => ({ det: det([], { forge }), reports: {} });
+    expect(forgeText({ det: null, reports: {} })).toBe("");
+    expect(forgeText(at({ kind: "none", host: null, path: null, by: "none" }))).toBe("no remote");
+    expect(forgeText(at({ kind: "github", host: "github.com", path: "o/r", by: "name" }))).toBe("github.com/o/r");
+    expect(forgeText(at({ kind: "unknown", host: "git.example", path: "o/r", by: "name" })))
+      .toBe("git.example/o/r · forge unknown: pin [maintenance] forge");
+  });
+
+  it("lists every detected source and marker under its facet, and what became of it", () => {
+    const inp: MaintInput = {
+      det: det(["git-local", GHA, "git-tags"], {
+        markers: [{ facet: "ci", label: "Woodpecker", found: [".woodpecker.yml"] }],
+        config: { ...det([]).config, off: ["prod"] },
+      }),
+      reports: { [GHA]: not(GHA, "ci", { state: "noAccess", reason: "who", fix: "gh auth login" }), "git-local": ok("git-local", hyg()) },
+      skip: ["git-tags"],
+    };
+    expect(coverRows(inp).map((r) => [r.facet, r.state, r.fix])).toEqual([
+      ["ci", "noAccess", "gh auth login"], ["ci", "marker", null], ["security", "none", null], ["deps", "none", null],
+      ["release", "skipped", null], ["git", "ok", null], ["prod", "untracked", null], ["work", "none", null],
+    ]);
+    expect(coverRows({ det: null, reports: {} })).toEqual([]);
+  });
+});
+
 // docs/maintenance.md's trigger rule, read off the source: the fleet is the home stage, so these run
 // at boot and on every exit from a pane, and a sweep reached from any of them is one nobody asked for.
+// The dashboard paints on every renderAll frame, so the same holds for its render path.
 describe("nothing scans until a person asks", () => {
-  const FLEETUI = readFileSync(new URL("../src/fleetui.ts", import.meta.url), "utf8")
-    .replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
   // Inverted on purpose: every ./maintscan or ./maintui binding counts as a scan unless it is
-  // listed here as a cache read, so a new import has to be argued into this list.
-  const READS = ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"];
-  const imported = [...FLEETUI.matchAll(/import\s*\{([^}]*)\}\s*from\s*"\.\/(?:maintscan|maintui)"/g)]
-    .flatMap((m) => m[1].split(",").map((x) => x.trim().replace(/^type\s+/, "")).filter(Boolean));
-  const SCANS = [...imported.filter((n) => !READS.includes(n)), "maint_read", "maint_detect"];
-  // Each top-level declaration runs to the next one; good enough for a call graph over one file.
-  const decl = /^(?:export\s+)?(?:async\s+)?(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)/gm;
-  const heads = [...FLEETUI.matchAll(decl)];
-  const bodies = new Map(heads.map((m, i) => [m[1], FLEETUI.slice(m.index!, heads[i + 1]?.index ?? FLEETUI.length)]));
-  const reaches = (from: string): string[] => {
-    const seen = new Set([from]), queue = [from], hit = new Set<string>();
-    while (queue.length) {
-      for (const w of bodies.get(queue.shift()!)!.match(/[A-Za-z_$][\w$]*/g) ?? []) {
-        if (SCANS.includes(w)) hit.add(w);
-        else if (bodies.has(w) && !seen.has(w)) { seen.add(w); queue.push(w); }
+  // listed as a cache read, so a new import has to be argued into the list.
+  const callGraph = (file: string, reads: string[], ownScans: string[]) => {
+    const src = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8")
+      .replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+    const imported = [...src.matchAll(/import\s*\{([^}]*)\}\s*from\s*"\.\/(?:maintscan|maintui)"/g)]
+      .flatMap((m) => m[1].split(",").map((x) => x.trim().replace(/^type\s+/, "")).filter(Boolean));
+    const scans = [...imported.filter((n) => !reads.includes(n)), ...ownScans];
+    // Each top-level declaration runs to the next one; good enough for a call graph over one file.
+    const decl = /^(?:export\s+)?(?:async\s+)?(?:function\s+|const\s+|let\s+)([A-Za-z_$][\w$]*)/gm;
+    const heads = [...src.matchAll(decl)];
+    const bodies = new Map(heads.map((m, i) => [m[1], src.slice(m.index!, heads[i + 1]?.index ?? src.length)]));
+    const reaches = (from: string): string[] => {
+      const seen = new Set([from]), queue = [from], hit = new Set<string>();
+      while (queue.length) {
+        for (const w of bodies.get(queue.shift()!)!.match(/[A-Za-z_$][\w$]*/g) ?? []) {
+          if (scans.includes(w)) hit.add(w);
+          else if (bodies.has(w) && !seen.has(w)) { seen.add(w); queue.push(w); }
+        }
       }
-    }
-    return [...hit];
+      return [...hit];
+    };
+    return { scans, bodies, reaches };
   };
 
+  const fleet = callGraph("fleetui.ts",
+    ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
+    ["maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+
   it("finds the functions it is about, and a walk that can see a scan", () => {
-    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(bodies.has(f), f).toBe(true);
-    expect(reaches("setFleetView")).toContain("scanFleet"); // the switch is the ask
-    expect(SCANS).toEqual(expect.arrayContaining(["scanFleet", "maintClick"]));
+    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);
+    expect(fleet.reaches("setFleetView")).toContain("scanFleet"); // the switch is the ask
+    expect(fleet.scans).toEqual(expect.arrayContaining(["scanFleet", "maintClick"]));
+    for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow", "setDashTab"]) expect(dash.bodies.has(f), f).toBe(true);
+    expect(dash.reaches("setDashTab")).toContain("loadMaint"); // the tab is the ask
+    expect(dash.scans).toEqual(expect.arrayContaining(["scanProject", "maintClick"]));
   });
 
   it("never reaches a scan from openFleet, loadFleet, renderFleet or buildView", () => {
-    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView"]) expect(reaches(f), f).toEqual([]);
+    for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView"]) expect(fleet.reaches(f), f).toEqual([]);
+  });
+
+  it("never reaches a scan from the dashboard's render path", () => {
+    for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow"]) expect(dash.reaches(f), f).toEqual([]);
   });
 });

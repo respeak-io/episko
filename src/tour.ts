@@ -46,9 +46,10 @@ export type TourActId = "paste-first-prompt";
 export interface TourAct { label: string; id: TourActId }
 
 // A collapsed panel the anchor lives in (⌘B minimises the rail; ⌘I hides the inspector on
-// a session and folds the dashboard's Next column away, which is "next");
+// a session and folds the dashboard's Next column away, which is "next"; the Maintenance tab
+// hides every Today column, which is "today", listed before "next" since ⌘I is off there);
 // ./tourui opens it before painting rather than stepping over the anchor.
-export type TourNeed = "rail" | "inspector" | "next";
+export type TourNeed = "rail" | "inspector" | "today" | "next";
 
 export interface TourStep {
   anchor?: string;  // CSS selector to light; omitted means a centred card over a plain dim
@@ -344,14 +345,14 @@ export const CHAPTERS: Chapter[] = [
         done: (w) => w.stage === "dash",
       },
       {
-        anchor: "#dashNext", needs: ["next"],
+        anchor: "#dashNext", needs: ["today", "next"],
         title: "Dispatch an agent at an issue",
         body: "<b>Next</b> is one ranked list: open issues, pull requests, dependency advisories and the notes left "
           + "here. The <b>▶</b> on a row opens a worktree, briefs the session with the item, and <b>claims it</b> so "
           + "nobody on the team doubles up.",
       },
       {
-        anchor: "#dashMoved",
+        anchor: "#dashMoved", needs: ["today"],
         title: "Today, and who else is in here",
         body: "<b>Since you were last here</b>: commits, sessions, spend and who else has been in, measured from your "
           + "last visit rather than from midnight. Below it, the working set and what has landed.",

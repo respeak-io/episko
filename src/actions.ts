@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, actToast, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
+import { $, actToast, dashOnMaint, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask, askOpt } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { glyphIcon } from "./svgicons";
@@ -647,7 +647,7 @@ export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // The fleet has neither: CSS already hides that column, so flipping `insp-off` there
 // changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
-  if (fleetMirror() || reviewMirror()) return;
+  if (fleetMirror() || reviewMirror() || (dashMirror() && dashOnMaint())) return;
   const app = $("app");
   if (dashMirror()) {
     const folded = foldDashNext();

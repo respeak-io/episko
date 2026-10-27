@@ -1,4 +1,4 @@
-// Maintenance's one cache, shared by the fleet and (from slice 8) the dashboard, and the only
+// Maintenance's one cache, shared by the fleet and the project dashboard, and the only
 // code that asks `maint_detect`/`maint_read`. Nothing here decides what a report means
 // (./maint) or draws it (./maintview); a scan starts only on a person's ask (docs/maintenance.md).
 

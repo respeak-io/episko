@@ -2,10 +2,12 @@
 
 > Rules and their reasons, compressed. Trust the code over the docs when they disagree, and fix the doc in the same commit.
 
-The Dependencies card on the project dashboard, its ⤢ overlay and the agent it dispatches.
+Dependency work on the project dashboard: the advisory and bot-PR rows in Today's queue, the
+Dependencies card on its Maintenance tab, the ⤢ overlay both open, and the agent it dispatches.
 Split the usual way: **`deps.ts` pure and tested** (versions, ranges, the verdict, grouping,
-the brief), **`depsview.ts`** data → string, **`dashboard.ts`** the pane, the IPC and the
-events, **`deps.rs`** the reads. It rides the dashboard's existing `openView` and sheet
+the brief), **`depsview.ts`** the overlay and the sheet, data → string, **`maintview.ts`** the
+card (Maintenance's `data-mt*` markup, its ⤢ reaching the overlay through `MaintHost.openView`),
+**`dashboard.ts`** the pane, the IPC and the events, **`deps.rs`** the reads. It rides the dashboard's existing `openView` and sheet
 machinery rather than growing a second overlay mechanism.
 
 **Every verb here starts an agent. Nothing is merged, dismissed, commented or pinned on
@@ -205,7 +207,7 @@ working in exactly one of them. They now share one rule and one pair of controls
 
 ## Easy to get wrong
 
-- **Every `data-dash*` the card and overlay emit must be probed in `dashboard.ts`**, and
+- **Every `data-dash*` the overlay and the queue's rows emit must be probed in `dashboard.ts`**, and
   `data-dashdepopen` must be probed **before** `data-dashdep`: the link sits inside the row
   and the row is the tick target, so a row-level probe placed first selects the advisory
   instead of opening it. `dispatch.test.ts` holds both, and now reads **`depsview.ts` as well
@@ -216,12 +218,15 @@ working in exactly one of them. They now share one rule and one pair of controls
   (`depSilent`) — a repo with a clean board but a `package.json` still gets one, because the
   scan is something it can offer. While the GitHub half is in flight it is a skeleton, which
   may then resolve to absent: that is the same skeleton-to-nothing the other GitHub cards
-  already do, and it is why `depSilent` reads the **tools** as well as the tally.
+  already do, and it is why `depSilent` reads the **tools** as well as the tally. The card
+  lives on the Maintenance tab; Today keeps the advisory and bot-PR **rows** in its queue,
+  so nothing urgent hides behind the tab nobody opened.
 - **Switching GitHub account drops this cache too** (`dep_invalidate`, beside
   `gh_invalidate`) and `reloadDashGh` re-reads both halves. The advisories were answered by
   the identity you have just stopped using, and a board that repaints as the new account
-  beside a dependency card still showing the old one is worse than either alone.
-- **`depsNow()` is one derivation for the card and the overlay.** Grouping and the verdict
+  beside a dependency card still showing the old one is worse than either alone. The
+  Maintenance tab's scan is re-asked with them, since `forgetMaint` dropped its answers.
+- **`depsNow()` is one derivation for the card, the queue's rows and the overlay.** Grouping and the verdict
   are the same work; two call sites computing it separately is how two surfaces start
   disagreeing about a count on the same screen.
 - **A tick here arms work, not a delete**, so `.dbr .brck.on` overrides the Branches view's

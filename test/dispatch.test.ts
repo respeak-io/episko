@@ -98,6 +98,8 @@ const DEPSVIEW = readFileSync(new URL("../src/depsview.ts", import.meta.url), "u
 const LANDEDVIEW = readFileSync(new URL("../src/landedview.ts", import.meta.url), "utf8");
 const ISSUEVIEW = readFileSync(new URL("../src/issueview.ts", import.meta.url), "utf8");
 const DASHBOARD = readFileSync(new URL("../src/dashboard.ts", import.meta.url), "utf8");
+// The pane's static half: the tab row and the composer are written once, never painted.
+const INDEX = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 // The pane's markup outgrew one file; the attribute contract has to follow it rather than
 // quietly stop covering whatever moved out. `EMITTERS` is held against the directory below.
 const EMITTERS = ["dashview.ts", "depsview.ts", "landedview.ts", "issueview.ts"];
@@ -182,7 +184,7 @@ describe("the project dashboard's own dispatcher", () => {
   // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
   // are deliberately not verbs. Adding one here should be a decision, not an oversight.
   const KEYS = new Set(["note", "sha"]);
-  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW + LANDEDVIEW + ISSUEVIEW).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW + LANDEDVIEW + ISSUEVIEW + INDEX).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
   // The ordering rules below are about ONE if-chain, so they read only the click listener:
@@ -214,6 +216,17 @@ describe("the project dashboard's own dispatcher", () => {
   it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
     const orphan = probed.filter((k) => !emitted.includes(k));
     expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("switches Today and Maintenance from the static tab row", () => {
+    expect(INDEX).toMatch(/id="dashTabs"[\s\S]*data-dashtab="today"[\s\S]*data-dashtab="maint"/);
+    expect(clickProbed).toContain("tab");
+  });
+
+  it("asks Maintenance's prober before any data-dash* probe, so a card's click is never the pane's", () => {
+    const ask = CLICK.indexOf("if (maintClick(t, ");
+    expect(ask).toBeGreaterThan(0);
+    expect(ask).toBeLessThan(CLICK.indexOf('closest<HTMLElement>("[data-dash'));
   });
 
   it("probes a branch row's own controls BEFORE the row that contains them", () => {
@@ -345,9 +358,9 @@ describe("the fleet dashboard's own dispatcher", () => {
   });
 });
 
-// Maintenance's cards sit on the fleet (and, from slice 8, the dashboard), so their clicks are
-// neither pane's: `maintview.ts` writes `data-mt*`, `maintui.ts`'s `maintClick` is the one prober,
-// and each host's listener calls it first. The name block is a card's door, so it goes last.
+// Maintenance's cards sit on the fleet and the project dashboard, so their clicks are neither
+// pane's: `maintview.ts` writes `data-mt*`, `maintui.ts`'s `maintClick` is the one prober, and
+// each host's listener calls it first. The name block is a card's door, so it goes last.
 
 const MAINTVIEW = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
 const MAINTUI = readFileSync(new URL("../src/maintui.ts", import.meta.url), "utf8");
@@ -385,8 +398,8 @@ describe("Maintenance's own dispatcher", () => {
     expect(probed.indexOf("proj"), "[data-mtproj] must be probed last").toBe(probed.length - 1);
   });
 
-  it("wires the facet tabs: a tab, a cell, the filter's ✕, each probed and each before the door", () => {
-    for (const k of ["tab", "cell", "clear"]) {
+  it("wires the facet tabs and the dashboard's cards: each probed, each before the door", () => {
+    for (const k of ["tab", "cell", "clear", "view", "across"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
     }
