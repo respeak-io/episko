@@ -120,7 +120,6 @@ pub(crate) enum Severity {
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code, reason = "code, secret and config findings arrive with the scanning adapters")]
 pub(crate) enum AdvisoryKind {
     Dependency,
     Code,
@@ -162,12 +161,11 @@ pub(crate) struct UpdatePr {
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code, reason = "made by github-releases; the wire fixture pins it now")]
 pub(crate) struct ForgeRelease {
-    tag: String,
-    name: String,
-    at: Option<u64>,
-    url: Option<String>,
+    pub(crate) tag: String,
+    pub(crate) name: String,
+    pub(crate) at: Option<u64>,
+    pub(crate) url: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -184,7 +182,7 @@ pub(crate) struct Probe {
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
-#[allow(dead_code, reason = "the adapters of later slices make the other kinds")]
+#[allow(dead_code, reason = "http-probe makes Probes in a later slice")]
 pub(crate) enum Facts {
     CiRuns { branch: String, runs: Vec<CiRun> },
     Advisories { items: Vec<Advisory> },
@@ -193,7 +191,7 @@ pub(crate) enum Facts {
     Releases { latest: Option<ForgeRelease>, count: u32 },
     Changelog { unreleased: Option<u32>, latest: Option<String>, latest_at: Option<u64> },
     Hygiene(Hygiene),
-    Work { issues: u32, prs: u32, review_requested: u32 },
+    Work { issues: u32, prs: u32, review_requested: Option<u32> },
     Probes { items: Vec<Probe> },
 }
 
@@ -283,6 +281,19 @@ impl MaintConfig {
     pub(crate) fn bots(&self) -> &[String] {
         &self.bots
     }
+
+    /// Where the project's scanners leave SARIF, as globs relative to the root.
+    pub(crate) fn sarif(&self) -> &[String] {
+        &self.sarif
+    }
+
+    /// A manifest `needs` entry: the `[maintenance]` key a source reads, which must be set.
+    fn has(&self, key: &str) -> bool {
+        match key {
+            "sarif" => !self.sarif.is_empty(),
+            _ => false,
+        }
+    }
 }
 
 // ---------- the manifest ----------
@@ -293,7 +304,11 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
     "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
     "sec.dependency", "sec.code", "sec.secret", "deps.update-prs", "deps.pr-checks",
+    "work.issues", "work.prs", "work.review-requested",
 ];
+
+/// The `[maintenance]` keys a manifest `needs` may name; `MaintConfig::has` reads each.
+const NEEDS: &[&str] = &["sarif"];
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -320,6 +335,8 @@ pub(crate) struct SourceMeta {
     cost: Cost,
     forge: Vec<String>,  // the forges it can talk to; empty is any
     detect: Vec<String>, // empty applies whenever the forge matches
+    #[serde(default)]
+    needs: Vec<String>, // `[maintenance]` keys that must be set: a source that reads what config names
     sees: Vec<String>,
     blind: Vec<String>,
 }
@@ -381,6 +398,9 @@ impl Manifest {
             }
             if let Some(c) = s.sees.iter().chain(&s.blind).find(|c| !MAINT_CAPS.contains(&c.as_str())) {
                 return Err(format!("{id}: unknown capability {c:?}"));
+            }
+            if let Some(n) = s.needs.iter().find(|n| !NEEDS.contains(&n.as_str())) {
+                return Err(format!("{id}: needs an unknown [maintenance] key {n:?}"));
             }
             well_formed(id, &s.forge, &s.detect)?;
         }
@@ -480,7 +500,7 @@ fn enabled(cfg: &MaintConfig, id: &str, facet: Facet) -> bool {
 
 // ---------- detection ----------
 
-const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "venv", "__pycache__"];
+pub(crate) const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "venv", "__pycache__"];
 const JSON_CAP: u64 = 2 * 1024 * 1024;
 const DETECT_TTL: Duration = Duration::from_secs(30);
 
@@ -561,7 +581,9 @@ fn detect_now(root: &str) -> Detection {
     let sources = SOURCES.iter()
         .filter(|d| {
             let m = &MANIFEST.sources[d.id];
-            applies(&m.forge, &m.detect, forge.kind, &probes).is_some() && enabled(&config, d.id, m.facet)
+            applies(&m.forge, &m.detect, forge.kind, &probes).is_some()
+                && m.needs.iter().all(|n| config.has(n))
+                && enabled(&config, d.id, m.facet)
         })
         .map(|d| d.id.to_string())
         .collect();
@@ -648,6 +670,10 @@ pub(crate) mod exec {
 
     pub(crate) trait Exec: Sync {
         fn gh(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String>;
+        /// `gh api graphql`, keeping a `data` that arrived beside `errors[]` (`github::gh_graphql`).
+        fn gh_graphql(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+            self.gh(root, account, args)
+        }
         fn glab(&self, root: &str, args: &[&str]) -> Result<String, String>;
         fn tool(&self, root: &str, bin: &str, args: &[&str], secs: u64) -> Result<Output, String>;
         fn http(&self, req: &HttpReq) -> Result<HttpResp, String>;
@@ -728,6 +754,11 @@ pub(crate) mod exec {
         fn gh(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
             self.trust("gh")?;
             crate::github::gh(root, account, args)
+        }
+
+        fn gh_graphql(&self, root: &str, account: Option<&str>, args: &[&str]) -> Result<String, String> {
+            self.trust("gh")?;
+            crate::github::gh_graphql(root, account, args)
         }
 
         fn glab(&self, _root: &str, _args: &[&str]) -> Result<String, String> {
@@ -906,11 +937,16 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-actions", read: crate::maint_ci::github_actions },
     SourceDef { id: "forge-commit-status", read: crate::maint_ci::forge_commit_status },
     SourceDef { id: "dependabot-alerts", read: crate::maint_sec::dependabot_alerts },
+    SourceDef { id: "github-code-scanning", read: crate::maint_sec::gh_code_scanning },
+    SourceDef { id: "github-secret-scanning", read: crate::maint_sec::gh_secret_scanning },
+    SourceDef { id: "sarif-files", read: crate::maint_sec::sarif_files },
     SourceDef { id: "dependabot-prs", read: crate::maint_repo::dependabot_prs },
     SourceDef { id: "renovate-prs", read: crate::maint_repo::renovate_prs },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
     SourceDef { id: "git-tags", read: crate::maint_git::git_tags },
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
+    SourceDef { id: "github-releases", read: crate::maint_repo::github_releases },
+    SourceDef { id: "github-work", read: crate::maint_repo::github_work },
 ];
 
 /// The cost classes, enforced here rather than at a call site: a scan never runs a program in
@@ -1109,7 +1145,7 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
-    /// A repo every local source can answer: a tag, a changelog, a trunk named in config.
+    /// A repo every local source can answer: a tag, a changelog, a trunk and a SARIF report named in config.
     fn fixture_repo() -> PathBuf {
         let dir = scratch_dir();
         git(&dir, &["init", "-q", "-b", "main"]);
@@ -1117,7 +1153,8 @@ mod tests {
         git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1.0"]);
         commit(&dir, "two");
         write(&dir, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n+ a thing\n\n## 1.0 — 2026-10-01\n+ first\n");
-        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\n");
+        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n");
+        write(&dir, "reports/scan.sarif", "{\"version\": \"2.1.0\", \"runs\": []}");
         dir
     }
 
@@ -1201,6 +1238,8 @@ mod tests {
         assert!(serde_json::from_str::<Manifest>(&typo).unwrap().check().unwrap_err().contains("rel.lats"));
         let mixed = include_str!("../../src/maintmanifest.json").replacen("[\"!github\"]", "[\"gitlab\", \"!github\"]", 1);
         assert!(serde_json::from_str::<Manifest>(&mixed).unwrap().check().unwrap_err().contains("never both"));
+        let needs = include_str!("../../src/maintmanifest.json").replace("\"needs\": [\"sarif\"]", "\"needs\": [\"sarfi\"]");
+        assert!(serde_json::from_str::<Manifest>(&needs).unwrap().check().unwrap_err().contains("sarfi"), "a key config cannot set");
         let ok = |f: &[&str], k| forge_admits(&f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), k);
         assert!(ok(&["!github"], ForgeKind::None) && !ok(&["!github"], ForgeKind::Github) && ok(&[], ForgeKind::Github));
         let extra = include_str!("../../src/maintmanifest.json").replace("\"facet\": \"git\",", "\"facet\": \"git\", \"argv\": [\"rm\"],");
@@ -1246,7 +1285,7 @@ mod tests {
     }
 
     fn meta(facet: Facet, cost: Cost) -> SourceMeta {
-        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], sees: vec![], blind: vec![] }
+        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sees: vec![], blind: vec![] }
     }
 
     fn calls_tool(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
@@ -1327,7 +1366,7 @@ mod tests {
 
     fn counts_gh(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
         ex.gh(ctx.root, None, &["api", "x"]).map_err(|reason| Coverage::Error { reason })?;
-        Ok(Read::of(Facts::Work { issues: 1, prs: 0, review_requested: 0 }))
+        Ok(Read::of(Facts::Work { issues: 1, prs: 0, review_requested: Some(0) }))
     }
 
     #[test]
@@ -1443,12 +1482,16 @@ mod tests {
 
     #[test]
     fn sources_follow_files_and_config() {
-        let gh = ["dependabot-alerts", "dependabot-prs", "renovate-prs"];
+        let gh = ["dependabot-alerts", "github-code-scanning", "github-secret-scanning", "dependabot-prs", "renovate-prs"];
         let dir = repo_with("https://github.com/a/b.git", &[("CHANGELOG.md", "# Changelog\n")]);
-        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "git-tags", "changelog"]].concat());
+        let rest = ["git-local", "git-tags", "changelog", "github-releases", "github-work"];
+        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &rest].concat());
         write(&dir, ".episko/episko.toml", "[maintenance]\nsources = { release = [\"changelog\"] }\n");
-        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "changelog"]].concat());
-        write(&dir, ".episko/episko.toml", "[maintenance]\noff = [\"release\", \"git-local\", \"ci\", \"security\", \"deps\"]\n");
+        assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "changelog", "github-work"]].concat());
+        // A source that reads what config names applies only once config names something.
+        write(&dir, ".episko/episko.toml", "[maintenance]\nsarif = [\"out/*.sarif\"]\n");
+        assert!(detect(&s(&dir), true).sources.iter().any(|x| x == "sarif-files"));
+        write(&dir, ".episko/episko.toml", "[maintenance]\noff = [\"release\", \"git-local\", \"ci\", \"security\", \"deps\", \"work\"]\n");
         let d = detect(&s(&dir), true);
         assert!(d.sources.is_empty(), "{:?}", d.sources);
         assert!(d.markers.iter().all(|m| m.facet != Facet::Ci), "an off facet has no markers either");
@@ -1536,7 +1579,7 @@ mod tests {
                 worktrees: vec![crate::git::WtAge { path: "/repo-wt".into(), branch: "wip".into(), at: None }],
                 fetched_at: None, gaps: vec!["never on the wire".into()],
             })),
-            ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: 1 }),
+            ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: Some(1) }),
             ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![Probe {
                 name: "app".into(), url: "https://app.example.com".into(), code: Some(200), ms: Some(120),
                 cert_not_after: Some(1_795_000_000), err: None,

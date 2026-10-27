@@ -43,8 +43,13 @@ never an empty board, and a page that came back full is a floor, counted on its 
 own issue list (`renovateDashboard` finds it there for free), its checkboxes are how you ask
 Renovate for a PR, and a second control panel that cannot tick them would be worse than a link.
 
-**Code scanning is deliberately absent.** CodeQL findings are about your code, not your
-dependencies; putting them in a card called Dependencies would make the word mean nothing.
+**Code scanning is deliberately absent from this card.** CodeQL findings are about your code,
+not your dependencies; putting them in a card called Dependencies would make the word mean
+nothing. Maintenance's Security facet reads them instead (`github-code-scanning`,
+`github-secret-scanning`, `sarif-files`; docs/maintenance.md), beside the same Dependabot
+alerts, and `mergeAdvisories` folds one CVE that several reporters name into one row. The code
+scanning endpoint needs the same `security_events` scope, so it reuses `coverage_of` after its
+own two cases (no analysis is `off`, no Advanced Security is `unsupported`).
 
 ## The two failures that name nothing unless you name them
 

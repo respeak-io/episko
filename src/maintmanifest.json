@@ -26,6 +26,21 @@
       "sees": ["sec.dependency"],
       "blind": ["sec.code", "sec.secret"]
     },
+    "github-code-scanning": {
+      "facet": "security", "label": "GitHub code scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["sec.code"],
+      "blind": ["sec.dependency", "sec.secret"]
+    },
+    "github-secret-scanning": {
+      "facet": "security", "label": "GitHub secret scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["sec.secret"],
+      "blind": ["sec.dependency", "sec.code"]
+    },
+    "sarif-files": {
+      "facet": "security", "label": "SARIF files", "cost": "local", "forge": [], "detect": [], "needs": ["sarif"],
+      "sees": ["sec.code", "sec.secret"],
+      "blind": []
+    },
     "dependabot-prs": {
       "facet": "deps", "label": "Dependabot", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["deps.update-prs", "deps.pr-checks"],
@@ -50,6 +65,16 @@
       "facet": "release", "label": "CHANGELOG.md", "cost": "local", "forge": [], "detect": ["./CHANGELOG.md"],
       "sees": ["rel.changelog"],
       "blind": []
+    },
+    "github-releases": {
+      "facet": "release", "label": "GitHub releases", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["rel.published"],
+      "blind": []
+    },
+    "github-work": {
+      "facet": "work", "label": "GitHub issues", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["work.issues", "work.prs", "work.review-requested"],
+      "blind": []
     }
   },
   "markers": [
@@ -62,8 +87,6 @@
     { "facet": "ci", "label": "Jenkins", "forge": ["!github"], "detect": ["Jenkinsfile"] },
     { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
     { "facet": "ci", "label": "Drone", "forge": ["!github"], "detect": [".drone.yml", ".drone.yaml"] },
-    { "facet": "security", "label": "GitHub code scanning", "forge": ["github"], "detect": [] },
-    { "facet": "security", "label": "GitHub secret scanning", "forge": ["github"], "detect": [] },
     { "facet": "security", "label": "OSV.dev", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"] },
     { "facet": "security", "label": "npm audit", "forge": [], "detect": ["package-lock.json"] },
     { "facet": "security", "label": "pnpm audit", "forge": [], "detect": ["pnpm-lock.yaml"] },
@@ -72,8 +95,6 @@
     { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
     { "facet": "deps", "label": "Renovate", "forge": ["!github"], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
     { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] },
-    { "facet": "release", "label": "GitHub releases", "forge": ["github"], "detect": [] },
-    { "facet": "work", "label": "GitHub issues", "forge": ["github"], "detect": [] },
     { "facet": "work", "label": "GitLab issues", "forge": ["gitlab"], "detect": [] }
   ],
   "bots": [

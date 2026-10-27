@@ -267,9 +267,12 @@ describe("facet rules over ok facts", () => {
   });
 
   it("work counts what is open and amber only for what waits on you", () => {
-    const w = (reviewRequested: number) => input(ok("w", { kind: "work", issues: 12, prs: 3, reviewRequested }));
+    const w = (reviewRequested: number | null, issues = 12) => input(ok("w", { kind: "work", issues, prs: 3, reviewRequested }));
     expect(cell("work", w(0))).toMatchObject({ level: "info", text: "12 open" });
     expect(cell("work", w(1))).toMatchObject({ level: "warn", text: "1 to review" });
+    expect(cell("work", w(0, 0))).toMatchObject({ level: "ok", text: "" });
+    expect(cell("work", w(null, 0)), "the review count was never read: not grey").toMatchObject({ level: "muted", text: "reviews unknown" });
+    expect(cell("work", w(null))).toMatchObject({ level: "info", text: "12 open" });
   });
 
   it("cells come in card order", () => {
@@ -301,6 +304,34 @@ describe("mergeAdvisories", () => {
     const rows = mergeAdvisories([[adv({ id: "A", aliases: [] }), adv({ id: "B", aliases: [] })], [adv({ id: "C", aliases: ["A", "B"] })]]);
     expect(rows.map((r) => [r.id, r.aliases])).toEqual([["A", ["B", "C"]]]);
   });
+
+  it("dedupes one vulnerability across every reporter's GHSA and CVE names, keeping the worst severity", () => {
+    const rows = mergeAdvisories([
+      [adv({ id: "GHSA-aaaa-bbbb-cccc", aliases: ["CVE-2026-1234"], severity: "medium", tool: "t1" })],
+      [adv({ id: "RUSTSEC-2026-0007", aliases: ["cve-2026-1234"], severity: "unknown", fixed: null, tool: "t2" })],
+      [adv({ id: "CVE-2026-1234", aliases: [], severity: "critical", url: null, tool: "t3" })],
+      [adv({ id: "GHSA-zzzz-zzzz-zzzz", aliases: ["CVE-2026-9999"], severity: "low", tool: "t1" })],
+    ]);
+    expect(rows.map((r) => [r.id, r.severity])).toEqual([["CVE-2026-1234", "critical"], ["GHSA-zzzz-zzzz-zzzz", "low"]]);
+    expect(rows[0]).toMatchObject({ key: "CVE-2026-1234", aliases: ["GHSA-aaaa-bbbb-cccc", "RUSTSEC-2026-0007"], tools: ["t1", "t2", "t3"] });
+    expect(rows[0].items.length, "every report stays behind the row").toBe(3);
+    const c = cell("security", input(ok("a", { kind: "advisories", items: rows.flatMap((r) => r.items) })));
+    expect(c, "counted once, at its worst").toMatchObject({ level: "bad", text: "1 critical" });
+  });
+
+  it("keeps a rule firing in two places as two rows, and two reporters at one place as one", () => {
+    const code = (o: Partial<Advisory>) => adv({ id: "js/sql-injection", kind: "code", pkg: null, ecosystem: null, version: null, fixed: null, ...o });
+    const rows = mergeAdvisories([
+      [code({ location: "src/db.js:42", severity: "high", tool: "t1" }), code({ location: "src/q.js:7", severity: "high", tool: "t1" })],
+      [code({ location: "src/db.js:42", severity: "critical", tool: "t2" })],
+    ]);
+    expect(rows.map((r) => [r.key, r.severity, r.tools])).toEqual([
+      ["js/sql-injection@src/db.js:42", "critical", ["t1", "t2"]], ["js/sql-injection@src/q.js:7", "high", ["t1"]],
+    ]);
+    const f = findings("/r", input(ok("s", { kind: "advisories", items: rows.flatMap((r) => r.items) })), MAINT_DEFAULTS, NOW);
+    expect(f.map((x) => [x.key, x.verb])).toEqual([["security:js/sql-injection@src/db.js:42", "fix"], ["security:js/sql-injection@src/q.js:7", "fix"]]);
+    expect(f[0].detail, "code has no published fix to miss").not.toMatch(/fix/);
+  });
 });
 
 describe("findings → verbs", () => {
@@ -319,7 +350,7 @@ describe("findings → verbs", () => {
 
   it("gives every finding the verb that answers it, worst first", () => {
     expect(fs.map((f) => [f.key, f.level, f.verb])).toEqual([
-      ["ci:e2e", "bad", "fix"], ["security:A", "bad", "patch"], ["security:K", "bad", "rotate"], ["prod:api", "bad", "fix"],
+      ["ci:e2e", "bad", "fix"], ["security:A", "bad", "patch"], ["security:K@seed.ts", "bad", "rotate"], ["prod:api", "bad", "fix"],
       ["deps:b", "warn", "review"], ["release", "warn", "release"], ["git:unpushed", "warn", "push"], ["prod:cert:app", "warn", "fix"],
       ["git:tidy", "info", "tidy"],
     ]);

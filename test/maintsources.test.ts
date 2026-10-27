@@ -99,7 +99,7 @@ describe("the frontend never names a vendor", () => {
   // Every word a label or ForgeKind holds, less the generic ones, so a new vendor row is caught unlisted.
   const generic = new Set(["ci", "on", "host", "actions", "pipelines", "alerts", "code", "scanning", "secret", "dev",
     "audit", "releases", "issues", "local", "branches", "git", "tags", "changelog", "md", "commit", "statuses",
-    "unknown", "none"]);
+    "unknown", "none", "sarif", "files"]); // SARIF is an open standard, not a vendor
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([
     ...labels.flatMap((l) => l.toLowerCase().split(/[^a-z0-9]+/)), ...variants("ForgeKind", forgeRs),

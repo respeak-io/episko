@@ -25,7 +25,8 @@ function factsOf<K extends Facts["kind"]>(f: Finding, inp: MaintInput, kind: K):
 function advisoryOf(f: Finding, inp: MaintInput) {
   const lists = Object.values(inp.reports).flatMap((r) =>
     r.coverage.state === "ok" && r.facts?.kind === "advisories" ? [r.facts.items] : []);
-  return mergeAdvisories(lists).find((a) => a.id === f.ref || (f.ref !== null && a.aliases.includes(f.ref))) ?? null;
+  const rows = mergeAdvisories(lists);
+  return rows.find((a) => a.key === f.ref) ?? rows.find((a) => a.id === f.ref || (f.ref !== null && a.aliases.includes(f.ref))) ?? null;
 }
 
 const ciBrief: Brief = (f, inp, ctx) => {
@@ -85,6 +86,26 @@ const rotateBrief: Brief = (f, inp, ctx) => {
     "Treat it as leaked. Say where it was issued and how to rotate or revoke it there, then remove it",
     "from the code and load it from the environment or a secret store instead. Rewriting git history",
     "is a decision for a person: describe what it would take, do not do it.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// A scanner's finding in the project's own code or config: judged in place, never silenced.
+const codeBrief: Brief = (f, inp, ctx) => {
+  const a = advisoryOf(f, inp);
+  if (!a || a.kind === "dependency" || a.kind === "secret") return null;
+  const where = [...new Set(a.items.map((x) => x.location).filter((l): l is string => !!l))];
+  return [
+    `A scanner reported ${a.kind === "config" ? "a misconfiguration" : "a finding"} in ${ctx.project}: ${a.id}${a.severity === "unknown" ? "" : `, ${a.severity}`}.`,
+    a.summary,
+    ...(a.url ? [a.url] : []),
+    "",
+    ...where.map((l) => bullet(`at ${l}`)),
+    "",
+    "Read the code at each place and say whether the report is right before changing anything. If it",
+    "is, fix the cause and add a test that would have caught it. If it is a false positive, say why and",
+    "change nothing: do not add a suppression comment or weaken the rule to make it go away.",
     "",
     ...verifyBlock(ctx.verify),
   ];
@@ -196,7 +217,8 @@ const setupBrief: Brief = (f, inp, ctx) => {
 };
 
 const BRIEFS: Record<Verb, Brief> = {
-  fix: (f, inp, ctx) => f.facet === "prod" ? prodBrief(f, inp, ctx) : f.facet === "ci" ? ciBrief(f, inp, ctx) : null,
+  fix: (f, inp, ctx) => f.facet === "prod" ? prodBrief(f, inp, ctx) : f.facet === "ci" ? ciBrief(f, inp, ctx)
+    : f.facet === "security" ? codeBrief(f, inp, ctx) : null,
   patch: patchBrief, rotate: rotateBrief, release: releaseBrief, push: pushBrief, tidy: tidyBrief, review: reviewBrief,
   setup: setupBrief, fetch: () => null, run: () => null, // a fetch and a read are not an agent's work
 };
