@@ -6,7 +6,7 @@ import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
   FACET_TAB, MAINT_TABS, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
-  type MaintTab, type ProbeRow, type TabCount, type Verb,
+  type MaintSnap, type MaintTab, type ProbeRow, type SnapFinding, type TabCount, type Verb,
 } from "./maint";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
@@ -23,6 +23,7 @@ export interface MaintCard {
   cells: Cell[]; findings: Finding[]; band: Band;
   reading: boolean; // a read is still out: only then is an unread cell a shimmer rather than a dash
   err: string | null;
+  past?: MaintSnap; // drawn from the last boot's snapshot: muted, as of then, its lines verb-less
 }
 export interface MaintTally { needs: number; drifting: number; quiet: number; unread: number; cantCheck: number }
 export interface MaintSoon { name: string; what: string; at: number } // at: unix secs
@@ -99,7 +100,7 @@ const tile = (label: string, value: string, sub: string, cls = "") =>
 
 // Colour only for what needs you: red and amber are the two tiles allowed to light.
 export function maintTilesHtml(v: MaintView): string {
-  const t = v.tally, known = v.checked > 0 || v.cards.length > 0;
+  const t = v.tally, known = v.checked > 0 || v.cards.some((c) => !c.past);
   const n = (x: number) => known ? String(x) : DASH;
   return `<div class="fl-tiles">`
     + tile("Needs you", n(t.needs), t.needs ? "something is broken" : "nothing broken", t.needs ? "s-bad" : "")
@@ -152,6 +153,10 @@ function findingHtml(f: Finding, name?: string): string {
       data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button>`}</div>`;
 }
 
+// A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.
+const pastHtml = (f: SnapFinding): string =>
+  `<div class="mt-find past"><i class="mt-sev"></i><span class="t">${esc(f.text)}</span></div>`;
+
 const avatar = (c: MaintCard) => c.icon
   ? `<span class="fc-av"><img class="picon" src="${escAttr(c.icon)}" alt="" /></span>`
   : `<span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>`;
@@ -163,8 +168,9 @@ function cardHtml(c: MaintCard, compact: boolean): string {
       data-tip="${escAttr(`Open ${c.name}`)}">${avatar(c)}<span class="mt-nm">${esc(c.name)}</span>
       <span class="mt-sub mono">${esc(sub)}</span></div>`;
   const cells = `<div class="mt-cells">${c.cells.map((x) => cellHtml(x, c)).join("")}</div>`;
-  const finds = !compact && c.findings.length
-    ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f)).join("")}</div>` : "";
+  const finds = compact ? ""
+    : c.findings.length ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f)).join("")}</div>`
+    : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map(pastHtml).join("")}</div>` : "";
   return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}">${id}${cells}${finds}</article>`;
 }
 

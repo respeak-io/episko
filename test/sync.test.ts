@@ -34,6 +34,9 @@ describe("the allowlist contract", () => {
     for (const k of ["cc-perm-modes", "cc-perm-mode", "cc-trusted", "cc-task-onstop", "cc-task-prefs", "cc-digest-ok", "cc-revive", "cc-maint-prefs"])
       expect(syncClass(k), k).toBe("local");
   });
+  it("keeps the maintenance snapshot on this machine: another checkout's state is not this one's", () => {
+    expect(syncClass("cc-maint")).toBe("local");
+  });
   it("lets the fleet's view and Maintenance's filter follow you, and nothing that runs", () => {
     expect(syncClass("cc-fleet-view")).toBe("pref");
     expect(syncClass("cc-maint-chip")).toBe("pref");

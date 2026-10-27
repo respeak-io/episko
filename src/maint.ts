@@ -206,7 +206,7 @@ export function clampMaint(raw: unknown): MaintThresholds {
 // ---------- a facet's cell ----------
 
 export type Level = "bad" | "warn" | "info" | "ok" | "muted" | "unread";
-export type CellState = "off" | "unread" | "none" | "markers" | "cantCheck" | "read";
+export type CellState = "off" | "unread" | "none" | "markers" | "cantCheck" | "read" | "past"; // past: the snapshot's
 export interface Cell {
   facet: Facet; state: CellState; level: Level;
   text: string; // the few words a card shows; "" with level ok is the grey dot
@@ -630,11 +630,11 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
 export type Band = "needs" | "drifting" | "unread" | "quiet";
 export const BANDS: readonly Band[] = ["needs", "drifting", "unread", "quiet"];
 
-/** Colour only for what needs you; a card still being read is not quiet yet. */
+/** Colour only for what needs you; a card still being read, or only known from the last boot, is not quiet yet. */
 export function projectBand(cells: readonly Cell[]): Band {
   if (cells.some((c) => c.level === "bad")) return "needs";
   if (cells.some((c) => c.level === "warn")) return "drifting";
-  return cells.some((c) => c.level === "unread") ? "unread" : "quiet";
+  return cells.some((c) => c.level === "unread" || c.state === "past") ? "unread" : "quiet";
 }
 
 /** Worst first, ending on the path, so a repaint never reorders two equal cards. */
@@ -734,7 +734,7 @@ export function tabGaps(tab: MaintTab, cards: readonly { path: string; cells: re
     if (cells.some(isVerdict)) read++;
     else if (cells.length && cells.every(isNone)) unset++;
     for (const x of cells) {
-      if (!isVerdict(x) && !isNone(x)) gaps.push({ path: c.path, facet: x.facet, text: x.text || "not read yet" });
+      if (!isVerdict(x) && !isNone(x)) gaps.push({ path: c.path, facet: x.facet, text: x.state === "past" ? "not checked this session" : x.text || "not read yet" });
     }
   }
   return { read, unset, gaps: gaps.sort((a, b) => a.path.localeCompare(b.path) || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)) };
@@ -903,4 +903,72 @@ export function hostRows(projects: readonly { path: string; hosts: readonly stri
       ? [worst.level, worst.text] : ["muted", read.length ? `${read.length} of ${e.size} checked` : "not checked"];
     return { host, projects: [...e.keys()].sort((a, b) => a.localeCompare(b)), level, text };
   }).sort((a, b) => byRank(a, b) || a.host.localeCompare(b.host));
+}
+
+// ---------- the cold-boot snapshot (`cc-maint`) ----------
+
+export const SNAP_ROOTS = 200, SNAP_FINDINGS = 12, SNAP_TEXT = 80, SNAP_KEY = 300;
+const LEVELS: readonly Level[] = ["bad", "warn", "info", "ok", "muted", "unread"];
+/** What a finished scan leaves for the next boot: a card's words, never an advisory's payload or a URL. */
+export interface SnapCell { facet: Facet; level: Level; text: string }
+export interface SnapFinding { facet: Facet; key: string; level: Finding["level"]; text: string }
+export interface MaintSnap { at: number; cells: SnapCell[]; findings: SnapFinding[] } // at: ms
+export type MaintSnaps = Record<string, MaintSnap>;
+
+/** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished. */
+export function takeSnap(root: string, inp: MaintInput, now = Date.now()): MaintSnap {
+  const th = clampMaint(inp.det?.config.thresholds);
+  return {
+    at: now,
+    cells: facetCells(inp, th, now).map((c) => ({ facet: c.facet, level: c.level, text: c.text.slice(0, SNAP_TEXT) })),
+    findings: findings(root, inp, th, now).filter((f) => f.key.length <= SNAP_KEY).slice(0, SNAP_FINDINGS)
+      .map((f) => ({ facet: f.facet, key: f.key, level: f.level, text: f.text.slice(0, SNAP_TEXT) })),
+  };
+}
+
+const short = (n: number): Is => (v) => typeof v === "string" && v.length <= n;
+const isSnapCell = shape({ facet: oneOf(FACETS), level: oneOf(LEVELS), text: short(SNAP_TEXT) });
+const isSnapFinding = shape({ facet: oneOf(FACETS), key: short(SNAP_KEY), level: oneOf(["bad", "warn", "info"]), text: short(SNAP_TEXT) });
+
+/** `cc-maint` narrowed: a root of the wrong shape is dropped on its own, and past twelve lines or two
+ *  hundred roots (the oldest go) is cut. Rebuilt field by field, so a hand-added URL never survives. */
+export function clampSnaps(raw: unknown): MaintSnaps {
+  if (!isObj(raw)) return {};
+  const kept = Object.entries(raw).flatMap(([root, v]): [string, MaintSnap][] => {
+    if (!root || !isObj(v) || !num(v.at) || (v.at as number) <= 0 || !Array.isArray(v.cells) || !Array.isArray(v.findings)) return [];
+    // Seven facets, each once: a card with a hole would draw a cell nobody stored.
+    if (!v.cells.every(isSnapCell) || FACETS.some((f) => (v.cells as SnapCell[]).filter((c) => c.facet === f).length !== 1)) return [];
+    const cells = FACETS.map((f) => (v.cells as SnapCell[]).find((c) => c.facet === f)!).map(({ facet, level, text }) => ({ facet, level, text }));
+    const fs = (v.findings.filter(isSnapFinding) as SnapFinding[]).slice(0, SNAP_FINDINGS)
+      .map(({ facet, key, level, text }) => ({ facet, key, level, text }));
+    return [[root, { at: v.at as number, cells, findings: fs }]];
+  });
+  return Object.fromEntries(kept.sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0])).slice(0, SNAP_ROOTS));
+}
+
+/** A snapshot's cells as a card draws them: muted and as of then, never a dot, whatever they said. */
+export function pastCells(s: MaintSnap, now = Date.now()): Cell[] {
+  const tip = [`as of the last check, ${span((now - s.at) / 1000)} ago`, "not checked this session"];
+  return s.cells.map((c): Cell => ({ facet: c.facet, state: "past", level: "muted",
+    text: c.text || (c.level === "ok" ? "fine" : "not read"), tip, fix: null, asOf: null }));
+}
+
+/** A red default branch as Today's queue takes it; `asOf` (ms) marks the snapshot's, `since` (ms) the first red run. */
+export interface CiRow { key: string; text: string; detail: string; since: number | null; asOf: number | null }
+
+/** This session's CI lines once its CI cell has a verdict, else the last check's, which say when that was.
+ *  A read that failed is no verdict: it must not stand in for the last known red. */
+export function ciRows(root: string, inp: MaintInput | null, snap: MaintSnap | null | undefined, now = Date.now()): CiRow[] {
+  const th = clampMaint(inp?.det?.config.thresholds);
+  const state = inp ? facetCell("ci", inp, th, now).state : "unread";
+  if (inp && (state === "read" || state === "none" || state === "off")) {
+    const since = new Map(ciFailures(okFacts(inp, "ci")).map((x) => [`ci:${x.workflow}`, x.since]));
+    return findings(root, inp, th, now).filter((f) => f.facet === "ci").map((f) => {
+      const s = since.get(f.key);
+      return { key: f.key, text: f.text, detail: f.detail, since: s ? s * 1000 : null, asOf: null };
+    });
+  }
+  // The key is findings' own `ci:<workflow>`, and the workflow is all of a line's detail a snapshot keeps.
+  return (snap?.findings ?? []).filter((f) => f.facet === "ci")
+    .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:/, ""), since: null, asOf: snap!.at }));
 }

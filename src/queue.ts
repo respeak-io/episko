@@ -1,15 +1,16 @@
-// One ranked queue over what were four cards: open work, triage, dependencies and notes.
+// One ranked queue over what were four cards (open work, triage, dependencies and notes) and a red default branch.
 // The rules only — no DOM, no fetch, no state; ./dashview draws it. See docs/dashboard.md.
 
 import { prBlockers, prFor, prReady, sevRank, type Advisory, type DepPr, type OutRow } from "./deps";
 import type { GhThread, Holder } from "./ghwork";
+import { span, type CiRow } from "./maint";
 import type { Note, SharedNote } from "./notes";
 
-export type QueueKind = "work" | "deps" | "note";
+export type QueueKind = "work" | "deps" | "note" | "ci";
 // The chips split `work` into issues and pull requests, because that is the distinction you
 // filter on, and add `quiet` — a FACET, not a source: a quiet row is also an issue and is
 // counted in both, which is why this is not `QueueKind` with an extra member.
-export type QueueFilter = "all" | "iss" | "pr" | "deps" | "note" | "quiet";
+export type QueueFilter = "all" | "iss" | "pr" | "deps" | "note" | "quiet" | "ci";
 
 /// One row, whatever it came from. The source object rides along so the view draws the verbs
 /// that row already had; `title`/`sub` are what every row says however it is drawn.
@@ -28,6 +29,7 @@ export interface QueueItem {
   out?: OutRow;
   note?: Note;
   shared?: SharedNote;
+  ci?: CiRow;
 }
 
 export interface QueueInput {
@@ -38,11 +40,12 @@ export interface QueueInput {
   out: OutRow[];
   notes: Note[];
   shared: SharedNote[];
+  ci: CiRow[]; // a red default branch, as ./maint's findings say it
   holder: (t: GhThread) => Holder | null;
   now: number;
 }
 
-// The `rank` ladder, 0 first: a critical or high advisory · a claim of yours in flight · a
+// The `rank` ladder, 0 first: a red default branch, leading it · a critical or high advisory · a claim of yours in flight · a
 // bot PR ready to merge · any other open PR · your note · an open issue · a triage
 // suggestion · something out of date · a medium or low advisory.
 
@@ -142,6 +145,19 @@ const sharedItem = (s: SharedNote): QueueItem => ({
   sub: [s.who || "someone", s.at].filter(Boolean).join(" · "), shared: s,
 });
 
+// A red default branch blocks every merge after it, so it leads the top rank. One from the last
+// check's snapshot says how old it is rather than passing for this session's read.
+function ciItem(r: CiRow, now: number): QueueItem {
+  return {
+    key: r.key, kind: "ci", rank: 0, moved: r.since ?? 0, title: r.text,
+    sub: [r.detail, r.asOf !== null ? `as of ${span((now - r.asOf) / 1000)} ago` : ""].filter(Boolean).join(" · "),
+    ci: r,
+  };
+}
+
+// Leading is per rank, and the two never share one: a suggestion ranks 6, a red branch 0.
+const leads = (i: QueueItem): boolean => !!i.triage || i.kind === "ci";
+
 export function rankQueue(q: QueueInput): QueueItem[] {
   const why = new Map(q.stale.map((s) => [s.t.number, s.why]));
   const drawn = new Set(q.threads.map((t) => t.number));
@@ -159,14 +175,14 @@ export function rankQueue(q: QueueInput): QueueItem[] {
   }
   items.push(...q.adv.map((a) => advItem(a, prFor(a, q.prs))),
     ...q.prs.map(prItem), ...q.out.map(outItem));
-  items.push(...q.notes.map(noteItem), ...q.shared.map(sharedItem));
+  items.push(...q.notes.map(noteItem), ...q.shared.map(sharedItem), ...q.ci.map((r) => ciItem(r, q.now)));
   // A suggestion LEADS its rank: ./ghwork caps them at TRIAGE_ROWS and the card answers one
   // outright (✓/✕), so the few there are belong at the top of the rank they share rather than
   // wherever recency — which favours the newest issues — would scatter them.
   // Ties then break on `moved` and `key`, so a repaint never reorders a row under the pointer.
   return cluster(items.sort((a, b) =>
     a.rank - b.rank
-    || Number(!!b.triage) - Number(!!a.triage)
+    || Number(leads(b)) - Number(leads(a))
     || b.moved - a.moved
     || a.key.localeCompare(b.key)));
 }
@@ -266,6 +282,7 @@ const inFilter = (i: QueueItem, f: QueueFilter): boolean =>
   : f === "iss" ? i.kind === "work" && !isPr(i)
   : f === "pr" ? isPr(i)
   : f === "note" ? i.kind === "note"
+  : f === "ci" ? i.kind === "ci"
   : i.kind === "deps" && !isPr(i);
 
 export const filterQueue = (items: QueueItem[], f: QueueFilter): QueueItem[] =>
@@ -274,8 +291,8 @@ export const filterQueue = (items: QueueItem[], f: QueueFilter): QueueItem[] =>
 // Counted over the UNFILTERED list, so a chip says what it would reveal rather than what is on
 // screen. `quiet` overlaps `iss`, so the parts deliberately do not sum to `all`.
 export function queueTally(items: QueueItem[]): Record<QueueFilter, number> {
-  const t: Record<QueueFilter, number> = { all: items.length, iss: 0, pr: 0, deps: 0, note: 0, quiet: 0 };
-  for (const i of items) for (const f of ["iss", "pr", "deps", "note", "quiet"] as const) if (inFilter(i, f)) t[f]++;
+  const t: Record<QueueFilter, number> = { all: items.length, iss: 0, pr: 0, deps: 0, note: 0, quiet: 0, ci: 0 };
+  for (const i of items) for (const f of ["iss", "pr", "deps", "note", "quiet", "ci"] as const) if (inFilter(i, f)) t[f]++;
   return t;
 }
 
@@ -289,6 +306,7 @@ const hay = (i: QueueItem): string => [
   i.pr ? `pr #${i.pr.number} ${i.pr.bot}` : "",
   i.out ? `pkg ${i.out.pkg}` : "",
   i.kind === "note" ? `note ${i.shared?.who ?? ""}` : "",
+  i.kind === "ci" ? "ci" : "",
 ].join(" ").toLowerCase();
 
 /// Every term must match, in any field and in any order, so "axios high" narrows rather than
