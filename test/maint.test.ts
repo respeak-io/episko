@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   ciFailures, ciFlows, clampMaint, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
-  narrowMaint, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
+  narrowMaint, probeRows, prodChecks, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
@@ -126,7 +126,8 @@ describe("facetCell: unknown is never green", () => {
       for (const s of states) {
         const c = cell(f, input(not("x", f, s)));
         expect(c.level, `${f} ${s.state}`).not.toBe("ok");
-        expect(c).toMatchObject({ state: "cantCheck", text: "can't check" });
+        // A source nobody clicked is not checked yet; every other state cannot be.
+        expect(c).toMatchObject({ state: "cantCheck", text: s.state === "notRun" ? "not checked" : "can't check" });
       }
       expect(cell(f, input(...states.map((s, i) => not(`x${i}`, f, s)))).level).toBe("muted");
     }
@@ -505,19 +506,87 @@ describe("the cross-project tabs", () => {
   });
 });
 
-describe("coming up and hosts", () => {
-  it("lists certificates inside the window, soonest first", () => {
-    const p = (name: string, days: number) => ({ name, url: `https://${name}`, code: 200, ms: 1, certNotAfter: S + days * D, err: null });
+describe("prod, coming up and hosts", () => {
+  const p = (name: string, days: number | null, o = {}) =>
+    ({ name, url: `https://${name}`, code: 200, ms: 1, certNotAfter: days === null ? null : S + days * D, err: null, ...o });
+  const probes = (...items: ReturnType<typeof p>[]): Facts => ({ kind: "probes", items });
+
+  it("lists certificates inside the window, soonest first, ties by project", () => {
     const rows = comingUp([
-      { root: "/a", inp: input(ok("h", { kind: "probes", items: [p("x", 24), p("y", 45), p("gone", -1)] })) },
-      { root: "/b", inp: input(ok("h", { kind: "probes", items: [p("z", 3)] })) },
+      { root: "/a", inp: input(ok("h", probes(p("x", 24), p("y", 45), p("gone", -1), p("unknown", null)))) },
+      { root: "/c", inp: input(ok("h", probes(p("w", 3)))) },
+      { root: "/b", inp: input(ok("h", probes(p("z", 3)))) },
+      { root: "/d", inp: input(not("h", "prod", { state: "notRun" })) },
     ], NOW);
-    expect(rows.map((r) => [r.root, r.what])).toEqual([["/b", "certificate for z"], ["/a", "certificate for x"]]);
+    expect(rows.map((r) => [r.root, r.what])).toEqual([["/b", "certificate for z"], ["/c", "certificate for w"], ["/a", "certificate for x"]]);
+    expect(comingUp([{ root: "/a", inp: input(ok("h", probes(p("x", 31)))) }], NOW), "past the window").toEqual([]);
   });
 
-  it("joins hosts to projects many-to-many", () => {
-    expect(hostRows([{ path: "/b", hosts: ["prod-1"] }, { path: "/a", hosts: ["prod-1", "pi"] }, { path: "/c", hosts: [] }]))
-      .toEqual([{ host: "pi", projects: ["/a"] }, { host: "prod-1", projects: ["/a", "/b"] }]);
+  it("levels each address as the Prod cell does: down is red, a 4xx and a near cert amber, unknown never fine", () => {
+    const rows = (...items: ReturnType<typeof p>[]) => probeRows(input(ok("h", probes(...items), { at: S - H })), MAINT_DEFAULTS, NOW);
+    expect(probeRows(input(not("h", "prod", { state: "notRun" })), MAINT_DEFAULTS, NOW), "never checked is no rows").toBeNull();
+    const r = rows(
+      p("ok", 90, { ms: 140 }), p("soon", 6), p("gone", -2), p("five", 90, { code: 502 }), p("four", 90, { code: 404, ms: null }),
+      p("down", null, { code: null, ms: null, err: "Could not resolve host" }), p("blind", null),
+      { ...p("plain", null), url: "http://plain" },
+    )!;
+    expect(r.at).toBe(S - H);
+    expect(r.rows.map((x) => [x.name, x.status, x.level, x.cert, x.certLevel])).toEqual([
+      ["ok", "200 · 140ms", "ok", "cert 90d", "ok"], ["soon", "200 · 1ms", "ok", "cert 6d", "warn"],
+      ["gone", "200 · 1ms", "ok", "cert expired", "bad"], ["five", "502 · 1ms", "bad", "cert 90d", "ok"],
+      ["four", "404", "warn", "cert 90d", "ok"], ["down", "no answer", "bad", "cert unknown", "muted"],
+      ["blind", "200 · 1ms", "ok", "cert unknown", "muted"], ["plain", "200 · 1ms", "ok", "", "ok"],
+    ]);
+    expect(cell("prod", input(ok("h", probes(p("a", 90), p("b", 90, { code: 404 }))))), "a 4xx is amber, not down")
+      .toMatchObject({ level: "warn", text: "b 404" });
+    expect(cell("prod", input(ok("h", probes(p("a", 90), { ...p("plain", null), url: "http://plain" })))), "plain http has no cert to miss")
+      .toMatchObject({ level: "ok", text: "" });
+  });
+
+  it("asks a click for what a scan may not run, and says it was never asked rather than that it cannot be", () => {
+    const d = det(["http-probe", "git-local"], { forge: { kind: "github", host: "github.com", path: "o/r", by: "table" } });
+    const inp: MaintInput = { det: d, reports: { "http-probe": { ...not("http-probe", "prod", { state: "notRun" }), cost: "remote" }, "git-local": ok("git-local", hyg()) } };
+    expect(prodChecks(inp)).toEqual(["http-probe"]);
+    expect(prodChecks({ ...inp, skip: ["http-probe"] })).toEqual([]);
+    expect(prodChecks({ ...inp, det: { ...d, config: { ...d.config, off: ["prod"] } } })).toEqual([]);
+    expect(cell("prod", inp)).toMatchObject({ state: "cantCheck", level: "muted", text: "not checked" });
+    const run = tabExtras("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run");
+    expect(run.map((f) => [f.key, f.facet, f.source, f.text])).toEqual([["run:http-probe", "prod", "http-probe", "URL checks: not checked"]]);
+    const answered = { ...inp, reports: { ...inp.reports, "http-probe": ok("http-probe", probes(p("app", 90))) } };
+    expect(tabExtras("/r", answered, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run"), "asked once is no longer a row").toEqual([]);
+  });
+
+  it("joins hosts to projects many-to-many, worst first, and a host none of whose projects was checked is not checked", () => {
+    const prod = (inp: MaintInput) => cell("prod", inp);
+    const down = prod(input(ok("h", probes(p("api", 90, { code: 502 })))));
+    const fine = prod(input(ok("h", probes(p("app", 90)))));
+    const near = prod(input(ok("h", probes(p("app", 4)))));
+    const never = prod(input(not("h", "prod", { state: "notRun" })));
+    expect(hostRows([
+      { path: "/b", hosts: ["prod-1"], prod: fine }, { path: "/a", hosts: ["prod-1", "pi"], prod: down },
+      { path: "/c", hosts: [] }, { path: "/d", hosts: ["nas"], prod: never }, { path: "/e", hosts: ["edge"], prod: near },
+      { path: "/f", hosts: ["quiet"], prod: fine },
+    ])).toEqual([
+      { host: "pi", projects: ["/a"], level: "bad", text: "api 502" },
+      { host: "prod-1", projects: ["/a", "/b"], level: "bad", text: "api 502" },
+      { host: "edge", projects: ["/e"], level: "warn", text: "cert 4d" },
+      { host: "nas", projects: ["/d"], level: "muted", text: "not checked" },
+      { host: "quiet", projects: ["/f"], level: "ok", text: "" },
+    ]);
+  });
+
+  it("never draws the healthy dot over a host half of whose projects nobody knows", () => {
+    const fine = cell("prod", input(ok("h", probes(p("app", 90)))));
+    const blind = cell("prod", input(ok("h", probes(p("api", null)))));
+    const never = cell("prod", input(not("h", "prod", { state: "notRun" })));
+    const rows = hostRows([
+      { path: "/a", hosts: ["mixed", "half"], prod: fine }, { path: "/b", hosts: ["mixed"], prod: blind },
+      { path: "/c", hosts: ["half"], prod: fine }, { path: "/d", hosts: ["half", "all"], prod: never }, { path: "/e", hosts: ["all"], prod: fine },
+    ]);
+    expect(rows.map((r) => [r.host, r.level, r.text])).toEqual([
+      ["all", "muted", "1 of 2 checked"], ["half", "muted", "2 of 3 checked"], ["mixed", "muted", blind.text],
+    ]);
+    expect(blind.level).toBe("muted");
   });
 });
 
@@ -621,9 +690,9 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
+    ["maintOf", "maintInput", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "askingFor", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);

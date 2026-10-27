@@ -16,7 +16,7 @@ export const MAINT_CAPS = [
   "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
   "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
   "sec.dependency", "sec.code", "sec.secret", "deps.update-prs", "deps.pr-checks",
-  "work.issues", "work.prs", "work.review-requested",
+  "work.issues", "work.prs", "work.review-requested", "prod.status", "prod.cert", "prod.host",
 ] as const;
 export type MaintCap = (typeof MAINT_CAPS)[number];
 
