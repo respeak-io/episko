@@ -4,8 +4,12 @@
 
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
-import { FACET_TAB, MAINT_TABS, type Band, type Cell, type Finding, type Level, type MaintTab, type TabCount, type Verb } from "./maint";
+import {
+  FACET_TAB, MAINT_TABS, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
+  type MaintTab, type TabCount, type Verb,
+} from "./maint";
 import { FACETS, facetDef, type Facet, type MaintCap } from "./maintsources";
+import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
@@ -91,12 +95,12 @@ export function maintTilesHtml(v: MaintView): string {
 
 const LEVEL_CLS: Record<Level, string> = { bad: "l-bad", warn: "l-warn", info: "l-info", ok: "l-ok", muted: "l-muted", unread: "l-unread" };
 
-function cellHtml(c: Cell, card: MaintCard): string {
+// `go` is what a click does here: the fleet opens a tab, the dashboard scrolls to a card.
+function cellHtml(c: Cell, card: MaintCard, go = `Click: ${TAB_TEXT[FACET_TAB[c.facet]][0]} for ${card.name}`): string {
   const label = facetDef(c.facet).label;
   const v = c.level === "unread"
     ? card.reading ? sk("54px", 9) : DASH
     : c.level === "ok" && !c.text ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(c.text);
-  const go = `Click: ${TAB_TEXT[FACET_TAB[c.facet]][0]} for ${card.name}`;
   const tip = [label, ...c.tip, ...(c.fix ? [`fix: ${c.fix}`] : []), go].join("\n");
   return `<button class="mt-cell" data-mtcell="${c.facet}" data-mtroot="${escAttr(card.path)}" data-tip="${escAttr(tip)}">`
     + `<span class="fk">${esc(label)}</span><span class="mt-v ${LEVEL_CLS[c.level]}">${v}</span></button>`;
@@ -236,4 +240,130 @@ export function maintBodyHtml(v: MaintView): string {
   return `<div class="mt-body">${bar}<div class="mt-top">${chipsHtml(v)}</div>`
     + (allClear && v.chip === "all" ? clearHtml(v) : "")
     + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div></div>`;
+}
+
+// ---------- the project dashboard's tab ----------
+
+/** The Dependencies card: the dashboard's own deps read, which its ⤢ overlay shares. */
+export interface MaintDeps {
+  adv: DepAdvisory[]; prs: DepPr[]; tally: DepTally;
+  scanned: boolean; // a package manager answered this visit
+  tool: string | null; // what ⤢ would offer to run while nothing has been asked
+  loading: boolean; reason: string;
+}
+export interface MaintDash {
+  card: MaintCard; // the strip is the fleet card's cells: two zoom levels of one scan
+  rows: Finding[]; // the card's lines and the rows only a tab shows
+  checked: number; // this project's last finished scan (ms), 0 for none
+  flows: { branch: string | null; rows: FlowRow[] }; release: Kv[];
+  deps: MaintDeps | null; // null: nothing to say and nothing to offer (depSilent)
+  hygiene: Hygiene | null; staleDays: number;
+  cover: CoverRow[]; forge: string; unreadable: boolean;
+}
+
+/** Which card a cell scrolls to on the dashboard: its fleet tab's, by the same map. */
+export const DASH_CARD: Record<MaintTab, [string, string]> = {
+  delivery: ["delivery", "Delivery"], security: ["deps", "Dependencies"], code: ["git", "Git hygiene"],
+  servers: ["cover", "Coverage"], work: ["todo", "To do"],
+};
+
+const across = (sub: MaintSub) => `<button class="aslink mt-across" data-mtacross="${sub}"`
+  + ` data-tip="${escAttr(`${TAB_TEXT[sub][0]} across every project`)}">all projects</button>`;
+const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" data-tip="${escAttr(tip)}">⤢</button>`;
+const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
+  `<section class="ac mt-dc" id="mtc-${id}"><div class="ac-h"><span class="t">${esc(title)}</span>`
+  + `<span class="n">${esc(n)}</span>${extra}</div><div class="ac-b">${body}</div></section>`;
+const kv = (k: string, v: string, cls = "") =>
+  `<div class="mt-kv"><span>${esc(k)}</span><span class="mono${cls ? " " + cls : ""}">${esc(v)}</span></div>`;
+// A card with nothing of its own to draw still says why, in its cell's words.
+const said = (c: Cell | undefined) => c && c.level !== "unread"
+  ? `<p class="ac-empty">${esc(c.text || (c.level === "ok" ? "nothing to report" : "not read"))}</p>`
+  : `<p class="ac-empty">${sk("62%", 9)}</p>`;
+const cellOf = (v: MaintDash, f: Facet) => v.card.cells.find((c) => c.facet === f);
+
+function todoCard(v: MaintDash): string {
+  const read = v.card.cells.filter((c) => c.state === "read" && c.level !== "muted").length;
+  const none = v.card.band === "unread" ? (v.card.reading ? "Reading this project…" : "Not checked yet.")
+    : `Nothing to do in the ${plural(read, "facet")} that could be read${read < FACETS.length ? "; Coverage says what could not" : ""}.`;
+  const body = v.rows.length
+    ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
+  return dcard("todo", "To do", v.rows.length ? String(v.rows.length) : "", across("overview"), body);
+}
+
+const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };
+function flowHtml(r: FlowRow): string {
+  const ago = r.at ? relTime(r.at * 1000) : "";
+  const v = r.red !== null ? `✕ ${r.red}`.trim() : `${FLOW_TEXT[r.status] ?? r.status} ${ago}`.trim();
+  const strip = r.runs.map((x) => `<i class="${x === "fail" ? "l-bad" : x === "pass" ? "l-ok" : ""}"></i>`).join("");
+  return `<div class="mt-flow"><span class="w">${esc(r.workflow)}</span>`
+    + `<span class="mt-v ${r.red !== null ? "l-bad" : "l-ok"}">${esc(v)}</span><span class="mt-runs" aria-hidden="true">${strip}</span></div>`;
+}
+
+function deliveryCard(v: MaintDash): string {
+  const ci = v.flows.rows.length ? v.flows.rows.map(flowHtml).join("") : said(cellOf(v, "ci"));
+  const rel = v.release.length ? v.release.map((x) => kv(x.k, x.v)).join("") : said(cellOf(v, "release"));
+  return dcard("delivery", "Delivery", v.flows.branch ? `on ${v.flows.branch}` : "", across("delivery"), ci + rel);
+}
+
+const SEV_CLS: Record<string, string> = { critical: "l-bad", high: "l-bad", medium: "l-warn" };
+function depsCard(d: MaintDeps): string {
+  const t = d.tally;
+  const n = t.critical || t.high ? [t.critical && `${t.critical} critical`, t.high && `${t.high} high`].filter(Boolean).join(" · ")
+    : t.vulns ? plural(t.vulns, "advisory", "advisories") : t.prs ? plural(t.prs, "update PR")
+    : d.scanned ? `${t.outdated} out of date` : "nothing open";
+  const advs = d.adv.slice(0, 4).map((a) => {
+    const pkgs = a.alerts.map((x) => x.pkg);
+    return `<div class="mt-li"><i class="mt-sev ${SEV_CLS[a.severity] ?? ""}"></i>`
+      + `<span class="t">${esc(pkgs.slice(0, 2).join(", "))}${pkgs.length > 2 ? ` +${pkgs.length - 2}` : ""}</span>`
+      + `<span class="d mono">${esc([FIX_TEXT[a.worst], a.summary].join(" · "))}</span></div>`;
+  }).join("") + (d.adv.length > 4 ? `<p class="ac-empty">+ ${esc(plural(d.adv.length - 4, "more advisory", "more advisories"))}</p>` : "");
+  const red = d.prs.filter((p) => checkState(p) === "failing").length;
+  const prs = d.prs.length
+    ? kv("Update pull requests", [`${d.prs.length} open`, t.ready && `${t.ready} ready`, red && `${red} failing`].filter(Boolean).join(" · "), red ? "l-warn" : "")
+    : "";
+  const out = d.scanned ? kv("Out of date", String(t.outdated)) : d.tool ? kv("Out of date", `not checked · ⤢ runs ${d.tool}`) : "";
+  const why = d.reason ? `<p class="ac-empty">${esc(d.reason)}</p>` : "";
+  const body = d.loading && !d.adv.length && !d.prs.length ? `<p class="ac-empty">${sk("70%", 9)}</p>` : advs + prs + out + why;
+  return dcard("deps", "Dependencies", n, grow("deps", "Every advisory, update pull request and out-of-date package") + across("security"), body);
+}
+
+function gitCard(v: MaintDash): string {
+  const h = v.hygiene;
+  const body = !h ? said(cellOf(v, "git")) : [
+    kv("Commits only on this machine", h.unpushed === null ? "unknown: no remote" : String(h.unpushed), h.unpushed ? "l-warn" : ""),
+    kv("Branches only here", String(h.localOnly.length), h.localOnly.length ? "l-warn" : ""),
+    kv(`Merged into ${h.trunk ?? "the trunk"}`, String(h.merged.length)),
+    kv("Upstream gone", String(h.gone.length)),
+    kv(`Untouched ${v.staleDays}d+`, String(h.stale.length)),
+    kv(`Worktrees idle ${v.staleDays}d+`, String(h.idle)),
+    h.fetchedAt ? kv("Last fetch", relTime(h.fetchedAt * 1000)) : "",
+  ].join("");
+  return dcard("git", "Git hygiene", h?.trunk ? `against ${h.trunk}` : "",
+    grow("branches", "Open Branches, where merged branches are swept") + across("code"), body);
+}
+
+// Amber only where a fix exists or a read broke; every other state is a fact, muted.
+const COVER_CLS: Partial<Record<CoverRow["state"], string>> = { noAccess: "l-warn", noTool: "l-warn", error: "l-warn" };
+function coverCard(v: MaintDash): string {
+  const head = v.unreadable
+    ? `<p class="ac-empty">.episko/episko.toml does not parse, so its [maintenance] settings are not applied.</p>` : "";
+  const rows = v.cover.map((r) => `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
+    + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span></div>`
+    + (r.fix ? `<code class="mt-fix">${esc(r.fix)}</code>` : "")).join("");
+  return dcard("cover", "Coverage", v.forge, "", head + (rows || said(undefined)));
+}
+
+/** The dashboard's Maintenance tab: the fleet card's strip, its lines, and a card per question. */
+export function maintDashHtml(v: MaintDash): string {
+  const go = (c: Cell) => `Click: the ${DASH_CARD[FACET_TAB[c.facet]][1]} card`;
+  const when = v.card.reading ? `<span class="fl-when mono">reading this project…</span>`
+    : v.checked ? `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>`
+      + `<button class="aslink" data-mtscan="force" data-tip="Check this project again, past every cache">⟳</button>`
+    : `<span class="fl-when mono">Not checked yet</span>`
+      + `<button class="aslink" data-mtscan="check" data-tip="Read this project once. Nothing runs in it">Check</button>`;
+  const err = v.card.err ? `<p class="fl-none">Could not read: ${esc(v.card.err)}</p>` : "";
+  return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
+    + `<div class="mt-dwhen">${when}</div></div>${err}`
+    + `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}${deliveryCard(v)}${v.deps ? depsCard(v.deps) : ""}</div>`
+    + `<div class="mt-dcol">${gitCard(v)}${coverCard(v)}</div></div>`;
 }

@@ -4,7 +4,7 @@ import {
   ASKING_MODES, CHAPTERS, chapterKey, isDone, parseTourState, permAsks, pickerChapters,
   planFor, RAIL_LEGEND, recordDone, releaseChapter, setTourPlatform, shouldOfferPicker,
   shouldOfferRelease,
-  stepApplies, stepBlocked, stepSatisfied, tourDefaults, type TourWorld,
+  stepApplies, stepBlocked, stepSatisfied, tourDefaults, type TourNeed, type TourWorld,
 } from "../src/tour";
 
 // A source-parsing contract test (like dispatch/ipc): a tour step's `anchor` is a join
@@ -138,18 +138,25 @@ describe("the manifest is well formed", () => {
   it("declares the panel every anchor lives in", () => {
     // ⌘I removes the inspector and ⌘B collapses the rail, so a step anchored inside either
     // must list it in `needs`, or it lights nothing for anyone who works with it collapsed.
-    const PANEL: Record<string, "rail" | "inspector" | "next"> = {
-      "[data-add]": "rail", ".padd": "rail", ".phead": "rail", "#projects": "rail",
-      "#inspector": "inspector", ".attn-btns": "inspector", ".wset": "inspector",
-      '[data-fmode="tools"]': "inspector",
+    const PANEL: Record<string, TourNeed[]> = {
+      "[data-add]": ["rail"], ".padd": ["rail"], ".phead": ["rail"], "#projects": ["rail"],
+      "#inspector": ["inspector"], ".attn-btns": ["inspector"], ".wset": ["inspector"],
+      '[data-fmode="tools"]': ["inspector"],
       // The dashboard's Next column is foldable by ⌘I, so a step lighting it must ask for it
       // the way an inspector step does — a folded column measures 0x0 and reads as absent.
-      "#dashNext": "next",
+      // Both Today columns are hidden outright behind the Maintenance tab.
+      "#dashNext": ["today", "next"], "#dashMoved": ["today"],
     };
-    const missing = allSteps()
-      .filter(({ s }) => s.anchor && PANEL[s.anchor] && !s.needs?.includes(PANEL[s.anchor]))
-      .map(({ c, s }) => `${c.id}: "${s.title}" -> ${s.anchor} needs the ${PANEL[s.anchor!]}`);
+    const missing = allSteps().flatMap(({ c, s }) => (s.anchor ? PANEL[s.anchor] ?? [] : [])
+      .filter((n) => !s.needs?.includes(n)).map((n) => `${c.id}: "${s.title}" -> ${s.anchor} needs the ${n}`));
     expect(missing).toEqual([]);
+  });
+
+  it("brings Today back before it unfolds a column in it", () => {
+    // ⌘I is off on the Maintenance tab, so "next" asked first would toggle nothing.
+    const late = allSteps().filter(({ s }) => s.needs?.includes("next") && s.needs.indexOf("today") > s.needs.indexOf("next"))
+      .map(({ s }) => s.title);
+    expect(late).toEqual([]);
   });
 
   it("only sends you to a Settings tab that exists", () => {

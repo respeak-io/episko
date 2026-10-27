@@ -3041,6 +3041,37 @@ select.in-ctl { cursor: pointer; }
 .mt-gaps em { color: var(--muted-2); }
 @media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; } }
 
+/* The project dashboard's two tabs. The Today columns are hidden behind Maintenance, never
+   rebuilt, so a draft note and Landed's fit survive the look (docs/maintenance.md). */
+.db-tabs { flex: none; padding: 8px 12px 6px; border-bottom: 1px solid var(--hair); }
+#dashPane.tab-maint .db-cols { display: none; }
+#dashPane:not(.tab-maint) .db-maint { display: none; }
+.db-maint { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.mt-dhead { display: flex; align-items: center; gap: 8px 16px; padding: 6px 8px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
+.mt-dhead .mt-cells { flex: 1; }
+.mt-dwhen { flex: none; display: flex; align-items: center; gap: 8px; }
+.mt-dgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; align-items: start; }
+.mt-dcol { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.mt-dc { scroll-margin-top: 8px; }
+.mt-dc .mt-finds { margin-top: 0; border-top: 0; padding: 0 6px; }
+.mt-across { flex: none; font-size: 10px; }
+.mt-kv, .mt-flow, .mt-li, .mt-cov { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
+.mt-kv > span:first-child, .mt-cov .s { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-kv .mono { flex: none; max-width: 60%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-kv .l-warn, .mt-cov .mt-v.l-warn { color: var(--st-working); }
+.mt-flow .w { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-flow .mt-v::before { display: none; }
+.mt-runs { flex: none; display: inline-flex; gap: 3px; align-self: center; }
+.mt-runs i { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
+.mt-runs i.l-ok { background: var(--muted-2); }
+.mt-runs i.l-bad { background: var(--st-error); }
+.mt-li .t { flex: none; max-width: 45%; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-li .d { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+.mt-cov .mt-v { flex: none; max-width: 55%; }
+.mt-fix { display: block; margin: 0 7px 5px 105px; font: 10.5px var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 1080px) { .mt-dgrid { grid-template-columns: minmax(0, 1fr); } .mt-dhead { flex-wrap: wrap; } }
+
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card
    never pushes another off screen. Column B is a query container: the lite graph collapses against
    the column's width, never the viewport's. */

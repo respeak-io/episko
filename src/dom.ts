@@ -49,6 +49,8 @@ export function takeStage(show: Stage) {
 
 // ⌘I on the dashboard folds the third column instead of an inspector it does not have.
 export function foldDashNext(): boolean { return $("dashPane").classList.toggle("fold-next"); }
+// Its Maintenance tab hides that column, so there ⌘I has nothing to fold. ./dashboard sets the class.
+export const dashOnMaint = (): boolean => $("dashPane").classList.contains("tab-maint");
 
 // The stage header's path: shown `~`-shortened and copied in full, so every stage taker
 // hands over the absolute one and the click never re-derives it from the label. The

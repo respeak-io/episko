@@ -447,6 +447,11 @@ export interface DepTally {
   outdated: number;
 }
 
+/** Why the GitHub half is absent: no GitHub remote, or alerts switched off; "" when it is not. */
+export function depReason(github: boolean, rep: DepReport | null, offGithub: string): string {
+  return !github ? offGithub : rep && !rep.enabled ? rep.reason ?? "" : "";
+}
+
 export function depTally(adv: Advisory[], prs: DepPr[], out: OutRow[]): DepTally {
   return {
     critical: adv.filter((a) => a.severity === "critical").length,

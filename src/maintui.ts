@@ -1,5 +1,5 @@
-// The one prober of data-mt*: fleetui's listener (and, from slice 8, the dashboard's) calls
-// `maintClick` first, and a card never sits inside an fl*/dash* row, or one click fires both.
+// The one prober of data-mt*: fleetui's and the dashboard's listeners call `maintClick` first,
+// and a card never sits inside an fl*/dash* row, or one click fires both.
 // A verb prefills an agent and never sends it: Episko presses Enter in two places only.
 
 import { invoke } from "@tauri-apps/api/core";
@@ -23,6 +23,8 @@ export interface MaintHost {
   // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
   openTab: (sub: MaintSub, root?: string | null) => void;
   render: () => void;
+  openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
+  openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -75,6 +77,10 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   if (tab) { host.openTab(subOf(tab.dataset.mttab)); return true; }
   const clear = t.closest<HTMLElement>("[data-mtclear]");
   if (clear) { host.openTab(subOf(clear.dataset.mtclear), null); return true; }
+  const view = t.closest<HTMLElement>("[data-mtview]");
+  if (view) { host.openView?.(view.dataset.mtview === "branches" ? "branches" : "deps"); return true; }
+  const across = t.closest<HTMLElement>("[data-mtacross]");
+  if (across) { host.openAcross?.(subOf(across.dataset.mtacross)); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   const cell = t.closest<HTMLElement>("[data-mtcell]");

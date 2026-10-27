@@ -353,13 +353,21 @@ const releaseRule: Rule = (facts, c) => {
   return { level: "muted", text: rel ? "no tags" : facetDef("release").none, tip, asOf };
 };
 
+type HygieneFacts = FactsOf<"hygiene">;
+// Untouched past the threshold: a branch that lives only here, and a worktree nobody opened.
+function aged(h: HygieneFacts, th: MaintThresholds, sec: number): { stale: BranchAge[]; idle: WtAge[] } {
+  const old = th.staleBranchDays * DAY;
+  return {
+    stale: h.branches.filter((b) => h.localOnly.includes(b.name) && sec - b.at > old),
+    idle: h.worktrees.filter((w) => w.at !== null && sec - w.at > old),
+  };
+}
+
 const gitRule: Rule = (facts, c) => {
   const [h] = kinds(facts, "hygiene");
   if (!h) return { level: "muted", text: "", tip: [] };
-  const now = c.now / 1000, old = c.th.staleBranchDays * DAY;
   const tidy = h.merged.length + h.gone.length;
-  const stale = h.branches.filter((b) => h.localOnly.includes(b.name) && now - b.at > old);
-  const idle = h.worktrees.filter((w) => w.at !== null && now - w.at > old);
+  const { stale, idle } = aged(h, c.th, c.now / 1000);
   const tip = [
     h.unpushed === null ? "no remote, so what is unpushed is unknown" : `${plural(h.unpushed, "commit")} on no remote`,
     ...(h.localOnly.length ? [`only here: ${h.localOnly.join(", ")}`] : []),
@@ -706,6 +714,99 @@ export function tabGaps(tab: MaintTab, cards: readonly { path: string; cells: re
     }
   }
   return { read, unset, gaps: gaps.sort((a, b) => a.path.localeCompare(b.path) || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)) };
+}
+
+// ---------- the project tab's cards ----------
+
+export interface FlowRow {
+  workflow: string; status: CiStatus; at: number | null;
+  runs: CiStatus[]; // its newest runs, oldest first, so a strip reads left to right
+  red: string | null; // failing for ("3d", "" when its source cannot date it); null when it is not
+}
+
+/** Delivery's CI half: one row per workflow on the default branch, the failing ones first. */
+export function ciFlows(inp: MaintInput, now = Date.now()): { branch: string | null; rows: FlowRow[] } {
+  const reps = okFacts(inp, "ci"), sec = now / 1000, rows: FlowRow[] = [];
+  const fails = new Map(ciFailures(reps).map((x) => [x.workflow, x]));
+  let branch: string | null = null;
+  for (const { facts: f } of reps) {
+    if (f.kind !== "ciRuns") continue;
+    branch ??= f.branch;
+    const by = new Map<string, CiRun[]>();
+    for (const r of f.runs) by.set(r.workflow, [...(by.get(r.workflow) ?? []), r]);
+    for (const [workflow, runs] of by) {
+      const x = fails.get(workflow);
+      rows.push({ workflow, status: runs[0].status, at: runs[0].at,
+        runs: runs.slice(0, 8).map((r) => r.status).reverse(), red: x ? redFor(x, sec) ?? "" : null });
+    }
+  }
+  return { branch, rows: rows.sort((a, b) => Number(b.red !== null) - Number(a.red !== null) || a.workflow.localeCompare(b.workflow)) };
+}
+
+export interface Kv { k: string; v: string }
+
+/** The forge line under the tab's cards: where this repo lives, and how to pin one nobody could name. */
+export function forgeText(inp: MaintInput): string {
+  const f = inp.det?.forge;
+  if (!f) return "";
+  if (f.kind === "none") return "no remote";
+  const where = [f.host, f.path].filter(Boolean).join("/") || f.kind;
+  return f.kind === "unknown" ? `${where} · forge unknown: pin [maintenance] forge` : where;
+}
+
+/** Delivery's release half, one line per thing a source read; nothing read is no line. */
+export function releaseRows(inp: MaintInput, now = Date.now()): Kv[] {
+  const sec = now / 1000, out: Kv[] = [];
+  const ago = (at: number | null) => at ? ` · ${span(sec - at)} ago` : "";
+  for (const { facts: f } of okFacts(inp, "release")) {
+    if (f.kind === "release") {
+      out.push({ k: "Last tag", v: f.tag ? `${f.tag}${ago(f.tagAt)} · ${plural(f.since, "commit")} since` : `no release tag on ${f.trunk ?? "the trunk"}` });
+      if (f.fetchedAt) out.push({ k: "As of", v: `last fetch ${span(sec - f.fetchedAt)} ago` });
+    } else if (f.kind === "releases") {
+      out.push({ k: "Published", v: f.latest ? `${f.latest.tag}${ago(f.latest.at)}` : "no releases" });
+    } else if (f.kind === "changelog" && f.unreleased !== null) {
+      out.push({ k: "Changelog", v: `${plural(f.unreleased, "entry", "entries")} under Unreleased` });
+    }
+  }
+  return out;
+}
+
+export interface Hygiene {
+  trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[]; gone: string[];
+  stale: string[]; idle: number; fetchedAt: number | null;
+}
+/** Git hygiene's counts, or null until a source read them. */
+export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Hygiene | null {
+  const h = okFacts(inp, "git").map((r) => r.facts).find((f): f is HygieneFacts => f.kind === "hygiene");
+  if (!h) return null;
+  const { stale, idle } = aged(h, th, now / 1000);
+  return { trunk: h.trunk, unpushed: h.unpushed, localOnly: h.localOnly, merged: h.merged, gone: h.gone,
+    stale: stale.map((b) => b.name), idle: idle.length, fetchedAt: h.fetchedAt };
+}
+
+export interface CoverRow { facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null }
+
+/** Coverage: every source and marker detected here and what became of it, in card order. */
+export function coverRows(inp: MaintInput): CoverRow[] {
+  const det = inp.det;
+  if (!det) return [];
+  const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
+    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null }));
+  for (const id of det.sources) {
+    const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
+    if (!facet) continue;
+    const row = (state: CoverRow["state"], text: string, fix: string | null = null) => out.push({ facet, label: labelOf(id), state, text, fix });
+    if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
+    else if (!r) row("unread", "not read yet");
+    else row(r.coverage.state, covText(r.coverage), fixOf(r.coverage));
+  }
+  for (const m of det.markers) {
+    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null });
+  }
+  for (const facet of FACETS) {
+    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null });
+  }
+  return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }
 
 // ---------- the all-clear's two lists ----------

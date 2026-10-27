@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  advisoryBrief, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depSilent, depTally,
+  advisoryBrief, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depReason, depSilent, depTally,
   fixKind, groupAdvisories, outdatedBrief, outRows, parseVer, prBlockers, prBrief, prFor,
   prPackages, prReady, renovateDashboard, satisfies, sevRank, verifyCommands,
   type DepAlert, type DepManifest, type DepPr, type OutdatedRun,
@@ -262,6 +262,15 @@ describe("the tally the card reads", () => {
     expect(depSilent(empty, [{ id: "pnpm", label: "pnpm outdated", cmd: "c", blocked: null }])).toBe(false);
     // A blocked one is not: it could not answer anything either.
     expect(depSilent(empty, [{ id: "pnpm", label: "pnpm outdated", cmd: "c", blocked: "not on PATH" }])).toBe(true);
+  });
+
+  it("says why the GitHub half is absent, and nothing when it is not", () => {
+    const rep = (enabled: boolean, reason: string | null = null) => ({ available: true, reason, alerts: [], prs: [], enabled });
+    expect(depReason(false, rep(true), "no GitHub")).toBe("no GitHub");
+    expect(depReason(true, rep(false, "alerts are off"), "no GitHub")).toBe("alerts are off");
+    expect(depReason(true, rep(false), "no GitHub")).toBe("");
+    expect(depReason(true, rep(true), "no GitHub")).toBe("");
+    expect(depReason(true, null, "no GitHub")).toBe("");
   });
 });
 

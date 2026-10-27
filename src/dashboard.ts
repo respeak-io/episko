@@ -29,11 +29,17 @@ import { stepThread, type GhIssueRead } from "./issue";
 import { filterQueue, foldQueue, plainRows, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
 import { foldBots, layoutGraph, parseRefs, ROW_H, type GraphCommit, type GraphMark, type LiteRow } from "./graph";
 import {
-  advisoryBrief, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
+  advisoryBrief, depReason, depSilent, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
   renovateDashboard, verifyCommands,
   type Advisory, type DepManifest, type DepPr, type DepReport, type DepTool, type OutdatedRun, type OutRow,
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
+import {
+  ciFlows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, projectBand, releaseRows, tabFindings, type MaintInput,
+} from "./maint";
+import { maintInput, maintOf, scanProject } from "./maintscan";
+import { maintClick, type MaintHost } from "./maintui";
+import { DASH_CARD, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import { discoverTasks, execCmd } from "./tasks";
 import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
@@ -117,6 +123,8 @@ export interface DashHost {
   // Pin the project to a GitHub account (`null` follows gh's active one). A stored
   // preference like `saveTrunk`; the write also drops the previous account's cached reads.
   setGhAccount: (root: string, login: string | null) => void;
+  // A Maintenance card's way across projects: the fleet's Maintenance, on that tab, unfiltered.
+  openFleetMaint: (sub: MaintSub) => void;
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
@@ -125,7 +133,7 @@ let host: DashHost = {
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
-  setGhAccount: () => {},
+  setGhAccount: () => {}, openFleetMaint: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
 
@@ -311,6 +319,14 @@ let writing: { key: string; scope: "me" | "project" } | null = null;
 // Gated on the stage, not the queue, since stage 1 can be a fortnight of calls.
 let stage: "me" | "project" | null = null;
 
+// Which half of the pane is up. Not persisted, and Today again on a project switch: the pane is
+// opened for what moved, and Maintenance is the weekly question (docs/maintenance.md).
+type DashTab = "today" | "maint";
+let dashTab: DashTab = "today";
+let maintFor = "";            // the root this open has scanned; "" until the tab asks
+let maintLoading = false;     // its own flag in aria-busy, cleared inside the root() guard
+let maintSeq = 0;             // a rescan over a running one: only the newest clears the flag
+
 const root = () => dashMirror()?.root ?? "";
 const name = () => dashMirror()?.name ?? "";
 
@@ -400,6 +416,24 @@ export function reloadDashGh(r: string): void {
   // The advisories and the bots' PRs were answered by the identity you have just stopped
   // using, so they are re-read with the board rather than left beside it a version behind.
   void loadDepsGh(r, true);
+  // Maintenance's cache was forgotten with the account; the tab re-asks now, or on its next look.
+  maintFor = "";
+  if (dashTab === "maint") void loadMaint(true);
+}
+
+// One project's Maintenance scan, shaped like `loadBranches`: the first look at the tab per open
+// asks, a render never does, and the answers land in ./maintscan's cache, which renderAll paints.
+async function loadMaint(force = false): Promise<void> {
+  const r = root();
+  if (!r) return;
+  const seq = ++maintSeq;
+  maintFor = r;
+  maintLoading = true;
+  renderDash();
+  await scanProject(r, force);
+  if (root() !== r || seq !== maintSeq) return;   // another project's flag now, or a newer scan's
+  maintLoading = false;
+  renderDash();
 }
 
 // Issues, PRs, the keep list and the claim ceiling. Separate from `loadDash` so a slow
@@ -844,8 +878,9 @@ export function renderDash(): void {
   }
   // The bars are `<i>`s of colour, so aria-busy is what says the pane is working.
   $("dashPane").setAttribute("aria-busy",
-    loading || ghLoading || landedLoading || queueRunning ? "true" : "false");
+    loading || ghLoading || landedLoading || queueRunning || maintLoading ? "true" : "false");
   const now = Date.now();
+  paintMaint(now);
 
   // ---- column A: what is running here, this project's verbs, the repo and its checkouts ----
   // Externals count as running here: they are somebody else's terminal in this project, they
@@ -1010,9 +1045,8 @@ export function renderDash(): void {
       scanning: depScanning, scanned: depScanned, scanError: depScanError,
       // A reason only when it cost us something: an unavailable half with rows anyway
       // (the PR list answered, the alert scope did not) still says why the alerts are absent.
-      reason: tier !== "github"
-        ? "Advisories and bot pull requests need a GitHub remote. The manifests and the scan below do not."
-        : depReport && !depReport.enabled ? depReport.reason ?? "" : "",
+      reason: depReason(tier === "github", depReport,
+        "Advisories and bot pull requests need a GitHub remote. The manifests and the scan below do not."),
       dashboard: renovateDashboard(gh.threads),
     }));
   }
@@ -1050,8 +1084,8 @@ export function renderDash(): void {
 
   // The fit is an INPUT to the markup, so it is measured once the markup is down and only after
   // a pass that wrote: an unchanged paint moved nothing, and a layout read on every renderAll
-  // frame would force the reflow the guards exist to avoid.
-  if (movedChanged && !landedLoading && !fitting) {
+  // frame would force the reflow the guards exist to avoid. A hidden column measures 0, so only on Today.
+  if (movedChanged && !landedLoading && !fitting && dashTab === "today") {
     fitting = true;
     try { if (fitLanded()) renderDash(); } finally { fitting = false; }
   }
@@ -1089,7 +1123,7 @@ export function renderDashHeader(): void {
 }
 
 // ---------- open / close ----------
-export function openDashboard(project: string, path: string): void {
+export function openDashboard(project: string, path: string, tab?: DashTab): void {
   const changed = root() !== path;
   invalidatePaintCache();   // unconditionally: a session visited in between overwrote #inspector
   setMirror({ kind: "dash", root: path, name: project });
@@ -1124,9 +1158,15 @@ export function openDashboard(project: string, path: string): void {
     depRun = null; depScanned = ""; depScanError = ""; depScanning = "";
     // `syncing` is not reset: it names a folder a real git process is still running in.
     mainWork = undefined;
+    dashTab = "today"; maintLoading = false;
+    $("dashMaint").innerHTML = "";   // the paint cache was just cleared, so this is its write too
   }
+  maintFor = "";   // the first look at Maintenance per open asks; a scan in flight keeps its own guard
+  if (tab) dashTab = tab;
+  showTab();
   host.renderAll();
   void loadDash();
+  if (dashTab === "maint") void loadMaint();
 }
 
 export function closeDashboard(): void {
@@ -1169,16 +1209,119 @@ function openDayMenu(at: HTMLElement): void {
   });
 }
 
+// An enlarge overlay, from a card's ⤢ on either tab. Checkouts is a tab of the Branches view,
+// not a view: one table, one selection model.
+function openDashView(v: string): void {
+  const was = openView;
+  const branchy = v === "branches" || v === "checkouts";
+  if (branchy) branchTab = v === "checkouts" ? "checkouts" : "branches";
+  openView = branchy ? "branches" : (v as typeof openView);
+  // Advisories is the wrong first tab where there can never be one; the scan is the
+  // only half of this view a non-GitHub project has.
+  if (openView === "deps" && tier !== "github") depTab = "stale";
+  // Opened from a narrowed queue, the view starts on the same kind.
+  if (openView === "work" && was === null) workKind = queueFilter === "iss" || queueFilter === "pr" ? queueFilter : "all";
+  if (was === "issue" && openView === readFrom) restoreScroll = listScroll;
+  renderDash();
+  if (branchy) void loadBranches();
+}
+
+// ---------- the Maintenance tab ----------
+// The columns are hidden, never rebuilt, so the draft in #dashJot and Landed's fit both survive.
+function showTab(): void {
+  $("dashPane").classList.toggle("tab-maint", dashTab === "maint");
+  for (const b of $("dashTabs").querySelectorAll<HTMLElement>("[data-dashtab]")) {
+    const on = b.dataset.dashtab === dashTab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", String(on));
+  }
+}
+
+function setDashTab(tab: DashTab): void {
+  dashTab = tab;
+  showTab();   // now, not on the coalesced pass: ⌘I and the tour read the class straight after
+  if (tab === "maint" && maintFor !== root()) void loadMaint();
+  host.renderAll();   // ◨ is greyed or lit from the truth by the pass
+}
+
+/** The tour's "today" need: a step lighting a Today column must not find it hidden. */
+export function dashToday(): void { if (dashMirror() && dashTab !== "today") setDashTab("today"); }
+
+const scrollToCard = (sub: MaintSub): void =>
+  (document.getElementById(`mtc-${sub === "overview" ? "todo" : DASH_CARD[sub][0]}`) ?? document.getElementById("mtc-cover"))
+    ?.scrollIntoView({ block: "start" });
+
+const emptyInput = (): MaintInput => ({ det: null, reports: {}, skip: [] });
+
+// The cache only: `loadMaint` is the one thing here that asks, and a render never reaches it.
+function maintNow(now: number): MaintDash {
+  const r = root(), e = maintOf(r), inp = maintInput(r) ?? emptyInput();
+  const th = clampMaint(inp.det?.config.thresholds);
+  const cells = facetCells(inp, th, now), rows = tabFindings(r, inp, th, now);
+  const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
+  return {
+    card: {
+      path: r, name: name(), accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
+      reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
+    },
+    rows, checked: e?.at ?? 0, flows: ciFlows(inp, now), release: releaseRows(inp, now),
+    deps: depSilent(tally, depTools) && !depLoading ? null : {
+      adv: dn.adv, prs: dn.prs, tally, scanned: depScanned !== "", loading: depLoading,
+      tool: depTools.find((x) => !x.blocked)?.label ?? null,
+      reason: depReason(tier === "github", depReport, "Advisories and update pull requests need a GitHub remote."),
+    },
+    hygiene: hygieneOf(inp, th, now), staleDays: th.staleBranchDays,
+    cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
+  };
+}
+
+// The tab's count is the card's red and amber lines, from whatever the cache holds; it never asks.
+function paintMaint(now: number): void {
+  const r = root(), inp = maintInput(r);
+  const fs = inp ? findings(r, inp, clampMaint(inp.det?.config.thresholds), now) : [];
+  const bad = fs.filter((f) => f.level === "bad").length, n = bad + fs.filter((f) => f.level === "warn").length;
+  const badge = $("dashMaintN");
+  badge.textContent = n ? String(n) : "";
+  badge.className = `n${bad ? " l-bad" : n ? " l-warn" : ""}`;
+  if (dashTab === "maint") paint("dashMaint", maintDashHtml(maintNow(now)));
+}
+
+// Prefilled, never sent, as on the fleet. The target is the finding's, not the stage's:
+// the verb awaited task discovery first, and the stage may have moved since.
+async function prefillAgent(project: string, path: string, text: string): Promise<void> {
+  const sid = await host.launch(project, path, { colorKey: path });
+  if (typeof sid !== "string") return;   // the launch already toasted
+  setTimeout(() => { void typeInto(sid, text).catch(() => {}); }, 1400);
+  toast("Started and prefilled. Read it, then press Enter");
+}
+
+const maintHost: MaintHost = {
+  scan: (force) => { void loadMaint(force); },
+  nameOf: (r) => r === root() ? name() : basename(r),
+  prefill: (project, path, text) => { void prefillAgent(project, path, text); },
+  // Review lands here: on this project it is a tab switch, not a second load of the pane.
+  openDashboard: (n, p, tab) => { if (p === root()) setDashTab(tab ?? "maint"); else openDashboard(n, p, tab); },
+  openTab: (sub) => scrollToCard(sub),
+  render: () => renderDash(),
+  openView: (v) => openDashView(v),
+  openAcross: (sub) => host.openFleetMaint(sub),
+};
+
 // ---------- events ----------
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.
 export function wireDashboard(): void {
   // The box Landed is fitted to changes on a window resize, on ⌘I and when the rail collapses,
   // and none of the three reaches this module as an event. Observing the column is safe: its
-  // own box is the grid's, so painting into it cannot call this back.
-  new ResizeObserver(() => { if (dashMirror() && fitLanded()) renderDash(); }).observe($("dashMoved"));
+  // own box is the grid's, so painting into it cannot call this back. Behind Maintenance it
+  // measures 0, which would fit Landed to nothing; the return to Today fires it at full size.
+  new ResizeObserver(() => { if (dashMirror() && dashTab === "today" && fitLanded()) renderDash(); }).observe($("dashMoved"));
 
   $("dashPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
+    // Maintenance's cards are not this pane's rows: their one prober is asked before any data-dash*.
+    if (maintClick(t, maintHost)) return;
+    const tab = t.closest<HTMLElement>("[data-dashtab]");
+    if (tab) { setDashTab(tab.dataset.dashtab === "maint" ? "maint" : "today"); return; }
 
     // Select-all, for every tick-box table on this pane: the header tick and the bar's
     // buttons write the same attribute, so one branch answers four tables.
@@ -1241,23 +1384,7 @@ export function wireDashboard(): void {
     }
 
     const view = t.closest<HTMLElement>("[data-dashopen-view]");
-    if (view) {
-      // Checkouts is a tab of the Branches view, not a view: one table, one selection model.
-      const v = view.dataset.dashopenView!;
-      const was = openView;
-      const branchy = v === "branches" || v === "checkouts";
-      if (branchy) branchTab = v === "checkouts" ? "checkouts" : "branches";
-      openView = branchy ? "branches" : (v as typeof openView);
-      // Advisories is the wrong first tab where there can never be one; the scan is the
-      // only half of this view a non-GitHub project has.
-      if (openView === "deps" && tier !== "github") depTab = "stale";
-      // Opened from a narrowed queue, the view starts on the same kind.
-      if (openView === "work" && was === null) workKind = queueFilter === "iss" || queueFilter === "pr" ? queueFilter : "all";
-      if (was === "issue" && openView === readFrom) restoreScroll = listScroll;
-      renderDash();
-      if (branchy) void loadBranches();
-      return;
-    }
+    if (view) { openDashView(view.dataset.dashopenView!); return; }
     if (t.closest("[data-dashclose-view]")) { openView = null; branchResult = null; renderDash(); return; }
     if (t.closest("[data-dashrail]")) { railOpen = !railOpen; enter = railOpen ? "rail" : null; renderDash(); return; }
     // The drawer covers its own ☰, so the dimmed reader beside it is what closes it.

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, clearStageBadges, setHeadPath, takeStage, toast } from "./dom";
+import { $, clearStageBadges, dashOnMaint, setHeadPath, takeStage, toast } from "./dom";
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
@@ -996,12 +996,10 @@ export function syncStageButtons() {
   const bare = !!dashMirror() || !!fleetMirror() || !!reviewMirror();
   for (const id of ["btnRun", "btnTerm", "btnHist"]) ($(id) as HTMLButtonElement).hidden = bare;
   // ◨ stays on every stage: on the dashboard it folds the Next column, a verb this pane has
-  // and no other surface offers, so hiding it there would leave ⌘I with nothing to find. Only
-  // the fleet disables it — CSS hides that column outright — and a disabled button must stay
-  // VISIBLE or the reason it gives is a tooltip nobody can reach. Here rather than in each
-  // header writer, because this runs on every pass and so is also what turns it back on.
+  // and no other surface offers. The fleet, the review and the dashboard's Maintenance tab
+  // disable it, and a disabled button stays VISIBLE or its reason is a tooltip nobody reaches.
   const ib = $("inspBtn") as HTMLButtonElement;
-  ib.disabled = !!fleetMirror() || !!reviewMirror();
+  ib.disabled = !!fleetMirror() || !!reviewMirror() || (!!dashMirror() && dashOnMaint());
   ib.title = ib.disabled ? "Nothing to fold on this screen" : "Toggle inspector (⌘I)";
   // Lit from the truth for whichever stage is up, never left over from the last one: the
   // dashboard's fold and the inspector's own switch are different classes on different
