@@ -628,7 +628,7 @@ pub(crate) fn detect(root: &str, force: bool) -> Detection {
 pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "only gh is called yet; the GitLab, tool and remote adapters of later slices call the rest")]
+    #![allow(dead_code, reason = "only gh and glab are called yet; the tool and remote adapters of later slices call the rest")]
 
     use std::time::Duration;
 
@@ -761,9 +761,9 @@ pub(crate) mod exec {
             crate::github::gh_graphql(root, account, args)
         }
 
-        fn glab(&self, _root: &str, _args: &[&str]) -> Result<String, String> {
+        fn glab(&self, root: &str, args: &[&str]) -> Result<String, String> {
             self.trust("glab")?;
-            Err("GitLab is not read yet (forge::glab arrives with the GitLab slice)".into())
+            crate::forge::glab(root, args)
         }
 
         fn tool(&self, root: &str, bin: &str, args: &[&str], secs: u64) -> Result<Output, String> {
@@ -936,6 +936,7 @@ pub(crate) struct SourceDef {
 pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-actions", read: crate::maint_ci::github_actions },
     SourceDef { id: "forge-commit-status", read: crate::maint_ci::forge_commit_status },
+    SourceDef { id: "gitlab-ci", read: crate::maint_ci::gitlab_ci },
     SourceDef { id: "dependabot-alerts", read: crate::maint_sec::dependabot_alerts },
     SourceDef { id: "github-code-scanning", read: crate::maint_sec::gh_code_scanning },
     SourceDef { id: "github-secret-scanning", read: crate::maint_sec::gh_secret_scanning },
@@ -947,6 +948,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
     SourceDef { id: "github-releases", read: crate::maint_repo::github_releases },
     SourceDef { id: "github-work", read: crate::maint_repo::github_work },
+    SourceDef { id: "gitlab-work", read: crate::maint_repo::gitlab_work },
 ];
 
 /// The cost classes, enforced here rather than at a call site: a scan never runs a program in
@@ -1103,6 +1105,21 @@ pub(crate) fn github_repo<'a>(ctx: &Ctx<'a>) -> Result<&'a str, Coverage> {
         .ok_or_else(|| Coverage::Unsupported { reason: "the remote names no owner/repo".into() })
 }
 
+/// The host glab asks and the project's full path (`group/sub/repo`), shared by every GitLab
+/// adapter. Any host may be GitLab, so unlike `github_repo` a pinned one is read.
+pub(crate) fn gitlab_project<'a>(ctx: &Ctx<'a>) -> Result<(&'a str, &'a str), Coverage> {
+    let f = ctx.forge;
+    if f.kind != ForgeKind::Gitlab {
+        return Err(Coverage::Unsupported { reason: "not a GitLab project".into() });
+    }
+    let host = f.api_host().and_then(|h| data_arg(h).ok())
+        .ok_or_else(|| Coverage::Unsupported { reason: "the remote names no GitLab host".into() })?;
+    let path = f.path.as_deref()
+        .filter(|p| p.split('/').count() >= 2 && !p.split('/').any(str::is_empty))
+        .ok_or_else(|| Coverage::Unsupported { reason: "the remote names no group/project".into() })?;
+    Ok((host, path))
+}
+
 // ---------- commands ----------
 
 #[tauri::command(async)]
@@ -1162,25 +1179,32 @@ mod tests {
         p.to_string_lossy().to_string()
     }
 
-    /// `fixture_repo` on github.com holding every file a source detects, so each read gets as
-    /// far as its `Exec` instead of bailing on "not a repo" or "no forge" first.
-    fn rich_repo() -> PathBuf {
-        let dir = fixture_repo();
-        git(&dir, &["remote", "add", "origin", "https://github.com/acme/app.git"]);
-        for d in MANIFEST.sources.values().flat_map(|s| &s.detect) {
-            let (path, key) = d.split_once('#').map_or((d.as_str(), None), |(p, k)| (p, Some(k)));
-            match key {
-                _ if dir.join(path).exists() => {}
-                Some(k) => write(&dir, path, &format!("{{\"{k}\": {{}}}}")),
-                None if path.ends_with('/') => write(&dir, &format!("{path}x"), ""),
-                None => write(&dir, path, ""),
+    /// `fixture_repo` on each forge a source reads, holding every file a source detects, so each
+    /// read gets as far as its `Exec` instead of bailing on "not a repo" or "no forge" first.
+    fn rich_repos() -> Vec<(String, Detection)> {
+        let repos: Vec<(String, Detection)> = ["https://github.com/acme/app.git", "https://gitlab.com/acme/app.git"].into_iter().map(|remote| {
+            let dir = fixture_repo();
+            git(&dir, &["remote", "add", "origin", remote]);
+            for d in MANIFEST.sources.values().flat_map(|s| &s.detect) {
+                let (path, key) = d.split_once('#').map_or((d.as_str(), None), |(p, k)| (p, Some(k)));
+                match key {
+                    _ if dir.join(path).exists() => {}
+                    Some(k) => write(&dir, path, &format!("{{\"{k}\": {{}}}}")),
+                    None if path.ends_with('/') => write(&dir, &format!("{path}x"), ""),
+                    None => write(&dir, path, ""),
+                }
             }
-        }
-        assert_eq!(detect(&s(&dir), true).sources.len(), SOURCES.len(), "the fixture must detect every source");
-        dir
+            let det = detect(&s(&dir), true);
+            let admitted = SOURCES.iter().filter(|d| forge_admits(&MANIFEST.sources[d.id].forge, det.forge.kind)).count();
+            assert_eq!(det.sources.len(), admitted, "{remote} must detect every source of its forge");
+            (s(&dir), det)
+        }).collect();
+        let all: BTreeSet<&str> = repos.iter().flat_map(|(_, d)| d.sources.iter().map(String::as_str)).collect();
+        assert_eq!(all.len(), SOURCES.len(), "some source is read on no fixture forge");
+        repos
     }
 
-    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None };
+    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None, api: None };
 
     fn garbage() -> Vec<FakeExec> {
         vec![FakeExec::answering(Err("boom")), FakeExec::answering(Ok("")), FakeExec::recorded("html-error.html")]
@@ -1246,24 +1270,29 @@ mod tests {
         assert!(serde_json::from_str::<Manifest>(&extra).is_err(), "no field the manifest does not define");
     }
 
+    /// The sources a rich repo detects, each with its forge's context.
+    fn detected<'a>(root: &'a str, det: &'a Detection) -> impl Iterator<Item = (&'static SourceDef, Ctx<'a>)> {
+        SOURCES.iter().filter(|d| det.sources.iter().any(|x| x == d.id))
+            .map(move |d| (d, Ctx { root, cfg: &det.config, forge: &det.forge, account: None, force: true }))
+    }
+
     #[test]
     fn no_source_answers_ok_on_garbage() {
-        let root = s(&rich_repo());
-        let det = detect(&root, true);
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
-        for def in SOURCES {
-            let meta = &MANIFEST.sources[def.id];
-            for ex in garbage() {
-                crate::deps::dep_invalidate(root.clone()); // a forced read still joins a fresh shared answer
-                let rep = run(def.id, meta, def.read, &ctx, &ex);
-                if meta.cost == Cost::Local {
-                    assert!(ex.calls().is_empty(), "{}: a local source never reads the Exec", def.id);
-                    continue;
+        for (root, det) in rich_repos() {
+            for (def, ctx) in detected(&root, &det) {
+                let meta = &MANIFEST.sources[def.id];
+                for ex in garbage() {
+                    crate::deps::dep_invalidate(root.clone()); // a forced read still joins a fresh shared answer
+                    let rep = run(def.id, meta, def.read, &ctx, &ex);
+                    if meta.cost == Cost::Local {
+                        assert!(ex.calls().is_empty(), "{}: a local source never reads the Exec", def.id);
+                        continue;
+                    }
+                    // A read that bailed before the seam would pass below without proving anything.
+                    assert!(!ex.calls().is_empty(), "{} never reached its Exec", def.id);
+                    assert_ne!(rep.coverage, Coverage::Ok, "{} answered ok on garbage", def.id);
+                    assert!(rep.facts.is_none());
                 }
-                // A read that bailed before the seam would pass below without proving anything.
-                assert!(!ex.calls().is_empty(), "{} never reached its Exec", def.id);
-                assert_ne!(rep.coverage, Coverage::Ok, "{} answered ok on garbage", def.id);
-                assert!(rep.facts.is_none());
             }
         }
     }
@@ -1336,23 +1365,25 @@ mod tests {
 
     #[test]
     fn every_call_uses_a_bin_trusted_for_its_cost() {
-        let root = s(&rich_repo());
-        let det = detect(&root, true);
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
-        for def in SOURCES {
-            let m = &MANIFEST.sources[def.id];
-            let ex = FakeExec::answering(Ok(""));
-            crate::deps::dep_invalidate(root.clone());
-            let _ = (def.read)(&ctx, &ex);
-            assert_eq!(ex.calls().is_empty(), m.cost == Cost::Local, "{}: only a local source makes no call", def.id);
-            for call in ex.calls() {
-                assert!(trusted(m.cost, &call[0]), "{} ({:?}) called {call:?}", def.id, m.cost);
+        let repos = rich_repos();
+        for (root, det) in &repos {
+            for (def, ctx) in detected(root, det) {
+                let m = &MANIFEST.sources[def.id];
+                let ex = FakeExec::answering(Ok(""));
+                crate::deps::dep_invalidate(root.clone());
+                let _ = (def.read)(&ctx, &ex);
+                assert_eq!(ex.calls().is_empty(), m.cost == Cost::Local, "{}: only a local source makes no call", def.id);
+                for call in ex.calls() {
+                    assert!(trusted(m.cost, &call[0]), "{} ({:?}) called {call:?}", def.id, m.cost);
+                }
             }
         }
         // The real seam refuses before it spawns anything.
-        assert!(SysExec { cost: Cost::Local }.gh(&root, None, &["api", "user"]).unwrap_err().contains("not trusted"));
-        assert!(SysExec { cost: Cost::Forge }.tool(&root, "npm", &["audit"], 5).unwrap_err().contains("not trusted"));
-        assert!(SysExec { cost: Cost::Tool }.tool(&root, "rm", &["-rf", "."], 5).unwrap_err().contains("not trusted"));
+        let root = &repos[0].0;
+        assert!(SysExec { cost: Cost::Local }.gh(root, None, &["api", "user"]).unwrap_err().contains("not trusted"));
+        assert!(SysExec { cost: Cost::Tool }.glab(root, &["api", "user"]).unwrap_err().contains("not trusted"));
+        assert!(SysExec { cost: Cost::Forge }.tool(root, "npm", &["audit"], 5).unwrap_err().contains("not trusted"));
+        assert!(SysExec { cost: Cost::Tool }.tool(root, "rm", &["-rf", "."], 5).unwrap_err().contains("not trusted"));
         assert!(SysExec { cost: Cost::Tool }.ssh("prod", "uptime", 5).unwrap_err().contains("not trusted"));
         let req = HttpReq { url: "file:///etc/passwd".into(), body: None, token: None, secs: 5 };
         assert!(SysExec { cost: Cost::Remote }.http(&req).is_err(), "only http(s)");
@@ -1460,6 +1491,24 @@ mod tests {
     }
 
     #[test]
+    fn gitlab_ci_yml_is_a_source_on_gitlab_and_a_marker_elsewhere() {
+        let yml = [(".gitlab-ci.yml", "test:\n  script: [true]\n")];
+        let ci = |d: &Detection| d.sources.iter().filter(|x| MANIFEST.sources[x.as_str()].facet == Facet::Ci).cloned().collect::<Vec<_>>();
+        for remote in ["https://gitlab.com/g/sub/r.git", "https://gitlab.acme.io/g/r.git"] {
+            let d = detect(&s(&repo_with(remote, &yml)), true);
+            assert_eq!(ci(&d), ["gitlab-ci"], "{remote}");
+            assert!(d.markers.iter().all(|m| m.facet != Facet::Ci), "a source, not a marker: {:?}", labels(&d));
+        }
+        let unknown = repo_with("https://git.acme.io/g/r.git", &yml);
+        let d = detect(&s(&unknown), true);
+        assert!(ci(&d).is_empty() && labels(&d).contains(&"CI on git.acme.io".to_string()), "{:?}", labels(&d));
+        write(&unknown, ".episko/episko.toml", "[maintenance]\nforge = \"gitlab\"\n");
+        assert_eq!(ci(&detect(&s(&unknown), true)), ["gitlab-ci"], "a pinned self-hosted GitLab is read");
+        let d = detect(&s(&repo_with("https://gitlab.com/g/r.git", &[])), true);
+        assert!(ci(&d).is_empty() && d.sources.iter().any(|x| x == "gitlab-work"), "no file is no CI; issues need none");
+    }
+
+    #[test]
     fn files_are_probed_by_their_shape() {
         let dir = repo_with("https://git.acme.io/g/sub/r.git", &[
             ("package.json", "{\"name\": \"x\", \"renovate\": {\"extends\": []}}"),
@@ -1505,7 +1554,7 @@ mod tests {
 
         // `changelog` reads the root's file, so a package's one level down must not detect it.
         let mono = repo_with("https://gitlab.com/a/b.git", &[("pkg/CHANGELOG.md", "# pkg\n")]);
-        assert_eq!(detect(&s(&mono), true).sources, ["git-local", "git-tags"]);
+        assert_eq!(detect(&s(&mono), true).sources, ["git-local", "git-tags", "gitlab-work"]);
     }
 
     #[test]
@@ -1600,7 +1649,7 @@ mod tests {
         let cfg = parse_maint("[maintenance]\nforge = \"github\"\noff = [\"prod\"]\nsources = { ci = [\"woodpecker\"] }\nbots = [\"acme-renovate\"]\ntrunk = \"main\"\ntag_pattern = \"v*\"\nsarif = [\"reports/*.sarif\"]\n[maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\n[maintenance.thresholds]\nstale_branch_days = 24\n");
         let det = Detection {
             repo_root: "/repo".into(),
-            forge: Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table },
+            forge: Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table, api: None },
             sources: vec!["git-local".into(), "git-tags".into()],
             markers: vec![Marker { facet: Facet::Ci, label: "Woodpecker".into(), found: vec![".woodpecker.yml".into()] }],
             config: cfg,

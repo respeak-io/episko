@@ -1,0 +1,13 @@
+{
+  "data": {
+    "project": {
+      "issues": {
+        "count": 256
+      },
+      "mergeRequests": {
+        "count": 87
+      }
+    },
+    "currentUser": null
+  }
+}

@@ -1,10 +1,10 @@
 //! The forge's own records (docs/maintenance.md § Adapters): the update bots' pull requests, every
-//! bot source sharing one `gh pr list` through `deps.rs`'s cache; published releases; open work.
+//! bot source sharing one `gh pr list` through `deps.rs`'s cache; published releases; open work on GitHub and GitLab.
 
 use serde_json::Value;
 
 use crate::deps::{bot_prs_read, ChecksRollup, DepPr};
-use crate::maint::{bots, found_any, gh_coverage, github_repo, CiStatus, Coverage, Ctx, Exec, Facts, ForgeRelease, Read, UpdatePr};
+use crate::maint::{bots, found_any, gh_coverage, github_repo, gitlab_project, CiStatus, Coverage, Ctx, Exec, Facts, ForgeRelease, Read, UpdatePr};
 use crate::usage::iso_epoch_secs;
 
 /// The rollup as one word, in `checkState`'s order: a failure outranks a check still running.
@@ -148,6 +148,46 @@ pub(crate) fn github_work(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
     parse_work(&out, ctx.account)
 }
 
+// ---------- gitlab-work ----------
+
+// Two variables of one value: GraphQL types `fullPath` as an ID and `projectPath` as a String.
+// The spaces keep `: ID` from ever reading as glab's `:id` placeholder.
+const GITLAB_WORK_Q: &str = "query($path: ID!, $p: String!){project(fullPath:$path){issues(state:opened){count} mergeRequests(state:opened){count}} currentUser{reviewRequestedMergeRequests(projectPath:$p,state:opened){count}}}";
+
+/// GitLab's own totals. A project nobody signed in may see answers `null`, not an error; a
+/// signed-out glab still reads a public project, and only the review count goes with it.
+pub(crate) fn parse_gitlab_work(json: &str, host: &str) -> Result<Read, Coverage> {
+    let v: Value = serde_json::from_str(json).map_err(|_| not_json("glab api graphql"))?;
+    let errors: Vec<&str> = v.get("errors").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|e| e.get("message").and_then(Value::as_str))
+        .collect();
+    let Some(project) = v.pointer("/data/project").filter(|p| p.is_object()) else {
+        let unseen = || crate::forge::classify_glab("404 Project Not Found", host);
+        return Err(errors.first().map_or_else(unseen, |m| crate::forge::classify_glab(m, host)));
+    };
+    let (Some(issues), Some(prs)) = (count(project.pointer("/issues/count")), count(project.pointer("/mergeRequests/count"))) else {
+        return Err(Coverage::Error { reason: "GitLab answered no open totals".into() });
+    };
+    let review = count(v.pointer("/data/currentUser/reviewRequestedMergeRequests/count"));
+    let signed_out = v.pointer("/data/currentUser").is_some_and(Value::is_null);
+    let gaps = match (review, errors.first()) {
+        (Some(_), _) => vec![],
+        (None, _) if signed_out => vec![format!("review requests not read: glab is not signed in to {host}")],
+        (None, Some(m)) => vec![format!("review requests not read: {m}")],
+        (None, None) => vec!["review requests not read".into()],
+    };
+    Ok(Read { gaps, ..Read::of(Facts::Work { issues, prs, review_requested: review }) })
+}
+
+/// Open issues and merge requests, and the merge requests waiting on the account glab uses here.
+pub(crate) fn gitlab_work(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    let (host, path) = gitlab_project(ctx)?;
+    let (q, a, b) = (format!("query={GITLAB_WORK_Q}"), format!("path={path}"), format!("p={path}"));
+    let out = ex.glab(ctx.root, &["api", "--hostname", host, "graphql", "-f", &q, "-f", &a, "-f", &b])
+        .map_err(|e| crate::forge::classify_glab(&e, host))?;
+    parse_gitlab_work(&out, host)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,7 +209,7 @@ mod tests {
 
     fn read_as(root: &str, toml: &str, f: ReadFn, ex: &FakeExec, force: bool) -> Result<Read, Coverage> {
         let cfg = parse_maint(toml);
-        let forge = Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table };
+        let forge = Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table, api: None };
         f(&Ctx { root, cfg: &cfg, forge: &forge, account: None, force }, ex)
     }
 
@@ -272,5 +312,40 @@ mod tests {
         assert!(matches!(e, Coverage::NoAccess { ref reason, .. } if reason.contains("bob")), "{e:?}");
         assert!(matches!(parse_work(r#"{"data":{"repository":{}}}"#, None), Err(Coverage::Error { .. })), "no totals is no answer");
         assert!(parse_work("<html>", None).is_err());
+    }
+
+    fn gitlab_read(ex: &FakeExec) -> Result<Read, Coverage> {
+        let cfg = parse_maint("");
+        let forge = Forge { kind: ForgeKind::Gitlab, host: Some("gitlab.com".into()), path: Some("gitlab-org/cli".into()), by: ForgeBy::Table, api: None };
+        gitlab_work(&Ctx { root: "/maint-test/gl", cfg: &cfg, forge: &forge, account: None, force: true }, ex)
+    }
+
+    #[test]
+    fn gitlab_work_counts_totals_and_a_signed_out_glab_costs_only_reviews() {
+        // Recorded signed out, so the project's totals came back and the review count did not.
+        let ex = FakeExec::answering(Ok(&FakeExec::testdata("glab-work.json")));
+        let r = gitlab_read(&ex).unwrap();
+        assert!(matches!(r.facts, Facts::Work { issues: 256, prs: 87, review_requested: None }), "{:?}", r.facts);
+        assert_eq!(r.gaps, ["review requests not read: glab is not signed in to gitlab.com"]);
+        let call = &ex.calls()[0];
+        assert_eq!(call[..5], ["glab", "api", "--hostname", "gitlab.com", "graphql"]);
+        assert!(call.contains(&"path=gitlab-org/cli".to_string()) && call.contains(&"p=gitlab-org/cli".to_string()), "{call:?}");
+
+        let mine = r#"{"data":{"project":{"issues":{"count":3},"mergeRequests":{"count":1}},"currentUser":{"reviewRequestedMergeRequests":{"count":1}}}}"#;
+        let r = parse_gitlab_work(mine, "gitlab.com").unwrap();
+        assert!(matches!(r.facts, Facts::Work { issues: 3, prs: 1, review_requested: Some(1) }) && r.gaps.is_empty());
+
+        let Err(Coverage::NoAccess { fix, .. }) = parse_gitlab_work(&FakeExec::testdata("glab-work-no-project.json"), "gitlab.com") else { panic!() };
+        assert_eq!(fix.as_deref(), Some("glab auth login --hostname gitlab.com"), "a project nobody may see is null, not an error");
+        assert!(matches!(parse_gitlab_work(r#"{"data":{"project":{}}}"#, "gitlab.com"), Err(Coverage::Error { .. })), "no totals is no answer");
+        assert!(matches!(gitlab_read(&FakeExec::answering(Err("glab not available: program not found"))), Err(Coverage::NoTool { .. })));
+        assert!(parse_gitlab_work("<html>", "gitlab.com").is_err());
+
+        let said = r#"{"data":{"project":null},"errors":[{"message":"403 Forbidden"}]}"#;
+        assert!(matches!(parse_gitlab_work(said, "gitlab.com"), Err(Coverage::NoAccess { reason, .. }) if reason == "403 Forbidden"), "a null project's own error decides");
+        let partial = r#"{"data":{"project":{"issues":{"count":2},"mergeRequests":{"count":0}},"currentUser":{}},"errors":[{"message":"Field 'reviewRequestedMergeRequests' doesn't exist"}]}"#;
+        let r = parse_gitlab_work(partial, "gitlab.acme.io").unwrap();
+        assert!(matches!(r.facts, Facts::Work { issues: 2, prs: 0, review_requested: None }), "{:?}", r.facts);
+        assert_eq!(r.gaps, ["review requests not read: Field 'reviewRequestedMergeRequests' doesn't exist"]);
     }
 }

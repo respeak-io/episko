@@ -21,6 +21,11 @@
       "sees": ["ci.default-branch", "ci.external"],
       "blind": ["ci.failing-since", "ci.other-branches"]
     },
+    "gitlab-ci": {
+      "facet": "ci", "label": "GitLab CI", "cost": "forge", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"],
+      "sees": ["ci.default-branch", "ci.failing-since"],
+      "blind": ["ci.per-workflow", "ci.other-branches"]
+    },
     "dependabot-alerts": {
       "facet": "security", "label": "Dependabot alerts", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["sec.dependency"],
@@ -75,10 +80,14 @@
       "facet": "work", "label": "GitHub issues", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["work.issues", "work.prs", "work.review-requested"],
       "blind": []
+    },
+    "gitlab-work": {
+      "facet": "work", "label": "GitLab issues", "cost": "forge", "forge": ["gitlab"], "detect": [],
+      "sees": ["work.issues", "work.prs", "work.review-requested"],
+      "blind": []
     }
   },
   "markers": [
-    { "facet": "ci", "label": "GitLab CI", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"] },
     { "facet": "ci", "label": "Forgejo/Gitea Actions", "forge": ["forgejo", "gitea"], "detect": [".forgejo/workflows/", ".gitea/workflows/", ".github/workflows/"] },
     { "facet": "ci", "label": "CI on {host}", "forge": ["unknown"], "detect": [".github/workflows/", ".forgejo/workflows/", ".gitea/workflows/", ".gitlab-ci.yml"] },
     { "facet": "ci", "label": "Woodpecker", "forge": ["!github"], "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/"] },
@@ -94,8 +103,7 @@
     { "facet": "security", "label": "Snyk", "forge": [], "detect": [".snyk"] },
     { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
     { "facet": "deps", "label": "Renovate", "forge": ["!github"], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
-    { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] },
-    { "facet": "work", "label": "GitLab issues", "forge": ["gitlab"], "detect": [] }
+    { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] }
   ],
   "bots": [
     {

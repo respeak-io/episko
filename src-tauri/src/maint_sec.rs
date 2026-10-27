@@ -434,7 +434,7 @@ mod tests {
     use crate::testutil::scratch_dir;
 
     fn github() -> Forge {
-        Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table }
+        Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table, api: None }
     }
 
     // A distinct root per read: a forced read still joins an answer under `FORCE_JOIN` old.
