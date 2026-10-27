@@ -537,7 +537,7 @@ export function prBrief(p: DepPr, ctx: BriefCtx): string {
 
 // The half that makes this worth dispatching at all: an agent that only edits a manifest
 // has done the easy third of the job.
-function compatBlock(): string[] {
+export function compatBlock(): string[] {
   return [
     "## Before you change anything",
     bullet("Read each advisory and the package's own release notes between the installed and the target version. Say what breaks, not just that it built."),
@@ -549,7 +549,7 @@ function compatBlock(): string[] {
   ];
 }
 
-function verifyBlock(verify: string[]): string[] {
+export function verifyBlock(verify: string[]): string[] {
   return [
     "## Verify",
     ...(verify.length
