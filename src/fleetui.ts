@@ -17,7 +17,7 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
+  clampMaint, comingUp, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
   type Cell, type MaintInput,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
@@ -363,7 +363,7 @@ function whereSub(inp: MaintInput): string {
 function buildMaint(now: number): MaintView {
   const byRoot = new Map<string, ProjGroup>();
   for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
-  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [];
+  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [], offered: MaintRow[] = [];
   const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
   let prodProjects = 0, prodChecking = false;
   const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
@@ -389,6 +389,7 @@ function buildMaint(now: number): MaintView {
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
     const fs = findings(root, inp, th, now);
     for (const f of [...fs, ...tabExtras(root, inp, th, now)]) rows.push({ ...f, name: p.name });
+    for (const f of offers(root, inp)) offered.push({ ...f, name: p.name });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
       sub: e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
@@ -410,7 +411,7 @@ function buildMaint(now: number): MaintView {
     sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
-    tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only) : [],
+    tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only) : [], offers: tab ? tabRows(tab, offered, only) : [],
     read: cov.read, unset: cov.unset, gaps: cov.gaps.map((g) => ({ name: byRoot.get(g.path)?.name ?? basename(g.path), facet: g.facet, text: g.text })),
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),

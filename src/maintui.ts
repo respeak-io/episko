@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, covText, FACET_TAB, prodChecks, tabFindings } from "./maint";
+import { clampMaint, covText, FACET_TAB, offers, prodChecks, tabFindings } from "./maint";
 import { briefFor } from "./maintbrief";
 import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
@@ -41,7 +41,7 @@ export let quietOpen = false;
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
   const inp = maintInput(root);
-  const f = inp && tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)).find((x) => x.key === key);
+  const f = inp && [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp)].find((x) => x.key === key);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
   const name = host.nameOf(root);
   if (f.verb === "fetch") {

@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  FACET_TAB, MAINT_TABS, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
+  FACET_TAB, foldOffers, MAINT_TABS, needsCount, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
   type MaintSnap, type MaintTab, type ProbeRow, type SnapFinding, type TabCount, type Verb,
 } from "./maint";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
@@ -43,6 +43,7 @@ export interface MaintView {
   filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell
   tabs: Record<MaintTab, TabCount>; // over the filter, so a narrowed tab bar says where that project stands
   rows: MaintRow[]; // the open tab's, in tabRows' order
+  offers: MaintRow[]; // the open tab's click-only sources nobody ran: one muted line, never rows
   read: number; // projects the open tab reached a verdict on
   unset: number; // projects with none of it set up: a fact, not a gap
   gaps: MaintGap[]; // its cells that do not know, so an empty tab never reads as clear
@@ -144,15 +145,37 @@ function runText(f: Finding): [string, string, string] {
   return [...VERB.run, f.detail];
 }
 
+const verbText = (f: Finding): [string, string, string] => f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
+function verbHtml(f: Finding): string {
+  const [label, tip] = verbText(f);
+  return f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
+      data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button>`;
+}
+
 // A tab's row names its project, and the name is that project's door, as a card's is.
 function findingHtml(f: Finding, name?: string): string {
-  const [label, tip, detail] = f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
+  const detail = verbText(f)[2];
   const who = name === undefined ? ""
     : `<span class="mt-rn" data-mtproj="${escAttr(f.root)}" data-mtname="${escAttr(name)}" data-tip="${escAttr(`Open ${name}`)}">${esc(name)}</span>`;
   return `<div class="mt-find l-${f.level}"><i class="mt-sev"></i>${who}
     <span class="t">${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
-    ${f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
-      data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(tip === "agent" ? AGENT_TIP : tip)}">${esc(label)}</button>`}</div>`;
+    ${verbHtml(f)}</div>`;
+}
+
+// Offers are not findings: one muted line at a tab's foot. Across projects it only counts, since nine
+// audits at once is not a click to offer; narrowed to one project it carries that project's verbs.
+const OFFER_TIP = "Runs only when asked, one project at a time: from its Coverage card, or this tab narrowed to it";
+function offersHtml(rows: readonly MaintRow[], one: boolean): string {
+  if (!rows.length) return "";
+  const items = one
+    ? rows.map((f) => f.busy ? `<span class="fl-when mono">${esc(findSource(f.source)?.label ?? "")} running…</span>` : verbHtml(f))
+    : foldOffers(rows).map((g) => {
+      const d = findSource(g.source), said = d && disclosure(d);
+      const names = rows.filter((r) => r.source === g.source).map((r) => r.name);
+      const tip = [said, OFFER_TIP, names.slice(0, 12).join(", ") + (names.length > 12 ? " …" : "")].filter(Boolean).join("\n");
+      return `<span data-tip="${escAttr(tip)}">${esc(g.text)}</span>`;
+    });
+  return `<div class="mt-soon mt-offers"><span class="label">On a click</span>${items.join(one ? "" : `<span class="dim">·</span>`)}</div>`;
 }
 
 // A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.
@@ -263,7 +286,8 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
     ? `<div class="mt-soon mt-gaps"><span class="label">Not read</span>${v.gaps.map((g) =>
       `<span>${esc(v.filter ? facetDef(g.facet).label : `${g.name} · ${facetDef(g.facet).label}`)} <em class="mono">${esc(g.text)}</em></span>`).join("")}</div>` : "";
   return (only ? `<div class="mt-top">${only}</div>` : "")
-    + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + gaps;
+    + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + gaps
+    + offersHtml(v.offers, !!v.filter);
 }
 
 export function maintBodyHtml(v: MaintView): string {
@@ -305,6 +329,7 @@ export interface MaintDeps {
 export interface MaintDash {
   card: MaintCard; // the strip is the fleet card's cells: two zoom levels of one scan
   rows: Finding[]; // the card's lines and the rows only a tab shows
+  offers: Finding[]; // click-only sources nobody ran: Coverage's buttons, never To do's rows
   checked: number; // this project's last finished scan (ms), 0 for none
   flows: { branch: string | null; rows: FlowRow[] }; release: Kv[];
   deps: MaintDeps | null; // null: nothing to say and nothing to offer (depSilent)
@@ -341,7 +366,8 @@ function todoCard(v: MaintDash): string {
     : `Nothing to do in the ${plural(read, "facet")} that could be read${read < FACETS.length ? "; Coverage says what could not" : ""}.`;
   const body = v.rows.length
     ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
-  return dcard("todo", "To do", v.rows.length ? String(v.rows.length) : "", across("overview"), body);
+  const n = needsCount(v.rows); // red and amber only, as the tab badges
+  return dcard("todo", "To do", n ? String(n) : "", across("overview"), body);
 }
 
 const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };
@@ -447,9 +473,14 @@ const COVER_CLS: Partial<Record<CoverRow["state"], string>> = { noAccess: "l-war
 function coverCard(v: MaintDash): string {
   const head = v.unreadable
     ? `<p class="ac-empty">.episko/episko.toml does not parse, so its [maintenance] settings are not applied.</p>` : "";
-  const rows = v.cover.map((r) => `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
-    + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span></div>`
-    + (r.fix ? `<code class="mt-fix">${esc(r.fix)}</code>` : "")).join("");
+  const rows = v.cover.map((r) => {
+    // A never-run source is offered here, on its own row; a public one says what leaves the machine.
+    const o = r.state === "notRun" ? v.offers.find((x) => x.source === r.source) : undefined;
+    const d = o && findSource(o.source), said = d && disclosure(d);
+    return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
+      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span>${o ? verbHtml(o) : ""}</div>`
+      + (r.fix ? `<code class="mt-fix">${esc(r.fix)}</code>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
+  }).join("");
   return dcard("cover", "Coverage", v.forge, "", head + (rows || said(undefined)));
 }
 

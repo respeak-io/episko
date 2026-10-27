@@ -691,17 +691,38 @@ export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = M
     out.push({ root, facet, key: `${facet}:setup`, level: "info", text: facetDef(facet).none, detail: SETUP_DETAIL[facet],
       verb: "setup", source: "", ref: null });
   }
-  // A source only a click runs, which nobody has clicked here: Run is that click.
+  return out;
+}
+
+/** A source only a click runs, which nobody has clicked here. An offer, not a finding: no tab row,
+ *  no count, only Coverage's button or the tab's one muted fold (docs/maintenance.md). */
+export function offers(root: string, inp: MaintInput): Finding[] {
+  const out: Finding[] = [];
   for (const id of inp.det?.sources ?? []) {
     const r = inp.reports[id], facet = findSource(id)?.facet;
     if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
-    out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: not checked`,
+    out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: ${offerWord(id)}`,
       detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: null, ...(inp.asking?.includes(id) ? { busy: true } : {}) });
   }
   return out;
 }
+const offerWord = (id: string) => findSource(id)?.cost === "tool" ? "not run" : "not checked";
 
-/** Every row a verb can be asked of: the card's lines and the tabs' own. */
+export interface OfferFold { source: string; facet: Facet; roots: string[]; text: string }
+/** A tab's offers as one entry per source, never one per project: nine audits are not one click. */
+export function foldOffers(rows: readonly Finding[]): OfferFold[] {
+  const by = new Map<string, OfferFold>();
+  for (const f of rows) {
+    if (f.verb !== "run") continue;
+    const g = by.get(f.source) ?? { source: f.source, facet: f.facet, roots: [], text: "" };
+    if (!g.roots.includes(f.root)) g.roots.push(f.root);
+    by.set(f.source, g);
+  }
+  return [...by.values()].map((g) => ({ ...g, roots: g.roots.sort(), text: `${labelOf(g.source)} ${offerWord(g.source)} in ${plural(g.roots.length, "project")}` }))
+    .sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || labelOf(a.source).localeCompare(labelOf(b.source)));
+}
+
+/** Every row a tab lists: the card's lines and the tabs' own. Offers are not among them. */
 export const tabFindings = (root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] =>
   [...findings(root, inp, th, now), ...tabExtras(root, inp, th, now)];
 
@@ -713,11 +734,14 @@ export function tabRows<T extends Finding>(tab: MaintTab, rows: readonly T[], ro
       || a.root.localeCompare(b.root) || a.key.localeCompare(b.key));
 }
 
-export interface TabCount { n: number; level: Finding["level"] | null } // level: the worst row's
+/** A count is what needs you: red and amber rows only, so a tab of muted rows shows no number. */
+export const needsCount = (rows: readonly Finding[]): number => rows.filter((f) => f.level !== "info").length;
+
+export interface TabCount { n: number; level: Finding["level"] | null } // level: the worst row's, null at 0
 export function tabTally(rows: readonly Finding[], root: string | null = null): Record<MaintTab, TabCount> {
   return Object.fromEntries(MAINT_TABS.map((t) => {
-    const r = tabRows(t, rows, root);
-    return [t, { n: r.length, level: r[0]?.level ?? null }];
+    const r = tabRows(t, rows, root), n = needsCount(r);
+    return [t, { n, level: n ? r[0].level : null }];
   })) as Record<MaintTab, TabCount>;
 }
 
@@ -811,27 +835,30 @@ export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
     stale: stale.map((b) => b.name), idle: idle.length, fetchedAt: h.fetchedAt };
 }
 
-export interface CoverRow { facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null }
+export interface CoverRow {
+  facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null;
+  source: string | null; // a source's id, so an offer's button can sit on its row; null for the rest
+}
 
 /** Coverage: every source and marker detected here and what became of it, in card order. */
 export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
   const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null }));
+    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
-    const row = (state: CoverRow["state"], text: string, fix: string | null = null) => out.push({ facet, label: labelOf(id), state, text, fix });
+    const row = (state: CoverRow["state"], text: string, fix: string | null = null) => out.push({ facet, label: labelOf(id), state, text, fix, source: id });
     if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
     else if (!r) row("unread", "not read yet");
     else row(r.coverage.state, covText(r.coverage), fixOf(r.coverage));
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null });
+    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }

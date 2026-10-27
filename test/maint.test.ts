@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
-  narrowMaint, probeRows, prodChecks, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
+  foldOffers, narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
@@ -480,12 +480,46 @@ describe("the cross-project tabs", () => {
     expect(tabRows("delivery", all, "/nowhere")).toEqual([]);
   });
 
-  it("counts each tab with its worst row, over the filter", () => {
+  it("counts each tab's red and amber rows with its worst, over the filter, and a muted tab shows no number", () => {
     expect(tabTally(all)).toEqual({
-      security: { n: 1, level: "bad" }, delivery: { n: 5, level: "bad" }, code: { n: 1, level: "warn" },
+      security: { n: 1, level: "bad" }, delivery: { n: 4, level: "bad" }, code: { n: 1, level: "warn" },
       servers: { n: 0, level: null }, work: { n: 0, level: null },
     });
-    expect(tabTally(all, "/c").delivery).toEqual({ n: 1, level: "info" });
+    expect(tabTally(all, "/c").delivery, "an info row is listed, not counted").toEqual({ n: 0, level: null });
+    expect(needsCount(all)).toBe(6);
+  });
+
+  // A lockfile project on GitHub: Dependabot answered, npm audit and OSV.dev were never clicked.
+  const offering = (root: string, ...extra: SourceReport[]): MaintInput => {
+    const reps = [ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
+      { ...not("npm-audit", "security", { state: "notRun" }), cost: "tool" as const },
+      { ...not("osv", "security", { state: "notRun" }), cost: "public" as const }, ...extra];
+    const forge = { kind: "none", host: null, path: null, by: "none" } as const; // no Set up rows beside them
+    return { det: det(reps.map((r) => r.source), { repoRoot: root, forge }), reports: Object.fromEntries(reps.map((r) => [r.source, r])) };
+  };
+
+  it("keeps a never-run source out of every finding, row and count: it is an offer", () => {
+    const inp = offering("/a"), rows = tabFindings("/a", inp, MAINT_DEFAULTS, NOW);
+    expect(tabRows("security", rows).map((f) => f.key)).toEqual(["security:A-1"]);
+    expect(rows.some((f) => f.verb === "run")).toBe(false);
+    expect(tabTally(rows).security).toEqual({ n: 1, level: "bad" });
+    expect(offers("/a", inp).map((f) => [f.key, f.verb, f.text])).toEqual([
+      ["run:npm-audit", "run", "npm audit: not run"], ["run:osv", "run", "OSV.dev: not checked"],
+    ]);
+    expect(offers("/a", { ...inp, skip: ["osv"] }).map((f) => f.key), "skipped here is not offered").toEqual(["run:npm-audit"]);
+    const ran = { ...inp, reports: { ...inp.reports, "npm-audit": ok("npm-audit", { kind: "advisories", items: [] }) } };
+    expect(offers("/a", ran).map((f) => f.key), "asked once is no longer an offer").toEqual(["run:osv"]);
+  });
+
+  it("folds a tab's offers into one entry per source, never one per project", () => {
+    const rows = [...offers("/b", offering("/b")), ...offers("/a", offering("/a")),
+      ...offers("/c", { det: det(["osv"], { repoRoot: "/c" }), reports: { osv: not("osv", "security", { state: "notRun" }) } })];
+    expect(foldOffers(rows)).toEqual([
+      { source: "npm-audit", facet: "security", roots: ["/a", "/b"], text: "npm audit not run in 2 projects" },
+      { source: "osv", facet: "security", roots: ["/a", "/b", "/c"], text: "OSV.dev not checked in 3 projects" },
+    ]);
+    expect(foldOffers(tabRows("security", rows, "/c")).map((g) => g.text)).toEqual(["OSV.dev not checked in 1 project"]);
+    expect(foldOffers(all), "a finding is never folded").toEqual([]);
   });
 
   it("says what an empty tab read and what it could not, never an all-clear over nothing", () => {
@@ -557,13 +591,14 @@ describe("prod, coming up and hosts", () => {
     expect(prodChecks({ ...inp, skip: ["http-probe"] })).toEqual([]);
     expect(prodChecks({ ...inp, det: { ...d, config: { ...d.config, off: ["prod"] } } })).toEqual([]);
     expect(cell("prod", inp)).toMatchObject({ state: "cantCheck", level: "muted", text: "not checked" });
-    const run = tabExtras("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run");
+    const run = offers("/r", inp);
     expect(run.map((f) => [f.key, f.facet, f.source, f.text])).toEqual([["run:http-probe", "prod", "http-probe", "URL checks: not checked"]]);
     expect(run[0].busy, "nothing out yet").toBeUndefined();
-    const out = tabExtras("/r", { ...inp, asking: ["http-probe"] }, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run");
+    expect(tabExtras("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run"), "an offer is never a tab row").toEqual([]);
+    const out = offers("/r", { ...inp, asking: ["http-probe"] });
     expect(out[0].busy, "a read already out is not a button to start another").toBe(true);
     const answered = { ...inp, reports: { ...inp.reports, "http-probe": ok("http-probe", probes(p("app", 90))) } };
-    expect(tabExtras("/r", answered, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "run"), "asked once is no longer a row").toEqual([]);
+    expect(offers("/r", answered), "asked once is no longer an offer").toEqual([]);
   });
 
   it("joins hosts to projects many-to-many, worst first, and a host none of whose projects was checked is not checked", () => {
@@ -662,9 +697,9 @@ describe("the project tab's cards", () => {
       reports: { [GHA]: not(GHA, "ci", { state: "noAccess", reason: "who", fix: "gh auth login" }), "git-local": ok("git-local", hyg()) },
       skip: ["git-tags"],
     };
-    expect(coverRows(inp).map((r) => [r.facet, r.state, r.fix])).toEqual([
-      ["ci", "noAccess", "gh auth login"], ["ci", "marker", null], ["security", "none", null], ["deps", "none", null],
-      ["release", "skipped", null], ["git", "ok", null], ["prod", "untracked", null], ["work", "none", null],
+    expect(coverRows(inp).map((r) => [r.facet, r.state, r.fix, r.source])).toEqual([
+      ["ci", "noAccess", "gh auth login", GHA], ["ci", "marker", null, null], ["security", "none", null, null], ["deps", "none", null, null],
+      ["release", "skipped", null, "git-tags"], ["git", "ok", null, "git-local"], ["prod", "untracked", null, null], ["work", "none", null, null],
     ]);
     expect(coverRows({ det: null, reports: {} })).toEqual([]);
   });
