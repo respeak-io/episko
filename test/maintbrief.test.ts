@@ -27,7 +27,7 @@ const inp = input(
   ok("osv", { kind: "advisories", items: [
     { id: "VULN-1", kind: "dependency", pkg: "lodash", version: "4.17.20", severity: "medium", summary: "", fixed: "4.17.21", tool: "osv", ...advisory, url: null },
   ] }),
-  ok("ci-src", { kind: "ciRuns", branch: "main", runs: [
+  ok("github-actions", { kind: "ciRuns", branch: "main", runs: [
     { workflow: "e2e", status: "fail", raw: "failure", sha: "4f2a91c0ffee", at: S - 2 * D, url: "https://ci.example/runs/9" },
   ] }),
   ok("bot-src", { kind: "updatePrs", bot: "renovate", configured: true, dashboard: null, prs: [

@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::github::{classify, gh, who_for};
+use crate::maint::CiStatus;
+use crate::maint_ci::check_status;
 use crate::platform::{augmented_path, sys_command};
 
 const TTL: Duration = Duration::from_secs(120);
@@ -162,31 +164,20 @@ pub(crate) fn bot_of(login: &str) -> String {
     }
 }
 
-/// A check run's `conclusion` where it has finished, its `status`/`state` where it has not.
-/// Both shapes appear in one array: `CheckRun` and the older `StatusContext`.
+/// A check run's `status` and `conclusion`, or a commit status's `state`: both shapes share one
+/// array and one vocabulary (`maint_ci::check_status`). Neutral passes, as GitHub's merge rule has it.
 fn roll_checks(v: Option<&serde_json::Value>) -> ChecksRollup {
     let mut r = ChecksRollup::default();
     let Some(arr) = v.and_then(|x| x.as_array()) else { return r };
     for c in arr {
         r.total += 1;
-        let status = c.get("status").and_then(|x| x.as_str()).unwrap_or("").to_uppercase();
-        let concl = c
-            .get("conclusion")
-            .and_then(|x| x.as_str())
-            .map(str::to_uppercase)
-            .filter(|s| !s.is_empty())
-            .or_else(|| c.get("state").and_then(|x| x.as_str()).map(str::to_uppercase))
-            .unwrap_or_default();
-        if status == "IN_PROGRESS" || status == "QUEUED" || status == "PENDING" || concl == "PENDING" {
-            r.pending += 1;
-        } else if concl == "SUCCESS" || concl == "NEUTRAL" {
-            r.passed += 1;
-        } else if concl == "SKIPPED" {
-            r.skipped += 1;
-        } else if concl.is_empty() {
-            r.pending += 1;
-        } else {
-            r.failed += 1;
+        let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or("");
+        let verdict = Some(s("conclusion")).filter(|x| !x.is_empty()).unwrap_or(s("state"));
+        match check_status(s("status"), verdict) {
+            CiStatus::Pass | CiStatus::Neutral => r.passed += 1,
+            CiStatus::Fail | CiStatus::Cancelled => r.failed += 1,
+            CiStatus::Skip => r.skipped += 1,
+            CiStatus::Running | CiStatus::Unknown => r.pending += 1,
         }
     }
     r

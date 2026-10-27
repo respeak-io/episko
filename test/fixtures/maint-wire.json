@@ -60,11 +60,59 @@
         "kind": "ciRuns",
         "runs": [
           {
-            "at": 1790000000,
-            "raw": "timed_out",
-            "sha": "abc1234",
+            "at": 1793016000,
+            "raw": "success",
+            "sha": "aaaa001",
+            "status": "pass",
+            "url": "https://github.com/acme/app/actions/runs/39899999986",
+            "workflow": "site"
+          },
+          {
+            "at": 1793005200,
+            "raw": "failure",
+            "sha": "aaaa001",
             "status": "fail",
-            "url": "https://github.com/acme/app/actions/runs/1",
+            "url": "https://github.com/acme/app/actions/runs/39899999979",
+            "workflow": "ci"
+          },
+          {
+            "at": 1793001600,
+            "raw": "in_progress",
+            "sha": "aaaa001",
+            "status": "running",
+            "url": "https://github.com/acme/app/actions/runs/39899999972",
+            "workflow": "lint"
+          },
+          {
+            "at": 1792918800,
+            "raw": "failure",
+            "sha": "aaaa002",
+            "status": "fail",
+            "url": "https://github.com/acme/app/actions/runs/39899999965",
+            "workflow": "ci"
+          },
+          {
+            "at": 1792915200,
+            "raw": "success",
+            "sha": "aaaa002",
+            "status": "pass",
+            "url": "https://github.com/acme/app/actions/runs/39899999958",
+            "workflow": "lint"
+          },
+          {
+            "at": 1792832400,
+            "raw": "failure",
+            "sha": "aaaa003",
+            "status": "fail",
+            "url": "https://github.com/acme/app/actions/runs/39899999951",
+            "workflow": "ci"
+          },
+          {
+            "at": 1792746000,
+            "raw": "success",
+            "sha": "aaaa004",
+            "status": "pass",
+            "url": "https://github.com/acme/app/actions/runs/39899999937",
             "workflow": "ci"
           }
         ]

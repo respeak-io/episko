@@ -245,19 +245,24 @@ const fixOf = (c: Coverage): string | null => c.state === "noAccess" || c.state 
 const labelOf = (id: string) => findSource(id)?.label ?? id;
 
 interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null }
-interface Ctx { th: MaintThresholds; now: number; trunc: boolean }
+interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: SourceReport[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
 const kinds = <K extends FactKind>(facts: Facts[], k: K): FactsOf<K>[] =>
   facts.filter((f): f is FactsOf<K> => f.kind === k);
 const count = (n: number, c: Ctx) => `${n}${c.trunc ? "+" : ""}`;
 
-export interface CiFailure { workflow: string; since: number | null; sha: string; url: string | null; branch: string }
+// `since` and `sha` are the first red run's, null from a source blind to ci.failing-since; `floor`
+// marks a streak that ran off a capped page.
+export interface CiFailure { workflow: string; since: number | null; floor: boolean; sha: string | null; url: string | null; branch: string }
+type CiReport = Pick<SourceReport, "source" | "truncated" | "facts">;
 
 /** Workflows whose newest run failed, each with the oldest of its unbroken run of failures. */
-export function ciFailures(facts: Facts[]): CiFailure[] {
+export function ciFailures(reps: CiReport[]): CiFailure[] {
   const out: CiFailure[] = [];
-  for (const f of kinds(facts, "ciRuns")) {
+  for (const { source, truncated, facts: f } of reps) {
+    if (f?.kind !== "ciRuns") continue;
+    const dated = !!findSource(source)?.sees.includes("ci.failing-since");
     const by = new Map<string, CiRun[]>();
     for (const r of f.runs) by.set(r.workflow, [...(by.get(r.workflow) ?? []), r]);
     for (const [workflow, runs] of by) {
@@ -265,11 +270,15 @@ export function ciFailures(facts: Facts[]): CiFailure[] {
       while (i < runs.length && runs[i].status === "fail") i++;
       if (!i) continue;
       const first = runs[i - 1];
-      out.push({ workflow, since: first.at, sha: first.sha, url: runs[0].url, branch: f.branch });
+      out.push({ workflow, since: dated ? first.at : null, floor: dated && truncated && i === runs.length,
+        sha: dated ? first.sha : null, url: runs[0].url, branch: f.branch });
     }
   }
   return out.sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity) || a.workflow.localeCompare(b.workflow));
 }
+/** How long a failure has been red ("3d", a floor "3d+"), or null when its source cannot say. */
+export const redFor = (x: CiFailure, sec: number): string | null =>
+  x.since === null ? null : `${span(sec - x.since)}${x.floor ? "+" : ""}`;
 
 // Positive evidence only: zero runs is "never ran", and skips alone are not a pass.
 const ciRule: Rule = (facts, c) => {
@@ -277,11 +286,11 @@ const ciRule: Rule = (facts, c) => {
   const runs = all.flatMap((f) => f.runs);
   const branch = [...new Set(all.map((f) => f.branch))].join(", ");
   if (!runs.length) return { level: "muted", text: "never ran", tip: [`no run on ${branch} yet, so no pass either`] };
-  const fail = ciFailures(facts);
+  const fail = ciFailures(c.reps), sec = c.now / 1000;
   if (fail.length) {
-    const since = fail[0].since;
-    const tip = fail.map((x) => `${x.workflow}: failing${x.since !== null ? ` ${span(c.now / 1000 - x.since)}` : ""}, first red at ${x.sha.slice(0, 7)}`);
-    return { level: "bad", text: since !== null ? `failing ${span(c.now / 1000 - since)}` : "failing", tip };
+    const age = (x: CiFailure) => redFor(x, sec) ?? "";
+    const tip = fail.map((x) => [`${x.workflow}: failing ${age(x)}`.trim(), x.sha && `first red at ${x.sha.slice(0, 7)}`].filter(Boolean).join(", "));
+    return { level: "bad", text: `failing ${age(fail[0])}`.trim(), tip };
   }
   const latest = new Map<string, CiStatus>();
   for (const r of runs) if (!latest.has(r.workflow)) latest.set(r.workflow, r.status);
@@ -433,7 +442,7 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const ok = reps.filter((r) => r.coverage.state === "ok" && r.facts);
   if (!ok.length) return cell("cantCheck", "muted", "can't check", [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
-  const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc });
+  const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
   const asOf = j.asOf ?? null;
   let { level, text } = j;
   const age = asOf !== null ? now / 1000 - asOf : null;
@@ -495,11 +504,11 @@ export interface Finding {
   ref: string | null; // what in that report: a workflow, an advisory id, a bot, a tag, a probe
 }
 
-const okFacts = (inp: MaintInput, facet: Facet): { source: string; facts: Facts }[] =>
+const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; facts: Facts }[] =>
   inp.det?.config.off.includes(facet) ? [] : (inp.det?.sources ?? [])
     .map((id) => inp.reports[id])
     .filter((r): r is SourceReport => !!r && r.coverage.state === "ok" && !!r.facts && FACT_FACET[r.facts.kind] === facet && !inp.skip?.includes(r.source))
-    .map((r) => ({ source: r.source, facts: r.facts! }));
+    .map((r) => ({ source: r.source, truncated: r.truncated, facts: r.facts! }));
 
 const LEVEL_RANK = { bad: 0, warn: 1, info: 2 } as const;
 
@@ -508,11 +517,11 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
   const out: Finding[] = [];
   const add = (facet: Facet, f: Omit<Finding, "root" | "facet">) => out.push({ root, facet, ...f });
   const sec = now / 1000;
-  for (const { source, facts } of okFacts(inp, "ci")) {
-    for (const x of ciFailures([facts])) {
-      const age = x.since !== null ? ` ${span(sec - x.since)}` : "";
-      add("ci", { key: `ci:${x.workflow}`, level: "bad", text: `CI failing${age}`,
-        detail: `${x.workflow} on ${x.branch} · first red at ${x.sha.slice(0, 7)}`, verb: "fix", source, ref: x.workflow });
+  for (const r of okFacts(inp, "ci")) {
+    for (const x of ciFailures([r])) {
+      const age = redFor(x, sec);
+      add("ci", { key: `ci:${x.workflow}`, level: "bad", text: `CI failing${age ? ` ${age}` : ""}`,
+        detail: `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}`, verb: "fix", source: r.source, ref: x.workflow });
     }
   }
   const advs = okFacts(inp, "security");

@@ -17,7 +17,7 @@ pub(crate) enum ForgeKind {
     None, // no remote at all
 }
 
-const KINDS: [(ForgeKind, &str); 8] = [
+pub(crate) const KINDS: [(ForgeKind, &str); 8] = [
     (ForgeKind::Github, "github"),
     (ForgeKind::Gitlab, "gitlab"),
     (ForgeKind::Forgejo, "forgejo"),
@@ -84,17 +84,19 @@ pub(crate) fn forge_with(url: Option<&str>, pin: Option<&str>, resolve: impl Fn(
     let pinned = pin
         .and_then(|p| ForgeKind::from_id(&p.trim().to_ascii_lowercase()))
         .filter(|k| !matches!(k, ForgeKind::Unknown | ForgeKind::None));
-    if let Some(kind) = pinned {
-        return Forge { kind, host, path, by: ForgeBy::Pin };
-    }
     let Some(h) = host.clone() else {
-        return Forge { kind: ForgeKind::None, host, path, by: ForgeBy::None };
+        let (kind, by) = pinned.map_or((ForgeKind::None, ForgeBy::None), |k| (k, ForgeBy::Pin));
+        return Forge { kind, host, path, by };
     };
     let ssh = url.is_some_and(|u| !u.trim_start().to_ascii_lowercase().starts_with("http"));
     let real = if known_host(&h).is_none() && ssh { resolve(&h) } else { None };
     let names = [Some(h.as_str()), real.as_deref()];
     let decided = names.iter().flatten().find_map(|n| known_host(n)).map(|k| (k, ForgeBy::Table))
         .or_else(|| names.iter().flatten().find_map(|n| named_host(n)).map(|k| (k, ForgeBy::Name)));
+    // A pin the host table agrees with is the table's answer, so an ssh alias of github.com stays github.com.
+    if let Some(kind) = pinned.filter(|k| decided != Some((*k, ForgeBy::Table))) {
+        return Forge { kind, host, path, by: ForgeBy::Pin };
+    }
     let (kind, by) = decided.unwrap_or((ForgeKind::Unknown, ForgeBy::None));
     Forge { kind, host, path, by }
 }
@@ -157,6 +159,8 @@ mod tests {
         let resolve = |a: &str| (a == "github.com-work").then(|| "github.com".to_string());
         let f = forge_with(Some("git@github.com-work:acme/app.git"), None, resolve);
         assert_eq!((f.kind, f.by, f.host.as_deref()), (ForgeKind::Github, ForgeBy::Table, Some("github.com-work")));
+        let pinned = forge_with(Some("git@github.com-work:acme/app.git"), Some("github"), resolve);
+        assert_eq!((pinned.kind, pinned.by), (ForgeKind::Github, ForgeBy::Table), "a pin the alias confirms is the table's");
         // An https host is a real hostname: no alias lookup, no `ssh -G` spawned for it.
         let never = |_: &str| -> Option<String> { panic!("an https remote must not be resolved") };
         assert_eq!(forge_with(Some("https://github.com-work/a/b"), None, never).kind, ForgeKind::Unknown);

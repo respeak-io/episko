@@ -99,9 +99,12 @@ pub(crate) fn parse_changelog(text: &str) -> Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forge::{Forge, ForgeBy, ForgeKind};
     use crate::maint::exec::FakeExec;
     use crate::maint::{read_config, MaintConfig};
     use crate::testutil::{git, scratch_dir};
+
+    const NO_FORGE: Forge = Forge { kind: ForgeKind::None, host: None, path: None, by: ForgeBy::None };
 
     fn changelog_of(text: &str) -> (Option<u32>, Option<String>, Option<u64>) {
         match parse_changelog(text) {
@@ -134,7 +137,7 @@ mod tests {
         commit(&dir, "one");
         let root = dir.to_string_lossy().to_string();
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
         let ex = FakeExec::answering(Err("unused"));
         assert!(matches!(git_tags(&ctx, &ex), Err(Coverage::Unsupported { .. })), "no remote, no pinned trunk");
         let read = git_local(&ctx, &ex).expect("branches stand without a trunk");
@@ -143,14 +146,14 @@ mod tests {
         std::fs::create_dir_all(dir.join(".episko")).unwrap();
         std::fs::write(dir.join(".episko/episko.toml"), "[maintenance]\ntrunk = \"main\"\n").unwrap();
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
         assert!(git_tags(&ctx, &ex).is_ok());
         assert_eq!(git_local(&ctx, &ex).expect("read").gaps.len(), 1, "only the missing remote");
         assert!(ex.calls().is_empty(), "local sources never touch the Exec");
 
         std::fs::write(dir.join(".episko/episko.toml"), "[maintenance]\ntrunk = \"dev\"\n").unwrap();
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None };
         match git_tags(&ctx, &ex) {
             Err(Coverage::Unsupported { reason }) => assert!(reason.contains("\"dev\""), "{reason}"),
             _ => panic!("a trunk that names nothing must not fall back to main"),

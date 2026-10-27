@@ -12,6 +12,7 @@ export type Cost = (typeof COSTS)[number];
 
 // The closed vocabulary `sees`/`blind` may use; maint.rs's MAINT_CAPS mirrors it, and a test holds them.
 export const MAINT_CAPS = [
+  "ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled", "ci.external", "ci.other-branches",
   "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
   "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
 ] as const;
