@@ -2975,6 +2975,56 @@ select.in-ctl { cursor: pointer; }
 .fl-fore { margin: 1px 0 0; font-size: 11px; line-height: 1.45; color: var(--muted); }
 .fl-fore.s-warn { color: var(--st-working); }
 .fl-fore.s-bad { color: var(--st-error); }
+.fl-top .aslink { align-self: auto; }
+
+/* Maintenance, the fleet's second view (./maintview): colour only for what needs you. Red is broken,
+   amber drifting, a healthy facet is a grey dot, and what nothing could read stays muted. */
+.mt-body { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.mt-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.mt-chip { display: inline-flex; align-items: center; gap: 6px; }
+.mt-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mt-card { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: 4px 16px; align-items: center; padding: 10px 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
+.mt-card.b-needs { border-color: color-mix(in srgb, var(--st-error) 28%, transparent); }
+.mt-card.quiet { padding: 5px 12px; background: transparent; }
+.mt-card.quiet .fc-av { width: 18px; height: 18px; font-size: 9.5px; }
+.mt-id { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; min-width: 0; cursor: pointer; }
+.mt-id .fc-av { grid-row: span 2; }
+.mt-card.quiet .mt-id .fc-av { grid-row: auto; }
+.mt-nm { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-id:hover .mt-nm { color: var(--accent-ink); }
+.mt-sub { font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-card.quiet .mt-sub { display: none; }
+.mt-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 2px 8px; min-width: 0; }
+.mt-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 3px 6px; border-radius: 6px; cursor: default; }
+.mt-cell:hover { background: var(--lift); }
+.mt-cell .fk { font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+.mt-v { font: 11px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.mt-v.l-bad { color: var(--st-error); }
+.mt-v.l-bad::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+.mt-v.l-warn { color: var(--st-working); }
+.mt-v.l-ok { color: var(--muted-2); }
+.mt-v.l-muted, .mt-v.l-unread { color: var(--muted-2); opacity: .7; }
+.mt-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); vertical-align: 1px; }
+.mt-finds { grid-column: 1 / -1; display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--hair); }
+.mt-find { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-find:last-child { border-bottom: 0; }
+.mt-find .t { flex: none; max-width: 55%; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-find .d { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-sev { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); align-self: center; }
+.l-bad > .mt-sev, .mt-sev.l-bad { background: var(--st-error); }
+.l-warn > .mt-sev, .mt-sev.l-warn { background: var(--st-working); }
+.mt-verb { flex: none; border: 1px solid transparent; background: none; color: var(--muted-2); font: 10.5px var(--font-mono); padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.mt-find:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-fold { align-self: stretch; text-align: left; border: 1px dashed var(--hair-strong); background: none; color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-fold:hover { color: var(--text); }
+.mt-clear { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
+.mt-clear-h { display: flex; align-items: center; gap: 14px; }
+.mt-clear-h b { font-size: 14px; }
+.mt-clear-h p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); }
+.mt-ring { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: 1.5px solid var(--muted-2); color: var(--muted); font-size: 15px; }
+.mt-soon { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; font-size: 11.5px; color: var(--muted); }
+.mt-soon em { font-style: normal; color: var(--text); margin-left: 4px; }
+@media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } }
 
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card
    never pushes another off screen. Column B is a query container: the lite graph collapses against

@@ -76,6 +76,7 @@ import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
 import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
 import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
+import { forgetMaint } from "./maintscan";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -450,7 +451,8 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 // Which account this project's `gh` calls run as; `null` follows gh's active account. It
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
 // and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
-// dependency reads are a cache of their own, which the same switch has to drop too.
+// dependency reads are a cache of their own, which the same switch has to drop too, as are
+// Maintenance's (maint.rs keys by account; ./maintscan does not, so it forgets the project).
 export function setProjectShareMode(colorKey: string, m: ShareMode, by?: string) {
   if (by !== undefined && shareModeOf(colorKey) === "off") return;
   if (by !== undefined && shareModeOf(colorKey) === m) return;
@@ -491,6 +493,8 @@ export function setProjectGhAccount(colorKey: string, login: string | null) {
   localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));
   void invoke("gh_invalidate", { root: colorKey }).catch(() => {});
   void invoke("dep_invalidate", { root: colorKey }).catch(() => {});
+  void invoke("maint_invalidate", { root: colorKey }).catch(() => {});
+  forgetMaint(colorKey);
   toast(login
     ? `${basename(colorKey)} reads GitHub as ${login}`
     : `${basename(colorKey)} follows gh's active account`);

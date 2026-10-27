@@ -38,6 +38,8 @@ export interface FleetUsage {
   projects: FleetSpendRow[];        // costliest first, already capped by the host
 }
 export type FleetLayout = "cards" | "list";
+/** Which body the home stage shows: who is working and what it cost, or what is rotting. */
+export type FleetViewKind = "activity" | "maint";
 export interface FleetView {
   sections: FleetSection[];          // fleetSorted's output, in the order it is drawn; one run when flat
   extra: Record<string, FleetExtra>; // keyed by FleetCard.path; a missing entry draws no spark
@@ -89,6 +91,15 @@ const layoutSeg = (cur: FleetLayout) => `<div class="db-seg">`
 const groupSeg = (on: boolean) => `<div class="db-seg">`
   + segBtn(`data-flgroup="1"`, on, "Group", "Group projects under the sidebar's own headings") + `</div>`;
 
+const viewSeg = (cur: FleetViewKind) => `<div class="db-seg">`
+  + segBtn(`data-flview="activity"`, cur === "activity", "Activity", "Sessions, spend and what moved")
+  + segBtn(`data-flview="maint"`, cur === "maint", "Maintenance", "What is rotting while nobody looks") + `</div>`;
+
+/** The title row both views share; `right` is the view's own note and controls. */
+export const fleetTopHtml = (kind: FleetViewKind, sub: string, right: string) =>
+  `<div class="fl-top"><span class="t">All projects</span>
+    <span class="fl-sub mono">${esc(sub)}</span><span class="sp"></span>${right}${viewSeg(kind)}</div>`;
+
 // Value then label, with the sub under both: the band answers "how much" before "of what".
 const tile = (label: string, value: string, sub: string, cls = "") =>
   `<div class="fl-tile"><span class="label">${esc(label)}</span>
@@ -113,12 +124,8 @@ export function fleetHeadHtml(v: FleetView): string {
     + tile("Week used", pct,
       wk.resetTs != null ? `resets in ${fmtUntil(wk.resetTs)}` : "no active window",
       wk.used == null ? "" : `s-${wk.status}`);
-  return `<div class="fl-top"><span class="t">All projects</span>
-      <span class="fl-sub mono">${esc(sub)}</span><span class="sp"></span>
-      ${v.when ? `<span class="fl-when mono">${esc(v.when)}</span>` : ""}
-      ${rangeSeg(v.range)}
-    </div>
-    <div class="fl-tiles">${tiles}</div>`;
+  return fleetTopHtml("activity", sub, (v.when ? `<span class="fl-when mono">${esc(v.when)}</span>` : "") + rangeSeg(v.range))
+    + `<div class="fl-tiles">${tiles}</div>`;
 }
 
 // ---------- the left column: who wants something ----------

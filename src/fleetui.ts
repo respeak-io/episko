@@ -12,10 +12,15 @@ import {
   type FleetCard, type FleetSection, type FleetSort, type NeedKind,
 } from "./fleet";
 import {
-  fleetBodyHtml, fleetHeadHtml,
+  fleetBodyHtml, fleetHeadHtml, fleetTopHtml,
   type FleetExtra, type FleetLayout, type FleetModel, type FleetResume, type FleetRow,
-  type FleetSpendRow, type FleetUsage, type FleetView,
+  type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
+import { clampMaint, comingUp, facetCells, findings, projectBand, rankMaint, type MaintInput } from "./maint";
+import { findSource, type MaintCap } from "./maintsources";
+import { fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, scanFleet } from "./maintscan";
+import { maintClick, maintChip, quietOpen, type MaintHost } from "./maintui";
+import { maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintView } from "./maintview";
 import {
   allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
@@ -40,7 +45,9 @@ import { tokenScanning } from "./usageview"; // the transcript scan's own flag, 
 export interface FleetHost {
   setActive: (id: string) => void;
   closeSession: (id: string) => void;
-  openDashboard: (project: string, path: string) => void;
+  openDashboard: (project: string, path: string, tab?: "today" | "maint") => void;
+  // Launch an agent and type `text` into it with no newline: a person reads it and presses Enter.
+  prefill: (project: string, path: string, text: string) => void;
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -49,7 +56,7 @@ export interface FleetHost {
   renderAll: () => void;
 }
 let host: FleetHost = {
-  setActive: () => {}, closeSession: () => {}, openDashboard: () => {},
+  setActive: () => {}, closeSession: () => {}, openDashboard: () => {}, prefill: () => {},
   openUsage: () => {}, openHistory: () => {}, refreshUsage: () => {}, renderAll: () => {},
 };
 export function setFleetHost(h: FleetHost) { host = h; }
@@ -93,6 +100,17 @@ export function setFleetRange(n: number) {
   localStorage.setItem("cc-fleet-range", String(n));
   void loadFleet();   // the commit scan is the range's, so it is re-read rather than re-sliced
 }
+// Activity by default: a home stage that reshuffles itself on upgrade is a bug report. A boot that
+// lands on Maintenance paints the cache and asks nothing; choosing the view is the ask (docs/maintenance.md).
+export let fleetView: FleetViewKind = localStorage.getItem("cc-fleet-view") === "maint" ? "maint" : "activity";
+export function setFleetView(v: FleetViewKind) {
+  fleetView = v === "maint" ? "maint" : "activity";
+  localStorage.setItem("cc-fleet-view", fleetView);
+  if (fleetView === "maint" && !fleetScanning && Date.now() - fleetCheckedAt > MAINT_FRESH_MS) checkFleet(false);
+  renderFleet();
+}
+const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
+function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
 
 // ---------- what the reads left behind ----------
 let commits: TrailCommit[] = [];
@@ -311,6 +329,54 @@ function buildView(now: number): FleetView {
   };
 }
 
+// ---------- the Maintenance view: the cache only, never a read ----------
+function whereSub(inp: MaintInput): string {
+  const f = inp.det?.forge;
+  if (!f) return "";
+  if (f.kind === "none") return "no remote";
+  return [f.host, f.path].filter(Boolean).join("/") || f.kind;
+}
+
+function buildMaint(now: number): MaintView {
+  const byRoot = new Map<string, ProjGroup>();
+  for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
+  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
+  const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
+  // Once anything was checked, a root nobody read (added since, or forgotten on an account
+  // switch) is an unread card: leaving it out would let the all-clear speak for it.
+  const asked = fleetCheckedAt > 0 || [...byRoot.keys()].some((r) => maintOf(r));
+  for (const [root, p] of byRoot) {
+    const e = maintOf(root);
+    const inp = maintInput(root) ?? (asked ? { det: null, reports: {}, skip: [] } : null);
+    if (!inp) continue;
+    const th = clampMaint(inp.det?.config.thresholds);
+    const cells = facetCells(inp, th, now);
+    for (const r of Object.values(inp.reports)) {
+      const d = findSource(r.source);
+      if (!d || !inp.det?.sources.includes(r.source)) continue;
+      for (const c of d.blind) blind.add(c);
+      if (r.coverage.state === "ok") for (const c of d.sees) sees.add(c);
+    }
+    read.push({ root, inp });
+    cards.push({
+      path: root, name: p.name, accent: p.accent, icon: iconFor(p.path), sub: e ? whereSub(inp) : "not checked yet",
+      cells, findings: findings(root, inp, th, now), band: projectBand(cells),
+      reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
+    });
+  }
+  const ranked = rankMaint(cards);
+  const n = (b: string) => ranked.filter((c) => c.band === b).length;
+  return {
+    cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
+    tally: {
+      needs: n("needs"), drifting: n("drifting"), quiet: n("quiet"), unread: n("unread"),
+      cantCheck: ranked.reduce((k, c) => k + c.cells.filter((x) => x.state === "markers" || x.state === "cantCheck").length, 0),
+    },
+    sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
+    soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
+  };
+}
+
 // ---------- render ----------
 // Assign only when the markup changed: `renderFleet` is on `renderAll`'s path, and an
 // `innerHTML` assignment destroys the node under the pointer (docs/architecture.md).
@@ -323,6 +389,14 @@ function paint(id: string, html: string): void {
 
 export function renderFleet(): void {
   if (!fleetMirror()) return;
+  if (fleetView === "maint") {
+    const now = Date.now(), mv = buildMaint(now), n = maintRoots().length;
+    const sub = `${fmtDayLong(now)} · ${n} project${n === 1 ? "" : "s"}`;
+    paint("fleetHead", fleetTopHtml("maint", sub, maintWhenHtml(mv)) + maintTilesHtml(mv));
+    paint("fleetBody", maintBodyHtml(mv));
+    $("fleetPane").setAttribute("aria-busy", mv.scanning ? "true" : "false");
+    return;
+  }
   const view = buildView(Date.now());
   // One `forecast7d()` for the head tile and the limits meter, so the two cannot disagree.
   paint("fleetHead", fleetHeadHtml(view));
@@ -382,10 +456,21 @@ export function closeFleet(): void {
 }
 
 // ---------- events ----------
+const maintHost: MaintHost = {
+  scan: (force) => checkFleet(force),
+  nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
+  prefill: (project, path, text) => host.prefill(project, path, text),
+  openDashboard: (name, path, tab) => host.openDashboard(name, path, tab),
+  render: () => renderFleet(),
+};
+
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.
 export function wireFleet(): void {
   $("fleetPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
+    if (maintClick(t, maintHost)) return;
+    const view = t.closest<HTMLElement>("[data-flview]");
+    if (view) { setFleetView(view.dataset.flview as FleetViewKind); return; }
     const sort = t.closest<HTMLElement>("[data-flsort]");
     if (sort) { setFleetSort(sort.dataset.flsort as FleetSort); return; }
     const range = t.closest<HTMLElement>("[data-flrange]");

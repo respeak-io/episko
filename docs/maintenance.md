@@ -54,11 +54,13 @@ Each source declares one `cost`, and **Rust enforces it**, not a convention at t
 
 **A scan is triggered only by a person:**
 
-- **Fleet:** switching to the Maintenance view when the cache is empty or older than `MAINT_FRESH_MS` (10 min), or ⟳ (forced). Landing on Maintenance because `cc-fleet-view` was persisted at boot does **not** scan: the head says *Not checked this session · Check*. `openFleet`, `loadFleet`, `renderFleet` and `buildView` never call into `maintscan`, because `openFleet` runs at boot and on every exit from the stage (`docs/dashboard.md`'s *a fleet-wide sweep is exactly the "nothing runs until you ask" rule*). Choosing the tab is the ask that buys the sweep.
+- **Fleet:** switching to the Maintenance view when the cache is empty or older than `MAINT_FRESH_MS` (10 min), or ⟳ (forced). Landing on Maintenance because `cc-fleet-view` was persisted at boot does **not** scan: the head says *Not checked this session · Check*. `openFleet`, `loadFleet`, `renderFleet` and `buildView` never reach `maintscan`'s scans (they read its cache only), because `openFleet` runs at boot and on every exit from the stage (`docs/dashboard.md`'s *a fleet-wide sweep is exactly the "nothing runs until you ask" rule*). Choosing the tab is the ask that buys the sweep.
 - **Project dashboard:** the first switch to the Maintenance tab per open scans that one project (`loadMaint`, shaped like `loadBranches`).
 - **Explicit buttons:** *Run npm audit*, *Check with OSV.dev*, *Check prod*. Each names what runs or what leaves the machine.
 
-A test reads the source of those six functions and fails if any of them reaches a scan.
+A test reads the source of those four functions and fails if any of them reaches anything of `maintscan`'s or `maintui`'s beyond the cache reads it lists. Once anything was checked, a project with no answer (added since, or forgotten on an account switch) is drawn as an unread card, so the all-clear never speaks for it.
+
+A scan asks `maint_read` for **every** detected source the machine does not skip, not only the ones `runnable` offers: for a class the scan may not run, Rust's gate answers `notRun` (or the result a click left, kept 24 h) without running anything, so no facet waits forever on a read nobody makes. `maint_detect` and `maint_read` share the six slots.
 
 ## Detection
 
@@ -201,7 +203,7 @@ trait Exec: Sync {
 |---|---|---|
 | `maint_detect` | `root, force` | `Detection`, `#[tauri::command(async)]` |
 | `maint_read` | `root, source, mode, public, force, account?` | `SourceReport`; `async` + `spawn_blocking`; an unknown id is `error` |
-| `maint_invalidate` | `root` | drops both caches; called beside `gh_invalidate`/`dep_invalidate` on an account switch |
+| `maint_invalidate` | `root` | drops both caches; called beside `gh_invalidate`/`dep_invalidate` on an account switch, where `forgetMaint` drops ./maintscan's entry too (that cache is not keyed by account) |
 | `deploy_config` | `dir` | `DeployConfig` |
 | `propose_deploy` | `dir, prompt` | `Result<DeployProposal, String>` |
 | `write_deploy` | `dir, deploy, create` | `Result<(), String>` |
@@ -233,7 +235,7 @@ Direction: `maintsources ← maint ← maintbrief` (logic) ← `maintview` ← `
 | key | class | holds |
 |---|---|---|
 | `cc-fleet-view` | pref | `"activity" \| "maint"`, default `activity`: a home stage that reshuffles itself on upgrade is a bug report |
-| `cc-maint-chip` | pref | Needs you / Drifting / Quiet / All |
+| `cc-maint-chip` | pref | `all` / `needs` / `drifting` / `quiet` |
 | `cc-maint-prefs` | local | `{public: string[], off: string[]}`: which public sources this machine may call and which sources it skips. It changes what runs, so it never travels |
 | `cc-maint` | local | the cold-boot snapshot: per root `{at, cells, ≤12 findings}`, ≤ 200 roots, written once per completed scan, always rendered *as of* and muted, never a live dot. No advisory payloads, no URLs |
 
@@ -316,6 +318,8 @@ The trunk is `[maintenance] trunk` when it resolves to a commit (a typo is repor
 Markers in v1: Woodpecker, CircleCI, Azure Pipelines, Jenkins, Forgejo/Gitea Actions, Bitbucket Pipelines, Drone, Snyk, Depfu, Mend, and *CI on <host>* for workflows on an `unknown` forge. Later, behind the same shape: ssh host facts (one `ssh -o BatchMode=yes` round trip per host), Sentry, GitLab MRs for Renovate, Gitea/Forgejo via token, pip-audit, osv-scanner, trivy, grype, snyk, govulncheck, endoflife.date.
 
 ## Slices
+
+Built so far: slices 1–3. In slice 3 a cell explains itself in its tip and opens nothing (the facet tabs are slice 7), the name block (`data-mtproj`) opens the project dashboard on Today (its Maintenance tab is slice 8; `openDashboard`'s `tab` is accepted and not yet read), *Review* opens the dashboard, and there are no host rows until `[deploy]` (slice 10).
 
 Each slice is one commit that leaves `pnpm build`, `pnpm test`, `cargo test` and `cargo clippy --all-targets -- -D warnings` green on both OSes, updates `CLAUDE.md`'s module tables and counts for what it adds, and adds this doc's rows for what it builds. A source not built yet is a marker, never a manifest source without a read function.
 

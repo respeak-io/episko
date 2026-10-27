@@ -539,6 +539,21 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       release tag must not name a stretch of history at all. This wording is a claim
       about ancestry; if it reads wrong, it is wrong.
 
+### Maintenance
+
+- [ ] **Booting onto Maintenance scans nothing; switching to it does.** On the fleet, pick
+      *Maintenance* in the head, wait for the cards, then quit and relaunch. The app must open on
+      Maintenance with the head saying *Not checked this session · Check* and no cards under it,
+      and stay that way: a card appearing on its own means a boot started a sweep. Switch to *Activity* and back:
+      that one scans (every card shimmers, then fills), and a second switch within ten minutes
+      does not. ⟳ always does.
+- [ ] **Unknown is never green.** A folder that is not a repo says *not a git repository*, a repo
+      with a `Jenkinsfile` says *can't check (Jenkins)*, and only a facet something read draws the
+      grey dot. A card's *Push ↗* / *Tidy ↗* starts an agent with the brief typed and **not sent**.
+- [ ] **A project nobody read stays on screen.** After a check, switch one project's GitHub
+      account (or add a project) and switch back to Maintenance within ten minutes. Its card must
+      stay, every cell a dash, *not checked yet* under its name, and *Nothing needs you* must not show.
+
 ### Sessions Episko doesn't own
 
 - [ ] **An external session appears.** Start `claude` in a plain terminal; it shows in

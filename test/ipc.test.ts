@@ -193,6 +193,15 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
     expect([...new Set(bad)]).toEqual([]);
   });
 
+  it("reads Maintenance's three calls as literals, so the contract covers them", () => {
+    // A source is data, never a command name: one literal per capability keeps each checkable here.
+    for (const cmd of ["maint_detect", "maint_read", "maint_invalidate"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+  });
+
   it("says what it could not check, rather than reading as full coverage", () => {
     // Zero is not required; this keeps the blind spot small enough to know about.
     const opaque = sites.filter((s) => !s.literal).map((s) => `${s.file}: ${s.cmd}`);

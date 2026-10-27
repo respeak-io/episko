@@ -56,7 +56,7 @@ import {
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
-  syncStageButtons, toggleRunGroup,
+  syncStageButtons, toggleRunGroup, typeInto,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -101,6 +101,7 @@ import {
 import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
+import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -320,11 +321,21 @@ setDashHost({
 wireDashboard();
 // The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
 setFleetHost({
+  // The dashboard has no Maintenance tab before slice 8, so `tab` is accepted and not yet read.
   setActive, closeSession, openDashboard, renderAll,
   openUsage, openHistory: () => { void openHistory(true); },
   refreshUsage: () => { void refreshTokens().then(renderAll); },
+  // Typed, never sent: the two places Episko presses Enter stay two (CLAUDE.md).
+  prefill: (project, path, text) => {
+    void launch(project, path, { colorKey: path }).then((sid) => {
+      if (typeof sid !== "string") return; // a failed launch already toasted
+      setTimeout(() => { void typeInto(sid, text).catch(() => {}); }, 1400);
+      toast("Started and prefilled. Read it, then press Enter");
+    });
+  },
 });
 wireFleet();
+setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts
 // The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
 setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
 setReviewHost({
