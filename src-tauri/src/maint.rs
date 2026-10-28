@@ -874,7 +874,7 @@ pub(crate) fn detect(root: &str, force: bool) -> Detection {
     d
 }
 
-/// A `[deploy]` write's: the next detection reads the file again, while every report stays cached.
+/// Any write of the file: the next detection reads it again. Reports are each writer's to drop.
 pub(crate) fn forget_detection(root: &str) {
     if let Ok(mut g) = DETECTIONS.lock() {
         if let Some(m) = g.as_mut() {
@@ -1427,6 +1427,18 @@ fn invalidate(key: &str) {
     if let Ok(mut g) = REPORTS.lock() {
         if let Some(m) = g.as_mut() {
             m.retain(|(root, _, _), _| root != key);
+        }
+    }
+}
+
+/// A `[deploy]` write's: only the sources that read it are dropped, so a probe of the old
+/// addresses is not served as today's, and every forge and tool read stays.
+pub(crate) fn forget_deploy_reads(root: &str) {
+    let key = root_key(root);
+    let reads = |id: &str| meta_of(id).is_some_and(|(m, _)| m.needs.iter().any(|n| n.starts_with("deploy.")));
+    if let Ok(mut g) = REPORTS.lock() {
+        if let Some(m) = g.as_mut() {
+            m.retain(|(r, id, _), _| *r != key || !reads(id));
         }
     }
 }
@@ -2414,6 +2426,24 @@ version_url = \"https://app.example.com/version\"
         assert!(held(), "an unchanged file keeps every report");
         write_maint(s(&dir), setup(Some("main"), None, &[], &[]), false).unwrap();
         assert!(!held(), "a new trunk is read again, not served from the cache");
+    }
+
+    #[test]
+    fn a_deploy_write_drops_only_the_reads_of_deploy() {
+        let dir = scratch_dir();
+        write(&dir, ".episko/episko.toml", "[deploy]\nurls = { app = \"https://old.example\" }\n");
+        let key = root_key(&s(&dir));
+        let held = |id: &str| REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&(key.clone(), id.into(), String::new())));
+        for id in ["http-probe", "git-tags"] {
+            REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
+                .insert((key.clone(), id.into(), String::new()), (Instant::now(), report(id, None, Coverage::NotRun)));
+        }
+        let urls = |u: &str| serde_json::from_value(serde_json::json!({ "urls": { "app": u } })).unwrap();
+        crate::deploy::write_deploy(s(&dir), urls("https://old.example"), false).unwrap();
+        assert!(held("http-probe"), "an unchanged file keeps the probe");
+        crate::deploy::write_deploy(s(&dir), urls("https://new.example"), false).unwrap();
+        assert!(!held("http-probe"), "the old addresses' answers are not served as the new ones'");
+        assert!(held("git-tags"), "a read that never looks at [deploy] stays");
     }
 
     #[test]

@@ -119,6 +119,12 @@ pub(crate) fn deploy_config(dir: String) -> DeployConfig {
     read(&dir).unwrap_or_default()
 }
 
+/// The file `[deploy]` and `[maintenance]` are read from and written to, so every door opens that one.
+#[tauri::command]
+pub(crate) fn episko_toml_path(dir: String) -> String {
+    file_of(&dir).to_string_lossy().into_owned()
+}
+
 // ---------- http-probe: remote, so a click only (maint.rs's gate) ----------
 
 const PROBE_SECS: u64 = 10;
@@ -293,6 +299,53 @@ pub(crate) async fn propose_deploy(dir: String, prompt: String) -> Result<Deploy
 /// `write_deploy`'s refusal when the file is missing and `create` is false; deploy.ts matches it.
 pub(crate) const NO_FILE: &str = "no .episko/episko.toml here yet";
 
+/// `compose` edited in place: only a shown service the proposal left out goes, and a value the read
+/// dropped (a wrong type, an unsafe name) stays where it was, since nobody was shown it.
+fn compose_item(cur: Option<&toml_edit::Item>, raw: &DeployConfig, old: &DeployConfig, d: &DeployConfig) -> Option<toml_edit::Item> {
+    let has = |l: &[String], v: &toml_edit::Value| v.as_str().is_some_and(|s| l.iter().any(|x| x == s.trim()));
+    let Some(mut item) = cur.filter(|i| i.is_array()).cloned() else {
+        let mut compose = d.compose.clone();
+        compose.extend(raw.compose.iter().filter(|c| !old.compose.contains(c) && !d.compose.contains(c)).cloned());
+        return (!compose.is_empty()).then(|| toml_edit::value(compose.iter().map(String::as_str).collect::<toml_edit::Array>()));
+    };
+    let a = item.as_array_mut()?;
+    a.retain(|v| !has(&old.compose, v) || has(&d.compose, v));
+    let new: Vec<&String> = d.compose.iter().filter(|c| !a.iter().any(|v| has(std::slice::from_ref(c), v))).collect();
+    for c in new {
+        a.push(c.as_str());
+    }
+    (!a.is_empty()).then_some(item)
+}
+
+/// `urls` edited in place by the same rule, key by key. A list becomes a table, since its names
+/// were never written; what `keep` refused in it is carried over.
+fn urls_item(cur: Option<&toml_edit::Item>, raw: &DeployConfig, old: &DeployConfig, d: &DeployConfig) -> Option<toml_edit::Item> {
+    let Some(mut item) = cur.filter(|i| i.is_table_like()).cloned() else {
+        let mut urls = d.urls.clone();
+        for (k, v) in raw.urls.iter().filter(|(k, _)| !old.urls.contains_key(*k)) {
+            urls.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        let mut m = toml_edit::InlineTable::new();
+        for (k, v) in &urls {
+            m.insert(k, v.as_str().into());
+        }
+        return (!m.is_empty()).then(|| toml_edit::value(m));
+    };
+    let t = item.as_table_like_mut()?;
+    let gone: Vec<String> = t.iter().map(|(k, _)| k.to_string())
+        .filter(|k| old.urls.contains_key(k.trim()) && (k != k.trim() || !d.urls.contains_key(k.trim())))
+        .collect();
+    for k in gone {
+        t.remove(&k);
+    }
+    for (k, v) in &d.urls {
+        if t.get(k).and_then(|i| i.as_str()).map(str::trim) != Some(v.as_str()) {
+            t.insert(k, toml_edit::value(v.as_str()));
+        }
+    }
+    (!t.is_empty()).then_some(item)
+}
+
 /// Only what changed is replaced, so a hand-written value and its comment survive an Apply. `raw` is
 /// the table as written: what `keep` drops was never shown, so no proposal can mean to remove it.
 fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployConfig) -> Result<(), String> {
@@ -307,6 +360,8 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployCo
         doc["deploy"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     let t = doc["deploy"].as_table_like_mut().ok_or("deploy is not a table")?;
+    let list = compose_item(t.get("compose"), raw, old, d);
+    let urls = urls_item(t.get("urls"), raw, old, d);
     let mut put = |k: &str, same: bool, v: Option<toml_edit::Item>| match v {
         _ if same => {}
         None => {
@@ -318,21 +373,7 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployCo
     };
     let word = |v: &Option<String>| v.as_deref().map(toml_edit::value);
     put("host", old.host == d.host, word(&d.host));
-    let mut compose = d.compose.clone();
-    compose.extend(raw.compose.iter().filter(|c| !old.compose.contains(c) && !d.compose.contains(c)).cloned());
-    let list = (!compose.is_empty()).then(|| toml_edit::value(compose.iter().map(String::as_str).collect::<toml_edit::Array>()));
     put("compose", old.compose == d.compose, list);
-    let mut urls = d.urls.clone();
-    for (k, v) in raw.urls.iter().filter(|(k, _)| !old.urls.contains_key(*k)) {
-        urls.entry(k.clone()).or_insert_with(|| v.clone());
-    }
-    let urls = (!urls.is_empty()).then(|| {
-        let mut m = toml_edit::InlineTable::new();
-        for (k, v) in &urls {
-            m.insert(k, v.as_str().into());
-        }
-        toml_edit::value(m)
-    });
     put("urls", old.urls == d.urls, urls);
     put("sentry", old.sentry == d.sentry, word(&d.sentry));
     put("version_url", old.version_url == d.version_url, word(&d.version_url));
@@ -374,7 +415,10 @@ pub(crate) fn write_deploy(dir: String, deploy: DeployConfig, create: bool) -> R
     if !refused.is_empty() {
         return Err(refused.join("; "));
     }
-    edit_toml(&dir, create, |text, doc| set_deploy(doc, &raw_deploy(text).unwrap_or_default(), &deploy)).map(|_| ())
+    if edit_toml(&dir, create, |text, doc| set_deploy(doc, &raw_deploy(text).unwrap_or_default(), &deploy))? {
+        crate::maint::forget_deploy_reads(&dir);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -491,7 +535,27 @@ mod tests {
         write_deploy(s(&dir), more, false).unwrap();
         let raw = raw_deploy(&std::fs::read_to_string(path_of(&s(&dir))).unwrap()).unwrap();
         assert_eq!(raw.urls.keys().collect::<Vec<_>>(), ["app", "docs", "staging"], "a rewritten table carries what was never shown");
-        assert_eq!((raw.compose, raw.host.as_deref()), (vec!["api".to_string(), "db".into(), "a b".into()], Some("-x")));
+        assert_eq!((raw.compose, raw.host.as_deref()), (vec!["api".to_string(), "a b".into(), "db".into()], Some("-x")));
+    }
+
+    /// A value of the wrong type never reaches the dialog either, so a rewrite must not take it.
+    #[test]
+    fn a_rewrite_keeps_what_the_read_never_showed() {
+        let dir = scratch_dir();
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        let before = "[deploy]\ncompose = ['api', 1, \"old\"] # services on the box\n\
+                      urls = { app = \"https://a.example\", alt = [\"https://b.example\"], gone = \"https://g.example\" } # ops\n";
+        std::fs::write(path_of(&s(&dir)), before).unwrap();
+        let mut d = read(&s(&dir)).unwrap();
+        assert_eq!((d.compose.len(), d.urls.len()), (2, 2), "1 and alt are never shown");
+        d.compose = vec!["api".into(), "db".into()];
+        d.urls.remove("gone");
+        d.urls.insert("docs".into(), "https://docs.example".into());
+        write_deploy(s(&dir), d.clone(), false).unwrap();
+        let text = std::fs::read_to_string(path_of(&s(&dir))).unwrap();
+        assert!(text.contains("compose = ['api', 1, \"db\"] # services on the box"), "{text}");
+        assert!(text.contains("alt = [\"https://b.example\"]") && !text.contains("gone") && text.contains("} # ops"), "{text}");
+        assert_eq!(parse_deploy(&text), Some(d));
     }
 
     #[test]
@@ -554,6 +618,9 @@ mod tests {
         write_deploy(s(&wt), cfg("prod-2", &[]), false).unwrap();
         assert_eq!(found(&wt, false), serde_json::to_value(cfg("prod-2", &[])).unwrap());
         assert!(!path_of(&s(&wt)).exists(), "a worktree shares its repo's table");
+        for dir in [&sub, &wt] {
+            assert!(Path::new(&episko_toml_path(s(dir))).exists(), "Open file names the file the write touched");
+        }
     }
 
     // 2026-11-29 23:59:59 UTC and 2026-11-30 08:12:43 UTC.

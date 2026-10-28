@@ -30,6 +30,7 @@ export interface ProjSetHost {
   refreshGh: () => Promise<unknown>;
   setupStack: (key: string) => void;
   openStackFile: (key: string) => void;
+  openTeamFile: (key: string) => void; // `[deploy]`'s and `[maintenance]`'s: the repo root's file
   setupDeploy: (key: string) => Promise<void>; // settles once the proposal was applied or set aside
   setupMaint: (key: string) => Promise<void>; // the same, for `[maintenance]`'s keys
   trust: (key: string) => void;
@@ -37,7 +38,7 @@ export interface ProjSetHost {
 let host: ProjSetHost = {
   setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setTools: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
-  setupStack: () => {}, openStackFile: () => {}, setupDeploy: () => Promise.resolve(), setupMaint: () => Promise.resolve(), trust: () => {},
+  setupStack: () => {}, openStackFile: () => {}, openTeamFile: () => {}, setupDeploy: () => Promise.resolve(), setupMaint: () => Promise.resolve(), trust: () => {},
 };
 export function setProjSetHost(h: ProjSetHost) { host = h; }
 
@@ -280,7 +281,8 @@ function act(verb: string, val: string) {
   else if (verb === "unstop") clearStopRule(k);
   else if (verb === "share") host.setShare(k, val as ShareMode);
   else if (verb === "stacksetup") { host.setupStack(k); return; }
-  else if (verb === "stackfile" || verb === "deployfile" || verb === "maintfile") { host.openStackFile(k); return; }
+  else if (verb === "stackfile") { host.openStackFile(k); return; }
+  else if (verb === "deployfile" || verb === "maintfile") { host.openTeamFile(k); return; }
   else if (verb === "deploysetup") { void host.setupDeploy(k).then(() => loadDeploy(k)); return; }
   else if (verb === "maintsetup") { void host.setupMaint(k).then(() => loadMaint(k)); return; }
   else if (verb === "trust") { host.trust(k); return; }
