@@ -893,6 +893,222 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.what.localeCompare(b.what) || a.key.localeCompare(b.key));
 }
 
+// ---------- the cross-project tabs' boards ----------
+
+/** One project as a tab's boards take it: `rows` are its `tabFindings`, where every verb comes from. */
+export interface TabProject { path: string; inp: MaintInput; cells: readonly Cell[]; rows: readonly Finding[] }
+const within = (ps: readonly TabProject[], root: string | null) => ps.filter((p) => root === null || p.path === root);
+const verbOf = (p: TabProject, key: string): Finding | null => p.rows.find((f) => f.key === key) ?? null;
+const thOf = (p: TabProject) => clampMaint(p.inp.det?.config.thresholds);
+const rowRank = (l: Level) => HOST_RANK.indexOf(l);
+/** Projects whose facet some source answered: what a board's empty line may claim. */
+const readOf = (ps: readonly TabProject[], facet: Facet) => ps.filter((p) => okFacts(p.inp, facet).length).length;
+
+/** The Security strip's buckets, a secret worse than any severity, as the cell has it. */
+export const SEV_BUCKETS = ["secret", ...SEVERITIES] as const;
+export type SevBucket = (typeof SEV_BUCKETS)[number];
+const BUCKET_LEVEL: Record<SevBucket, Finding["level"]> = { secret: "bad", ...SEV_LEVEL } as Record<SevBucket, Finding["level"]>;
+
+export interface AdvRow {
+  key: string; id: string; aliases: string[]; kind: AdvisoryKind; bucket: SevBucket; level: Finding["level"];
+  what: string; // the packages, or where in the code
+  installed: string[]; fixed: string[]; summary: string; url: string | null;
+  projects: { root: string; verb: Finding | null }[]; // each project's own line for this kind
+}
+
+/** One row per vulnerability across every project (`mergeAdvisories` over all of them), its projects
+ *  as chips. Worst first, then the widest, then the key. */
+export function advisoryRows(ps: readonly TabProject[], root: string | null = null): { rows: AdvRow[]; capped: boolean; read: number } {
+  const owner = new Map<Advisory, string>(), lists: Advisory[][] = [];
+  let capped = false;
+  // By path, since a tie in mergeAdvisories goes to the first reported: a repaint must not reword a row.
+  const mine = within(ps, root).sort((a, b) => a.path.localeCompare(b.path));
+  for (const p of mine) {
+    for (const r of okFacts(p.inp, "security")) {
+      if (r.facts.kind !== "advisories") continue;
+      capped ||= r.truncated;
+      for (const a of r.facts.items) owner.set(a, p.path);
+      lists.push(r.facts.items);
+    }
+  }
+  const uniq = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string => !!x))].sort();
+  const rows = mergeAdvisories(lists).map((m): AdvRow => {
+    const bucket: SevBucket = m.kind === "secret" ? "secret" : m.severity;
+    const roots = uniq(m.items.map((x) => owner.get(x) ?? null));
+    return {
+      key: m.key, id: m.id, aliases: m.aliases, kind: m.kind, bucket, level: BUCKET_LEVEL[bucket],
+      what: m.pkgs.length ? m.pkgs.join(", ") : uniq(m.items.map((x) => x.location)).join(", "),
+      installed: uniq(m.items.map((x) => x.version)), fixed: uniq(m.items.map((x) => x.fixed)), summary: m.summary, url: m.url,
+      projects: roots.map((r) => ({ root: r, verb: verbOf(mine.find((p) => p.path === r)!, `security:${m.kind}`) })),
+    };
+  }).sort((a, b) => SEV_BUCKETS.indexOf(a.bucket) - SEV_BUCKETS.indexOf(b.bucket)
+    || b.projects.length - a.projects.length || a.key.localeCompare(b.key));
+  return { rows, capped, read: readOf(mine, "security") };
+}
+
+export interface SevCount { bucket: SevBucket; n: number; level: Finding["level"] }
+/** The four severities always, a secret or an unknown one only when there is one or it is the pick,
+ *  so a pick whose rows went away still has the button that clears it. */
+export const sevStrip = (rows: readonly AdvRow[], sev: SevBucket | null = null): SevCount[] => SEV_BUCKETS
+  .map((bucket) => ({ bucket, n: rows.filter((r) => r.bucket === bucket).length, level: BUCKET_LEVEL[bucket] }))
+  .filter((c) => c.n || c.bucket === sev || (c.bucket !== "secret" && c.bucket !== "unknown"));
+export const bySev = (rows: readonly AdvRow[], sev: SevBucket | null): AdvRow[] => rows.filter((r) => sev === null || r.bucket === sev);
+
+export interface PrRow { root: string; bot: string; open: number; red: number; oldest: number | null; capped: boolean; level: Level; verb: Finding | null }
+/** Open update pull requests, one row per project and bot; `oldest` is the oldest one's age (secs). */
+export function updatePrRows(ps: readonly TabProject[], root: string | null = null, now = Date.now()): PrRow[] {
+  const out: PrRow[] = [];
+  for (const p of within(ps, root)) {
+    for (const { truncated, facts: f } of okFacts(p.inp, "deps")) {
+      if (f.kind !== "updatePrs" || !f.prs.length) continue;
+      const red = f.prs.filter((x) => x.checks === "fail").length, at = f.prs.flatMap((x) => x.at !== null ? [x.at] : []);
+      out.push({ root: p.path, bot: f.bot, open: f.prs.length, red, capped: truncated,
+        oldest: at.length ? now / 1000 - Math.min(...at) : null,
+        level: red || f.prs.length >= thOf(p).botPrBacklog ? "warn" : "info", verb: verbOf(p, `deps:${f.bot}`) });
+    }
+  }
+  return out.sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.red - a.red || b.open - a.open
+    || a.root.localeCompare(b.root) || a.bot.localeCompare(b.bot));
+}
+
+export const CI_STRIP = 12;
+export interface CiBoardRow {
+  root: string; level: Level; text: string; // the CI cell's own words
+  since: string | null; // failing for, null when green or undatable
+  why: string; // the red workflows, or the newest run
+  runs: CiStatus[]; // the newest CI_STRIP runs on the default branch, oldest first
+  verb: Finding | null;
+}
+/** One row per project whose CI a source read, the longest red first. */
+export function ciBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): CiBoardRow[] {
+  const sec = now / 1000;
+  return within(ps, root).flatMap((p) => {
+    const reps = okFacts(p.inp, "ci");
+    const runs = reps.flatMap((r) => r.facts.kind === "ciRuns" ? r.facts.runs : []);
+    if (!reps.length) return [];
+    const c = p.cells.find((x) => x.facet === "ci")!, red = ciFailures(reps), last = [...runs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    const why = red.length ? red.map((x) => x.workflow).join(", ")
+      : last[0] ? `${last[0].workflow}${last[0].at ? ` · ${span(sec - last[0].at)} ago` : ""}` : "no run yet";
+    return [{ row: { root: p.path, level: c.level, text: c.text, since: red[0] ? redFor(red[0], sec) : null, why,
+      runs: last.slice(0, CI_STRIP).map((r) => r.status).reverse(), verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
+  }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || a.at - b.at || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
+}
+
+export interface RelRow {
+  root: string; tag: string | null; tagAge: number | null; since: number;
+  ratio: number; // of the board's largest count, for a bar
+  oldest: number | null; level: Level; verb: Finding | null;
+}
+/** Unreleased work per project from its tags; a project never tagged says so and has no count. */
+export function releaseBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): RelRow[] {
+  const sec = now / 1000, out: RelRow[] = [];
+  for (const p of within(ps, root)) {
+    const f = okFacts(p.inp, "release").map((r) => r.facts).find((x): x is FactsOf<"release"> => x.kind === "release");
+    if (!f) continue;
+    const th = thOf(p), old = f.tag && f.since && f.oldestUnreleasedAt ? sec - f.oldestUnreleasedAt : null;
+    const drift = f.since >= th.unreleasedCommits || (old ?? 0) >= th.unreleasedDays * DAY;
+    out.push({ root: p.path, tag: f.tag, tagAge: f.tag && f.tagAt ? sec - f.tagAt : null, since: f.tag ? f.since : 0, ratio: 0, oldest: old,
+      level: !f.tag ? "muted" : !f.since ? "ok" : drift ? "warn" : "info", verb: verbOf(p, "release") });
+  }
+  const max = Math.max(1, ...out.map((r) => r.since));
+  return out.map((r) => ({ ...r, ratio: r.since / max }))
+    .sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.since - a.since || a.root.localeCompare(b.root));
+}
+
+/** A hygiene count: zero is the grey dot (`ok`), null is unknown. */
+export interface HygCount { n: number | null; level: Level }
+export interface HygRow {
+  root: string; trunk: string | null;
+  unpushed: HygCount; localOnly: HygCount; merged: HygCount; gone: HygCount; idle: HygCount;
+  fetched: { age: number | null; level: Level };
+  level: Level; verbs: Finding[]; // Push, Tidy, Fetch: whichever lines this project has
+}
+/** One row per project whose git state a source read; only a non-zero count speaks. */
+export function hygieneBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): HygRow[] {
+  const sec = now / 1000;
+  const n = (k: number | null, loud: Level): HygCount => ({ n: k, level: k === null ? "muted" : k ? loud : "ok" });
+  return within(ps, root).flatMap((p) => {
+    const h = hygieneOf(p.inp, thOf(p), now);
+    if (!h) return [];
+    const age = h.fetchedAt === null ? null : sec - h.fetchedAt;
+    const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "warn"), n(h.mergedRead ? h.merged.length : null, "info"),
+      n(h.gone.length, "info"), n(h.idle, "info")];
+    const fetched: Level = age !== null && age > thOf(p).fetchStaleDays * DAY ? "warn" : "ok";
+    const level = [...cs.map((c) => c.level), fetched].sort((a, b) => rowRank(a) - rowRank(b))[0];
+    const verbs = ["git:unpushed", "git:tidy", "git:fetch"].flatMap((k) => verbOf(p, k) ?? []);
+    const sum = cs.reduce((s, c) => s + (c.n ?? 0), 0);
+    return [{ sum, row: { root: p.path, trunk: h.trunk, unpushed: cs[0], localOnly: cs[1], merged: cs[2], gone: cs[3], idle: cs[4],
+      fetched: { age, level: fetched }, level, verbs } }];
+  }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || b.sum - a.sum || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
+}
+
+export interface WorkRow {
+  root: string; issues: number; prs: number;
+  review: number | null; // null: every review search failed
+  reviewPartial: boolean; // some failed, so `review` is a floor
+  issuesRatio: number; prsRatio: number; level: Level;
+  verbs: Finding[]; // its review line, then its open-work line: the row draws the first and carries both
+}
+/** Open work per project: reviews waiting on you first, then the biggest pile. */
+export function workBoard(ps: readonly TabProject[], root: string | null = null): WorkRow[] {
+  const out: WorkRow[] = [];
+  for (const p of within(ps, root)) {
+    const w = okFacts(p.inp, "work").flatMap((r) => r.facts.kind === "work" ? [r.facts] : []);
+    if (!w.length) continue;
+    const issues = w.reduce((s, x) => s + x.issues, 0), prs = w.reduce((s, x) => s + x.prs, 0);
+    const failed = w.filter((x) => x.reviewRequested === null).length;
+    const review = failed === w.length ? null : w.reduce((s, x) => s + (x.reviewRequested ?? 0), 0);
+    out.push({ root: p.path, issues, prs, review, reviewPartial: review !== null && failed > 0, issuesRatio: 0, prsRatio: 0,
+      level: review ? "warn" : issues + prs ? "info" : review === null || failed ? "muted" : "ok",
+      verbs: ["work:review", "work:open"].flatMap((k) => verbOf(p, k) ?? []) });
+  }
+  const mi = Math.max(1, ...out.map((r) => r.issues)), mp = Math.max(1, ...out.map((r) => r.prs));
+  return out.map((r) => ({ ...r, issuesRatio: r.issues / mi, prsRatio: r.prs / mp }))
+    .sort((a, b) => (b.review ?? -1) - (a.review ?? -1) || b.issues + b.prs - (a.issues + a.prs) || a.root.localeCompare(b.root));
+}
+
+export type ProbeBoardRow = ProbeRow & { root: string; verb: Finding | null };
+/** Every address last checked, across projects, the worst answer first. */
+export function probeBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): ProbeBoardRow[] {
+  const worst = (r: ProbeRow) => Math.min(rowRank(r.level), rowRank(r.certLevel));
+  return within(ps, root).flatMap((p) => (probeRows(p.inp, thOf(p), now)?.rows ?? []).map((r) => ({
+    ...r, root: p.path, verb: verbOf(p, `prod:${r.name}`) ?? verbOf(p, `prod:cert:${r.name}`),
+  }))).sort((a, b) => worst(a) - worst(b) || a.root.localeCompare(b.root) || a.name.localeCompare(b.name));
+}
+
+export interface Boards {
+  adv: AdvRow[]; strip: SevCount[]; capped: boolean; prs: PrRow[];
+  ci: CiBoardRow[]; releases: RelRow[]; hygiene: HygRow[]; work: WorkRow[]; probes: ProbeBoardRow[];
+  read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
+  unchecked: number; // projects in the filter whose *Check prod* nobody has clicked yet
+  drawn: string[]; // `root|key` of every line a board carries the verb for; the rest are listed below them
+}
+
+/** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
+export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
+  const b: Boards = { adv: [], strip: [], capped: false, prs: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {}, unchecked: 0, drawn: [] };
+  const mine = within(ps, root);
+  for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f);
+  const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false };
+  if (tab === "security") Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, prs: updatePrRows(ps, root, now) });
+  if (tab === "delivery") Object.assign(b, { ci: ciBoard(ps, root, now), releases: releaseBoard(ps, root, now) });
+  if (tab === "code") b.hygiene = hygieneBoard(ps, root, now);
+  if (tab === "work") b.work = workBoard(ps, root);
+  if (tab === "servers") {
+    b.probes = probeBoard(ps, root, now);
+    // A check that ran and failed is Coverage's to explain, never "not checked yet".
+    b.unchecked = mine.filter((p) => {
+      const ids = prodChecks(p.inp);
+      return ids.length && ids.every((id) => (p.inp.reports[id]?.coverage.state ?? "notRun") === "notRun");
+    }).length;
+  }
+  // A filtered-out severity hides its rows, not their lines: those are still the board's.
+  const verbs = [...all.rows.flatMap((r) => r.projects.map((x) => x.verb)), ...b.prs.map((r) => r.verb), ...b.ci.map((r) => r.verb),
+    ...b.releases.map((r) => r.verb), ...b.hygiene.flatMap((r) => r.verbs), ...b.work.flatMap((r) => r.verbs), ...b.probes.map((r) => r.verb)];
+  b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
+  return b;
+}
+
 // ---------- the project tab's cards ----------
 
 export interface FlowRow {
@@ -951,14 +1167,16 @@ export function releaseRows(inp: MaintInput, now = Date.now()): Kv[] {
 export interface Hygiene {
   trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[]; gone: string[];
   stale: string[]; idle: number; fetchedAt: number | null;
+  mergedRead: boolean; // false: no trunk, or git.rs could not read the protect list, so `merged` is empty for nothing
 }
 /** Git hygiene's counts, or null until a source read them. */
 export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Hygiene | null {
-  const h = okFacts(inp, "git").map((r) => r.facts).find((f): f is HygieneFacts => f.kind === "hygiene");
-  if (!h) return null;
-  const { stale, idle } = aged(h, th, now / 1000);
+  const rep = okFacts(inp, "git").find((r) => r.facts.kind === "hygiene");
+  if (!rep) return null;
+  const h = rep.facts as HygieneFacts, { stale, idle } = aged(h, th, now / 1000);
   return { trunk: h.trunk, unpushed: h.unpushed, localOnly: h.localOnly, merged: h.merged, gone: h.gone,
-    stale: stale.map((b) => b.name), idle: idle.length, fetchedAt: h.fetchedAt };
+    stale: stale.map((b) => b.name), idle: idle.length, fetchedAt: h.fetchedAt,
+    mergedRead: h.trunk !== null && !inp.reports[rep.source].gaps.some((g) => g.startsWith("merged branches not read")) };
 }
 
 export interface CoverRow {
@@ -1014,7 +1232,7 @@ export function comingUp(projects: readonly { root: string; inp: MaintInput }[],
 // ---------- prod ----------
 
 export interface ProbeRow {
-  name: string; url: string; err: string | null;
+  name: string; url: string; err: string | null; code: number | null; ms: number | null;
   status: string; level: Level; // "200 · 140ms", "no answer"
   cert: string; certLevel: Level; // "" for plain http, where there is no certificate to read
 }
@@ -1031,7 +1249,7 @@ export function probeRows(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
     const left = p.certNotAfter === null ? null : p.certNotAfter - sec;
     const [cert, certLevel]: [string, Level] = left === null ? (p.url.startsWith("https:") ? ["cert unknown", "muted"] : ["", "ok"])
       : left <= 0 ? ["cert expired", "bad"] : [`cert ${span(left)}`, left < th.certWarnDays * DAY ? "warn" : "ok"];
-    return { name: p.name, url: p.url, err: p.err,
+    return { name: p.name, url: p.url, err: p.err, code: p.code, ms: p.ms,
       status: p.code === null ? "no answer" : `${p.code}${p.ms !== null ? ` · ${p.ms}ms` : ""}`,
       level: down ? "bad" : p.code! >= 400 ? "warn" : "ok", cert, certLevel };
   });
