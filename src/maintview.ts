@@ -51,6 +51,7 @@ export interface MaintView extends MaintTabView {
   cards: MaintCard[]; // rankMaint's order
   chip: MaintChip; quietOpen: boolean;
   checked: number; // the last finished sweep this session (ms), 0 for none
+  kept: number; // the newest of the last session's scans painted at boot (ms), 0 for none
   scanning: boolean;
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
@@ -92,7 +93,7 @@ function prodHtml(p: MaintProd, root?: string): string {
 export function maintWhenHtml(v: MaintView): string {
   if (v.scanning) return `<span class="fl-when mono">checking every project…</span>`;
   if (!v.checked) {
-    return `<span class="fl-when mono">Not checked this session</span>
+    return `<span class="fl-when mono">${v.kept ? `as of ${esc(relTime(v.kept))}` : "Not checked this session"}</span>
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
   }
   return `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>

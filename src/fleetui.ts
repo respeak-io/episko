@@ -416,7 +416,7 @@ function buildMaint(now: number): MaintView {
     seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
-      sub: e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
+      sub: e?.kept ? `as of ${relTime(e.at)}` : e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
       cells, findings: fs, band: projectBand(cells), past: snap,
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });
@@ -429,6 +429,7 @@ function buildMaint(now: number): MaintView {
     // The dashboard builds the same model for its one project (docs/maintenance.md).
     ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, maintSev, now),
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
+    kept: Math.max(0, ...[...byRoot.keys()].map((r) => maintOf(r)).filter((e) => e?.kept).map((e) => e!.at)),
     tally: {
       needs: n("needs"), drifting: n("drifting"), quiet: n("quiet"), unread: n("unread"),
       cantCheck: ranked.reduce((k, c) => k + c.cells.filter((x) => x.state === "markers" || x.state === "cantCheck").length, 0),

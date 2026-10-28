@@ -1431,3 +1431,33 @@ export function ciRows(inp: MaintInput | null, snap: MaintSnap | null | undefine
   return (snap?.findings ?? []).filter((f) => f.facet === "ci")
     .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:?/, ""), since: null, asOf: f.at ?? snap!.at }));
 }
+
+// ---------- the last scan, kept whole (`cc-maint-scan`) ----------
+
+/** What a boot paints before anyone asks: each root's detection and reports as its last finished scan left them. */
+export interface KeptScan { at: number; account: string | null; det: Detection; reports: Record<string, SourceReport> } // at: ms
+export type KeptScans = Record<string, KeptScan>;
+export const KEPT_CHARS = 1_500_000; // localStorage is shared with every other cc- key
+
+/** `cc-maint-scan` narrowed through the wire's own narrowing: a root that fails it is dropped alone. */
+export function clampKept(raw: unknown): KeptScans {
+  if (!isObj(raw)) return {};
+  return Object.fromEntries(Object.entries(raw).flatMap(([root, v]): [string, KeptScan][] => {
+    if (!root || !isObj(v) || !num(v.at) || (v.at as number) <= 0 || !isObj(v.reports)) return [];
+    const det = narrowDetection(v.det);
+    if (!det) return [];
+    const reports = Object.fromEntries(Object.entries(v.reports).map(([id, r]) => [id, narrowMaint(r, id)]));
+    return [[root, { at: v.at as number, account: strOr(v.account), det, reports }]];
+  }));
+}
+
+/** The newest scans that fit `budget` characters; a root left out falls back to its `cc-maint` snapshot. */
+export function packKept(all: KeptScans, budget = KEPT_CHARS): KeptScans {
+  const out: KeptScans = {};
+  let used = 2;
+  for (const [root, k] of Object.entries(all).sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0]))) {
+    const n = JSON.stringify(root).length + JSON.stringify(k).length + (used > 2 ? 2 : 1); // `:` and a `,` after the first
+    if (used + n <= budget) { out[root] = k; used += n; }
+  }
+  return out;
+}

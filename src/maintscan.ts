@@ -4,7 +4,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
-import { clampSnaps, narrowDetection, narrowMaint, takeSnap, type Detection, type MaintInput, type MaintSnap, type SourceReport } from "./maint";
+import {
+  clampKept, clampSnaps, narrowDetection, narrowMaint, packKept, takeSnap,
+  type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport,
+} from "./maint";
 import { findSource, MAINT_PREFS_DEFAULT, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
 import { readObj } from "./store";
@@ -18,6 +21,7 @@ export interface ProjectMaint {
   out: number; // reads still in flight
   at: number; // when its last scan finished (ms), 0 if none has
   err: string | null; // detection itself failed
+  kept?: boolean; // the last session's scan, painted at boot; no read of this session has replaced it
 }
 
 /** A switch to the view inside this window re-reads nothing; ⟳ always does. */
@@ -48,17 +52,27 @@ export function setMaintPublic(id: string, on: boolean): void {
   localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
 }
 
-// The last finished scan per root, for a boot that has asked nothing yet. Local: another
-// machine's checkout is not this one's, and it is only ever drawn muted and as of then.
+// The last finished scan per root in words, for a root whose whole scan did not fit `cc-maint-scan`
+// and for Today. Local: another machine's checkout is not this one's; drawn muted and as of then.
 let snaps = clampSnaps(readObj<unknown>("cc-maint"));
 export const maintSnap = (root: string): MaintSnap | undefined => snaps[root];
 function keepSnap(e: ProjectMaint): void {
   const inp = maintInput(e.root);
   if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at, snaps[e.root]) });
+  if (e.det) kept = { ...kept, [e.root]: { at: e.at, account: ghAccountFor(e.root), det: e.det, reports: { ...e.reports } } };
 }
 const saveSnaps = () => {
   try { localStorage.setItem("cc-maint", JSON.stringify(snaps)); } catch (err) { dlog("warn", `maint: snapshot not kept: ${err}`); }
+  try { localStorage.setItem("cc-maint-scan", JSON.stringify(packKept(kept))); } catch (err) { dlog("warn", `maint: last scan not kept: ${err}`); }
 };
+
+// The same scans whole, so a boot paints the boards as they were rather than an empty view.
+// Loading them reads storage only; an answer another account gave is not this one's.
+let kept: KeptScans = clampKept(readObj<unknown>("cc-maint-scan"));
+for (const [root, k] of Object.entries(kept)) {
+  if (k.account !== ghAccountFor(root)) continue;
+  cache.set(root, { root, det: k.det, reports: k.reports, detecting: false, out: 0, at: k.at, err: null, kept: true });
+}
 
 /** What ./maint's rules take for one project, or null before anything was asked. */
 export function maintInput(root: string): MaintInput | null {
@@ -175,7 +189,7 @@ const forgotten = new Map<string, number>(); // per root: an answer asked before
 /** An account switch: what the other identity answered must not be drawn as this one's. */
 export function forgetMaint(root: string): void {
   cache.delete(root);
-  if (snaps[root]) { delete snaps[root]; saveSnaps(); }
+  if (snaps[root] || kept[root]) { delete snaps[root]; delete kept[root]; saveSnaps(); }
   forgotten.set(root, (forgotten.get(root) ?? 0) + 1);
   paint();
 }
