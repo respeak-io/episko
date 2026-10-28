@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  ADVISORY_KINDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
+  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally, whyWord,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
@@ -1054,6 +1054,97 @@ describe("the tabs' boards", () => {
     expect(rows.map((f) => f.key)).toEqual(expect.arrayContaining(["ci:setup", "git:unpushed", "git:tidy"]));
     expect(tabBoards("code", ps, null, null, NOW).drawn).toEqual(["/r|git:tidy", "/r|git:unpushed"]);
     expect(tabBoards("delivery", ps, null, null, NOW).drawn, "Set up is no board's: it stays a line").toEqual([]);
+  });
+});
+
+describe("a card line opens what it summarises", () => {
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const scan = (items: Advisory[]) => ok("github-code-scanning", { kind: "advisories", items });
+  const probe = (name: string, code: number | null, days: number) =>
+    ({ name, url: `https://${name}`, code, ms: 9, certNotAfter: S + days * D, err: code ? null : "refused" });
+
+  it("opens every kind of line on its facet's tab, at the board that carries its verb", () => {
+    const p = tp("/r",
+      ok(GHA, ci(run("build", "fail", S - H))),
+      ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
+      scan([adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" }), adv({ id: "S-1", kind: "secret", pkg: null, location: "k" })]),
+      ok("dependabot-prs", prs(2)),
+      ok("git-tags", rel({ since: 10, fetchedAt: S - 9 * D })),
+      ok("git-local", hyg({ unpushed: 2, merged: ["x"], fetchedAt: S - 9 * D })),
+      ok("github-work", { kind: "work", issues: 3, prs: 1, reviewRequested: 1 }),
+      ok("h", { kind: "probes", items: [probe("api", null, 90), probe("www", 200, 5)] }),
+    );
+    const at = Object.fromEntries(p.rows.map((f) => { const t = findingTarget(f); return [f.key, `${t.tab}/${t.board}`]; }));
+    expect(at).toEqual({
+      ci: "delivery/ci", release: "delivery/releases",
+      "security:dependency": "security/advisories", "security:code": "security/advisories", "security:secret": "security/advisories",
+      "deps:b": "security/update-prs",
+      "git:unpushed": "code/hygiene", "git:tidy": "code/hygiene", "git:fetch": "code/hygiene",
+      "work:review": "work/work", "work:open": "work/work",
+      "prod:api": "servers/addresses", "prod:cert:www": "servers/addresses",
+    });
+    // The anchor is only right if that board really draws the line: its verb is on it.
+    for (const f of p.rows) {
+      expect(tabBoards(findingTarget(f).tab, [p], "/r", null, NOW).drawn, f.key).toContain(`/r|${f.key}`);
+    }
+  });
+
+  it("falls back to its tab's top for a line no board carries", () => {
+    const p = tp("/r", ok("git-local", hyg()));
+    const setup = p.rows.find((f) => f.key === "ci:setup")!;
+    expect(findingTarget(setup)).toEqual({ tab: "delivery", board: null });
+    expect(findingTarget({ facet: "deps", key: "deps:setup" })).toEqual({ tab: "security", board: null });
+    expect(findingTarget({ facet: "security", key: "security:setup" })).toEqual({ tab: "security", board: null });
+    expect(findingTarget({ facet: "prod", key: "prod:setup" })).toEqual({ tab: "servers", board: null });
+    expect(findingTarget({ facet: "security", key: "run:osv" })).toEqual({ tab: "security", board: null });
+    expect(findingTarget({ facet: "git", key: "git:something-new" })).toEqual({ tab: "code", board: null });
+    // A snapshot written before the CI lines folded still names its workflow.
+    expect(findingTarget({ facet: "ci", key: "ci:build" })).toEqual({ tab: "delivery", board: "ci" });
+  });
+
+  it("names each board where the view draws it: a facet's board is in its tab's renderer", () => {
+    const src = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
+    const map = /const BOARDS: Record<MaintTab,[^\n]*\{([^}]*)\}/.exec(src)![1];
+    const fnOf = Object.fromEntries([...map.matchAll(/(\w+): (\w+Html)/g)].map((m) => [m[1], m[2]]));
+    const emitted = (tab: string) => {
+      const at = src.indexOf(`function ${fnOf[tab]}(`);
+      expect(at, fnOf[tab]).toBeGreaterThan(-1);
+      const rest = src.slice(at), body = rest.slice(0, rest.search(/\n\}\r?\n/));
+      return [...body.matchAll(/board\("([\w-]+)"/g)].map((m) => m[1]);
+    };
+    const sample: Record<Facet, string> = {
+      ci: "ci", release: "release", security: "security:code", deps: "deps:b", git: "git:tidy", prod: "prod:api", work: "work:open",
+    };
+    for (const f of FACETS) {
+      const t = findingTarget({ facet: f, key: sample[f] });
+      expect(emitted(t.tab), f).toContain(t.board);
+    }
+    expect(new Set(MAINT_TABS.flatMap(emitted))).toEqual(new Set(BOARD_IDS));
+  });
+
+  it("lists every project in the picker with what needs you in that tab: worst, most, then name and root", () => {
+    const ps = [
+      tp("/warn", ok("git-tags", rel({ since: 40 }))),
+      tp("/red", ok(GHA, ci(run("t", "fail", S - H))), ok("git-tags", rel({ since: 40 }))),
+      tp("/info", ok("git-tags", rel({ since: 3 }))),
+    ];
+    const rows = ps.flatMap((p) => p.rows);
+    const projects = [
+      { root: "/info", name: "Info" }, { root: "/unread", name: "aaa" }, { root: "/red", name: "zed" }, { root: "/warn", name: "Warn" },
+    ];
+    const picks = projectPicks("delivery", rows, projects);
+    expect(picks.map((p) => [p.root, p.n, p.level])).toEqual([
+      ["/red", 2, "bad"], ["/warn", 1, "warn"], ["/unread", 0, null], ["/info", 0, null],
+    ]);
+    expect(picks.map((p) => p.name), "a project nothing was read for is still listed").toContain("aaa");
+    expect(projectPicks("delivery", [...rows].reverse(), [...projects].reverse()), "stable whatever the order").toEqual(picks);
+    expect(projectPicks("code", rows, projects).every((p) => p.n === 0), "counted per tab").toBe(true);
+    const red1 = tp("/red1", ok(GHA, ci(run("t", "fail", S - H))));
+    const tie = projectPicks("delivery", [...rows, ...red1.rows], [...projects, { root: "/red1", name: "aaa" }, { root: "/b", name: "Info" }]);
+    expect(tie.map((p) => p.root), "more lines first at one level; one name ordered by root").toEqual(["/red", "/red1", "/warn", "/unread", "/b", "/info"]);
   });
 });
 

@@ -366,8 +366,8 @@ const MAINTVIEW = readFileSync(new URL("../src/maintview.ts", import.meta.url), 
 const MAINTUI = readFileSync(new URL("../src/maintui.ts", import.meta.url), "utf8");
 
 describe("Maintenance's own dispatcher", () => {
-  // Read off an element that already matched: a verb's project and a card's name.
-  const PAYLOAD = new Set(["root", "name"]);
+  // Read off an element that already matched: a verb's project, a card's name and a line's key.
+  const PAYLOAD = new Set(["root", "name", "key"]);
   const emitted = [...new Set([...MAINTVIEW.matchAll(/data-mt([a-z]+)="/g)].map((m) => m[1]))];
   const probed = [...MAINTUI.matchAll(/closest<HTMLElement>\("\[data-mt([a-z]+)\]"\)/g)].map((m) => m[1]);
 
@@ -400,8 +400,8 @@ describe("Maintenance's own dispatcher", () => {
 
   it("wires the facet tabs and the dashboard's cards: each probed, each before the door", () => {
     // url and copy are Coverage's: a forge's settings page per project, and a fix command; sev is
-    // the Security strip's filter.
-    for (const k of ["tab", "cell", "clear", "view", "across", "deploy", "prod", "url", "copy", "sev"]) {
+    // the Security strip's filter; pick the tab's project picker and find a card line.
+    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
     }
@@ -419,6 +419,16 @@ describe("Maintenance's own dispatcher", () => {
     // The guard asks what is drawn: a lapsed filter must not swallow the first Escape.
     expect(esc).toMatch(/fleetView === "maint" && liveFilter\(\) !== null/);
     expect(esc.indexOf("maintFilter = null")).toBeLessThan(esc.indexOf("closeFleet()"));
+  });
+
+  it("lets a card line's verb win over the line, and opens the line on Enter as on a click", () => {
+    // Patch prefills and nothing else: the row's tab switch must never ride along on its verb.
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("find"));
+    // The line's text is the focusable door, so the verb stays a control of its own and not one nested in a button.
+    expect(MAINTVIEW).toContain('<span class="t"${go ? ` tabindex="0" role="button"` : ""}>');
+    expect(MAINTVIEW).not.toMatch(/role="button" data-mtfind=/);
+    expect(MAINTUI).toContain('t.matches("[data-mtfind] > .t")');
+    expect(FLEETUI).toContain('$("fleetPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); })');
   });
 
   it("is asked before the fleet's own probes, so a card's click never reaches a data-fl* row", () => {

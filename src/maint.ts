@@ -779,6 +779,34 @@ export function tabTally(rows: readonly Finding[], root: string | null = null): 
   })) as Record<MaintTab, TabCount>;
 }
 
+/** The boards a cross-project tab draws (`tabBoards`), each an anchor a card line can open on. */
+export const BOARD_IDS = ["advisories", "update-prs", "ci", "releases", "hygiene", "work", "addresses"] as const;
+export type BoardId = (typeof BOARD_IDS)[number];
+// Each facet's board and the keys it carries a verb for; a pre-fold snapshot's `ci:<workflow>` is CI's too.
+const FACET_BOARD: Record<Facet, [BoardId, RegExp]> = {
+  ci: ["ci", /^ci$|^ci:(?!setup$)/], release: ["releases", /^release$/], security: ["advisories", /^security:(?!setup$)/],
+  deps: ["update-prs", /^deps:(?!setup$)/], git: ["hygiene", /^git:(unpushed|tidy|fetch)$/],
+  prod: ["addresses", /^prod:(?!setup$)/], work: ["work", /^work:(review|open)$/],
+};
+
+/** Where a card line opens: its facet's tab, at the board that summarises it, or the tab's top
+ *  (`board: null`) for a line no board carries (*Set up*, an offer). */
+export function findingTarget(f: Pick<Finding, "facet" | "key">): { tab: MaintTab; board: BoardId | null } {
+  const [board, keys] = FACET_BOARD[f.facet];
+  return { tab: FACET_TAB[f.facet], board: keys.test(f.key) ? board : null };
+}
+
+export interface ProjectPick { root: string; name: string; n: number; level: Finding["level"] | null }
+/** A tab's project picker: every project with what needs you there (red and amber, as the badges),
+ *  those with something first, then by name, so the list never reorders between two looks. */
+export function projectPicks(tab: MaintTab, rows: readonly Finding[], projects: readonly { root: string; name: string }[]): ProjectPick[] {
+  const rank = (p: ProjectPick) => p.level ? LEVEL_RANK[p.level] : 3;
+  return projects.map((p) => {
+    const r = tabRows(tab, rows, p.root), n = needsCount(r);
+    return { root: p.root, name: p.name, n, level: n ? r[0].level : null };
+  }).sort((a, b) => rank(a) - rank(b) || b.n - a.n || a.name.localeCompare(b.name) || a.root.localeCompare(b.root));
+}
+
 // Muted is unknown ("never ran", "reviews unknown"), except a read that found the facet's none.
 const isNone = (x: Cell) => x.state === "none" || x.state === "off" || (x.state === "read" && x.level === "muted" && x.text === facetDef(x.facet).none);
 const isVerdict = (x: Cell) => x.state === "read" && x.level !== "muted" && x.level !== "unread";

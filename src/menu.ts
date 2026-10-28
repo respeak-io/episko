@@ -11,6 +11,8 @@ export interface MenuItem {
   id: string;
   label: string;
   sub?: string;
+  /** Colours `sub` for a count that needs you: red broken, amber drifting; anything else stays muted. */
+  tone?: "bad" | "warn";
   /** Leading slot: a tick for the chosen one, a glyph for anything else. */
   mark?: string;
   /** Inline SVG markup (./providers/logos), NOT a url and NOT escaped — a fixed table, never user text. */
@@ -58,7 +60,7 @@ function itemHtml(i: MenuItem, idx: number): string {
   return `<button class="${cls}" role="menuitem"${i.disabled ? " disabled" : ""}`
     + `${i.disabled ? "" : ` data-mi="${escAttr(i.id)}" data-idx="${idx}"`}>${mark}`
     + `<span class="mn-b"><span class="mn-l">${esc(i.label)}</span>`
-    + (i.sub ? `<span class="mn-s2">${esc(i.sub)}</span>` : "") + `</span></button>`;
+    + (i.sub ? `<span class="mn-s2${i.tone ? ` t-${i.tone}` : ""}">${esc(i.sub)}</span>` : "") + `</span></button>`;
 }
 
 /** `at` is the control the menu belongs to; it opens under it and flips up when there is no room. */
