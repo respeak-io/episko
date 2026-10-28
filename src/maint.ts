@@ -5,6 +5,7 @@
 import { FACETS, COSTS, facetDef, findSource, permitted, type Cost, type Facet } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
+import { parseVer, satisfies, verCmpStr } from "./deps";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
 
@@ -1659,4 +1660,155 @@ export function packKept(all: KeptScans, budget = KEPT_CHARS): KeptScans {
     if (used + n <= budget) { out[root] = k; used += n; }
   }
   return out;
+}
+
+// ---------- the advisory sweep (maint_sweep.rs; docs/maintenance.md § Advisory sweep) ----------
+// Rust resolves the advisory and reads what each project installs; whether that is affected is decided
+// here with ./deps' narrow semver, and a shape it cannot read is unsure, never a guess either way.
+
+export interface SweepSpan { kind: string; introduced: string | null; fixed: string | null; lastAffected: string | null }
+/** One affected package: its runs from the record, or `range` as a person typed it. */
+export interface SweepPkg {
+  ecosystem: string; name: string; spans: SweepSpan[]; range: string | null;
+  versions: string[]; versionsCut: boolean; // cut: a version missing from the list proves nothing
+}
+export interface SweepAdvisory {
+  id: string | null; aliases: string[]; summary: string; severity: Severity; rawSeverity: string; url: string | null;
+  packages: SweepPkg[]; asked: string[]; gaps: string[];
+}
+export interface SweepCopy { pkg: number; version: string; file: string } // pkg: an index into `packages`
+export interface SweepUnread { file: string; ecosystem: string; reason: string }
+export interface SweepFacts { root: string; locks: string[]; found: SweepCopy[]; unpinned: SweepCopy[]; unread: SweepUnread[] }
+export const SWEEP_CHECKS = ["affected", "not-affected", "unsure"] as const;
+export interface SweepCheck { verdict: (typeof SWEEP_CHECKS)[number]; evidence: string[] }
+/** A read-only agent asked about one unsure project: its answer is shown beside the row, never applied. */
+export type SweepAgent = { state: "running" } | { state: "done"; check: SweepCheck } | { state: "error"; err: string };
+export type SweepState = "resolving" | "matching" | "done" | "error";
+
+const isSpan = shape({ kind: str, introduced: opt(str), fixed: opt(str), lastAffected: opt(str) });
+const isSweepPkg = shape({ ecosystem: str, name: str, spans: list(isSpan), versions: list(str), versionsCut: bool, range: opt(str) });
+const isSweepAdv = shape({
+  id: opt(str), aliases: list(str), summary: str, severity: oneOf(SEVERITIES), rawSeverity: str, url: opt(str),
+  packages: list(isSweepPkg), asked: list(str), gaps: list(str),
+});
+const isCopy = shape({ pkg: num, version: str, file: str });
+const isSweepFacts = shape({
+  root: str, locks: list(str), found: list(isCopy), unpinned: list(isCopy), unread: list(shape({ file: str, ecosystem: str, reason: str })),
+});
+export const narrowSweep = (raw: unknown): SweepAdvisory | null => isSweepAdv(raw) ? raw as SweepAdvisory : null;
+export const narrowSweepFacts = (raw: unknown): SweepFacts[] => Array.isArray(raw) ? raw.filter(isSweepFacts) as SweepFacts[] : [];
+export const narrowSweepCheck = (raw: unknown): SweepCheck | null =>
+  shape({ verdict: oneOf(SWEEP_CHECKS), evidence: list(str) })(raw) ? raw as SweepCheck : null;
+
+/** One run as a range `satisfies` reads; null for a commit range, in which no version can be placed. */
+export function spanRange(s: SweepSpan): string | null {
+  if (s.kind.toUpperCase() === "GIT") return null;
+  const lo = s.introduced && s.introduced !== "0" ? `>=${s.introduced}` : "";
+  const hi = s.fixed ? `<${s.fixed}` : s.lastAffected ? `<=${s.lastAffected}` : "";
+  return [lo, hi].filter(Boolean).join(" ") || "*";
+}
+
+/** What the advisory says of one package, as a person reads it. */
+export function affectedText(p: SweepPkg): string {
+  if (p.range !== null) return `${p.ecosystem} ${p.name} ${p.range}`;
+  const runs = p.spans.map((s) => spanRange(s) ?? "a commit range");
+  const fixed = [...new Set(p.spans.flatMap((s) => s.fixed && spanRange(s) ? [s.fixed] : []))];
+  const what = runs.length ? runs.join(" || ") : p.versions.length ? plural(p.versions.length, "listed version") : "no range";
+  return `${p.ecosystem} ${p.name} ${what}${fixed.length ? `, fixed in ${fixed.join(", ")}` : ""}`;
+}
+
+export type Placed = { state: "in"; range: string; fixed: string | null } | { state: "out"; past: string | null } | { state: "unknown"; why: string };
+const fixAbove = (p: SweepPkg, v: string) => p.spans.flatMap((s) => s.fixed && verCmpStr(s.fixed, v) > 0 ? [s.fixed] : []).sort(verCmpStr)[0] ?? null;
+
+/** Where one installed version stands against one package's runs; `past` is the newest fix it is at or beyond. */
+export function placeVersion(p: SweepPkg, version: string): Placed {
+  if (p.versions.includes(version)) return { state: "in", range: "a listed version", fixed: fixAbove(p, version) };
+  if (!parseVer(version)) return { state: "unknown", why: `${version} is not a version this can compare` };
+  const runs: { r: string | null; fixed: string | null }[] = p.range !== null ? [{ r: p.range, fixed: null }]
+    : p.spans.map((s) => ({ r: spanRange(s), fixed: s.fixed }));
+  let why: string | null = runs.length || p.versions.length ? null : "the advisory names no version range";
+  for (const { r, fixed } of runs) {
+    if (r === null) { why = "its range is a commit range, which names no version"; continue; }
+    const held = satisfies(version, r, p.ecosystem);
+    if (held === null) { why = `${r} is a range shape this does not read`; continue; }
+    if (held) return { state: "in", range: r, fixed };
+  }
+  if (why) return { state: "unknown", why };
+  if (!runs.length && p.versionsCut) return { state: "unknown", why: `${version} is not among the listed versions, and the list was cut short` };
+  const past = p.spans.flatMap((s) => s.fixed && verCmpStr(version, s.fixed) >= 0 ? [s.fixed] : []).sort(verCmpStr).pop() ?? null;
+  return { state: "out", past };
+}
+
+export type SweepVerdict = "affected" | "unsure" | "patched" | "unused";
+export const SWEEP_VERDICTS: readonly SweepVerdict[] = ["affected", "unsure", "patched", "unused"];
+export interface SweepRow {
+  root: string; verdict: SweepVerdict;
+  word: string; // a copy past its fix is "patched", one never in range "not in range"
+  evidence: string[]; // a line per copy, and per file that might hold one and was not read
+  fix: string | null; // affected only
+}
+
+/** One project: affected if any copy is in a range, else unsure if anything could not be placed or read. */
+export function sweepVerdict(adv: SweepAdvisory, f: SweepFacts): SweepRow {
+  const row = (verdict: SweepVerdict, word: string, evidence: string[], fix: string | null = null): SweepRow =>
+    ({ root: f.root, verdict, word, evidence, fix });
+  if (!adv.packages.length) return row("unsure", "unsure", [adv.gaps[adv.gaps.length - 1] ?? "the advisory names no package to match"]);
+  const hit: string[] = [], unsure: string[] = [], clear: string[] = [], fixes = new Set<string>();
+  let past = 0;
+  for (const c of f.found) {
+    const p = adv.packages[c.pkg];
+    if (!p) continue;
+    const at = placeVersion(p, c.version), where = `${c.file}: ${p.name}@${c.version}`;
+    if (at.state === "in") { hit.push(`${where} · in ${at.range}`); if (at.fixed) fixes.add(at.fixed); }
+    else if (at.state === "unknown") unsure.push(`${where} · ${at.why}`);
+    else { clear.push(`${where} · ${at.past ? `at or past the fix, ${at.past}` : "outside every affected range"}`); past += at.past ? 1 : 0; }
+  }
+  for (const c of f.unpinned) unsure.push(`${c.file}: ${adv.packages[c.pkg]?.name ?? "?"} from ${c.version}, not the registry's copy, so its version proves nothing`);
+  const ecos = new Set(adv.packages.map((p) => p.ecosystem));
+  for (const u of f.unread) if (ecos.has(u.ecosystem)) unsure.push(`${u.file}: ${u.reason}`);
+  if (hit.length) {
+    const typed = adv.packages.find((p) => p.range !== null)?.range;
+    const fix = fixes.size ? `bump → ${[...fixes].sort(verCmpStr).join(", ")}` : typed ? `a version outside ${typed}` : "no fix published";
+    return row("affected", "affected", [...hit, ...unsure], fix);
+  }
+  if (unsure.length) return row("unsure", "unsure", [...unsure, ...clear]);
+  if (clear.length) return row("patched", past === clear.length ? "patched" : "not in range", clear);
+  const names = [...new Set(adv.packages.map((p) => p.name))];
+  const none = `no ${names.slice(0, 3).join(", ")}${names.length > 3 ? " …" : ""}`;
+  const ecoList = [...ecos].join(" or ");
+  return row("unused", "not using", [f.locks.length ? `${f.locks.join(", ")}: ${none}` : `no ${ecoList} manifest or lockfile`]);
+}
+
+/** A row per root asked, worst first, then by path so a repaint never reorders. A root the read
+ *  answered nothing for is unsure, never missing: a missing row would read as an all-clear. */
+export const sweepRows = (adv: SweepAdvisory, facts: readonly SweepFacts[], roots: readonly string[]): SweepRow[] =>
+  [...new Set(roots)].map((root) => {
+    const f = facts.find((x) => x.root === root);
+    return f ? sweepVerdict(adv, f) : { root, verdict: "unsure" as const, word: "unsure", evidence: ["its lockfiles were not read"], fix: null };
+  }).sort((a, b) => SWEEP_VERDICTS.indexOf(a.verdict) - SWEEP_VERDICTS.indexOf(b.verdict) || a.root.localeCompare(b.root));
+
+/** The advisory as one line: its id and first aliases, or the package and range typed. */
+export const sweepTitle = (adv: SweepAdvisory): string =>
+  adv.id ? `${adv.id}${adv.aliases.length ? ` (${adv.aliases.slice(0, 3).join(", ")})` : ""}` : adv.summary;
+
+/** *Copy report*: the advisory, a line per project that uses it worst first, and the rest named once. */
+export function sweepReport(adv: SweepAdvisory, rows: readonly SweepRow[], names: Readonly<Record<string, string>>,
+  agents: Readonly<Record<string, SweepAgent>> = {}): string {
+  const name = (r: string) => names[r] ?? r;
+  const unused = rows.filter((r) => r.verdict === "unused");
+  const lines = rows.filter((r) => r.verdict !== "unused").flatMap((r) => {
+    const a = agents[r.root];
+    return [
+      `- ${name(r.root)}: ${r.word}${r.fix ? ` · ${r.fix}` : ""}`, ...r.evidence.map((e) => `    ${e}`),
+      ...(a?.state === "done" ? [`    an agent read it: ${a.check.verdict}`, ...a.check.evidence.map((e) => `      ${e}`)] : []),
+    ];
+  });
+  return [
+    `Advisory sweep: ${sweepTitle(adv)}${adv.severity === "unknown" ? "" : ` · ${adv.severity}`}`,
+    ...(adv.id && adv.summary ? [adv.summary] : []), ...(adv.url ? [adv.url] : []),
+    ...adv.packages.map((p) => `affects ${affectedText(p)}`), ...adv.gaps,
+    "",
+    ...(lines.length ? lines : ["No project uses it."]),
+    ...(unused.length ? ["", `Not using it (${unused.length}): ${unused.map((r) => name(r.root)).join(", ")}`] : []),
+  ].join("\n");
 }

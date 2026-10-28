@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { briefFor, type MaintBriefCtx } from "../src/maintbrief";
-import { FACT_FACET, MAINT_DEFAULTS, findings, type Facts, type MaintInput, type SourceReport } from "../src/maint";
+import { briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
+import {
+  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Facts, type MaintInput, type SourceReport, type SweepAdvisory, type SweepFacts,
+} from "../src/maint";
 
 // The brief is the product: an agent is only as good as what it was told, and a person reads it
 // in the composer before sending. It is built from facts, so it never names who reported them.
@@ -220,5 +222,38 @@ describe("briefFor", () => {
     expect(b2).toContain("### postgres 14 · ends in 20d\nIt reaches its end of life on");
     const fine = input(ok("runtime-eol", { kind: "runtimes", items: [rt("go", "1.27", false, "go.mod")] }));
     expect(briefFor(f, fine, ctx), "nothing left to upgrade").toBeNull();
+  });
+});
+
+// A sweep's affected project is briefed as any Patch is, and the read-only agent is asked from the
+// same facts; neither names who published the advisory.
+describe("the advisory sweep's briefs", () => {
+  const adv: SweepAdvisory = {
+    id: "GHSA-35jh-r3h4-6jhm", aliases: ["CVE-2021-23337"], summary: "Command Injection in lodash", severity: "high", rawSeverity: "HIGH",
+    url: "https://adv.example/GHSA-35jh-r3h4-6jhm", asked: [], gaps: [],
+    packages: [{ ecosystem: "npm", name: "lodash", spans: [{ kind: "SEMVER", introduced: "0", fixed: "4.17.21", lastAffected: null }], versions: [], versionsCut: false, range: null }],
+  };
+  const facts = (o: Partial<SweepFacts>): SweepFacts => ({ root: "/r", locks: ["package-lock.json"], found: [], unpinned: [], unread: [], ...o });
+
+  it("patches each copy inside the range, with the fix, the compatibility rules and the checks", () => {
+    const f = facts({ found: [{ pkg: 0, version: "4.17.20", file: "package-lock.json" }, { pkg: 0, version: "4.17.21", file: "web/pnpm-lock.yaml" }] });
+    const b = sweepBrief(adv, f, ctx)!;
+    expect(b).toContain("Patch GHSA-35jh-r3h4-6jhm (CVE-2021-23337) · high in acme.");
+    expect(b).toContain("- lodash 4.17.20 (npm) in package-lock.json; fixed in 4.17.21");
+    expect(b, "a patched copy is not part of it").not.toContain("web/pnpm-lock.yaml");
+    expect(b).toContain("from the lockfiles alone");
+    expect(b).toContain("## Before you change anything");
+    expect(b).toContain("pnpm test");
+    expect(sweepBrief(adv, facts({ found: [{ pkg: 0, version: "4.17.21", file: "package-lock.json" }] }), ctx), "nothing affected").toBeNull();
+  });
+
+  it("asks the agent one question with what could not be decided, and the block to answer in", () => {
+    const f = facts({ unpinned: [{ pkg: 0, version: "github:me/lodash#fix", file: "package-lock.json" }] });
+    const p = sweepPrompt(adv, sweepVerdict(adv, f), "gb-dashboard");
+    expect(p).toContain("Is the project in this folder (gb-dashboard) affected by GHSA-35jh-r3h4-6jhm (CVE-2021-23337)?");
+    expect(p).toContain("- npm lodash <4.17.21, fixed in 4.17.21");
+    expect(p).toContain("- package-lock.json: lodash from github:me/lodash#fix, not the registry's copy, so its version proves nothing");
+    expect(p).toContain("```toml\nverdict = ");
+    expect(p).toContain("nothing you answer is applied");
   });
 });

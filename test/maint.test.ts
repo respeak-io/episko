@@ -6,7 +6,9 @@ import {
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
+  affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
+  type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
 import { BRANCH_FILTERS } from "../src/branches";
 import { briefFor } from "../src/maintbrief";
@@ -1735,7 +1737,8 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen", "MaintHost"],
+    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen", "MaintHost",
+      "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
   const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
@@ -1755,5 +1758,130 @@ describe("nothing scans until a person asks", () => {
 
   it("never reaches a scan from the dashboard's render path", () => {
     for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow"]) expect(dash.reaches(f), f).toEqual([]);
+  });
+});
+
+// The advisory sweep decides each project from what Rust read out of its lockfiles; a shape the narrow
+// semver cannot read is unsure, never a guess (docs/maintenance.md § Advisory sweep).
+describe("the advisory sweep", () => {
+  const span = (introduced: string | null, fixed: string | null, kind = "SEMVER", lastAffected: string | null = null) =>
+    ({ kind, introduced, fixed, lastAffected });
+  const pkg = (name: string, spans: ReturnType<typeof span>[], o: Partial<SweepPkg> = {}): SweepPkg =>
+    ({ ecosystem: "npm", name, spans, versions: [], versionsCut: false, range: null, ...o });
+  const adv = (...packages: SweepPkg[]): SweepAdvisory => ({
+    id: "GHSA-35jh-r3h4-6jhm", aliases: ["CVE-2021-23337"], summary: "Command Injection in lodash", severity: "high", rawSeverity: "HIGH",
+    url: "https://adv.example/GHSA-35jh-r3h4-6jhm", packages, asked: ["GHSA-35jh-r3h4-6jhm"], gaps: [],
+  });
+  const facts = (root: string, o: Partial<SweepFacts> = {}): SweepFacts =>
+    ({ root, locks: ["package-lock.json"], found: [], unpinned: [], unread: [], ...o });
+  const lodash = adv(pkg("lodash", [span("0", "4.17.21")]), pkg("smallvec", [span("0.6.3", "0.6.14"), span("1.0.0", "1.6.1")], { ecosystem: "crates.io" }));
+  const copy = (pkgIx: number, version: string, file = "package-lock.json") => ({ pkg: pkgIx, version, file });
+
+  it("is affected inside a range, and names the fix of the range it is in", () => {
+    const r = sweepVerdict(lodash, facts("/a", { found: [copy(0, "4.17.20"), copy(1, "1.6.0", "Cargo.lock")] }));
+    expect(r).toEqual({
+      root: "/a", verdict: "affected", word: "affected", fix: "bump → 1.6.1, 4.17.21",
+      evidence: ["package-lock.json: lodash@4.17.20 · in <4.17.21", "Cargo.lock: smallvec@1.6.0 · in >=1.0.0 <1.6.1"],
+    });
+    expect(placeVersion(lodash.packages[1], "0.6.13")).toEqual({ state: "in", range: ">=0.6.3 <0.6.14", fixed: "0.6.14" });
+  });
+
+  it("is patched at or past the fix, and not in range below where it was introduced", () => {
+    expect(sweepVerdict(lodash, facts("/b", { found: [copy(0, "4.17.21")] })))
+      .toMatchObject({ verdict: "patched", word: "patched", evidence: ["package-lock.json: lodash@4.17.21 · at or past the fix, 4.17.21"] });
+    expect(sweepVerdict(lodash, facts("/c", { found: [copy(1, "0.5.0", "Cargo.lock")] })))
+      .toMatchObject({ verdict: "patched", word: "not in range", evidence: ["Cargo.lock: smallvec@0.5.0 · outside every affected range"] });
+  });
+
+  it("is unsure for a range shape or a version it cannot read, never a guess either way", () => {
+    const odd = adv(pkg("lodash", [], { range: "~> 4.17" }));
+    expect(sweepVerdict(odd, facts("/d", { found: [copy(0, "4.17.20")] })))
+      .toMatchObject({ verdict: "unsure", evidence: ["package-lock.json: lodash@4.17.20 · ~> 4.17 is a range shape this does not read"] });
+    expect(sweepVerdict(lodash, facts("/d", { found: [copy(0, "latest-beta")] })).verdict).toBe("unsure");
+    const commits = adv(pkg("lodash", [span("0", "c6e281b8", "GIT")]));
+    expect(sweepVerdict(commits, facts("/d", { found: [copy(0, "4.17.20")] })).evidence[0]).toContain("commit range");
+    expect(sweepVerdict(adv(), facts("/d")).verdict, "a record naming no package").toBe("unsure");
+  });
+
+  it("places a version by the record's own list, and an unlisted one against a cut list is unsure", () => {
+    const listed = pkg("lodash-rails", [], { ecosystem: "RubyGems", versions: ["4.17.20", "4.17.15"] });
+    expect(placeVersion(listed, "4.17.20")).toEqual({ state: "in", range: "a listed version", fixed: null });
+    expect(placeVersion(listed, "4.17.21")).toEqual({ state: "out", past: null });
+    expect(placeVersion({ ...listed, versionsCut: true }, "4.17.21").state, "missing from a cut list proves nothing").toBe("unknown");
+  });
+
+  it("is unsure for a git or path copy, and for a lockfile of the ecosystem it could not read", () => {
+    const git = sweepVerdict(lodash, facts("/e", { unpinned: [copy(0, "git+ssh://git@example.com/me/lodash.git#abc")] }));
+    expect(git).toMatchObject({ verdict: "unsure", evidence: ["package-lock.json: lodash from git+ssh://git@example.com/me/lodash.git#abc, not the registry's copy, so its version proves nothing"] });
+    const yarn = facts("/f", { found: [copy(0, "4.17.21")], unread: [{ file: "web/yarn.lock", ecosystem: "npm", reason: "a lockfile Episko does not read" }] });
+    expect(sweepVerdict(lodash, yarn), "one copy is patched, but another lockfile may hold one that is not").toMatchObject({ verdict: "unsure" });
+    const py = facts("/g", { unread: [{ file: "poetry.lock", ecosystem: "PyPI", reason: "a lockfile Episko does not read" }] });
+    expect(sweepVerdict(lodash, py).verdict, "another ecosystem's lockfile cannot hold it").toBe("unused");
+    expect(sweepVerdict(lodash, facts("/h", { locks: [] })).evidence).toEqual(["no npm or crates.io manifest or lockfile"]);
+    const pip = facts("/i", { locks: [], unread: [{ file: "pyproject.toml", ecosystem: "PyPI", reason: "no lockfile says what it installs" }] });
+    expect(sweepVerdict(adv(pkg("jinja2", [span("0", "3.1.5")], { ecosystem: "PyPI" })), pip).verdict, "a manifest it cannot read is never 'not using'")
+      .toBe("unsure");
+  });
+
+  it("orders worst first and writes a report a person can paste", () => {
+    const all = ["/z-unused", "/b-patched", "/c-unsure", "/a-hit"];
+    const rows = sweepRows(lodash, [
+      facts("/z-unused"), facts("/b-patched", { found: [copy(0, "4.17.21")] }),
+      facts("/c-unsure", { unpinned: [copy(0, "file:../lodash")] }), facts("/a-hit", { found: [copy(0, "4.17.20")] }),
+    ], all);
+    expect(rows.map((r) => r.verdict)).toEqual(SWEEP_VERDICTS);
+    const names = { "/a-hit": "wirksam", "/b-patched": "puttyparty", "/c-unsure": "gb-dashboard", "/z-unused": "notes" };
+    const agents = { "/c-unsure": { state: "done" as const, check: { verdict: "not-affected" as const, evidence: ["package.json: a fork carrying the fix"] } } };
+    expect(sweepReport(lodash, rows, names, agents)).toBe([
+      "Advisory sweep: GHSA-35jh-r3h4-6jhm (CVE-2021-23337) · high",
+      "Command Injection in lodash",
+      "https://adv.example/GHSA-35jh-r3h4-6jhm",
+      "affects npm lodash <4.17.21, fixed in 4.17.21",
+      "affects crates.io smallvec >=0.6.3 <0.6.14 || >=1.0.0 <1.6.1, fixed in 0.6.14, 1.6.1",
+      "",
+      "- wirksam: affected · bump → 4.17.21",
+      "    package-lock.json: lodash@4.17.20 · in <4.17.21",
+      "- gb-dashboard: unsure",
+      "    package-lock.json: lodash from file:../lodash, not the registry's copy, so its version proves nothing",
+      "    an agent read it: not-affected",
+      "      package.json: a fork carrying the fix",
+      "- puttyparty: patched",
+      "    package-lock.json: lodash@4.17.21 · at or past the fix, 4.17.21",
+      "",
+      "Not using it (1): notes",
+    ].join("\n"));
+    expect(sweepReport(lodash, [sweepVerdict(lodash, facts("/z"))], {})).toContain("No project uses it.");
+  });
+
+  it("draws a root the read answered nothing for as unsure, never as missing", () => {
+    const rows = sweepRows(lodash, [facts("/a")], ["/a", "/lost", "/a"]);
+    expect(rows.map((r) => [r.root, r.verdict])).toEqual([["/lost", "unsure"], ["/a", "unused"]]);
+    expect(rows[0].evidence).toEqual(["its lockfiles were not read"]);
+    expect(sweepReport(lodash, sweepRows(lodash, [], ["/x"]), {})).not.toContain("No project uses it.");
+  });
+
+  it("reads a hand-typed range as written, with no fix to name", () => {
+    const typed: SweepAdvisory = { ...adv(pkg("lodash", [], { range: "<4.17.21" })), id: null, aliases: [], summary: "lodash <4.17.21", url: null, severity: "unknown" };
+    expect(sweepVerdict(typed, facts("/a", { found: [copy(0, "4.17.20")] }))).toMatchObject({ verdict: "affected", fix: "a version outside <4.17.21" });
+    expect(sweepTitle(typed)).toBe("lodash <4.17.21");
+    expect(affectedText(pkg("x", [span("2.0.0", null)]))).toBe("npm x >=2.0.0");
+    expect(spanRange(span(null, null, "ECOSYSTEM", "4.5.0"))).toBe("<=4.5.0");
+  });
+
+  it("narrows exactly what maint_sweep.rs serializes (test/fixtures/sweep-wire.json)", () => {
+    const w = JSON.parse(readFileSync(new URL("./fixtures/sweep-wire.json", import.meta.url), "utf8")) as Record<string, unknown>;
+    expect(narrowSweep(w.advisory)).toEqual(w.advisory);
+    expect(narrowSweep(w.typed)).toEqual(w.typed);
+    expect(narrowSweepFacts(w.facts)).toEqual(w.facts);
+    expect(narrowSweepCheck(w.check)).toEqual(w.check);
+  });
+
+  it("narrows what Rust sends rather than trusting it", () => {
+    expect(narrowSweep(lodash)).toEqual(lodash);
+    expect(narrowSweep({ ...lodash, severity: "dire" })).toBeNull();
+    expect(narrowSweepFacts([facts("/a"), { root: "/b" }, null])).toEqual([facts("/a")]);
+    expect(narrowSweepFacts("nope")).toEqual([]);
+    expect(narrowSweepCheck({ verdict: "not-affected", evidence: ["x"] })).toEqual({ verdict: "not-affected", evidence: ["x"] });
+    expect(narrowSweepCheck({ verdict: "probably", evidence: [] })).toBeNull();
   });
 });

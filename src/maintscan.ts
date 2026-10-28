@@ -5,8 +5,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, narrowDetection, narrowMaint, packKept, takeSnap,
-  type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport,
+  clampKept, clampSnaps, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, takeSnap,
+  type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
+  type SweepFacts, type SweepState,
 } from "./maint";
 import { findSource, MAINT_PREFS_DEFAULT, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
@@ -191,5 +192,60 @@ export function forgetMaint(root: string): void {
   cache.delete(root);
   if (snaps[root] || kept[root]) { delete snaps[root]; delete kept[root]; saveSnaps(); }
   forgotten.set(root, (forgotten.get(root) ?? 0) + 1);
+  paint();
+}
+
+// ---------- the advisory sweep: this session only, never a cc- key (docs/maintenance.md) ----------
+
+export interface SweepRun {
+  n: number; query: string; at: number; // ms
+  roots: string[]; // every project asked: one the read answered nothing for is drawn unsure
+  state: SweepState; err: string | null;
+  adv: SweepAdvisory | null; facts: SweepFacts[];
+  agents: Record<string, SweepAgent>; // per root: the read-only agent asked about an unsure project
+}
+const SWEEPS_KEPT = 6;
+let sweepN = 0;
+export let sweeps: SweepRun[] = []; // newest first
+let sweepShown = 0; // the run the board draws
+export const shownSweep = (): SweepRun | null => sweeps.find((s) => s.n === sweepShown) ?? null;
+export function showSweep(n: number): void { sweepShown = n; paint(); }
+
+/** A person's submit: an id is looked up (that id is all that leaves), then every lockfile is read here. */
+export async function runSweep(query: string, roots: readonly string[]): Promise<void> {
+  const s: SweepRun = {
+    n: ++sweepN, query, at: Date.now(), roots: [...new Set(roots)], state: "resolving", err: null, adv: null, facts: [], agents: {},
+  };
+  sweeps = [s, ...sweeps].slice(0, SWEEPS_KEPT);
+  sweepShown = s.n;
+  paint();
+  try {
+    const adv = narrowSweep(await invoke<unknown>("sweep_advisory", { query }));
+    if (!adv) throw new Error("the advisory came back in the wrong shape");
+    s.adv = adv;
+    s.state = "matching";
+    paint();
+    const packages = adv.packages.map((p) => ({ ecosystem: p.ecosystem, name: p.name }));
+    s.facts = narrowSweepFacts(await invoke<unknown>("sweep_match", { roots: s.roots, packages }));
+    s.state = "done";
+  } catch (e) {
+    s.state = "error";
+    s.err = e instanceof Error ? e.message : String(e);
+  }
+  paint();
+}
+
+/** One unsure project, asked of the read-only agent; a second click while it reads is ignored. */
+export async function checkSweep(n: number, root: string, prompt: string): Promise<void> {
+  const s = sweeps.find((x) => x.n === n);
+  if (!s || s.agents[root]?.state === "running") return;
+  s.agents[root] = { state: "running" };
+  paint();
+  try {
+    const check = narrowSweepCheck(await invoke<unknown>("sweep_check", { dir: root, prompt }));
+    s.agents[root] = check ? { state: "done", check } : { state: "error", err: "the answer came back in the wrong shape" };
+  } catch (e) {
+    s.agents[root] = { state: "error", err: String(e) };
+  }
   paint();
 }

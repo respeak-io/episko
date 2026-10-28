@@ -21,6 +21,7 @@ mod maint_eol;
 mod maint_git;
 mod maint_repo;
 mod maint_sec;
+mod maint_sweep;
 mod mcp;
 mod notes;
 mod platform;
@@ -532,6 +533,9 @@ pub fn run() {
             maint::maint_setup,
             maint::propose_maint,
             maint::write_maint,
+            maint_sweep::sweep_advisory,
+            maint_sweep::sweep_match,
+            maint_sweep::sweep_check,
             stack::compose_containers,
             stack::compose_stop,
             stack::stack_config,

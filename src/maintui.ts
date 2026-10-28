@@ -9,11 +9,12 @@ import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
+  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, sweepReport,
+  sweepRows, tabFindings,
   type BoardId, type Door, type MaintTab, type ProjectPick, type SevBucket,
 } from "./maint";
-import { briefFor } from "./maintbrief";
-import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
+import { briefFor, sweepBrief, sweepPrompt } from "./maintbrief";
+import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
 import { openMenu } from "./menu";
@@ -59,6 +60,12 @@ async function fetchHere(root: string, name: string): Promise<void> {
   void scanProject(root, true);
 }
 
+// The project's own check commands, which every brief ends on.
+async function verifyFor(root: string): Promise<string[]> {
+  const tasks = await discoverTasks(root).catch((e) => { dlog("warn", `maint: tasks for ${root}: ${e}`); return []; });
+  return verifyCommands(tasks.map((x) => ({ cmd: execCmd(x), group: x.group, blocked: x.blocked })));
+}
+
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
   const inp = maintInput(root);
@@ -77,9 +84,7 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   }
   // Open work lives in Today's queue; the rest of what Review means is the Maintenance tab's.
   if (f.verb === "review") { host.openDashboard(name, root, f.facet === "work" ? "today" : "maint"); return; }
-  const tasks = await discoverTasks(root).catch((e) => { dlog("warn", `maint: tasks for ${root}: ${e}`); return []; });
-  const verify = verifyCommands(tasks.map((x) => ({ cmd: execCmd(x), group: x.group, blocked: x.blocked })));
-  const text = briefFor(f, inp, { project: name, verify });
+  const text = briefFor(f, inp, { project: name, verify: await verifyFor(root) });
   if (!text) { toast("That has changed since the last check. Check again"); return; }
   host.prefill(name, root, text);
 }
@@ -100,6 +105,43 @@ async function checkProd(roots: readonly string[]): Promise<void> {
   const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
   const failed = reps.filter((x) => x.coverage.state !== "ok").length;
   if (failed) toast(`Prod: ${failed} of ${reps.length} checks could not run. The Prod cell says why`);
+}
+
+// ---------- the advisory sweep: nothing runs until the person submits ----------
+
+function startSweep(at: HTMLElement, host: MaintHost): void {
+  const q = at.closest(".mt-sweep")?.querySelector<HTMLInputElement>(".mt-sweepq")?.value.trim() ?? "";
+  if (!q) { toast("Paste an advisory id, or a package and its range"); return; }
+  void runSweep(q, host.roots());
+}
+
+// Each affected project's brief, prefilled and never sent; the facts are the run's, as drawn.
+async function briefSweep(roots: readonly string[], host: MaintHost): Promise<void> {
+  const s = shownSweep();
+  if (!s?.adv) return;
+  for (const root of roots) {
+    const f = s.facts.find((x) => x.root === root), name = host.nameOf(root);
+    const text = f && sweepBrief(s.adv, f, { project: name, verify: await verifyFor(root) });
+    if (text) host.prefill(name, root, text);
+  }
+}
+
+function sweepAct(at: HTMLElement, host: MaintHost): void {
+  const act = at.dataset.mtsweep, s = shownSweep(), root = at.dataset.mtroot ?? "";
+  if (act === "run") { startSweep(at, host); return; }
+  if (act === "open") { showSweep(Number(at.dataset.mtkey)); return; }
+  if (!s?.adv) return;
+  // A root on Brief or Copy is the tab's project filter: they act on exactly the rows drawn.
+  const rows = sweepRows(s.adv, s.facts, s.roots), mine = root ? rows.filter((r) => r.root === root) : rows;
+  if (act === "patch") void briefSweep([root], host);
+  if (act === "brief") void briefSweep(mine.filter((r) => r.verdict === "affected").map((r) => r.root), host);
+  const row = rows.find((r) => r.root === root);
+  if (act === "check" && row) void checkSweep(s.n, root, sweepPrompt(s.adv, row, host.nameOf(root)));
+  if (act === "copy") {
+    const names = Object.fromEntries(mine.map((r) => [r.root, host.nameOf(r.root)]));
+    const text = sweepReport(s.adv, mine, names, s.agents);
+    void writeText(text).then(() => toast("Copied the sweep's report")).catch(() => toast("Could not copy the report"));
+  }
 }
 
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
@@ -126,6 +168,8 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   const scan = t.closest<HTMLElement>("[data-mtscan]");
   if (scan) { host.scan(scan.dataset.mtscan === "force"); return true; }
+  const sweep = t.closest<HTMLElement>("[data-mtsweep]");
+  if (sweep) { sweepAct(sweep, host); return true; }
   const prod = t.closest<HTMLElement>("[data-mtprod]");
   if (prod) { void checkProd(prod.dataset.mtprod ? [prod.dataset.mtprod] : host.roots()); return true; }
   const chip = t.closest<HTMLElement>("[data-mtchip]");
@@ -191,9 +235,16 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   return false;
 }
 
-/** Enter or Space on a card line's text opens it as a click would; its verb is a button of its own. */
+/** Enter or Space on a card line's text opens it as a click would; its verb is a button of its own.
+ *  Enter in the sweep's box submits it, and nothing else typed there is Maintenance's. */
 export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
   const t = e.target;
+  if (t instanceof HTMLInputElement && t.matches(".mt-sweepq")) {
+    if (e.key !== "Enter" || e.isComposing) return false;
+    e.preventDefault();
+    startSweep(t, host);
+    return true;
+  }
   if ((e.key !== "Enter" && e.key !== " ") || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
   if (!(t instanceof HTMLElement) || !t.matches("[data-mtfind] > .t")) return false;
   e.preventDefault();

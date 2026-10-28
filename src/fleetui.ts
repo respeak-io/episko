@@ -17,15 +17,17 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabExtras,
-  tabFindings, tabModel,
+  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  tabExtras, tabFindings, tabModel,
   type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type TabProject,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
-import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
+import {
+  askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet, shownSweep, sweeps, type SweepRun,
+} from "./maintscan";
 import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import {
-  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSub, type MaintView,
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSub, type MaintSweepView, type MaintView,
 } from "./maintview";
 import {
   allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
@@ -394,6 +396,20 @@ function maintPicks(tab: MaintTab): PickRow[] {
     .map((k) => { const p = byRoot.get(k.root)!; return { ...k, accent: p.accent, icon: iconFor(p.path) }; });
 }
 
+// The session's sweeps as drawn, from what they left: drawing one asks nothing.
+function sweepView(projects: number): MaintSweepView {
+  const rowsOf = (s: SweepRun) => s.adv && s.state === "done" ? sweepRows(s.adv, s.facts, s.roots) : [];
+  const cur = shownSweep();
+  return {
+    runs: sweeps.map((s) => ({
+      n: s.n, at: s.at, query: s.query, state: s.state, title: s.adv ? sweepTitle(s.adv) : s.query,
+      hit: rowsOf(s).filter((r) => r.verdict === "affected").length,
+    })),
+    cur: cur && { n: cur.n, query: cur.query, state: cur.state, err: cur.err, adv: cur.adv, rows: rowsOf(cur), agents: cur.agents },
+    projects, service: findSource("osv")?.label ?? "a public advisory database", // the one maint_sweep.rs asks
+  };
+}
+
 function buildMaint(now: number): MaintView {
   const byRoot = maintProjects();
   const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
@@ -454,6 +470,7 @@ function buildMaint(now: number): MaintView {
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
     })),
     prod: { projects: prodProjects, checking: prodChecking },
+    sweep: maintSub === "security" ? sweepView(byRoot.size) : undefined,
   };
 }
 
@@ -464,7 +481,14 @@ const painted = new Map<string, string>();
 function paint(id: string, html: string): void {
   if (painted.get(id) === html) return;
   painted.set(id, html);
-  $(id).innerHTML = html;
+  const el = $(id), q = el.querySelector<HTMLInputElement>(".mt-sweepq");
+  // The sweep's box is typed into while answers land: its text, caret and focus survive a repaint.
+  const kept = q && { v: q.value, on: document.activeElement === q, a: q.selectionStart, b: q.selectionEnd };
+  el.innerHTML = html;
+  const nq = kept && el.querySelector<HTMLInputElement>(".mt-sweepq");
+  if (!kept || !nq) return;
+  nq.value = kept.v;
+  if (kept.on) { nq.focus({ preventScroll: true }); nq.setSelectionRange(kept.a, kept.b); }
 }
 
 export function renderFleet(): void {

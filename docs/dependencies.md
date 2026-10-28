@@ -102,6 +102,8 @@ Four rules hold it up:
 - **A bare version means opposite things in two ecosystems.** `serde = "1"` in Cargo.toml is
   `^1`; `"vitest": "1"` in package.json is exactly `1.0.0`. The ecosystem is therefore an
   argument to `satisfies`, and getting it wrong inverts every verdict for one of them.
+  The advisory sweep (docs/maintenance.md § Advisory sweep) passes OSV's `crates.io`, which is
+  deliberately *not* caret-by-default: a range a person types there means the version written.
 - **A 0.x minor is a MAJOR bump.** Semver puts breaking changes there below 1.0.0, and the
   word is what a person acts on.
 - **`transitive` is a locator, not a cost**, so it is **not** on the group's cost ladder. One

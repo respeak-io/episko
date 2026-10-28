@@ -3,8 +3,9 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  ciFailures, clampMaint, mergeAdvisories, okFacts, redFor, rtName, runtimeStates, span,
-  type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type RuntimeState, type Verb,
+  affectedText, ciFailures, clampMaint, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
+  type Advisory, type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type RuntimeState,
+  type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
 export interface MaintBriefCtx {
@@ -80,20 +81,61 @@ function pkgRows(a: MergedAdvisory): string[] {
       + (fixOf(x) ? `fixed in ${fixOf(x)}` : "no fixed version published")));
 }
 
-const patchBrief: Brief = (f, inp, ctx) => {
-  const { all, capped } = advisoriesOf(f, inp, "dependency");
-  if (!all.length) return null;
+// `why` says where the rows came from when it is not a reporter's list.
+function patchLines(all: MergedAdvisory[], capped: boolean, ctx: MaintBriefCtx, why: string[] = []): string[] {
   const one = all.length === 1;
   return [
     one ? `Patch ${named(all[0])} · ${all[0].severity} in ${ctx.project}.`
       : `Patch ${all.length} advisories in ${ctx.project}, worst first. One upgrade may clear several; say which.`,
     ...each(all, (a) => `${named(a)} · ${a.severity}`, (a) => [a.summary, ...(a.url ? [a.url] : []), ...(one ? [""] : []), ...pkgRows(a)]),
+    ...why,
     ...cappedNote(capped, "advisories"),
     "",
     ...compatBlock(),
     ...verifyBlock(ctx.verify),
   ];
+}
+
+const patchBrief: Brief = (f, inp, ctx) => {
+  const { all, capped } = advisoriesOf(f, inp, "dependency");
+  return all.length ? patchLines(all, capped, ctx) : null;
 };
+
+/** A sweep's affected project as any Patch reads: each copy inside a range is one advisory row. */
+export function sweepBrief(adv: SweepAdvisory, f: SweepFacts, ctx: MaintBriefCtx): string | null {
+  const items: Advisory[] = f.found.flatMap((c) => {
+    const p = adv.packages[c.pkg], at = p && placeVersion(p, c.version);
+    return p && at?.state === "in" ? [{
+      id: adv.id ?? `${p.name} ${at.range}`, aliases: adv.aliases, kind: "dependency" as const, pkg: p.name, ecosystem: p.ecosystem,
+      version: c.version, severity: adv.severity, rawSeverity: adv.rawSeverity, summary: adv.summary, fixed: at.fixed,
+      location: c.file, url: adv.url, tool: "advisory sweep",
+    }] : [];
+  });
+  if (!items.length) return null;
+  const why = ["", "An advisory sweep found each copy above inside the affected range, from the lockfiles alone.",
+    "Check for any other copy (a vendored one, another lockfile) before you call it done."];
+  return patchLines(mergeAdvisories([items]), false, ctx, why).join("\n");
+}
+
+/** What the read-only agent is asked of one project the lockfiles could not decide. */
+export function sweepPrompt(adv: SweepAdvisory, row: SweepRow, project: string): string {
+  return [
+    `Is the project in this folder (${project}) affected by ${sweepTitle(adv)}?`,
+    ...(adv.id && adv.summary ? [adv.summary] : []), ...(adv.url ? [adv.url] : []),
+    "", "The advisory affects:", ...adv.packages.map((p) => bullet(affectedText(p))),
+    "", "Reading the lockfiles could not decide it:", ...row.evidence.map(bullet),
+    "",
+    "Read the manifests, lockfiles, vendored or forked copies and the code that uses the package, and decide",
+    "whether a vulnerable version is installed here. Say what you read; never guess a version you could not find.",
+    "You can read files and nothing else, and nothing you answer is applied.",
+    "",
+    "Answer with one fenced toml block and nothing after it:",
+    "```toml",
+    `verdict = "unsure" # or "affected", or "not-affected"`,
+    `evidence = ["<file>: <what it says>"]`,
+    "```",
+  ].join("\n");
+}
 
 const rotateBrief: Brief = (f, inp, ctx) => {
   const { all, capped } = advisoriesOf(f, inp, "secret");

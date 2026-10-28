@@ -8,6 +8,7 @@ import {
   advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Door, type Finding, type FlowRow, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
+  affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
 } from "./maint";
 import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
@@ -43,6 +44,14 @@ export interface MaintTabView extends TabModel {
   sev: SevBucket | null; // the Security strip's pick
   names: Record<string, string>; // every root's project name
   dash?: MaintDashExtra; // the dashboard's: one project for good, so no picker, and its own reads
+  sweep?: MaintSweepView; // the fleet's Security tab only: the question is asked of every project
+}
+/** The advisory sweep: the run drawn and this session's others, newest first. Never stored. */
+export interface MaintSweepView {
+  runs: { n: number; at: number; query: string; title: string; hit: number; state: SweepState }[];
+  cur: { n: number; query: string; state: SweepState; err: string | null; adv: SweepAdvisory | null; rows: SweepRow[]; agents: Record<string, SweepAgent> } | null;
+  projects: number;
+  service: string; // who an id is sent to, as the manifest names it
 }
 /** What only the dashboard knows: its dependency read, which no Maintenance source carries. */
 export interface MaintDashExtra {
@@ -432,7 +441,8 @@ function securityHtml(v: MaintTabView, b: Boards): string {
     : empty("Every advisory and update pull request the dependency read found is behind ⤢."), first ? door : "") : "";
   const eol = b.eol.length ? board("runtimes", "Runtime end-of-life",
     `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b)) : "";
-  return adv + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
+  const sweep = v.sweep ? sweepHtml(v, b, v.sweep) : "";
+  return adv + sweep + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
 }
 
 // One row per runtime cycle a project declares; its end opens the page that dates it, muted unless it needs you.
@@ -541,6 +551,77 @@ function serversHtml(v: MaintTabView, b: Boards): string {
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);
   return board("addresses", "Addresses", `as last checked · ${readNote(b.read.prod)}`,
     table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows));
+}
+
+// ---------- the advisory sweep: one question asked of every project's lockfiles ----------
+
+const SWEEP_CLS: Record<SweepVerdict, string> = { affected: "l-bad", unsure: "l-warn", patched: "l-ok", unused: "l-muted" };
+const AGENT_CLS: Record<SweepCheck["verdict"], string> = { affected: "l-bad", "not-affected": "l-ok", unsure: "l-warn" };
+const SWEEP_TIP = "Look the advisory up and read every project's lockfiles. Nothing runs in a project";
+const sweepBtn = (act: string, label: string, tip: string, root = "") =>
+  `<button class="mt-verb" data-mtsweep="${act}"${root ? ` data-mtroot="${escAttr(root)}"` : ""} data-tip="${escAttr(tip)}">${esc(label)}</button>`;
+
+// What the read-only agent said, beside the row and never in place of it.
+function agentHtml(a: SweepAgent | undefined): string {
+  if (!a) return "";
+  if (a.state === "running") return `<span class="mt-sw-ag dim">an agent is reading this project…</span>`;
+  if (a.state === "error") return `<span class="mt-sw-ag dim">the agent could not answer: ${esc(a.err)}</span>`;
+  return `<span class="mt-sw-ag">agent: <b class="mt-n ${AGENT_CLS[a.check.verdict]}">${esc(a.check.verdict)}</b>`
+    + a.check.evidence.map((e) => `<br>${esc(e)}`).join("") + `</span>`;
+}
+
+function sweepRowHtml(v: MaintTabView, b: Boards, run: NonNullable<MaintSweepView["cur"]>, r: SweepRow): string {
+  const a = run.agents[r.root];
+  const verb = r.verdict === "affected" ? sweepBtn("patch", "Patch ↗", AGENT_TIP, r.root)
+    : r.verdict === "unsure" && a?.state !== "running"
+      ? sweepBtn("check", a ? "Ask again" : "Check with an agent",
+        "Claude reads this project in the background, read-only (Read, Glob, Grep), and says whether it is affected. Its answer is shown here and changes nothing", r.root)
+      : "";
+  return `<tr>${projTd(v, b, r.root)}` + td(`<span class="mt-n ${SWEEP_CLS[r.verdict]}">${esc(r.word)}</span>`)
+    + td(r.evidence.map(esc).join("<br>") + agentHtml(a), "mt-sw-ev mono")
+    + td(r.fix ? `<span class="mt-n l-warn">${esc(r.fix)}</span>` : DASH, "mono") + td(verb, "a") + `</tr>`;
+}
+
+function sweepRunHtml(v: MaintTabView, b: Boards, s: MaintSweepView, run: NonNullable<MaintSweepView["cur"]>): string {
+  if (run.state === "error") return `<p class="mt-sw-err">${esc(run.err ?? "the sweep failed")}</p>`;
+  if (!run.adv) return `<p class="fl-none">Looking up ${esc(run.query)}…</p>`;
+  const adv = run.adv, sev = adv.severity === "unknown" ? "" : ` · ${adv.severity}`;
+  const id = adv.url ? settingsHtml(adv.url, `${sweepTitle(adv)} ↗`) : `<span>${esc(sweepTitle(adv))}</span>`;
+  const level = adv.severity === "critical" || adv.severity === "high" ? "l-bad" : adv.severity === "medium" ? "l-warn" : "l-muted";
+  const head = `<div class="mt-sw-adv"><span class="mono id">${id}<span class="mt-n ${level}">${esc(sev)}</span></span>`
+    + (adv.id && adv.summary ? `<b>${esc(adv.summary)}</b>` : "")
+    + `<span class="mono f">${[...adv.packages.map((p) => `affects ${affectedText(p)}`), ...adv.gaps].map(esc).join("<br>")}</span></div>`;
+  if (run.state !== "done") return head + `<p class="fl-none">Reading ${esc(plural(s.projects, "project"))}' lockfiles…</p>`;
+  const only = v.filter?.root ?? "", mine = run.rows.filter((r) => !only || r.root === only);
+  const used = mine.filter((r) => r.verdict !== "unused"), unused = mine.filter((r) => r.verdict === "unused");
+  const n = (k: SweepVerdict) => mine.filter((r) => r.verdict === k).length;
+  const tally = SWEEP_VERDICTS.filter((k) => n(k)).map((k) => `${n(k)} ${k === "unused" ? "not using it" : k}`).join(" · ");
+  const rest = unused.length ? `<p class="fl-none" data-tip="${escAttr(unused.map((r) => nameOf(v, r.root)).join(", "))}">`
+    + `${esc(`${plural(unused.length, "project")} ${unused.length === 1 ? "does" : "do"} not use it: `)}${unused.slice(0, SHOWN).map((r) => projHtml(r.root, nameOf(v, r.root))).join(", ")}`
+    + `${unused.length > SHOWN ? ` +${unused.length - SHOWN}` : ""}</p>` : "";
+  const hit = n("affected");
+  const acts = `<div class="mt-sw-acts"><span class="mt-note mono">${esc(tally)}</span>`
+    + sweepBtn("copy", "Copy report", "Copy the verdicts drawn here as text", only)
+    + (hit ? sweepBtn("brief", `Brief ${plural(hit, "agent")} ↗`, `One agent per affected project, each with its brief prefilled and never sent: you press Enter in each`, only) : "")
+    + `</div>`;
+  const table = used.length ? `<div class="mt-scroll"><table class="mt-tbl mt-sw-tbl"><thead><tr>`
+    + [...projCol(b), "Verdict", "Evidence", "Fix", ""].map((c) => `<th>${esc(c)}</th>`).join("") + `</tr></thead><tbody>`
+    + used.map((r) => sweepRowHtml(v, b, run, r)).join("") + `</tbody></table></div>` : `<p class="fl-none">No project uses it.</p>`;
+  return head + table + rest + acts;
+}
+
+// The board's ask, its run and the session's recent sweeps; what leaves the machine is said beside the box.
+function sweepHtml(v: MaintTabView, b: Boards, s: MaintSweepView): string {
+  const ask = `<div class="mt-sw-ask"><input class="mt-sweepq mono" type="text" spellcheck="false" autocomplete="off"`
+    + ` aria-label="An advisory id, or a package and its range" placeholder="CVE-2021-23337 · GHSA-… · RUSTSEC-… · lodash@&lt;4.17.21 · npm:next &gt;=15.0.0 &lt;15.5.6" />`
+    + `<button class="mt-sw-go" data-mtsweep="run" data-tip="${escAttr(SWEEP_TIP)}">Sweep</button></div>`
+    + `<p class="mt-sw-hint">${esc(`An id is looked up on ${s.service}, which receives that id and nothing else (for a record naming no package, also the ids it lists beside it). A package and its range sends nothing. Lockfiles are read here and never run.`)}</p>`;
+  const recent = s.runs.length > 1 ? `<div class="mt-sw-recent"><span class="mt-note mono">this session</span>` + s.runs.map((r) =>
+    `<button class="mt-sw-past${r.n === s.cur?.n ? " on" : ""}" data-mtsweep="open" data-mtkey="${r.n}" data-tip="${escAttr(`${r.query}, ${relTime(r.at)}`)}">`
+    + `<span class="mt-n ${r.hit ? "l-bad" : "l-muted"}">${r.state === "done" ? `${r.hit} hit` : r.state === "error" ? "failed" : "…"}</span>${esc(r.title)}</button>`).join("") + `</div>` : "";
+  const body = s.cur ? sweepRunHtml(v, b, s, s.cur) : "";
+  return `<section class="mt-sec mt-board mt-sweep"><div class="mt-sec-h"><span class="label">Advisory sweep</span>`
+    + `<span class="mt-note mono">${esc(`does it affect any project? · ${plural(s.projects, "project")}`)}</span></div>${ask}${body}${recent}</section>`;
 }
 
 const BOARDS: Record<MaintTab, (v: MaintTabView, b: Boards) => string> = {
