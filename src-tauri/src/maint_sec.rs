@@ -201,8 +201,9 @@ fn code_alert(a: &Value) -> Option<Advisory> {
     })
 }
 
-/// A secret has no severity of its own; whether it still works is the fact that matters.
-fn secret_alert(a: &Value) -> Option<Advisory> {
+/// A secret has no severity of its own; whether it still works is the fact that matters. Its
+/// number is per repository, so the id names the repository or two repos' `#1` would be one row.
+fn secret_alert(repo: &str, a: &Value) -> Option<Advisory> {
     let n = a.get("number")?.as_u64()?;
     let what = [text(a, "/secret_type_display_name"), text(a, "/secret_type")].into_iter().find(|s| !s.is_empty()).unwrap_or("a secret");
     let valid = match text(a, "/validity") {
@@ -212,7 +213,7 @@ fn secret_alert(a: &Value) -> Option<Advisory> {
     };
     let line = a.pointer("/first_location_detected/start_line").and_then(Value::as_u64);
     Some(Advisory {
-        id: format!("secret #{n}"),
+        id: format!("secret {repo}#{n}"),
         aliases: vec![],
         kind: AdvisoryKind::Secret,
         pkg: None,
@@ -236,7 +237,8 @@ pub(crate) fn gh_code_scanning(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverag
 
 pub(crate) fn gh_secret_scanning(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
     let (rows, full) = alert_page(ctx, ex, "secret-scanning", secret_scanning_coverage)?;
-    let items = rows.iter().filter_map(secret_alert).collect();
+    let repo = github_repo(ctx)?;
+    let items = rows.iter().filter_map(|a| secret_alert(repo, a)).collect();
     Ok(Read { truncated: full, ..Read::of(Facts::Advisories { items }) })
 }
 
@@ -934,8 +936,8 @@ mod tests {
         assert!(ex.calls()[0].iter().any(|a| a.ends_with("&hide_secret=true")), "never fetch the leaked value: {:?}", ex.calls());
         let got: Vec<_> = items(&r).iter().map(|a| (a.id.as_str(), a.kind, a.summary.as_str(), a.location.as_deref())).collect();
         assert_eq!(got, [
-            ("secret #3", AdvisoryKind::Secret, "GitHub Personal Access Token, still valid", Some("scripts/seed.ts:12")),
-            ("secret #4", AdvisoryKind::Secret, "Slack Incoming Webhook URL", None),
+            ("secret acme/app#3", AdvisoryKind::Secret, "GitHub Personal Access Token, still valid", Some("scripts/seed.ts:12")),
+            ("secret acme/app#4", AdvisoryKind::Secret, "Slack Incoming Webhook URL", None),
         ]);
         assert!(items(&r).iter().all(|a| a.severity == Severity::Unknown), "a secret has no severity to invent");
     }

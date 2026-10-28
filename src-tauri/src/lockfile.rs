@@ -123,32 +123,53 @@ fn pnpm_lock(text: &str, file: &str) -> Result<Parsed, String> {
     }
     let (mut out, mut other) = (Parsed::default(), 0);
     let mut inside = false;
+    // 6.x keys a git, path or tarball copy by where it came from; its name is a line inside.
+    let mut bare: Option<String> = None;
     for line in text.lines() {
         if !line.starts_with(' ') && !line.trim().is_empty() {
             inside = line.trim_end() == "packages:";
+            other += usize::from(bare.take().is_some());
+            continue;
+        }
+        if let (Some(from), Some(n)) = (&bare, line.strip_prefix("    name:")) {
+            out.unpinned.push(pkg("npm", n.trim().trim_matches(['\'', '"']), from));
+            (other, bare) = (other + 1, None);
             continue;
         }
         let Some(key) = line.strip_prefix("  ").filter(|k| !k.starts_with(' ')).and_then(|k| k.trim_end().strip_suffix(':')) else { continue };
         if !inside {
             continue;
         }
+        other += usize::from(bare.take().is_some());
         let key = key.trim_matches(['\'', '"']);
         let key = key.strip_prefix('/').unwrap_or(key);
         let key = key.split('(').next().unwrap_or(key);
-        // The `@` after the name, never a scope's leading one.
-        if let Some((name, version)) = key.rsplit_once('@').filter(|(n, _)| !n.is_empty()) {
-            if version.starts_with(|c: char| c.is_ascii_digit()) {
-                out.pkgs.push(pkg("npm", name, version));
-            } else if version.starts_with("link:") {
-                out.local.push(pkg("npm", name, version)); // usually the project's own folder
-            } else {
-                other += 1;
-                out.unpinned.push(pkg("npm", name, version));
-            }
+        let Some((name, version)) = pnpm_key(key) else {
+            bare = Some(key.to_string());
+            continue;
+        };
+        if version.starts_with(|c: char| c.is_ascii_digit()) {
+            out.pkgs.push(pkg("npm", name, version));
+        } else if version.starts_with("link:") {
+            out.local.push(pkg("npm", name, version)); // usually the project's own folder
+        } else {
+            other += 1;
+            out.unpinned.push(pkg("npm", name, version));
         }
     }
+    other += usize::from(bare.is_some());
     unchecked(&mut out, file, other);
     Ok(out)
+}
+
+/// Split at the first `@` after a scope's leading one, since a git source has `@` in it too; a
+/// name that is not an npm name (`github.com/x/y`, `file:a`) means the key is no `name@version`.
+fn pnpm_key(key: &str) -> Option<(&str, &str)> {
+    let at = key.char_indices().skip(1).find(|&(_, c)| c == '@')?.0;
+    let name = &key[..at];
+    let slashes = name.matches('/').count();
+    let ok = !name.contains(':') && slashes == usize::from(name.starts_with('@'));
+    ok.then(|| (name, &key[at + 1..]))
 }
 
 #[cfg(test)]
@@ -210,12 +231,21 @@ version = \"1.6.0\"
         assert_eq!((names(&p), p.gaps.len()), (NPM.to_vec(), 0), "importers and snapshots are not packages");
         let v6 = "lockfileVersion: '6.0'\n\ndependencies:\n  lodash:\n    specifier: 4.17.20\n    version: 4.17.20\n\npackages:\n\n  \
                   /lodash@4.17.20:\n    resolution: {integrity: x}\n\n  /@scope/peer@1.0.0(react@18.2.0):\n    dev: false\n\n  \
-                  /local@file:../x:\n    dev: false\n\n  /mine@link:../mine:\n    dev: false\n";
+                  file:packages/foo:\n    resolution: {directory: packages/foo, type: directory}\n    name: foo\n    dev: false\n\n  \
+                  github.com/acme/is-positive/97edff6f:\n    resolution: {tarball: x}\n    name: is-positive\n    version: 3.1.0\n\n  \
+                  registry.example.com/nameless/-/nameless-1.0.0.tgz:\n    dev: false\n\n  /mine@link:../mine:\n    dev: false\n";
         let p = parse("pnpm-lock.yaml", v6).unwrap();
         assert_eq!(names(&p), [("npm", "@scope/peer", "1.0.0"), ("npm", "lodash", "4.17.20")]);
-        assert_eq!(p.gaps, ["pnpm-lock.yaml: 1 from git, a tarball or a path not checked"], "file: is a gap, link: the project");
-        assert_eq!(p.unpinned, [pkg("npm", "local", "file:../x")]);
+        assert_eq!(p.gaps, ["pnpm-lock.yaml: 3 from git, a tarball or a path not checked"], "file:, git and a tarball are gaps, link: the project");
+        let from_git = pkg("npm", "is-positive", "github.com/acme/is-positive/97edff6f");
+        assert_eq!(p.unpinned, [pkg("npm", "foo", "file:packages/foo"), from_git], "6.x keys these by source, named inside");
         assert_eq!(p.local, [pkg("npm", "mine", "link:../mine")]);
+        let v9 = "lockfileVersion: '9.0'\n\npackages:\n\n  foo@git+ssh://git@gitlab.com/acme/foo.git#abc:\n    resolution: {type: git}\n\n  \
+                  '@s/bar@file:../bar':\n    resolution: {directory: ../bar}\n\nsnapshots:\n\n  foo@git+ssh://git@gitlab.com/acme/foo.git#abc: {}\n";
+        let p = parse("pnpm-lock.yaml", v9).unwrap();
+        let ssh = pkg("npm", "foo", "git+ssh://git@gitlab.com/acme/foo.git#abc");
+        assert_eq!(p.unpinned, [pkg("npm", "@s/bar", "file:../bar"), ssh], "split at the name's @, not the source's");
+        assert_eq!(p.gaps, ["pnpm-lock.yaml: 2 from git, a tarball or a path not checked"]);
         let old = parse("pnpm-lock.yaml", "lockfileVersion: 5.4\npackages:\n  /a/1.0.0:\n    dev: false\n").unwrap();
         assert_eq!((old.pkgs.len(), old.gaps), (0, vec!["pnpm-lock.yaml: lockfileVersion 5.4 not read".to_string()]));
         assert!(parse("pnpm-lock.yaml", "packages:\n").is_err(), "no version line is not a lockfile");

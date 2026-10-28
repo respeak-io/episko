@@ -176,11 +176,15 @@ fn declared(root: &str, gaps: &mut Vec<String>) -> Vec<Decl> {
         let path = Path::new(root).join(&file);
         let text = match crate::maint::read_capped(&path, FILE_BYTES) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::Other => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Other | std::io::ErrorKind::InvalidData) => {
                 gaps.push(format!("{file} is {e}"));
                 continue;
             }
-            Err(_) => continue,
+            Err(e) => {
+                gaps.push(format!("{file} could not be read: {e}"));
+                continue;
+            }
         };
         for d in parse_decl(&file, &text, gaps) {
             if !out.contains(&d) {
@@ -382,6 +386,18 @@ mod tests {
         }
         assert_eq!(decls("pyproject.toml", "[tool.poetry]\nname = 1\n"), (vec![], vec![]));
         assert_eq!(decls("pyproject.toml", "[[[ junk"), (vec![], vec![]), "unparseable is nothing read, never a guess");
+    }
+
+    #[test]
+    fn a_windows_encoded_file_is_read_and_an_unreadable_one_is_a_gap() {
+        let root = repo(&[("Dockerfile", "\u{feff}FROM node:14\n"), ("go.mod", "")]);
+        std::fs::write(Path::new(&root).join(".nvmrc"), [0xFF, 0xFE, b'1', 0, b'6', 0, b'\r', 0, b'\n', 0]).unwrap();
+        std::fs::write(Path::new(&root).join("go.mod"), [b'g', b'o', b' ', 0xC3, 0x28]).unwrap();
+        let mut gaps = vec![];
+        let mut d: Vec<_> = declared(&root, &mut gaps).into_iter().map(|d| (d.product, d.version)).collect();
+        d.sort();
+        assert_eq!(d, [v("nodejs", "14"), v("nodejs", "16")], "a BOM and UTF-16 are text too");
+        assert_eq!(gaps, ["go.mod is not UTF-8 text"], "never skipped in silence");
     }
 
     #[test]
