@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, rtName, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, snapFor, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
@@ -273,6 +273,9 @@ describe("facet rules over ok facts", () => {
     expect(cell("deps", input(ok("d", old)))).toMatchObject({ level: "muted", text: "silent" });
     expect(cell("deps", input(ok("d", prs(2))))).toMatchObject({ level: "info", text: "2 PRs" });
     expect(cell("deps", input(ok("d", prs(5))))).toMatchObject({ level: "warn", text: "5 PRs" });
+    const two = input(ok("d", prs(3)), ok("e", prs(2, { bot: "c" })));
+    expect(cell("deps", two), "a pile is one bot's, as its line is").toMatchObject({ level: "info", text: "5 PRs" });
+    expect(findings("/r", two, MAINT_DEFAULTS, NOW).map((f) => f.level)).toEqual(["info", "info"]);
     expect(cell("deps", input(ok("d", prs(1, {}, "fail"))))).toMatchObject({ level: "warn", text: "1 red" });
     const undated = prs(2);
     if (undated.kind === "updatePrs") for (const p of undated.prs) p.at = null;
@@ -306,6 +309,14 @@ describe("facet rules over ok facts", () => {
     expect(cell("git", input(ok("g", hyg())))).toMatchObject({ level: "ok", text: "" });
   });
 
+  it("git: a branch only here whose commits a remote holds needs nothing, so it is no colour and no line", () => {
+    const fresh = input(ok("g", hyg({ localOnly: ["cur", "wt-branch"] })));
+    expect(cell("git", fresh)).toMatchObject({ level: "ok", text: "" });
+    expect(cell("git", fresh).tip).toContain("only here: cur, wt-branch");
+    expect(findings("/r", fresh, MAINT_DEFAULTS, NOW)).toEqual([]);
+    expect(cell("git", input(ok("g", hyg({ unpushed: null, localOnly: ["main"] }))))).toMatchObject({ level: "muted", text: "no remote" });
+  });
+
   it("prod: down is broken, and a certificate nobody could read is unknown, never fine", () => {
     const probe = (o = {}) => ({ name: "app", url: "https://app.example", code: 200, ms: 90, certNotAfter: S + 90 * D, err: null, ...o });
     const p = (o = {}) => input(ok("h", { kind: "probes", items: [probe(o)] }));
@@ -314,6 +325,7 @@ describe("facet rules over ok facts", () => {
     expect(cell("prod", p({ code: null, err: "timeout" }))).toMatchObject({ level: "bad", text: "app down" });
     expect(cell("prod", p({ certNotAfter: S + 6 * D }))).toMatchObject({ level: "warn", text: "cert 6d" });
     expect(cell("prod", p({ certNotAfter: null }))).toMatchObject({ level: "muted", text: "cert unknown" });
+    expect(cell("prod", p({ certNotAfter: null, url: "HTTPS://app.example" })), "a scheme in any case").toMatchObject({ level: "muted", text: "cert unknown" });
     const expired = cell("prod", p({ certNotAfter: S - 3 * D }));
     expect(expired).toMatchObject({ level: "bad", text: "cert expired" });
     expect(expired.tip).toEqual(["app: 200 · cert expired 3d ago"]);
@@ -928,7 +940,7 @@ describe("prod, coming up and hosts", () => {
     const r = rows(
       p("ok", 90, { ms: 140 }), p("soon", 6), p("gone", -2), p("five", 90, { code: 502 }), p("four", 90, { code: 404, ms: null }),
       p("down", null, { code: null, ms: null, err: "Could not resolve host" }), p("blind", null),
-      { ...p("plain", null), url: "http://plain" },
+      { ...p("plain", null), url: "http://plain" }, { ...p("upper", null), url: "HTTPS://upper" },
     )!;
     expect(r.at).toBe(S - H);
     expect(r.rows.map((x) => [x.name, x.status, x.level, x.cert, x.certLevel])).toEqual([
@@ -936,6 +948,7 @@ describe("prod, coming up and hosts", () => {
       ["gone", "200 · 1ms", "ok", "cert expired", "bad"], ["five", "502 · 1ms", "bad", "cert 90d", "ok"],
       ["four", "404", "warn", "cert 90d", "ok"], ["down", "no answer", "bad", "cert unknown", "muted"],
       ["blind", "200 · 1ms", "ok", "cert unknown", "muted"], ["plain", "200 · 1ms", "ok", "", "ok"],
+      ["upper", "200 · 1ms", "ok", "cert unknown", "muted"],
     ]);
     expect(cell("prod", input(ok("h", probes(p("a", 90), p("b", 90, { code: 404 }))))), "a 4xx is amber, not down")
       .toMatchObject({ level: "warn", text: "b 404" });
@@ -1113,7 +1126,7 @@ describe("the tabs' boards", () => {
     const rows = hygieneBoard(ps, null, NOW);
     const cnt = (r: (typeof rows)[number]) => [r.unpushed, r.localOnly, r.merged, r.gone, r.idle].map((c) => `${c.n}:${c.level}`);
     expect(rows.map((r) => [r.root, r.level])).toEqual([["/messy", "warn"], ["/stale", "warn"], ["/nowhere", "muted"], ["/clean", "ok"]]);
-    expect(cnt(rows[0])).toEqual(["3:warn", "1:warn", "2:info", "1:info", "0:ok"]);
+    expect(cnt(rows[0]), "local-only is the Git cell's tip, not its colour").toEqual(["3:warn", "1:info", "2:info", "1:info", "0:ok"]);
     expect(cnt(rows[3]), "a zero is the grey dot, never a number").toEqual(["0:ok", "0:ok", "0:ok", "0:ok", "0:ok"]);
     expect(cnt(rows[2])[0], "no remote is unknown, not zero").toBe("null:muted");
     expect(rows[0].verbs.map((f) => f.verb)).toEqual(["push", "tidy"]);
@@ -1222,12 +1235,12 @@ describe("a board's numbers are doors", () => {
   // Every number column of every board, and where it opens: "url" takes the cell's own address.
   const WHERE: Record<BoardId, Record<string, Door | "url" | null>> = {
     advisories: {}, packages: {}, runtimes: { ends: "url" },
-    "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
+    "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
     ci: { run: "url" },
     releases: { since: { to: "landed" }, changelog: null },
     hygiene: {
       unpushed: branches("unpushed"), localOnly: branches("localonly"), merged: branches("merged"), gone: branches("gone"),
-      stale: branches("stale"), idle: { to: "checkouts" }, fetched: { to: "fetch" },
+      stale: branches("untouched"), idle: { to: "checkouts" }, fetched: { to: "fetch" },
     },
     work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
     addresses: { address: "url" },
@@ -1559,6 +1572,19 @@ describe("the cold-boot snapshot (cc-maint)", () => {
     expect(snap.findings.map((f) => f.key)).toContain("ci");
   });
 
+  it("keeps the account that read it, and is no other identity's to draw", () => {
+    const mine = takeSnap("/r", red(), NOW, undefined, "work");
+    const snaps = clampSnaps(JSON.parse(JSON.stringify({ "/r": mine, "/legacy": stored() })));
+    expect(snaps["/r"].account).toBe("work");
+    expect(snapFor(snaps, "/r", "work")).toEqual(mine);
+    expect(snapFor(snaps, "/r", "home"), "another login's verdict").toBeUndefined();
+    expect(snapFor(snaps, "/r", null), "the pin removed").toBeUndefined();
+    expect(snaps["/legacy"].account, "a snapshot from before the field is the unpinned one's").toBeNull();
+    expect(snapFor(snaps, "/legacy", null)).toBeDefined();
+    expect(snapFor(snaps, "/legacy", "work")).toBeUndefined();
+    expect(clampSnaps({ "/r": stored({ account: 7 }) })["/r"].account, "a wrong shape is no account").toBeNull();
+  });
+
   it("writes only what it will read back: long words are cut, an overlong key is left out, the root survives", () => {
     const probe = (name: string) => ({ name, url: "https://app.example/h", code: 503, ms: 90, certNotAfter: null, err: null });
     const long = "a".repeat(SNAP_TEXT + 20), huge = "b".repeat(SNAP_KEY + 1);
@@ -1661,7 +1687,7 @@ describe("the last scan kept whole (cc-maint-scan)", () => {
 
 describe("Today's red default branch", () => {
   const failing = () => input(ok(GHA, ci(run("build", "fail", S - 3 * D), run("build", "pass", S - 4 * D))));
-  const snap = { at: NOW - 5 * H * 1000, cells: [], findings: [
+  const snap = { at: NOW - 5 * H * 1000, account: null, cells: [], findings: [
     { facet: "ci" as const, key: "ci:deploy", level: "bad" as const, text: "CI failing 1d" },
     { facet: "git" as const, key: "git:tidy", level: "info" as const, text: "2 branches to tidy" },
   ] };

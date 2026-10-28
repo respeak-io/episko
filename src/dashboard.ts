@@ -1066,7 +1066,7 @@ export function renderDash(): void {
       picked: branchSel.picked, cpicked: coSel.picked,
       headState: pickState(pickCtx("branches"), branchSel.picked),
       coHeadState: pickState(pickCtx("checkouts"), coSel.picked),
-      filter: branchFilter, query: branchQuery, now,
+      filter: branchFilter, query: branchQuery, now, untouchedDays: untouchedDays(),
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
@@ -1180,7 +1180,9 @@ export function openDashboard(project: string, path: string, tab?: DashTab, door
 // A Maintenance board number's door: the view that acts on what it counts, with that already picked.
 function openDashDoor(d: Door): void {
   if (d.to === "branches") { branchFilter = d.filter; branchQuery = ""; openDashView("branches"); return; }
-  if (d.to === "checkouts" || d.to === "deps") { openDashView(d.to); return; }
+  if (d.to === "checkouts") { openDashView(d.to); return; }
+  // After the view opens: its tier fallback must not override the tab the number counts.
+  if (d.to === "deps") { openDashView("deps"); if (d.tab) { depTab = d.tab; renderDash(); } return; }
   if (d.to !== "queue" && d.to !== "landed") return;   // a fetch and a page never leave Maintenance
   if (d.to === "queue") { queueFilter = d.filter; queueQuery = ""; }
   if (dashTab !== "today") setDashTab("today");
@@ -1813,7 +1815,9 @@ const checkoutRowsNow = (): CheckoutRow[] => branchData ? checkoutRows({
 }) : [];
 
 // What the table is showing right now, which is what `All` and a shift-click range mean.
-const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, branchQuery, Date.now()));
+const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, branchQuery, Date.now(), untouchedDays()));
+// Untouched lists what Maintenance's hygiene board counts, so it reads the same threshold.
+function untouchedDays(): number { return clampMaint(maintInput(root())?.det?.config.thresholds).staleBranchDays; }
 
 // Delete the ticked branches here, or here and on the remote. Checkouts first (git refuses to
 // delete a branch a worktree holds), then the local refs, then the remote ones: a remote
