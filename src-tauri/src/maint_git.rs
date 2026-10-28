@@ -2,7 +2,7 @@
 //! Thin wrappers over git.rs's readers; they never fetch, so their facts carry `fetched_at`.
 
 use crate::git::{hygiene, maint_trunk, release_facts, repo_root_of};
-use crate::maint::{Coverage, Ctx, Exec, Facts, Read};
+use crate::maint::{read_capped, Coverage, Ctx, Exec, Facts, Read};
 
 fn not_a_repo() -> Coverage {
     Coverage::Unsupported { reason: "not a git repository".into() }
@@ -37,13 +37,12 @@ const CHANGELOG_CAP: u64 = 4 * 1024 * 1024;
 
 pub(crate) fn changelog(ctx: &Ctx, _ex: &dyn Exec) -> Result<Read, Coverage> {
     let path = std::path::Path::new(ctx.root).join("CHANGELOG.md");
-    match std::fs::metadata(&path) {
-        Err(_) => return Err(Coverage::Unsupported { reason: "no CHANGELOG.md".into() }),
-        Ok(m) if m.len() > CHANGELOG_CAP => return Err(Coverage::Unsupported { reason: "CHANGELOG.md is too large to read".into() }),
-        Ok(_) => {}
+    match read_capped(&path, CHANGELOG_CAP) {
+        Ok(text) => Ok(Read::of(parse_changelog(&text))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Coverage::Unsupported { reason: "no CHANGELOG.md".into() }),
+        Err(e) if e.kind() == std::io::ErrorKind::Other => Err(Coverage::Unsupported { reason: format!("CHANGELOG.md is {e}") }),
+        Err(e) => Err(Coverage::Error { reason: e.to_string() }),
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| Coverage::Error { reason: e.to_string() })?;
-    Ok(Read::of(parse_changelog(&text)))
 }
 
 fn heading(line: &str) -> Option<&str> {

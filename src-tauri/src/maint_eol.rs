@@ -174,11 +174,14 @@ fn declared(root: &str, gaps: &mut Vec<String>) -> Vec<Decl> {
     for found in found_paths(root, DECLS) {
         let file = found.split('#').next().unwrap_or(&found).to_string();
         let path = Path::new(root).join(&file);
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > FILE_BYTES) {
-            gaps.push(format!("{file} is too large to read"));
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let text = match crate::maint::read_capped(&path, FILE_BYTES) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::Other => {
+                gaps.push(format!("{file} is {e}"));
+                continue;
+            }
+            Err(_) => continue,
+        };
         for d in parse_decl(&file, &text, gaps) {
             if !out.contains(&d) {
                 out.push(d);

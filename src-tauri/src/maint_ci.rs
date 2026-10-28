@@ -1,7 +1,7 @@
 //! The CI facet (docs/maintenance.md § Adapters): one vocabulary for every vendor's status, and
 //! the forge reads, `github-actions`, `forge-commit-status` and `gitlab-ci`, on the default branch only.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -53,7 +53,10 @@ fn gh(ctx: &Ctx, ex: &dyn Exec, args: &[&str]) -> Result<String, Coverage> {
 // ---------- github-actions ----------
 
 pub(crate) const RUN_CAP: usize = 50;
-const RUN_FIELDS: &str = "databaseId,workflowName,status,conclusion,headSha,createdAt,url,event";
+// A workflow absent from the branch's page is read on its own, this many at most and this deep.
+const FLOW_CAP: usize = 8;
+const FLOW_RUNS: usize = 20;
+const RUN_FIELDS: &str = "databaseId,workflowDatabaseId,workflowName,status,conclusion,headSha,createdAt,url,event";
 // A pull request's run carries its head branch's name, which a fork may well call `main`; a
 // `dynamic` run is GitHub's own job (Dependabot Updates, CodeQL default setup, Pages), never CI.
 const NOT_CI_EVENTS: &[&str] = &["pull_request", "pull_request_target", "dynamic"];
@@ -89,60 +92,172 @@ fn since_last_pass(runs: Vec<CiRun>, ends: fn(CiStatus) -> bool) -> (Vec<CiRun>,
     (kept, seen.len() > green.len())
 }
 
-/// `gh run list --json`, newest first. `truncated` only when the page cap was reached and some
-/// workflow's history runs off its end, so its streak is a floor.
-pub(crate) fn parse_runs(json: &str) -> Result<(Vec<CiRun>, bool), Coverage> {
-    let v: Value = serde_json::from_str(json).map_err(|_| not_json("gh run list"))?;
-    let arr = v.as_array().ok_or_else(|| not_json("gh run list"))?;
-    let mut runs: Vec<CiRun> = arr.iter()
-        .filter(|o| !NOT_CI_EVENTS.contains(&text(o, "event")))
-        .filter(|o| !text(o, "workflowName").is_empty())
-        .map(|o| CiRun {
-            workflow: text(o, "workflowName").to_string(),
-            status: check_status(text(o, "status"), text(o, "conclusion")),
-            raw: raw_word(text(o, "status"), text(o, "conclusion")).to_string(),
-            sha: text(o, "headSha").to_string(),
-            at: iso_epoch_secs(text(o, "createdAt")),
-            url: Some(text(o, "url").to_string()).filter(|u| !u.is_empty()),
-        })
-        .collect();
-    runs.sort_by_key(|r| std::cmp::Reverse(r.at)); // stable, so gh's own order breaks a tie
-    let (runs, open) = since_last_pass(runs, |s| s == CiStatus::Pass);
-    Ok((runs, open && arr.len() >= RUN_CAP))
+/// A run with the identity its stream is cut by; `alt` tells two streams of one name apart.
+struct Keyed {
+    key: String,
+    alt: String,
+    run: CiRun,
 }
 
-/// `gh workflow list --all`: a disabled workflow is CI that looks configured and runs nothing.
-pub(crate) fn disabled_workflows(json: &str) -> Result<Vec<String>, String> {
+/// One stream per key, named as people read it; a name two keys share gets its `alt`
+/// (`CI (nightly.yml)`), so neither hides the other's failure behind its pass.
+fn by_stream(rows: Vec<Keyed>) -> Vec<CiRun> {
+    let mut keys: HashMap<String, HashSet<String>> = HashMap::new();
+    for k in &rows {
+        keys.entry(k.run.workflow.clone()).or_default().insert(k.key.clone());
+    }
+    rows.into_iter()
+        .map(|Keyed { alt, mut run, .. }| {
+            if keys.get(&run.workflow).is_some_and(|k| k.len() > 1) {
+                run.workflow = format!("{} ({alt})", run.workflow);
+            }
+            run
+        })
+        .collect()
+}
+
+/// `gh run list --json` rows, keyed by workflow id where gh gives one; `files` names it.
+fn action_rows(json: &str, files: &HashMap<u64, String>) -> Result<(Vec<Keyed>, usize), Coverage> {
+    let v: Value = serde_json::from_str(json).map_err(|_| not_json("gh run list"))?;
+    let arr = v.as_array().ok_or_else(|| not_json("gh run list"))?;
+    let rows = arr.iter()
+        .filter(|o| !NOT_CI_EVENTS.contains(&text(o, "event")))
+        .filter(|o| !text(o, "workflowName").is_empty())
+        .map(|o| {
+            let id = o.get("workflowDatabaseId").and_then(Value::as_u64);
+            Keyed {
+                key: id.map_or_else(|| text(o, "workflowName").to_string(), |i| i.to_string()),
+                alt: id.map_or_else(String::new, |i| files.get(&i).cloned().unwrap_or_else(|| format!("#{i}"))),
+                run: CiRun {
+                    workflow: text(o, "workflowName").to_string(),
+                    status: check_status(text(o, "status"), text(o, "conclusion")),
+                    raw: raw_word(text(o, "status"), text(o, "conclusion")).to_string(),
+                    sha: text(o, "headSha").to_string(),
+                    at: iso_epoch_secs(text(o, "createdAt")),
+                    url: Some(text(o, "url").to_string()).filter(|u| !u.is_empty()),
+                },
+            }
+        })
+        .collect();
+    Ok((rows, arr.len()))
+}
+
+fn cut_runs(rows: Vec<Keyed>, full: bool) -> (Vec<CiRun>, bool) {
+    let mut runs = by_stream(rows);
+    runs.sort_by_key(|r| std::cmp::Reverse(r.at)); // stable, so gh's own order breaks a tie
+    let (runs, open) = since_last_pass(runs, |s| s == CiStatus::Pass);
+    (runs, open && full)
+}
+
+/// `gh run list --json`, newest first. `truncated` only when the page cap was reached and some
+/// workflow's history runs off its end, so its streak is a floor.
+#[cfg(test)]
+pub(crate) fn parse_runs(json: &str) -> Result<(Vec<CiRun>, bool), Coverage> {
+    let (rows, n) = action_rows(json, &HashMap::new())?;
+    Ok(cut_runs(rows, n >= RUN_CAP))
+}
+
+/// One entry of `gh workflow list --all --json id,name,path,state`.
+pub(crate) struct Flow {
+    id: Option<u64>,
+    name: String,
+    file: String,
+    state: String,
+}
+
+pub(crate) fn parse_flows(json: &str) -> Result<Vec<Flow>, String> {
     let v: Value = serde_json::from_str(json).map_err(|_| "gh workflow list answered no list".to_string())?;
     let arr = v.as_array().ok_or("gh workflow list answered no list")?;
     Ok(arr.iter()
+        .map(|w| Flow {
+            id: w.get("id").and_then(Value::as_u64),
+            name: text(w, "name").to_string(),
+            file: text(w, "path").to_string(),
+            state: text(w, "state").to_string(),
+        })
+        .collect())
+}
+
+/// `gh workflow list --all`: a disabled workflow is CI that looks configured and runs nothing.
+pub(crate) fn disabled_workflows(flows: &[Flow]) -> Vec<String> {
+    flows.iter()
         .filter_map(|w| {
-            let how = match text(w, "state") {
+            let how = match w.state.as_str() {
                 "disabled_manually" => "by hand",
                 "disabled_inactivity" => "after 60 days without activity",
                 "disabled_fork" => "in this fork",
                 s if s.starts_with("disabled") => s,
                 _ => return None,
             };
-            Some(format!("workflow \"{}\" is disabled {how}, so it never runs", text(w, "name")))
+            Some(format!("workflow \"{}\" is disabled {how}, so it never runs", w.name))
         })
-        .collect())
+        .collect()
+}
+
+/// Active workflows with no run on the branch's page: a rarely run one is pushed off it by a busy
+/// one and must not vanish. A `dynamic/` one is GitHub's job, whose runs are dropped anyway.
+fn unseen<'a>(flows: &'a [Flow], rows: &[Keyed]) -> Vec<&'a Flow> {
+    let seen = |w: &Flow| rows.iter().any(|k| w.id.map_or(k.run.workflow == w.name, |i| k.key == i.to_string()));
+    flows.iter().filter(|w| w.state == "active" && !w.file.starts_with("dynamic/") && !seen(w)).collect()
 }
 
 pub(crate) fn github_actions(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
     let repo = github_repo(ctx)?;
     // The workflow list needs no branch, so it runs beside the two calls that do.
     let (runs, flows) = std::thread::scope(|s| {
-        let flows = s.spawn(|| ex.gh(ctx.root, ctx.account, &["workflow", "list", "--repo", repo, "--all", "--json", "name,state"]));
+        let flows = s.spawn(|| ex.gh(ctx.root, ctx.account, &["workflow", "list", "--repo", repo, "--all", "--json", "id,name,path,state"]));
         let runs = default_branch(ctx, ex, repo).and_then(|branch| {
             let cap = RUN_CAP.to_string();
             let out = gh(ctx, ex, &["run", "list", "--repo", repo, "--branch", &branch, "--limit", &cap, "--json", RUN_FIELDS])?;
-            Ok((branch, parse_runs(&out)?))
+            Ok((branch, out))
         });
         (runs, flows.join().unwrap_or_else(|_| Err("gh workflow list panicked".into())))
     });
-    let (branch, (runs, truncated)) = runs?;
-    let gaps = flows.and_then(|j| disabled_workflows(&j)).unwrap_or_else(|e| vec![format!("disabled workflows not read: {e}")]);
+    let (branch, out) = runs?;
+    let (flows, mut gaps) = match flows.and_then(|j| parse_flows(&j)) {
+        Ok(f) => {
+            let gaps = disabled_workflows(&f);
+            (f, gaps)
+        }
+        Err(e) => (vec![], vec![format!("workflows not listed, so one with no run among the newest {RUN_CAP} is not seen: {e}")]),
+    };
+    let files: HashMap<u64, String> = flows.iter()
+        .filter_map(|w| Some((w.id?, w.file.rsplit('/').next().unwrap_or(&w.file).to_string())))
+        .collect();
+    let (mut rows, n) = action_rows(&out, &files)?;
+    let mut full = n >= RUN_CAP;
+    let missing = unseen(&flows, &rows);
+    let extra: Vec<_> = std::thread::scope(|s| {
+        let asks: Vec<_> = missing.iter().take(FLOW_CAP)
+            .map(|&w| {
+                let (branch, files) = (&branch, &files);
+                s.spawn(move || {
+                    let (flow, limit) = (w.id.map_or_else(|| w.name.clone(), |i| i.to_string()), FLOW_RUNS.to_string());
+                    let args = ["run", "list", "--repo", repo, "--workflow", &flow, "--branch", branch, "--limit", &limit, "--json", RUN_FIELDS];
+                    (w, gh(ctx, ex, &args).and_then(|o| action_rows(&o, files)))
+                })
+            })
+            .collect();
+        asks.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let mut unread: Vec<&Flow> = missing.iter().skip(FLOW_CAP).copied().collect();
+    for (w, got) in extra {
+        match got {
+            Ok((more, n)) => {
+                full |= n >= FLOW_RUNS;
+                rows.extend(more);
+            }
+            Err(_) => unread.push(w),
+        }
+    }
+    // Not read is not passing: an `unknown` run keeps the cell off the grey dot.
+    for w in unread {
+        gaps.push(format!("workflow \"{}\" has no run among the newest {RUN_CAP} on {branch} and was not read", w.name));
+        let run = CiRun { workflow: w.name.clone(), status: CiStatus::Unknown, raw: "not read".into(), sha: String::new(), at: None, url: None };
+        let alt = w.id.and_then(|i| files.get(&i).cloned()).unwrap_or_default();
+        rows.push(Keyed { key: w.id.map_or_else(|| w.name.clone(), |i| i.to_string()), alt, run });
+    }
+    let (runs, truncated) = cut_runs(rows, full);
     Ok(Read { facts: Facts::CiRuns { branch, runs }, truncated, gaps })
 }
 
@@ -152,32 +267,35 @@ const ROLLUP_Q: &str = "query($owner:String!,$name:String!){repository(owner:$ow
 
 /// One check run or commit status as a run of its own. GitHub Actions' check runs are left to
 /// `github-actions`, which reads them per workflow, so one failure never counts twice.
-fn context_run(n: &Value, sha: &str) -> Option<CiRun> {
+fn context_run(n: &Value, sha: &str) -> Option<Keyed> {
     let at = |k: &str| iso_epoch_secs(text(n, k));
     let url = |k: &str| Some(text(n, k).to_string()).filter(|u| !u.is_empty());
     if let Some(name) = n.get("name").and_then(Value::as_str) {
-        if n.pointer("/checkSuite/app/slug").and_then(Value::as_str) == Some("github-actions") {
+        let app = n.pointer("/checkSuite/app/slug").and_then(Value::as_str).unwrap_or("");
+        if app == "github-actions" {
             return None;
         }
         let (status, verdict) = (text(n, "status"), text(n, "conclusion"));
-        return Some(CiRun {
+        let run = CiRun {
             workflow: name.to_string(),
             status: check_status(status, verdict),
             raw: raw_word(status, verdict).to_string(),
             sha: sha.to_string(),
             at: at("completedAt").or_else(|| at("startedAt")),
             url: url("detailsUrl"),
-        });
+        };
+        return Some(Keyed { key: format!("check:{app}/{name}"), alt: if app.is_empty() { "check".into() } else { app.into() }, run });
     }
     let name = n.get("context").and_then(Value::as_str)?;
-    Some(CiRun {
+    let run = CiRun {
         workflow: name.to_string(),
         status: norm_status(text(n, "state")),
         raw: text(n, "state").to_string(),
         sha: sha.to_string(),
         at: at("createdAt"),
         url: url("targetUrl"),
-    })
+    };
+    Some(Keyed { key: format!("status:{name}"), alt: "status".into(), run })
 }
 
 /// The default branch head's status rollup. No context at all is an empty list, which
@@ -195,7 +313,7 @@ pub(crate) fn parse_rollup(json: &str) -> Result<Read, Coverage> {
     let ctxs = head.pointer("/target/statusCheckRollup/contexts");
     let nodes = ctxs.and_then(|c| c.get("nodes")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let total = ctxs.and_then(|c| c.get("totalCount")).and_then(Value::as_u64).unwrap_or(0);
-    let runs = nodes.iter().filter_map(|n| context_run(n, sha)).collect();
+    let runs = by_stream(nodes.iter().filter_map(|n| context_run(n, sha)).collect());
     Ok(Read { truncated: total > nodes.len() as u64, ..Read::of(Facts::CiRuns { branch: branch.to_string(), runs }) })
 }
 
@@ -385,7 +503,78 @@ mod tests {
         let ex = FakeExec::answering(Ok("[]")).on(&["gh", "api"], Ok("main")).on(&["gh", "workflow"], Err("HTTP 502"));
         let r = read_with(&github(), None, github_actions, &ex).unwrap();
         assert!(runs_of(&r).1.is_empty(), "an empty list is facts, and maint.ts says never ran");
-        assert_eq!(r.gaps, ["disabled workflows not read: HTTP 502"], "the side read degrades alone");
+        assert_eq!(r.gaps.len(), 1, "the side read degrades alone");
+        assert!(r.gaps[0].starts_with("workflows not listed") && r.gaps[0].ends_with("HTTP 502"), "{:?}", r.gaps);
+    }
+
+    fn run(id: u64, name: &str, verdict: &str, at: &str) -> Value {
+        serde_json::json!({ "workflowDatabaseId": id, "workflowName": name, "status": "completed", "conclusion": verdict,
+            "event": "push", "createdAt": format!("2026-10-{at}T00:00:00Z"), "headSha": "abc" })
+    }
+
+    fn flow(id: u64, name: &str, path: &str) -> Value {
+        serde_json::json!({ "id": id, "name": name, "path": path, "state": "active" })
+    }
+
+    fn json(v: &[Value]) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    /// A nightly that failed is pushed off a page of fifty green pushes; it is read on its own.
+    #[test]
+    fn a_workflow_off_the_page_is_read_on_its_own_never_dropped() {
+        let page = json(&vec![run(1, "CI", "success", "27"); RUN_CAP]);
+        let flows = json(&[flow(1, "CI", ".github/workflows/ci.yml"), flow(2, "E2E", ".github/workflows/e2e.yml"),
+            flow(3, "Pages", "dynamic/pages/pages-build-deployment")]);
+        let ex = FakeExec::answering(Err("unexpected call"))
+            .on(&["gh", "api"], Ok("main"))
+            .on(&["gh", "workflow", "list"], Ok(&flows))
+            .on(&["gh", "run", "list", "--repo", "acme/app", "--workflow", "2"], Ok(&json(&[run(2, "E2E", "failure", "20")])))
+            .on(&["gh", "run", "list", "--repo", "acme/app", "--branch"], Ok(&page));
+        let r = read_with(&github(), None, github_actions, &ex).unwrap();
+        let got: Vec<(&str, CiStatus)> = runs_of(&r).1.iter().map(|r| (r.workflow.as_str(), r.status)).collect();
+        assert_eq!(got, [("CI", CiStatus::Pass), ("E2E", CiStatus::Fail)]);
+        assert!(r.gaps.is_empty(), "{:?}", r.gaps);
+        assert_eq!(ex.calls().iter().filter(|c| c.contains(&"--workflow".to_string())).count(), 1, "a dynamic workflow is never asked");
+
+        // Past the cap, or a read that failed, is an `unknown` run: not read is never a pass.
+        let many: Vec<Value> = (0..FLOW_CAP as u64 + 2).map(|i| flow(10 + i, &format!("w{i}"), "x.yml")).collect();
+        let ex = FakeExec::answering(Ok("[]"))
+            .on(&["gh", "api"], Ok("main"))
+            .on(&["gh", "workflow", "list"], Ok(&json(&many)))
+            .on(&["gh", "run", "list", "--repo", "acme/app", "--workflow", "10"], Err("HTTP 502"))
+            .on(&["gh", "run", "list", "--repo", "acme/app", "--branch"], Ok(&json(&[run(1, "CI", "success", "27")])));
+        let r = read_with(&github(), None, github_actions, &ex).unwrap();
+        let unknown: Vec<&str> = runs_of(&r).1.iter().filter(|r| r.status == CiStatus::Unknown).map(|r| r.workflow.as_str()).collect();
+        assert_eq!(unknown.len(), 3, "w0 failed, two past the cap: {unknown:?}");
+        assert_eq!(r.gaps.len(), 3, "{:?}", r.gaps);
+    }
+
+    /// Two workflow files may share a `name:`; one's pass must not end the other's failures.
+    #[test]
+    fn workflows_of_one_name_are_two_streams() {
+        let rows = json(&[run(1, "CI", "success", "27"), run(2, "CI", "failure", "26"), run(1, "CI", "failure", "25")]);
+        let (runs, _) = parse_runs(&rows).unwrap();
+        let got: Vec<(&str, CiStatus)> = runs.iter().map(|r| (r.workflow.as_str(), r.status)).collect();
+        assert_eq!(got, [("CI (#1)", CiStatus::Pass), ("CI (#2)", CiStatus::Fail)]);
+
+        let flows = json(&[flow(1, "CI", ".github/workflows/ci.yml"), flow(2, "CI", ".github/workflows/nightly.yml")]);
+        let ex = FakeExec::answering(Err("unexpected call"))
+            .on(&["gh", "api"], Ok("main"))
+            .on(&["gh", "workflow", "list"], Ok(&flows))
+            .on(&["gh", "run", "list"], Ok(&rows));
+        let r = read_with(&github(), None, github_actions, &ex).unwrap();
+        let names: Vec<&str> = runs_of(&r).1.iter().map(|r| r.workflow.as_str()).collect();
+        assert_eq!(names, ["CI (ci.yml)", "CI (nightly.yml)"]);
+
+        let check = |app: &str, verdict: &str| serde_json::json!({ "__typename": "CheckRun", "name": "build", "status": "COMPLETED",
+            "conclusion": verdict, "checkSuite": { "app": { "slug": app } } });
+        let rollup = serde_json::json!({ "data": { "repository": { "defaultBranchRef": { "name": "main", "target": { "oid": "abc",
+            "statusCheckRollup": { "contexts": { "totalCount": 3, "nodes": [check("circleci", "SUCCESS"), check("buildkite", "FAILURE"),
+            { "__typename": "StatusContext", "context": "lint", "state": "SUCCESS" }] } } } } } } });
+        let r = parse_rollup(&rollup.to_string()).unwrap();
+        let got: Vec<(&str, CiStatus)> = runs_of(&r).1.iter().map(|r| (r.workflow.as_str(), r.status)).collect();
+        assert_eq!(got, [("build (circleci)", CiStatus::Pass), ("build (buildkite)", CiStatus::Fail), ("lint", CiStatus::Pass)]);
     }
 
     #[test]
