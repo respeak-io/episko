@@ -27,6 +27,7 @@ export interface SourceDef {
   id: string; facet: Facet; label: string; cost: Cost;
   forge: string[]; detect: string[]; sees: MaintCap[]; blind: MaintCap[];
   sends: string | null; // what a public source sends; maint.rs refuses a public one without it
+  settings: string | null; // the forge page that switches it on, `{path}` the repository's
 }
 export interface MarkerDef { facet: Facet; label: string; forge: string[]; detect: string[] }
 export interface BotDef { id: string; logins: string[]; branch: string; dashboard: string | null; config: string[] }
@@ -57,6 +58,7 @@ export const SOURCES: readonly SourceDef[] = Object.entries(manifest.sources).ma
   id, facet: among(FACETS, s.facet, "facet"), label: s.label, cost: among(COSTS, s.cost, "cost"),
   forge: s.forge, detect: s.detect, sees: capsOf(s.sees), blind: capsOf(s.blind),
   sends: "sends" in s && typeof s.sends === "string" ? s.sends : null,
+  settings: "settings" in s && typeof s.settings === "string" ? s.settings : null,
 }));
 
 export const MARKERS: readonly MarkerDef[] = manifest.markers.map((m) => ({

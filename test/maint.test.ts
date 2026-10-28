@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
-  foldOffers, narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally,
+  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally, whyWord,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
@@ -97,7 +97,7 @@ describe("the wire", () => {
   it("files a broken report this build cannot place under the facet it claimed, and its cell cannot check", () => {
     const future = narrowMaint({ ...wire.reports[0], source: "future-src", facet: "ci", coverage: { state: "fine" } }, "future-src");
     expect(future).toMatchObject({ source: "future-src", facet: "ci", cost: null, coverage: { state: "error" } });
-    expect(facetCell("ci", input(future), MAINT_DEFAULTS, NOW)).toMatchObject({ state: "cantCheck", text: "can't check" });
+    expect(facetCell("ci", input(future), MAINT_DEFAULTS, NOW)).toMatchObject({ state: "cantCheck", text: "read failed" });
   });
 });
 
@@ -120,23 +120,59 @@ describe("facetCell: unknown is never green", () => {
     { state: "error", reason: "HTTP 502" },
   ];
 
+  // Each state's word, `states` in order; off is "alerts off" on Security alone.
+  const words = ["switched off", "token scope", "tool missing", "unavailable", "not checked", "read failed"];
+
   it("draws no grey dot for any coverage but ok, alone or together, in any facet", () => {
     expect(states.map((s) => s.state).sort()).toEqual(COV_STATES.filter((s) => s !== "ok").sort());
     for (const f of FACETS) {
-      for (const s of states) {
+      for (const [i, s] of states.entries()) {
         const c = cell(f, input(not("x", f, s)));
         expect(c.level, `${f} ${s.state}`).not.toBe("ok");
-        // A source nobody clicked is not checked yet; every other state cannot be.
-        expect(c).toMatchObject({ state: "cantCheck", text: s.state === "notRun" ? "not checked" : "can't check" });
+        // Never a bare "can't check": the coverage says why, in the cell's own few words.
+        expect(c).toMatchObject({ state: "cantCheck", text: f === "security" && !i ? "alerts off" : words[i] });
+        expect(c.text).not.toMatch(/can't check/);
       }
       expect(cell(f, input(...states.map((s, i) => not(`x${i}`, f, s)))).level).toBe("muted");
     }
+  });
+
+  it("reads Rust's own coverages, not hand-written ones, so a reworded fix fails here", () => {
+    const of = (source: string, state: string) => wire.reports.find((r) => r.source === source && (r.coverage as Coverage).state === state)!.coverage as Coverage;
+    expect(whyWord(of("dependabot-alerts", "noAccess"), "security")).toBe("token scope");
+    expect(whyWord(of("github-work", "noTool"), "work")).toBe("signed out");
+    expect(whyWord(of("gitlab-work", "noTool"), "work")).toBe("signed out");
+    expect(whyWord(of("gitlab-ci", "noAccess"), "ci")).toBe("no access");
+    expect(whyWord(of("cargo-audit", "noTool"), "security")).toBe("tool missing");
   });
 
   it("puts the coverage that carries a fix first in the tip", () => {
     const c = cell("security", input(not("a", "security", states[4]), not("b", "security", states[2]), not("c", "security", states[1])));
     expect(c.tip[0]).toMatch(/^c: no access/);
     expect(c.fix).toBe("gh auth refresh");
+  });
+
+  it("names the reason in a word, the most actionable coverage when several fail differently", () => {
+    const why = (c: Coverage, f: Facet = "security") => whyWord(c, f);
+    expect(why({ state: "off", reason: "Dependabot alerts are switched off" })).toBe("alerts off");
+    expect(why({ state: "off", reason: "x" }, "ci")).toBe("switched off");
+    expect(why({ state: "noAccess", reason: "gh's token cannot read security alerts", fix: "gh auth refresh -h github.com -s security_events" })).toBe("token scope");
+    expect(why({ state: "noAccess", reason: "acme/app is not visible to bob", fix: "pick the account" })).toBe("no access");
+    expect(why({ state: "noTool", tool: "gh", fix: "gh auth login" })).toBe("signed out");
+    expect(why({ state: "noTool", tool: "cargo-audit", fix: "cargo install cargo-audit --locked" })).toBe("tool missing");
+    expect(why({ state: "unsupported", reason: "needs Advanced Security" })).toBe("unavailable");
+    expect(why({ state: "notRun" })).toBe("not checked");
+    expect(why({ state: "error", reason: "HTTP 502" })).toBe("read failed");
+    // Off outranks unsupported and a never-run click, so the switch somebody can flip names the cell.
+    const mixed = cell("security", input(not("a", "security", states[4]), not("b", "security", states[3]), not("c", "security", states[0])));
+    expect(mixed).toMatchObject({ state: "cantCheck", level: "muted", text: "alerts off" });
+    expect(mixed.tip, "the tip lists them all").toEqual(["c: off: disabled", "b: no default branch known", "a: never run"]);
+    expect(cell("security", input(not("a", "security", states[0]), not("b", "security", states[1]))).text, "a fix outranks a switch").toBe("token scope");
+    expect(cell("security", input(not("a", "security", states[4]), not("b", "security", states[4]))).text, "only clicks left").toBe("not checked");
+    expect(coverFirst(mixed)).toBe(true);
+    const marked = { det: det([], { markers: [{ facet: "ci" as const, label: "Woodpecker", found: [".woodpecker.yml"] }] }), reports: {} };
+    expect(coverFirst(cell("ci", marked)), "a marker's answer is Coverage too").toBe(true);
+    expect(coverFirst(cell("security", input(ok("a", { kind: "advisories", items: [] }), not("b", "security", states[0])))), "a verdict opens its card").toBe(false);
   });
 
   it("walks the ladder top-down: off, unread, none, markers", () => {
@@ -153,7 +189,7 @@ describe("facetCell: unknown is never green", () => {
 
   it("says a source this machine skips cannot be checked, never that there is none", () => {
     const inp = { ...input(ok("g", hyg())), skip: ["g"] };
-    expect(cell("git", inp)).toMatchObject({ state: "cantCheck", text: "can't check" });
+    expect(cell("git", inp)).toMatchObject({ state: "cantCheck", text: "skipped here" });
     expect(cell("git", inp).tip.join()).toContain("skipped on this machine");
   });
 
@@ -588,15 +624,114 @@ describe("the cross-project tabs", () => {
     expect(offers("/a", ran).map((f) => f.key), "asked once is no longer an offer").toEqual(["run:osv"]);
   });
 
-  it("folds a tab's offers into one entry per source, never one per project", () => {
-    const rows = [...offers("/b", offering("/b")), ...offers("/a", offering("/a")),
-      ...offers("/c", { det: det(["osv"], { repoRoot: "/c" }), reports: { osv: not("osv", "security", { state: "notRun" }) } })];
-    expect(foldOffers(rows)).toEqual([
-      { source: "npm-audit", facet: "security", roots: ["/a", "/b"], text: "npm audit not run in 2 projects" },
-      { source: "osv", facet: "security", roots: ["/a", "/b", "/c"], text: "OSV.dev not checked in 3 projects" },
-    ]);
-    expect(foldOffers(tabRows("security", rows, "/c")).map((g) => g.text)).toEqual(["OSV.dev not checked in 1 project"]);
-    expect(foldOffers(all), "a finding is never folded").toEqual([]);
+  describe("Coverage, by reason across projects", () => {
+    const hub = (path: string) => ({ kind: "github", host: "github.com", path, by: "table" as const });
+    // A GitHub project whose Dependabot alerts are off, with npm audit offered beside them.
+    const switchedOff = (root: string, path: string | null = `o/${root.slice(1)}`, o: Partial<MaintInput> = {}): MaintInput => {
+      const reps = [not("dependabot-alerts", "security", { state: "off", reason: "Dependabot alerts are switched off for this repository" }),
+        { ...not("npm-audit", "security", { state: "notRun" }), cost: "tool" as const }];
+      return { det: det(reps.map((r) => r.source), { repoRoot: root, forge: path ? hub(path) : { kind: "gitlab", host: "gitlab.com", path: "g/r", by: "table" } }),
+        reports: Object.fromEntries(reps.map((r) => [r.source, r])), ...o };
+    };
+    const scope = (root: string): MaintInput => {
+      const r = not("dependabot-alerts", "security", { state: "noAccess", reason: `who is ${root}`, fix: "gh auth refresh -s security_events" });
+      return { det: det([r.source], { repoRoot: root, forge: hub(`o${root}`) }), reports: { [r.source]: r } };
+    };
+    const at = (path: string, inp: MaintInput) => ({ path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) });
+
+    it("groups by source and reason, not by project, widest first, with the one action that fixes it", () => {
+      const projects = [at("/c", switchedOff("/c")), at("/a", switchedOff("/a")), at("/b", switchedOff("/b")), at("/d", scope("/d")), at("/e", scope("/e"))];
+      const g = coverGroups("security", projects, null, NOW);
+      expect(g.map((x) => [x.what, x.why, x.roots])).toEqual([
+        ["Dependabot alerts", "alerts off", ["/a", "/b", "/c"]],
+        ["npm audit", "not run", ["/a", "/b", "/c"]],
+        ["Dependabot alerts", "token scope", ["/d", "/e"]],
+      ]);
+      expect(g[0].action).toEqual({ kind: "settings", urls: {
+        "/a": "https://github.com/o/a/settings/security_analysis", "/b": "https://github.com/o/b/settings/security_analysis",
+        "/c": "https://github.com/o/c/settings/security_analysis" } });
+      expect(g[1].action).toEqual({ kind: "run", source: "npm-audit" });
+      expect(g[2].action, "an account in the reason never splits a row").toEqual({ kind: "fix", fix: "gh auth refresh -s security_events" });
+      expect(g.every((x) => !x.quiet)).toBe(true);
+    });
+
+    it("keeps every project's link when the first one listed has none", () => {
+      const g = coverGroups("security", [at("/b", switchedOff("/b", null)), at("/a", switchedOff("/a"))], null, NOW)[0];
+      expect(g.action).toEqual({ kind: "settings", urls: { "/a": "https://github.com/o/a/settings/security_analysis" } });
+    });
+
+    it("merges failed reads whatever each said, and says a source skipped here", () => {
+      const failed = (root: string, reason: string): MaintInput => {
+        const r = not("dependabot-alerts", "security", { state: "error", reason });
+        return { det: det([r.source], { repoRoot: root, forge: hub(`o${root}`) }), reports: { [r.source]: r } };
+      };
+      const skipped = { ...scope("/s"), skip: ["dependabot-alerts"] };
+      const g = coverGroups("security", [at("/a", failed("/a", "HTTP 502")), at("/b", failed("/b", "timed out")), at("/s", skipped)], null, NOW);
+      expect(g.map((x) => [x.what, x.why, x.roots, x.action])).toEqual([
+        ["Dependabot alerts", "read failed", ["/a", "/b"], null], ["Dependabot alerts", "skipped here", ["/s"], null],
+      ]);
+    });
+
+    it("narrows to one project, and lists a project off the forge without a link it cannot name", () => {
+      const projects = [at("/a", switchedOff("/a")), at("/b", switchedOff("/b", null))];
+      expect(coverGroups("security", projects, "/b", NOW).map((x) => [x.what, x.roots, x.action])).toEqual([
+        ["Dependabot alerts", ["/b"], null], ["npm audit", ["/b"], { kind: "run", source: "npm-audit" }],
+      ]);
+      const both = coverGroups("security", projects, null, NOW)[0];
+      expect(both.roots).toEqual(["/a", "/b"]);
+      expect(both.action).toEqual({ kind: "settings", urls: { "/a": "https://github.com/o/a/settings/security_analysis" } });
+      expect(coverGroups("delivery", projects, null, NOW).filter((x) => x.facet === "security")).toEqual([]);
+    });
+
+    it("says a silent bot apart from what stops a check, and below it", () => {
+      const old = (root: string) => on(root, ok("dependabot-prs", prs(1, { prs: [{ number: 1, title: "t", url: "u", branch: "b", draft: false, at: S - 40 * D, checks: "pass" }] })));
+      const quiet = (root: string) => on(root, ok("dependabot-prs", prs(0, { configured: true })));
+      const projects = [at("/a", old("/a")), at("/b", old("/b")), at("/c", quiet("/c")), at("/d", switchedOff("/d"))];
+      expect(cell("deps", old("/a")).text).toBe("silent");
+      const g = coverGroups("security", projects, null, NOW);
+      expect(g.map((x) => [x.what, x.why, x.roots.length, x.quiet])).toEqual([
+        ["Dependabot alerts", "alerts off", 1, false], ["npm audit", "not run", 1, false],
+        ["Dependabot", "opened nothing in 30+ days", 2, true], ["Dependabot", "configured, no open pull request", 1, true],
+      ]);
+      expect(g.filter((x) => x.quiet).every((x) => x.action === null)).toBe(true);
+    });
+
+    it("explains every cell with no verdict, and never one that has a verdict", () => {
+      const marked = { det: det([], { markers: [{ facet: "ci" as const, label: "Woodpecker", found: [".woodpecker.yml"] }] }), reports: {} };
+      const never = on("/n", ok(GHA, ci()));
+      const projects = [at("/m", marked), at("/n", never), at("/u", { det: null, reports: {} }), at("/a", on("/a", ok(GHA, ci(run("e2e", "pass", S - D)))))];
+      const g = coverGroups("delivery", projects, null, NOW);
+      expect(g.map((x) => [x.what, x.why, x.roots])).toEqual([
+        ["CI", "never ran", ["/n"]], ["CI", "not read yet", ["/u"]], ["Woodpecker", "nothing reads it yet", ["/m"]], ["Release", "not read yet", ["/u"]],
+      ]);
+      expect(g.some((x) => x.roots.includes("/a")), "a verdict is not a coverage row").toBe(false);
+      const quiet = at("/q", on("/q", ok("dependabot-alerts", { kind: "advisories", items: [] })));
+      expect(coverGroups("security", [quiet], null, NOW), "a clean read leaves nothing to explain").toEqual([]);
+    });
+
+    it("names a settings page only from the manifest, for a forge path it can spell, none otherwise", () => {
+      const A = "dependabot-alerts", page = "https://github.com/o/r/settings/security_analysis";
+      expect(settingsUrl(A, hub("o/r"))).toBe(page);
+      expect(settingsUrl(A, { kind: "github", host: "gh-work", path: "o/r", by: "table" }), "an ssh alias the table resolved").toBe(page);
+      expect(settingsUrl(A, { kind: "github", host: "git.corp.example", path: "o/r", by: "pin" }), "a pinned host the page does not name").toBeNull();
+      expect(settingsUrl(A, { kind: "gitlab", host: "gitlab.com", path: "g/r", by: "table" }), "a forge the source does not talk to").toBeNull();
+      expect(settingsUrl("gitlab-ci", { kind: "gitlab", host: "gitlab.com", path: "g/r", by: "table" }), "a source with no page").toBeNull();
+      expect(settingsUrl("npm-audit", hub("o/r"))).toBeNull();
+      expect(settingsUrl(A, { kind: "github", host: "github.acme.io", path: "o/r", by: "name" }), "a host only its name decided").toBeNull();
+      expect(settingsUrl(A, hub("o/r/../../evil"))).toBeNull();
+      expect(settingsUrl(A, hub("../.."))).toBeNull();
+      expect(settingsUrl(A, hub("./r"))).toBeNull();
+      expect(settingsUrl(A, hub("o r/x"))).toBeNull();
+      expect(settingsUrl(A, null)).toBeNull();
+    });
+
+    it("carries the settings link onto the project's Coverage card, only for a forge switch that is off", () => {
+      const rows = coverRows(switchedOff("/a"));
+      expect(rows.find((r) => r.source === "dependabot-alerts")).toMatchObject({ state: "off", url: "https://github.com/o/a/settings/security_analysis" });
+      expect(rows.find((r) => r.source === "npm-audit")?.url).toBeNull();
+      expect(coverRows(switchedOff("/a", null)).find((r) => r.source === "dependabot-alerts")?.url).toBeNull();
+      expect(coverRows(scope("/d")).find((r) => r.source === "dependabot-alerts")).toMatchObject({ fix: "gh auth refresh -s security_events", url: null });
+    });
   });
 
   it("says what an empty tab read and what it could not, never an all-clear over nothing", () => {
@@ -605,22 +740,19 @@ describe("the cross-project tabs", () => {
       card("/b", { det: null, reports: {} }),
       card("/a", on("/a", ok(GHA, ci(run("e2e", "pass", S - D))), not("t", "release", { state: "error", reason: "x" }))),
     ];
-    expect(tabGaps("delivery", cards)).toEqual({ read: 1, unset: 0, gaps: [
-      { path: "/a", facet: "release", text: "can't check" },
-      { path: "/b", facet: "ci", text: "not read yet" }, { path: "/b", facet: "release", text: "not read yet" },
-    ] });
+    expect(tabGaps("delivery", cards)).toEqual({ read: 1, unset: 0 });
     expect(tabGaps("delivery", cards, "/b").read).toBe(0);
-    expect(tabGaps("servers", cards, "/a"), "no deploy is a fact, not a gap").toEqual({ read: 0, unset: 1, gaps: [] });
+    expect(tabGaps("servers", cards, "/a"), "no deploy is a fact, not a gap").toEqual({ read: 0, unset: 1 });
   });
 
   it("counts a cell that does not know as a gap, never as read", () => {
     const card = (path: string, inp: MaintInput) => ({ path, cells: facetCells(inp, MAINT_DEFAULTS, NOW) });
     const unknown = [card("/a", on("/a", ok("w", work({ issues: 0, prs: 0, reviewRequested: null }))))];
-    expect(tabGaps("work", unknown)).toEqual({ read: 0, unset: 0, gaps: [{ path: "/a", facet: "work", text: "reviews unknown" }] });
+    expect(tabGaps("work", unknown)).toEqual({ read: 0, unset: 0 });
     const never = [card("/a", on("/a", ok(GHA, ci())))];
-    expect(tabGaps("delivery", never).gaps.map((g) => g.text)).toContain("never ran");
+    expect(tabGaps("delivery", never)).toEqual({ read: 0, unset: 0 });
     const bare = [card("/a", on("/a", ok("d", prs(0, { configured: false }))))];
-    expect(tabGaps("security", bare), "no bot found is the facet's none").toMatchObject({ read: 0, gaps: [] });
+    expect(tabGaps("security", bare), "no bot found is the facet's none").toEqual({ read: 0, unset: 1 });
   });
 });
 
@@ -856,7 +988,9 @@ describe("the cold-boot snapshot (cc-maint)", () => {
     expect(cells.map((c) => c.text)).toEqual(["fine", "failing 3d", "not read", "not read", "not read", "not read", "v1.0"]);
     expect(cells[0].tip[0]).toBe("as of the last check, 2h ago");
     expect(projectBand(cells)).toBe("unread"); // never quiet: nothing was read this session
-    expect(tabGaps("delivery", [{ path: "/r", cells }]).gaps.map((g) => g.text)).toEqual(["not checked this session", "not checked this session"]);
+    expect(tabGaps("delivery", [{ path: "/r", cells }]).read).toBe(0);
+    expect(coverGroups("delivery", [{ path: "/r", inp: { det: null, reports: {} }, cells }], null, NOW).map((g) => [g.what, g.why]))
+      .toEqual([["CI", "not checked this session"], ["Release", "not checked this session"]]);
   });
 });
 

@@ -351,13 +351,55 @@
       "cost": "forge",
       "coverage": {
         "fix": "gh auth refresh -h github.com -s security_events",
-        "reason": "token lacks security_events",
+        "reason": "gh's token cannot read security alerts",
         "state": "noAccess"
       },
       "facet": "security",
       "facts": null,
       "gaps": [],
       "source": "dependabot-alerts",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "gh auth login",
+        "state": "noTool",
+        "tool": "gh"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "github-work",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "glab auth login --hostname gitlab.com",
+        "state": "noTool",
+        "tool": "glab"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "gitlab-work",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "glab auth login --hostname gitlab.com",
+        "reason": "the account glab uses on gitlab.com cannot see this project",
+        "state": "noAccess"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "gitlab-ci",
       "truncated": false
     },
     {

@@ -3,10 +3,12 @@
 // A verb prefills an agent and never sends it: Episko presses Enter in two places only.
 
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, covText, FACET_TAB, offers, prodChecks, tabFindings } from "./maint";
+import { clampMaint, coverFirst, covText, FACET_TAB, facetCell, offers, prodChecks, tabFindings } from "./maint";
 import { briefFor } from "./maintbrief";
 import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
@@ -26,6 +28,7 @@ export interface MaintHost {
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
   deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
+  openCover?: () => void; // the dashboard's Coverage card, where a cell that cannot check says why
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
 }
 
@@ -103,12 +106,23 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   if (across) { host.openAcross?.(subOf(across.dataset.mtacross)); return true; }
   const dep = t.closest<HTMLElement>("[data-mtdeploy]");
   if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
+  const url = t.closest<HTMLElement>("[data-mturl]");
+  if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
+  const copy = t.closest<HTMLElement>("[data-mtcopy]");
+  if (copy) {
+    // Tauri's clipboard, never navigator.clipboard, which raises an OS permission prompt.
+    const text = copy.dataset.mtcopy!;
+    void writeText(text).then(() => toast("Copied")).catch(() => toast(text));
+    return true;
+  }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   const cell = t.closest<HTMLElement>("[data-mtcell]");
   if (cell) {
-    const facet = cell.dataset.mtcell as Facet;
-    if (FACETS.includes(facet)) host.openTab(FACET_TAB[facet], cell.dataset.mtroot!);
+    const facet = cell.dataset.mtcell as Facet, root = cell.dataset.mtroot!, inp = maintInput(root);
+    if (!FACETS.includes(facet)) return true;
+    if (host.openCover && inp && coverFirst(facetCell(facet, inp, clampMaint(inp.det?.config.thresholds)))) host.openCover();
+    else host.openTab(FACET_TAB[facet], root);
     return true;
   }
   const proj = t.closest<HTMLElement>("[data-mtproj]");

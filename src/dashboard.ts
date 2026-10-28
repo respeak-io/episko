@@ -1308,6 +1308,7 @@ const maintHost: MaintHost = {
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
   openDashboard: (n, p, tab) => { if (p === root()) setDashTab(tab ?? "maint"); else openDashboard(n, p, tab); },
   openTab: (sub) => scrollToCard(sub),
+  openCover: () => document.getElementById("mtc-cover")?.scrollIntoView({ block: "start" }),
   render: () => renderDash(),
   openView: (v) => openDashView(v),
   openAcross: (sub) => host.openFleetMaint(sub),

@@ -399,7 +399,8 @@ describe("Maintenance's own dispatcher", () => {
   });
 
   it("wires the facet tabs and the dashboard's cards: each probed, each before the door", () => {
-    for (const k of ["tab", "cell", "clear", "view", "across", "deploy", "prod"]) {
+    // url and copy are Coverage's: a forge's settings page per project, and a fix command.
+    for (const k of ["tab", "cell", "clear", "view", "across", "deploy", "prod", "url", "copy"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
     }
