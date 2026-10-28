@@ -1,5 +1,5 @@
-// `[deploy]`'s rules (docs/maintenance.md): what the agent is asked, which of its values may be
-// kept, and how the table reads in a dialog and a settings row. deploy.rs reads and writes it.
+// The setup rules of `[deploy]` and `[maintenance]` (docs/maintenance.md): what the agent is asked, which
+// of its values may be kept, and how a table reads in a dialog and a settings row. Rust writes them.
 
 /** Where a project runs. `host` is an ssh alias and `sentry` an org/project: nothing here is a secret. */
 export interface DeployCfg {
@@ -112,7 +112,7 @@ export function deployPrompt(current: DeployCfg | null): string {
   ].join("\n");
 }
 
-const why = (p: DeployProposal, key: string) => p.why.find((w) => w.toLowerCase().startsWith(key + ":"))?.slice(key.length + 1).trim();
+const why = (p: { why: string[] }, key: string) => p.why.find((w) => w.toLowerCase().startsWith(key + ":"))?.slice(key.length + 1).trim();
 const said = (p: DeployProposal, key: string) => why(p, key) ? `: ${why(p, key)}` : "";
 
 /** The review dialog's text, in ./format's `dialogBody` dialect: blank lines, bullets, backticks. */
@@ -129,5 +129,116 @@ export function deployText(p: DeployProposal, checked: { deploy: DeployCfg; drop
   if (lost.length) out.push(`Changes what it says now:\n\n${lost.map((x) => `- ${x}`).join("\n")}`);
   if (checked.dropped.length) out.push(`Left out:\n\n${checked.dropped.map((x) => `- ${x}`).join("\n")}`);
   if (lines.length) out.push("Nothing connects anywhere until you ask for a check. Nothing is committed: review it in git like any other change.");
+  return out.join("\n\n");
+}
+
+// ---------- [maintenance]'s setup: the keys an agent may propose ----------
+
+/** What Apply writes into `[maintenance]`; `off`, `sources`, the thresholds and the params stay a person's. */
+export interface MaintCfg { trunk: string | null; tagPattern: string | null; sarif: string[]; bots: string[] }
+/** What `propose_maint` hands back, unchecked: `unknown` is every other key the agent set. */
+export interface MaintCfgProposal { maintenance: MaintCfg; unknown: string[]; why: string[] }
+
+export const isEmptyMaintCfg = (c: MaintCfg): boolean => !c.trunk && !c.tagPattern && !c.sarif.length && !c.bots.length;
+const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
+/** `maint_setup`'s answer, or null for none: a wrong shape drops that value, never the rest. */
+export function narrowMaintCfg(raw: unknown): MaintCfg | null {
+  if (!isObj(raw)) return null;
+  const c: MaintCfg = { trunk: strOr(raw.trunk), tagPattern: strOr(raw.tagPattern), sarif: strs(raw.sarif), bots: strs(raw.bots) };
+  return isEmptyMaintCfg(c) ? null : c;
+}
+
+// maint.rs's `keep_setup`, word for word: a trunk and a tag glob reach git as one argv word.
+const isRef = (v: string) => isWord(v) && !/[*?[\]\\~^:]|@\{|\.\./.test(v) && v !== "@" && v !== "HEAD";
+const isTagGlob = (v: string) => isWord(v) && !/[?[\]\\]/.test(v);
+const isInside = (p: string) => p !== "" && !p.startsWith("/") && !p.includes("..") && !p.includes("\\") && !p.includes(":");
+const isLogin = (v: string) => /^[A-Za-z0-9_.[\]/][A-Za-z0-9_.[\]/-]*$/.test(v);
+
+/** The values Apply may write, trimmed and deduplicated, and one line for each it may not. */
+export function checkMaintCfg(p: MaintCfgProposal): { maintenance: MaintCfg; dropped: string[] } {
+  const c = p.maintenance, dropped: string[] = [];
+  const keep = (ok: boolean, line: string) => { if (!ok) dropped.push(line); return ok; };
+  const t = (v: string | null) => v?.trim() || null;
+  const list = (v: string[], ok: (x: string) => boolean, line: (x: string) => string) =>
+    [...new Set(v.map((x) => x.trim()).filter((x) => x && keep(ok(x), line(x))))];
+  const trunk = t(c.trunk), tag = t(c.tagPattern);
+  const out: MaintCfg = {
+    trunk: trunk && keep(isRef(trunk), `trunk = "${trunk}" is not a branch name`) ? trunk : null,
+    tagPattern: tag && keep(isTagGlob(tag), `tag_pattern = "${tag}" is not a tag glob: * is its only wildcard`) ? tag : null,
+    sarif: list(c.sarif, isInside, (x) => `sarif = "${x}" is not a path inside the project`),
+    bots: list(c.bots, isLogin, (x) => `bots = "${x}" is not a login`),
+  };
+  for (const k of p.unknown) dropped.push(`${k} is not a key an agent may set`);
+  return { maintenance: out, dropped };
+}
+
+/** One line for the project settings row; empty when none of the keys is set. */
+export function maintCfgSummary(c: MaintCfg | null): string {
+  if (!c) return "";
+  return [
+    c.trunk && `trunk ${c.trunk}`, c.tagPattern && `tags ${c.tagPattern}`,
+    c.sarif.length && `${c.sarif.length} SARIF path${c.sarif.length === 1 ? "" : "s"}`, c.bots.length && `bots ${c.bots.join(", ")}`,
+  ].filter(Boolean).join(" · ");
+}
+
+/** The keys as TOML, value for value: the agent keeps only what it is shown. */
+export function maintCfgToml(c: MaintCfg): string {
+  const arr = (v: string[]) => `[${v.map(tq).join(", ")}]`;
+  return ["[maintenance]", c.trunk && `trunk = ${tq(c.trunk)}`, c.tagPattern && `tag_pattern = ${tq(c.tagPattern)}`,
+    c.sarif.length && `sarif = ${arr(c.sarif)}`, c.bots.length && `bots = ${arr(c.bots)}`].filter(Boolean).join("\n");
+}
+
+/** One line per current value the proposal removes or changes, so Discard is an informed choice. */
+export function maintCfgLosses(current: MaintCfg | null, next: MaintCfg): string[] {
+  if (!current) return [];
+  const out: string[] = [];
+  const one = (k: string, a: string | null, b: string | null) => {
+    if (a && a !== b) out.push(b ? `\`${k} = "${a}"\` becomes \`"${b}"\`` : `\`${k} = "${a}"\` is removed`);
+  };
+  one("trunk", current.trunk, next.trunk);
+  one("tag_pattern", current.tagPattern, next.tagPattern);
+  for (const x of current.sarif) if (!next.sarif.includes(x)) out.push(`sarif path \`${x}\` is removed`);
+  for (const x of current.bots) if (!next.bots.includes(x)) out.push(`bot \`${x}\` is removed`);
+  return out;
+}
+
+/** The headless reader's question: what the keys say now, and what Maintenance could not tell. */
+export function maintPrompt(current: MaintCfg | null, asks: readonly string[] = []): string {
+  const now = current && !isEmptyMaintCfg(current) ? maintCfgToml(current) : "";
+  return [
+    "Read this software project's repository and find how its maintenance is organised.",
+    "Episko, a desktop app, uses the answer to check the project's branches, releases and security reports; it changes nothing on its own.",
+    "You can only read files. Look at CONTRIBUTING and README files, CI workflows, release scripts and their config, changelogs, and the config of any scanner or update bot.",
+    ...(asks.length ? ["", "Episko could not tell on its own:", ...asks.map((a) => `- ${a}`)] : []),
+    "",
+    "Answer with exactly one fenced ```toml block containing a [maintenance] table with:",
+    "- trunk: the branch work is merged into and releases are cut from, when the files say it is not simply the remote's default branch (a dev branch, say), or when the repository has no remote.",
+    "- tag_pattern: a glob every release tag matches, such as \"v*\", when releases are tagged and other tags exist too. * is the only wildcard allowed.",
+    "- sarif: paths relative to the repository root, as a list, where the project's own scans write SARIF files into the working tree (* allowed in a file name).",
+    "- bots: the logins of self-hosted update bots that open dependency pull requests, as a list. Leave out the hosted Dependabot and Renovate apps.",
+    "Leave a key out when the files do not support it, and write no other key. Never write a token, password, key or any other secret.",
+    now ? `The current values are below. Repeat every one that is still right, even one the files do not show: a value you leave out is removed.\n\`\`\`toml\n${now}\n\`\`\``
+      : "None of them is set yet.",
+    "",
+    "After the block write a line containing only WHY, then one line per key starting with \"- trunk:\", \"- tag_pattern:\", \"- sarif:\" or \"- bots:\" saying which file and lines it is based on. Write nothing else.",
+  ].join("\n");
+}
+
+/** The review dialog's text, in ./format's `dialogBody` dialect, naming every current value it changes. */
+export function maintCfgText(p: MaintCfgProposal, checked: { maintenance: MaintCfg; dropped: string[] }, current: MaintCfg | null): string {
+  const c = checked.maintenance, lines: string[] = [];
+  const arr = (v: string[]) => v.map((x) => `"${x}"`).join(", ");
+  const said = (k: string) => why(p, k) ? `: ${why(p, k)}` : "";
+  if (c.trunk) lines.push(`- \`trunk = "${c.trunk}"\`${said("trunk")}`);
+  if (c.tagPattern) lines.push(`- \`tag_pattern = "${c.tagPattern}"\`${said("tag_pattern")}`);
+  if (c.sarif.length) lines.push(`- \`sarif = [${arr(c.sarif)}]\`${said("sarif")}`);
+  if (c.bots.length) lines.push(`- \`bots = [${arr(c.bots)}]\`${said("bots")}`);
+  const lost = maintCfgLosses(current, c);
+  const out = [lines.length ? `For \`[maintenance]\` in \`.episko/episko.toml\`:\n\n${lines.join("\n")}`
+    : `Claude found nothing it could support for \`[maintenance]\`${lost.length ? ", so Apply clears what it says now" : ""}.`];
+  if (lost.length) out.push(`Changes what it says now:\n\n${lost.map((x) => `- ${x}`).join("\n")}`);
+  if (checked.dropped.length) out.push(`Left out:\n\n${checked.dropped.map((x) => `- ${x}`).join("\n")}`);
+  if (lines.length || lost.length) out.push("Only these keys are written; off, sources, thresholds and params stay as they are. Nothing is committed: review it in git like any other change.");
   return out.join("\n\n");
 }

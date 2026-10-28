@@ -274,7 +274,7 @@ fn sarif_paths(root: &Path, patterns: &[String], gaps: &mut Vec<String>) -> (Vec
     let mut found = BTreeSet::new();
     let mut cut = false;
     for p in patterns {
-        if p.starts_with('/') || p.contains("..") || p.contains('\\') || p.contains(':') {
+        if !crate::maint::sarif_inside(p) {
             gaps.push(format!("sarif pattern {p:?} must be a path inside the project"));
             continue;
         }

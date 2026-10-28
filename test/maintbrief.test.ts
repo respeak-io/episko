@@ -103,6 +103,17 @@ describe("briefFor", () => {
     expect(setup("deps")).not.toContain(".some-ci.yml");
   });
 
+  // A code-scanning source switched off on its forge (`coverSetups`): a workflow, never a switch flipped.
+  it("sets up code scanning as a workflow a person reviews and enables", () => {
+    const bare = input();
+    bare.det!.forge.host = "git.example.org";
+    const text = briefFor({ ...by("release"), facet: "security", verb: "setup", key: "setup:x", ref: "sec.code" }, bare, ctx)!;
+    expect(text).toMatch(/acme has code scanning switched off[\s\S]*git\.example\.org[\s\S]*every pull request/);
+    expect(text).toContain("Do not push or enable anything on the remote");
+    expect(text).not.toMatch(/GitHub|CodeQL/);
+    expect(briefFor({ ...by("release"), facet: "security", verb: "setup", key: "setup:x", ref: null }, bare, ctx), "only code scanning").toBeNull();
+  });
+
   it("asks for a scanner's findings in code to be judged where they are, every place named", () => {
     const code = (location: string) => ({ id: "js/sql-injection", aliases: [], kind: "code" as const, pkg: null, ecosystem: null,
       version: null, severity: "high" as const, rawSeverity: "8.8", summary: "Query built from user input", fixed: null, location, url: null, tool: "t" });

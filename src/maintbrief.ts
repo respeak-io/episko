@@ -215,7 +215,7 @@ const prodBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
-// A facet with nothing reading it; the forge is named only as the remote spells it.
+// A facet with nothing reading it, or code scanning off; the forge is named only as the remote spells it.
 const setupBrief: Brief = (f, inp, ctx) => {
   const host = inp.det?.forge.host;
   const on = host ? ` The remote is on ${host}.` : "";
@@ -237,6 +237,17 @@ const setupBrief: Brief = (f, inp, ctx) => {
       "Add the configuration for an update bot this remote supports, covering every package manager",
       "the project uses: group patch and minor updates, keep majors separate, and schedule it weekly.",
       "Say which bot you chose and why, and what a person must switch on for it to run.",
+    ];
+  }
+  // `coverSetups`: the forge offers code scanning and has it switched off.
+  if (f.facet === "security" && f.ref === "sec.code") {
+    return [
+      `${ctx.project} has code scanning switched off, so nothing analyses its code for vulnerabilities.${on}`, "",
+      "Add a code-scanning workflow on the CI this remote already offers that analyses every language",
+      "the project is written in, on every push to the default branch, on every pull request and once a",
+      "week, and uploads its results to the remote's code scanning. Read the manifests and build scripts",
+      "first, so a compiled language is built the way the project builds it today.",
+      "", "Do not push or enable anything on the remote: a person reviews the workflow first, then switches code scanning on.",
     ];
   }
   return null;

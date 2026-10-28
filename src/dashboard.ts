@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciRows, clampMaint, coverRows, FACET_TAB, facetCells, findings, forgeText, hostRows, offers, outdatedText, probeRows, prodChecks, projectBand,
+  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostRows, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -128,6 +128,7 @@ export interface DashHost {
   openFleetMaint: (sub: MaintSub, root: string) => void;
   // The Runs on card's doors: the `[deploy]` proposal (actions.ts) and the committed file itself.
   proposeDeploy: (root: string) => void;
+  proposeMaint: (root: string) => void; // a Coverage row's: the `[maintenance]` proposal
   openConfig: (root: string) => void;
 }
 let host: DashHost = {
@@ -137,7 +138,7 @@ let host: DashHost = {
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
-  setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, openConfig: () => {},
+  setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, proposeMaint: () => {}, openConfig: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
 
@@ -1298,7 +1299,7 @@ function maintNow(now: number): MaintDash {
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
       stale: !!e && (e.detecting || e.out > 0) && e.at > 0,
     },
-    rows, offers: offers(r, inp), checked: e?.at ?? 0,
+    rows, offers: offers(r, inp), setups: coverSetups(r, inp), checked: e?.at ?? 0,
     tab: {
       ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
       sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
@@ -1351,6 +1352,7 @@ const maintHost: MaintHost = {
   openView: (v) => openDashView(v),
   openAcross: (sub) => host.openFleetMaint(sub, root()),
   deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
+  setup: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeMaint(r); },
   roots: () => [root()],
 };
 

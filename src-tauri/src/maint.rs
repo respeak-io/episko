@@ -512,6 +512,165 @@ pub(crate) fn read_config(root: &str) -> MaintConfig {
     }
 }
 
+// ---------- [maintenance]'s setup: proposed by an agent, written after Apply ----------
+
+/// The keys an agent proposes and Apply writes; `off`, `sources`, the thresholds and the params
+/// stay a person's. An unknown key is refused by serde, never written.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub(crate) struct MaintSetup {
+    trunk: Option<String>,
+    tag_pattern: Option<String>,
+    sarif: Vec<String>,
+    bots: Vec<String>,
+}
+
+const SETUP_KEYS: &[&str] = &["trunk", "tag_pattern", "sarif", "bots"];
+
+impl MaintSetup {
+    fn of(c: &MaintConfig) -> Self {
+        Self { trunk: c.trunk.clone(), tag_pattern: c.tag_pattern.clone(), sarif: c.sarif.clone(), bots: c.bots.clone() }
+    }
+}
+
+/// A SARIF pattern that stays inside the project; `sarif_files` skips any other, as a gap.
+pub(crate) fn sarif_inside(p: &str) -> bool {
+    !p.is_empty() && !p.starts_with('/') && !p.contains("..") && !p.contains('\\') && !p.contains(':')
+}
+
+// One argv word git reads as a branch, not as wildmatch or a revision expression (`@{-1}`, `a..b`).
+fn ref_word(v: &str) -> bool {
+    let rev = v.contains("@{") || v.contains("..") || v == "@" || v == "HEAD";
+    data_arg(v).is_ok() && !rev && !v.contains(['*', '?', '[', ']', '\\', '~', '^', ':'])
+}
+
+// `glob_match`'s dialect: `describe --match` would read any other wildcard as wildmatch.
+fn tag_glob(v: &str) -> bool {
+    data_arg(v).is_ok() && !v.contains(['?', '[', ']', '\\'])
+}
+
+fn login(v: &str) -> bool {
+    !v.is_empty() && !v.starts_with('-') && v.chars().all(|c| c.is_ascii_alphanumeric() || "-_.[]/".contains(c))
+}
+
+/// The values safe to write, trimmed and deduplicated, and one line per value that is not.
+fn keep_setup(s: MaintSetup) -> (MaintSetup, Vec<String>) {
+    let mut out = vec![];
+    let mut said = |ok: bool, line: String| {
+        if !ok {
+            out.push(line);
+        }
+        ok
+    };
+    let word = |v: Option<String>| v.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    let trunk = word(s.trunk).filter(|t| said(ref_word(t), format!("trunk = \"{t}\" is not a branch name")));
+    let tag_pattern = word(s.tag_pattern).filter(|p| said(tag_glob(p), format!("tag_pattern = \"{p}\" is not a tag glob: * is its only wildcard")));
+    let mut list = |v: Vec<String>, ok: fn(&str) -> bool, line: fn(&str) -> String| {
+        let mut seen: Vec<String> = vec![];
+        for x in v.iter().map(|x| x.trim()).filter(|x| !x.is_empty()) {
+            if said(ok(x), line(x)) && !seen.iter().any(|y| y == x) {
+                seen.push(x.to_string());
+            }
+        }
+        seen
+    };
+    let sarif = list(s.sarif, sarif_inside, |p| format!("sarif = \"{p}\" is not a path inside the project"));
+    let bots = list(s.bots, login, |b| format!("bots = \"{b}\" is not a login"));
+    (MaintSetup { trunk, tag_pattern, sarif, bots }, out)
+}
+
+#[tauri::command]
+pub(crate) fn maint_setup(dir: String) -> MaintSetup {
+    MaintSetup::of(&read_config(&root_key(&dir)))
+}
+
+/// Unchecked, so the dialog can say what it left out: `unknown` is every other key the block set.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct MaintProposal {
+    maintenance: MaintSetup,
+    unknown: Vec<String>,
+    why: Vec<String>,
+}
+
+fn parse_maint_proposal(out: &str) -> Result<MaintProposal, String> {
+    let (block, why) = crate::deploy::fenced(out)?;
+    let t = block.parse::<toml::Table>().map_err(|e| format!("the proposal is not valid TOML: {e}"))?;
+    let m = t.get("maintenance").and_then(|v| v.as_table()).cloned().unwrap_or_default();
+    let word = |k: &str| m.get(k).and_then(|v| v.as_str()).map(String::from);
+    // A bare string is a list of one, as `compose` reads in `[deploy]`.
+    let list = |k: &str| match m.get(k) {
+        Some(toml::Value::Array(a)) => a.iter().filter_map(|x| x.as_str()).map(String::from).collect(),
+        Some(v) => v.as_str().map(String::from).into_iter().collect(),
+        None => vec![],
+    };
+    let unknown = m.keys().filter(|k| !SETUP_KEYS.contains(&k.as_str())).cloned().collect();
+    let maintenance = MaintSetup { trunk: word("trunk"), tag_pattern: word("tag_pattern"), sarif: list("sarif"), bots: list("bots") };
+    Ok(MaintProposal { maintenance, unknown, why })
+}
+
+#[tauri::command]
+pub(crate) async fn propose_maint(dir: String, prompt: String) -> Result<MaintProposal, String> {
+    tauri::async_runtime::spawn_blocking(move || parse_maint_proposal(&crate::deploy::propose_toml(&dir, &prompt)?))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Only a key whose value changed is replaced, so a hand-written value keeps its comment, and the
+/// keys a person owns (`off`, the subtables) are never touched. `old` is the table as read.
+fn set_setup(doc: &mut toml_edit::DocumentMut, old: &MaintSetup, s: &MaintSetup) -> Result<(), String> {
+    if doc.get("maintenance").is_some_and(|i| !i.is_table_like()) {
+        return Err("maintenance in .episko/episko.toml is not a table".into());
+    }
+    if old == s {
+        return Ok(()); // nothing to write, so not even the header is touched
+    }
+    if doc.get("maintenance").is_none() {
+        doc["maintenance"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let t = doc["maintenance"].as_table_like_mut().ok_or("maintenance is not a table")?;
+    let mut put = |k: &str, same: bool, v: Option<toml_edit::Item>| match v {
+        _ if same => {}
+        None => {
+            t.remove(k);
+        }
+        Some(i) => {
+            t.insert(k, i);
+        }
+    };
+    let word = |v: &Option<String>| v.as_deref().map(toml_edit::value);
+    let list = |v: &[String]| (!v.is_empty()).then(|| toml_edit::value(v.iter().map(String::as_str).collect::<toml_edit::Array>()));
+    put("trunk", old.trunk == s.trunk, word(&s.trunk));
+    put("tag_pattern", old.tag_pattern == s.tag_pattern, word(&s.tag_pattern));
+    put("sarif", old.sarif == s.sarif, list(&s.sarif));
+    put("bots", old.bots == s.bots, list(&s.bots));
+    let (empty, bare) = (t.is_empty(), t.iter().all(|(_, v)| v.is_table()));
+    if empty {
+        doc.remove("maintenance"); // an emptied table must not leave a bare header behind
+    } else if let Some(table) = doc["maintenance"].as_table_mut() {
+        // Only `[maintenance.thresholds]` left: no empty header above it, unless a comment rides on it.
+        let noted = [table.decor().prefix(), table.decor().suffix()].iter().any(|r| r.and_then(|r| r.as_str()).is_some_and(|x| x.contains('#')));
+        table.set_implicit(bare && !noted);
+    }
+    Ok(())
+}
+
+/// Reads degrade, writes fail loudly: an unsafe value is refused and named, never dropped.
+#[tauri::command]
+pub(crate) fn write_maint(dir: String, maintenance: MaintSetup, create: bool) -> Result<(), String> {
+    let (s, refused) = keep_setup(maintenance);
+    if !refused.is_empty() {
+        return Err(refused.join("; "));
+    }
+    let wrote = crate::deploy::edit_toml(&dir, create, |text, doc| set_setup(doc, &MaintSetup::of(&parse_maint(text)), &s))?;
+    if wrote {
+        // Every key here feeds a cached read (trunk, tags, SARIF, the bots' PRs), so Apply must show.
+        let key = root_key(&dir);
+        invalidate(&key);
+        crate::deps::dep_invalidate(key);
+    }
+    Ok(())
+}
+
 fn facet_off(cfg: &MaintConfig, facet: Facet) -> bool {
     cfg.off.iter().any(|o| o == facet.id())
 }
@@ -2025,5 +2184,149 @@ version_url = \"https://app.example.com/version\"
         let text = std::fs::read_to_string(&path).expect("test/fixtures/maint-wire.json: regenerate with MAINT_WIRE_WRITE=1 cargo test");
         let want: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(got, want, "the maint wire changed: MAINT_WIRE_WRITE=1 cargo test, then teach src/maint.ts");
+    }
+
+    fn setup(trunk: Option<&str>, tag: Option<&str>, sarif: &[&str], bots: &[&str]) -> MaintSetup {
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect();
+        MaintSetup { trunk: trunk.map(String::from), tag_pattern: tag.map(String::from), sarif: v(sarif), bots: v(bots) }
+    }
+
+    fn cfg_file(dir: &Path) -> PathBuf {
+        dir.join(".episko").join("episko.toml")
+    }
+
+    /// deploy.ts's `checkMaintCfg` runs the same table, so the two languages cannot drift apart.
+    #[test]
+    fn setup_checks_agree_with_deploy_ts() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/fixtures/maint-checks.json");
+        let table: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for case in table["cases"].as_array().unwrap() {
+            let (field, v) = (case["field"].as_str().unwrap(), case["value"].as_str().unwrap());
+            let want: Vec<String> = case["refused"].as_str().map(String::from).into_iter().collect();
+            if field == "key" {
+                let p = parse_maint_proposal(&format!("```toml\n[maintenance]\n{v} = 1\n```\n")).unwrap();
+                // The proposal names the key and serde refuses it at write; the line is deploy.ts's alone.
+                assert_eq!((p.unknown, want.len()), (vec![v.to_string()], 1), "{v}");
+                continue;
+            }
+            let s = match field {
+                "trunk" => setup(Some(v), None, &[], &[]),
+                "tag_pattern" => setup(None, Some(v), &[], &[]),
+                "sarif" => setup(None, None, &[v], &[]),
+                "bots" => setup(None, None, &[], &[v]),
+                other => panic!("no field {other}"),
+            };
+            let (kept, out) = keep_setup(s);
+            assert_eq!(out, want, "{field} = {v:?}");
+            assert_eq!(kept == MaintSetup::default(), !want.is_empty(), "{field} = {v:?}");
+        }
+    }
+
+    #[test]
+    fn a_setup_key_the_writer_does_not_know_is_refused() {
+        let bad = serde_json::from_value::<MaintSetup>(serde_json::json!({ "trunk": "dev", "off": ["prod"] }));
+        assert!(bad.is_err(), "an unknown key never reaches the file");
+        let ok = serde_json::from_value::<MaintSetup>(serde_json::json!({ "tagPattern": "v*" })).unwrap();
+        assert_eq!(ok, setup(None, Some("v*"), &[], &[]));
+        let p = parse_maint_proposal("```toml\n[maintenance]\ntrunk = \"dev\"\nsarif = \"out/x.sarif\"\noff = [\"prod\"]\n[maintenance.thresholds]\nx = 1\n```\nWHY\n- trunk: CONTRIBUTING.md\n").unwrap();
+        assert_eq!(p.maintenance, setup(Some("dev"), None, &["out/x.sarif"], &[]), "a bare string is a list of one");
+        assert_eq!((p.unknown, p.why), (vec!["off".to_string(), "thresholds".into()], vec!["trunk: CONTRIBUTING.md".to_string()]));
+        assert!(parse_maint_proposal("nothing").is_err());
+        let (kept, out) = keep_setup(setup(Some(" dev "), Some(""), &["a.sarif", " a.sarif", ""], &[]));
+        assert_eq!((kept, out.len()), (setup(Some("dev"), None, &["a.sarif"], &[]), 0), "trimmed, deduplicated, empties gone");
+    }
+
+    #[test]
+    fn a_setup_write_keeps_every_hand_written_line() {
+        let dir = scratch_dir();
+        let before = "# team settings\n[branches]\nprotect = [\"dev\"]\n\n[maintenance]\ntrunk = \"dev\" # releases are cut here\n\
+                      off = [\"prod\"]\n\n[maintenance.thresholds]\nstale_branch_days = 14\n";
+        write(&dir, ".episko/episko.toml", before);
+        let want = setup(Some("dev"), Some("v*"), &["reports/*.sarif"], &["acme-renovate"]);
+        write_maint(s(&dir), want.clone(), false).unwrap();
+        let text = std::fs::read_to_string(cfg_file(&dir)).unwrap();
+        let head = "# team settings\n[branches]\nprotect = [\"dev\"]\n\n[maintenance]\ntrunk = \"dev\" # releases are cut here\noff = [\"prod\"]\n";
+        assert!(text.starts_with(head), "{text}");
+        let c = parse_maint(&text);
+        assert_eq!(MaintSetup::of(&c), want);
+        assert_eq!((c.off.clone(), c.thresholds.get("stale_branch_days")), (vec!["prod".to_string()], Some(&14.0)), "a person's keys stay");
+        assert_eq!(serde_json::to_value(crate::git::parse_protect(&text)).unwrap(), serde_json::to_value(crate::git::parse_protect(before)).unwrap());
+        // Removing what the agent no longer proposes takes only those keys.
+        write_maint(s(&dir), setup(Some("dev"), None, &[], &[]), false).unwrap();
+        let after = std::fs::read_to_string(cfg_file(&dir)).unwrap();
+        assert_eq!(MaintSetup::of(&parse_maint(&after)), setup(Some("dev"), None, &[], &[]));
+        assert!(after.contains("trunk = \"dev\" # releases are cut here") && after.contains("stale_branch_days = 14"), "{after}");
+    }
+
+    #[test]
+    fn an_unchanged_setup_writes_nothing() {
+        let dir = scratch_dir();
+        let text = "[maintenance]\nbots   = [ 'acme-renovate' ]\ntrunk='dev'\n";
+        write(&dir, ".episko/episko.toml", text);
+        let mtime = std::fs::metadata(cfg_file(&dir)).unwrap().modified().unwrap();
+        write_maint(s(&dir), setup(Some("dev"), None, &[], &["acme-renovate"]), false).unwrap();
+        assert_eq!(std::fs::read_to_string(cfg_file(&dir)).unwrap(), text);
+        assert_eq!(std::fs::metadata(cfg_file(&dir)).unwrap().modified().unwrap(), mtime);
+        assert!(!dir.join(".episko").join("episko.toml.tmp").exists());
+        let held = "[maintenance] # ops owns this\n\n[maintenance.thresholds]\nstale_branch_days = 14\n";
+        write(&dir, ".episko/episko.toml", held);
+        write_maint(s(&dir), MaintSetup::default(), false).unwrap();
+        assert_eq!(std::fs::read_to_string(cfg_file(&dir)).unwrap(), held, "a header over subtables only is left alone");
+        write(&dir, ".episko/episko.toml", "[maintenance] # ops owns this\ntrunk = \"dev\"\n\n[maintenance.thresholds]\nx = 1\n");
+        write_maint(s(&dir), MaintSetup::default(), false).unwrap();
+        let after = std::fs::read_to_string(cfg_file(&dir)).unwrap();
+        assert!(after.contains("[maintenance] # ops owns this") && !after.contains("trunk"), "a commented header survives: {after}");
+    }
+
+    #[test]
+    fn a_setup_write_drops_the_projects_cached_reports() {
+        let dir = scratch_dir();
+        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"dev\"\n");
+        let key = root_key(&s(&dir));
+        let held = || REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.keys().any(|(r, _, _)| *r == key));
+        let put = || REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
+            .insert((key.clone(), "git-tags".into(), String::new()), (Instant::now(), report("git-tags", None, Coverage::NotRun)));
+        put();
+        write_maint(s(&dir), setup(Some("dev"), None, &[], &[]), false).unwrap();
+        assert!(held(), "an unchanged file keeps every report");
+        write_maint(s(&dir), setup(Some("main"), None, &[], &[]), false).unwrap();
+        assert!(!held(), "a new trunk is read again, not served from the cache");
+    }
+
+    #[test]
+    fn a_setup_write_refuses_and_names_an_unsafe_value() {
+        let dir = scratch_dir();
+        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"dev\"\n");
+        let e = write_maint(s(&dir), setup(Some("--orphan"), Some("v[0-9]*"), &["../x.sarif"], &[]), false).unwrap_err();
+        assert!(e.contains("trunk = \"--orphan\"") && e.contains("tag_pattern = \"v[0-9]*\"") && e.contains("../x.sarif"), "{e}");
+        assert_eq!(maint_setup(s(&dir)), setup(Some("dev"), None, &[], &[]), "refused, so nothing moved");
+    }
+
+    #[test]
+    fn a_setup_creates_a_file_only_when_asked() {
+        let dir = scratch_dir();
+        assert_eq!(write_maint(s(&dir), setup(Some("dev"), None, &[], &[]), false), Err(crate::deploy::NO_FILE.to_string()));
+        assert!(!cfg_file(&dir).exists());
+        write_maint(s(&dir), MaintSetup::default(), true).unwrap();
+        assert!(!cfg_file(&dir).exists(), "nothing to write is no new file");
+        write_maint(s(&dir), setup(Some("dev"), Some("v*"), &[], &[]), true).unwrap();
+        assert_eq!(maint_setup(s(&dir)), setup(Some("dev"), Some("v*"), &[], &[]));
+    }
+
+    #[test]
+    fn a_setup_table_beside_its_subtables() {
+        let dev = setup(Some("dev"), None, &[], &[]);
+        let mut doc = "[maintenance.thresholds]\nstale_branch_days = 14\n".parse::<toml_edit::DocumentMut>().unwrap();
+        set_setup(&mut doc, &MaintSetup::default(), &dev).unwrap();
+        let text = doc.to_string();
+        assert_eq!(MaintSetup::of(&parse_maint(&text)), dev, "{text}");
+        assert_eq!(parse_maint(&text).thresholds.get("stale_branch_days"), Some(&14.0), "{text}");
+        set_setup(&mut doc, &dev, &MaintSetup::default()).unwrap();
+        assert_eq!(doc.to_string(), "[maintenance.thresholds]\nstale_branch_days = 14\n", "no empty header is left above it");
+        let mut gone = "[stack]\nup = \"x\"\n\n[maintenance]\ntrunk = \"dev\"\n".parse::<toml_edit::DocumentMut>().unwrap();
+        set_setup(&mut gone, &dev, &MaintSetup::default()).unwrap();
+        assert_eq!(gone.to_string(), "[stack]\nup = \"x\"\n");
+        let mut bad = "maintenance = 3\n".parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(set_setup(&mut bad, &MaintSetup::default(), &dev).is_err());
     }
 }

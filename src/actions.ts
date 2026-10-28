@@ -16,7 +16,11 @@ import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
 import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
 import { checkRun, describePrompt, runSummaryText, taskCmd, type RunInfo } from "./runinfo";
-import { checkDeploy, deployPrompt, deployText, isEmptyDeploy, narrowDeploy, NO_FILE, type DeployCfg, type DeployProposal } from "./deploy";
+import {
+  checkDeploy, checkMaintCfg, deployPrompt, deployText, isEmptyDeploy, maintCfgLosses, maintCfgText, maintPrompt, narrowDeploy,
+  isEmptyMaintCfg, narrowMaintCfg, NO_FILE, type DeployProposal, type MaintCfgProposal,
+} from "./deploy";
+import { coverRows } from "./maint";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -77,7 +81,7 @@ import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
 import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
 import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
-import { forgetMaint, maintOf, scanProject } from "./maintscan";
+import { forgetMaint, maintInput, maintOf, scanProject } from "./maintscan";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -790,16 +794,16 @@ export async function proposeStack(root: string): Promise<void> {
 // ---------- where it runs ----------
 
 // A new committable file is asked about once more: Apply answered for the table, not the file.
-async function writeDeploy(root: string, deploy: DeployCfg): Promise<boolean> {
+async function writeTable(root: string, table: string, write: (create: boolean) => Promise<unknown>): Promise<boolean> {
   try {
-    await invoke("write_deploy", { dir: root, deploy, create: false });
+    await write(false);
     return true;
   } catch (e) {
     if (String(e) !== NO_FILE) throw e;
   }
-  const make = await ask(`${basename(root)} has no \`.episko/episko.toml\` yet. Create it to hold \`[deploy]\`? It is a new file to commit.`,
+  const make = await ask(`${basename(root)} has no \`.episko/episko.toml\` yet. Create it to hold \`[${table}]\`? It is a new file to commit.`,
     { title: "Create .episko/episko.toml", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
-  if (make) await invoke("write_deploy", { dir: root, deploy, create: true });
+  if (make) await write(true);
   return make;
 }
 
@@ -819,12 +823,42 @@ export async function proposeDeploy(root: string): Promise<void> {
       return;
     }
     if (!await ask(text, { title: `Where ${basename(root)} runs`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
-    if (!await writeDeploy(root, checked.deploy)) return;
+    const deploy = checked.deploy;
+    if (!await writeTable(root, "deploy", (create) => invoke("write_deploy", { dir: root, deploy, create }))) return;
     toast("[deploy] written. Commit .episko/ to share it");
     // Only a project Maintenance already read: the write dropped Rust's detection, every report stays.
     if (maintOf(root)) void scanProject(root, false);
   } catch (e) {
     toast(`No deploy proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
+}
+
+// The same reader asked about `[maintenance]`'s keys, told what Maintenance could not settle on its
+// own; only those keys are written, and only after Apply (docs/maintenance.md).
+export async function proposeMaint(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project's branches, releases and scanners. This can take a minute or two");
+  try {
+    const current = await invoke<unknown>("maint_setup", { dir: root }).then(narrowMaintCfg, () => null);
+    const inp = maintInput(root);
+    const asks = inp ? coverRows(inp).filter((r) => r.cfg).map((r) => `${r.label}: ${r.text}`) : [];
+    const p = await invoke<MaintCfgProposal>("propose_maint", { dir: root, prompt: maintPrompt(current, asks) });
+    const checked = checkMaintCfg(p);
+    const text = maintCfgText(p, checked, current);
+    const maintenance = checked.maintenance;
+    if (isEmptyMaintCfg(maintenance) && !maintCfgLosses(current, maintenance).length) {
+      await ask(text, { title: "Nothing to set", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    if (!await ask(text, { title: `Maintenance settings of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    if (!await writeTable(root, "maintenance", (create) => invoke("write_maint", { dir: root, maintenance, create }))) return;
+    toast("[maintenance] written. Commit .episko/ to share it");
+    if (maintOf(root)) void scanProject(root, false);
+  } catch (e) {
+    toast(`No maintenance proposal: ${e}`);
   } finally {
     proposing.delete(root);
   }

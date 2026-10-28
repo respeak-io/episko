@@ -9,7 +9,7 @@ import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
+  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
   type BoardId, type Door, type MaintTab, type ProjectPick, type SevBucket,
 } from "./maint";
 import { briefFor } from "./maintbrief";
@@ -35,6 +35,7 @@ export interface MaintHost {
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
   deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
+  setup?: (root: string, what: "propose" | "file") => void; // a Coverage row a [maintenance] key answers
   openCover?: (facet: Facet) => void; // the dashboard's: the facet's tab at its Coverage, which says why
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
 }
@@ -61,7 +62,8 @@ async function fetchHere(root: string, name: string): Promise<void> {
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
   const inp = maintInput(root);
-  const f = inp && [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp)].find((x) => x.key === key);
+  const f = inp && [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)]
+    .find((x) => x.key === key);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
   const name = host.nameOf(root);
   if (f.verb === "fetch") { await fetchHere(root, name); return; }
@@ -151,6 +153,8 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   if (across) { host.openAcross?.(subOf(across.dataset.mtacross)); return true; }
   const dep = t.closest<HTMLElement>("[data-mtdeploy]");
   if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
+  const cfg = t.closest<HTMLElement>("[data-mtcfg]");
+  if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
   const url = t.closest<HTMLElement>("[data-mturl]");
   if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
   const copy = t.closest<HTMLElement>("[data-mtcopy]");
