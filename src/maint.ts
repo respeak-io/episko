@@ -258,7 +258,7 @@ const count = (n: number, c: Ctx) => `${n}${c.trunc ? "+" : ""}`;
 
 // `since` and `sha` are the first red run's, null from a source blind to ci.failing-since; `floor`
 // marks a streak that ran off a capped page.
-export interface CiFailure { workflow: string; since: number | null; floor: boolean; sha: string | null; url: string | null; branch: string }
+export interface CiFailure { workflow: string; since: number | null; floor: boolean; sha: string | null; url: string | null; branch: string; source: string }
 type CiReport = Pick<SourceReport, "source" | "truncated" | "facts">;
 
 /** Workflows whose newest run failed, each with the oldest of its unbroken run of failures. */
@@ -275,7 +275,7 @@ export function ciFailures(reps: CiReport[]): CiFailure[] {
       if (!i) continue;
       const first = runs[i - 1];
       out.push({ workflow, since: dated ? first.at : null, floor: dated && truncated && i === runs.length,
-        sha: dated ? first.sha : null, url: runs[0].url, branch: f.branch });
+        sha: dated ? first.sha : null, url: runs[0].url, branch: f.branch, source });
     }
   }
   return out.sort((a, b) => (a.since ?? Infinity) - (b.since ?? Infinity) || a.workflow.localeCompare(b.workflow));
@@ -311,15 +311,26 @@ const ciRule: Rule = (facts, c) => {
 
 const SEV_LEVEL: Record<Severity, Level> = { critical: "bad", high: "bad", medium: "warn", low: "info", unknown: "info" };
 const sevRank = (s: Severity) => SEVERITIES.indexOf(s);
+const SEV_SHORT: Record<Severity, string> = { critical: "critical", high: "high", medium: "med", low: "low", unknown: "unknown" };
 
+/** How many of each severity, worst first, empty buckets left out: "1 high · 3 medium". */
+export function sevMix(sevs: readonly Severity[], short = false, n = (k: number) => String(k)): string[] {
+  return SEVERITIES.flatMap((s) => {
+    const k = sevs.filter((x) => x === s).length;
+    return k ? [`${n(k)} ${short ? SEV_SHORT[s] : s}`] : [];
+  });
+}
+
+// The two worst buckets, a secret worse than any severity: "1 high · 3 med", "1 secret · 2 critical".
 const securityRule: Rule = (facts, c) => {
   const merged = mergeAdvisories(kinds(facts, "advisories").map((f) => f.items));
   if (!merged.length) return { level: "ok", text: "", tip: ["no open advisories"] };
   const tip = merged.map((a) => [a.severity, a.id, a.pkgs.join(", ") || a.items[0]?.location].filter(Boolean).join(" · "));
   const secrets = merged.filter((a) => a.kind === "secret").length;
-  if (secrets) return { level: "bad", text: `${count(secrets, c)} secret${secrets === 1 ? "" : "s"}`, tip };
-  const worst = merged[0].severity;
-  return { level: SEV_LEVEL[worst], text: `${count(merged.filter((a) => a.severity === worst).length, c)} ${worst}`, tip };
+  const rest = merged.filter((a) => a.kind !== "secret");
+  const text = [...(secrets ? [`${count(secrets, c)} secret${secrets === 1 ? "" : "s"}`] : []),
+    ...sevMix(rest.map((a) => a.severity), true, (k) => count(k, c))].slice(0, 2).join(" · ");
+  return { level: secrets ? "bad" : SEV_LEVEL[rest[0].severity], text, tip };
 };
 
 // A bot nothing shows to be alive is silent, not healthy: open PRs are the only trace it leaves.
@@ -528,7 +539,11 @@ export function mergeAdvisories(lists: readonly (readonly Advisory[])[]): Merged
   }).sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || a.key.localeCompare(b.key));
 }
 
-const FINDING_TEXT: Record<AdvisoryKind, string> = { dependency: "advisory", code: "code finding", config: "misconfiguration", secret: "secret" };
+const FINDING_TEXT: Record<AdvisoryKind, [string, string]> = {
+  dependency: ["advisory", "advisories"], code: ["code finding", "code findings"],
+  config: ["misconfiguration", "misconfigurations"], secret: ["secret reported", "secrets reported"],
+};
+const KIND_VERB: Record<AdvisoryKind, Verb> = { dependency: "patch", code: "fix", config: "fix", secret: "rotate" };
 
 // ---------- findings, the lines under a card ----------
 
@@ -541,7 +556,8 @@ export interface Finding {
   busy?: boolean; // a Run row whose read is out, so a second click cannot start it again
 }
 
-const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; facts: Facts }[] =>
+/** A facet's reports a card may judge: detected, not off, read, and not skipped here. */
+export const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; facts: Facts }[] =>
   inp.det?.config.off.includes(facet) ? [] : (inp.det?.sources ?? [])
     .map((id) => inp.reports[id])
     .filter((r): r is SourceReport => !!r && r.coverage.state === "ok" && !!r.facts && FACT_FACET[r.facts.kind] === facet && !inp.skip?.includes(r.source))
@@ -556,24 +572,41 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
   const out: Finding[] = [];
   const add = (facet: Facet, f: Omit<Finding, "root" | "facet">) => out.push({ root, facet, ...f });
   const sec = now / 1000;
-  for (const r of okFacts(inp, "ci")) {
-    for (const x of ciFailures([r])) {
-      const age = redFor(x, sec);
-      add("ci", { key: `ci:${x.workflow}`, level: "bad", text: `CI failing${age ? ` ${age}` : ""}`,
-        detail: `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}`, verb: "fix", source: r.source, ref: x.workflow });
-    }
+  // Every red workflow is one Fix, oldest first; Today's queue keeps a row each (`ciRows`).
+  const red = ciFailures(okFacts(inp, "ci"));
+  if (red.length) {
+    const x = red[0], age = redFor(x, sec), on = [...new Set(red.map((y) => y.branch))].join(", ");
+    const names = red.map((y) => [y.workflow, redFor(y, sec)].filter(Boolean).join(" "));
+    add("ci", { key: "ci", level: "bad", verb: "fix", source: x.source, ref: red.length === 1 ? x.workflow : null,
+      text: red.length === 1 ? `CI failing${age ? ` ${age}` : ""}` : `${red.length} workflows failing`,
+      detail: red.length === 1 ? `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}`
+        : `${names.slice(0, 3).join(", ")}${red.length > 3 ? " …" : ""} on ${on}` });
   }
+  // One line per kind: four advisories are one Patch, as 65 branches are one Tidy (docs/maintenance.md).
   const advs = okFacts(inp, "security");
-  for (const a of mergeAdvisories(advs.map((r) => r.facts.kind === "advisories" ? r.facts.items : []))) {
-    const secret = a.kind === "secret", dep = a.kind === "dependency";
-    const lvl = secret ? "bad" : SEV_LEVEL[a.severity];
+  const merged = mergeAdvisories(advs.map((r) => r.facts.kind === "advisories" ? r.facts.items : []));
+  for (const kind of ADVISORY_KINDS) {
+    const group = merged.filter((a) => a.kind === kind);
+    if (!group.length) continue;
+    // Only a capped source that reported this kind makes its count a floor.
+    const trunc = advs.some((r) => r.truncated && r.facts.kind === "advisories" && r.facts.items.some((i) => i.kind === kind));
+    const a = group[0], lvl = kind === "secret" ? "bad" : SEV_LEVEL[a.severity];
     const source = advs.find((r) => r.facts.kind === "advisories" && r.facts.items.some((i) => a.items.includes(i)))?.source ?? "";
-    // Only a dependency has a published fix to name; code is fixed in place, and a secret is rotated.
-    const fix = !dep ? "" : a.fixed ? `fixed in ${a.fixed}` : a.items.some((x) => x.fixed) ? "" : "no fix published";
-    add("security", { key: `security:${a.key}`, level: lvl === "bad" ? "bad" : lvl === "warn" ? "warn" : "info",
-      text: secret ? "secret reported" : `${a.severity === "unknown" ? "" : `${a.severity} `}${FINDING_TEXT[a.kind]}`,
-      detail: [a.pkgs.join(", ") || a.items[0]?.location, fix, a.summary].filter(Boolean).join(" · "),
-      verb: secret ? "rotate" : dep ? "patch" : "fix", source, ref: a.key });
+    const where = (x: MergedAdvisory) => x.pkgs.length ? x.pkgs : x.items[0]?.location ? [x.items[0].location] : [];
+    let text: string, detail: string;
+    if (group.length === 1 && !trunc) {
+      // Only a dependency has a published fix to name; code is fixed in place, and a secret is rotated.
+      const fix = kind !== "dependency" ? "" : a.fixed ? `fixed in ${a.fixed}` : a.items.some((x) => x.fixed) ? "" : "no fix published";
+      text = kind === "secret" ? FINDING_TEXT.secret[0] : `${a.severity === "unknown" ? "" : `${a.severity} `}${FINDING_TEXT[kind][0]}`;
+      detail = [where(a).join(", "), fix, a.summary].filter(Boolean).join(" · ");
+    } else {
+      const places = [...new Set(group.flatMap(where))]; // worst first, as mergeAdvisories ranks them
+      text = `${group.length}${trunc ? "+" : ""} ${FINDING_TEXT[kind][1]}`;
+      detail = [...(kind === "secret" ? [] : sevMix(group.map((x) => x.severity), false, (k) => `${k}${trunc ? "+" : ""}`)),
+        places.slice(0, 3).join(", ") + (places.length > 3 ? " …" : "")].filter(Boolean).join(" · ");
+    }
+    add("security", { key: `security:${kind}`, level: lvl === "bad" ? "bad" : lvl === "warn" ? "warn" : "info",
+      text, detail, verb: KIND_VERB[kind], source, ref: kind });
   }
   for (const { source, facts } of okFacts(inp, "deps")) {
     if (facts.kind !== "updatePrs" || !facts.prs.length) continue;
@@ -1004,17 +1037,18 @@ export interface CiRow { key: string; text: string; detail: string; since: numbe
 
 /** This session's CI lines once its CI cell has a verdict, else the last check's, which say when that was.
  *  A read that failed is no verdict: it must not stand in for the last known red. */
-export function ciRows(root: string, inp: MaintInput | null, snap: MaintSnap | null | undefined, now = Date.now()): CiRow[] {
+export function ciRows(inp: MaintInput | null, snap: MaintSnap | null | undefined, now = Date.now()): CiRow[] {
   const th = clampMaint(inp?.det?.config.thresholds);
   const state = inp ? facetCell("ci", inp, th, now).state : "unread";
   if (inp && (state === "read" || state === "none" || state === "off")) {
-    const since = new Map(ciFailures(okFacts(inp, "ci")).map((x) => [`ci:${x.workflow}`, x.since]));
-    return findings(root, inp, th, now).filter((f) => f.facet === "ci").map((f) => {
-      const s = since.get(f.key);
-      return { key: f.key, text: f.text, detail: f.detail, since: s ? s * 1000 : null, asOf: null };
+    const sec = now / 1000;
+    return ciFailures(okFacts(inp, "ci")).map((x) => {
+      const age = redFor(x, sec);
+      return { key: `ci:${x.workflow}`, text: `CI failing${age ? ` ${age}` : ""}`, since: x.since ? x.since * 1000 : null, asOf: null,
+        detail: `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}` };
     });
   }
-  // The key is findings' own `ci:<workflow>`, and the workflow is all of a line's detail a snapshot keeps.
+  // A snapshot keeps words only; a line from before slice 14 named its one workflow in its key.
   return (snap?.findings ?? []).filter((f) => f.facet === "ci")
-    .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:/, ""), since: null, asOf: f.at ?? snap!.at }));
+    .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:?/, ""), since: null, asOf: f.at ?? snap!.at }));
 }

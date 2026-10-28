@@ -2,7 +2,10 @@
 // vendor's name for it. Each is prefilled and never sent: Episko presses Enter in two places only.
 
 import { compatBlock, verifyBlock } from "./deps";
-import { ciFailures, mergeAdvisories, redFor, span, type Facts, type Finding, type MaintInput, type Verb } from "./maint";
+import {
+  ciFailures, mergeAdvisories, okFacts, redFor, span,
+  type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type Verb,
+} from "./maint";
 
 export interface MaintBriefCtx {
   project: string;
@@ -21,28 +24,45 @@ function factsOf<K extends Facts["kind"]>(f: Finding, inp: MaintInput, kind: K):
   return r?.coverage.state === "ok" && r.facts?.kind === kind ? r.facts as Extract<Facts, { kind: K }> : null;
 }
 
-// Every reporter's rows, so the brief names the fix whichever of them knew it.
-function advisoryOf(f: Finding, inp: MaintInput) {
-  const lists = Object.values(inp.reports).flatMap((r) =>
-    r.coverage.state === "ok" && r.facts?.kind === "advisories" ? [r.facts.items] : []);
-  const rows = mergeAdvisories(lists);
-  return rows.find((a) => a.key === f.ref) ?? rows.find((a) => a.id === f.ref || (f.ref !== null && a.aliases.includes(f.ref))) ?? null;
+// The rows behind the finding's line, from the reports that line counted, worst first, so the
+// brief names the fix whichever reporter knew it. `capped` when any of them hit its page cap.
+function advisoriesOf(f: Finding, inp: MaintInput, ...want: AdvisoryKind[]): { all: MergedAdvisory[]; capped: boolean } {
+  const kind = f.ref as AdvisoryKind;
+  if (!want.includes(kind)) return { all: [], capped: false };
+  const reps = okFacts(inp, "security").flatMap((r) =>
+    r.facts.kind === "advisories" && r.facts.items.some((i) => i.kind === kind) ? [{ ...r, items: r.facts.items }] : []);
+  return { all: mergeAdvisories(reps.map((r) => r.items)).filter((a) => a.kind === kind), capped: reps.some((r) => r.truncated) };
 }
+const cappedNote = (capped: boolean, what: string) =>
+  capped ? ["", `This list hit a page cap, so more ${what} may exist than are named here: check again once these are done.`] : [];
 
-const ciBrief: Brief = (f, inp, ctx) => {
-  const facts = factsOf(f, inp, "ciRuns");
-  const x = facts && ciFailures([inp.reports[f.source]]).find((w) => w.workflow === f.ref);
-  if (!facts || !x) return null;
-  const runs = facts.runs.filter((r) => r.workflow === x.workflow).slice(0, 8);
-  const red = redFor(x, (ctx.now ?? Date.now()) / 1000);
+const named = (a: MergedAdvisory) => `${a.id}${a.aliases.length ? ` (${a.aliases.join(", ")})` : ""}`;
+const placesOf = (a: MergedAdvisory) => [...new Set(a.items.map((x) => x.location).filter((l): l is string => !!l))];
+// One row reads as before; several get a heading each, so every one keeps its own facts.
+const each = <T>(all: T[], head: (a: T) => string, body: (a: T) => string[]) =>
+  all.length === 1 ? body(all[0]) : all.flatMap((a) => ["", `### ${head(a)}`, ...body(a)]);
+
+// Every red workflow, as the one CI line counts them, oldest first.
+const ciBrief: Brief = (_f, inp, ctx) => {
+  const red = ciFailures(okFacts(inp, "ci"));
+  if (!red.length) return null;
+  const one = red.length === 1, sec = (ctx.now ?? Date.now()) / 1000, x = red[0];
+  const age = (w: CiFailure) => redFor(w, sec);
+  const body = (w: CiFailure) => {
+    const facts = inp.reports[w.source]?.facts;
+    const runs = facts?.kind === "ciRuns" ? facts.runs.filter((r) => r.workflow === w.workflow).slice(0, 8) : [];
+    return [
+      ...(w.url ? [w.url] : []), ...(one ? [""] : []),
+      bullet(w.sha ? `first failing commit: ${w.sha}` : `failing at ${w.branch}'s head, ${runs[0]?.sha ?? "?"}; this CI reports no history`),
+      bullet(`recent runs, newest first: ${runs.map((r) => r.status).join(", ")}`),
+    ];
+  };
   return [
-    `CI is failing on ${x.branch} in ${ctx.project}: the ${x.workflow} workflow${red ? `, red for ${red}` : ""}.`,
-    ...(x.url ? [x.url] : []),
+    one ? `CI is failing on ${x.branch} in ${ctx.project}: the ${x.workflow} workflow${age(x) ? `, red for ${age(x)}` : ""}.`
+      : `CI is failing in ${ctx.project}: ${red.length} workflows, oldest first. One cause may break several; say which.`,
+    ...each(red, (w) => `${w.workflow} on ${w.branch}${age(w) ? `, red for ${age(w)}` : ""}`, body),
     "",
-    bullet(x.sha ? `first failing commit: ${x.sha}` : `failing at ${x.branch}'s head, ${runs[0].sha}; this CI reports no history`),
-    bullet(`recent runs, newest first: ${runs.map((r) => r.status).join(", ")}`),
-    "",
-    "Read the failing run's log at the link above and find the cause before changing anything:",
+    `Read the failing ${one ? "run's log at the link above" : "runs' logs at the links above"} and find the cause before changing anything:`,
     "say whether the code, the test or the CI environment is wrong, and reproduce it locally if you can.",
     "Fix the cause, never the symptom: do not skip, retry or loosen a test to get it green.",
     "",
@@ -50,22 +70,25 @@ const ciBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
-const patchBrief: Brief = (f, inp, ctx) => {
-  const a = advisoryOf(f, inp);
-  if (!a) return null;
+// Another reporter may know a package's fix; another package's fix is never this one's.
+function pkgRows(a: MergedAdvisory): string[] {
   const seen = new Set<string>();
-  // Another reporter may know this package's fix; another package's fix is never this one's.
   const fixOf = (x: (typeof a.items)[number]) =>
     x.fixed ?? a.items.find((y) => y.fixed && y.pkg === x.pkg && y.ecosystem === x.ecosystem)?.fixed ?? null;
-  const rows = a.items.filter((x) => { const k = `${x.pkg}@${x.version}@${x.location}`; return !seen.has(k) && !!seen.add(k); }).map((x) =>
+  return a.items.filter((x) => { const k = `${x.pkg}@${x.version}@${x.location}`; return !seen.has(k) && !!seen.add(k); }).map((x) =>
     bullet(`${x.pkg ?? "?"} ${x.version ?? "?"}${x.ecosystem ? ` (${x.ecosystem})` : ""}${x.location ? ` in ${x.location}` : ""}; `
       + (fixOf(x) ? `fixed in ${fixOf(x)}` : "no fixed version published")));
+}
+
+const patchBrief: Brief = (f, inp, ctx) => {
+  const { all, capped } = advisoriesOf(f, inp, "dependency");
+  if (!all.length) return null;
+  const one = all.length === 1;
   return [
-    `Patch ${a.id}${a.aliases.length ? ` (${a.aliases.join(", ")})` : ""} · ${a.severity} in ${ctx.project}.`,
-    a.summary,
-    ...(a.url ? [a.url] : []),
-    "",
-    ...rows,
+    one ? `Patch ${named(all[0])} · ${all[0].severity} in ${ctx.project}.`
+      : `Patch ${all.length} advisories in ${ctx.project}, worst first. One upgrade may clear several; say which.`,
+    ...each(all, (a) => `${named(a)} · ${a.severity}`, (a) => [a.summary, ...(a.url ? [a.url] : []), ...(one ? [""] : []), ...pkgRows(a)]),
+    ...cappedNote(capped, "advisories"),
     "",
     ...compatBlock(),
     ...verifyBlock(ctx.verify),
@@ -73,17 +96,18 @@ const patchBrief: Brief = (f, inp, ctx) => {
 };
 
 const rotateBrief: Brief = (f, inp, ctx) => {
-  const a = advisoryOf(f, inp);
-  if (!a) return null;
-  const where = [...new Set(a.items.map((x) => x.location).filter((l): l is string => !!l))];
+  const { all, capped } = advisoriesOf(f, inp, "secret");
+  if (!all.length) return null;
+  const one = all.length === 1;
   return [
-    `A secret was reported in ${ctx.project}: ${a.summary}`,
-    ...(a.url ? [a.url] : []),
+    one ? `A secret was reported in ${ctx.project}: ${all[0].summary}` : `${all.length} secrets were reported in ${ctx.project}.`,
+    ...each(all, (a) => `${a.id}: ${a.summary}`, (a) => [
+      ...(a.url ? [a.url] : []), ...(one ? [""] : []),
+      bullet(`report: ${a.id}`), ...placesOf(a).map((l) => bullet(`found in ${l}`)),
+    ]),
+    ...cappedNote(capped, "secrets"),
     "",
-    bullet(`report: ${a.id}`),
-    ...where.map((l) => bullet(`found in ${l}`)),
-    "",
-    "Treat it as leaked. Say where it was issued and how to rotate or revoke it there, then remove it",
+    `Treat ${one ? "it" : "each"} as leaked. Say where it was issued and how to rotate or revoke it there, then remove it`,
     "from the code and load it from the environment or a secret store instead. Rewriting git history",
     "is a decision for a person: describe what it would take, do not do it.",
     "",
@@ -93,17 +117,19 @@ const rotateBrief: Brief = (f, inp, ctx) => {
 
 // A scanner's finding in the project's own code or config: judged in place, never silenced.
 const codeBrief: Brief = (f, inp, ctx) => {
-  const a = advisoryOf(f, inp);
-  if (!a || a.kind === "dependency" || a.kind === "secret") return null;
-  const where = [...new Set(a.items.map((x) => x.location).filter((l): l is string => !!l))];
+  const { all, capped } = advisoriesOf(f, inp, "code", "config");
+  if (!all.length) return null;
+  const one = all.length === 1, config = f.ref === "config";
+  const sev = (a: MergedAdvisory) => a.severity === "unknown" ? "" : `, ${a.severity}`;
   return [
-    `A scanner reported ${a.kind === "config" ? "a misconfiguration" : "a finding"} in ${ctx.project}: ${a.id}${a.severity === "unknown" ? "" : `, ${a.severity}`}.`,
-    a.summary,
-    ...(a.url ? [a.url] : []),
+    one ? `A scanner reported ${config ? "a misconfiguration" : "a finding"} in ${ctx.project}: ${all[0].id}${sev(all[0])}.`
+      : `A scanner reported ${all.length} ${config ? "misconfigurations" : "findings"} in ${ctx.project}, worst first.`,
+    ...each(all, (a) => `${a.id}${sev(a)}`, (a) => [
+      a.summary, ...(a.url ? [a.url] : []), ...(one ? [""] : []), ...placesOf(a).map((l) => bullet(`at ${l}`)),
+    ]),
+    ...cappedNote(capped, "findings"),
     "",
-    ...where.map((l) => bullet(`at ${l}`)),
-    "",
-    "Read the code at each place and say whether the report is right before changing anything. If it",
+    "Read the code at each place and say whether each report is right before changing anything. If it",
     "is, fix the cause and add a test that would have caught it. If it is a false positive, say why and",
     "change nothing: do not add a suppression comment or weaken the rule to make it go away.",
     "",
