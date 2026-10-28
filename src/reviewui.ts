@@ -75,7 +75,7 @@ let activeFile = -1;
 let busy: string | null = null;
 let event: ReviewEvent = "COMMENT";
 let mergeMethod = "";
-let deleteBranch = true;
+let deleteBranch = false; // a shared write is armed by you, never by default: a PR's head may be `dev`
 let gen = 0;
 let seeded = false; // the first diff of a review folds what you have viewed; after that, folds are yours
 

@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! Merging a pull request no longer deletes its branch unless you tick *Delete the branch
+  afterwards*, and keeps a protected branch or one other pull requests target, such as `dev`.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
