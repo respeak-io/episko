@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
+  ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, rtName, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
-  advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS,
-  type Advisory, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
+  advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
+  type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
 } from "../src/maint";
 import { BRANCH_FILTERS } from "../src/branches";
 import { briefFor } from "../src/maintbrief";
@@ -808,6 +808,102 @@ describe("the cross-project tabs", () => {
   });
 });
 
+describe("runtime end-of-life", () => {
+  const rt = (name: string, cycle: string | null, eol: Runtime["eol"], o: Partial<Runtime> = {}): Runtime => ({
+    product: name, name, declared: cycle ?? "99", cycle, eol, latest: null, newest: null, file: ".nvmrc", url: `https://eol.example/${name}`, ...o,
+  });
+  const eol = (...items: Runtime[]) => ok("runtime-eol", { kind: "runtimes", items }, { cost: "public" });
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const ended = rt("node", "18", S - 540 * D, { newest: "26" });
+
+  it("narrows the wire's runtimes, and refuses an end that is neither a date nor a yes or no", () => {
+    const r = wire.reports.find((x) => (x.facts as Facts | null)?.kind === "runtimes")!;
+    expect(narrowMaint(r, "runtime-eol")).toEqual(r);
+    const items = (r.facts as Extract<Facts, { kind: "runtimes" }>).items;
+    expect(items.map((x) => x.eol), "a date, a bare yes, and unknown").toEqual([1_745_971_200, true, null]);
+    expect(narrowMaint({ ...r, facts: { kind: "runtimes", items: [{ ...items[0], eol: "2025-04-30" }] } }, "runtime-eol").coverage.state).toBe("error");
+  });
+
+  it("walks the ladder: ended is red, ending soon amber, supported the dot, and unknown never green", () => {
+    const sec = (...items: Runtime[]) => cell("security", input(eol(...items)));
+    expect(sec(ended)).toMatchObject({ level: "bad", text: "node 18 EOL" });
+    expect(sec(rt("node", "3", true))).toMatchObject({ level: "bad", text: "node 3 EOL" });
+    expect(sec(rt("node", "20", S + 52 * D))).toMatchObject({ level: "warn", text: "node 20 EOL in 52d" });
+    const fine = [rt("node", "24", S + 400 * D), rt("go", "1.27", false)];
+    expect(sec(...fine), "a supported runtime vouches for no advisory").toMatchObject({ state: "read", level: "muted", text: "advisories not read" });
+    const alerts = (...items: Advisory[]) => ok("dependabot-alerts", { kind: "advisories", items });
+    expect(cell("security", input(alerts(), eol(...fine)))).toMatchObject({ level: "ok", text: "" });
+    const scope = not("dependabot-alerts", "security", { state: "noAccess", reason: "token lacks security_events", fix: "gh auth refresh -s security_events" });
+    expect(cell("security", input(scope, eol(...fine))), "a click on endoflife.date never turns can't-check into the dot")
+      .toMatchObject({ state: "cantCheck", level: "muted", text: "token scope", fix: "gh auth refresh -s security_events" });
+    expect(sec(rt("postgres", null, null))).toMatchObject({ level: "muted", text: "postgres 99 unknown" });
+    expect(sec(rt("node", "24", null)), "a listed cycle with no end given").toMatchObject({ level: "muted", text: "node 24 unknown" });
+    expect(sec(ended, rt("python", "3.9", S - 330 * D)), "two ended").toMatchObject({ level: "bad", text: "2 runtimes EOL" });
+    const near = input(alerts(), eol(rt("node", "20", S + 52 * D)));
+    expect(facetCell("security", near, clampMaint({ eol_warn_days: 30 }), NOW), "the threshold is the team's").toMatchObject({ level: "ok" });
+    expect(clampMaint({ eol_warn_days: 0 }).eolWarnDays).toBe(90);
+    // A toolchain pinned below the newest is a choice, not an ended runtime: no red, no line, no date.
+    const pin = rt("rust", "1.98", S - 27 * D, { newest: "1.99" });
+    expect(cell("security", input(alerts(), eol(pin)))).toMatchObject({ level: "ok", text: "" });
+    expect(runtimeStates(input(eol(pin)), MAINT_DEFAULTS, NOW)[0]).toMatchObject({ level: "ok", text: "pinned, 1.99 is newest", left: null });
+    expect(findings("/r", input(eol(pin)), MAINT_DEFAULTS, NOW)).toEqual([]);
+    // Beside advisories at its level: a runtime past its end is as loud as a high advisory.
+    expect(cell("security", input(alerts(adv({ severity: "medium" })), eol(ended)))).toMatchObject({ level: "bad", text: "node 18 EOL · 1 med" });
+    expect(cell("security", input(alerts(adv()), eol(rt("node", "20", S + 52 * D))))).toMatchObject({ level: "bad", text: "1 high · node 20 EOL in 52d" });
+    expect(cell("security", input(alerts(adv({ severity: "low" })), eol(rt("go", "1.27", false))))).toMatchObject({ level: "info", text: "1 low" });
+    const never = { ...not("runtime-eol", "security", { state: "notRun" }), cost: "public" as const };
+    expect(cell("security", input(never))).toMatchObject({ state: "cantCheck", text: "not checked" });
+    expect(offers("/r", input(never)).map((f) => [f.key, f.text])).toEqual([["run:runtime-eol", "endoflife.date: not checked"]]);
+  });
+
+  it("folds every runtime to upgrade into one line, worst first, and leaves the supported ones out", () => {
+    const line = (...items: Runtime[]) => findings("/r", input(eol(...items)), MAINT_DEFAULTS, NOW).map((f) => [f.key, f.level, f.text, f.detail, f.verb]);
+    expect(line(ended, { ...ended, file: "Dockerfile" }, rt("go", "1.27", false))).toEqual([
+      ["security:runtime", "bad", "node 18 ended 18mo ago", "from .nvmrc, Dockerfile · newest 26", "upgrade"],
+    ]);
+    expect(line(rt("postgres", "14", S + 20 * D), rt("python", "3.9", S - 330 * D), ended, rt("node", "26", S + 900 * D))).toEqual([
+      ["security:runtime", "bad", "3 runtimes to upgrade", "node 18 ended 18mo ago, python 3.9 ended 11mo ago, postgres 14 ends in 20d", "upgrade"],
+    ]);
+    expect(line(rt("postgres", "14", S + 20 * D))[0].slice(1, 3)).toEqual(["warn", "postgres 14 ends in 20d"]);
+    expect(line(rt("node", "26", S + 900 * D), rt("x", null, null)), "fine and unknown are no line").toEqual([]);
+    expect(findingTarget({ facet: "security", key: "security:runtime" })).toEqual({ tab: "security", board: "runtimes" });
+    expect([longSpan(3 * D), longSpan(59 * D), longSpan(60 * D), longSpan(800 * D)]).toEqual(["3d", "59d", "2mo", "2y"]);
+  });
+
+  it("lays its board out per project and cycle, the nearest end first, the project's Upgrade on each row it covers", () => {
+    const ps = [
+      tp("/b", eol(rt("postgres", "14", S + 20 * D, { file: "compose.yml" }), rt("node", "24", S + 400 * D))),
+      tp("/a", eol(ended, { ...ended, file: "Dockerfile", declared: "18.20.1" }, rt("go", "1.27", false, { file: "go.mod" }))),
+    ];
+    const rows = eolBoard(ps, null, NOW);
+    expect(rows.map((r) => [r.root, rtName(r), r.level, r.text, r.verb?.key ?? null])).toEqual([
+      ["/a", "node 18", "bad", "ended 18mo ago", "security:runtime"], ["/b", "postgres 14", "warn", "ends in 20d", "security:runtime"],
+      ["/b", "node 24", "ok", "ends in 13mo", null], ["/a", "go 1.27", "ok", "no end announced", null],
+    ]);
+    expect(rows[0].decls).toEqual([{ file: ".nvmrc", declared: "18" }, { file: "Dockerfile", declared: "18.20.1" }]);
+    const b = tabBoards("security", ps, null, null, NOW);
+    expect(b.eol).toEqual(rows);
+    expect(b.drawn).toEqual(["/a|security:runtime", "/b|security:runtime"]);
+    expect(b.advRead, "no advisory source answered, so no advisories board").toBe(0);
+    expect(tabBoards("security", [...ps].reverse(), null, null, NOW).eol, "a repaint never reorders").toEqual(rows);
+    expect(tabBoards("security", ps, "/b", null, NOW).eol.map((r) => r.root)).toEqual(["/b", "/b"]);
+    expect(boardDoor("runtimes", "ends", rows[0].url)).toEqual({ to: "url", url: "https://eol.example/node" });
+    expect(runtimeStates(ps[1].inp, MAINT_DEFAULTS, NOW).map(rtName), "worst first").toEqual(["node 18", "go 1.27"]);
+  });
+
+  it("lists a runtime reaching its end inside the window beside the certificates, and nothing already past", () => {
+    const cert = ok("h", { kind: "probes", items: [{ name: "x", url: "https://x", code: 200, ms: 1, certNotAfter: S + 10 * D, err: null }] });
+    const rows = comingUp([
+      { root: "/a", inp: input(eol(rt("postgres", "14", S + 20 * D), ended, rt("node", "3", true), rt("go", "1.27", false))) },
+      { root: "/b", inp: input(eol(rt("node", "20", S + 40 * D)), cert) },
+    ], NOW);
+    expect(rows.map((r) => [r.root, r.what, r.at])).toEqual([["/b", "certificate for x", S + 10 * D], ["/a", "postgres 14 end-of-life", S + 20 * D]]);
+  });
+});
+
 describe("prod, coming up and hosts", () => {
   const p = (name: string, days: number | null, o = {}) =>
     ({ name, url: `https://${name}`, code: 200, ms: 1, certNotAfter: days === null ? null : S + days * D, err: null, ...o });
@@ -1123,7 +1219,7 @@ describe("a board's numbers are doors", () => {
   const branches = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
   // Every number column of every board, and where it opens: "url" takes the cell's own address.
   const WHERE: Record<BoardId, Record<string, Door | "url" | null>> = {
-    advisories: {}, packages: {},
+    advisories: {}, packages: {}, runtimes: { ends: "url" },
     "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
     ci: { run: "url" },
     releases: { since: { to: "landed" }, changelog: null },

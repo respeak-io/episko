@@ -16,6 +16,7 @@ mod icons;
 mod lockfile;
 mod maint;
 mod maint_ci;
+mod maint_eol;
 mod maint_git;
 mod maint_repo;
 mod maint_sec;

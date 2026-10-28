@@ -35,6 +35,12 @@ export interface Advisory {
 export interface UpdatePr { number: number; title: string; url: string; branch: string; draft: boolean; at: number | null; checks: CiStatus }
 export interface ForgeRelease { tag: string; name: string; at: number | null; url: string | null }
 export interface Probe { name: string; url: string; code: number | null; ms: number | null; certNotAfter: number | null; err: string | null }
+/** A cycle's end: unix secs, or the bare yes or no a list gives where it names no date. */
+export type Eol = number | boolean | null;
+export interface Runtime {
+  product: string; name: string; declared: string; cycle: string | null; eol: Eol;
+  latest: string | null; newest: string | null; file: string; url: string | null;
+}
 export interface BranchAge { name: string; at: number }
 export interface WtAge { path: string; branch: string; at: number | null }
 
@@ -50,14 +56,15 @@ export type Facts =
   | { kind: "hygiene"; trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[];
       gone: string[]; branches: BranchAge[]; worktrees: WtAge[]; fetchedAt: number | null }
   | { kind: "work"; issues: number; prs: number; reviewRequested: number | null } // null: the search failed
-  | { kind: "probes"; items: Probe[] };
+  | { kind: "probes"; items: Probe[] }
+  | { kind: "runtimes"; items: Runtime[] };
 export type FactKind = Facts["kind"];
 type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
 
 /** The one facet each kind may answer (`Facts::facet`); a record, so a new kind fails to compile here. */
 export const FACT_FACET: Record<FactKind, Facet> = {
   ciRuns: "ci", advisories: "security", updatePrs: "deps", release: "release", releases: "release",
-  changelog: "release", hygiene: "git", work: "work", probes: "prod",
+  changelog: "release", hygiene: "git", work: "work", probes: "prod", runtimes: "security",
 };
 export const FACT_KINDS = Object.keys(FACT_FACET) as FactKind[];
 
@@ -97,6 +104,10 @@ const isAdvisory = shape({
 });
 const isPr = shape({ number: num, title: str, url: str, branch: str, draft: bool, at: opt(num), checks: oneOf(CI_STATUSES) });
 const isProbe = shape({ name: str, url: str, code: opt(num), ms: opt(num), certNotAfter: opt(num), err: opt(str) });
+const isRuntime = shape({
+  product: str, name: str, declared: str, cycle: opt(str), eol: (v) => v === null || num(v) || bool(v),
+  latest: opt(str), newest: opt(str), file: str, url: opt(str),
+});
 
 const FACT_SHAPES: Record<FactKind, Is> = {
   ciRuns: shape({ branch: str, runs: list(isCiRun) }),
@@ -111,6 +122,7 @@ const FACT_SHAPES: Record<FactKind, Is> = {
   }),
   work: shape({ issues: num, prs: num, reviewRequested: opt(num) }),
   probes: shape({ items: list(isProbe) }),
+  runtimes: shape({ items: list(isRuntime) }),
 };
 
 const COV_SHAPES: Record<CovState, Is> = {
@@ -182,15 +194,16 @@ export interface MaintThresholds {
   botSilentDays: number; // a configured bot whose newest open PR is older says nothing about itself
   botPrBacklog: number; // open update PRs that count as a pile
   fetchStaleDays: number; // release and git counts are as old as the last fetch
+  eolWarnDays: number; // a runtime whose cycle ends sooner is drifting
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
   unreleasedCommits: 30, unreleasedDays: 21, staleBranchDays: 30,
-  certWarnDays: 21, botSilentDays: 30, botPrBacklog: 5, fetchStaleDays: 7,
+  certWarnDays: 21, botSilentDays: 30, botPrBacklog: 5, fetchStaleDays: 7, eolWarnDays: 90,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   unreleasedCommits: "unreleased_commits", unreleasedDays: "unreleased_days",
   staleBranchDays: "stale_branch_days", certWarnDays: "cert_warn_days", botSilentDays: "bot_silent_days",
-  botPrBacklog: "bot_pr_backlog", fetchStaleDays: "fetch_stale_days",
+  botPrBacklog: "bot_pr_backlog", fetchStaleDays: "fetch_stale_days", eolWarnDays: "eol_warn_days",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -264,7 +277,7 @@ export function whyWord(c: Coverage, facet: Facet): string {
   }
 }
 
-interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null }
+interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean } // blind: not the facet's own question
 interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: SourceReport[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
@@ -337,17 +350,80 @@ export function sevMix(sevs: readonly Severity[], short = false, n = (k: number)
   });
 }
 
-// The two worst buckets, a secret worse than any severity: "1 high · 3 med", "1 secret · 2 critical".
+type Seg = [Level, string];
+// The two worst buckets, a secret worse than any severity and a runtime past its end beside the
+// advisories of its level: "1 high · 3 med", "1 secret · node 18 EOL".
 const securityRule: Rule = (facts, c) => {
   const merged = mergeAdvisories(kinds(facts, "advisories").map((f) => f.items));
-  if (!merged.length) return { level: "ok", text: "", tip: ["no open advisories"] };
-  const tip = merged.map((a) => [a.severity, a.id, a.pkgs.join(", ") || a.items[0]?.location].filter(Boolean).join(" · "));
+  const rts = judgeRuntimes(kinds(facts, "runtimes").flatMap((f) => f.items), c.th, c.now);
+  const tip = [...merged.map((a) => [a.severity, a.id, a.pkgs.join(", ") || a.items[0]?.location].filter(Boolean).join(" · ")),
+    ...rts.map((r) => `${rtName(r)}: ${r.text} · ${r.decls.map((d) => d.file).join(", ")}`)];
   const secrets = merged.filter((a) => a.kind === "secret").length;
   const rest = merged.filter((a) => a.kind !== "secret");
-  const text = [...(secrets ? [`${count(secrets, c)} secret${secrets === 1 ? "" : "s"}`] : []),
-    ...sevMix(rest.map((a) => a.severity), true, (k) => count(k, c))].slice(0, 2).join(" · ");
-  return { level: secrets ? "bad" : SEV_LEVEL[rest[0].severity], text, tip };
+  const said = (level: Level, many: string, one: (r: RuntimeState) => string): Seg[] => {
+    const rs = rts.filter((r) => r.level === level);
+    return rs.length ? [[level, rs.length === 1 ? one(rs[0]) : `${rs.length} runtimes ${many}`]] : [];
+  };
+  const segs: Seg[] = [
+    ...(secrets ? [["bad", `${count(secrets, c)} secret${secrets === 1 ? "" : "s"}`] as Seg] : []),
+    ...SEVERITIES.flatMap((s) => sevMix(rest.filter((a) => a.severity === s).map((a) => a.severity), true, (k) => count(k, c))
+      .map((t): Seg => [SEV_LEVEL[s], t])),
+    ...said("bad", "EOL", (r) => `${rtName(r)} EOL`),
+    ...said("warn", "ending", (r) => `${rtName(r)} EOL in ${longSpan(r.left ?? 0)}`),
+    ...said("muted", "unknown", (r) => `${rtName(r)} unknown`),
+  ].sort((a, b) => HOST_RANK.indexOf(a[0]) - HOST_RANK.indexOf(b[0]));
+  // A supported runtime vouches for no advisory: the dot needs an advisory source that answered.
+  if (!segs.length && !kinds(facts, "advisories").length) return { level: "muted", text: "advisories not read", tip, blind: true };
+  if (!segs.length) return { level: "ok", text: "", tip: tip.length ? tip : ["no open advisories"] };
+  return { level: segs[0][0], text: segs.slice(0, 2).map((x) => x[1]).join(" · "), tip };
 };
+
+// ---------- runtimes and their end of life ----------
+
+/** One runtime cycle in one project, with every file that declares it: ended is red, ending inside
+ *  `eolWarnDays` amber, and a cycle the list does not hold, or an end it does not give, unknown. */
+export interface RuntimeState {
+  product: string; name: string; cycle: string | null; eol: Eol; latest: string | null; newest: string | null;
+  url: string | null; decls: { file: string; declared: string }[];
+  level: Level; text: string; // "ended 18mo ago", "ends in 52d", "no end announced", "cycle unknown"
+  left: number | null; // secs to its end, negative once past; null without a date
+}
+export const rtName = (r: Pick<RuntimeState, "name" | "cycle" | "decls">): string => `${r.name} ${r.cycle ?? r.decls[0]?.declared ?? "?"}`;
+const MONTH = 30 * DAY, YEAR = 365 * DAY;
+/** An age too long for days: 52d, 18mo, 3y. */
+export function longSpan(sec: number): string {
+  const s = Math.max(0, sec);
+  return s < 60 * DAY ? `${Math.max(1, Math.floor(s / DAY))}d` : s < 2 * YEAR ? `${Math.floor(s / MONTH)}mo` : `${Math.floor(s / YEAR)}y`;
+}
+
+// A cycle the list ends the day the next ships (Rust's six weeks) is a pin, an MSRV choice, never
+// ended: red on every pinned toolchain would teach the cell to be ignored.
+const ROLLING = new Set(["rust"]);
+
+function judgeRuntimes(items: readonly Runtime[], th: MaintThresholds, now: number): RuntimeState[] {
+  const sec = now / 1000, by = new Map<string, RuntimeState>();
+  for (const r of items) {
+    const key = `${r.product}@${r.cycle ?? `?${r.declared}`}`, e = by.get(key), decl = { file: r.file, declared: r.declared };
+    if (e) {
+      if (!e.decls.some((d) => d.file === decl.file && d.declared === decl.declared)) e.decls.push(decl);
+      continue;
+    }
+    const pinned = ROLLING.has(r.product) && r.cycle !== null && r.eol !== null && r.eol !== false;
+    const left = typeof r.eol === "number" && !pinned ? r.eol - sec : null;
+    const [level, text]: Seg = r.cycle === null ? ["muted", "cycle unknown"]
+      : pinned ? ["ok", r.newest && r.newest !== r.cycle ? `pinned, ${r.newest} is newest` : "pinned"]
+      : r.eol === true ? ["bad", "ended"] : r.eol === false ? ["ok", "no end announced"] : left === null ? ["muted", "end unknown"]
+      : left <= 0 ? ["bad", `ended ${longSpan(-left)} ago`] : [left < th.eolWarnDays * DAY ? "warn" : "ok", `ends in ${longSpan(left)}`];
+    by.set(key, { product: r.product, name: r.name, cycle: r.cycle, eol: r.eol, latest: r.latest, newest: r.newest, url: r.url,
+      decls: [decl], level, text, left });
+  }
+  return [...by.values()].sort((a, b) => HOST_RANK.indexOf(a.level) - HOST_RANK.indexOf(b.level)
+    || (a.left ?? Infinity) - (b.left ?? Infinity) || rtName(a).localeCompare(rtName(b)));
+}
+
+/** A project's runtimes as its security sources read them, worst first. */
+export const runtimeStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): RuntimeState[] =>
+  judgeRuntimes(okFacts(inp, "security").flatMap((r) => r.facts.kind === "runtimes" ? r.facts.items : []), th, now);
 
 // A bot nothing shows to be alive is silent, not healthy: open PRs are the only trace it leaves.
 const depsRule: Rule = (facts, c) => {
@@ -490,6 +566,7 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   if (!ok.length) return cell("cantCheck", "muted", why, [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
+  if (j.blind && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
   const asOf = j.asOf ?? null;
   let { level, text } = j;
   const age = asOf !== null ? now / 1000 - asOf : null;
@@ -563,7 +640,7 @@ const KIND_VERB: Record<AdvisoryKind, Verb> = { dependency: "patch", code: "fix"
 
 // ---------- findings, the lines under a card ----------
 
-export type Verb = "fix" | "patch" | "rotate" | "release" | "push" | "tidy" | "review" | "fetch" | "run" | "setup";
+export type Verb = "fix" | "patch" | "rotate" | "upgrade" | "release" | "push" | "tidy" | "review" | "fetch" | "run" | "setup";
 export interface Finding {
   root: string; facet: Facet; key: string; level: "bad" | "warn" | "info";
   text: string; detail: string; verb: Verb;
@@ -623,6 +700,15 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
     }
     add("security", { key: `security:${kind}`, level: lvl === "bad" ? "bad" : lvl === "warn" ? "warn" : "info",
       text, detail, verb: KIND_VERB[kind], source, ref: kind });
+  }
+  // Every runtime past or near its end is one Upgrade, as four advisories are one Patch.
+  const due = runtimeStates(inp, th, now).filter((r) => r.level === "bad" || r.level === "warn");
+  if (due.length) {
+    const r = due[0], source = advs.find((x) => x.facts.kind === "runtimes")?.source ?? "";
+    add("security", { key: "security:runtime", level: due.some((x) => x.level === "bad") ? "bad" : "warn", verb: "upgrade", source, ref: "runtime",
+      text: due.length === 1 ? `${rtName(r)} ${r.text}` : `${due.length} runtimes to upgrade`,
+      detail: due.length === 1 ? [`from ${r.decls.map((d) => d.file).join(", ")}`, r.newest && `newest ${r.newest}`].filter(Boolean).join(" · ")
+        : due.slice(0, 3).map((x) => `${rtName(x)} ${x.text}`).join(", ") + (due.length > 3 ? " …" : "") });
   }
   for (const { source, facts } of okFacts(inp, "deps")) {
     if (facts.kind !== "updatePrs" || !facts.prs.length) continue;
@@ -804,20 +890,21 @@ export function tabTally(rows: readonly Finding[], root: string | null = null): 
 }
 
 /** The boards a cross-project tab draws (`tabBoards`), each an anchor a card line can open on. */
-export const BOARD_IDS = ["advisories", "update-prs", "packages", "ci", "releases", "hygiene", "work", "addresses"] as const;
+export const BOARD_IDS = ["advisories", "runtimes", "update-prs", "packages", "ci", "releases", "hygiene", "work", "addresses"] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
-// Each facet's board and the keys it carries a verb for; a pre-fold snapshot's `ci:<workflow>` is CI's too.
-const FACET_BOARD: Record<Facet, [BoardId, RegExp]> = {
-  ci: ["ci", /^ci$|^ci:(?!setup$)/], release: ["releases", /^release$/], security: ["advisories", /^security:(?!setup$)/],
-  deps: ["update-prs", /^deps:(?!setup$)/], git: ["hygiene", /^git:(unpushed|tidy|fetch)$/],
-  prod: ["addresses", /^prod:(?!setup$)/], work: ["work", /^work:(review|open)$/],
+// Each facet's boards and the keys each carries a verb for, the first match winning; a pre-fold
+// snapshot's `ci:<workflow>` is CI's too.
+const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
+  ci: [["ci", /^ci$|^ci:(?!setup$)/]], release: [["releases", /^release$/]],
+  security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
+  deps: [["update-prs", /^deps:(?!setup$)/]], git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
+  prod: [["addresses", /^prod:(?!setup$)/]], work: [["work", /^work:(review|open)$/]],
 };
 
 /** Where a card line opens: its facet's tab, at the board that summarises it, or the tab's top
  *  (`board: null`) for a line no board carries (*Set up*, an offer). */
 export function findingTarget(f: Pick<Finding, "facet" | "key">): { tab: MaintTab; board: BoardId | null } {
-  const [board, keys] = FACET_BOARD[f.facet];
-  return { tab: FACET_TAB[f.facet], board: keys.test(f.key) ? board : null };
+  return { tab: FACET_TAB[f.facet], board: FACET_BOARD[f.facet].find(([, keys]) => keys.test(f.key))?.[0] ?? null };
 }
 
 export interface ProjectPick { root: string; name: string; n: number; level: Finding["level"] | null }
@@ -999,7 +1086,17 @@ export function advisoryRows(ps: readonly TabProject[], root: string | null = nu
     };
   }).sort((a, b) => SEV_BUCKETS.indexOf(a.bucket) - SEV_BUCKETS.indexOf(b.bucket)
     || b.projects.length - a.projects.length || a.key.localeCompare(b.key));
-  return { rows, capped, read: readOf(mine, "security") };
+  return { rows, capped, read: mine.filter((p) => okFacts(p.inp, "security").some((r) => r.facts.kind === "advisories")).length };
+}
+
+export type EolRow = RuntimeState & { root: string; verb: Finding | null };
+/** Every runtime cycle each project declares, the nearest end first; the project's one Upgrade sits
+ *  on each row it covers. */
+export function eolBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): EolRow[] {
+  return within(ps, root).flatMap((p) => runtimeStates(p.inp, thOf(p), now).map((r) => ({
+    ...r, root: p.path, verb: r.level === "bad" || r.level === "warn" ? verbOf(p, "security:runtime") : null,
+  }))).sort((a, b) => rowRank(a.level) - rowRank(b.level) || (a.left ?? Infinity) - (b.left ?? Infinity)
+    || a.root.localeCompare(b.root) || rtName(a).localeCompare(rtName(b)));
 }
 
 export interface SevCount { bucket: SevBucket; n: number; level: Finding["level"] }
@@ -1158,6 +1255,8 @@ export function probeBoard(ps: readonly TabProject[], root: string | null = null
 
 export interface Boards {
   adv: AdvRow[]; strip: SevCount[]; capped: boolean; prs: PrRow[];
+  advRead: number; // projects an advisory source answered: what the advisories board may claim
+  eol: EolRow[];
   ci: CiBoardRow[]; releases: RelRow[]; hygiene: HygRow[]; work: WorkRow[]; probes: ProbeBoardRow[];
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
   unchecked: number; // projects in the filter whose *Check prod* nobody has clicked yet
@@ -1168,12 +1267,16 @@ export interface Boards {
 /** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
 export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
   const b: Boards = {
-    adv: [], strip: [], capped: false, prs: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {}, unchecked: 0, drawn: [], one: root !== null,
+    adv: [], strip: [], capped: false, prs: [], advRead: 0, eol: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {},
+    unchecked: 0, drawn: [], one: root !== null,
   };
   const mine = within(ps, root);
   for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f);
-  const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false };
-  if (tab === "security") Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, prs: updatePrRows(ps, root, now) });
+  const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false, read: 0 };
+  if (tab === "security") {
+    Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, advRead: all.read,
+      eol: eolBoard(ps, root, now), prs: updatePrRows(ps, root, now) });
+  }
   if (tab === "delivery") Object.assign(b, { ci: ciBoard(ps, root, now), releases: releaseBoard(ps, root, now) });
   if (tab === "code") b.hygiene = hygieneBoard(ps, root, now);
   if (tab === "work") b.work = workBoard(ps, root);
@@ -1186,7 +1289,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     }).length;
   }
   // A filtered-out severity hides its rows, not their lines: those are still the board's.
-  const verbs = [...all.rows.flatMap((r) => r.projects.map((x) => x.verb)), ...b.prs.map((r) => r.verb), ...b.ci.map((r) => r.verb),
+  const verbs = [...all.rows.flatMap((r) => r.projects.map((x) => x.verb)), ...b.eol.map((r) => r.verb), ...b.prs.map((r) => r.verb), ...b.ci.map((r) => r.verb),
     ...b.releases.map((r) => r.verb), ...b.hygiene.flatMap((r) => r.verbs), ...b.work.flatMap((r) => r.verbs), ...b.probes.map((r) => r.verb)];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
   return b;
@@ -1234,6 +1337,7 @@ const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to:
 // Every number column of every board; "url" takes the cell's own address, null is a number with no door.
 const DOORS = {
   advisories: {}, packages: {}, // the severity strip filters in place; Packages' door is its ⤢
+  runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
   ci: { run: "url" },
   releases: { since: { to: "landed" }, changelog: null },
@@ -1371,10 +1475,13 @@ export function coverRows(inp: MaintInput): CoverRow[] {
 
 export interface ComingUp { root: string; what: string; at: number } // at: unix secs
 
-/** Dates inside the window that will need someone; certificates are the only ones the wire carries yet. */
+/** Dates inside the window that will need someone: certificates, and runtimes reaching their end. */
 export function comingUp(projects: readonly { root: string; inp: MaintInput }[], now = Date.now(), days = 30): ComingUp[] {
   const sec = now / 1000, out: ComingUp[] = [];
   for (const { root, inp } of projects) {
+    for (const r of runtimeStates(inp, clampMaint(inp.det?.config.thresholds), now)) {
+      if (r.left !== null && typeof r.eol === "number" && r.eol > sec && r.eol - sec <= days * DAY) out.push({ root, what: `${rtName(r)} end-of-life`, at: r.eol });
+    }
     for (const { facts } of okFacts(inp, "prod")) {
       if (facts.kind !== "probes") continue;
       for (const p of facts.items) {
