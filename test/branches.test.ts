@@ -276,6 +276,21 @@ describe("the filter chips, which are also the quick-selects", () => {
     expect(filterCounts(rs, NOW).unpushed).toBe(4);
   });
 
+  // Maintenance's Untouched count opens this chip, so it lists exactly what that number counts.
+  it("Untouched: only here, never gone, and idle past the project's own threshold", () => {
+    const rs = rows({ branches: [
+      LOCAL("idle", { unix: day(40) }), LOCAL("busy", { unix: day(3) }), B("old-remote", { remote: true, unix: day(90) }),
+      B("old-pushed", { unix: day(90) }), B("old-gone", { gone: true, unix: day(90) }),
+    ] });
+    const names = (days?: number) => filterRows(rs, "untouched", "", NOW, days).map((r) => r.name).sort();
+    expect(names()).toEqual(["idle"]);
+    expect(names(60)).toEqual([]);
+    expect(names(2)).toEqual(["busy", "idle"]);
+    expect(filterCounts(rs, NOW, 2).untouched).toBe(2);
+    expect(filterRows(rs, "stale", "", NOW, 2).map((r) => r.name).sort(), "Stale keeps its fixed 30 days")
+      .toEqual(["idle", "old-gone", "old-pushed", "old-remote"]);
+  });
+
   it("filters by name on top of the chip", () => {
     expect(filterRows(list(), "merged", "old", NOW).map((r) => r.name)).toEqual(["old-merged"]);
     expect(filterRows(list(), "gone", "old", NOW)).toEqual([]);

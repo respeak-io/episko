@@ -311,23 +311,28 @@ export function orderRows(rows: BranchRow[]): BranchRow[] {
 // is two clicks and needs no second mechanism. The controls are ./pick's, shared with three
 // other tables; these chips only decide which rows are on screen.
 
-export type BranchFilter = "all" | "merged" | "gone" | "stale" | "localonly" | "unpushed" | "checkout";
+export type BranchFilter = "all" | "merged" | "gone" | "stale" | "untouched" | "localonly" | "unpushed" | "checkout";
 export const BRANCH_FILTERS: { id: BranchFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "merged", label: "Merged" },
   { id: "gone", label: "Gone" },
   { id: "stale", label: "Stale" },
+  { id: "untouched", label: "Untouched" },
   { id: "localonly", label: "Local only" },
   { id: "unpushed", label: "Unpushed" },
   { id: "checkout", label: "Checked out" },
 ];
 export const STALE_DAYS = 30;
 
-const MATCH: Record<BranchFilter, (r: BranchRow, now: number) => boolean> = {
+const idleFor = (r: BranchRow, now: number, days: number) => !!r.br.unix && now - r.br.unix * 1000 > days * 864e5;
+// `days` is the project's `[maintenance] stale_branch_days`; only Untouched reads it.
+const MATCH: Record<BranchFilter, (r: BranchRow, now: number, days: number) => boolean> = {
   all: () => true,
   merged: (r) => !!r.pr || r.br.merged,
   gone: (r) => r.br.gone,
-  stale: (r, now) => !!r.br.unix && now - r.br.unix * 1000 > STALE_DAYS * 864e5,
+  stale: (r, now) => idleFor(r, now, STALE_DAYS),
+  // Maintenance's Untouched, exactly: git-local's local-only (no upstream, so never gone) gone idle.
+  untouched: (r, now, days) => r.hasLocal && !r.hasRemote && !r.br.gone && idleFor(r, now, days),
   localonly: (r) => r.hasLocal && !r.hasRemote,
   // git-local's count, over- rather than under-taken: ahead of what it follows, or following nothing
   // (no remote ref, or one never tracked) with commits the trunk lacks.
@@ -335,16 +340,16 @@ const MATCH: Record<BranchFilter, (r: BranchRow, now: number) => boolean> = {
   checkout: (r) => !!r.wt || r.br.current,
 };
 
-export function filterRows(rows: BranchRow[], f: BranchFilter, q: string, now: number): BranchRow[] {
+export function filterRows(rows: BranchRow[], f: BranchFilter, q: string, now: number, days = STALE_DAYS): BranchRow[] {
   const needle = q.trim().toLowerCase();
-  return rows.filter((r) => MATCH[f](r, now) && (!needle || r.name.toLowerCase().includes(needle)));
+  return rows.filter((r) => MATCH[f](r, now, days) && (!needle || r.name.toLowerCase().includes(needle)));
 }
 
 // Counted over every row, never over the filtered set: a chip that reads 0 because another
 // chip is on says nothing about the repo.
-export function filterCounts(rows: BranchRow[], now: number): Record<BranchFilter, number> {
+export function filterCounts(rows: BranchRow[], now: number, days = STALE_DAYS): Record<BranchFilter, number> {
   const out = {} as Record<BranchFilter, number>;
-  for (const { id } of BRANCH_FILTERS) out[id] = rows.filter((r) => MATCH[id](r, now)).length;
+  for (const { id } of BRANCH_FILTERS) out[id] = rows.filter((r) => MATCH[id](r, now, days)).length;
   return out;
 }
 

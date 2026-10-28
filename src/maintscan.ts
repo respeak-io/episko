@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, takeSnap,
+  clampKept, clampSnaps, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, snapFor, takeSnap,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState,
 } from "./maint";
@@ -56,10 +56,10 @@ export function setMaintPublic(id: string, on: boolean): void {
 // The last finished scan per root in words, for a root whose whole scan did not fit `cc-maint-scan`
 // and for Today. Local: another machine's checkout is not this one's; drawn muted and as of then.
 let snaps = clampSnaps(readObj<unknown>("cc-maint"));
-export const maintSnap = (root: string): MaintSnap | undefined => snaps[root];
+export const maintSnap = (root: string): MaintSnap | undefined => snapFor(snaps, root, ghAccountFor(root));
 function keepSnap(e: ProjectMaint): void {
-  const inp = maintInput(e.root);
-  if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at, snaps[e.root]) });
+  const inp = maintInput(e.root), account = ghAccountFor(e.root);
+  if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at, maintSnap(e.root), account) });
   if (e.det) kept = { ...kept, [e.root]: { at: e.at, account: ghAccountFor(e.root), det: e.det, reports: { ...e.reports } } };
 }
 const saveSnaps = () => {

@@ -1096,13 +1096,13 @@ setInterval(() => { void pollServers(); }, 4000);
 // is only how soon after it returns an overdue rung is noticed.
 setInterval(tickRevive, 10_000);
 
-refreshExternals();
+const externalsIn = refreshExternals();
 setInterval(refreshExternals, 3000);
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
 // After the roster: an outcome heard just before the last quit removes the row it settles.
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
+const rosterIn = agentDiscovery.then(() => adoptOrphans()).finally(() => loadDormants().then(() => settleDue()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 
@@ -1134,4 +1134,5 @@ renderAll();
 // Nothing restored takes the stage, so this is where the app lands: every project, not a
 // card saying no sessions are running. Last, because it is the fallback for all of the above.
 if (!activeId && !mirror) takeStage("home");
-maintOnBoot();
+// Once every project source is in: a scan over the favourites alone would stamp the fleet checked.
+void Promise.allSettled([rosterIn, externalsIn]).then(() => maintOnBoot());

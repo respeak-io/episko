@@ -439,7 +439,8 @@ const depsRule: Rule = (facts, c) => {
   const quiet = age !== null ? `newest PR ${span(age)} old` : "configured, but no open PR shows it has run";
   const tip = [...prs.map((p) => `#${p.number} ${p.title} · checks ${p.checks}`), ...(silent ? [quiet] : [])];
   if (red) return { level: "warn", text: `${count(red, c)} red`, tip };
-  if (prs.length >= c.th.botPrBacklog) return { level: "warn", text: `${count(prs.length, c)} PRs`, tip };
+  // A pile is one bot's, as each bot's line and board row judge it.
+  if (ups.some((u) => u.prs.length >= c.th.botPrBacklog)) return { level: "warn", text: `${count(prs.length, c)} PRs`, tip };
   if (silent) return { level: "muted", text: "silent", tip };
   return prs.length ? { level: "info", text: `${count(prs.length, c)} PR${prs.length === 1 ? "" : "s"}`, tip } : { level: "ok", text: "", tip };
 };
@@ -489,8 +490,8 @@ const gitRule: Rule = (facts, c) => {
     ...(idle.length ? [`${plural(idle.length, "worktree")} idle ${c.th.staleBranchDays}d+`] : []),
   ];
   const j = (level: Level, text: string): Judged => ({ level, text, tip, asOf: h.fetchedAt });
+  // Local-only alone is no colour: with nothing unpushed a remote holds every commit (a fresh worktree branch).
   if (h.unpushed) return j("warn", `${h.unpushed} unpushed`);
-  if (h.localOnly.length) return j("warn", `${h.localOnly.length} local-only`);
   if (tidy || stale.length || idle.length) return j("info", `${tidy + stale.length + idle.length} to tidy`);
   return h.unpushed === null ? j("muted", "no remote") : j("ok", "");
 };
@@ -509,7 +510,7 @@ const prodRule: Rule = (facts, c) => {
   if (client) return { level: "warn", text: `${client.name} ${client.code}`, tip };
   const soon = items.filter((p) => p.certNotAfter !== null).sort((a, b) => a.certNotAfter! - b.certNotAfter!)[0];
   if (soon && soon.certNotAfter! - now < c.th.certWarnDays * DAY) return { level: "warn", text: `cert ${span(soon.certNotAfter! - now)}`, tip };
-  if (items.some((p) => p.url.startsWith("https:") && p.certNotAfter === null)) return { level: "muted", text: "cert unknown", tip };
+  if (items.some((p) => /^https:/i.test(p.url) && p.certNotAfter === null)) return { level: "muted", text: "cert unknown", tip };
   return { level: "ok", text: "", tip };
 };
 
@@ -1207,7 +1208,7 @@ export function hygieneBoard(ps: readonly TabProject[], root: string | null = nu
     const h = hygieneOf(p.inp, thOf(p), now);
     if (!h) return [];
     const age = h.fetchedAt === null ? null : sec - h.fetchedAt;
-    const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "warn", h.localOnly), n(h.mergedRead ? h.merged.length : null, "info", h.merged),
+    const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "info", h.localOnly), n(h.mergedRead ? h.merged.length : null, "info", h.merged),
       n(h.gone.length, "info", h.gone), n(h.idle, "info", h.idleNames), n(h.stale.length, "info", h.stale)];
     const fetched: Level = age !== null && age > thOf(p).fetchStaleDays * DAY ? "warn" : "ok";
     const level = [...cs.map((c) => c.level), fetched].sort((a, b) => rowRank(a) - rowRank(b))[0];
@@ -1330,7 +1331,7 @@ export type Door =
   | { to: "checkouts" } // the Branches view's Checkouts tab, where a worktree is removed
   | { to: "queue"; filter: "iss" | "pr" } // Today's queue on that chip
   | { to: "landed" } // Today's Landed, the unreleased commits
-  | { to: "deps" } // the dependency overlay
+  | { to: "deps"; tab?: "vulns" | "prs" | "stale" } // the dependency overlay, on that tab
   | { to: "fetch" }
   | { to: "url"; url: string };
 
@@ -1339,11 +1340,11 @@ const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to:
 const DOORS = {
   advisories: {}, packages: {}, // the severity strip filters in place; Packages' door is its ⤢
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
-  "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
+  "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
   ci: { run: "url" },
   releases: { since: { to: "landed" }, changelog: null },
   hygiene: {
-    unpushed: br("unpushed"), localOnly: br("localonly"), merged: br("merged"), gone: br("gone"), stale: br("stale"),
+    unpushed: br("unpushed"), localOnly: br("localonly"), merged: br("merged"), gone: br("gone"), stale: br("untouched"),
     idle: { to: "checkouts" }, fetched: { to: "fetch" },
   },
   work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
@@ -1513,7 +1514,7 @@ export function probeRows(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
   const rows = reps.flatMap((r) => r.facts!.kind === "probes" ? r.facts!.items : []).map((p): ProbeRow => {
     const down = p.err !== null || p.code === null || p.code >= 500;
     const left = p.certNotAfter === null ? null : p.certNotAfter - sec;
-    const [cert, certLevel]: [string, Level] = left === null ? (p.url.startsWith("https:") ? ["cert unknown", "muted"] : ["", "ok"])
+    const [cert, certLevel]: [string, Level] = left === null ? (/^https:/i.test(p.url) ? ["cert unknown", "muted"] : ["", "ok"])
       : left <= 0 ? ["cert expired", "bad"] : [`cert ${span(left)}`, left < th.certWarnDays * DAY ? "warn" : "ok"];
     return { name: p.name, url: p.url, err: p.err, code: p.code, ms: p.ms,
       status: p.code === null ? "no answer" : `${p.code}${p.ms !== null ? ` · ${p.ms}ms` : ""}`,
@@ -1555,8 +1556,12 @@ const LEVELS: readonly Level[] = ["bad", "warn", "info", "ok", "muted", "unread"
  *  `at` (ms) only on what an older scan left, when it differs from the snapshot's own. */
 export interface SnapCell { facet: Facet; level: Level; text: string; at?: number }
 export interface SnapFinding { facet: Facet; key: string; level: Finding["level"]; text: string; at?: number }
-export interface MaintSnap { at: number; cells: SnapCell[]; findings: SnapFinding[] } // at: ms
+/** `account`: the forge login pinned when it was read, null for none (and for a snapshot from before it was kept). */
+export interface MaintSnap { at: number; account: string | null; cells: SnapCell[]; findings: SnapFinding[] } // at: ms
 export type MaintSnaps = Record<string, MaintSnap>;
+/** A root's snapshot, if the identity reading this project now is the one that left it, as `cc-maint-scan` loads. */
+export const snapFor = (snaps: MaintSnaps, root: string, account: string | null): MaintSnap | undefined =>
+  snaps[root]?.account === account ? snaps[root] : undefined;
 
 const VERDICT: readonly CellState[] = ["read", "none", "off"];
 const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
@@ -1564,7 +1569,7 @@ const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
 /** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
  *  A facet this scan reached no verdict on keeps `prev`'s cell and lines, dated as then: a failed read
  *  must not erase the last known red. */
-export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap): MaintSnap {
+export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
   const kept = new Set(prev ? live.filter((c) => !VERDICT.includes(c.state)).map((c) => c.facet) : []);
@@ -1578,7 +1583,7 @@ export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?:
   const carried = (prev?.findings ?? []).filter((f) => kept.has(f.facet)).map(dated);
   const all = [...fresh, ...carried].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
-  return { at: now, cells, findings: all.slice(0, SNAP_FINDINGS) };
+  return { at: now, account, cells, findings: all.slice(0, SNAP_FINDINGS) };
 }
 
 const short = (n: number): Is => (v) => typeof v === "string" && v.length <= n;
@@ -1599,7 +1604,7 @@ export function clampSnaps(raw: unknown): MaintSnaps {
       .map(({ facet, level, text, at }) => ({ facet, level, text, ...withAt(at) }));
     const fs = (v.findings.filter(isSnapFinding) as SnapFinding[]).slice(0, SNAP_FINDINGS)
       .map(({ facet, key, level, text, at }) => ({ facet, key, level, text, ...withAt(at) }));
-    return [[root, { at: v.at as number, cells, findings: fs }]];
+    return [[root, { at: v.at as number, account: strOr(v.account), cells, findings: fs }]];
   });
   return Object.fromEntries(kept.sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0])).slice(0, SNAP_ROOTS));
 }

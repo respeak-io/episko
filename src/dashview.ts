@@ -687,6 +687,7 @@ export interface BranchesView {
   filter: BranchFilter;
   query: string;
   now: number;
+  untouchedDays: number; // the project's stale_branch_days, which the Untouched chip measures by
   scopes: { local: boolean; remote: boolean };
   trunk: string;
   remoteName: string;
@@ -743,12 +744,13 @@ function branchesBody(o: BranchesView): string {
   const lock = o.protect.readable ? "" : `<div class="dbbr-note warn">`
     + `<b>.episko/episko.toml</b> could not be parsed, so no branch here is protected. `
     + `Fix the file and reopen this view.</div>`;
-  const counts = filterCounts(o.rows, o.now);
+  const counts = filterCounts(o.rows, o.now, o.untouchedDays);
   const chips = `<div class="bvchips">`
-    + BRANCH_FILTERS.map((f) => `<button class="bvchip${f.id === o.filter ? " on" : ""}" data-dashbrfilter="${f.id}">`
+    + BRANCH_FILTERS.map((f) => `<button class="bvchip${f.id === o.filter ? " on" : ""}" data-dashbrfilter="${f.id}"`
+      + (f.id === "untouched" ? ` title="Only on this machine, no commit in ${o.untouchedDays} days"` : "") + `>`
       + `${esc(f.label)}<span class="n">${counts[f.id]}</span></button>`).join("")
     + `</div>`;
-  const shown = orderRows(filterRows(o.rows, o.filter, o.query, o.now));
+  const shown = orderRows(filterRows(o.rows, o.filter, o.query, o.now, o.untouchedDays));
   const list = shown.length
     ? brHead(o.headState) + shown.map((r) => branchRow(r, o)).join("")
     : `<div class="ac-empty">${o.rows.length ? "No branch matches that." : "No branches here yet."}</div>`;
