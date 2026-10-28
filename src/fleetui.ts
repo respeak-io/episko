@@ -17,15 +17,15 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, coverGroups, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabBoards, tabExtras,
-  tabFindings, tabGaps, tabRows, tabTally,
+  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabExtras,
+  tabFindings, tabModel,
   type BoardId, type Cell, type Finding, type MaintInput, type MaintTab, type ProjectPick, type TabProject,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
 import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost } from "./maintui";
 import {
-  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintRow, type MaintSub, type MaintView,
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSub, type MaintView,
 } from "./maintview";
 import {
   allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
@@ -129,16 +129,17 @@ function setMaintTab(sub: MaintSub, root?: string | null, board?: BoardId | null
   renderFleet();
   if (board === undefined) return;
   // Painted above, so the board is there to scroll to; a board this project has none of lands on the tab's top.
-  // Focus follows, since the repaint took the focused line with it.
-  const at = board && document.getElementById(`mtb-${board}`);
-  (at || document.querySelector("#fleetBody .mt-tabs"))?.scrollIntoView({ block: "start" });
-  (at || document.querySelector<HTMLElement>("#fleetBody .mt-pick"))?.focus({ preventScroll: true });
+  // Focus follows, since the repaint took the focused line with it. Scoped: the dashboard draws the same ids.
+  const body = $("fleetBody"), at = board && body.querySelector<HTMLElement>(`#mtb-${board}`);
+  (at || body.querySelector(".mt-tabs"))?.scrollIntoView({ block: "start" });
+  (at || body.querySelector<HTMLElement>(".mt-pick"))?.focus({ preventScroll: true });
 }
 function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
-/** A dashboard card's "all projects": Maintenance on that tab, unfiltered. Choosing it is the ask. */
-export function showFleetMaint(sub: MaintSub): void {
+/** A dashboard's "all projects": Maintenance on that tab, narrowed to the project it came from, so
+ *  the picker is one click from every project. Choosing it is the ask. */
+export function showFleetMaint(sub: MaintSub, root: string | null = null): void {
   maintSub = sub;
-  maintFilter = null;
+  maintFilter = sub === "overview" ? null : root;
   setFleetView("maint");
 }
 
@@ -386,7 +387,7 @@ function maintPicks(tab: MaintTab): ProjectPick[] {
 
 function buildMaint(now: number): MaintView {
   const byRoot = maintProjects();
-  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [], offered: MaintRow[] = [];
+  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
   const seen: TabProject[] = [];
   const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
   let prodProjects = 0, prodChecking = false;
@@ -411,10 +412,8 @@ function buildMaint(now: number): MaintView {
     hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod") });
     const prod = prodChecks(inp);
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
-    const fs = findings(root, inp, th, now), mine = [...fs, ...tabExtras(root, inp, th, now)];
-    for (const f of mine) rows.push({ ...f, name: p.name });
-    seen.push({ path: root, inp, cells, rows: mine });
-    for (const f of offers(root, inp)) offered.push({ ...f, name: p.name });
+    const fs = findings(root, inp, th, now);
+    seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
       sub: e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
@@ -425,12 +424,10 @@ function buildMaint(now: number): MaintView {
   const ranked = rankMaint(cards);
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
   const only = liveFilter();
-  const tab = maintSub === "overview" ? null : maintSub;
-  const cov = tab ? tabGaps(tab, ranked, only) : { read: 0, unset: 0 };
   const nameOf = (r: string) => byRoot.get(r)?.name ?? basename(r);
-  const boards = tab ? tabBoards(tab, seen, only, maintSev, now) : null;
-  const drawn = new Set(boards?.drawn ?? []);
   return {
+    // The dashboard builds the same model for its one project (docs/maintenance.md).
+    ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, maintSev, now),
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
     tally: {
       needs: n("needs"), drifting: n("drifting"), quiet: n("quiet"), unread: n("unread"),
@@ -439,10 +436,7 @@ function buildMaint(now: number): MaintView {
     sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
-    tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only).filter((r) => !drawn.has(`${r.root}|${r.key}`)) : [],
-    offers: tab ? tabRows(tab, offered, only) : [], boards, sev: maintSev, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
-    read: cov.read, unset: cov.unset,
-    cover: tab ? coverGroups(tab, seen, only, now).map((g) => ({ ...g, names: Object.fromEntries(g.roots.map((r) => [r, nameOf(r)])) })) : [],
+    sev: maintSev, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
     })),

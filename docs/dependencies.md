@@ -3,10 +3,11 @@
 > Rules and their reasons, compressed. Trust the code over the docs when they disagree, and fix the doc in the same commit.
 
 Dependency work on the project dashboard: the advisory and bot-PR rows in Today's queue, the
-Dependencies card on its Maintenance tab, the ⤢ overlay both open, and the agent it dispatches.
+Maintenance tab's Security boards (each advisory's verdict beside it, and a Packages board with the
+out-of-date count), the ⤢ overlay both open, and the agent it dispatches.
 Split the usual way: **`deps.ts` pure and tested** (versions, ranges, the verdict, grouping,
 the brief), **`depsview.ts`** the overlay and the sheet, data → string, **`maintview.ts`** the
-card (Maintenance's `data-mt*` markup, its ⤢ reaching the overlay through `MaintHost.openView`),
+boards (Maintenance's `data-mt*` markup, its ⤢ reaching the overlay through `MaintHost.openView`),
 **`dashboard.ts`** the pane, the IPC and the events, **`deps.rs`** the reads. It rides the dashboard's existing `openView` and sheet
 machinery rather than growing a second overlay mechanism.
 
@@ -27,7 +28,7 @@ Four sources, on three different gates, and they do **not** all need GitHub:
   Renovate. A bot the table does not know files its PRs on the human Open work board, so a
   new bot is a manifest row, never a second match somewhere. GitHub tier.
 - **What the manifests declare** — read off disk, no process, any tier. This is the half
-  that makes a *verdict* possible, and it is why the card is useful on a GitLab remote.
+  that makes a *verdict* possible, and it is why the Security boards are useful on a GitLab remote.
 - **What a package manager says is out of date** — `pnpm/npm/yarn outdated`, `cargo
   outdated`, `go list -m -u`, `pip list --outdated`. Any tier, and **only when asked**.
 
@@ -45,8 +46,8 @@ never an empty board, and a page that came back full is a floor, counted on its 
 own issue list (`renovateDashboard` finds it there for free), its checkboxes are how you ask
 Renovate for a PR, and a second control panel that cannot tick them would be worse than a link.
 
-**Code scanning is deliberately absent from this card.** CodeQL findings are about your code,
-not your dependencies; putting them in a card called Dependencies would make the word mean
+**Code scanning is deliberately absent from the dependency read.** CodeQL findings are about
+your code, not your dependencies; folding them into `depsNow()` would make the word mean
 nothing. Maintenance's Security facet reads them instead (`github-code-scanning`,
 `github-secret-scanning`, `sarif-files`; docs/maintenance.md), beside the same Dependabot
 alerts, and `mergeAdvisories` folds one CVE that several reporters name into one row. The code
@@ -71,7 +72,7 @@ own two cases (no analysis is `off`, no Advanced Security is `unsupported`).
 **A failed alert read does not take the PR list down with it.** They are separate `gh`
 calls in one `thread::scope`, and the scope 403 is much commoner than a gh outage — so the
 report is `available` whenever *either* half answered, and `enabled: false` is what says the
-alert half did not. A board of bot PRs with one explanatory row beats an empty card.
+alert half did not. A board of bot PRs with one explanatory row beats an empty Security tab.
 
 **`dependency-graph/sbom` is not used.** It would give the installed version of everything
 in one call, and it 404s on repos with the dependency graph off — measured, on this repo.
@@ -107,14 +108,14 @@ Four rules hold it up:
   advisory's transitive package is nearly always fixed by bumping the declared parent listed
   beside it, and pricing the group at "via a parent" hid the actual action — *bump vitest* —
   behind a word that names no verb. It wins a group only when nothing in that group is
-  declared at all. Found by rendering the card against this repo's own alerts.
+  declared at all. Found by rendering the old Dependencies card against this repo's own alerts.
 
 ## One advisory is one row
 
 GitHub files an alert **per package**, so this repo's `GHSA-82fw-gwwq-j7x9` arrives twice:
 `vitest` (direct) and `@vitest/mocker` (transitive), one fix between them. `groupAdvisories`
 keys by GHSA, and the row names the packages. Ungrouped, a board of sixty alerts is mostly
-the same advisory said again, and the count at the top of the card means nothing.
+the same advisory said again, and the severity strip's counts mean nothing.
 
 An alert with **no** GHSA keys on its own number rather than on `""`, or every one of them
 would collapse into a single row claiming to be one advisory.
@@ -222,19 +223,19 @@ working in exactly one of them. They now share one rule and one pair of controls
   as `dashview.ts`** — the pane's markup outgrew one file and the contract had to follow it
   rather than quietly stop covering what moved out. That test also fails if a *third*
   `*view.ts` starts emitting `data-dash*` without joining the list.
-- **The card is absent when it has nothing to say AND nothing that could be asked**
-  (`depSilent`) — a repo with a clean board but a `package.json` still gets one, because the
-  scan is something it can offer. While the GitHub half is in flight it is a skeleton, which
-  may then resolve to absent: that is the same skeleton-to-nothing the other GitHub cards
-  already do, and it is why `depSilent` reads the **tools** as well as the tally. The card
-  lives on the Maintenance tab; Today keeps the advisory and bot-PR **rows** in its queue,
-  so nothing urgent hides behind the tab nobody opened.
+- **The Packages board and the ⤢ are absent when the read has nothing to say AND nothing
+  that could be asked** (`depSilent`) — a repo with a clean read but a `package.json` still
+  gets them, because the scan is something it can offer, and it is why `depSilent` reads the
+  **tools** as well as the tally. The ⤢ sits once, on the first Security board drawn (the
+  advisories, else the update pull requests, else Packages, drawn to carry it). The boards
+  live on the Maintenance tab's Security sub-tab; Today keeps the advisory and bot-PR
+  **rows** in its queue, so nothing urgent hides behind the tab nobody opened.
 - **Switching GitHub account drops this cache too** (`dep_invalidate`, beside
   `gh_invalidate`) and `reloadDashGh` re-reads both halves. The advisories were answered by
   the identity you have just stopped using, and a board that repaints as the new account
-  beside a dependency card still showing the old one is worse than either alone. The
+  beside a Security board still showing the old one is worse than either alone. The
   Maintenance tab's scan is re-asked with them, since `forgetMaint` dropped its answers.
-- **`depsNow()` is one derivation for the card, the queue's rows and the overlay.** Grouping and the verdict
+- **`depsNow()` is one derivation for the Security boards' verdicts, the queue's rows and the overlay.** Grouping and the verdict
   are the same work; two call sites computing it separately is how two surfaces start
   disagreeing about a count on the same screen.
 - **A tick here arms work, not a delete**, so `.dbr .brck.on` overrides the Branches view's

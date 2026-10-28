@@ -29,18 +29,18 @@ import { stepThread, type GhIssueRead } from "./issue";
 import { filterQueue, foldQueue, plainRows, queueTally, rankQueue, searchQueue, type QueueFilter } from "./queue";
 import { foldBots, layoutGraph, parseRefs, ROW_H, type GraphCommit, type GraphMark, type LiteRow } from "./graph";
 import {
-  advisoryBrief, depReason, depSilent, depTally, groupAdvisories, outdatedBrief, outRows, prBrief,
+  advisoryBrief, depReason, depSilent, depTally, FIX_TEXT, groupAdvisories, outdatedBrief, outRows, prBrief,
   renovateDashboard, verifyCommands,
   type Advisory, type DepManifest, type DepPr, type DepReport, type DepTool, type OutdatedRun, type OutRow,
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciFlows, ciRows, clampMaint, coverRows, facetCells, findings, forgeText, hygieneOf, offers, probeRows, prodChecks, projectBand, releaseRows,
-  tabFindings, type MaintInput,
+  ciRows, clampMaint, coverRows, FACET_TAB, facetCells, findings, forgeText, hostRows, offers, outdatedText, probeRows, prodChecks, projectBand,
+  tabFindings, tabModel, type BoardId, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
-import { maintClick, type MaintHost } from "./maintui";
-import { DASH_CARD, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
+import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
+import { maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import { discoverTasks, execCmd } from "./tasks";
 import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
@@ -124,8 +124,8 @@ export interface DashHost {
   // Pin the project to a GitHub account (`null` follows gh's active one). A stored
   // preference like `saveTrunk`; the write also drops the previous account's cached reads.
   setGhAccount: (root: string, login: string | null) => void;
-  // A Maintenance card's way across projects: the fleet's Maintenance, on that tab, unfiltered.
-  openFleetMaint: (sub: MaintSub) => void;
+  // Maintenance's way across projects: the fleet's, on that tab, narrowed to `root` so its picker widens it.
+  openFleetMaint: (sub: MaintSub, root: string) => void;
   // The Runs on card's doors: the `[deploy]` proposal (actions.ts) and the committed file itself.
   proposeDeploy: (root: string) => void;
   openConfig: (root: string) => void;
@@ -330,6 +330,8 @@ let dashTab: DashTab = "today";
 let maintFor = "";            // the root this open has scanned; "" until the tab asks
 let maintLoading = false;     // its own flag in aria-busy, cleared inside the root() guard
 let maintSeq = 0;             // a rescan over a running one: only the newest clears the flag
+// Maintenance's own sub-tab: remembered for the session across projects, as the fleet's is.
+let dashSub: MaintSub = "overview";
 
 const root = () => dashMirror()?.root ?? "";
 const name = () => dashMirror()?.name ?? "";
@@ -1253,33 +1255,50 @@ function setDashTab(tab: DashTab): void {
 /** The tour's "today" need: a step lighting a Today column must not find it hidden. */
 export function dashToday(): void { if (dashMirror() && dashTab !== "today") setDashTab("today"); }
 
-const scrollToCard = (sub: MaintSub): void =>
-  (document.getElementById(`mtc-${sub === "overview" ? "todo" : DASH_CARD[sub][0]}`) ?? document.getElementById("mtc-cover"))
-    ?.scrollIntoView({ block: "start" });
+// Painted now so the board is there to scroll to; scoped, since the fleet draws the same ids. A cell
+// that cannot check lands on its tab's Coverage, which says why.
+function openMaintSub(sub: MaintSub, board?: BoardId | null, cover = false): void {
+  dashSub = sub;
+  if (dashTab !== "maint") setDashTab("maint");
+  renderDash();
+  if (board === undefined && !cover) return;
+  const box = $("dashMaint");
+  const at = cover ? box.querySelector<HTMLElement>(".mt-cover") : board ? box.querySelector<HTMLElement>(`#mtb-${board}`) : null;
+  (at ?? box.querySelector(".mt-tabs"))?.scrollIntoView({ block: "start" });
+  (at ?? box.querySelector<HTMLElement>(".mt-tabs .bvtab.on"))?.focus({ preventScroll: true });
+}
 
 const emptyInput = (): MaintInput => ({ det: null, reports: {}, skip: [] });
 
 // The cache only: `loadMaint` is the one thing here that asks, and a render never reaches it.
+// The sub-tabs are the fleet's model narrowed to this project (docs/maintenance.md).
 function maintNow(now: number): MaintDash {
-  const r = root(), e = maintOf(r), inp = maintInput(r) ?? emptyInput();
+  const r = root(), e = maintOf(r), inp = maintInput(r) ?? emptyInput(), nm = name();
   const th = clampMaint(inp.det?.config.thresholds);
-  const cells = facetCells(inp, th, now), rows = tabFindings(r, inp, th, now);
+  const cells = facetCells(inp, th, now), rows = tabFindings(r, inp, th, now), prod = prodChecks(inp);
   const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
+  const quiet = depSilent(tally, depTools) && !depLoading;
+  const at = inp.det?.deploy?.host;
+  const hosts = at ? hostRows([{ path: r, hosts: [at], prod: cells.find((c) => c.facet === "prod") }]) : [];
   return {
     card: {
-      path: r, name: name(), accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
+      path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
     },
-    rows, offers: offers(r, inp), checked: e?.at ?? 0, flows: ciFlows(inp, now), release: releaseRows(inp, now),
-    deps: depSilent(tally, depTools) && !depLoading ? null : {
-      adv: dn.adv, prs: dn.prs, tally, scanned: depScanned !== "", loading: depLoading,
-      tool: depTools.find((x) => !x.blocked)?.label ?? null,
-      reason: depReason(tier === "github", depReport, "Advisories and update pull requests need a GitHub remote."),
+    rows, offers: offers(r, inp), checked: e?.at ?? 0,
+    tab: {
+      ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
+      sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
+      hosts: hosts.map((h) => ({ ...h, projects: [{ root: r, name: nm }] })),
+      prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod) },
+      dash: {
+        outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
+        deps: !quiet,
+        fixes: Object.fromEntries(dn.adv.flatMap((a) => [a.ghsa, a.cve ?? ""].filter(Boolean).map((k) => [k.toUpperCase(), FIX_TEXT[a.worst]]))),
+      },
     },
-    hygiene: hygieneOf(inp, th, now), staleDays: th.staleBranchDays,
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
-    deploy: inp.det?.deploy ?? null, detected: !!inp.det,
-    probes: probeRows(inp, th, now), prod: { projects: prodChecks(inp).length ? 1 : 0, checking: askingFor(r, prodChecks(inp)) },
+    deploy: inp.det?.deploy ?? null, detected: !!inp.det, probes: probeRows(inp, th, now),
   };
 }
 
@@ -1309,11 +1328,11 @@ const maintHost: MaintHost = {
   prefill: (project, path, text) => { void prefillAgent(project, path, text); },
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
   openDashboard: (n, p, tab) => { if (p === root()) setDashTab(tab ?? "maint"); else openDashboard(n, p, tab); },
-  openTab: (sub) => scrollToCard(sub),
-  openCover: () => document.getElementById("mtc-cover")?.scrollIntoView({ block: "start" }),
+  openTab: (sub, _root, board) => openMaintSub(sub, board),
+  openCover: (facet) => openMaintSub(FACET_TAB[facet], null, true),
   render: () => renderDash(),
   openView: (v) => openDashView(v),
-  openAcross: (sub) => host.openFleetMaint(sub),
+  openAcross: (sub) => host.openFleetMaint(sub, root()),
   deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
   roots: () => [root()],
 };
@@ -1326,6 +1345,7 @@ export function wireDashboard(): void {
   // own box is the grid's, so painting into it cannot call this back. Behind Maintenance it
   // measures 0, which would fit Landed to nothing; the return to Today fires it at full size.
   new ResizeObserver(() => { if (dashMirror() && dashTab === "today" && fitLanded()) renderDash(); }).observe($("dashMoved"));
+  $("dashPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); });
 
   $("dashPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;

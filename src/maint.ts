@@ -780,7 +780,7 @@ export function tabTally(rows: readonly Finding[], root: string | null = null): 
 }
 
 /** The boards a cross-project tab draws (`tabBoards`), each an anchor a card line can open on. */
-export const BOARD_IDS = ["advisories", "update-prs", "ci", "releases", "hygiene", "work", "addresses"] as const;
+export const BOARD_IDS = ["advisories", "update-prs", "packages", "ci", "releases", "hygiene", "work", "addresses"] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
 // Each facet's board and the keys it carries a verb for; a pre-fold snapshot's `ci:<workflow>` is CI's too.
 const FACET_BOARD: Record<Facet, [BoardId, RegExp]> = {
@@ -982,7 +982,11 @@ export const sevStrip = (rows: readonly AdvRow[], sev: SevBucket | null = null):
   .filter((c) => c.n || c.bucket === sev || (c.bucket !== "secret" && c.bucket !== "unknown"));
 export const bySev = (rows: readonly AdvRow[], sev: SevBucket | null): AdvRow[] => rows.filter((r) => sev === null || r.bucket === sev);
 
-export interface PrRow { root: string; bot: string; open: number; red: number; oldest: number | null; capped: boolean; level: Level; verb: Finding | null }
+export interface PrRow {
+  root: string; bot: string; open: number; red: number;
+  green: number; // checks pass and not a draft: what a merge could take now
+  oldest: number | null; capped: boolean; level: Level; verb: Finding | null;
+}
 /** Open update pull requests, one row per project and bot; `oldest` is the oldest one's age (secs). */
 export function updatePrRows(ps: readonly TabProject[], root: string | null = null, now = Date.now()): PrRow[] {
   const out: PrRow[] = [];
@@ -990,7 +994,7 @@ export function updatePrRows(ps: readonly TabProject[], root: string | null = nu
     for (const { truncated, facts: f } of okFacts(p.inp, "deps")) {
       if (f.kind !== "updatePrs" || !f.prs.length) continue;
       const red = f.prs.filter((x) => x.checks === "fail").length, at = f.prs.flatMap((x) => x.at !== null ? [x.at] : []);
-      out.push({ root: p.path, bot: f.bot, open: f.prs.length, red, capped: truncated,
+      out.push({ root: p.path, bot: f.bot, open: f.prs.length, red, capped: truncated, green: f.prs.filter((x) => x.checks === "pass" && !x.draft).length,
         oldest: at.length ? now / 1000 - Math.min(...at) : null,
         level: red || f.prs.length >= thOf(p).botPrBacklog ? "warn" : "info", verb: verbOf(p, `deps:${f.bot}`) });
     }
@@ -1005,6 +1009,7 @@ export interface CiBoardRow {
   since: string | null; // failing for, null when green or undatable
   why: string; // the red workflows, or the newest run
   runs: CiStatus[]; // the newest CI_STRIP runs on the default branch, oldest first
+  branch: string | null; flows: FlowRow[]; // each workflow on its own, which one project's board lists
   verb: Finding | null;
 }
 /** One row per project whose CI a source read, the longest red first. */
@@ -1015,28 +1020,41 @@ export function ciBoard(ps: readonly TabProject[], root: string | null = null, n
     const runs = reps.flatMap((r) => r.facts.kind === "ciRuns" ? r.facts.runs : []);
     if (!reps.length) return [];
     const c = p.cells.find((x) => x.facet === "ci")!, red = ciFailures(reps), last = [...runs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    const { branch, rows: flows } = ciFlows(p.inp, now);
     const why = red.length ? red.map((x) => x.workflow).join(", ")
       : last[0] ? `${last[0].workflow}${last[0].at ? ` · ${span(sec - last[0].at)} ago` : ""}` : "no run yet";
     return [{ row: { root: p.path, level: c.level, text: c.text, since: red[0] ? redFor(red[0], sec) : null, why,
-      runs: last.slice(0, CI_STRIP).map((r) => r.status).reverse(), verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
+      runs: last.slice(0, CI_STRIP).map((r) => r.status).reverse(), branch, flows, verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
   }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || a.at - b.at || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
 }
 
 export interface RelRow {
   root: string; tag: string | null; tagAge: number | null; since: number;
+  trunk: string | null; // what an untagged project was read against
+  tagRead: boolean; // a tag source answered; without one, tag and since say nothing
   ratio: number; // of the board's largest count, for a bar
   oldest: number | null; level: Level; verb: Finding | null;
+  fetched: number | null; // the last fetch's age: the tag count is as old as it
+  published: { tag: string | null; age: number | null } | null; // the forge's latest release, null unread
+  changelog: number | null; // entries under Unreleased, null with no such section read
 }
-/** Unreleased work per project from its tags; a project never tagged says so and has no count. */
+/** Unreleased work per project from its tags, its published release and changelog beside it; a
+ *  project never tagged says so and has no count. */
 export function releaseBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): RelRow[] {
   const sec = now / 1000, out: RelRow[] = [];
   for (const p of within(ps, root)) {
-    const f = okFacts(p.inp, "release").map((r) => r.facts).find((x): x is FactsOf<"release"> => x.kind === "release");
-    if (!f) continue;
-    const th = thOf(p), old = f.tag && f.since && f.oldestUnreleasedAt ? sec - f.oldestUnreleasedAt : null;
-    const drift = f.since >= th.unreleasedCommits || (old ?? 0) >= th.unreleasedDays * DAY;
-    out.push({ root: p.path, tag: f.tag, tagAge: f.tag && f.tagAt ? sec - f.tagAt : null, since: f.tag ? f.since : 0, ratio: 0, oldest: old,
-      level: !f.tag ? "muted" : !f.since ? "ok" : drift ? "warn" : "info", verb: verbOf(p, "release") });
+    const facts = okFacts(p.inp, "release").map((r) => r.facts);
+    const f = facts.find((x): x is FactsOf<"release"> => x.kind === "release");
+    const pub = facts.find((x): x is FactsOf<"releases"> => x.kind === "releases");
+    const log = facts.find((x): x is FactsOf<"changelog"> => x.kind === "changelog");
+    if (!f && !pub && !log) continue;
+    const th = thOf(p), old = f?.tag && f.since && f.oldestUnreleasedAt ? sec - f.oldestUnreleasedAt : null;
+    const drift = !!f && (f.since >= th.unreleasedCommits || (old ?? 0) >= th.unreleasedDays * DAY);
+    out.push({ root: p.path, tag: f?.tag ?? null, trunk: f?.trunk ?? null, tagRead: !!f, tagAge: f?.tag && f.tagAt ? sec - f.tagAt : null,
+      since: f?.tag ? f.since : 0, ratio: 0, oldest: old, fetched: f?.fetchedAt ? sec - f.fetchedAt : null,
+      published: pub ? { tag: pub.latest?.tag ?? null, age: pub.latest?.at ? sec - pub.latest.at : null } : null,
+      changelog: log?.unreleased ?? null,
+      level: !f?.tag ? "muted" : !f.since ? "ok" : drift ? "warn" : "info", verb: verbOf(p, "release") });
   }
   const max = Math.max(1, ...out.map((r) => r.since));
   return out.map((r) => ({ ...r, ratio: r.since / max }))
@@ -1048,6 +1066,7 @@ export interface HygCount { n: number | null; level: Level }
 export interface HygRow {
   root: string; trunk: string | null;
   unpushed: HygCount; localOnly: HygCount; merged: HygCount; gone: HygCount; idle: HygCount;
+  stale: HygCount; staleDays: number; // branches only here, untouched that long
   fetched: { age: number | null; level: Level };
   level: Level; verbs: Finding[]; // Push, Tidy, Fetch: whichever lines this project has
 }
@@ -1060,13 +1079,13 @@ export function hygieneBoard(ps: readonly TabProject[], root: string | null = nu
     if (!h) return [];
     const age = h.fetchedAt === null ? null : sec - h.fetchedAt;
     const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "warn"), n(h.mergedRead ? h.merged.length : null, "info"),
-      n(h.gone.length, "info"), n(h.idle, "info")];
+      n(h.gone.length, "info"), n(h.idle, "info"), n(h.stale.length, "info")];
     const fetched: Level = age !== null && age > thOf(p).fetchStaleDays * DAY ? "warn" : "ok";
     const level = [...cs.map((c) => c.level), fetched].sort((a, b) => rowRank(a) - rowRank(b))[0];
     const verbs = ["git:unpushed", "git:tidy", "git:fetch"].flatMap((k) => verbOf(p, k) ?? []);
     const sum = cs.reduce((s, c) => s + (c.n ?? 0), 0);
     return [{ sum, row: { root: p.path, trunk: h.trunk, unpushed: cs[0], localOnly: cs[1], merged: cs[2], gone: cs[3], idle: cs[4],
-      fetched: { age, level: fetched }, level, verbs } }];
+      stale: cs[5], staleDays: thOf(p).staleBranchDays, fetched: { age, level: fetched }, level, verbs } }];
   }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || b.sum - a.sum || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
 }
 
@@ -1110,11 +1129,14 @@ export interface Boards {
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
   unchecked: number; // projects in the filter whose *Check prod* nobody has clicked yet
   drawn: string[]; // `root|key` of every line a board carries the verb for; the rest are listed below them
+  one: boolean; // narrowed to one project, so no row names it: the column would only repeat the name
 }
 
 /** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
 export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
-  const b: Boards = { adv: [], strip: [], capped: false, prs: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {}, unchecked: 0, drawn: [] };
+  const b: Boards = {
+    adv: [], strip: [], capped: false, prs: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {}, unchecked: 0, drawn: [], one: root !== null,
+  };
   const mine = within(ps, root);
   for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f);
   const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false };
@@ -1135,6 +1157,40 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.releases.map((r) => r.verb), ...b.hygiene.flatMap((r) => r.verbs), ...b.work.flatMap((r) => r.verbs), ...b.probes.map((r) => r.verb)];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
   return b;
+}
+
+/** Everything a tab draws but its host's chrome. The fleet and a project's dashboard both build it
+ *  here, so one project on the dashboard is exactly the fleet narrowed to it. */
+export interface TabModel {
+  tabs: Record<MaintTab, TabCount>; // the bar's counts, over the filter
+  boards: Boards | null; // null on Overview
+  rows: Finding[]; // the open tab's lines no board carries a verb for, in tabRows' order
+  offers: Finding[]; // its click-only sources nobody ran: Coverage's run doors when narrowed
+  cover: CoverGroup[];
+  read: number; unset: number; // what an empty tab may claim (tabGaps)
+}
+export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null,
+  sev: SevBucket | null = null, now = Date.now()): TabModel {
+  const rows = ps.flatMap((p) => p.rows), tabs = tabTally(rows, root);
+  if (!sub) return { tabs, boards: null, rows: [], offers: [], cover: [], read: 0, unset: 0 };
+  const boards = tabBoards(sub, ps, root, sev, now), drawn = new Set(boards.drawn);
+  return {
+    tabs, boards, ...tabGaps(sub, ps, root),
+    rows: tabRows(sub, rows, root).filter((r) => !drawn.has(`${r.root}|${r.key}`)),
+    offers: tabRows(sub, ps.flatMap((p) => offers(p.path, p.inp)), root),
+    cover: coverGroups(sub, ps, root, now),
+  };
+}
+
+/** An advisory row's fix verdict from the dashboard's own dependency read, by any of its ids. */
+export const advFix = (r: Pick<AdvRow, "id" | "aliases">, fixes: Readonly<Record<string, string>>): string | null =>
+  [r.id, ...r.aliases].map((k) => fixes[k.toUpperCase()]).find(Boolean) ?? null;
+
+/** The dashboard's out-of-date line: the count once a package manager answered, else what its door
+ *  runs; null when it has neither. No source reads this, so no fleet board carries it. */
+export function outdatedText(scanned: boolean, outdated: number, tool: string | null): string | null {
+  if (scanned) return outdated ? `${plural(outdated, "package")} out of date` : "nothing out of date";
+  return tool ? `not checked · ⤢ runs ${tool}` : null;
 }
 
 // ---------- the project tab's cards ----------
@@ -1158,13 +1214,11 @@ export function ciFlows(inp: MaintInput, now = Date.now()): { branch: string | n
     for (const [workflow, runs] of by) {
       const x = fails.get(workflow);
       rows.push({ workflow, status: runs[0].status, at: runs[0].at,
-        runs: runs.slice(0, 8).map((r) => r.status).reverse(), red: x ? redFor(x, sec) ?? "" : null });
+        runs: runs.slice(0, CI_STRIP).map((r) => r.status).reverse(), red: x ? redFor(x, sec) ?? "" : null });
     }
   }
   return { branch, rows: rows.sort((a, b) => Number(b.red !== null) - Number(a.red !== null) || a.workflow.localeCompare(b.workflow)) };
 }
-
-export interface Kv { k: string; v: string }
 
 /** The forge line under the tab's cards: where this repo lives, and how to pin one nobody could name. */
 export function forgeText(inp: MaintInput): string {
@@ -1175,22 +1229,6 @@ export function forgeText(inp: MaintInput): string {
   return f.kind === "unknown" ? `${where} · forge unknown: pin [maintenance] forge` : where;
 }
 
-/** Delivery's release half, one line per thing a source read; nothing read is no line. */
-export function releaseRows(inp: MaintInput, now = Date.now()): Kv[] {
-  const sec = now / 1000, out: Kv[] = [];
-  const ago = (at: number | null) => at ? ` · ${span(sec - at)} ago` : "";
-  for (const { facts: f } of okFacts(inp, "release")) {
-    if (f.kind === "release") {
-      out.push({ k: "Last tag", v: f.tag ? `${f.tag}${ago(f.tagAt)} · ${plural(f.since, "commit")} since` : `no release tag on ${f.trunk ?? "the trunk"}` });
-      if (f.fetchedAt) out.push({ k: "As of", v: `last fetch ${span(sec - f.fetchedAt)} ago` });
-    } else if (f.kind === "releases") {
-      out.push({ k: "Published", v: f.latest ? `${f.latest.tag}${ago(f.latest.at)}` : "no releases" });
-    } else if (f.kind === "changelog" && f.unreleased !== null) {
-      out.push({ k: "Changelog", v: `${plural(f.unreleased, "entry", "entries")} under Unreleased` });
-    }
-  }
-  return out;
-}
 
 export interface Hygiene {
   trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[]; gone: string[];

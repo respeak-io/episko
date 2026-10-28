@@ -308,7 +308,7 @@ setDashHost({
   openReview: (project, root, number) => { openPrReview(project, root, number); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
-  openFleetMaint: (sub) => { showFleetMaint(sub); openFleet(); },
+  openFleetMaint: (sub, root) => { showFleetMaint(sub, root); openFleet(); },
   proposeDeploy: (root) => { void proposeDeploy(root); },
   openConfig: (root) => { void openFileOrRead(`${root}/.episko/episko.toml`); },
   openHistory: () => { void openHistory(true); },

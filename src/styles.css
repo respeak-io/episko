@@ -3108,12 +3108,15 @@ select.in-ctl { cursor: pointer; }
 .mt-pc .mt-rn { max-width: 140px; font-size: 11px; }
 .mt-pc .mt-verb { padding: 0 6px; }
 .mt-pc:hover .mt-verb { color: var(--accent-ink); }
+.mt-pc.solo { padding: 1px 2px; }
 .mt-cis { display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--hair); }
 .mt-ci { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 120px) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
 .mt-ci:last-child { border-bottom: 0; }
 .mt-ci .mt-rn, .mt-tbl .mt-rn { max-width: none; display: block; }
 .mt-ci .w { min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-ci .a:empty { display: none; }
+/* one project's board lists its workflows, or its branch where none ran, in the name column */
+.mt-ci .wn { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-ci:hover .mt-verb, .mt-tbl tr:hover .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
 .mt-board .mt-runs i { width: 7px; height: 13px; }
 .mt-runs i.l-run { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); }
@@ -3152,18 +3155,18 @@ select.in-ctl { cursor: pointer; }
 .mt-dc { scroll-margin-top: 8px; }
 .mt-dc .mt-finds { margin-top: 0; border-top: 0; padding: 0 6px; }
 .mt-across { flex: none; font-size: 10px; }
-.mt-kv, .mt-flow, .mt-li, .mt-cov { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
+/* a sub-tab's top row on the dashboard: no picker, only the way across, on the right */
+.mt-grow { flex: 1; }
+.mt-board .mt-sec-h .xb { margin-left: auto; align-self: center; }
+.mt-board > .mt-kv { padding: 6px 4px; margin-top: 4px; border-top: 1px solid var(--hair); }
+.mt-kv, .mt-cov { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
 .mt-kv > span:first-child, .mt-cov .s { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-kv .mono { flex: none; max-width: 60%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-kv .l-warn, .mt-cov .mt-v.l-warn { color: var(--st-working); }
-.mt-flow .w { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-flow .mt-v::before { display: none; }
 .mt-runs { flex: none; display: inline-flex; gap: 3px; align-self: center; }
 .mt-runs i { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
 .mt-runs i.l-ok { background: var(--muted-2); }
 .mt-runs i.l-bad { background: var(--st-error); }
-.mt-li .t { flex: none; max-width: 45%; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-li .d { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .mt-cov .mt-v { flex: none; max-width: 55%; }
 .mt-probe { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
@@ -3412,8 +3415,8 @@ select.in-ctl { cursor: pointer; }
 .ac-h { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--hair); }
 .ac-h .t { font: 700 9.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
 .ac-h .n { margin-left: auto; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ac-h .xb, .asec-h .xb { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px; width: 19px; height: 19px; border-radius: 6px; display: grid; place-items: center; flex: none; }
-.ac-h .xb:hover, .asec-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
+.ac-h .xb, .asec-h .xb, .mt-sec-h .xb { border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-2); font-size: 11px; width: 19px; height: 19px; border-radius: 6px; display: grid; place-items: center; flex: none; }
+.ac-h .xb:hover, .asec-h .xb:hover, .mt-sec-h .xb:hover { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent-line); }
 .ac-b { padding: 3px; display: flex; flex-direction: column; gap: 1px; }
 .ac-empty { padding: 9px 7px; font-size: 11px; line-height: 1.5; color: var(--muted-2); }
 .cr { display: grid; grid-template-columns: 22px minmax(0, 1fr) minmax(74px, auto); gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; min-width: 0; }

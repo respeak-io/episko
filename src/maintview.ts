@@ -5,12 +5,11 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, span, type AdvRow, type Band, type BoardId, type Boards, type Cell, type CiStatus, type CoverGroup, type CoverRow,
-  type Finding, type FlowRow, type HygCount, type Hygiene, type Kv, type Level, type MaintSnap, type MaintTab, type ProbeRow, type SevBucket,
-  type SnapFinding, type TabCount, type Verb,
+  advFix, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, span, type AdvRow, type Band, type BoardId, type Boards,
+  type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Finding, type FlowRow, type HygCount, type Level, type MaintSnap, type MaintTab,
+  type ProbeRow, type RelRow, type SevBucket, type SnapFinding, type TabModel, type Verb,
 } from "./maint";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
-import { checkState, FIX_TEXT, type Advisory as DepAdvisory, type DepPr, type DepTally } from "./deps";
 import type { DeployCfg } from "./deploy";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
@@ -32,7 +31,23 @@ export interface MaintSoon { name: string; what: string; at: number } // at: uni
 export interface MaintHostRow { host: string; projects: { root: string; name: string }[]; level: Level; text: string }
 /** What *Check prod* would ask: projects with an address in `[deploy]`, and whether a check is out. */
 export interface MaintProd { projects: number; checking: boolean }
-export interface MaintView {
+/** A tab as the fleet and a project's dashboard both draw it: ./maint's TabModel and its host's chrome. */
+export interface MaintTabView extends TabModel {
+  sub: MaintSub;
+  filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell or the picker
+  hosts: MaintHostRow[]; // hostRows' order, over the filter
+  prod: MaintProd;
+  sev: SevBucket | null; // the Security strip's pick
+  names: Record<string, string>; // every root's project name
+  dash?: MaintDashExtra; // the dashboard's: one project for good, so no picker, and its own reads
+}
+/** What only the dashboard knows: its dependency read, which no Maintenance source carries. */
+export interface MaintDashExtra {
+  outdated: string | null; // ./maint outdatedText: drawn beside the ⤢ that runs it
+  deps: boolean; // the dependency read has something to say, so Security carries the overlay's ⤢
+  fixes: Record<string, string>; // an advisory id's fix verdict, upper-case keys
+}
+export interface MaintView extends MaintTabView {
   cards: MaintCard[]; // rankMaint's order
   chip: MaintChip; quietOpen: boolean;
   checked: number; // the last finished sweep this session (ms), 0 for none
@@ -40,22 +55,7 @@ export interface MaintView {
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
   soon: MaintSoon[];
-  sub: MaintSub;
-  filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell
-  tabs: Record<MaintTab, TabCount>; // over the filter, so a narrowed tab bar says where that project stands
-  rows: MaintRow[]; // the open tab's lines no board carries a verb for, in tabRows' order
-  offers: MaintRow[]; // the open tab's click-only sources nobody ran: Coverage's run doors when narrowed
-  read: number; // projects the open tab reached a verdict on
-  unset: number; // projects with none of it set up: a fact, not a gap
-  cover: MaintCover[]; // why its cells do not know, by reason, so an empty tab never reads as clear
-  hosts: MaintHostRow[]; // hostRows' order, over the filter
-  prod: MaintProd;
-  boards: Boards | null; // the open tab's, null on Overview
-  sev: SevBucket | null; // the Security strip's pick
-  names: Record<string, string>; // every root's project name
 }
-export type MaintRow = Finding & { name: string };
-export type MaintCover = CoverGroup & { names: Record<string, string> };
 
 const DASH = `<span class="dim">—</span>`;
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -184,10 +184,10 @@ const settingsHtml = (url: string, label = "Settings ↗") =>
 
 // Across projects a name is that project's door, or its settings page when the fix is a forge switch.
 const SHOWN = 8;
-function namesHtml(g: MaintCover): string {
+function namesHtml(v: MaintTabView, g: CoverGroup): string {
   const urls = g.action?.kind === "settings" ? g.action.urls : {};
-  const one = (r: string) => urls[r] ? settingsHtml(urls[r], `${g.names[r]} ↗`) : projHtml(r, g.names[r]);
-  const rest = g.roots.slice(SHOWN).map((r) => g.names[r]);
+  const one = (r: string) => urls[r] ? settingsHtml(urls[r], `${nameOf(v, r)} ↗`) : projHtml(r, nameOf(v, r));
+  const rest = g.roots.slice(SHOWN).map((r) => nameOf(v, r));
   return g.roots.slice(0, SHOWN).map(one).join(", ")
     + (rest.length ? ` <span class="dim" data-tip="${escAttr(rest.join(", "))}">+${rest.length}</span>` : "");
 }
@@ -195,7 +195,7 @@ function namesHtml(g: MaintCover): string {
 // Offers and forge switches are not findings: one row per reason, however many projects share it.
 // Across projects a click-only source only counts, since nine audits at once is not a click to offer.
 const OFFER_TIP = "Runs only when asked, one project at a time: from its Coverage card, or this tab narrowed to it";
-function coverHtml(v: MaintView): string {
+function coverHtml(v: MaintTabView): string {
   if (!v.cover.length) return "";
   const one = !!v.filter;
   const rows = v.cover.map((g) => {
@@ -204,13 +204,13 @@ function coverHtml(v: MaintView): string {
     const act = a?.kind === "fix" ? copyHtml(a.fix)
       : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
       : offer && one ? verbHtml(offer) : "";
-    const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(g)}</span>`;
+    const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(v, g)}</span>`;
     const tip = [g.detail, a?.kind === "run" && !one ? OFFER_TIP : "", said ?? ""].filter(Boolean).join("\n");
     return `<div class="mt-cv${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
       + `<span class="t" data-tip="${escAttr(tip)}">${esc(g.what)} <em>${esc(g.why)}</em></span>${where}`
       + `<span class="d mono">${esc(one ? g.detail : "")}</span><span class="a">${act}</span></div>`;
   }).join("");
-  return `<section class="mt-sec mt-cover"><div class="mt-sec-h label">Coverage</div><div class="mt-finds">${rows}</div></section>`;
+  return `<section class="mt-sec mt-cover" tabindex="-1"><div class="mt-sec-h label">Coverage</div><div class="mt-finds">${rows}</div></section>`;
 }
 
 // A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.
@@ -289,25 +289,28 @@ const TAB_TEXT: Record<MaintSub, [string, string]> = {
   work: ["Work", "Open issues, pull requests and reviews waiting on you, across every project"],
 };
 export const tabName = (s: MaintSub): string => TAB_TEXT[s][0];
+// On a project's dashboard a tab is about that project alone.
+const tabTip = (v: MaintTabView, s: MaintSub) => !v.dash ? TAB_TEXT[s][1]
+  : s === "overview" ? "What needs you here, where it runs, and what could be read" : `${TAB_TEXT[s][1].replace(/, across every project$/, "")}, in this project`;
 const SECTION: Record<Facet, string> = {
   ci: "CI on the default branch", release: "Unreleased work", security: "Advisories and findings",
   deps: "Update pull requests", git: "Branches and pushes", prod: "Endpoints", work: "Open work",
 };
 
 // Only red and amber light a count; everything else stays muted, as on the cards.
-function tabsHtml(v: MaintView): string {
+function tabsHtml(v: MaintTabView): string {
   return `<div class="bvtabs mt-tabs" role="tablist">` + MAINT_SUBS.map((id) => {
     const c = id === "overview" ? null : v.tabs[id];
     const n = c?.n ? `<span class="n${c.level === "bad" ? " l-bad" : c.level === "warn" ? " l-warn" : ""}">${c.n}</span>` : "";
     return `<button class="bvtab${id === v.sub ? " on" : ""}" role="tab" aria-selected="${id === v.sub}" data-mttab="${id}"`
-      + ` data-tip="${escAttr(TAB_TEXT[id][1])}">${esc(TAB_TEXT[id][0])}${n}</button>`;
+      + ` data-tip="${escAttr(tabTip(v, id))}">${esc(TAB_TEXT[id][0])}${n}</button>`;
   }).join("") + `</div>`;
 }
 
 // ---------- the tabs' boards: colour only where a value needs you, a zero is the grey dot ----------
 
 const DOT = `<i class="mt-dot" aria-label="none"></i>`;
-const nameOf = (v: MaintView, root: string) => v.names[root] ?? root;
+const nameOf = (v: MaintTabView, root: string) => v.names[root] ?? root;
 const ageOf = (sec: number | null) => sec === null ? DASH : esc(span(sec));
 const num = (n: number, level: Level, tip = "") => n
   ? `<span class="mt-n ${LEVEL_CLS[level]}"${tip ? ` data-tip="${escAttr(tip)}"` : ""}>${n}</span>` : DOT;
@@ -322,10 +325,10 @@ function runsHtml(runs: readonly CiStatus[]): string {
 }
 
 // A board is a card of its own; its note says what it covers and how many projects were read. Its
-// id is where a card line opens (./maint findingTarget).
-const board = (id: BoardId, title: string, note: string, body: string) =>
+// id is where a card line opens (./maint findingTarget); `extra` is a host's door in its head.
+const board = (id: BoardId, title: string, note: string, body: string, extra = "") =>
   `<section class="mt-sec mt-board" id="mtb-${id}" tabindex="-1"><div class="mt-sec-h"><span class="label">${esc(title)}</span>`
-  + `<span class="mt-note mono">${esc(note)}</span></div>${body}</section>`;
+  + `<span class="mt-note mono">${esc(note)}</span>${extra}</div>${body}</section>`;
 const empty = (text: string) => `<p class="fl-none">${esc(text)}</p>`;
 const table = (cols: string[], rows: string[]) => `<div class="mt-scroll"><table class="mt-tbl"><thead><tr>`
   + cols.map((c) => `<th${c.startsWith(">") ? ` class="r"` : ""}>${esc(c.replace(/^>/, ""))}</th>`).join("")
@@ -333,9 +336,13 @@ const table = (cols: string[], rows: string[]) => `<div class="mt-scroll"><table
 const td = (html: string, cls = "") => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 const readNote = (n: number | undefined) => `${plural(n ?? 0, "project")} read`;
 const verbTd = (f: Finding | null) => td(f ? verbHtml(f) : "", "a");
+// Narrowed to one project, a Project column would only repeat its name, so the board drops it.
+const projCol = (b: Boards): string[] => b.one ? [] : ["Project"];
+const projTd = (v: MaintTabView, b: Boards, root: string) => b.one ? "" : td(projHtml(root, nameOf(v, root)));
+const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" data-tip="${escAttr(tip)}">⤢</button>`;
 
 const SEV_TEXT: Record<SevBucket, string> = { secret: "secret", critical: "critical", high: "high", medium: "medium", low: "low", unknown: "unknown" };
-function stripHtml(v: MaintView, b: Boards): string {
+function stripHtml(v: MaintTabView, b: Boards): string {
   return `<div class="mt-sevs" role="group" aria-label="Severity">` + b.strip.map((c) => {
     const on = v.sev === c.bucket, off = !c.n && !on;
     const tip = on ? "Every severity again" : c.n ? `Only the ${SEV_TEXT[c.bucket]} rows` : `No ${SEV_TEXT[c.bucket]} row`;
@@ -345,89 +352,137 @@ function stripHtml(v: MaintView, b: Boards): string {
 }
 
 const KIND_WORD: Record<AdvRow["kind"], string> = { dependency: "advisory", code: "code finding", config: "misconfiguration", secret: "secret" };
-function advHtml(v: MaintView, r: AdvRow): string {
+function advHtml(v: MaintTabView, b: Boards, r: AdvRow): string {
   const ver = r.kind === "dependency" ? `${r.installed.join(", ") || "?"} → ${r.fixed.join(", ") || "no fix published"}` : "";
+  const fix = v.dash ? advFix(r, v.dash.fixes) : null; // the dashboard's own read knows what the fix takes
   const id = r.url ? settingsHtml(r.url, r.id) : `<span>${esc(r.id)}</span>`;
   const chips = r.projects.map((p) => {
     // The verb is the project's line for this kind, so its brief covers every row of it there.
     const why = p.verb ? `${nameOf(v, p.root)}: one brief for every ${KIND_WORD[r.kind]} there` : "";
-    return `<span class="mt-pc">${projHtml(p.root, nameOf(v, p.root))}${p.verb ? verbHtml(p.verb, why) : ""}</span>`;
+    return b.one ? (p.verb ? `<span class="mt-pc solo">${verbHtml(p.verb, why)}</span>` : "")
+      : `<span class="mt-pc">${projHtml(p.root, nameOf(v, p.root))}${p.verb ? verbHtml(p.verb, why) : ""}</span>`;
   }).join("");
   const tip = [r.summary, r.aliases.length ? `also ${r.aliases.join(", ")}` : ""].filter(Boolean).join("\n");
+  const sub = [ver, fix].filter(Boolean).map((x) => `${esc(x!)} · `).join("");
   return `<div class="mt-adv"><span class="mt-sevl ${LEVEL_CLS[r.level]}">${esc(SEV_TEXT[r.bucket])}</span>`
     + `<span class="m"><span class="t" data-tip="${escAttr(tip)}"><b>${esc(r.what || r.id)}</b> ${esc(r.summary)}</span>`
-    + `<span class="s mono">${ver ? `${esc(ver)} · ` : ""}${id}</span></span><span class="mt-pcs">${chips}</span></div>`;
+    + `<span class="s mono">${sub}${id}</span></span><span class="mt-pcs">${chips}</span></div>`;
 }
 
-function securityHtml(v: MaintView, b: Boards): string {
+const DEPS_TIP = "Every advisory, update pull request and out-of-date package";
+function securityHtml(v: MaintTabView, b: Boards): string {
   const all = b.strip.reduce((k, c) => k + c.n, 0);
-  const rows = b.adv.length ? `<div class="mt-advs">${b.adv.map((r) => advHtml(v, r)).join("")}</div>`
+  const rows = b.adv.length ? `<div class="mt-advs">${b.adv.map((r) => advHtml(v, b, r)).join("")}</div>`
     : empty(all ? "No row of that severity. Click it again for every one." : "No open advisory or finding.");
-  const adv = b.read.security || all ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows) : "";
-  const prs = b.prs.length ? table(["Project", "Bot", ">Open", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${td(projHtml(r.root, nameOf(v, r.root)))}`
+  // The overlay's ⤢ sits once, on the first board drawn; with none, Packages is drawn to carry it.
+  const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.read.security || all), hasPrs = !!(b.prs.length || b.read.deps);
+  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows, door) : "";
+  const prs = b.prs.length ? table([...projCol(b), "Bot", ">Open", ">Green", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info") + (r.capped ? "+" : ""), "r")
+    + td(num(r.green, "info", "checks pass and not a draft"), "r")
     + td(num(r.red, "warn", "update pull requests whose checks fail"), "r") + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`))
     : empty("No open update pull request.");
-  return adv + (b.prs.length || b.read.deps ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs) : "");
+  const out = v.dash?.outdated, first = !hasAdv && !hasPrs;
+  const pkgs = out || (door && first) ? board("packages", "Packages", "this project's package manager", out
+    ? `<div class="mt-kv"><span>Out of date</span><span class="mono">${esc(out)}</span></div>`
+    : empty("Every advisory and update pull request the dependency read found is behind ⤢."), first ? door : "") : "";
+  return adv + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
 }
 
-function deliveryHtml(v: MaintView, b: Boards): string {
-  const ci = b.ci.map((r) => `<div class="mt-ci">${projHtml(r.root, nameOf(v, r.root))}`
+const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };
+// Only a pass or a skip reads as fine; a cancelled, running or unknown run is unverified, so muted.
+const flowCls = (w: FlowRow) => w.red !== null ? "l-bad" : w.status === "pass" || w.status === "skip" ? "l-ok" : "l-muted";
+// One project's CI is its workflows, each with its own strip; the Fix covers every red one, so it sits once.
+function flowsHtml(r: CiBoardRow): string {
+  let verb = r.verb;
+  return r.flows.map((w) => {
+    const ago = w.at ? relTime(w.at * 1000) : "", mine = w.red !== null ? verb : null;
+    if (mine) verb = null;
+    const text = w.red !== null ? `failing ${w.red}`.trim() : `${FLOW_TEXT[w.status] ?? w.status} ${ago}`.trim();
+    return `<div class="mt-ci wf"><span class="wn">${esc(w.workflow)}</span>`
+      + `<span class="mt-v ${flowCls(w)}">${esc(text)}</span><span class="w mono"></span>${runsHtml(w.runs)}`
+      + `<span class="a">${mine ? verbHtml(mine) : ""}</span></div>`;
+  }).join("");
+}
+
+const untagged = (b: Boards, r: RelRow) => {
+  const on = `no release tag on ${r.trunk ?? "the trunk"}`;
+  return `<span class="dim" data-tip="${escAttr(on)}">${esc(b.one ? on : "never tagged")}</span>`;
+};
+function deliveryHtml(v: MaintTabView, b: Boards): string {
+  const ci = b.ci.map((r) => b.one && r.flows.length ? flowsHtml(r)
+    : `<div class="mt-ci">${b.one ? `<span class="wn">${esc(r.branch ?? "")}</span>` : projHtml(r.root, nameOf(v, r.root))}`
     + `<span class="mt-v ${LEVEL_CLS[r.level]}">${r.level === "ok" && !r.text ? DOT : esc(r.text)}</span>`
     + `<span class="w mono">${esc(r.why)}</span>${runsHtml(r.runs)}<span class="a">${r.verb ? verbHtml(r.verb) : ""}</span></div>`).join("");
-  const rel = table(["Project", "Last tag", "Unreleased", ">Oldest", ""], b.releases.map((r) => `<tr>${td(projHtml(r.root, nameOf(v, r.root)))}`
-    + td(r.tag ? `${esc(r.tag)}${r.tagAge !== null ? ` <span class="dim">· ${esc(span(r.tagAge))}</span>` : ""}` : `<span class="dim">never tagged</span>`, "mono")
-    + td(r.tag ? `<span class="mt-barc">${barHtml(r.ratio, r.level)}${num(r.since, r.level === "warn" ? "warn" : "info")}</span>` : DASH)
-    + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`));
-  return (b.ci.length ? board("ci", "CI on the default branch", `last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
+  const on = b.one && b.ci[0]?.branch ? `on ${b.ci[0].branch} · ` : "";
+  const rel = table([...projCol(b), "Last tag", "Unreleased", ">Oldest", "Published", ">Changelog", ""], b.releases.map((r) => {
+    const tag = !r.tagRead ? DASH : r.tag ? `${esc(r.tag)}${r.tagAge !== null ? ` <span class="dim">· ${esc(span(r.tagAge))}</span>` : ""}` : untagged(b, r);
+    const asOf = r.fetched === null ? "" : ` data-tip="${escAttr(`as of the last fetch, ${span(r.fetched)} ago`)}"`;
+    const pub = !r.published ? DASH : r.published.tag
+      ? `${esc(r.published.tag)}${r.published.age !== null ? ` <span class="dim">· ${esc(span(r.published.age))}</span>` : ""}` : `<span class="dim">none</span>`;
+    return `<tr>${projTd(v, b, r.root)}` + td(tag, "mono")
+      + td(r.tag ? `<span class="mt-barc"${asOf}>${barHtml(r.ratio, r.level)}${num(r.since, r.level === "warn" ? "warn" : "info")}</span>` : DASH)
+      + td(ageOf(r.oldest), "r mono") + td(pub, "mono")
+      + td(r.changelog === null ? DASH : num(r.changelog, "info", "entries under Unreleased in CHANGELOG.md"), "r") + verbTd(r.verb) + `</tr>`;
+  }));
+  return (b.ci.length ? board("ci", "CI on the default branch", `${on}last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
     + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
 }
 
-function codeHtml(v: MaintView, b: Boards): string {
+function codeHtml(v: MaintTabView, b: Boards): string {
   if (!b.hygiene.length) return "";
-  const rows = b.hygiene.map((r) => `<tr>${td(projHtml(r.root, nameOf(v, r.root)))}`
+  const rows = b.hygiene.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(countHtml(r.unpushed, "no remote, so what is unpushed is unknown"), "r") + td(countHtml(r.localOnly), "r")
     + td(countHtml(r.merged, r.trunk ? "the protect list in .episko/episko.toml is unreadable, so merged branches were not read"
-      : "no trunk, so nothing counts as merged"), "r") + td(countHtml(r.gone), "r") + td(countHtml(r.idle), "r")
+      : "no trunk, so nothing counts as merged"), "r") + td(countHtml(r.gone), "r")
+    + td(`<span data-tip="${escAttr(`branches only here, untouched ${r.staleDays}d+`)}">${countHtml(r.stale)}</span>`, "r") + td(countHtml(r.idle), "r")
     + td(r.fetched.age === null ? DASH : `<span class="mt-n ${LEVEL_CLS[r.fetched.level]}">${esc(span(r.fetched.age))}</span>`, "r mono")
     + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`);
-  return board("hygiene", "Git hygiene", `as of each repo's last fetch · ${readNote(b.read.git)}`,
-    table(["Project", ">Unpushed", ">Only here", ">Merged", ">Gone", ">Idle worktrees", ">Fetched", ""], rows));
+  const against = b.one && b.hygiene[0].trunk ? `against ${b.hygiene[0].trunk} · ` : "";
+  return board("hygiene", "Git hygiene", `${against}as of each repo's last fetch · ${readNote(b.read.git)}`,
+    table([...projCol(b), ">Unpushed", ">Only here", ">Merged", ">Gone", ">Untouched", ">Idle worktrees", ">Fetched", ""], rows),
+    v.dash ? grow("branches", "Open Branches, where merged branches are swept") : "");
 }
 
-function workHtml(v: MaintView, b: Boards): string {
+function workHtml(v: MaintTabView, b: Boards): string {
   if (!b.work.length) return "";
-  const rows = b.work.map((r) => `<tr>${td(projHtml(r.root, nameOf(v, r.root)))}`
+  const rows = b.work.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(r.review === null ? `<span class="dim" data-tip="the review search failed">?</span>`
       : r.reviewPartial ? `<span class="mt-n${r.review ? ` ${LEVEL_CLS.warn}` : ""}" data-tip="a review search failed, so there may be more">${r.review}+</span>`
       : num(r.review, "warn"), "r")
     + td(`<span class="mt-barc">${barHtml(r.issuesRatio, "info")}${num(r.issues, "info")}</span>`)
     + td(`<span class="mt-barc">${barHtml(r.prsRatio, "info")}${num(r.prs, "info")}</span>`) + verbTd(r.verbs[0] ?? null) + `</tr>`);
   return board("work", "Open work", `reviews waiting on you first · ${readNote(b.read.work)}`,
-    table(["Project", ">Review requested", "Issues", "Pull requests", ""], rows));
+    table([...projCol(b), ">Review requested", "Issues", "Pull requests", ""], rows));
 }
 
-function serversHtml(v: MaintView, b: Boards): string {
+function serversHtml(v: MaintTabView, b: Boards): string {
   if (!b.probes.length) {
     return b.unchecked ? board("addresses", "Addresses", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
       + `<p class="fl-none">${prodHtml(v.prod, v.filter?.root)}</p>`) : "";
   }
-  const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${td(projHtml(r.root, nameOf(v, r.root)))}`
+  const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${projTd(v, b, r.root)}`
     + td(`${esc(r.name)} <span class="dim">${esc(r.url)}</span>`, "mono u")
     + td(`<span class="mt-n ${LEVEL_CLS[r.level]}">${esc(r.code === null ? "no answer" : String(r.code))}</span>`, "r mono")
     + td(r.ms === null ? DASH : esc(`${r.ms}ms`), "r mono")
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);
-  return board("addresses", "Addresses", `as last checked · ${readNote(b.read.prod)}`, table(["Project", "Address", ">Status", ">Latency", ">Certificate", ""], rows));
+  return board("addresses", "Addresses", `as last checked · ${readNote(b.read.prod)}`,
+    table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows));
 }
 
-const BOARDS: Record<MaintTab, (v: MaintView, b: Boards) => string> = {
+const BOARDS: Record<MaintTab, (v: MaintTabView, b: Boards) => string> = {
   security: securityHtml, delivery: deliveryHtml, code: codeHtml, servers: serversHtml, work: workHtml,
 };
 
-function tabHtml(v: MaintView, tab: MaintTab): string {
+// The dashboard's way across: the fleet's tab, narrowed to this project, so its picker widens it.
+const across = (sub: MaintSub, name?: string) => `<button class="aslink mt-across" data-mtacross="${sub}" data-tip="${escAttr(sub === "overview"
+  ? "Every project's card" : `${TAB_TEXT[sub][0]} across every project, starting at ${name ?? "this one"}`)}">all projects</button>`;
+
+function tabHtml(v: MaintTabView, tab: MaintTab): string {
   const label = TAB_TEXT[tab][0];
   // The project picker: ./maintui opens the menu, and the root it carries is the one ticked.
-  const pick = `<button class="mt-pick${v.filter ? " on" : ""}" data-mtpick="${tab}" data-mtroot="${escAttr(v.filter?.root ?? "")}"`
+  const pick = v.dash ? `<span class="mt-grow"></span>${across(tab, v.filter?.name)}`
+    : `<button class="mt-pick${v.filter ? " on" : ""}" data-mtpick="${tab}" data-mtroot="${escAttr(v.filter?.root ?? "")}"`
     + ` aria-haspopup="menu" data-tip="${escAttr(v.filter ? "Show another project, or every one (Esc)" : "Show one project only")}">`
     + `<span>Project</span><b>${esc(v.filter?.name ?? "All projects")}</b><span class="car" aria-hidden="true">▾</span></button>`;
   const boards = v.boards ? BOARDS[tab](v, v.boards) : "";
@@ -436,7 +491,7 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
     const rows = v.rows.filter((r) => r.facet === f);
     const head = boards ? `Also · ${SECTION[f]}` : SECTION[f]; // a board above already wears the bare name
     return rows.length ? [`<section class="mt-sec"><div class="mt-sec-h label">${esc(head)}</div>`
-      + `<div class="mt-finds">${rows.map((r) => findingHtml(r, v.filter ? undefined : r.name)).join("")}</div></section>`] : [];
+      + `<div class="mt-finds">${rows.map((r) => findingHtml(r, v.filter ? undefined : nameOf(v, r.root))).join("")}</div></section>`] : [];
   }).join("");
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
@@ -474,123 +529,49 @@ export function maintBodyHtml(v: MaintView): string {
 
 // ---------- the project dashboard's tab ----------
 
-/** The Dependencies card: the dashboard's own deps read, which its ⤢ overlay shares. */
-export interface MaintDeps {
-  adv: DepAdvisory[]; prs: DepPr[]; tally: DepTally;
-  scanned: boolean; // a package manager answered this visit
-  tool: string | null; // what ⤢ would offer to run while nothing has been asked
-  loading: boolean; reason: string;
-}
 export interface MaintDash {
   card: MaintCard; // the strip is the fleet card's cells: two zoom levels of one scan
   rows: Finding[]; // the card's lines and the rows only a tab shows
   offers: Finding[]; // click-only sources nobody ran: Coverage's buttons, never To do's rows
   checked: number; // this project's last finished scan (ms), 0 for none
-  flows: { branch: string | null; rows: FlowRow[] }; release: Kv[];
-  deps: MaintDeps | null; // null: nothing to say and nothing to offer (depSilent)
-  hygiene: Hygiene | null; staleDays: number;
+  tab: MaintTabView; // the sub-tabs: the fleet's boards, narrowed to this project for good
   cover: CoverRow[]; forge: string; unreadable: boolean;
   deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
   probes: { at: number | null; rows: ProbeRow[] } | null; // null until Check prod answered
-  prod: MaintProd;
 }
 
-/** Which card a cell scrolls to on the dashboard: its fleet tab's, by the same map. */
-export const DASH_CARD: Record<MaintTab, [string, string]> = {
-  delivery: ["delivery", "Delivery"], security: ["deps", "Dependencies"], code: ["git", "Git hygiene"],
-  servers: ["runs", "Runs on"], work: ["todo", "To do"],
-};
-
-const across = (sub: MaintSub) => `<button class="aslink mt-across" data-mtacross="${sub}"`
-  + ` data-tip="${escAttr(`${TAB_TEXT[sub][0]} across every project`)}">all projects</button>`;
-const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" data-tip="${escAttr(tip)}">⤢</button>`;
 const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
   `<section class="ac mt-dc" id="mtc-${id}"><div class="ac-h"><span class="t">${esc(title)}</span>`
   + `<span class="n">${esc(n)}</span>${extra}</div><div class="ac-b">${body}</div></section>`;
 const kv = (k: string, v: string, cls = "") =>
   `<div class="mt-kv"><span>${esc(k)}</span><span class="mono${cls ? " " + cls : ""}">${esc(v)}</span></div>`;
-// A card with nothing of its own to draw still says why, in its cell's words.
-const said = (c: Cell | undefined) => c && c.level !== "unread"
-  ? `<p class="ac-empty">${esc(c.text || (c.level === "ok" ? "nothing to report" : "not read"))}</p>`
-  : `<p class="ac-empty">${sk("62%", 9)}</p>`;
-const cellOf = (v: MaintDash, f: Facet) => v.card.cells.find((c) => c.facet === f);
 
+// Each row is a door to the sub-tab and board that carry it, as a fleet card's line is.
 function todoCard(v: MaintDash): string {
   const read = v.card.cells.filter((c) => c.state === "read" && c.level !== "muted").length;
   const none = v.card.band === "unread" ? (v.card.reading ? "Reading this project…" : "Not checked yet.")
     : `Nothing to do in the ${plural(read, "facet")} that could be read${read < FACETS.length ? "; Coverage says what could not" : ""}.`;
   const body = v.rows.length
-    ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
+    ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f, undefined, true)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
   const n = needsCount(v.rows); // red and amber only, as the tab badges
   return dcard("todo", "To do", n ? String(n) : "", across("overview"), body);
 }
 
-const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };
-function flowHtml(r: FlowRow): string {
-  const ago = r.at ? relTime(r.at * 1000) : "";
-  const v = r.red !== null ? `✕ ${r.red}`.trim() : `${FLOW_TEXT[r.status] ?? r.status} ${ago}`.trim();
-  return `<div class="mt-flow"><span class="w">${esc(r.workflow)}</span>`
-    + `<span class="mt-v ${r.red !== null ? "l-bad" : "l-ok"}">${esc(v)}</span>${runsHtml(r.runs)}</div>`;
-}
-
-function deliveryCard(v: MaintDash): string {
-  const ci = v.flows.rows.length ? v.flows.rows.map(flowHtml).join("") : said(cellOf(v, "ci"));
-  const rel = v.release.length ? v.release.map((x) => kv(x.k, x.v)).join("") : said(cellOf(v, "release"));
-  return dcard("delivery", "Delivery", v.flows.branch ? `on ${v.flows.branch}` : "", across("delivery"), ci + rel);
-}
-
-const SEV_CLS: Record<string, string> = { critical: "l-bad", high: "l-bad", medium: "l-warn" };
-function depsCard(d: MaintDeps): string {
-  const t = d.tally;
-  const n = t.critical || t.high ? [t.critical && `${t.critical} critical`, t.high && `${t.high} high`].filter(Boolean).join(" · ")
-    : t.vulns ? plural(t.vulns, "advisory", "advisories") : t.prs ? plural(t.prs, "update PR")
-    : d.scanned ? `${t.outdated} out of date` : "nothing open";
-  const advs = d.adv.slice(0, 4).map((a) => {
-    const pkgs = a.alerts.map((x) => x.pkg);
-    return `<div class="mt-li"><i class="mt-sev ${SEV_CLS[a.severity] ?? ""}"></i>`
-      + `<span class="t">${esc(pkgs.slice(0, 2).join(", "))}${pkgs.length > 2 ? ` +${pkgs.length - 2}` : ""}</span>`
-      + `<span class="d mono">${esc([FIX_TEXT[a.worst], a.summary].join(" · "))}</span></div>`;
-  }).join("") + (d.adv.length > 4 ? `<p class="ac-empty">+ ${esc(plural(d.adv.length - 4, "more advisory", "more advisories"))}</p>` : "");
-  const red = d.prs.filter((p) => checkState(p) === "failing").length;
-  const prs = d.prs.length
-    ? kv("Update pull requests", [`${d.prs.length} open`, t.ready && `${t.ready} ready`, red && `${red} failing`].filter(Boolean).join(" · "), red ? "l-warn" : "")
-    : "";
-  const out = d.scanned ? kv("Out of date", String(t.outdated)) : d.tool ? kv("Out of date", `not checked · ⤢ runs ${d.tool}`) : "";
-  const why = d.reason ? `<p class="ac-empty">${esc(d.reason)}</p>` : "";
-  const body = d.loading && !d.adv.length && !d.prs.length ? `<p class="ac-empty">${sk("70%", 9)}</p>` : advs + prs + out + why;
-  return dcard("deps", "Dependencies", n, grow("deps", "Every advisory, update pull request and out-of-date package") + across("security"), body);
-}
-
-function gitCard(v: MaintDash): string {
-  const h = v.hygiene;
-  const body = !h ? said(cellOf(v, "git")) : [
-    kv("Commits only on this machine", h.unpushed === null ? "unknown: no remote" : String(h.unpushed), h.unpushed ? "l-warn" : ""),
-    kv("Branches only here", String(h.localOnly.length), h.localOnly.length ? "l-warn" : ""),
-    kv(`Merged into ${h.trunk ?? "the trunk"}`, String(h.merged.length)),
-    kv("Upstream gone", String(h.gone.length)),
-    kv(`Untouched ${v.staleDays}d+`, String(h.stale.length)),
-    kv(`Worktrees idle ${v.staleDays}d+`, String(h.idle)),
-    h.fetchedAt ? kv("Last fetch", relTime(h.fetchedAt * 1000)) : "",
-  ].join("");
-  return dcard("git", "Git hygiene", h?.trunk ? `against ${h.trunk}` : "",
-    grow("branches", "Open Branches, where merged branches are swept") + across("code"), body);
-}
-
 // The doors are the project settings row's: an agent proposes, a person applies, the file is git's.
 function runsCard(v: MaintDash): string {
-  const d = v.deploy;
+  const d = v.deploy, name = v.card.name;
   const door = (what: "propose" | "file", label: string, tip: string) =>
     `<button class="aslink" data-mtdeploy="${what}" data-mtroot="${escAttr(v.card.path)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`;
   const ask = door("propose", d ? "Re-check…" : "Propose with an agent",
     "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard");
   // A failed detection is not a loading one: say so, and keep the door the card exists for.
   if (!v.detected) {
-    return dcard("runs", "Runs on", "", across("servers"), v.card.err && !v.card.reading
+    return dcard("runs", "Runs on", "", across("servers", name), v.card.err && !v.card.reading
       ? `<p class="ac-empty">Could not read this project, so its [deploy] table is unknown.</p><p class="ac-empty">${ask}</p>`
-      : said(undefined));
+      : `<p class="ac-empty">${sk("62%", 9)}</p>`);
   }
   if (!d) {
-    return dcard("runs", "Runs on", "", across("servers"),
+    return dcard("runs", "Runs on", "", across("servers", name),
       `<p class="ac-empty">No [deploy] table, so Episko does not know where this project runs.</p><p class="ac-empty">${ask}</p>`);
   }
   // An address shows its last answer once one exists; until then it is the table's value.
@@ -609,9 +590,10 @@ function runsCard(v: MaintDash): string {
     d.sentry ? kv("Errors", d.sentry) : "",
     d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
   ].join("");
-  const checked = !v.prod.projects ? "" : v.prod.checking ? "" : v.probes?.at ? ` · checked ${relTime(v.probes.at * 1000)}` : " · never checked";
-  const doors = [prodHtml(v.prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
-  return dcard("runs", "Runs on", "from [deploy]", across("servers"),
+  const prod = v.tab.prod;
+  const checked = !prod.projects ? "" : prod.checking ? "" : v.probes?.at ? ` · checked ${relTime(v.probes.at * 1000)}` : " · never checked";
+  const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
+  return dcard("runs", "Runs on", "from [deploy]", across("servers", name),
     rows + `<p class="ac-empty">Nothing connects until you ask${esc(checked)}. ${doors}</p>`);
 }
 
@@ -636,20 +618,21 @@ function coverCard(v: MaintDash): string {
       + `${r.url ? settingsHtml(r.url) : ""}</div>`
       + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
   }).join("");
-  return dcard("cover", "Coverage", v.forge, "", head + (rows || said(undefined)));
+  return dcard("cover", "Coverage", v.forge, "", head + (rows || `<p class="ac-empty">${sk("62%", 9)}</p>`));
 }
 
-/** The dashboard's Maintenance tab: the fleet card's strip, its lines, and a card per question. */
+/** The dashboard's Maintenance tab: the fleet card's strip, then the fleet's sub-tabs for this project. */
 export function maintDashHtml(v: MaintDash): string {
-  const go = (c: Cell) => `Click: the ${coverFirst(c) ? "Coverage" : DASH_CARD[FACET_TAB[c.facet]][1]} card`;
+  const go = (c: Cell) => `Click: ${tabName(FACET_TAB[c.facet])}${coverFirst(c) ? ", at its Coverage" : ""}`;
   const when = v.card.reading ? `<span class="fl-when mono">reading this project…</span>`
     : v.checked ? `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>`
       + `<button class="aslink" data-mtscan="force" data-tip="Check this project again, past every cache">⟳</button>`
     : `<span class="fl-when mono">Not checked yet</span>`
       + `<button class="aslink" data-mtscan="check" data-tip="Read this project once. Nothing runs in it">Check</button>`;
   const err = v.card.err ? `<p class="fl-none">Could not read: ${esc(v.card.err)}</p>` : "";
+  const body = v.tab.sub === "overview"
+    ? `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}</div><div class="mt-dcol">${runsCard(v)}${coverCard(v)}</div></div>`
+    : tabHtml(v.tab, v.tab.sub);
   return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
-    + `<div class="mt-dwhen">${when}</div></div>${err}`
-    + `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}${deliveryCard(v)}${v.deps ? depsCard(v.deps) : ""}</div>`
-    + `<div class="mt-dcol">${runsCard(v)}${gitCard(v)}${coverCard(v)}</div></div>`;
+    + `<div class="mt-dwhen">${when}</div></div>${err}${tabsHtml(v.tab)}${body}`;
 }

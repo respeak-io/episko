@@ -4,7 +4,8 @@ import {
   ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
-  narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally, whyWord,
+  narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
+  advFix, outdatedText,
   type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
@@ -1148,6 +1149,101 @@ describe("a card line opens what it summarises", () => {
   });
 });
 
+describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const tool = (id: string): SourceReport => ({ ...not(id, "security", { state: "notRun" }), cost: "tool" });
+  const many = (path: string, red: boolean) => tp(path,
+    ok(GHA, ci(run("build", red ? "fail" : "pass", S - H), run("lint", "pass", S - 2 * H))),
+    ok("dependabot-alerts", { kind: "advisories", items: [adv(), adv({ id: "B-2", pkg: "minimist", severity: "medium" })] }),
+    ok("github-code-scanning", { kind: "advisories", items: [adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" })] }),
+    not("github-secret-scanning", "security", { state: "off", reason: "secret scanning is off" }),
+    tool("npm-audit"),
+    ok("dependabot-prs", prs(2)),
+    ok("git-tags", rel({ since: 12, oldestUnreleasedAt: S - 3 * D })),
+    ok("github-releases", { kind: "releases", latest: { tag: "v1.0", name: "v1.0", at: S - 2 * D, url: null }, count: 4 }),
+    ok("changelog", { kind: "changelog", unreleased: 3, latest: "1.0", latestAt: S - 2 * D }),
+    ok("git-local", hyg({ unpushed: 2, merged: ["x"], localOnly: ["old"], branches: [{ name: "old", at: S - 40 * D }] })),
+    ok("github-work", { kind: "work", issues: 3, prs: 1, reviewRequested: 1 }),
+    ok("h", { kind: "probes", items: [{ name: "api", url: "https://api", code: null, ms: null, certNotAfter: null, err: "refused" }] }),
+  );
+
+  it("builds exactly the fleet's tab narrowed to the project, for every sub-tab and the bar's counts", () => {
+    const fleet = [many("/a", true), many("/b", false), tp("/c", ok("git-local", hyg()))];
+    for (const sub of [null, ...MAINT_TABS]) {
+      for (const sev of [null, "medium"] as const) {
+        expect(tabModel(sub, [fleet[1]], "/b", sev, NOW), `${sub} ${sev}`).toEqual(tabModel(sub, fleet, "/b", sev, NOW));
+      }
+    }
+    const sec = tabModel("security", [fleet[0]], "/a", null, NOW);
+    expect(sec.boards!.adv.map((r) => [r.id, r.projects.map((p) => p.verb?.key)]), "one row per advisory, each with its own Patch").toEqual([
+      ["A-1", ["security:dependency"]], ["C-1", ["security:code"]], ["B-2", ["security:dependency"]],
+    ]);
+    // Secret scanning off is no gap here: the cell reached its verdict from the sources that answered.
+    expect(sec.cover.map((g) => [g.what, g.action?.kind]), "Coverage for this project, with its run door").toEqual([["npm audit", "run"]]);
+    expect(sec.offers.map((o) => o.key)).toEqual(["run:npm-audit"]);
+  });
+
+  it("marks a board narrowed to one project, so the view drops the column that would only repeat its name", () => {
+    const ps = [many("/a", true), many("/b", false)];
+    for (const tab of MAINT_TABS) {
+      expect(tabBoards(tab, ps, "/a", null, NOW).one, tab).toBe(true);
+      expect(tabBoards(tab, ps, null, null, NOW).one, tab).toBe(false);
+    }
+    // Every table's Project column goes through the one switch, and the two places a name is drawn
+    // outside a table (a CI row with no workflows, an advisory's chip) ask the same flag first.
+    const src = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
+    const tables = src.match(/table\(\[[^\]]*/g) ?? [];
+    expect(tables.length).toBeGreaterThan(0);
+    for (const t of tables) expect(t, "a table's columns start at projCol").toMatch(/^table\(\[\.\.\.projCol\(b\)/);
+    expect(src.match(/"Project"/g)?.length, "the column is named in projCol alone").toBe(1);
+    expect(src).toMatch(/\$\{b\.one \? `<span class="wn">\$\{esc\(r\.branch \?\? ""\)\}<\/span>` : projHtml\(/);
+    expect(src).toMatch(/return b\.one \? \(p\.verb \? `<span class="mt-pc solo">/);
+  });
+
+  it("opens every To do row on a sub-tab that carries it: on its board, else listed below the boards", () => {
+    const p = many("/r", true);
+    const setup = tp("/s", ok("git-local", hyg()));
+    for (const q of [p, setup]) {
+      expect(q.rows.length).toBeGreaterThan(0);
+      for (const f of q.rows) {
+        const t = findingTarget(f), m = tabModel(t.tab, [q], q.path, null, NOW);
+        expect(t.tab, f.key).toBe(FACET_TAB[f.facet]);
+        if (t.board) expect(m.boards!.drawn, f.key).toContain(`${q.path}|${f.key}`);
+        else expect(m.rows.map((r) => r.key), f.key).toContain(f.key);
+      }
+    }
+  });
+
+  it("keeps what the old cards showed: changelog entries, the published release, the last fetch, untouched branches, each workflow", () => {
+    const p = many("/r", true);
+    const [rel1] = releaseBoard([p], "/r", NOW);
+    expect([rel1.changelog, rel1.published, rel1.fetched]).toEqual([3, { tag: "v1.0", age: 2 * D }, H]);
+    const [untagged] = releaseBoard([tp("/u", ok("git-tags", rel({ tag: null, tagAt: null })))], "/u", NOW);
+    expect([untagged.tag, untagged.trunk], "an untagged project names the trunk it was read against").toEqual([null, "origin/main"]);
+    const bare = tp("/n", ok("github-releases", { kind: "releases", latest: null, count: 0 }));
+    expect(releaseBoard([bare], "/n", NOW).map((r) => [r.tagRead, r.published, r.changelog, r.level]), "a forge release alone is still a row")
+      .toEqual([[false, { tag: null, age: null }, null, "muted"]]);
+    const [h] = hygieneBoard([p], "/r", NOW);
+    expect([h.stale, h.staleDays]).toEqual([{ n: 1, level: "info" }, MAINT_DEFAULTS.staleBranchDays]);
+    const [c] = ciBoard([p], "/r", NOW);
+    expect([c.branch, c.flows.map((w) => [w.workflow, w.red])]).toEqual(["main", [["build", "1h"], ["lint", null]]]);
+    expect(updatePrRows([p], "/r", NOW)[0].green).toBe(2);
+  });
+
+  it("says the package manager's answer, or the door that asks it, and the fix an advisory takes", () => {
+    expect(outdatedText(false, 0, "pnpm outdated")).toBe("not checked · ⤢ runs pnpm outdated");
+    expect(outdatedText(true, 3, "pnpm outdated")).toBe("3 packages out of date");
+    expect(outdatedText(true, 0, null)).toBe("nothing out of date");
+    expect(outdatedText(false, 0, null)).toBeNull();
+    const fixes = { "GHSA-X": "via a parent" };
+    expect(advFix({ id: "CVE-1", aliases: ["ghsa-x"] }, fixes), "by any id, case-blind").toBe("via a parent");
+    expect(advFix({ id: "OSV-9", aliases: [] }, fixes)).toBeNull();
+  });
+});
+
 describe("the project tab's cards", () => {
   it("lists every workflow once, the red ones first, with its run strip oldest first", () => {
     const flows = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H), run("test", "fail", S - H), run("test", "fail", S - 3 * D), run("test", "pass", S - 4 * D)))), NOW);
@@ -1160,8 +1256,8 @@ describe("the project tab's cards", () => {
   it("marks a failure its source cannot date red with no age, caps the strip, and merges two reports", () => {
     const undated = ciFlows(input(ok("forge-commit-status", ci(run("build", "fail", S - H)))), NOW);
     expect(undated.rows.map((r) => [r.workflow, r.red])).toEqual([["build", ""]]);
-    const many = Array.from({ length: 10 }, (_, i) => run("lint", i === 7 || i === 9 ? "fail" : "pass", S - i * H));
-    expect(ciFlows(input(ok(GHA, ci(...many))), NOW).rows[0].runs).toEqual(["fail", ...Array(7).fill("pass")]);
+    const many = Array.from({ length: CI_STRIP + 2 }, (_, i) => run("lint", i === CI_STRIP - 1 || i === CI_STRIP + 1 ? "fail" : "pass", S - i * H));
+    expect(ciFlows(input(ok(GHA, ci(...many))), NOW).rows[0].runs, "the CI board's strip").toEqual(["fail", ...Array(CI_STRIP - 1).fill("pass")]);
     const two = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H))),
       ok("forge-commit-status", { kind: "ciRuns", branch: "trunk", runs: [run("deploy", "pass", S - H)] })), NOW);
     expect(two.branch).toBe("main");
@@ -1169,11 +1265,14 @@ describe("the project tab's cards", () => {
   });
 
   it("says nothing about a release no source read, and names the tag, the count and the fetch", () => {
-    expect(releaseRows(input(not("git-tags", "release", { state: "notRun" })), NOW)).toEqual([]);
-    expect(releaseRows(input(ok("git-tags", rel({ since: 4 }))), NOW)).toEqual([
-      { k: "Last tag", v: "v1.0 · 2d ago · 4 commits since" }, { k: "As of", v: "last fetch 1h ago" },
-    ]);
-    expect(releaseRows(input(ok("git-tags", rel({ tag: null, fetchedAt: null }))), NOW)).toEqual([{ k: "Last tag", v: "no release tag on origin/main" }]);
+    const one = (...reps: SourceReport[]) => {
+      const inp = input(...reps);
+      return releaseBoard([{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings("/r", inp, MAINT_DEFAULTS, NOW) }], "/r", NOW);
+    };
+    expect(one(not("git-tags", "release", { state: "notRun" }))).toEqual([]);
+    const [r] = one(ok("git-tags", rel({ since: 4 })));
+    expect([r.tag, r.tagAge, r.since, r.fetched, r.tagRead]).toEqual(["v1.0", 2 * D, 4, H, true]);
+    expect(one(ok("git-tags", rel({ tag: null, fetchedAt: null }))).map((x) => [x.tag, x.since, x.fetched, x.level])).toEqual([[null, 0, null, "muted"]]);
   });
 
   it("counts hygiene with the same age rule as the cell, and null until it was read", () => {
@@ -1378,7 +1477,7 @@ describe("nothing scans until a person asks", () => {
   const fleet = callGraph("fleetui.ts",
     ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen", "MaintHost"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);

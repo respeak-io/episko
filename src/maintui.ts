@@ -34,7 +34,7 @@ export interface MaintHost {
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
   deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
-  openCover?: () => void; // the dashboard's Coverage card, where a cell that cannot check says why
+  openCover?: (facet: Facet) => void; // the dashboard's: the facet's tab at its Coverage, which says why
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
 }
 
@@ -163,7 +163,7 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   if (cell) {
     const facet = cell.dataset.mtcell as Facet, root = cell.dataset.mtroot!, inp = maintInput(root);
     if (!FACETS.includes(facet)) return true;
-    if (host.openCover && inp && coverFirst(facetCell(facet, inp, clampMaint(inp.det?.config.thresholds)))) host.openCover();
+    if (host.openCover && inp && coverFirst(facetCell(facet, inp, clampMaint(inp.det?.config.thresholds)))) host.openCover(facet);
     else host.openTab(FACET_TAB[facet], root);
     return true;
   }
