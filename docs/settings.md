@@ -75,7 +75,7 @@ One project's own settings, in a dialog of its own. It opens from the dashboard'
 
 - **Two headed groups, *Yours* and *The team's*.** *Yours* holds overrides that stay on this
   machine and affect nobody else: agent, permission mode, agent tools, auto-fetch and its
-  cadence, GitHub account, run-on-stop, and whether its task files may be run to list them. *The team's* holds the sharing channel, which switches teammates too, and the dev stack's `[stack]` table, which is committed: its row shows what is set and starts an agent to write it (docs/stack.md).
+  cadence, GitHub account, run-on-stop, and whether its task files may be run to list them. *The team's* holds the sharing channel, which switches teammates too, and three committed tables of `.episko/episko.toml`: the dev stack's `[stack]` (docs/stack.md), *Where it runs* (`[deploy]`) and *Maintenance* (`[maintenance]`'s trunk, tag pattern, SARIF paths and bots; docs/maintenance.md). Each row shows what is set, opens the file and starts an agent to propose it, and nothing is written until its Apply.
   Changing a team setting while believing it is personal is the mistake the split exists to
   prevent, so a new row has to choose a group.
 - **Every override row offers *Settings* as its first option**, and that is the only way back:

@@ -199,15 +199,23 @@ function namesHtml(v: MaintTabView, g: CoverGroup): string {
 // Offers and forge switches are not findings: one row per reason, however many projects share it.
 // Across projects a click-only source only counts, since nine audits at once is not a click to offer.
 const OFFER_TIP = "Runs only when asked, one project at a time: from its Coverage card, or this tab narrowed to it";
+// What a [maintenance] key would answer: an agent proposes it, or a person edits the file.
+const setupHtml = (root: string) => [["propose", "Propose with an agent",
+  "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard"],
+["file", "Open file", "Open .episko/episko.toml"]].map(([what, label, tip]) =>
+  `<button class="aslink" data-mtcfg="${what}" data-mtroot="${escAttr(root)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`).join(" · ");
+
 function coverHtml(v: MaintTabView): string {
   if (!v.cover.length) return "";
   const one = !!v.filter;
   const rows = v.cover.map((g) => {
     const a = g.action, offer = a?.kind === "run" ? v.offers.find((o) => o.source === a.source) : undefined;
     const d = a?.kind === "run" ? findSource(a.source) : undefined, said = d && disclosure(d);
-    const act = a?.kind === "fix" ? copyHtml(a.fix)
+    const setup = one && g.source ? v.setups.find((x) => x.source === g.source) : undefined;
+    const act = (a?.kind === "fix" ? copyHtml(a.fix)
       : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
-      : offer && one ? verbHtml(offer) : "";
+      : offer && one ? verbHtml(offer) : "")
+      + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
     const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(v, g)}</span>`;
     const tip = [g.detail, a?.kind === "run" && !one ? OFFER_TIP : "", said ?? ""].filter(Boolean).join("\n");
     return `<div class="mt-cv${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
@@ -583,6 +591,7 @@ export interface MaintDash {
   card: MaintCard; // the strip is the fleet card's cells: two zoom levels of one scan
   rows: Finding[]; // the card's lines and the rows only a tab shows
   offers: Finding[]; // click-only sources nobody ran: Coverage's buttons, never To do's rows
+  setups: Finding[]; // Coverage rows an agent could set up (`coverSetups`)
   checked: number; // this project's last finished scan (ms), 0 for none
   tab: MaintTabView; // the sub-tabs: the fleet's boards, narrowed to this project for good
   cover: CoverRow[]; forge: string; unreadable: boolean;
@@ -662,11 +671,13 @@ function coverCard(v: MaintDash): string {
   const rows = v.cover.map((r) => {
     // A never-run source is offered here, on its own row; a public one says what leaves the machine.
     const o = r.state === "notRun" ? v.offers.find((x) => x.source === r.source) : undefined;
+    const up = r.state === "off" ? v.setups.find((x) => x.source === r.source) : undefined;
     const d = o && findSource(o.source), said = d && disclosure(d);
     return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
-      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span>${o ? verbHtml(o) : ""}`
+      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.text)}</span>${o ? verbHtml(o) : ""}${up ? verbHtml(up) : ""}`
       + `${r.url ? settingsHtml(r.url) : ""}</div>`
-      + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
+      + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "")
+      + (r.cfg ? `<div class="mt-fixrow">${setupHtml(v.card.path)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
   }).join("");
   return dcard("cover", "Coverage", v.forge, "", head + (rows || `<p class="ac-empty">${sk("62%", 9)}</p>`));
 }

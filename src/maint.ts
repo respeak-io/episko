@@ -757,6 +757,29 @@ export function offers(root: string, inp: MaintInput): Finding[] {
 }
 const offerWord = (id: string) => findSource(id)?.cost === "tool" ? "not run" : "not checked";
 
+/** Code scanning switched off on a forge that offers it: Coverage's *Set up*, a workflow an agent
+ *  writes and a person enables. Not a finding: nothing was read, so nothing is wrong yet. */
+export function coverSetups(root: string, inp: MaintInput): Finding[] {
+  const det = inp.det;
+  if (!det || det.config.off.includes("security")) return [];
+  return det.sources.flatMap((id): Finding[] => {
+    const d = findSource(id);
+    if (!d || d.facet !== "security" || d.cost !== "forge" || !d.sees.includes("sec.code") || !d.forge.includes(det.forge.kind)
+      || inp.reports[id]?.coverage.state !== "off" || inp.skip?.includes(id)) return [];
+    return [{ root, facet: "security", key: `setup:${id}`, level: "info", text: `${labelOf(id)}: off`,
+      detail: "nothing analyses the code on the forge", verb: "setup", source: id, ref: "sec.code" }];
+  });
+}
+
+/** The `[maintenance]` keys an agent may propose (maint.rs's `SETUP_KEYS`, held by the suite), and the one a reason names. */
+export const SETUP_KEYS = ["trunk", "tag_pattern", "sarif", "bots"] as const;
+export type SetupKey = (typeof SETUP_KEYS)[number];
+const SETUP_RE = new RegExp(`\\[maintenance\\] (${SETUP_KEYS.join("|")})\\b|\\b(tag_pattern) "`);
+export function setupKeyOf(text: string): SetupKey | null {
+  const m = SETUP_RE.exec(text);
+  return (m?.[1] ?? m?.[2] ?? null) as SetupKey | null;
+}
+
 /** Every row a tab lists: the card's lines and the tabs' own. Offers are not among them. */
 export const tabFindings = (root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] =>
   [...findings(root, inp, th, now), ...tabExtras(root, inp, th, now)];
@@ -849,6 +872,8 @@ export type CoverAction =
   | { kind: "run"; source: string };
 export interface CoverGroup {
   key: string; facet: Facet;
+  source: string | null; // the source it is about, so a Set up can sit on its row; null for a facet or marker
+  cfg: boolean; // a [maintenance] key would answer it: the setup doors
   what: string; // the source, marker or facet it is about
   why: string; // the cell's word for it
   detail: string; // the coverage in full, as the first project had it
@@ -862,8 +887,10 @@ export interface CoverGroup {
 export function coverGroups(tab: MaintTab, projects: readonly { path: string; inp: MaintInput; cells: readonly Cell[] }[],
   root: string | null = null, now = Date.now()): CoverGroup[] {
   const by = new Map<string, CoverGroup>();
-  const add = (path: string, g: Omit<CoverGroup, "roots" | "action" | "quiet">, action: CoverAction | null = null, quiet = false) => {
-    const e = by.get(g.key) ?? { ...g, roots: [], quiet, action: action?.kind === "settings" ? { kind: "settings", urls: {} } : action };
+  type Said = Omit<CoverGroup, "roots" | "action" | "quiet" | "source" | "cfg"> & Partial<Pick<CoverGroup, "source">>;
+  const add = (path: string, g: Said, action: CoverAction | null = null, quiet = false) => {
+    const e = by.get(g.key) ?? { source: null, cfg: !!setupKeyOf(g.detail), ...g, roots: [], quiet,
+      action: action?.kind === "settings" ? { kind: "settings", urls: {} } : action };
     if (!e.roots.includes(path)) e.roots.push(path);
     if (e.action?.kind === "settings" && action?.kind === "settings") Object.assign(e.action.urls, action.urls);
     by.set(g.key, e);
@@ -885,13 +912,13 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
         for (const id of det.sources) {
           const r = inp.reports[id];
           if ((findSource(id)?.facet ?? r?.facet) !== facet) continue;
-          if (inp.skip?.includes(id)) { add(path, { key: `${id}|skipped`, facet, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
+          if (inp.skip?.includes(id)) { add(path, { key: `${id}|skipped`, facet, source: id, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
           if (!r || r.coverage.state === "ok" || r.coverage.state === "notRun") continue; // an offer, below
           const fix = fixOf(r.coverage), url = settingsFor(r, det);
           // Grouped by the fix where there is one: an account name in the reason must not split a row.
           const key = `${id}|${r.coverage.state}|${fix ?? (r.coverage.state === "error" ? "" : covText(r.coverage))}`;
           // Every off row collects links, so a first project with none cannot strip the rest of theirs.
-          add(path, { key, facet, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
+          add(path, { key, facet, source: id, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
             fix ? { kind: "fix", fix } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
         }
       } else if (facet === "deps" && c.text === "silent") {
@@ -902,7 +929,7 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
           const old = dated.length > 0 && now / 1000 - Math.max(...dated) > th.botSilentDays * DAY;
           if (!old && (f.prs.length || !f.configured || f.dashboard !== null)) continue;
           const why = old ? `opened nothing in ${th.botSilentDays}+ days` : "configured, no open pull request";
-          add(path, { key: `${source}|silent|${why}`, facet, what: labelOf(source), why,
+          add(path, { key: `${source}|silent|${why}`, facet, source, what: labelOf(source), why,
             detail: "open pull requests are the only trace an update bot leaves" }, null, true);
         }
       } else {
@@ -911,7 +938,7 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     }
     for (const o of offers(path, inp)) {
       if (FACET_TAB[o.facet] !== tab) continue;
-      add(path, { key: `${o.source}|notRun`, facet: o.facet, what: labelOf(o.source), why: offerWord(o.source), detail: o.detail },
+      add(path, { key: `${o.source}|notRun`, facet: o.facet, source: o.source, what: labelOf(o.source), why: offerWord(o.source), detail: o.detail },
         { kind: "run", source: o.source });
     }
   }
@@ -1172,18 +1199,20 @@ export interface TabModel {
   boards: Boards | null; // null on Overview
   rows: Finding[]; // the open tab's lines no board carries a verb for, in tabRows' order
   offers: Finding[]; // its click-only sources nobody ran: Coverage's run doors when narrowed
+  setups: Finding[]; // its Coverage rows an agent could set up (`coverSetups`), drawn when narrowed
   cover: CoverGroup[];
   read: number; unset: number; // what an empty tab may claim (tabGaps)
 }
 export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null,
   sev: SevBucket | null = null, now = Date.now()): TabModel {
   const rows = ps.flatMap((p) => p.rows), tabs = tabTally(rows, root);
-  if (!sub) return { tabs, boards: null, rows: [], offers: [], cover: [], read: 0, unset: 0 };
+  if (!sub) return { tabs, boards: null, rows: [], offers: [], setups: [], cover: [], read: 0, unset: 0 };
   const boards = tabBoards(sub, ps, root, sev, now), drawn = new Set(boards.drawn);
   return {
     tabs, boards, ...tabGaps(sub, ps, root),
     rows: tabRows(sub, rows, root).filter((r) => !drawn.has(`${r.root}|${r.key}`)),
     offers: tabRows(sub, ps.flatMap((p) => offers(p.path, p.inp)), root),
+    setups: tabRows(sub, ps.flatMap((p) => coverSetups(p.path, p.inp)), root),
     cover: coverGroups(sub, ps, root, now),
   };
 }
@@ -1309,6 +1338,7 @@ export interface CoverRow {
   facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null;
   source: string | null; // a source's id, so an offer's button can sit on its row; null for the rest
   url: string | null; // the forge page that switches an `off` source on
+  cfg: boolean; // a [maintenance] key would answer it: the setup doors
 }
 
 /** Coverage: every source and marker detected here and what became of it, in card order. */
@@ -1316,21 +1346,23 @@ export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
   const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null }));
+    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null, cfg: false }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
     const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null) =>
-      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url });
+      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text) });
+    // A read that answered without a key it needed says so: merged branches want a trunk.
+    const gap = r?.coverage.state === "ok" ? r.gaps.find((g) => setupKeyOf(g)) : undefined;
     if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
     else if (!r) row("unread", "not read yet");
-    else row(r.coverage.state, covText(r.coverage), fixOf(r.coverage), settingsFor(r, det));
+    else row(r.coverage.state, gap ? `read; ${gap}` : covText(r.coverage), fixOf(r.coverage), settingsFor(r, det));
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null });
+    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null, cfg: false });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null, cfg: false });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }

@@ -342,33 +342,39 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployCo
     Ok(())
 }
 
-/// Reads degrade, writes fail loudly: an unsafe value is refused, never dropped in silence. The
-/// file is committed, so an unchanged table writes nothing; `create` gates a new file.
-#[tauri::command]
-pub(crate) fn write_deploy(dir: String, deploy: DeployConfig, create: bool) -> Result<(), String> {
-    let path = file_of(&dir);
+/// One table's read-modify-write of the committed file, `[deploy]`'s and `[maintenance]`'s: `edit`
+/// gets the text as written. An unchanged file writes nothing (churn lands in a diff); `create` gates a new one.
+/// Answers whether it wrote.
+pub(crate) fn edit_toml(dir: &str, create: bool, edit: impl FnOnce(&str, &mut toml_edit::DocumentMut) -> Result<(), String>) -> Result<bool, String> {
+    let path = file_of(dir);
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && create => String::new(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NO_FILE.into()),
         Err(e) => return Err(e.to_string()),
     };
-    let (deploy, refused) = keep(deploy);
-    if !refused.is_empty() {
-        return Err(refused.join("; "));
-    }
     let mut doc = text.parse::<toml_edit::DocumentMut>().map_err(|e| format!(".episko/episko.toml does not parse: {e}"))?;
-    set_deploy(&mut doc, &raw_deploy(&text).unwrap_or_default(), &deploy)?;
+    edit(&text, &mut doc)?;
     let out = doc.to_string();
     if out == text {
-        return Ok(());
+        return Ok(false);
     }
     std::fs::create_dir_all(path.parent().ok_or("bad project dir")?).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    crate::maint::forget_detection(&dir);
-    Ok(())
+    crate::maint::forget_detection(dir);
+    Ok(true)
+}
+
+/// Reads degrade, writes fail loudly: an unsafe value is refused, never dropped in silence.
+#[tauri::command]
+pub(crate) fn write_deploy(dir: String, deploy: DeployConfig, create: bool) -> Result<(), String> {
+    let (deploy, refused) = keep(deploy);
+    if !refused.is_empty() {
+        return Err(refused.join("; "));
+    }
+    edit_toml(&dir, create, |text, doc| set_deploy(doc, &raw_deploy(text).unwrap_or_default(), &deploy)).map(|_| ())
 }
 
 #[cfg(test)]

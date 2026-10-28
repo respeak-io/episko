@@ -5,7 +5,7 @@ import {
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
-  advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames,
+  advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS,
   type Advisory, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
 } from "../src/maint";
 import { BRANCH_FILTERS } from "../src/branches";
@@ -734,6 +734,55 @@ describe("the cross-project tabs", () => {
       expect(rows.find((r) => r.source === "npm-audit")?.url).toBeNull();
       expect(coverRows(switchedOff("/a", null)).find((r) => r.source === "dependabot-alerts")?.url).toBeNull();
       expect(coverRows(scope("/d")).find((r) => r.source === "dependabot-alerts")).toMatchObject({ fix: "gh auth refresh -s security_events", url: null });
+    });
+
+    // Code scanning off is a workflow nobody wrote yet: Set up, on the forge that offers it only.
+    const noScan = (root: string, forge = hub(`o${root}`), o: Partial<MaintInput> = {}): MaintInput => {
+      const r = not("github-code-scanning", "security", { state: "off", reason: "no analysis found" });
+      return { det: det([r.source], { repoRoot: root, forge }), reports: { [r.source]: r }, ...o };
+    };
+
+    it("offers Set up for code scanning switched off, and never as a finding", () => {
+      const s = coverSetups("/a", noScan("/a"));
+      expect(s.map((f) => [f.key, f.verb, f.facet, f.source, f.ref])).toEqual([["setup:github-code-scanning", "setup", "security", "github-code-scanning", "sec.code"]]);
+      expect(tabFindings("/a", noScan("/a"), MAINT_DEFAULTS, NOW).some((f) => f.facet === "security"), "not a To do row").toBe(false);
+      expect(coverSetups("/a", noScan("/a", { kind: "gitlab", host: "gitlab.com", path: "g/r", by: "table" })), "a forge it does not talk to").toEqual([]);
+      expect(coverSetups("/a", noScan("/a", undefined, { skip: ["github-code-scanning"] }))).toEqual([]);
+      const off = noScan("/a");
+      off.det!.config.off = ["security"];
+      expect(coverSetups("/a", off), "a facet switched off").toEqual([]);
+      const read = { ...noScan("/a"), reports: { "github-code-scanning": ok("github-code-scanning", { kind: "advisories", items: [] }) } };
+      expect(coverSetups("/a", read), "a read that answered").toEqual([]);
+      expect(coverSetups("/a", switchedOff("/a")), "Dependabot alerts off is a switch, not a workflow").toEqual([]);
+    });
+
+    it("puts Set up on the code-scanning row of a narrowed tab's Coverage", () => {
+      const p = (path: string) => { const inp = noScan(path), cells = facetCells(inp, MAINT_DEFAULTS, NOW); return { path, inp, cells, rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) }; };
+      const m = tabModel("security", [p("/a"), p("/b")], "/b", null, NOW);
+      expect(m.setups.map((f) => [f.root, f.key])).toEqual([["/b", "setup:github-code-scanning"]]);
+      expect(m.cover.map((g) => [g.what, g.source, g.cfg])).toEqual([["GitHub code scanning", "github-code-scanning", false]]);
+      expect(tabModel("delivery", [p("/a")], "/a", null, NOW).setups).toEqual([]);
+    });
+
+    it("knows which Coverage reasons a [maintenance] key answers", () => {
+      expect(setupKeyOf("no default branch known: set [maintenance] trunk")).toBe("trunk");
+      expect(setupKeyOf('failed: [maintenance] trunk "dvel" names no commit here')).toBe("trunk");
+      expect(setupKeyOf('failed: tag_pattern "v[0-9]*": only * is special here')).toBe("tag_pattern");
+      expect(setupKeyOf("no file matches [maintenance] sarif: out/*.sarif")).toBe("sarif");
+      expect(setupKeyOf("forge unknown: pin [maintenance] forge"), "the forge pin is a person's").toBeNull();
+      expect(setupKeyOf("Dependabot alerts are switched off")).toBeNull();
+      const rs = /const SETUP_KEYS: &\[&str\] = &\[([^\]]*)\]/.exec(readFileSync(new URL("../src-tauri/src/maint.rs", import.meta.url), "utf8"));
+      expect(rs?.[1].split(",").map((k) => k.trim().replace(/"/g, "")), "maint.rs's list").toEqual([...SETUP_KEYS]);
+      const tags = not("git-tags", "release", { state: "unsupported", reason: "no remote, so no default branch: set [maintenance] trunk" });
+      const local = ok("git-local", { kind: "hygiene", trunk: null, unpushed: null, localOnly: [], merged: [], gone: [], branches: [], worktrees: [], fetchedAt: null },
+        { gaps: ["merged branches not read: no remote, so no default branch: set [maintenance] trunk"] });
+      const rows = coverRows({ det: det(["git-tags", "git-local"]), reports: { "git-tags": tags, "git-local": local } });
+      expect(rows.filter((r) => r.cfg).map((r) => [r.source, r.text])).toEqual([
+        ["git-tags", "no remote, so no default branch: set [maintenance] trunk"],
+        ["git-local", "read; merged branches not read: no remote, so no default branch: set [maintenance] trunk"],
+      ]);
+      const g = coverGroups("delivery", [{ path: "/r", inp: { det: det(["git-tags"]), reports: { "git-tags": tags } }, cells: facetCells({ det: det(["git-tags"]), reports: { "git-tags": tags } }, MAINT_DEFAULTS, NOW) }], "/r", NOW);
+      expect(g.find((x) => x.source === "git-tags")?.cfg).toBe(true);
     });
   });
 
