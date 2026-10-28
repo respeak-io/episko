@@ -5,10 +5,11 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  advFix, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, span, type AdvRow, type Band, type BoardId, type Boards,
-  type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Finding, type FlowRow, type HygCount, type Level, type MaintSnap, type MaintTab,
-  type ProbeRow, type RelRow, type SevBucket, type SnapFinding, type TabModel, type Verb,
+  advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, span, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Door, type Finding, type FlowRow, type HygCount,
+  type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
 } from "./maint";
+import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import type { DeployCfg } from "./deploy";
 import { icon } from "./svgicons";
@@ -315,16 +316,45 @@ function tabsHtml(v: MaintTabView): string {
 const DOT = `<i class="mt-dot" aria-label="none"></i>`;
 const nameOf = (v: MaintTabView, root: string) => v.names[root] ?? root;
 const ageOf = (sec: number | null) => sec === null ? DASH : esc(span(sec));
-const num = (n: number, level: Level, tip = "") => n
-  ? `<span class="mt-n ${LEVEL_CLS[level]}"${tip ? ` data-tip="${escAttr(tip)}"` : ""}>${n}</span>` : DOT;
-const countHtml = (c: HygCount, tip = "") => c.n === null
-  ? `<span class="dim" data-tip="${escAttr(tip)}">?</span>` : num(c.n, c.level);
+
+// A number is a door to where what it counts is acted on (./maint boardDoor); a zero or an unknown is not.
+type DoorAt = { [B in BoardId]: [board: B, col: BoardCol<B>, root: string] }[BoardId];
+const chipName = (f: string) => BRANCH_FILTERS.find((x) => x.id === f)?.label ?? f;
+function doorText(d: Door): string {
+  switch (d.to) {
+    case "branches": return `Click: Branches with ${chipName(d.filter)} picked, where they are swept`;
+    case "checkouts": return "Click: Branches › Checkouts, where a worktree is removed";
+    case "queue": return `Click: Today's queue, ${d.filter === "iss" ? "issues" : "pull requests"}`;
+    case "landed": return "Click: Today's Landed, the commits since";
+    case "deps": return "Click: every update pull request, in the dependency view";
+    case "fetch": return "Click: git fetch here, then check this project again";
+    case "url": return `Click: open ${d.url}`;
+  }
+}
+function doorHtml(inner: string, cls: string, at: DoorAt | undefined, v: number | string | null, tip = ""): string {
+  const d = at && boardDoor(at[0], at[1], v), said = [tip, d ? doorText(d) : ""].filter(Boolean).join("\n");
+  const tipAttr = said ? ` data-tip="${escAttr(said)}"` : "";
+  if (!d || !at) return `<span class="${cls}"${tipAttr}>${inner}</span>`;
+  const to = d.to === "url" ? `data-mturl="${escAttr(d.url)}"` : `data-mtdoor="${at[0]}.${escAttr(at[1])}" data-mtroot="${escAttr(at[2])}"`;
+  return `<button class="${cls} mt-door" ${to}${tipAttr}>${inner}</button>`;
+}
+const num = (n: number, level: Level, tip = "", at?: DoorAt) => !n ? DOT
+  : at ? doorHtml(String(n), `mt-n ${LEVEL_CLS[level]}`, at, n, tip)
+  : `<span class="mt-n ${LEVEL_CLS[level]}"${tip ? ` data-tip="${escAttr(tip)}"` : ""}>${n}</span>`;
+// `what` is the column's question, and its tip the first names it counts.
+const countHtml = (c: HygCount, what: string, at: DoorAt, unknown = "") => c.n === null
+  ? `<span class="dim" data-tip="${escAttr(unknown)}">?</span>`
+  : num(c.n, c.level, c.names.length ? `${what}: ${peekNames(c.names)}` : what, at);
 const barHtml = (ratio: number, level: Level) =>
   `<span class="mt-bar ${LEVEL_CLS[level]}" aria-hidden="true"><i style="width:${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%"></i></span>`;
 const RUN_CLS: Partial<Record<CiStatus, string>> = { fail: "l-bad", pass: "l-ok", running: "l-run" };
-function runsHtml(runs: readonly CiStatus[]): string {
-  return `<span class="mt-runs" data-tip="${escAttr(`oldest to newest: ${runs.join(", ")}`)}">`
-    + runs.map((x) => `<i class="${RUN_CLS[x] ?? ""}"></i>`).join("") + `</span>`;
+// Oldest to newest; each dot opens its run's page, its tip the workflow, the word and when.
+function runsHtml(runs: readonly RunDot[], root: string): string {
+  return `<span class="mt-runs">` + runs.map((x) => {
+    const tip = [x.workflow, x.status, x.at ? relTime(x.at * 1000) : ""].filter(Boolean).join(" · ");
+    return x.url ? doorHtml("", RUN_CLS[x.status] ?? "", ["ci", "run", root], x.url, tip)
+      : `<i class="${RUN_CLS[x.status] ?? ""}" data-tip="${escAttr(tip)}"></i>`;
+  }).join("") + `</span>`;
 }
 
 // A board is a card of its own; its note says what it covers and how many projects were read. Its
@@ -381,9 +411,10 @@ function securityHtml(v: MaintTabView, b: Boards): string {
   const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.read.security || all), hasPrs = !!(b.prs.length || b.read.deps);
   const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows, door) : "";
   const prs = b.prs.length ? table([...projCol(b), "Bot", ">Open", ">Green", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${projTd(v, b, r.root)}`
-    + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info") + (r.capped ? "+" : ""), "r")
-    + td(num(r.green, "info", "checks pass and not a draft"), "r")
-    + td(num(r.red, "warn", "update pull requests whose checks fail"), "r") + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`))
+    + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info", "", ["update-prs", "open", r.root]) + (r.capped ? "+" : ""), "r")
+    + td(num(r.green, "info", "checks pass and not a draft", ["update-prs", "green", r.root]), "r")
+    + td(num(r.red, "warn", "update pull requests whose checks fail", ["update-prs", "red", r.root]), "r")
+    + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`))
     : empty("No open update pull request.");
   const out = v.dash?.outdated, first = !hasAdv && !hasPrs;
   const pkgs = out || (door && first) ? board("packages", "Packages", "this project's package manager", out
@@ -403,7 +434,7 @@ function flowsHtml(r: CiBoardRow): string {
     if (mine) verb = null;
     const text = w.red !== null ? `failing ${w.red}`.trim() : `${FLOW_TEXT[w.status] ?? w.status} ${ago}`.trim();
     return `<div class="mt-ci wf"><span class="wn">${esc(w.workflow)}</span>`
-      + `<span class="mt-v ${flowCls(w)}">${esc(text)}</span><span class="w mono"></span>${runsHtml(w.runs)}`
+      + `<span class="mt-v ${flowCls(w)}">${esc(text)}</span><span class="w mono"></span>${runsHtml(w.runs, r.root)}`
       + `<span class="a">${mine ? verbHtml(mine) : ""}</span></div>`;
   }).join("");
 }
@@ -416,7 +447,7 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
   const ci = b.ci.map((r) => b.one && r.flows.length ? flowsHtml(r)
     : `<div class="mt-ci">${b.one ? `<span class="wn">${esc(r.branch ?? "")}</span>` : projHtml(r.root, nameOf(v, r.root))}`
     + `<span class="mt-v ${LEVEL_CLS[r.level]}">${r.level === "ok" && !r.text ? DOT : esc(r.text)}</span>`
-    + `<span class="w mono">${esc(r.why)}</span>${runsHtml(r.runs)}<span class="a">${r.verb ? verbHtml(r.verb) : ""}</span></div>`).join("");
+    + `<span class="w mono">${esc(r.why)}</span>${runsHtml(r.runs, r.root)}<span class="a">${r.verb ? verbHtml(r.verb) : ""}</span></div>`).join("");
   const on = b.one && b.ci[0]?.branch ? `on ${b.ci[0].branch} · ` : "";
   const rel = table([...projCol(b), "Last tag", "Unreleased", ">Oldest", "Published", ">Changelog", ""], b.releases.map((r) => {
     const tag = !r.tagRead ? DASH : r.tag ? `${esc(r.tag)}${r.tagAge !== null ? ` <span class="dim">· ${esc(span(r.tagAge))}</span>` : ""}` : untagged(b, r);
@@ -424,7 +455,8 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
     const pub = !r.published ? DASH : r.published.tag
       ? `${esc(r.published.tag)}${r.published.age !== null ? ` <span class="dim">· ${esc(span(r.published.age))}</span>` : ""}` : `<span class="dim">none</span>`;
     return `<tr>${projTd(v, b, r.root)}` + td(tag, "mono")
-      + td(r.tag ? `<span class="mt-barc"${asOf}>${barHtml(r.ratio, r.level)}${num(r.since, r.level === "warn" ? "warn" : "info")}</span>` : DASH)
+      + td(r.tag ? `<span class="mt-barc"${asOf}>${barHtml(r.ratio, r.level)}${num(r.since, r.level === "warn" ? "warn" : "info",
+        `commits on ${r.trunk ?? "the trunk"} since ${r.tag}`, ["releases", "since", r.root])}</span>` : DASH)
       + td(ageOf(r.oldest), "r mono") + td(pub, "mono")
       + td(r.changelog === null ? DASH : num(r.changelog, "info", "entries under Unreleased in CHANGELOG.md"), "r") + verbTd(r.verb) + `</tr>`;
   }));
@@ -434,13 +466,20 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
 
 function codeHtml(v: MaintTabView, b: Boards): string {
   if (!b.hygiene.length) return "";
-  const rows = b.hygiene.map((r) => `<tr>${projTd(v, b, r.root)}`
-    + td(countHtml(r.unpushed, "no remote, so what is unpushed is unknown"), "r") + td(countHtml(r.localOnly), "r")
-    + td(countHtml(r.merged, r.trunk ? "the protect list in .episko/episko.toml is unreadable, so merged branches were not read"
-      : "no trunk, so nothing counts as merged"), "r") + td(countHtml(r.gone), "r")
-    + td(`<span data-tip="${escAttr(`branches only here, untouched ${r.staleDays}d+`)}">${countHtml(r.stale)}</span>`, "r") + td(countHtml(r.idle), "r")
-    + td(r.fetched.age === null ? DASH : `<span class="mt-n ${LEVEL_CLS[r.fetched.level]}">${esc(span(r.fetched.age))}</span>`, "r mono")
-    + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`);
+  const rows = b.hygiene.map((r) => {
+    const at = (col: BoardCol<"hygiene">): DoorAt => ["hygiene", col, r.root];
+    return `<tr>${projTd(v, b, r.root)}`
+      + td(countHtml(r.unpushed, "commits on no remote", at("unpushed"), "no remote, so what is unpushed is unknown"), "r")
+      + td(countHtml(r.localOnly, "branches only on this machine", at("localOnly")), "r")
+      + td(countHtml(r.merged, `merged into ${r.trunk ?? "the trunk"}`, at("merged"), r.trunk
+        ? "the protect list in .episko/episko.toml is unreadable, so merged branches were not read" : "no trunk, so nothing counts as merged"), "r")
+      + td(countHtml(r.gone, "remote branch deleted", at("gone")), "r")
+      + td(countHtml(r.stale, `branches only here, untouched ${r.staleDays}d+`, at("stale")), "r")
+      + td(countHtml(r.idle, `worktrees idle ${r.staleDays}d+`, at("idle")), "r")
+      + td(r.fetched.age === null ? DASH : doorHtml(esc(span(r.fetched.age)), `mt-n ${LEVEL_CLS[r.fetched.level]}`, at("fetched"), r.fetched.age,
+        `last fetched ${span(r.fetched.age)} ago`), "r mono")
+      + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`;
+  });
   const against = b.one && b.hygiene[0].trunk ? `against ${b.hygiene[0].trunk} · ` : "";
   return board("hygiene", "Git hygiene", `${against}as of each repo's last fetch · ${readNote(b.read.git)}`,
     table([...projCol(b), ">Unpushed", ">Only here", ">Merged", ">Gone", ">Untouched", ">Idle worktrees", ">Fetched", ""], rows),
@@ -449,12 +488,18 @@ function codeHtml(v: MaintTabView, b: Boards): string {
 
 function workHtml(v: MaintTabView, b: Boards): string {
   if (!b.work.length) return "";
-  const rows = b.work.map((r) => `<tr>${projTd(v, b, r.root)}`
-    + td(r.review === null ? `<span class="dim" data-tip="the review search failed">?</span>`
-      : r.reviewPartial ? `<span class="mt-n${r.review ? ` ${LEVEL_CLS.warn}` : ""}" data-tip="a review search failed, so there may be more">${r.review}+</span>`
-      : num(r.review, "warn"), "r")
-    + td(`<span class="mt-barc">${barHtml(r.issuesRatio, "info")}${num(r.issues, "info")}</span>`)
-    + td(`<span class="mt-barc">${barHtml(r.prsRatio, "info")}${num(r.prs, "info")}</span>`) + verbTd(r.verbs[0] ?? null) + `</tr>`);
+  const rows = b.work.map((r) => {
+    // A forge whose threads the queue cannot list keeps plain numbers: a door to an empty chip is none.
+    const at = (col: BoardCol<"work">): DoorAt | undefined => r.queue ? ["work", col, r.root] : undefined;
+    return `<tr>${projTd(v, b, r.root)}`
+      + td(r.review === null ? `<span class="dim" data-tip="the review search failed">?</span>`
+        : r.reviewPartial ? doorHtml(`${r.review}+`, `mt-n${r.review ? ` ${LEVEL_CLS.warn}` : ""}`, at("review"), r.review,
+          "a review search failed, so there may be more")
+        : num(r.review, "warn", "reviews requested of you", at("review")), "r")
+      + td(`<span class="mt-barc">${barHtml(r.issuesRatio, "info")}${num(r.issues, "info", "open issues", at("issues"))}</span>`)
+      + td(`<span class="mt-barc">${barHtml(r.prsRatio, "info")}${num(r.prs, "info", "open pull requests", at("prs"))}</span>`)
+      + verbTd(r.verbs[0] ?? null) + `</tr>`;
+  });
   return board("work", "Open work", `reviews waiting on you first · ${readNote(b.read.work)}`,
     table([...projCol(b), ">Review requested", "Issues", "Pull requests", ""], rows));
 }
@@ -465,7 +510,7 @@ function serversHtml(v: MaintTabView, b: Boards): string {
       + `<p class="fl-none">${prodHtml(v.prod, v.filter?.root)}</p>`) : "";
   }
   const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${projTd(v, b, r.root)}`
-    + td(`${esc(r.name)} <span class="dim">${esc(r.url)}</span>`, "mono u")
+    + td(`${esc(r.name)} ${doorHtml(esc(r.url), "dim", ["addresses", "address", r.root], r.url)}`, "mono u")
     + td(`<span class="mt-n ${LEVEL_CLS[r.level]}">${esc(r.code === null ? "no answer" : String(r.code))}</span>`, "r mono")
     + td(r.ms === null ? DASH : esc(`${r.ms}ms`), "r mono")
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);

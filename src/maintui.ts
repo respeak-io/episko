@@ -9,8 +9,8 @@ import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
 import {
-  clampMaint, coverFirst, covText, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
-  type BoardId, type MaintTab, type ProjectPick, type SevBucket,
+  BOARD_IDS, clampMaint, coverFirst, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
+  type BoardId, type Door, type MaintTab, type ProjectPick, type SevBucket,
 } from "./maint";
 import { briefFor } from "./maintbrief";
 import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
@@ -25,7 +25,8 @@ export interface MaintHost {
   scan: (force: boolean) => void; // the fleet's every project, the dashboard's one
   nameOf: (root: string) => string;
   prefill: (project: string, path: string, text: string) => void;
-  openDashboard: (name: string, path: string, tab?: "today" | "maint") => void;
+  // `door` opens the view a board number counts (./maint Door); on its own dashboard, that view in place.
+  openDashboard: (name: string, path: string, tab?: "today" | "maint", door?: Door) => void;
   // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
   // `board` set scrolls to that board once painted, null to the tab's top.
   openTab: (sub: MaintSub, root?: string | null, board?: BoardId | null) => void;
@@ -49,20 +50,21 @@ export let quietOpen = false;
 // The Security strip's bucket, a glance like the fold: a second click on it shows every row again.
 export let maintSev: SevBucket | null = null;
 
+async function fetchHere(root: string, name: string): Promise<void> {
+  try {
+    const r = await invoke<GitActionResult>("git_action", { workdir: root, op: "fetch" });
+    toast(r.ok ? `${name}: fetched` : `${name}: ${r.summary}`);
+  } catch (e) { toast(`${name}: fetch failed: ${e}`); }
+  void scanProject(root, true);
+}
+
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
   const inp = maintInput(root);
   const f = inp && [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp)].find((x) => x.key === key);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
   const name = host.nameOf(root);
-  if (f.verb === "fetch") {
-    try {
-      const r = await invoke<GitActionResult>("git_action", { workdir: root, op: "fetch" });
-      toast(r.ok ? `${name}: fetched` : `${name}: ${r.summary}`);
-    } catch (e) { toast(`${name}: fetch failed: ${e}`); }
-    void scanProject(root, true);
-    return;
-  }
+  if (f.verb === "fetch") { await fetchHere(root, name); return; }
   if (f.verb === "run") {
     if (askingFor(root, [f.source])) return; // already out: two audits would share one folder
     const label = findSource(f.source)?.label ?? f.source;
@@ -78,6 +80,15 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   const text = briefFor(f, inp, { project: name, verify });
   if (!text) { toast("That has changed since the last check. Check again"); return; }
   host.prefill(name, root, text);
+}
+
+// A board number: a fetch runs here; anything else is a view of the project's dashboard (a page is data-mturl's).
+function openDoor(at: string, root: string, host: MaintHost): void {
+  const [board, col] = at.split(".");
+  const d = BOARD_IDS.includes(board as BoardId) ? doorAt(board as BoardId, col ?? "") : null;
+  if (!d || d.to === "url") return;
+  if (d.to === "fetch") { void fetchHere(root, host.nameOf(root)); return; }
+  host.openDashboard(host.nameOf(root), root, d.to === "queue" || d.to === "landed" ? "today" : undefined, d);
 }
 
 // Every address of every project asked, each project's checks as one click-only read per source.
@@ -149,6 +160,8 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
     void writeText(text).then(() => toast("Copied")).catch(() => toast(text));
     return true;
   }
+  const door = t.closest<HTMLElement>("[data-mtdoor]");
+  if (door) { openDoor(door.dataset.mtdoor ?? "", door.dataset.mtroot!, host); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   // A card line, after its verb so Patch only prefills: the tab and board that line summarises.

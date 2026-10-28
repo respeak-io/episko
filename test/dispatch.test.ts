@@ -401,7 +401,8 @@ describe("Maintenance's own dispatcher", () => {
   it("wires the facet tabs and the dashboard's cards: each probed, each before the door", () => {
     // url and copy are Coverage's: a forge's settings page per project, and a fix command; sev is
     // the Security strip's filter; pick the tab's project picker and find a card line.
-    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev"]) {
+    // door is a board number's (./maint boardDoor): a branch filter, a queue chip, a fetch.
+    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev", "door"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
     }

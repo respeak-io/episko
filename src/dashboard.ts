@@ -36,7 +36,7 @@ import {
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
   ciRows, clampMaint, coverRows, FACET_TAB, facetCells, findings, forgeText, hostRows, offers, outdatedText, probeRows, prodChecks, projectBand,
-  tabFindings, tabModel, type BoardId, type MaintInput,
+  tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
 import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
@@ -1131,7 +1131,7 @@ export function renderDashHeader(): void {
 }
 
 // ---------- open / close ----------
-export function openDashboard(project: string, path: string, tab?: DashTab): void {
+export function openDashboard(project: string, path: string, tab?: DashTab, door?: Door): void {
   const changed = root() !== path;
   invalidatePaintCache();   // unconditionally: a session visited in between overwrote #inspector
   setMirror({ kind: "dash", root: path, name: project });
@@ -1175,6 +1175,18 @@ export function openDashboard(project: string, path: string, tab?: DashTab): voi
   host.renderAll();
   void loadDash();
   if (dashTab === "maint") void loadMaint();
+  if (door) openDashDoor(door);
+}
+
+// A Maintenance board number's door: the view that acts on what it counts, with that already picked.
+function openDashDoor(d: Door): void {
+  if (d.to === "branches") { branchFilter = d.filter; branchQuery = ""; openDashView("branches"); return; }
+  if (d.to === "checkouts" || d.to === "deps") { openDashView(d.to); return; }
+  if (d.to !== "queue" && d.to !== "landed") return;   // a fetch and a page never leave Maintenance
+  if (d.to === "queue") { queueFilter = d.filter; queueQuery = ""; }
+  if (dashTab !== "today") setDashTab("today");
+  renderDash();
+  $(d.to === "queue" ? "dashNext" : "dashMoved").scrollIntoView({ block: "start" });
 }
 
 export function closeDashboard(): void {
@@ -1328,7 +1340,11 @@ const maintHost: MaintHost = {
   nameOf: (r) => r === root() ? name() : basename(r),
   prefill: (project, path, text) => { void prefillAgent(project, path, text); },
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
-  openDashboard: (n, p, tab) => { if (p === root()) setDashTab(tab ?? "maint"); else openDashboard(n, p, tab); },
+  openDashboard: (n, p, tab, door) => {
+    if (p !== root()) openDashboard(n, p, tab, door);
+    else if (door) openDashDoor(door);
+    else setDashTab(tab ?? "maint");
+  },
   openTab: (sub, _root, board) => openMaintSub(sub, board),
   openCover: (facet) => openMaintSub(FACET_TAB[facet], null, true),
   render: () => renderDash(),

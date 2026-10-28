@@ -3086,6 +3086,10 @@ select.in-ctl { cursor: pointer; }
 .mt-n.l-bad { color: var(--st-error); }
 .mt-n.l-warn { color: var(--st-working); }
 .mt-n.l-ok, .mt-n.l-muted { color: var(--muted-2); }
+/* A board number that opens where it is acted on: its own colour, a pointer and an underline on hover. */
+:where(.mt-door) { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; border-radius: 3px; }
+.mt-door:hover { text-decoration: underline; text-underline-offset: 2px; }
+.mt-door:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mt-sevs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
 .mt-sevb { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--hair); background: none; color: var(--muted-2); font: 10.5px var(--font-mono); cursor: pointer; }
 .mt-sevb b { font-size: 15px; font-weight: 600; color: var(--muted); }
@@ -3121,8 +3125,8 @@ select.in-ctl { cursor: pointer; }
 /* one project's board lists its workflows, or its branch where none ran, in the name column */
 .mt-ci .wn { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-ci:hover .mt-verb, .mt-tbl tr:hover .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
-.mt-board .mt-runs i { width: 7px; height: 13px; }
-.mt-runs i.l-run { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); }
+.mt-board .mt-runs > * { width: 7px; height: 13px; }
+.mt-runs > .l-run { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); }
 .mt-scroll { overflow-x: auto; margin-top: 6px; }
 .mt-tbl { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
 .mt-tbl th { padding: 4px 6px 6px; text-align: left; font: 500 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); white-space: nowrap; }
@@ -3167,9 +3171,10 @@ select.in-ctl { cursor: pointer; }
 .mt-kv .mono { flex: none; max-width: 60%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-kv .l-warn, .mt-cov .mt-v.l-warn { color: var(--st-working); }
 .mt-runs { flex: none; display: inline-flex; gap: 3px; align-self: center; }
-.mt-runs i { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
-.mt-runs i.l-ok { background: var(--muted-2); }
-.mt-runs i.l-bad { background: var(--st-error); }
+.mt-runs > * { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
+.mt-runs > .l-ok { background: var(--muted-2); }
+.mt-runs > .l-bad { background: var(--st-error); }
+.mt-runs > .mt-door:hover { box-shadow: 0 0 0 1px var(--muted); }
 .mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .mt-cov .mt-v { flex: none; max-width: 55%; }
 .mt-probe { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }

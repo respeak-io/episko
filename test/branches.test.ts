@@ -259,6 +259,23 @@ describe("the filter chips, which are also the quick-selects", () => {
     expect(only("all")).toHaveLength(6);
   });
 
+  it("narrows to branches holding commits no remote has: ahead of their upstream, or with nothing pushed", () => {
+    const rs = branchRows(ctx({ branches: [
+      B("ahead", { ahead: 2 }),
+      B("even"),
+      LOCAL("never-pushed", { t_ahead: 3 }),
+      LOCAL("empty"), // a fresh branch with nothing of its own has nothing to push
+      B("orphan", { gone: true, t_ahead: 1 }),
+      B("theirs", { remote: true, t_ahead: 4 }),
+      // Pushed without -u, then committed to: git counts those, and nothing here says how many.
+      B("untracked", { upstream: "", t_ahead: 2 }),
+      B("untracked-even", { upstream: "" }),
+    ] }));
+    expect(filterRows(rs, "unpushed", "", NOW).map((r) => r.name).sort())
+      .toEqual(["ahead", "never-pushed", "orphan", "untracked"]);
+    expect(filterCounts(rs, NOW).unpushed).toBe(4);
+  });
+
   it("filters by name on top of the chip", () => {
     expect(filterRows(list(), "merged", "old", NOW).map((r) => r.name)).toEqual(["old-merged"]);
     expect(filterRows(list(), "gone", "old", NOW)).toEqual([]);

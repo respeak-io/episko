@@ -311,13 +311,14 @@ export function orderRows(rows: BranchRow[]): BranchRow[] {
 // is two clicks and needs no second mechanism. The controls are ./pick's, shared with three
 // other tables; these chips only decide which rows are on screen.
 
-export type BranchFilter = "all" | "merged" | "gone" | "stale" | "localonly" | "checkout";
+export type BranchFilter = "all" | "merged" | "gone" | "stale" | "localonly" | "unpushed" | "checkout";
 export const BRANCH_FILTERS: { id: BranchFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "merged", label: "Merged" },
   { id: "gone", label: "Gone" },
   { id: "stale", label: "Stale" },
   { id: "localonly", label: "Local only" },
+  { id: "unpushed", label: "Unpushed" },
   { id: "checkout", label: "Checked out" },
 ];
 export const STALE_DAYS = 30;
@@ -328,6 +329,9 @@ const MATCH: Record<BranchFilter, (r: BranchRow, now: number) => boolean> = {
   gone: (r) => r.br.gone,
   stale: (r, now) => !!r.br.unix && now - r.br.unix * 1000 > STALE_DAYS * 864e5,
   localonly: (r) => r.hasLocal && !r.hasRemote,
+  // git-local's count, over- rather than under-taken: ahead of what it follows, or following nothing
+  // (no remote ref, or one never tracked) with commits the trunk lacks.
+  unpushed: (r) => r.hasLocal && (r.br.ahead > 0 || ((!r.hasRemote || !r.br.upstream) && r.br.t_ahead > 0)),
   checkout: (r) => !!r.wt || r.br.current,
 };
 

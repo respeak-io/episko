@@ -19,7 +19,7 @@ import {
 import {
   clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabExtras,
   tabFindings, tabModel,
-  type BoardId, type Cell, type Finding, type MaintInput, type MaintTab, type TabProject,
+  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type TabProject,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
@@ -51,7 +51,7 @@ import { tokenScanning } from "./usageview"; // the transcript scan's own flag, 
 export interface FleetHost {
   setActive: (id: string) => void;
   closeSession: (id: string) => void;
-  openDashboard: (project: string, path: string, tab?: "today" | "maint") => void;
+  openDashboard: (project: string, path: string, tab?: "today" | "maint", door?: Door) => void;
   // Launch an agent and type `text` into it with no newline: a person reads it and presses Enter.
   prefill: (project: string, path: string, text: string) => void;
   openUsage: () => void;
@@ -546,7 +546,7 @@ const maintHost: MaintHost = {
   scan: (force) => checkFleet(force),
   nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
   prefill: (project, path, text) => host.prefill(project, path, text),
-  openDashboard: (name, path, tab) => host.openDashboard(name, path, tab),
+  openDashboard: (name, path, tab, door) => host.openDashboard(name, path, tab, door),
   openTab: (sub, root, board) => setMaintTab(sub, root, board),
   picks: (tab) => maintPicks(tab),
   render: () => renderFleet(),
