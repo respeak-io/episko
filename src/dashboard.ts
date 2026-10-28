@@ -1284,6 +1284,7 @@ function maintNow(now: number): MaintDash {
     card: {
       path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
+      stale: !!e && (e.detecting || e.out > 0) && e.at > 0,
     },
     rows, offers: offers(r, inp), checked: e?.at ?? 0,
     tab: {

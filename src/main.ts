@@ -99,7 +99,7 @@ import {
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, fleetEscape, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
+  closeFleet, fleetEscape, maintOnBoot, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
 } from "./fleetui";
 import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
@@ -1133,3 +1133,4 @@ renderAll();
 // Nothing restored takes the stage, so this is where the app lands: every project, not a
 // card saying no sessions are running. Last, because it is the fallback for all of the above.
 if (!activeId && !mirror) takeStage("home");
+maintOnBoot();

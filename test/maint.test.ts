@@ -1518,6 +1518,7 @@ describe("nothing scans until a person asks", () => {
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);
     expect(fleet.reaches("setFleetView")).toContain("scanFleet"); // the switch is the ask
+    expect(fleet.reaches("maintOnBoot")).toContain("scanFleet"); // and a boot that lands on the view
     expect(fleet.scans).toEqual(expect.arrayContaining(["scanFleet", "maintClick"]));
     for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow", "setDashTab"]) expect(dash.bodies.has(f), f).toBe(true);
     expect(dash.reaches("setDashTab")).toContain("loadMaint"); // the tab is the ask

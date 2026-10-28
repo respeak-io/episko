@@ -29,7 +29,7 @@ export interface MaintHost {
   // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
   // `board` set scrolls to that board once painted, null to the tab's top.
   openTab: (sub: MaintSub, root?: string | null, board?: BoardId | null) => void;
-  picks?: (tab: MaintTab) => ProjectPick[]; // the fleet's project picker; the dashboard is one project
+  picks?: (tab: MaintTab) => PickRow[]; // the fleet's project picker; the dashboard is one project
   render: () => void;
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
@@ -91,6 +91,7 @@ async function checkProd(roots: readonly string[]): Promise<void> {
 
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
 
+export type PickRow = ProjectPick & { accent: string; icon: string | null };
 const ALL = "*"; // the menu's "All projects": a root is an absolute path, never this
 function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
   if (sub === "overview" || !host.picks) return;
@@ -101,7 +102,8 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
     title: tabName(sub), sub: "show one project's rows",
     groups: [
       { items: [{ id: ALL, label: "All projects", mark: cur ? "" : "✓" }] },
-      { label: "Projects", items: picks.map((p) => ({ id: p.root, label: p.name, mark: p.root === cur ? "✓" : "", sub: needs(p.n), tone: tone(p) })) },
+      { label: "Projects", items: picks.map((p) => ({ id: p.root, label: p.name, mark: p.root === cur ? "✓" : "", sub: needs(p.n), tone: tone(p),
+        avatar: { icon: p.icon, accent: p.accent, name: p.name } })) },
     ],
     onPick: (id) => host.openTab(sub, id === ALL ? null : id),
   });
