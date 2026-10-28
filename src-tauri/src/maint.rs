@@ -503,7 +503,12 @@ pub(crate) fn parse_maint(text: &str) -> MaintConfig {
     let table = |k: &str| t.get(k).and_then(|v| v.as_table());
     let sources = table("sources").into_iter().flatten()
         .filter(|(k, _)| FACETS.iter().any(|f| f.id() == k.as_str()))
-        .map(|(k, v)| (k.clone(), list(Some(v))))
+        // A bare word is a list of one; any other wrong shape restricts nothing, never everything.
+        .filter_map(|(k, v)| match v {
+            toml::Value::String(s) => Some(vec![s.trim().to_string()]).filter(|l| !l[0].is_empty()),
+            toml::Value::Array(a) => Some(list(Some(v))).filter(|l| !l.is_empty() || a.is_empty()),
+            _ => None,
+        }.map(|ids| (k.clone(), ids)))
         .collect();
     // A value with a scheme must be http(s): a param is data a built-in source fetches.
     let params = table("params").into_iter().flatten()
@@ -724,7 +729,21 @@ pub(crate) fn read_capped(path: &Path, cap: u64) -> std::io::Result<String> {
     if buf.len() as u64 > cap {
         return Err(Error::other("too large to read"));
     }
-    String::from_utf8(buf).map_err(|_| Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))
+    decode(buf).ok_or_else(|| Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))
+}
+
+/// UTF-8 with its BOM dropped, or UTF-16 behind one: Windows PowerShell 5.1's `echo 14 > .nvmrc`.
+fn decode(buf: Vec<u8>) -> Option<String> {
+    let utf16 = |be: bool| {
+        let body = buf.get(2..).filter(|b| b.len() % 2 == 0)?;
+        let units: Vec<u16> = body.as_chunks::<2>().0.iter().map(|&c| if be { u16::from_be_bytes(c) } else { u16::from_le_bytes(c) }).collect();
+        String::from_utf16(&units).ok()
+    };
+    match buf.get(..2) {
+        Some([0xFF, 0xFE]) => utf16(false),
+        Some([0xFE, 0xFF]) => utf16(true),
+        _ => String::from_utf8(buf).ok().map(|s| s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s)),
+    }
 }
 
 fn present(p: &Path, dir: bool, key: Option<&str>) -> bool {
@@ -1523,6 +1542,11 @@ mod tests {
         assert_eq!(read_capped(&dir.join("big.txt"), 64).unwrap_err().to_string(), "too large to read");
         assert_eq!(read_capped(&dir, 64).unwrap_err().to_string(), "not a regular file");
         assert_eq!(read_capped(&dir.join("none"), 64).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        std::fs::write(dir.join("bom.txt"), b"\xEF\xBB\xBF14\n").unwrap();
+        std::fs::write(dir.join("le.txt"), [0xFF, 0xFE, b'1', 0, b'4', 0]).unwrap();
+        std::fs::write(dir.join("bin.txt"), [0xC3, 0x28]).unwrap();
+        assert_eq!((read_capped(&dir.join("bom.txt"), 64).unwrap(), read_capped(&dir.join("le.txt"), 64).unwrap()), ("14\n".into(), "14".into()));
+        assert_eq!(read_capped(&dir.join("bin.txt"), 64).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
         // The device reports length 0, so only the read itself can stop it.
         #[cfg(unix)]
         {
@@ -1935,13 +1959,14 @@ mod tests {
     fn maintenance_is_read_forgivingly() {
         let c = parse_maint(
             "[branches]\nprotect = [\"main\"]\n[maintenance]\nforge = \"gitlab\"\noff = [\"prod\", 3]\ntrunk = 7\n\
-             sources = { ci = [\"woodpecker\"], nonsense = [\"x\"] }\n\
+             sources = { ci = [\"woodpecker\"], nonsense = [\"x\"], security = \" osv \", prod = 3, git = [1], release = [] }\n\
              [maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\nsneaky = \"file:///etc/passwd\"\n\
              [maintenance.thresholds]\nstale_branch_days = 24\nunreleased_days = 2.5\nbad = \"x\"\n",
         );
         assert!(c.readable);
         assert_eq!((c.forge.as_deref(), c.off.clone(), c.trunk.clone()), (Some("gitlab"), vec!["prod".to_string()], None));
-        assert_eq!(c.sources.keys().collect::<Vec<_>>(), ["ci"], "only facets restrict");
+        assert_eq!(c.sources.keys().collect::<Vec<_>>(), ["ci", "release", "security"], "only facets restrict, and only as a list");
+        assert_eq!((c.sources["security"].clone(), c.sources["release"].len()), (vec!["osv".to_string()], 0), "a word is a list of one; [] is meant");
         assert_eq!(c.params.keys().collect::<Vec<_>>(), ["woodpecker_server"], "a param URL must be http(s)");
         assert_eq!(c.thresholds.get("stale_branch_days"), Some(&24.0));
         assert_eq!(c.thresholds.len(), 2);

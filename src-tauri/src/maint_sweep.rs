@@ -44,11 +44,17 @@ fn eco_of(word: &str) -> Option<&'static str> {
     ECOSYSTEMS.iter().find(|(_, names)| names.contains(&w.as_str())).map(|(e, _)| *e)
 }
 
-/// GitHub's ids are lower-case after the prefix; every other scheme's tail is digits.
+/// GitHub's ids are three groups of four from its own alphabet, digits optional; every other
+/// scheme's tail has digits, which is what keeps `go-yaml` a package name.
 fn as_id(s: &str) -> Option<String> {
     let (pre, rest) = s.split_once('-')?;
     let pre = pre.to_ascii_uppercase();
-    if !ID_PREFIXES.contains(&pre.as_str()) || !rest.chars().any(|c| c.is_ascii_digit()) {
+    let ghsa = |r: &str| {
+        let g: Vec<&str> = r.split('-').collect();
+        g.len() == 3 && g.iter().all(|p| p.len() == 4 && p.chars().all(|c| "23456789cfghjmpqrvwx".contains(c.to_ascii_lowercase())))
+    };
+    let shaped = if pre == "GHSA" { ghsa(rest) } else { rest.chars().any(|c| c.is_ascii_digit()) };
+    if !ID_PREFIXES.contains(&pre.as_str()) || !shaped {
         return None;
     }
     let id = if pre == "GHSA" { format!("{pre}-{}", rest.to_ascii_lowercase()) } else { format!("{pre}-{rest}") };
@@ -263,7 +269,7 @@ pub(crate) struct SweepCopy {
     file: String,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SweepUnread {
     file: String,
@@ -344,22 +350,31 @@ fn covered(locks: &[(&str, &str)], eco: &str, manifest: &str) -> bool {
     }
 }
 
+/// One project-wide line per ecosystem asked, for a read that cannot vouch for any file.
+fn unread_all(asks: &[SweepAsk], why: &str) -> Vec<SweepUnread> {
+    let mut ecos: Vec<&str> = asks.iter().map(|a| a.ecosystem.as_str()).collect();
+    ecos.sort_unstable();
+    ecos.dedup();
+    ecos.into_iter().map(|e| SweepUnread { file: ".".into(), ecosystem: e.into(), reason: why.into() }).collect()
+}
+
 /// Every lockfile here, read and never run, and each copy of the asked packages in them. The
 /// files come from the project's index at any depth, plus an ignored one at the top.
 pub(crate) fn match_project(root: &str, asks: &[SweepAsk]) -> SweepFacts {
+    let mut f = SweepFacts { root: root.to_string(), locks: vec![], found: vec![], unpinned: vec![], unread: vec![] };
+    // A folder that is gone or unmounted read nothing, which must never say "not using".
+    if std::fs::read_dir(root).is_err() {
+        f.unread = unread_all(asks, "the project folder could not be read");
+        return f;
+    }
     let (index, cut, _) = crate::files::index_of(root);
     let names: Vec<&str> = NAMED.iter().map(|(n, _, _)| *n).collect();
     let mut files: Vec<String> = index.into_iter().filter(|f| kind_of(f).is_some()).chain(found_paths(root, &names)).collect();
     files.sort();
     files.dedup();
-    let mut f = SweepFacts { root: root.to_string(), locks: vec![], found: vec![], unpinned: vec![], unread: vec![] };
     let unread = |file: &str, eco: &str, reason: String| SweepUnread { file: file.to_string(), ecosystem: eco.to_string(), reason };
     if cut || files.len() > FILES {
-        let why = format!("only the first {FILES} manifests and lockfiles of a long file list were looked at");
-        let mut ecos: Vec<&str> = asks.iter().map(|a| a.ecosystem.as_str()).collect();
-        ecos.sort_unstable();
-        ecos.dedup();
-        f.unread.extend(ecos.into_iter().map(|e| unread(".", e, why.clone())));
+        f.unread.extend(unread_all(asks, &format!("only the first {FILES} manifests and lockfiles of a long file list were looked at")));
         files.truncate(FILES);
     }
     let kinds: Vec<(&str, &str, bool)> = files.iter().filter_map(|x| kind_of(x).map(|(e, l)| (x.as_str(), e, l))).collect();
@@ -403,9 +418,16 @@ pub(crate) struct SweepCheck {
 
 const VERDICTS: &[&str] = &["affected", "not-affected", "unsure"];
 
-/// The answer's fenced `toml` block (`deploy::fenced`); a block with no known verdict is a failure.
+/// The last fenced `toml` block that names a verdict, since a quoted manifest may come first; with
+/// none, the last block's own failure.
 pub(crate) fn parse_check(out: &str) -> Result<SweepCheck, String> {
-    let (block, why) = crate::deploy::fenced(out).map_err(|_| "the agent answered without a verdict block".to_string())?;
+    let tries: Vec<_> = out.match_indices("```toml").map(|(i, _)| check_block(&out[i..])).collect();
+    let last = tries.iter().rposition(Result::is_ok).or(tries.len().checked_sub(1));
+    last.and_then(|i| tries.into_iter().nth(i)).unwrap_or_else(|| Err("the agent answered without a verdict block".into()))
+}
+
+fn check_block(out: &str) -> Result<SweepCheck, String> {
+    let (block, why) = crate::deploy::fenced(out).map_err(|_| "the agent's verdict block was cut off".to_string())?;
     let t: toml::Table = block.parse().map_err(|e| format!("the agent's verdict is not valid TOML: {e}"))?;
     let verdict = t.get("verdict").and_then(|v| v.as_str()).map(|v| v.trim().to_ascii_lowercase())
         .filter(|v| VERDICTS.contains(&v.as_str()))
@@ -430,11 +452,22 @@ pub(crate) async fn sweep_advisory(query: String) -> Result<SweepAdvisory, Strin
         .map_err(|e| e.to_string())?
 }
 
+/// A prefix of the asks, so `pkg` still indexes the advisory's list; the rest is said in every project.
+fn sweep_roots(roots: &[String], packages: &[SweepAsk]) -> Vec<SweepFacts> {
+    let (asks, dropped) = packages.split_at(packages.len().min(ASKS));
+    let why = format!("only the first {ASKS} of the advisory's {} packages were looked for", packages.len());
+    let cut = unread_all(dropped, &why);
+    roots.iter().take(ROOTS).map(|r| {
+        let mut f = match_project(r, asks);
+        f.unread.extend(cut.iter().cloned());
+        f
+    }).collect()
+}
+
 #[tauri::command]
 pub(crate) async fn sweep_match(roots: Vec<String>, packages: Vec<SweepAsk>) -> Result<Vec<SweepFacts>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let asks = &packages[..packages.len().min(ASKS)];
-        roots.iter().take(ROOTS).map(|r| match_project(r, asks)).collect()
+        sweep_roots(&roots, &packages)
     })
     .await
     .map_err(|e| e.to_string())
@@ -475,6 +508,8 @@ mod tests {
         assert_eq!(id("RUSTSEC-2021-0003"), "RUSTSEC-2021-0003");
         assert_eq!(id("https://github.com/advisories/GHSA-35jh-r3h4-6jhm"), "GHSA-35jh-r3h4-6jhm");
         assert_eq!(id("https://rustsec.org/advisories/RUSTSEC-2021-0003.html"), "RUSTSEC-2021-0003");
+        assert_eq!(id("GHSA-WXJW-fvqm-hrcx"), "GHSA-wxjw-fvqm-hrcx", "a GitHub id may hold no digit at all");
+        assert_eq!(id("https://github.com/advisories/GHSA-wxjw-fvqm-hrcx"), "GHSA-wxjw-fvqm-hrcx");
         assert_eq!(range("lodash@<4.17.21"), (vec!["npm", "crates.io"], "lodash".into(), "<4.17.21".into()), "no ecosystem: every one a lockfile is read for");
         assert_eq!(range("@scope/pkg@^1.2"), (vec!["npm", "crates.io"], "@scope/pkg".into(), "^1.2".into()));
         assert_eq!(range("npm:next >=15.0.0 <15.5.6"), (vec!["npm"], "next".into(), ">=15.0.0 <15.5.6".into()));
@@ -490,6 +525,7 @@ mod tests {
         }
         assert!(parse_query("lodash").unwrap_err().contains("lodash@<1.2.3"), "a bare name asks for its range");
         assert!(parse_query("left-pad").is_err(), "a name that looks like an id is not looked up");
+        assert!(parse_query("GHSA-abcd-efgh-ijkl").is_err(), "outside GitHub's alphabet");
         assert!(parse_query(&"x".repeat(500)).is_err());
     }
 
@@ -534,8 +570,8 @@ mod tests {
         assert!(typed.calls().is_empty(), "a package and range sends nothing");
         assert_eq!((r.id, r.packages[0].range.as_deref(), r.asked.len()), (None, Some("<4.17.21"), 0));
 
-        let missing = resolve("GHSA-0000-0000-0000", &osv_records()).unwrap_err();
-        assert_eq!(missing, "OSV.dev has no record of GHSA-0000-0000-0000");
+        let missing = resolve("GHSA-2222-2222-2222", &osv_records()).unwrap_err();
+        assert_eq!(missing, "OSV.dev has no record of GHSA-2222-2222-2222");
         assert!(resolve("hello world", &osv_records()).is_err());
     }
 
@@ -596,6 +632,10 @@ mod tests {
         assert!(ws.unread.is_empty(), "a workspace's lockfile answers for every manifest below it: {:?}", ws.unread);
         let empty = match_project(&project(&[]), &asks);
         assert!(empty.locks.is_empty() && empty.found.is_empty() && empty.unread.is_empty(), "no lockfile and no manifest: nothing installed");
+        let gone = scratch_dir().join("gone").to_string_lossy().into_owned();
+        let g = match_project(&gone, &[ask("npm", "lodash"), ask("crates.io", "x"), ask("npm", "y")]);
+        let said: Vec<(&str, &str)> = g.unread.iter().map(|u| (u.file.as_str(), u.ecosystem.as_str())).collect();
+        assert_eq!(said, [(".", "crates.io"), (".", "npm")], "a folder nobody could read is unsure, never 'not using'");
     }
 
     #[test]
@@ -616,6 +656,18 @@ version = \"1.6.0\"
 ";
         let v = match_project(&project(&[("Cargo.lock", vendored)]), &[ask("crates.io", "smallvec")]);
         assert_eq!((v.found.len(), v.unpinned[0].version.as_str()), (0, "a local path at 1.6.0"), "a path copy is reported, not dropped");
+    }
+
+    #[test]
+    fn asks_past_the_cap_are_said_in_every_project() {
+        let mut asks: Vec<SweepAsk> = (0..ASKS).map(|i| ask("npm", &format!("p{i}"))).collect();
+        asks.push(ask("crates.io", "late"));
+        let roots = [project(&[]), project(&[])];
+        let out = sweep_roots(&roots, &asks);
+        for f in &out {
+            assert_eq!(f.unread.iter().map(|u| u.ecosystem.as_str()).collect::<Vec<_>>(), ["crates.io"], "{:?}", f.unread);
+        }
+        assert!(sweep_roots(&roots, &asks[..ASKS]).iter().all(|f| f.unread.is_empty()), "no cut, nothing said");
     }
 
     #[test]
@@ -662,6 +714,10 @@ evidence = [\"package.json: lodash is vendored\"]
         assert!(parse_check("affected, probably").unwrap_err().contains("without a verdict block"));
         assert!(parse_check("```toml\nverdict = \"maybe\"\n```").unwrap_err().contains("no verdict"));
         assert!(parse_check("```toml\nverdict = \n```").unwrap_err().contains("not valid TOML"));
+        let quoted = "Cargo.toml pins it:\n```toml\nsmallvec = \"1.6\"\n```\nSo:\n```toml\nverdict = \"affected\"\n```\n";
+        assert_eq!(parse_check(quoted).unwrap().verdict, "affected", "a quoted manifest above the verdict is not it");
+        assert!(parse_check("```toml\nverdict = \"unsure\"\n```\n```toml\nx = 1\n```").is_ok(), "the last block that names one");
+        assert!(parse_check("```toml\nverdict = \"unsure\"").unwrap_err().contains("cut off"));
         let long = format!("```toml\nverdict = \"affected\"\nevidence = [{}]\n```", vec!["\"x\""; 20].join(","));
         assert_eq!(parse_check(&long).unwrap().evidence.len(), 8, "capped");
     }
