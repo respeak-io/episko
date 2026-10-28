@@ -982,8 +982,8 @@ export function renderDash(): void {
   const items = rankQueue({
     threads: gh.threads, stale, adv: dn.adv, prs: dn.prs, out: dn.out,
     notes: noteList(root()), shared: theirs, holder, now,
-    // The cache and the snapshot only: Today never scans, so a red branch is as old as the last check.
-    ci: ciRows(maintInput(root()), maintSnap(root()), now),
+    // The cache and the snapshot only: Today never scans, and a scan kept from last session dates its row.
+    ci: ciRows(maintOf(root())?.kept ? null : maintInput(root()), maintSnap(root()), now),
   });
   // The search is the pool and the chips narrow it: the tally is of everything the search
   // left, never of what the filter left, so a chip still says what it would reveal.

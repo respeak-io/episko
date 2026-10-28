@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
-  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText,
@@ -1394,6 +1394,42 @@ describe("the cold-boot snapshot (cc-maint)", () => {
     expect(tabGaps("delivery", [{ path: "/r", cells }]).read).toBe(0);
     expect(coverGroups("delivery", [{ path: "/r", inp: { det: null, reports: {} }, cells }], null, NOW).map((g) => [g.what, g.why]))
       .toEqual([["CI", "not checked this session"], ["Release", "not checked this session"]]);
+  });
+});
+
+describe("the last scan kept whole (cc-maint-scan)", () => {
+  const scan = (at: number) => {
+    const inp = input(ok(GHA, ci(run("build", "fail", S - D))), ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
+      not("github-code-scanning", "security", { state: "off", reason: "no analysis" }));
+    return { at, account: "me", det: inp.det!, reports: { ...inp.reports } };
+  };
+
+  it("round-trips through the store, so a boot draws exactly what the scan read", () => {
+    const k = { "/r": scan(NOW) };
+    expect(clampKept(JSON.parse(JSON.stringify(k)))).toEqual(k);
+    expect(clampKept(JSON.parse(JSON.stringify({ "/r": { ...scan(NOW), account: undefined } })))["/r"].account).toBeNull();
+  });
+
+  it("drops a root of the wrong shape on its own, and a mangled report becomes that source's error, never facts", () => {
+    const back = clampKept({
+      "/a": scan(NOW), "/b": { ...scan(NOW), det: null }, "/c": { ...scan(NOW), at: 0 }, "/d": "x", "": scan(NOW),
+      "/e": { ...scan(NOW), reports: { [GHA]: { source: GHA, coverage: { state: "ok" }, facet: "ci", facts: { kind: "ciRuns" } } } },
+    });
+    expect(Object.keys(back).sort()).toEqual(["/a", "/e"]);
+    expect(back["/e"].reports[GHA].coverage.state).toBe("error");
+    expect(back["/e"].reports[GHA].facts).toBeNull();
+    expect(clampKept(null)).toEqual({});
+    expect(clampKept([scan(NOW)])).toEqual({});
+  });
+
+  it("keeps the newest scans that fit, leaving the rest to their snapshot", () => {
+    const all = { "/old": scan(NOW - D), "/new": scan(NOW), "/mid": scan(NOW - H) };
+    const one = JSON.stringify({ "/new": all["/new"] }).length;
+    expect(Object.keys(packKept(all, one))).toEqual(["/new"]);
+    expect(Object.keys(packKept(all, JSON.stringify({ "/new": all["/new"], "/mid": all["/mid"] }).length))).toEqual(["/new", "/mid"]);
+    expect(Object.keys(packKept(all))).toEqual(["/new", "/mid", "/old"]);
+    expect(JSON.stringify(packKept(all, one)).length).toBe(one);
+    expect(packKept(all, 10)).toEqual({});
   });
 });
 
