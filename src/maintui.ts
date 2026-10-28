@@ -8,11 +8,15 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, coverFirst, covText, FACET_TAB, facetCell, offers, prodChecks, SEV_BUCKETS, tabFindings, type SevBucket } from "./maint";
+import {
+  clampMaint, coverFirst, covText, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, tabFindings,
+  type BoardId, type MaintTab, type ProjectPick, type SevBucket,
+} from "./maint";
 import { briefFor } from "./maintbrief";
 import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
-import { MAINT_CHIPS, MAINT_SUBS, type MaintChip, type MaintSub } from "./maintview";
+import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
+import { openMenu } from "./menu";
 import { discoverTasks, execCmd } from "./tasks";
 import type { GitActionResult } from "./types";
 
@@ -23,7 +27,9 @@ export interface MaintHost {
   prefill: (project: string, path: string, text: string) => void;
   openDashboard: (name: string, path: string, tab?: "today" | "maint") => void;
   // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
-  openTab: (sub: MaintSub, root?: string | null) => void;
+  // `board` set scrolls to that board once painted, null to the tab's top.
+  openTab: (sub: MaintSub, root?: string | null, board?: BoardId | null) => void;
+  picks?: (tab: MaintTab) => ProjectPick[]; // the fleet's project picker; the dashboard is one project
   render: () => void;
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
@@ -85,6 +91,22 @@ async function checkProd(roots: readonly string[]): Promise<void> {
 
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
 
+const ALL = "*"; // the menu's "All projects": a root is an absolute path, never this
+function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
+  if (sub === "overview" || !host.picks) return;
+  const cur = at.dataset.mtroot || null, picks = host.picks(sub);
+  const needs = (n: number) => n ? `${n} need${n === 1 ? "s" : ""} you` : undefined;
+  const tone = (p: ProjectPick) => p.level === "bad" || p.level === "warn" ? p.level : undefined;
+  openMenu(at, {
+    title: tabName(sub), sub: "show one project's rows",
+    groups: [
+      { items: [{ id: ALL, label: "All projects", mark: cur ? "" : "✓" }] },
+      { label: "Projects", items: picks.map((p) => ({ id: p.root, label: p.name, mark: p.root === cur ? "✓" : "", sub: needs(p.n), tone: tone(p) })) },
+    ],
+    onPick: (id) => host.openTab(sub, id === ALL ? null : id),
+  });
+}
+
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   const scan = t.closest<HTMLElement>("[data-mtscan]");
@@ -108,8 +130,8 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   }
   const tab = t.closest<HTMLElement>("[data-mttab]");
   if (tab) { host.openTab(subOf(tab.dataset.mttab)); return true; }
-  const clear = t.closest<HTMLElement>("[data-mtclear]");
-  if (clear) { host.openTab(subOf(clear.dataset.mtclear), null); return true; }
+  const pick = t.closest<HTMLElement>("[data-mtpick]");
+  if (pick) { pickProject(pick, subOf(pick.dataset.mtpick), host); return true; }
   const view = t.closest<HTMLElement>("[data-mtview]");
   if (view) { host.openView?.(view.dataset.mtview === "branches" ? "branches" : "deps"); return true; }
   const across = t.closest<HTMLElement>("[data-mtacross]");
@@ -127,6 +149,16 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
+  // A card line, after its verb so Patch only prefills: the tab and board that line summarises.
+  const find = t.closest<HTMLElement>("[data-mtfind]");
+  if (find) {
+    const facet = find.dataset.mtfind as Facet;
+    if (!FACETS.includes(facet)) return true;
+    const to = findingTarget({ facet, key: find.dataset.mtkey ?? "" });
+    maintSev = null; // a severity picked earlier could hide the very rows this line counts
+    host.openTab(to.tab, find.dataset.mtroot!, to.board);
+    return true;
+  }
   const cell = t.closest<HTMLElement>("[data-mtcell]");
   if (cell) {
     const facet = cell.dataset.mtcell as Facet, root = cell.dataset.mtroot!, inp = maintInput(root);
@@ -138,4 +170,13 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   const proj = t.closest<HTMLElement>("[data-mtproj]");
   if (proj) { host.openDashboard(proj.dataset.mtname!, proj.dataset.mtproj!, "maint"); return true; }
   return false;
+}
+
+/** Enter or Space on a card line's text opens it as a click would; its verb is a button of its own. */
+export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
+  const t = e.target;
+  if ((e.key !== "Enter" && e.key !== " ") || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+  if (!(t instanceof HTMLElement) || !t.matches("[data-mtfind] > .t")) return false;
+  e.preventDefault();
+  return maintClick(t, host);
 }

@@ -17,12 +17,13 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, coverGroups, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, rankMaint, tabBoards, tabExtras, tabGaps, tabRows, tabTally,
-  type Cell, type MaintInput, type TabProject,
+  clampMaint, comingUp, coverGroups, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabBoards, tabExtras,
+  tabFindings, tabGaps, tabRows, tabTally,
+  type BoardId, type Cell, type Finding, type MaintInput, type MaintTab, type ProjectPick, type TabProject,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
-import { maintClick, maintChip, maintSev, quietOpen, type MaintHost } from "./maintui";
+import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost } from "./maintui";
 import {
   maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintRow, type MaintSub, type MaintView,
 } from "./maintview";
@@ -121,11 +122,17 @@ let maintSub: MaintSub = "overview";
 let maintFilter: string | null = null;
 // A project removed since its cell was clicked narrows to nothing, so its filter lapses everywhere.
 const liveFilter = () => maintFilter !== null && maintRoots().includes(maintFilter) ? maintFilter : null;
-function setMaintTab(sub: MaintSub, root?: string | null): void {
+function setMaintTab(sub: MaintSub, root?: string | null, board?: BoardId | null): void {
   maintSub = sub;
   if (root !== undefined) maintFilter = root;
   if (sub === "overview") maintFilter = null; // the cards are every project's or nothing
   renderFleet();
+  if (board === undefined) return;
+  // Painted above, so the board is there to scroll to; a board this project has none of lands on the tab's top.
+  // Focus follows, since the repaint took the focused line with it.
+  const at = board && document.getElementById(`mtb-${board}`);
+  (at || document.querySelector("#fleetBody .mt-tabs"))?.scrollIntoView({ block: "start" });
+  (at || document.querySelector<HTMLElement>("#fleetBody .mt-pick"))?.focus({ preventScroll: true });
 }
 function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
 /** A dashboard card's "all projects": Maintenance on that tab, unfiltered. Choosing it is the ask. */
@@ -360,9 +367,25 @@ function whereSub(inp: MaintInput): string {
   return [f.host, f.path].filter(Boolean).join("/") || f.kind;
 }
 
-function buildMaint(now: number): MaintView {
+// One card per repo: worktrees collapse to their root, the first project of it naming the card.
+function maintProjects(): Map<string, ProjGroup> {
   const byRoot = new Map<string, ProjGroup>();
   for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
+  return byRoot;
+}
+
+// The picker's list, on a click only: every project, with the rows buildMaint counts for the tab badges.
+function maintPicks(tab: MaintTab): ProjectPick[] {
+  const now = Date.now(), byRoot = maintProjects(), rows: Finding[] = [];
+  for (const root of byRoot.keys()) {
+    const inp = maintInput(root);
+    if (inp) rows.push(...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds), now));
+  }
+  return projectPicks(tab, rows, [...byRoot].map(([root, p]) => ({ root, name: p.name })));
+}
+
+function buildMaint(now: number): MaintView {
+  const byRoot = maintProjects();
   const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [], offered: MaintRow[] = [];
   const seen: TabProject[] = [];
   const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
@@ -517,7 +540,8 @@ const maintHost: MaintHost = {
   nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
   prefill: (project, path, text) => host.prefill(project, path, text),
   openDashboard: (name, path, tab) => host.openDashboard(name, path, tab),
-  openTab: (sub, root) => setMaintTab(sub, root),
+  openTab: (sub, root, board) => setMaintTab(sub, root, board),
+  picks: (tab) => maintPicks(tab),
   render: () => renderFleet(),
   roots: () => maintRoots(),
 };
@@ -551,4 +575,5 @@ export function wireFleet(): void {
     const proj = t.closest<HTMLElement>("[data-flproj]");
     if (proj) { host.openDashboard(proj.dataset.flname!, proj.dataset.flproj!); return; }
   });
+  $("fleetPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); });
 }

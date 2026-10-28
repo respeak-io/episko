@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, MAINT_TABS, needsCount, span, type AdvRow, type Band, type Boards, type Cell, type CiStatus, type CoverGroup, type CoverRow,
+  CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, span, type AdvRow, type Band, type BoardId, type Boards, type Cell, type CiStatus, type CoverGroup, type CoverRow,
   type Finding, type FlowRow, type HygCount, type Hygiene, type Kv, type Level, type MaintSnap, type MaintTab, type ProbeRow, type SevBucket,
   type SnapFinding, type TabCount, type Verb,
 } from "./maint";
@@ -162,12 +162,17 @@ ${said}` : said)}">${esc(label)}</button>`;
 const projHtml = (root: string, name: string) =>
   `<span class="mt-rn" data-mtproj="${escAttr(root)}" data-mtname="${escAttr(name)}" data-tip="${escAttr(`Open ${name}`)}">${esc(name)}</span>`;
 
+// A card line opens what it summarises: its tab, narrowed to the project, at the board that counts it.
+const goAttrs = (facet: Facet, key: string, root: string) =>
+  ` data-mtfind="${facet}" data-mtkey="${escAttr(key)}" data-mtroot="${escAttr(root)}"`
+  + ` data-tip="${escAttr(`Open in ${TAB_TEXT[findingTarget({ facet, key }).tab][0]}`)}"`;
+
 // A tab's row names its project, and the name is that project's door, as a card's is.
-function findingHtml(f: Finding, name?: string): string {
+function findingHtml(f: Finding, name?: string, go = false): string {
   const detail = verbText(f)[2];
   const who = name === undefined ? "" : projHtml(f.root, name);
-  return `<div class="mt-find l-${f.level}"><i class="mt-sev"></i>${who}
-    <span class="t">${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
+  return `<div class="mt-find l-${f.level}${go ? " go" : ""}"${go ? goAttrs(f.facet, f.key, f.root) : ""}><i class="mt-sev"></i>${who}
+    <span class="t"${go ? ` tabindex="0" role="button"` : ""}>${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
     ${verbHtml(f)}</div>`;
 }
 
@@ -209,8 +214,8 @@ function coverHtml(v: MaintView): string {
 }
 
 // A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.
-const pastHtml = (f: SnapFinding): string =>
-  `<div class="mt-find past"><i class="mt-sev"></i><span class="t">${esc(f.text)}</span></div>`;
+const pastHtml = (f: SnapFinding, root: string): string =>
+  `<div class="mt-find past go"${goAttrs(f.facet, f.key, root)}><i class="mt-sev"></i><span class="t">${esc(f.text)}</span></div>`;
 
 const avatar = (c: MaintCard) => c.icon
   ? `<span class="fc-av"><img class="picon" src="${escAttr(c.icon)}" alt="" /></span>`
@@ -224,8 +229,8 @@ function cardHtml(c: MaintCard, compact: boolean): string {
       <span class="mt-sub mono">${esc(sub)}</span></div>`;
   const cells = `<div class="mt-cells">${c.cells.map((x) => cellHtml(x, c)).join("")}</div>`;
   const finds = compact ? ""
-    : c.findings.length ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f)).join("")}</div>`
-    : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map(pastHtml).join("")}</div>` : "";
+    : c.findings.length ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f, undefined, true)).join("")}</div>`
+    : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map((f) => pastHtml(f, c.path)).join("")}</div>` : "";
   return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}">${id}${cells}${finds}</article>`;
 }
 
@@ -283,6 +288,7 @@ const TAB_TEXT: Record<MaintSub, [string, string]> = {
   servers: ["Servers", "Where the projects run and whether it answers, across every project"],
   work: ["Work", "Open issues, pull requests and reviews waiting on you, across every project"],
 };
+export const tabName = (s: MaintSub): string => TAB_TEXT[s][0];
 const SECTION: Record<Facet, string> = {
   ci: "CI on the default branch", release: "Unreleased work", security: "Advisories and findings",
   deps: "Update pull requests", git: "Branches and pushes", prod: "Endpoints", work: "Open work",
@@ -315,9 +321,10 @@ function runsHtml(runs: readonly CiStatus[]): string {
     + runs.map((x) => `<i class="${RUN_CLS[x] ?? ""}"></i>`).join("") + `</span>`;
 }
 
-// A board is a card of its own; its note says what it covers and how many projects were read.
-const board = (title: string, note: string, body: string) =>
-  `<section class="mt-sec mt-board"><div class="mt-sec-h"><span class="label">${esc(title)}</span>`
+// A board is a card of its own; its note says what it covers and how many projects were read. Its
+// id is where a card line opens (./maint findingTarget).
+const board = (id: BoardId, title: string, note: string, body: string) =>
+  `<section class="mt-sec mt-board" id="mtb-${id}" tabindex="-1"><div class="mt-sec-h"><span class="label">${esc(title)}</span>`
   + `<span class="mt-note mono">${esc(note)}</span></div>${body}</section>`;
 const empty = (text: string) => `<p class="fl-none">${esc(text)}</p>`;
 const table = (cols: string[], rows: string[]) => `<div class="mt-scroll"><table class="mt-tbl"><thead><tr>`
@@ -356,12 +363,12 @@ function securityHtml(v: MaintView, b: Boards): string {
   const all = b.strip.reduce((k, c) => k + c.n, 0);
   const rows = b.adv.length ? `<div class="mt-advs">${b.adv.map((r) => advHtml(v, r)).join("")}</div>`
     : empty(all ? "No row of that severity. Click it again for every one." : "No open advisory or finding.");
-  const adv = b.read.security || all ? board("Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows) : "";
+  const adv = b.read.security || all ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows) : "";
   const prs = b.prs.length ? table(["Project", "Bot", ">Open", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${td(projHtml(r.root, nameOf(v, r.root)))}`
     + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info") + (r.capped ? "+" : ""), "r")
     + td(num(r.red, "warn", "update pull requests whose checks fail"), "r") + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`))
     : empty("No open update pull request.");
-  return adv + (b.prs.length || b.read.deps ? board("Update pull requests", readNote(b.read.deps), prs) : "");
+  return adv + (b.prs.length || b.read.deps ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs) : "");
 }
 
 function deliveryHtml(v: MaintView, b: Boards): string {
@@ -372,8 +379,8 @@ function deliveryHtml(v: MaintView, b: Boards): string {
     + td(r.tag ? `${esc(r.tag)}${r.tagAge !== null ? ` <span class="dim">· ${esc(span(r.tagAge))}</span>` : ""}` : `<span class="dim">never tagged</span>`, "mono")
     + td(r.tag ? `<span class="mt-barc">${barHtml(r.ratio, r.level)}${num(r.since, r.level === "warn" ? "warn" : "info")}</span>` : DASH)
     + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`));
-  return (b.ci.length ? board("CI on the default branch", `last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
-    + (b.releases.length ? board("Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
+  return (b.ci.length ? board("ci", "CI on the default branch", `last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
+    + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
 }
 
 function codeHtml(v: MaintView, b: Boards): string {
@@ -384,7 +391,7 @@ function codeHtml(v: MaintView, b: Boards): string {
       : "no trunk, so nothing counts as merged"), "r") + td(countHtml(r.gone), "r") + td(countHtml(r.idle), "r")
     + td(r.fetched.age === null ? DASH : `<span class="mt-n ${LEVEL_CLS[r.fetched.level]}">${esc(span(r.fetched.age))}</span>`, "r mono")
     + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`);
-  return board("Git hygiene", `as of each repo's last fetch · ${readNote(b.read.git)}`,
+  return board("hygiene", "Git hygiene", `as of each repo's last fetch · ${readNote(b.read.git)}`,
     table(["Project", ">Unpushed", ">Only here", ">Merged", ">Gone", ">Idle worktrees", ">Fetched", ""], rows));
 }
 
@@ -396,13 +403,13 @@ function workHtml(v: MaintView, b: Boards): string {
       : num(r.review, "warn"), "r")
     + td(`<span class="mt-barc">${barHtml(r.issuesRatio, "info")}${num(r.issues, "info")}</span>`)
     + td(`<span class="mt-barc">${barHtml(r.prsRatio, "info")}${num(r.prs, "info")}</span>`) + verbTd(r.verbs[0] ?? null) + `</tr>`);
-  return board("Open work", `reviews waiting on you first · ${readNote(b.read.work)}`,
+  return board("work", "Open work", `reviews waiting on you first · ${readNote(b.read.work)}`,
     table(["Project", ">Review requested", "Issues", "Pull requests", ""], rows));
 }
 
 function serversHtml(v: MaintView, b: Boards): string {
   if (!b.probes.length) {
-    return b.unchecked ? board("Addresses", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
+    return b.unchecked ? board("addresses", "Addresses", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
       + `<p class="fl-none">${prodHtml(v.prod, v.filter?.root)}</p>`) : "";
   }
   const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${td(projHtml(r.root, nameOf(v, r.root)))}`
@@ -410,7 +417,7 @@ function serversHtml(v: MaintView, b: Boards): string {
     + td(`<span class="mt-n ${LEVEL_CLS[r.level]}">${esc(r.code === null ? "no answer" : String(r.code))}</span>`, "r mono")
     + td(r.ms === null ? DASH : esc(`${r.ms}ms`), "r mono")
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);
-  return board("Addresses", `as last checked · ${readNote(b.read.prod)}`, table(["Project", "Address", ">Status", ">Latency", ">Certificate", ""], rows));
+  return board("addresses", "Addresses", `as last checked · ${readNote(b.read.prod)}`, table(["Project", "Address", ">Status", ">Latency", ">Certificate", ""], rows));
 }
 
 const BOARDS: Record<MaintTab, (v: MaintView, b: Boards) => string> = {
@@ -419,9 +426,10 @@ const BOARDS: Record<MaintTab, (v: MaintView, b: Boards) => string> = {
 
 function tabHtml(v: MaintView, tab: MaintTab): string {
   const label = TAB_TEXT[tab][0];
-  const only = v.filter
-    ? `<span class="mt-only">only <b>${esc(v.filter.name)}</b><button class="mt-x" data-mtclear="${tab}"`
-      + ` data-tip="Every project again (Esc)" aria-label="Show every project">✕</button></span>` : "";
+  // The project picker: ./maintui opens the menu, and the root it carries is the one ticked.
+  const pick = `<button class="mt-pick${v.filter ? " on" : ""}" data-mtpick="${tab}" data-mtroot="${escAttr(v.filter?.root ?? "")}"`
+    + ` aria-haspopup="menu" data-tip="${escAttr(v.filter ? "Show another project, or every one (Esc)" : "Show one project only")}">`
+    + `<span>Project</span><b>${esc(v.filter?.name ?? "All projects")}</b><span class="car" aria-hidden="true">▾</span></button>`;
   const boards = v.boards ? BOARDS[tab](v, v.boards) : "";
   // What no board carries (a facet nobody set up, a stale fetch with no git read) is still a line with its verb.
   const rest = FACETS.filter((f) => FACET_TAB[f] === tab).flatMap((f) => {
@@ -433,7 +441,7 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
-  return (only ? `<div class="mt-top">${only}</div>` : "") + (tab === "servers" ? hostsHtml(v.hosts) : "")
+  return `<div class="mt-top">${pick}</div>` + (tab === "servers" ? hostsHtml(v.hosts) : "")
     + (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
 }
 
