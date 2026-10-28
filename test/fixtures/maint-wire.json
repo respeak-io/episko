@@ -334,6 +334,55 @@
       "truncated": false
     },
     {
+      "at": 1790000000,
+      "cost": "public",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "security",
+      "facts": {
+        "items": [
+          {
+            "cycle": "18",
+            "declared": "18",
+            "eol": 1745971200,
+            "file": ".nvmrc",
+            "latest": "18.20.8",
+            "name": "node",
+            "newest": "26",
+            "product": "nodejs",
+            "url": "https://endoflife.date/nodejs"
+          },
+          {
+            "cycle": "3",
+            "declared": "3",
+            "eol": true,
+            "file": "Dockerfile",
+            "latest": null,
+            "name": "node",
+            "newest": "26",
+            "product": "nodejs",
+            "url": null
+          },
+          {
+            "cycle": null,
+            "declared": "99",
+            "eol": null,
+            "file": "compose.yml",
+            "latest": null,
+            "name": "postgres",
+            "newest": "18",
+            "product": "postgresql",
+            "url": null
+          }
+        ],
+        "kind": "runtimes"
+      },
+      "gaps": [],
+      "source": "runtime-eol",
+      "truncated": false
+    },
+    {
       "at": null,
       "cost": "forge",
       "coverage": {

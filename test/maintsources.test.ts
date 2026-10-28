@@ -109,6 +109,8 @@ describe("what a mode may run", () => {
   it("gives every public source, and only those, a disclosure naming what it sends", () => {
     for (const s of SOURCES) expect(disclosure(s) !== null, s.id).toBe(s.cost === "public");
     expect(disclosure(sourceDef("osv"))).toMatch(/^OSV\.dev receives .*lockfiles\. Nothing else leaves this machine\.$/);
+    expect(disclosure(sourceDef("runtime-eol")), "a runtime's name only").toMatch(/receives the name of each runtime .*never a version or a path\. Nothing else/);
+    expect(sourceDef("runtime-eol")).toMatchObject({ facet: "security", cost: "public", sees: ["sec.runtime"] });
   });
 });
 
@@ -117,7 +119,7 @@ describe("the frontend never names a vendor", () => {
   // Every word a label or ForgeKind holds, less the generic ones, so a new vendor row is caught unlisted.
   const generic = new Set(["ci", "on", "host", "actions", "pipelines", "alerts", "code", "scanning", "secret", "dev",
     "audit", "releases", "issues", "local", "branches", "git", "tags", "changelog", "md", "commit", "statuses",
-    "unknown", "none", "sarif", "files", "url", "checks"]); // SARIF is an open standard, not a vendor
+    "unknown", "none", "sarif", "files", "url", "checks", "date"]); // SARIF is an open standard; "date" is endoflife.date's TLD, "endoflife" the vendor
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([
     ...labels.flatMap((l) => l.toLowerCase().split(/[^a-z0-9]+/)), ...variants("ForgeKind", forgeRs),

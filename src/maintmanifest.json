@@ -70,6 +70,15 @@
       "sees": ["sec.dependency"],
       "blind": ["sec.code", "sec.secret"]
     },
+    "runtime-eol": {
+      "facet": "security", "label": "endoflife.date", "cost": "public", "forge": [],
+      "detect": [".nvmrc", ".node-version", "package.json#engines", ".python-version", "pyproject.toml", "rust-toolchain",
+                 "rust-toolchain.toml", "go.mod", "Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml",
+                 "compose.yaml", ".tool-versions"],
+      "sends": "the name of each runtime this project declares (nodejs, python, postgresql…), never a version or a path",
+      "sees": ["sec.runtime"],
+      "blind": ["sec.dependency", "sec.code", "sec.secret"]
+    },
     "dependabot-prs": {
       "facet": "deps", "label": "Dependabot", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["deps.update-prs", "deps.pr-checks"],

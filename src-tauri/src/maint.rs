@@ -179,6 +179,29 @@ pub(crate) struct Probe {
     pub(crate) err: Option<String>,
 }
 
+/// A release cycle's end: a date (unix secs), or the bare yes or no a list gives where it names none.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum Eol {
+    At(u64),
+    Flag(bool),
+}
+
+/// One runtime as one file declares it, and the release cycle that version is in.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Runtime {
+    pub(crate) product: String, // the list's id: nodejs, postgresql
+    pub(crate) name: String,    // as a project calls it: node, postgres
+    pub(crate) declared: String,
+    pub(crate) cycle: Option<String>, // None: no listed cycle holds the version, so its end is unknown
+    pub(crate) eol: Option<Eol>,
+    pub(crate) latest: Option<String>, // the newest release in that cycle
+    pub(crate) newest: Option<String>, // the newest cycle listed
+    pub(crate) file: String,
+    pub(crate) url: Option<String>,
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum Facts {
@@ -191,6 +214,7 @@ pub(crate) enum Facts {
     Hygiene(Hygiene),
     Work { issues: u32, prs: u32, review_requested: Option<u32> },
     Probes { items: Vec<Probe> },
+    Runtimes { items: Vec<Runtime> },
 }
 
 impl Facts {
@@ -198,7 +222,7 @@ impl Facts {
     pub(crate) fn facet(&self) -> Facet {
         match self {
             Facts::CiRuns { .. } => Facet::Ci,
-            Facts::Advisories { .. } => Facet::Security,
+            Facts::Advisories { .. } | Facts::Runtimes { .. } => Facet::Security,
             Facts::UpdatePrs { .. } => Facet::Deps,
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
@@ -302,7 +326,7 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled", "ci.external", "ci.other-branches",
     "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
     "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
-    "sec.dependency", "sec.code", "sec.secret", "deps.update-prs", "deps.pr-checks",
+    "sec.dependency", "sec.code", "sec.secret", "sec.runtime", "deps.update-prs", "deps.pr-checks",
     "work.issues", "work.prs", "work.review-requested", "prod.status", "prod.cert", "prod.host",
 ];
 
@@ -1241,6 +1265,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "npm-audit", read: crate::maint_sec::npm_audit },
     SourceDef { id: "pnpm-audit", read: crate::maint_sec::pnpm_audit },
     SourceDef { id: "cargo-audit", read: crate::maint_sec::cargo_audit },
+    SourceDef { id: "runtime-eol", read: crate::maint_eol::runtime_eol },
     SourceDef { id: "dependabot-prs", read: crate::maint_repo::dependabot_prs },
     SourceDef { id: "renovate-prs", read: crate::maint_repo::renovate_prs },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
@@ -1511,6 +1536,7 @@ mod tests {
             "Cargo.lock" => FakeExec::testdata("lock-cargo.lock"),
             "package-lock.json" => FakeExec::testdata("lock-npm-v3.json"),
             "pnpm-lock.yaml" => FakeExec::testdata("lock-pnpm-v9.yaml"),
+            ".nvmrc" => "18\n".into(),
             _ => String::new(),
         }
     }
@@ -1720,7 +1746,7 @@ mod tests {
         }
         let want: BTreeSet<&str> = MANIFEST.sources.iter().filter(|(_, s)| matches!(s.cost, Cost::Tool | Cost::Public)).map(|(id, _)| id.as_str()).collect();
         assert_eq!(seen, want);
-        assert!(want.contains("osv") && want.contains("cargo-audit"), "{want:?}");
+        assert!(want.contains("osv") && want.contains("cargo-audit") && want.contains("runtime-eol"), "{want:?}");
     }
 
     #[test]
@@ -2091,6 +2117,17 @@ host = \"-oProxyCommand=x\"
                 name: "app".into(), url: "https://app.example.com".into(), code: Some(200), ms: Some(120),
                 cert_not_after: Some(1_795_000_000), err: None,
             }] }),
+            ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: vec![Runtime {
+                product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
+                eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
+                file: ".nvmrc".into(), url: Some("https://endoflife.date/nodejs".into()),
+            }, Runtime {
+                product: "nodejs".into(), name: "node".into(), declared: "3".into(), cycle: Some("3".into()),
+                eol: Some(Eol::Flag(true)), latest: None, newest: Some("26".into()), file: "Dockerfile".into(), url: None,
+            }, Runtime {
+                product: "postgresql".into(), name: "postgres".into(), declared: "99".into(), cycle: None,
+                eol: None, latest: None, newest: Some("18".into()), file: "compose.yml".into(), url: None,
+            }] }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
             // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
             not("dependabot-alerts", crate::deps::coverage_of("HTTP 403: token lacks security_events", None)),
@@ -2129,7 +2166,7 @@ version_url = \"https://app.example.com/version\"
     /// A new variant stops at these exhaustive matches; name it in `ALL_*` beside them, and
     /// `wire_fixture_is_current` then fails until the sample carries it.
     const ALL_STATES: [&str; 7] = ["ok", "off", "noAccess", "noTool", "unsupported", "notRun", "error"];
-    const ALL_KINDS: [&str; 9] = ["ciRuns", "advisories", "updatePrs", "release", "releases", "changelog", "hygiene", "work", "probes"];
+    const ALL_KINDS: [&str; 10] = ["ciRuns", "advisories", "updatePrs", "release", "releases", "changelog", "hygiene", "work", "probes", "runtimes"];
 
     fn state_of(c: &Coverage) -> &'static str {
         match c {
@@ -2154,6 +2191,7 @@ version_url = \"https://app.example.com/version\"
             Facts::Hygiene(_) => "hygiene",
             Facts::Work { .. } => "work",
             Facts::Probes { .. } => "probes",
+            Facts::Runtimes { .. } => "runtimes",
         }
     }
 

@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  ciFailures, mergeAdvisories, okFacts, redFor, span,
-  type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type Verb,
+  ciFailures, clampMaint, mergeAdvisories, okFacts, redFor, rtName, runtimeStates, span,
+  type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type RuntimeState, type Verb,
 } from "./maint";
 
 export interface MaintBriefCtx {
@@ -137,6 +137,31 @@ const codeBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
+// Every runtime past or near its end, as the one Upgrade line counts them, worst first.
+const upgradeBrief: Brief = (_f, inp, ctx) => {
+  const due = runtimeStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now).filter((r) => r.level === "bad" || r.level === "warn");
+  if (!due.length) return null;
+  const one = due.length === 1, r = due[0];
+  const when = (x: RuntimeState) => typeof x.eol === "number" ? ` on ${new Date(x.eol * 1000).toISOString().slice(0, 10)}` : "";
+  const end = (x: RuntimeState) => x.level === "bad" ? `reached its end of life${when(x)}` : `reaches its end of life${when(x)}`;
+  return [
+    one ? `Upgrade ${rtName(r)} in ${ctx.project}: it ${end(r)}, and gets no security fixes after it.`
+      : `Upgrade ${due.length} runtimes in ${ctx.project} at or near their end of life, worst first. Each gets no security fixes after it.`,
+    ...each(due, (x) => `${rtName(x)} · ${x.text}`, (x) => [
+      ...(one ? [] : [`It ${end(x)}.`]), ...(x.url ? [x.url] : []), ...(one ? [""] : []),
+      ...x.decls.map((d) => bullet(`${d.file} declares ${d.declared}`)),
+      ...(x.newest ? [bullet(`the newest cycle is ${x.newest}`)] : []),
+    ]),
+    "",
+    "Move each to a supported cycle, the newest the project's dependencies allow, in every file that",
+    "declares it, and keep them in step: version files, the engines field, Dockerfiles, compose files and",
+    "the CI matrix. Search the repository for the old version too: the files above are only those read.",
+    "Read the runtime's release notes between the two cycles and say what changes for this code first.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
 const releaseBrief: Brief = (f, inp, ctx) => {
   const r = factsOf(f, inp, "release");
   if (!r?.tag || !r.since) return null;
@@ -256,7 +281,7 @@ const setupBrief: Brief = (f, inp, ctx) => {
 const BRIEFS: Record<Verb, Brief> = {
   fix: (f, inp, ctx) => f.facet === "prod" ? prodBrief(f, inp, ctx) : f.facet === "ci" ? ciBrief(f, inp, ctx)
     : f.facet === "security" ? codeBrief(f, inp, ctx) : null,
-  patch: patchBrief, rotate: rotateBrief, release: releaseBrief, push: pushBrief, tidy: tidyBrief, review: reviewBrief,
+  patch: patchBrief, rotate: rotateBrief, upgrade: upgradeBrief, release: releaseBrief, push: pushBrief, tidy: tidyBrief, review: reviewBrief,
   setup: setupBrief, fetch: () => null, run: () => null, // a fetch and a read are not an agent's work
 };
 

@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, span, type AdvRow, type Band,
+  advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Door, type Finding, type FlowRow, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
 } from "./maint";
@@ -75,6 +75,7 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "rel.unreleased": "unreleased commits", "rel.last": "the last release tag", "rel.published": "published releases",
   "rel.changelog": "the changelog's Unreleased section",
   "sec.dependency": "advisories in dependencies", "sec.code": "code scanning findings", "sec.secret": "committed secrets",
+  "sec.runtime": "runtimes at their end of life",
   "deps.update-prs": "open update pull requests", "deps.pr-checks": "the checks on each update pull request",
   "work.issues": "open issues", "work.prs": "open pull requests", "work.review-requested": "reviews requested of you",
   "prod.status": "whether each [deploy] address answers", "prod.cert": "when its certificate expires",
@@ -137,7 +138,8 @@ function cellHtml(c: Cell, card: MaintCard, go = `Click: ${TAB_TEXT[FACET_TAB[c.
 }
 
 const VERB: Record<Verb, [string, string]> = {
-  fix: ["Fix ↗", "agent"], patch: ["Patch ↗", "agent"], rotate: ["Rotate ↗", "agent"], release: ["Draft release ↗", "agent"],
+  fix: ["Fix ↗", "agent"], patch: ["Patch ↗", "agent"], rotate: ["Rotate ↗", "agent"], upgrade: ["Upgrade ↗", "agent"],
+  release: ["Draft release ↗", "agent"],
   push: ["Push ↗", "agent"], tidy: ["Tidy ↗", "agent"], setup: ["Set up ↗", "agent"],
   review: ["Review", "Open this project to review them"],
   fetch: ["Fetch", "git fetch here, then check this project again"],
@@ -294,7 +296,7 @@ function clearHtml(v: MaintView): string {
 
 const TAB_TEXT: Record<MaintSub, [string, string]> = {
   overview: ["Overview", "One card per project, worst first"],
-  security: ["Security", "Advisories, scanner findings and update pull requests, across every project"],
+  security: ["Security", "Advisories, scanner findings, runtimes at their end of life and update pull requests, across every project"],
   delivery: ["Delivery", "CI on the default branch and unreleased work, across every project"],
   code: ["Code", "Unpushed work, branches to tidy and stale fetches, across every project"],
   servers: ["Servers", "Where the projects run and whether it answers, across every project"],
@@ -416,8 +418,8 @@ function securityHtml(v: MaintTabView, b: Boards): string {
   const rows = b.adv.length ? `<div class="mt-advs">${b.adv.map((r) => advHtml(v, b, r)).join("")}</div>`
     : empty(all ? "No row of that severity. Click it again for every one." : "No open advisory or finding.");
   // The overlay's ⤢ sits once, on the first board drawn; with none, Packages is drawn to carry it.
-  const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.read.security || all), hasPrs = !!(b.prs.length || b.read.deps);
-  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.read.security)}`, stripHtml(v, b) + rows, door) : "";
+  const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.advRead || all), hasPrs = !!(b.prs.length || b.read.deps);
+  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.advRead)}`, stripHtml(v, b) + rows, door) : "";
   const prs = b.prs.length ? table([...projCol(b), "Bot", ">Open", ">Green", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info", "", ["update-prs", "open", r.root]) + (r.capped ? "+" : ""), "r")
     + td(num(r.green, "info", "checks pass and not a draft", ["update-prs", "green", r.root]), "r")
@@ -428,7 +430,22 @@ function securityHtml(v: MaintTabView, b: Boards): string {
   const pkgs = out || (door && first) ? board("packages", "Packages", "this project's package manager", out
     ? `<div class="mt-kv"><span>Out of date</span><span class="mono">${esc(out)}</span></div>`
     : empty("Every advisory and update pull request the dependency read found is behind ⤢."), first ? door : "") : "";
-  return adv + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
+  const eol = b.eol.length ? board("runtimes", "Runtime end-of-life",
+    `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b)) : "";
+  return adv + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
+}
+
+// One row per runtime cycle a project declares; its end opens the page that dates it, muted unless it needs you.
+function eolHtml(v: MaintTabView, b: Boards): string {
+  return table([...projCol(b), "Runtime", "Declared", ">Ends", "From", ""], b.eol.map((r) => {
+    const on = typeof r.eol === "number" ? `${(r.left ?? 0) <= 0 ? "ended" : "ends"} ${fmtDay(r.eol * 1000)}`
+      : r.eol === true ? "ended, no date listed" : r.eol === false ? "no end date listed" : "";
+    const tip = [on, r.latest && `latest in this cycle ${r.latest}`, r.newest && `newest cycle ${r.newest}`].filter(Boolean).join("\n");
+    const declared = [...new Set(r.decls.map((d) => d.declared))].join(", ");
+    return `<tr>${projTd(v, b, r.root)}` + td(esc(rtName(r)), "mono")
+      + td(esc(declared), "mono") + td(doorHtml(esc(r.text), `mt-n ${LEVEL_CLS[r.level]}`, ["runtimes", "ends", r.root], r.url, tip), "r")
+      + td(`<span class="dim">${esc(r.decls.map((d) => d.file).join(", "))}</span>`, "mono") + verbTd(r.verb) + `</tr>`;
+  }));
 }
 
 const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };

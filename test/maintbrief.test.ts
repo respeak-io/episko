@@ -198,4 +198,27 @@ describe("briefFor", () => {
     expect(b).toContain("left 1.0 (npm) in package-lock.json; fixed in 1.1");
     expect(b).toContain("right 2.0 (npm) in package-lock.json; no fixed version published");
   });
+
+  it("moves every runtime at or near its end in every file that declares it, and runs the checks", () => {
+    const rt = (name: string, cycle: string, eol: number | boolean, file: string, declared = cycle) =>
+      ({ product: name, name, declared, cycle, eol, latest: null, newest: "26", file, url: `https://eol.example/${name}` });
+    const one = input(ok("runtime-eol", { kind: "runtimes", items: [
+      rt("node", "18", 1_745_971_200, ".nvmrc"), rt("node", "18", 1_745_971_200, "Dockerfile", "18.20.1"), rt("go", "1.27", false, "go.mod"),
+    ] }));
+    const f = findings("/r", one, MAINT_DEFAULTS, NOW).find((x) => x.key === "security:runtime")!;
+    const b = briefFor(f, one, ctx)!;
+    expect(b).toContain("Upgrade node 18 in acme: it reached its end of life on 2025-04-30");
+    expect(b).toContain("- .nvmrc declares 18\n- Dockerfile declares 18.20.1\n- the newest cycle is 26");
+    expect(b).toContain("in every file that");
+    expect(b).toContain("pnpm test");
+    expect(b, "a supported runtime is not part of it").not.toContain("go 1.27");
+    const two = input(ok("runtime-eol", { kind: "runtimes", items: [rt("node", "18", 1_745_971_200, ".nvmrc"), rt("postgres", "14", S + 20 * D, "compose.yml")] }));
+    const g = findings("/r", two, MAINT_DEFAULTS, NOW).find((x) => x.key === "security:runtime")!;
+    const b2 = briefFor(g, two, ctx)!;
+    expect(b2).toContain("Upgrade 2 runtimes in acme");
+    expect(b2).toContain("### node 18 · ended");
+    expect(b2).toContain("### postgres 14 · ends in 20d\nIt reaches its end of life on");
+    const fine = input(ok("runtime-eol", { kind: "runtimes", items: [rt("go", "1.27", false, "go.mod")] }));
+    expect(briefFor(f, fine, ctx), "nothing left to upgrade").toBeNull();
+  });
 });
