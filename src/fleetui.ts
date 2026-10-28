@@ -17,7 +17,7 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
+  clampMaint, comingUp, coverGroups, facetCells, findings, hostRows, offers, pastCells, prodChecks, projectBand, rankMaint, tabExtras, tabGaps, tabRows, tabTally,
   type Cell, type MaintInput,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
@@ -364,6 +364,7 @@ function buildMaint(now: number): MaintView {
   const byRoot = new Map<string, ProjGroup>();
   for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
   const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [], rows: MaintRow[] = [], offered: MaintRow[] = [];
+  const seen: { path: string; inp: MaintInput; cells: Cell[] }[] = [];
   const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
   let prodProjects = 0, prodChecking = false;
   const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
@@ -384,6 +385,7 @@ function buildMaint(now: number): MaintView {
       if (r.coverage.state === "ok") for (const c of d.sees) sees.add(c);
     }
     read.push({ root, inp });
+    seen.push({ path: root, inp, cells });
     hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod") });
     const prod = prodChecks(inp);
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
@@ -401,7 +403,8 @@ function buildMaint(now: number): MaintView {
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
   const only = liveFilter();
   const tab = maintSub === "overview" ? null : maintSub;
-  const cov = tab ? tabGaps(tab, ranked, only) : { read: 0, unset: 0, gaps: [] };
+  const cov = tab ? tabGaps(tab, ranked, only) : { read: 0, unset: 0 };
+  const nameOf = (r: string) => byRoot.get(r)?.name ?? basename(r);
   return {
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
     tally: {
@@ -412,7 +415,8 @@ function buildMaint(now: number): MaintView {
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
     tabs: tabTally(rows, only), rows: tab ? tabRows(tab, rows, only) : [], offers: tab ? tabRows(tab, offered, only) : [],
-    read: cov.read, unset: cov.unset, gaps: cov.gaps.map((g) => ({ name: byRoot.get(g.path)?.name ?? basename(g.path), facet: g.facet, text: g.text })),
+    read: cov.read, unset: cov.unset,
+    cover: tab ? coverGroups(tab, seen, only, now).map((g) => ({ ...g, names: Object.fromEntries(g.roots.map((r) => [r, nameOf(r)])) })) : [],
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
     })),

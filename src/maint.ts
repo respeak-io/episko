@@ -248,6 +248,21 @@ export function covText(c: Coverage): string {
 const fixOf = (c: Coverage): string | null => c.state === "noAccess" || c.state === "noTool" ? c.fix : null;
 const labelOf = (id: string) => findSource(id)?.label ?? id;
 
+// A cell that cannot check says why in a word; its tip and Coverage say the rest.
+const OFF_WORD: Partial<Record<Facet, string>> = { security: "alerts off" };
+/** The few words a cell shows for a coverage: what stands between it and an answer. */
+export function whyWord(c: Coverage, facet: Facet): string {
+  switch (c.state) {
+    case "ok": return "read";
+    case "noAccess": return /scope|auth refresh/i.test(`${c.reason} ${c.fix ?? ""}`) ? "token scope" : "no access";
+    case "noTool": return /auth login/i.test(c.fix ?? "") ? "signed out" : "tool missing";
+    case "off": return OFF_WORD[facet] ?? "switched off";
+    case "unsupported": return "unavailable";
+    case "notRun": return "not checked";
+    case "error": return "read failed";
+  }
+}
+
 interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null }
 interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: SourceReport[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
@@ -469,9 +484,9 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const notes = ranked.filter((r) => r.coverage.state !== "ok").map((r) => `${labelOf(r.source)}: ${covText(r.coverage)}`);
   const fix = ranked.map((r) => fixOf(r.coverage)).find((f) => f) ?? null;
   const ok = reps.filter((r) => r.coverage.state === "ok" && r.facts);
-  // A click-only source nobody clicked is not one that cannot answer: one click reads it.
-  const unasked = reps.every((r) => r.coverage.state === "notRun");
-  if (!ok.length) return cell("cantCheck", "muted", unasked ? "not checked" : "can't check", [...head, ...notes, ...found], fix);
+  // The most actionable coverage names the cell; a source nobody clicked only when every one is.
+  const why = inp.skip?.includes(ranked[0].source) ? "skipped here" : whyWord(ranked[0].coverage, facet);
+  if (!ok.length) return cell("cantCheck", "muted", why, [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
   const asOf = j.asOf ?? null;
@@ -728,7 +743,7 @@ export function tabExtras(root: string, inp: MaintInput, th: MaintThresholds = M
 }
 
 /** A source only a click runs, which nobody has clicked here. An offer, not a finding: no tab row,
- *  no count, only Coverage's button or the tab's one muted fold (docs/maintenance.md). */
+ *  no count, only Coverage's button or row (docs/maintenance.md). */
 export function offers(root: string, inp: MaintInput): Finding[] {
   const out: Finding[] = [];
   for (const id of inp.det?.sources ?? []) {
@@ -740,20 +755,6 @@ export function offers(root: string, inp: MaintInput): Finding[] {
   return out;
 }
 const offerWord = (id: string) => findSource(id)?.cost === "tool" ? "not run" : "not checked";
-
-export interface OfferFold { source: string; facet: Facet; roots: string[]; text: string }
-/** A tab's offers as one entry per source, never one per project: nine audits are not one click. */
-export function foldOffers(rows: readonly Finding[]): OfferFold[] {
-  const by = new Map<string, OfferFold>();
-  for (const f of rows) {
-    if (f.verb !== "run") continue;
-    const g = by.get(f.source) ?? { source: f.source, facet: f.facet, roots: [], text: "" };
-    if (!g.roots.includes(f.root)) g.roots.push(f.root);
-    by.set(f.source, g);
-  }
-  return [...by.values()].map((g) => ({ ...g, roots: g.roots.sort(), text: `${labelOf(g.source)} ${offerWord(g.source)} in ${plural(g.roots.length, "project")}` }))
-    .sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || labelOf(a.source).localeCompare(labelOf(b.source)));
-}
 
 /** Every row a tab lists: the card's lines and the tabs' own. Offers are not among them. */
 export const tabFindings = (root: string, inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): Finding[] =>
@@ -778,26 +779,118 @@ export function tabTally(rows: readonly Finding[], root: string | null = null): 
   })) as Record<MaintTab, TabCount>;
 }
 
-export interface TabGap { path: string; facet: Facet; text: string }
 // Muted is unknown ("never ran", "reviews unknown"), except a read that found the facet's none.
 const isNone = (x: Cell) => x.state === "none" || x.state === "off" || (x.state === "read" && x.level === "muted" && x.text === facetDef(x.facet).none);
 const isVerdict = (x: Cell) => x.state === "read" && x.level !== "muted" && x.level !== "unread";
 
-/** What an empty tab may claim: projects it reached a verdict on, projects with none of it set up,
- *  and each cell that does not know. */
-export function tabGaps(tab: MaintTab, cards: readonly { path: string; cells: readonly Cell[] }[], root: string | null = null): { read: number; unset: number; gaps: TabGap[] } {
+/** What an empty tab may claim: projects it reached a verdict on and projects with none of it set
+ *  up. What the rest do not know is `coverGroups`'. */
+export function tabGaps(tab: MaintTab, cards: readonly { path: string; cells: readonly Cell[] }[], root: string | null = null): { read: number; unset: number } {
   let read = 0, unset = 0;
-  const gaps: TabGap[] = [];
   for (const c of cards) {
     if (root !== null && c.path !== root) continue;
     const cells = c.cells.filter((x) => FACET_TAB[x.facet] === tab);
     if (cells.some(isVerdict)) read++;
     else if (cells.length && cells.every(isNone)) unset++;
-    for (const x of cells) {
-      if (!isVerdict(x) && !isNone(x)) gaps.push({ path: c.path, facet: x.facet, text: x.state === "past" ? "not checked this session" : x.text || "not read yet" });
+  }
+  return { read, unset };
+}
+
+/** A cell whose answer is why nothing read it: on the dashboard it opens Coverage, not its card. */
+export const coverFirst = (c: Cell): boolean => c.state === "cantCheck" || c.state === "markers";
+
+// ---------- coverage across projects, by reason ----------
+
+/** The manifest's page that switches `source` on for this repository, or null: a forge it does not
+ *  talk to, a host only a pin or a name decided (the template names the table's), or a path that is
+ *  not one owner/repo. */
+export function settingsUrl(source: string, f: Forge | null | undefined): string | null {
+  const d = findSource(source);
+  const seg = (x: string) => /^[\w.-]+$/.test(x) && !/^\.+$/.test(x);
+  const path = f?.path ?? "", parts = path.split("/");
+  if (!d?.settings || f?.by !== "table" || !d.forge.includes(f.kind) || parts.length !== 2 || !parts.every(seg)) return null;
+  return d.settings.replace("{path}", path);
+}
+const settingsFor = (r: SourceReport, det: Detection): string | null =>
+  r.coverage.state === "off" ? settingsUrl(r.source, det.forge) : null;
+
+export type CoverAction =
+  | { kind: "settings"; urls: Record<string, string> } // per root; a root without one is listed bare
+  | { kind: "fix"; fix: string }
+  | { kind: "run"; source: string };
+export interface CoverGroup {
+  key: string; facet: Facet;
+  what: string; // the source, marker or facet it is about
+  why: string; // the cell's word for it
+  detail: string; // the coverage in full, as the first project had it
+  roots: string[];
+  quiet: boolean; // a bot nothing shows to be alive: said, but below what stops a check
+  action: CoverAction | null;
+}
+
+/** One tab's Coverage, grouped by reason across projects rather than by project: every cell with no
+ *  verdict, explained by its sources, and every click-only source nobody ran. Widest first. */
+export function coverGroups(tab: MaintTab, projects: readonly { path: string; inp: MaintInput; cells: readonly Cell[] }[],
+  root: string | null = null, now = Date.now()): CoverGroup[] {
+  const by = new Map<string, CoverGroup>();
+  const add = (path: string, g: Omit<CoverGroup, "roots" | "action" | "quiet">, action: CoverAction | null = null, quiet = false) => {
+    const e = by.get(g.key) ?? { ...g, roots: [], quiet, action: action?.kind === "settings" ? { kind: "settings", urls: {} } : action };
+    if (!e.roots.includes(path)) e.roots.push(path);
+    if (e.action?.kind === "settings" && action?.kind === "settings") Object.assign(e.action.urls, action.urls);
+    by.set(g.key, e);
+  };
+  for (const { path, inp, cells } of projects) {
+    if (root !== null && path !== root) continue;
+    const det = inp.det, th = clampMaint(det?.config.thresholds);
+    for (const c of cells) {
+      const facet = c.facet, label = facetDef(facet).label;
+      if (FACET_TAB[facet] !== tab || isVerdict(c) || isNone(c)) continue;
+      if (c.state === "past" || c.state === "unread" || !det) {
+        const why = c.state === "past" ? "not checked this session" : "not read yet";
+        add(path, { key: `${facet}|${c.state}`, facet, what: label, why, detail: "" });
+      } else if (c.state === "markers") {
+        for (const m of det.markers.filter((x) => x.facet === facet)) {
+          add(path, { key: `marker:${m.label}`, facet, what: m.label, why: "nothing reads it yet", detail: `found ${m.found.join(", ") || "on this forge"}` });
+        }
+      } else if (c.state === "cantCheck") {
+        for (const id of det.sources) {
+          const r = inp.reports[id];
+          if ((findSource(id)?.facet ?? r?.facet) !== facet) continue;
+          if (inp.skip?.includes(id)) { add(path, { key: `${id}|skipped`, facet, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
+          if (!r || r.coverage.state === "ok" || r.coverage.state === "notRun") continue; // an offer, below
+          const fix = fixOf(r.coverage), url = settingsFor(r, det);
+          // Grouped by the fix where there is one: an account name in the reason must not split a row.
+          const key = `${id}|${r.coverage.state}|${fix ?? (r.coverage.state === "error" ? "" : covText(r.coverage))}`;
+          // Every off row collects links, so a first project with none cannot strip the rest of theirs.
+          add(path, { key, facet, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
+            fix ? { kind: "fix", fix } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
+        }
+      } else if (facet === "deps" && c.text === "silent") {
+        // depsRule's silence, bot by bot: only a dated PR can say a bot has gone quiet.
+        for (const { source, facts: f } of okFacts(inp, "deps")) {
+          if (f.kind !== "updatePrs") continue;
+          const dated = f.prs.flatMap((p) => p.at !== null ? [p.at] : []);
+          const old = dated.length > 0 && now / 1000 - Math.max(...dated) > th.botSilentDays * DAY;
+          if (!old && (f.prs.length || !f.configured || f.dashboard !== null)) continue;
+          const why = old ? `opened nothing in ${th.botSilentDays}+ days` : "configured, no open pull request";
+          add(path, { key: `${source}|silent|${why}`, facet, what: labelOf(source), why,
+            detail: "open pull requests are the only trace an update bot leaves" }, null, true);
+        }
+      } else {
+        add(path, { key: `${facet}|${c.text}`, facet, what: label, why: c.text, detail: c.tip[0] ?? "" });
+      }
+    }
+    for (const o of offers(path, inp)) {
+      if (FACET_TAB[o.facet] !== tab) continue;
+      add(path, { key: `${o.source}|notRun`, facet: o.facet, what: labelOf(o.source), why: offerWord(o.source), detail: o.detail },
+        { kind: "run", source: o.source });
     }
   }
-  return { read, unset, gaps: gaps.sort((a, b) => a.path.localeCompare(b.path) || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)) };
+  return [...by.values()].map((g) => ({
+    ...g, roots: g.roots.sort((a, b) => a.localeCompare(b)),
+    action: g.action?.kind === "settings" && !Object.keys(g.action.urls).length ? null : g.action,
+  })).sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.roots.length - a.roots.length
+    || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.what.localeCompare(b.what) || a.key.localeCompare(b.key));
 }
 
 // ---------- the project tab's cards ----------
@@ -871,6 +964,7 @@ export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
 export interface CoverRow {
   facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null;
   source: string | null; // a source's id, so an offer's button can sit on its row; null for the rest
+  url: string | null; // the forge page that switches an `off` source on
 }
 
 /** Coverage: every source and marker detected here and what became of it, in card order. */
@@ -878,20 +972,21 @@ export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
   const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null }));
+    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
-    const row = (state: CoverRow["state"], text: string, fix: string | null = null) => out.push({ facet, label: labelOf(id), state, text, fix, source: id });
+    const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null) =>
+      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url });
     if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
     else if (!r) row("unread", "not read yet");
-    else row(r.coverage.state, covText(r.coverage), fixOf(r.coverage));
+    else row(r.coverage.state, covText(r.coverage), fixOf(r.coverage), settingsFor(r, det));
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null });
+    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }

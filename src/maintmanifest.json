@@ -28,16 +28,19 @@
     },
     "dependabot-alerts": {
       "facet": "security", "label": "Dependabot alerts", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
       "sees": ["sec.dependency"],
       "blind": ["sec.code", "sec.secret"]
     },
     "github-code-scanning": {
       "facet": "security", "label": "GitHub code scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
       "sees": ["sec.code"],
       "blind": ["sec.dependency", "sec.secret"]
     },
     "github-secret-scanning": {
       "facet": "security", "label": "GitHub secret scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
       "sees": ["sec.secret"],
       "blind": ["sec.dependency", "sec.code"]
     },

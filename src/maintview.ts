@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
-  FACET_TAB, foldOffers, MAINT_TABS, needsCount, type Band, type Cell, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
+  coverFirst, FACET_TAB, MAINT_TABS, needsCount, type Band, type Cell, type CoverGroup, type CoverRow, type Finding, type FlowRow, type Hygiene, type Kv, type Level,
   type MaintSnap, type MaintTab, type ProbeRow, type SnapFinding, type TabCount, type Verb,
 } from "./maint";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
@@ -43,15 +43,15 @@ export interface MaintView {
   filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell
   tabs: Record<MaintTab, TabCount>; // over the filter, so a narrowed tab bar says where that project stands
   rows: MaintRow[]; // the open tab's, in tabRows' order
-  offers: MaintRow[]; // the open tab's click-only sources nobody ran: one muted line, never rows
+  offers: MaintRow[]; // the open tab's click-only sources nobody ran: Coverage's run doors when narrowed
   read: number; // projects the open tab reached a verdict on
   unset: number; // projects with none of it set up: a fact, not a gap
-  gaps: MaintGap[]; // its cells that do not know, so an empty tab never reads as clear
+  cover: MaintCover[]; // why its cells do not know, by reason, so an empty tab never reads as clear
   hosts: MaintHostRow[]; // hostRows' order, over the filter
   prod: MaintProd;
 }
 export type MaintRow = Finding & { name: string };
-export interface MaintGap { name: string; facet: Facet; text: string }
+export type MaintCover = CoverGroup & { names: Record<string, string> };
 
 const DASH = `<span class="dim">—</span>`;
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -162,20 +162,42 @@ function findingHtml(f: Finding, name?: string): string {
     ${verbHtml(f)}</div>`;
 }
 
-// Offers are not findings: one muted line at a tab's foot. Across projects it only counts, since nine
-// audits at once is not a click to offer; narrowed to one project it carries that project's verbs.
+// A fix is the command itself, copied rather than retyped; a forge switch is its settings page.
+const copyHtml = (fix: string) => `<code class="mt-fix">${esc(fix)}</code><button class="aslink" data-mtcopy="${escAttr(fix)}"`
+  + ` data-tip="Copy the command">Copy</button>`;
+const settingsHtml = (url: string, label = "Settings ↗") =>
+  `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}</button>`;
+
+// Across projects a name is that project's door, or its settings page when the fix is a forge switch.
+const SHOWN = 8;
+function namesHtml(g: MaintCover): string {
+  const urls = g.action?.kind === "settings" ? g.action.urls : {};
+  const one = (r: string) => urls[r] ? settingsHtml(urls[r], `${g.names[r]} ↗`)
+    : `<span class="mt-rn" data-mtproj="${escAttr(r)}" data-mtname="${escAttr(g.names[r])}" data-tip="${escAttr(`Open ${g.names[r]}`)}">${esc(g.names[r])}</span>`;
+  const rest = g.roots.slice(SHOWN).map((r) => g.names[r]);
+  return g.roots.slice(0, SHOWN).map(one).join(", ")
+    + (rest.length ? ` <span class="dim" data-tip="${escAttr(rest.join(", "))}">+${rest.length}</span>` : "");
+}
+
+// Offers and forge switches are not findings: one row per reason, however many projects share it.
+// Across projects a click-only source only counts, since nine audits at once is not a click to offer.
 const OFFER_TIP = "Runs only when asked, one project at a time: from its Coverage card, or this tab narrowed to it";
-function offersHtml(rows: readonly MaintRow[], one: boolean): string {
-  if (!rows.length) return "";
-  const items = one
-    ? rows.map((f) => f.busy ? `<span class="fl-when mono">${esc(findSource(f.source)?.label ?? "")} running…</span>` : verbHtml(f))
-    : foldOffers(rows).map((g) => {
-      const d = findSource(g.source), said = d && disclosure(d);
-      const names = rows.filter((r) => r.source === g.source).map((r) => r.name);
-      const tip = [said, OFFER_TIP, names.slice(0, 12).join(", ") + (names.length > 12 ? " …" : "")].filter(Boolean).join("\n");
-      return `<span data-tip="${escAttr(tip)}">${esc(g.text)}</span>`;
-    });
-  return `<div class="mt-soon mt-offers"><span class="label">On a click</span>${items.join(one ? "" : `<span class="dim">·</span>`)}</div>`;
+function coverHtml(v: MaintView): string {
+  if (!v.cover.length) return "";
+  const one = !!v.filter;
+  const rows = v.cover.map((g) => {
+    const a = g.action, offer = a?.kind === "run" ? v.offers.find((o) => o.source === a.source) : undefined;
+    const d = a?.kind === "run" ? findSource(a.source) : undefined, said = d && disclosure(d);
+    const act = a?.kind === "fix" ? copyHtml(a.fix)
+      : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
+      : offer && one ? verbHtml(offer) : "";
+    const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(g)}</span>`;
+    const tip = [g.detail, a?.kind === "run" && !one ? OFFER_TIP : "", said ?? ""].filter(Boolean).join("\n");
+    return `<div class="mt-cv${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
+      + `<span class="t" data-tip="${escAttr(tip)}">${esc(g.what)} <em>${esc(g.why)}</em></span>${where}`
+      + `<span class="d mono">${esc(one ? g.detail : "")}</span><span class="a">${act}</span></div>`;
+  }).join("");
+  return `<section class="mt-sec mt-cover"><div class="mt-sec-h label">Coverage</div><div class="mt-finds">${rows}</div></section>`;
 }
 
 // A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.
@@ -282,12 +304,8 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
-  const gaps = v.gaps.length
-    ? `<div class="mt-soon mt-gaps"><span class="label">No verdict</span>${v.gaps.map((g) =>
-      `<span>${esc(v.filter ? facetDef(g.facet).label : `${g.name} · ${facetDef(g.facet).label}`)} <em class="mono">${esc(g.text)}</em></span>`).join("")}</div>` : "";
   return (only ? `<div class="mt-top">${only}</div>` : "")
-    + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + gaps
-    + offersHtml(v.offers, !!v.filter);
+    + (sections || `<p class="fl-none">${esc(none)}</p>`) + (tab === "servers" ? hostsHtml(v.hosts) : "") + coverHtml(v);
 }
 
 export function maintBodyHtml(v: MaintView): string {
@@ -478,15 +496,16 @@ function coverCard(v: MaintDash): string {
     const o = r.state === "notRun" ? v.offers.find((x) => x.source === r.source) : undefined;
     const d = o && findSource(o.source), said = d && disclosure(d);
     return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
-      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span>${o ? verbHtml(o) : ""}</div>`
-      + (r.fix ? `<code class="mt-fix">${esc(r.fix)}</code>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
+      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.state === "ok" ? "read" : r.text)}</span>${o ? verbHtml(o) : ""}`
+      + `${r.url ? settingsHtml(r.url) : ""}</div>`
+      + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
   }).join("");
   return dcard("cover", "Coverage", v.forge, "", head + (rows || said(undefined)));
 }
 
 /** The dashboard's Maintenance tab: the fleet card's strip, its lines, and a card per question. */
 export function maintDashHtml(v: MaintDash): string {
-  const go = (c: Cell) => `Click: the ${DASH_CARD[FACET_TAB[c.facet]][1]} card`;
+  const go = (c: Cell) => `Click: the ${coverFirst(c) ? "Coverage" : DASH_CARD[FACET_TAB[c.facet]][1]} card`;
   const when = v.card.reading ? `<span class="fl-when mono">reading this project…</span>`
     : v.checked ? `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>`
       + `<button class="aslink" data-mtscan="force" data-tip="Check this project again, past every cache">⟳</button>`

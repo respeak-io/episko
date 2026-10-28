@@ -346,6 +346,8 @@ pub(crate) struct SourceMeta {
     needs: Vec<String>, // `[maintenance]` keys that must be set: a source that reads what config names
     #[serde(default)]
     sends: Option<String>, // what a `public` source sends, which every door to it discloses
+    #[serde(default)]
+    settings: Option<String>, // the forge page that switches it on, `{path}` the repository's
     sees: Vec<String>,
     blind: Vec<String>,
 }
@@ -413,6 +415,10 @@ impl Manifest {
             }
             if (s.cost == Cost::Public) != s.sends.as_deref().is_some_and(|x| !x.trim().is_empty()) {
                 return Err(format!("{id}: a public source says what it sends, and only a public one"));
+            }
+            // One page per forge: a source any forge may answer has no single settings page.
+            if s.settings.as_deref().is_some_and(|u| !u.starts_with("https://") || !u.contains("{path}") || s.cost != Cost::Forge || s.forge.len() != 1) {
+                return Err(format!("{id}: settings is an https page with {{path}}, on a forge source of one forge"));
             }
             well_formed(id, &s.forge, &s.detect)?;
         }
@@ -1411,6 +1417,16 @@ mod tests {
         let mut m: Manifest = serde_json::from_str(man).unwrap();
         m.sources.get_mut("git-tags").unwrap().sends = Some("x".into());
         assert!(m.check().is_err(), "and only a public one");
+        for (src, url) in [("dependabot-alerts", "http://github.com/{path}"), ("dependabot-alerts", "https://github.com/settings"), ("osv", "https://osv.dev/{path}")] {
+            let mut m: Manifest = serde_json::from_str(man).unwrap();
+            m.sources.get_mut(src).unwrap().settings = Some(url.into());
+            assert!(m.check().unwrap_err().contains("settings"), "{src}: {url}");
+        }
+        for forge in [vec![], vec!["github".to_string(), "gitlab".to_string()]] {
+            let mut m: Manifest = serde_json::from_str(man).unwrap();
+            m.sources.get_mut("dependabot-alerts").unwrap().forge = forge.clone();
+            assert!(m.check().unwrap_err().contains("settings"), "one page per forge: {forge:?}");
+        }
         assert!(serde_json::from_str::<Manifest>(&needs).unwrap().check().unwrap_err().contains("sarfi"), "a key config cannot set");
         let ok = |f: &[&str], k| forge_admits(&f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), k);
         assert!(ok(&["!github"], ForgeKind::None) && !ok(&["!github"], ForgeKind::Github) && ok(&[], ForgeKind::Github));
@@ -1462,7 +1478,7 @@ mod tests {
     }
 
     fn meta(facet: Facet, cost: Cost) -> SourceMeta {
-        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, sees: vec![], blind: vec![] }
+        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, settings: None, sees: vec![], blind: vec![] }
     }
 
     fn calls_tool(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
@@ -1909,7 +1925,11 @@ host = \"-oProxyCommand=x\"
                 cert_not_after: Some(1_795_000_000), err: None,
             }] }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
-            not("dependabot-alerts", Coverage::NoAccess { reason: "token lacks security_events".into(), fix: Some("gh auth refresh -h github.com -s security_events".into()) }),
+            // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
+            not("dependabot-alerts", crate::deps::coverage_of("HTTP 403: token lacks security_events", None)),
+            not("github-work", gh_coverage("HTTP 401: Bad credentials", None)),
+            not("gitlab-work", crate::forge::classify_glab("401 Unauthorized", "gitlab.com")),
+            not("gitlab-ci", crate::forge::classify_glab("404 Project Not Found", "gitlab.com")),
             not("cargo-audit", Coverage::NoTool { tool: "cargo-audit".into(), fix: Some("cargo install cargo-audit".into()) }),
             not("gitlab-ci", Coverage::Unsupported { reason: "no default branch known".into() }),
             not("npm-audit", Coverage::NotRun),

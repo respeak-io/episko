@@ -3017,7 +3017,7 @@ select.in-ctl { cursor: pointer; }
 .l-warn > .mt-sev, .mt-sev.l-warn { background: var(--st-working); }
 .mt-find.past .t { font-weight: 500; color: var(--muted-2); }
 .mt-verb { flex: none; border: 1px solid transparent; background: none; color: var(--muted-2); font: 10.5px var(--font-mono); padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
-.mt-find:hover .mt-verb, .mt-cov:hover .mt-verb, .mt-offers .mt-verb:hover, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-find:hover .mt-verb, .mt-cov:hover .mt-verb, .mt-cv:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
 .mt-fold { align-self: stretch; text-align: left; border: 1px dashed var(--hair-strong); background: none; color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-fold:hover { color: var(--text); }
 .mt-clear { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
@@ -3039,10 +3039,25 @@ select.in-ctl { cursor: pointer; }
 .mt-sec .mt-finds { margin-top: 4px; }
 .mt-rn { flex: none; max-width: 24%; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .mt-rn:hover { color: var(--accent-ink); }
-.mt-gaps em { color: var(--muted-2); }
-/* Offers are not findings: one muted line at a tab's foot, never a row per project. */
-.mt-offers { padding: 0 4px; color: var(--muted-2); }
-.mt-offers .mt-verb { padding: 0 6px; }
+/* Coverage: one row per reason across projects, muted throughout; a quiet bot below what stops a check. */
+.mt-cover { margin-top: 10px; }
+.mt-cv { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); font-size: 11.5px; color: var(--muted); }
+.mt-cv:last-child { border-bottom: 0; }
+.mt-cv .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+.mt-cv .t { flex: none; max-width: 38%; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cv .t em { font: 500 11px var(--font-mono); font-style: normal; color: var(--muted); margin-left: 6px; }
+.mt-cv .p, .mt-cv .d { flex: 1; min-width: 0; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cv .d { font-size: 10.5px; }
+.mt-cv .d:empty { display: none; }
+.mt-cv .p .mt-rn, .mt-cv .p .aslink { max-width: none; font-size: 11.5px; }
+.mt-cv .a { flex: none; max-width: 45%; display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mt-cv .a:empty { display: none; }
+.mt-cv .mt-fix { min-width: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cv .mt-verb { padding: 0 6px; }
+.mt-cv.quiet { opacity: .75; }
+.mt-cv.quiet .t { font-weight: 500; color: var(--muted); }
+.mt-fixrow { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0 7px 5px 105px; }
+.mt-fixrow .mt-fix { min-width: 0; margin: 0; }
 /* Hosts are not projects: a row each, below the cards, the worst Prod cell of what it runs. */
 .mt-hosts { margin-top: 10px; padding-bottom: 6px; }
 .mt-host { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
