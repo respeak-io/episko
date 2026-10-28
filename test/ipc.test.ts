@@ -369,3 +369,31 @@ describe("where a project runs", () => {
     expect(sorted(prop)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployProposal\s*\{/))));
   });
 });
+
+// The advisory sweep crosses three times, and maint.ts narrows each answer by these field names:
+// a field renamed on one side alone narrows every answer to nothing.
+const SWEEP_RS = read(RS, "maint_sweep.rs");
+const MAINT_TS = read(SRC, "maint.ts");
+
+describe("the advisory sweep", () => {
+  it("reads its three calls as literals", () => {
+    for (const cmd of ["sweep_advisory", "sweep_match", "sweep_check"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+    expect(cmds.get("sweep_match")!.required).toEqual(["roots", "packages"]);
+  });
+
+  it("names in each TS mirror exactly what its Rust struct carries", () => {
+    const pairs = [["Span", "SweepSpan"], ["Affected", "SweepPkg"], ["SweepAdvisory", "SweepAdvisory"], ["SweepCopy", "SweepCopy"],
+      ["SweepUnread", "SweepUnread"], ["SweepFacts", "SweepFacts"], ["SweepCheck", "SweepCheck"]];
+    for (const [rs, ts] of pairs) {
+      const head = new RegExp(`pub\\(crate\\)\\s+struct\\s+${rs}\\s*\\{`);
+      expect(attrsAbove(SWEEP_RS, head.exec(SWEEP_RS)!.index), rs).toMatch(/rename_all\s*=\s*"camelCase"/);
+      const r = rustFields(bodyOf(SWEEP_RS, head)).map(camel);
+      expect(r.length, rs).toBeGreaterThan(1);
+      expect(sorted(r), rs).toEqual(sorted(tsFields(bodyOf(MAINT_TS, new RegExp(`export\\s+interface\\s+${ts}\\s*\\{`)))));
+    }
+  });
+});

@@ -52,7 +52,7 @@ fn some(s: &str) -> Option<String> {
     Some(s.to_string()).filter(|s| !s.is_empty())
 }
 
-fn text<'a>(v: &'a Value, ptr: &str) -> &'a str {
+pub(crate) fn text<'a>(v: &'a Value, ptr: &str) -> &'a str {
     v.pointer(ptr).and_then(Value::as_str).unwrap_or("")
 }
 
@@ -64,7 +64,7 @@ fn located(path: &str, line: Option<u64>) -> Option<String> {
 }
 
 /// One line, at most 200 characters: a scanner's message can run to paragraphs.
-fn summary_of(s: &str) -> String {
+pub(crate) fn summary_of(s: &str) -> String {
     let line = s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
     line.chars().take(200).collect()
 }
@@ -475,19 +475,19 @@ fn graded(word: &str, vector: &str) -> (Severity, String) {
     (cvss3(vector).map_or(Severity::Unknown, score_severity), vector.to_string())
 }
 
-fn strs(v: Option<&Value>) -> Vec<String> {
+pub(crate) fn strs(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
 }
 
 // ---------- osv ----------
 
-const OSV_API: &str = "https://api.osv.dev/v1";
+pub(crate) const OSV_API: &str = "https://api.osv.dev/v1";
 const OSV_BATCH: usize = 1000; // querybatch's own limit
 const OSV_PKGS: usize = 5000;
 const OSV_DETAILS: usize = 40; // records fetched per read, GHSA first; the rest are named without a severity
 const OSV_SECS: u64 = 30;
 const OSV_KEEP: usize = 2000;
-const LOCK_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const LOCK_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A vulnerability's record while its `modified` stands: querybatch names both, so a repeat
 /// read fetches only what changed.
@@ -529,7 +529,7 @@ fn installed(root: &str, gaps: &mut Vec<String>) -> Result<Vec<(Pkg, String)>, C
     }
 }
 
-fn osv_call(ex: &dyn Exec, url: String, body: Option<String>) -> Result<Value, String> {
+pub(crate) fn osv_call(ex: &dyn Exec, url: String, body: Option<String>) -> Result<Value, String> {
     let r = ex.http(&HttpReq { url, body, token: None, secs: OSV_SECS, report: false })?;
     if r.code != 200 {
         return Err(format!("OSV.dev answered HTTP {}", r.code));
@@ -538,7 +538,7 @@ fn osv_call(ex: &dyn Exec, url: String, body: Option<String>) -> Result<Value, S
 }
 
 /// An id goes into a URL path, so it is held to the characters OSV ids use.
-fn osv_id(id: &str) -> bool {
+pub(crate) fn osv_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:".contains(c))
 }
 
@@ -563,15 +563,19 @@ fn osv_fixed(r: &Value, p: &Pkg) -> Option<String> {
     None
 }
 
+/// GitHub's reviewed word where the record is GitHub's; else the record's or its package's vector.
+pub(crate) fn record_severity(r: &Value) -> (Severity, String) {
+    let vector = r.get("severity").and_then(Value::as_array).into_iter().flatten()
+        .find(|s| text(s, "/type").starts_with("CVSS_V3")).map(|s| text(s, "/score"))
+        .or_else(|| r.pointer("/affected/0/database_specific/cvss").and_then(Value::as_str)).unwrap_or("");
+    graded(text(r, "/database_specific/severity"), vector)
+}
+
 /// One package's hit; with no record (past the per-read cap, or a lookup that failed) it is
 /// still a finding, named with no severity.
 fn osv_advisory(p: &Pkg, at: &str, id: &str, rec: Option<&Value>) -> Advisory {
     let r = rec.unwrap_or(&Value::Null);
-    // GitHub's reviewed word where the record is GitHub's; else the record's or its package's vector.
-    let vector = r.get("severity").and_then(Value::as_array).into_iter().flatten()
-        .find(|s| text(s, "/type").starts_with("CVSS_V3")).map(|s| text(s, "/score"))
-        .or_else(|| r.pointer("/affected/0/database_specific/cvss").and_then(Value::as_str)).unwrap_or("");
-    let (severity, raw_severity) = graded(text(r, "/database_specific/severity"), vector);
+    let (severity, raw_severity) = record_severity(r);
     Advisory {
         id: id.to_string(),
         aliases: strs(r.get("aliases")).into_iter().filter(|a| a != id).collect(),

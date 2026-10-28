@@ -77,6 +77,16 @@ describe("ranges", () => {
     expect(satisfies("2.0.0", "1", "cargo")).toBe(false);
   });
 
+  it("reads an advisory sweep's ranges, in the ecosystem names the advisory database uses", () => {
+    // crates.io is how an advisory spells cargo's: a hand-typed bare version there means that version, never ^.
+    expect(satisfies("1.9.0", "1.2.3", "crates.io")).toBe(false);
+    expect(satisfies("1.2.3", "1.2.3", "crates.io")).toBe(true);
+    expect(satisfies("1.6.0", ">=1.0.0 <1.6.1", "crates.io")).toBe(true);
+    expect(satisfies("15.3.2", ">=15.0.0 <15.5.6 || <14.2.33", "npm")).toBe(true);
+    expect(satisfies("4.5.0", "<=4.5.0")).toBe(true);
+    expect(satisfies("1.0.0", "==1.0.0.post1", "PyPI")).toBeNull();
+  });
+
   it("answers null for a shape it does not model, rather than guessing either way", () => {
     expect(satisfies("1.0.0", "github:me/thing")).toBeNull();
     expect(satisfies("1.0.0", "workspace:^")).toBeNull();

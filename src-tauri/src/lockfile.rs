@@ -1,5 +1,5 @@
-//! What a lockfile says is installed, for `osv` (docs/maintenance.md): read, never resolved. A
-//! format version these parsers do not know is a gap, never a lockfile with nothing in it.
+//! What a lockfile says is installed, for `osv` and the advisory sweep (docs/maintenance.md): read,
+//! never resolved. A format version these parsers do not know is a gap, never an empty lockfile.
 
 use serde_json::Value;
 
@@ -15,6 +15,10 @@ pub(crate) struct Pkg {
 pub(crate) struct Parsed {
     pub(crate) pkgs: Vec<Pkg>,
     pub(crate) gaps: Vec<String>,
+    /// From git, a tarball, a path or another registry: `version` is where it came from, never a version.
+    pub(crate) unpinned: Vec<Pkg>,
+    /// A path or a link: the project's own package, or a vendored or patched copy of someone else's.
+    pub(crate) local: Vec<Pkg>,
 }
 
 /// The lockfiles a parser exists for, as detection's entries.
@@ -30,6 +34,10 @@ pub(crate) fn parse(file: &str, text: &str) -> Result<Parsed, String> {
     }?;
     p.pkgs.sort();
     p.pkgs.dedup();
+    for v in [&mut p.unpinned, &mut p.local] {
+        v.sort();
+        v.dedup();
+    }
     Ok(p)
 }
 
@@ -43,7 +51,7 @@ fn cargo_lock(text: &str, file: &str) -> Result<Parsed, String> {
     let doc: toml::Table = text.parse().map_err(|_| format!("{file} is not TOML"))?;
     let v = doc.get("version").and_then(|v| v.as_integer()).unwrap_or(1);
     if v > 4 {
-        return Ok(Parsed { pkgs: vec![], gaps: vec![format!("{file}: lockfile version {v} not read")] });
+        return Ok(Parsed { gaps: vec![format!("{file}: lockfile version {v} not read")], ..Parsed::default() });
     }
     let (mut out, mut other) = (Parsed::default(), 0);
     for p in doc.get("package").and_then(|v| v.as_array()).into_iter().flatten() {
@@ -53,6 +61,9 @@ fn cargo_lock(text: &str, file: &str) -> Result<Parsed, String> {
             out.pkgs.push(pkg("crates.io", s("name"), s("version")));
         } else if !src.is_empty() {
             other += 1;
+            out.unpinned.push(pkg("crates.io", s("name"), src));
+        } else if !s("name").is_empty() {
+            out.local.push(pkg("crates.io", s("name"), &format!("a local path at {}", s("version"))));
         }
     }
     if other > 0 {
@@ -75,19 +86,24 @@ fn package_lock(text: &str, file: &str) -> Result<Parsed, String> {
     let doc: Value = serde_json::from_str(text).map_err(|_| format!("{file} is not JSON"))?;
     let v = doc.get("lockfileVersion").and_then(Value::as_u64).unwrap_or(0);
     if !(2..=3).contains(&v) {
-        return Ok(Parsed { pkgs: vec![], gaps: vec![format!("{file}: lockfileVersion {v} not read")] });
+        return Ok(Parsed { gaps: vec![format!("{file}: lockfileVersion {v} not read")], ..Parsed::default() });
     }
     let (mut out, mut other) = (Parsed::default(), 0);
     for (path, e) in doc.get("packages").and_then(Value::as_object).into_iter().flatten() {
         // The root, a workspace's own folder and a link to one are the project, not a dependency.
         let Some((_, tail)) = path.rsplit_once("node_modules/") else { continue };
+        let name = e.get("name").and_then(Value::as_str).unwrap_or(tail);
         if e.get("link").and_then(Value::as_bool) == Some(true) {
+            out.local.push(pkg("npm", name, &format!("link:{}", e.get("resolved").and_then(Value::as_str).unwrap_or(""))));
             continue;
         }
-        let name = e.get("name").and_then(Value::as_str).unwrap_or(tail);
         let version = e.get("version").and_then(Value::as_str).unwrap_or("");
-        if version.contains(':') {
+        // npm 7+ keeps a git copy's own version and says where it came from in `resolved`.
+        let resolved = e.get("resolved").and_then(Value::as_str).unwrap_or("");
+        let from = if version.contains(':') { version } else if resolved.starts_with("git") || resolved.starts_with("file:") { resolved } else { "" };
+        if !from.is_empty() {
             other += 1;
+            out.unpinned.push(pkg("npm", name, from));
         } else if !version.is_empty() {
             out.pkgs.push(pkg("npm", name, version));
         }
@@ -103,7 +119,7 @@ fn pnpm_lock(text: &str, file: &str) -> Result<Parsed, String> {
         .map(|v| v.trim().trim_matches(['\'', '"']).to_string())
         .ok_or_else(|| format!("{file} names no lockfileVersion"))?;
     if !matches!(ver.split('.').next(), Some("6" | "9")) {
-        return Ok(Parsed { pkgs: vec![], gaps: vec![format!("{file}: lockfileVersion {ver} not read")] });
+        return Ok(Parsed { gaps: vec![format!("{file}: lockfileVersion {ver} not read")], ..Parsed::default() });
     }
     let (mut out, mut other) = (Parsed::default(), 0);
     let mut inside = false;
@@ -123,8 +139,11 @@ fn pnpm_lock(text: &str, file: &str) -> Result<Parsed, String> {
         if let Some((name, version)) = key.rsplit_once('@').filter(|(n, _)| !n.is_empty()) {
             if version.starts_with(|c: char| c.is_ascii_digit()) {
                 out.pkgs.push(pkg("npm", name, version));
-            } else if !version.starts_with("link:") {
-                other += 1; // a link is the project's own folder
+            } else if version.starts_with("link:") {
+                out.local.push(pkg("npm", name, version)); // usually the project's own folder
+            } else {
+                other += 1;
+                out.unpinned.push(pkg("npm", name, version));
             }
         }
     }
@@ -148,8 +167,17 @@ mod tests {
         let p = parse("Cargo.lock", &FakeExec::testdata("lock-cargo.lock")).unwrap();
         assert_eq!(names(&p), [("crates.io", "itoa", "1.0.18"), ("crates.io", "smallvec", "1.6.0")], "the workspace crate is the project");
         assert!(p.gaps.is_empty());
+        assert_eq!(p.local.len(), 1, "but still named, as a path copy would be");
+        let vendored = "version = 3
+[[package]]
+name = \"smallvec\"
+version = \"1.6.0\"
+";
+        assert_eq!(parse("Cargo.lock", vendored).unwrap().local, [pkg("crates.io", "smallvec", "a local path at 1.6.0")], "a [patch] path copy is not dropped");
         let git = "version = 3\n[[package]]\nname = \"x\"\nversion = \"0.1.0\"\nsource = \"git+https://example.com/x#abc\"\n";
-        assert_eq!(parse("sub/Cargo.lock", git).unwrap().gaps, ["sub/Cargo.lock: 1 from git or another registry not checked"]);
+        let g = parse("sub/Cargo.lock", git).unwrap();
+        assert_eq!(g.gaps, ["sub/Cargo.lock: 1 from git or another registry not checked"]);
+        assert_eq!(g.unpinned, [pkg("crates.io", "x", "git+https://example.com/x#abc")], "named, so a sweep can say it cannot place it");
         assert_eq!(parse("Cargo.lock", "version = 9\n").unwrap().gaps, ["Cargo.lock: lockfile version 9 not read"]);
         assert!(parse("Cargo.lock", "[[package\n").is_err());
     }
@@ -166,6 +194,11 @@ mod tests {
         let p = parse("package-lock.json", nested).unwrap();
         assert_eq!(names(&p), [("npm", "b", "2.0.0")], "a nested copy is installed too");
         assert_eq!(p.gaps, ["package-lock.json: 1 from git, a tarball or a path not checked"], "the link is the project, the git one a gap");
+        assert_eq!(p.unpinned, [pkg("npm", "c", "git+ssh://x")]);
+        assert_eq!(p.local, [pkg("npm", "app", "link:packages/app")]);
+        let resolved = r#"{"lockfileVersion": 3, "packages": {"node_modules/next": {"version": "15.0.0", "resolved": "git+ssh://git@example.com/me/next.git#abc"}}}"#;
+        let r = parse("package-lock.json", resolved).unwrap();
+        assert_eq!((r.pkgs.len(), r.unpinned.len()), (0, 1), "a git copy's own version says nothing about the advisory's range");
         let v1 = parse("package-lock.json", r#"{"lockfileVersion": 1, "dependencies": {"a": {"version": "1.0.0"}}}"#).unwrap();
         assert_eq!((v1.pkgs.len(), v1.gaps), (0, vec!["package-lock.json: lockfileVersion 1 not read".to_string()]));
         assert!(parse("package-lock.json", "<html>").is_err());
@@ -181,6 +214,8 @@ mod tests {
         let p = parse("pnpm-lock.yaml", v6).unwrap();
         assert_eq!(names(&p), [("npm", "@scope/peer", "1.0.0"), ("npm", "lodash", "4.17.20")]);
         assert_eq!(p.gaps, ["pnpm-lock.yaml: 1 from git, a tarball or a path not checked"], "file: is a gap, link: the project");
+        assert_eq!(p.unpinned, [pkg("npm", "local", "file:../x")]);
+        assert_eq!(p.local, [pkg("npm", "mine", "link:../mine")]);
         let old = parse("pnpm-lock.yaml", "lockfileVersion: 5.4\npackages:\n  /a/1.0.0:\n    dev: false\n").unwrap();
         assert_eq!((old.pkgs.len(), old.gaps), (0, vec!["pnpm-lock.yaml: lockfileVersion 5.4 not read".to_string()]));
         assert!(parse("pnpm-lock.yaml", "packages:\n").is_err(), "no version line is not a lockfile");
