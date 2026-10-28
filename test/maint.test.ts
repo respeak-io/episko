@@ -5,9 +5,10 @@ import {
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
-  advFix, outdatedText,
-  type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
+  advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames,
+  type Advisory, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
 } from "../src/maint";
+import { BRANCH_FILTERS } from "../src/branches";
 import { briefFor } from "../src/maintbrief";
 import { FACETS, type Facet } from "../src/maintsources";
 
@@ -923,8 +924,9 @@ describe("the tabs' boards", () => {
       ["/red", "bad", "failing 1h", "1h", "build"], ["/green", "ok", "", null, "build · 1h ago"],
     ]);
     expect(rows[0].runs).toHaveLength(CI_STRIP);
-    expect(rows[0].runs.slice(-3), "newest last").toEqual(["pass", "fail", "fail"]);
-    expect(rows[0].runs[CI_STRIP - 6], "the cancelled run, six from the end").toBe("cancelled");
+    expect(rows[0].runs.slice(-3).map((r) => r.status), "newest last").toEqual(["pass", "fail", "fail"]);
+    expect(rows[0].runs[CI_STRIP - 6].status, "the cancelled run, six from the end").toBe("cancelled");
+    expect(rows[0].runs.at(-1), "a dot carries its run's page").toEqual({ workflow: "build", status: "fail", at: S, url: `https://ci.example/build/${S}` });
     expect(rows[0].verb?.key).toBe("ci");
     expect(rows[1].verb, "green has nothing to fix").toBeNull();
   });
@@ -973,10 +975,10 @@ describe("the tabs' boards", () => {
 
   it("never calls merged zero when nothing was compared: no trunk, or a protect list git.rs could not read", () => {
     const merged = (...reps: SourceReport[]) => hygieneBoard([tp("/r", ...reps)], null, NOW)[0].merged;
-    expect(merged(ok("git-local", hyg({ trunk: null })))).toEqual({ n: null, level: "muted" });
+    expect(merged(ok("git-local", hyg({ trunk: null })))).toMatchObject({ n: null, level: "muted" });
     expect(merged(ok("git-local", hyg(), { gaps: ["merged branches not read: .episko/episko.toml unreadable"] })))
-      .toEqual({ n: null, level: "muted" });
-    expect(merged(ok("git-local", hyg()))).toEqual({ n: 0, level: "ok" });
+      .toMatchObject({ n: null, level: "muted" });
+    expect(merged(ok("git-local", hyg()))).toEqual({ n: 0, level: "ok", names: [] });
   });
 
   it("sorts open work by reviews waiting on you, then by size, and scales each bar to its column", () => {
@@ -1002,6 +1004,16 @@ describe("the tabs' boards", () => {
     ];
     const rows = workBoard(ps);
     expect(rows.map((r) => [r.root, r.review, r.reviewPartial, r.level])).toEqual([["/half", 3, true, "warn"], ["/big", 0, false, "info"]]);
+  });
+
+  it("makes a Work count a door only where the dashboard's queue lists what it counts", () => {
+    const ps = [
+      tp("/gh", ok("github-work", work(4, 2, 1))),
+      tp("/gl", ok("gitlab-work", work(4, 2, 1))),
+      tp("/both", ok("github-work", work(1, 0, 0)), ok("gitlab-work", work(1, 0, 0))),
+    ];
+    // The queue has no GitLab threads, so its counts would open an empty chip.
+    expect(workBoard(ps).map((r) => [r.root, r.queue]).sort()).toEqual([["/both", false], ["/gh", true], ["/gl", false]]);
   });
 
   it("lists every address last checked, the worst answer first", () => {
@@ -1055,6 +1067,72 @@ describe("the tabs' boards", () => {
     expect(rows.map((f) => f.key)).toEqual(expect.arrayContaining(["ci:setup", "git:unpushed", "git:tidy"]));
     expect(tabBoards("code", ps, null, null, NOW).drawn).toEqual(["/r|git:tidy", "/r|git:unpushed"]);
     expect(tabBoards("delivery", ps, null, null, NOW).drawn, "Set up is no board's: it stays a line").toEqual([]);
+  });
+});
+
+describe("a board's numbers are doors", () => {
+  const branches = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
+  // Every number column of every board, and where it opens: "url" takes the cell's own address.
+  const WHERE: Record<BoardId, Record<string, Door | "url" | null>> = {
+    advisories: {}, packages: {},
+    "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
+    ci: { run: "url" },
+    releases: { since: { to: "landed" }, changelog: null },
+    hygiene: {
+      unpushed: branches("unpushed"), localOnly: branches("localonly"), merged: branches("merged"), gone: branches("gone"),
+      stale: branches("stale"), idle: { to: "checkouts" }, fetched: { to: "fetch" },
+    },
+    work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
+    addresses: { address: "url" },
+  };
+
+  it("names every column of every board", () => {
+    expect(Object.keys(BOARD_COLS).sort()).toEqual([...BOARD_IDS].sort());
+    for (const b of BOARD_IDS) expect(BOARD_COLS[b], b).toEqual(Object.keys(WHERE[b]));
+  });
+
+  it("opens each column where what it counts is acted on, and a zero or an unknown nowhere", () => {
+    for (const b of BOARD_IDS) {
+      for (const [col, to] of Object.entries(WHERE[b])) {
+        const at = `${b}.${col}`;
+        expect(boardDoor(b, col, 0), `${at}: a zero is the grey dot`).toBeNull();
+        expect(boardDoor(b, col, null), `${at}: an unknown is a ?`).toBeNull();
+        expect(boardDoor(b, col, ""), at).toBeNull();
+        if (to === "url") {
+          expect(boardDoor(b, col, "https://ci.example/run/1"), at).toEqual({ to: "url", url: "https://ci.example/run/1" });
+          expect(boardDoor(b, col, "javascript:alert(1)"), `${at}: only a web page`).toBeNull();
+          expect(boardDoor(b, col, 3), `${at}: a count is not a page`).toBeNull();
+          expect(doorAt(b, col), `${at}: a page goes through data-mturl`).toBeNull();
+        } else {
+          expect(boardDoor(b, col, 3), at).toEqual(to);
+          expect(boardDoor(b, col, "3"), `${at}: a door takes a count`).toBeNull();
+          expect(doorAt(b, col), at).toEqual(to);
+        }
+      }
+      expect(boardDoor(b, "nope", 3), `${b}: a column no board has`).toBeNull();
+    }
+  });
+
+  it("opens Branches only on a chip the view has", () => {
+    const ids = BRANCH_FILTERS.map((f) => f.id);
+    for (const cols of Object.values(WHERE)) {
+      for (const d of Object.values(cols)) if (d && d !== "url" && d.to === "branches") expect(ids).toContain(d.filter);
+    }
+  });
+
+  it("peeks at what a count counts: the first names, then how many more", () => {
+    expect(peekNames([])).toBe("");
+    expect(peekNames(["a", "b"])).toBe("a, b");
+    expect(peekNames(["a", "b", "c", "d"], 2)).toBe("a, b +2 more");
+    const [r] = hygieneBoard([{ path: "/r", ...(() => {
+      const inp = input(ok("git-local", hyg({
+        localOnly: ["wip"], merged: ["a", "b"], gone: ["c"], branches: [{ name: "wip", at: S - 40 * D }],
+        worktrees: [{ path: "C:\\wt\\spike", branch: "spike", at: S - 40 * D }],
+      })));
+      return { inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings("/r", inp, MAINT_DEFAULTS, NOW) };
+    })() }], null, NOW);
+    expect([r.localOnly, r.merged, r.gone, r.stale, r.idle].map((c) => c.names)).toEqual([["wip"], ["a", "b"], ["c"], ["wip"], ["spike"]]);
+    expect(r.unpushed.names, "commits have no names").toEqual([]);
   });
 });
 
@@ -1227,7 +1305,7 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
     expect(releaseBoard([bare], "/n", NOW).map((r) => [r.tagRead, r.published, r.changelog, r.level]), "a forge release alone is still a row")
       .toEqual([[false, { tag: null, age: null }, null, "muted"]]);
     const [h] = hygieneBoard([p], "/r", NOW);
-    expect([h.stale, h.staleDays]).toEqual([{ n: 1, level: "info" }, MAINT_DEFAULTS.staleBranchDays]);
+    expect([h.stale, h.staleDays]).toEqual([{ n: 1, level: "info", names: ["old"] }, MAINT_DEFAULTS.staleBranchDays]);
     const [c] = ciBoard([p], "/r", NOW);
     expect([c.branch, c.flows.map((w) => [w.workflow, w.red])]).toEqual(["main", [["build", "1h"], ["lint", null]]]);
     expect(updatePrRows([p], "/r", NOW)[0].green).toBe(2);
@@ -1249,7 +1327,7 @@ describe("the project tab's cards", () => {
     const flows = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H), run("test", "fail", S - H), run("test", "fail", S - 3 * D), run("test", "pass", S - 4 * D)))), NOW);
     expect(flows.branch).toBe("main");
     expect(flows.rows.map((r) => [r.workflow, r.status, r.red])).toEqual([["test", "fail", "3d"], ["lint", "pass", null]]);
-    expect(flows.rows[0].runs).toEqual(["pass", "fail", "fail"]);
+    expect(flows.rows[0].runs.map((r) => r.status)).toEqual(["pass", "fail", "fail"]);
     expect(ciFlows(input(not(GHA, "ci", { state: "notRun" })), NOW)).toEqual({ branch: null, rows: [] });
   });
 
@@ -1257,7 +1335,8 @@ describe("the project tab's cards", () => {
     const undated = ciFlows(input(ok("forge-commit-status", ci(run("build", "fail", S - H)))), NOW);
     expect(undated.rows.map((r) => [r.workflow, r.red])).toEqual([["build", ""]]);
     const many = Array.from({ length: CI_STRIP + 2 }, (_, i) => run("lint", i === CI_STRIP - 1 || i === CI_STRIP + 1 ? "fail" : "pass", S - i * H));
-    expect(ciFlows(input(ok(GHA, ci(...many))), NOW).rows[0].runs, "the CI board's strip").toEqual(["fail", ...Array(CI_STRIP - 1).fill("pass")]);
+    expect(ciFlows(input(ok(GHA, ci(...many))), NOW).rows[0].runs.map((r) => r.status), "the CI board's strip")
+      .toEqual(["fail", ...Array(CI_STRIP - 1).fill("pass")]);
     const two = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H))),
       ok("forge-commit-status", { kind: "ciRuns", branch: "trunk", runs: [run("deploy", "pass", S - H)] })), NOW);
     expect(two.branch).toBe("main");
@@ -1281,7 +1360,7 @@ describe("the project tab's cards", () => {
       localOnly: ["old", "new"], branches: [{ name: "old", at: S - 40 * D }, { name: "new", at: S - D }, { name: "pushed", at: S - 90 * D }],
       worktrees: [{ path: "/w", branch: "x", at: S - 40 * D }, { path: "/v", branch: "y", at: null }],
     }))), MAINT_DEFAULTS, NOW)!;
-    expect(h).toMatchObject({ stale: ["old"], idle: 1, unpushed: 0 });
+    expect(h).toMatchObject({ stale: ["old"], idle: 1, idleNames: ["w"], unpushed: 0 });
     const git = cell("git", input(ok("git-local", hyg({
       localOnly: ["old", "new"], branches: [{ name: "old", at: S - 40 * D }, { name: "new", at: S - D }, { name: "pushed", at: S - 90 * D }],
       worktrees: [{ path: "/w", branch: "x", at: S - 40 * D }, { path: "/v", branch: "y", at: null }],

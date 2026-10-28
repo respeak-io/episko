@@ -4,6 +4,7 @@
 
 import { FACETS, COSTS, facetDef, findSource, permitted, type Cost, type Facet } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
+import type { BranchFilter } from "./branches";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
 
@@ -1004,11 +1005,14 @@ export function updatePrRows(ps: readonly TabProject[], root: string | null = nu
 }
 
 export const CI_STRIP = 12;
+/** One run in a strip: its status, and the run page a dot opens. */
+export interface RunDot { workflow: string; status: CiStatus; at: number | null; url: string | null }
+const dotOf = (r: CiRun): RunDot => ({ workflow: r.workflow, status: r.status, at: r.at, url: r.url });
 export interface CiBoardRow {
   root: string; level: Level; text: string; // the CI cell's own words
   since: string | null; // failing for, null when green or undatable
   why: string; // the red workflows, or the newest run
-  runs: CiStatus[]; // the newest CI_STRIP runs on the default branch, oldest first
+  runs: RunDot[]; // the newest CI_STRIP runs on the default branch, oldest first
   branch: string | null; flows: FlowRow[]; // each workflow on its own, which one project's board lists
   verb: Finding | null;
 }
@@ -1024,7 +1028,7 @@ export function ciBoard(ps: readonly TabProject[], root: string | null = null, n
     const why = red.length ? red.map((x) => x.workflow).join(", ")
       : last[0] ? `${last[0].workflow}${last[0].at ? ` · ${span(sec - last[0].at)} ago` : ""}` : "no run yet";
     return [{ row: { root: p.path, level: c.level, text: c.text, since: red[0] ? redFor(red[0], sec) : null, why,
-      runs: last.slice(0, CI_STRIP).map((r) => r.status).reverse(), branch, flows, verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
+      runs: last.slice(0, CI_STRIP).map(dotOf).reverse(), branch, flows, verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
   }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || a.at - b.at || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
 }
 
@@ -1061,8 +1065,8 @@ export function releaseBoard(ps: readonly TabProject[], root: string | null = nu
     .sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.since - a.since || a.root.localeCompare(b.root));
 }
 
-/** A hygiene count: zero is the grey dot (`ok`), null is unknown. */
-export interface HygCount { n: number | null; level: Level }
+/** A hygiene count: zero is the grey dot (`ok`), null is unknown; `names` what it counts, for its tip. */
+export interface HygCount { n: number | null; level: Level; names: string[] }
 export interface HygRow {
   root: string; trunk: string | null;
   unpushed: HygCount; localOnly: HygCount; merged: HygCount; gone: HygCount; idle: HygCount;
@@ -1073,13 +1077,13 @@ export interface HygRow {
 /** One row per project whose git state a source read; only a non-zero count speaks. */
 export function hygieneBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): HygRow[] {
   const sec = now / 1000;
-  const n = (k: number | null, loud: Level): HygCount => ({ n: k, level: k === null ? "muted" : k ? loud : "ok" });
+  const n = (k: number | null, loud: Level, names: string[] = []): HygCount => ({ n: k, level: k === null ? "muted" : k ? loud : "ok", names });
   return within(ps, root).flatMap((p) => {
     const h = hygieneOf(p.inp, thOf(p), now);
     if (!h) return [];
     const age = h.fetchedAt === null ? null : sec - h.fetchedAt;
-    const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "warn"), n(h.mergedRead ? h.merged.length : null, "info"),
-      n(h.gone.length, "info"), n(h.idle, "info"), n(h.stale.length, "info")];
+    const cs = [n(h.unpushed, "warn"), n(h.localOnly.length, "warn", h.localOnly), n(h.mergedRead ? h.merged.length : null, "info", h.merged),
+      n(h.gone.length, "info", h.gone), n(h.idle, "info", h.idleNames), n(h.stale.length, "info", h.stale)];
     const fetched: Level = age !== null && age > thOf(p).fetchStaleDays * DAY ? "warn" : "ok";
     const level = [...cs.map((c) => c.level), fetched].sort((a, b) => rowRank(a) - rowRank(b))[0];
     const verbs = ["git:unpushed", "git:tidy", "git:fetch"].flatMap((k) => verbOf(p, k) ?? []);
@@ -1095,19 +1099,21 @@ export interface WorkRow {
   reviewPartial: boolean; // some failed, so `review` is a floor
   issuesRatio: number; prsRatio: number; level: Level;
   verbs: Finding[]; // its review line, then its open-work line: the row draws the first and carries both
+  queue: boolean; // the dashboard's queue lists what it counts, so its numbers are doors (the manifest's `queue`)
 }
 /** Open work per project: reviews waiting on you first, then the biggest pile. */
 export function workBoard(ps: readonly TabProject[], root: string | null = null): WorkRow[] {
   const out: WorkRow[] = [];
   for (const p of within(ps, root)) {
-    const w = okFacts(p.inp, "work").flatMap((r) => r.facts.kind === "work" ? [r.facts] : []);
+    const reps = okFacts(p.inp, "work"), w = reps.flatMap((r) => r.facts.kind === "work" ? [r.facts] : []);
     if (!w.length) continue;
     const issues = w.reduce((s, x) => s + x.issues, 0), prs = w.reduce((s, x) => s + x.prs, 0);
     const failed = w.filter((x) => x.reviewRequested === null).length;
     const review = failed === w.length ? null : w.reduce((s, x) => s + (x.reviewRequested ?? 0), 0);
     out.push({ root: p.path, issues, prs, review, reviewPartial: review !== null && failed > 0, issuesRatio: 0, prsRatio: 0,
       level: review ? "warn" : issues + prs ? "info" : review === null || failed ? "muted" : "ok",
-      verbs: ["work:review", "work:open"].flatMap((k) => verbOf(p, k) ?? []) });
+      verbs: ["work:review", "work:open"].flatMap((k) => verbOf(p, k) ?? []),
+      queue: reps.every((r) => findSource(r.source)?.queue) });
   }
   const mi = Math.max(1, ...out.map((r) => r.issues)), mp = Math.max(1, ...out.map((r) => r.prs));
   return out.map((r) => ({ ...r, issuesRatio: r.issues / mi, prsRatio: r.prs / mp }))
@@ -1182,6 +1188,59 @@ export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: 
   };
 }
 
+// ---------- a board's numbers as doors ----------
+
+/** Where a board number opens: the dashboard view that acts on what it counts, with that already
+ *  picked, a fetch, or a page. The host routes it, so the fleet and the dashboard share one table. */
+export type Door =
+  | { to: "branches"; filter: Exclude<BranchFilter, "all" | "checkout"> }
+  | { to: "checkouts" } // the Branches view's Checkouts tab, where a worktree is removed
+  | { to: "queue"; filter: "iss" | "pr" } // Today's queue on that chip
+  | { to: "landed" } // Today's Landed, the unreleased commits
+  | { to: "deps" } // the dependency overlay
+  | { to: "fetch" }
+  | { to: "url"; url: string };
+
+const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
+// Every number column of every board; "url" takes the cell's own address, null is a number with no door.
+const DOORS = {
+  advisories: {}, packages: {}, // the severity strip filters in place; Packages' door is its ⤢
+  "update-prs": { open: { to: "deps" }, green: { to: "deps" }, red: { to: "deps" } },
+  ci: { run: "url" },
+  releases: { since: { to: "landed" }, changelog: null },
+  hygiene: {
+    unpushed: br("unpushed"), localOnly: br("localonly"), merged: br("merged"), gone: br("gone"), stale: br("stale"),
+    idle: { to: "checkouts" }, fetched: { to: "fetch" },
+  },
+  work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
+  addresses: { address: "url" },
+} as const satisfies { [B in BoardId]: Readonly<Record<string, Door | "url" | null>> };
+/** A board's own column names, so a view that asks for one the table lacks fails tsc, not a click. */
+export type BoardCol<B extends BoardId> = keyof (typeof DOORS)[B] & string;
+export const BOARD_COLS = Object.fromEntries(BOARD_IDS.map((b) => [b, Object.keys(DOORS[b])])) as Record<BoardId, string[]>;
+const cellOf = (board: BoardId, col: string): Door | "url" | null | undefined =>
+  (DOORS[board] as Readonly<Record<string, Door | "url" | null>> | undefined)?.[col];
+
+/** A column's door, whatever its value: what ./maintui routes a clicked number through. */
+export function doorAt(board: BoardId, col: string): Door | null {
+  const d = cellOf(board, col);
+  return d && d !== "url" ? d : null;
+}
+
+/** A board cell's door, or null: a zero is the grey dot and an unknown a `?`, and neither opens
+ *  anything; a page opens only over http(s). */
+export function boardDoor(board: BoardId, col: string, v: number | string | null): Door | null {
+  const d = cellOf(board, col);
+  if (!d || v === null || v === 0 || v === "") return null;
+  if (d === "url") return typeof v === "string" && /^https?:\/\//i.test(v) ? { to: "url", url: v } : null;
+  return typeof v === "number" ? d : null;
+}
+
+/** A count's tip: the first names it counts, and how many more. */
+export function peekNames(names: readonly string[], n = 6): string {
+  return names.slice(0, n).join(", ") + (names.length > n ? ` +${names.length - n} more` : "");
+}
+
 /** An advisory row's fix verdict from the dashboard's own dependency read, by any of its ids. */
 export const advFix = (r: Pick<AdvRow, "id" | "aliases">, fixes: Readonly<Record<string, string>>): string | null =>
   [r.id, ...r.aliases].map((k) => fixes[k.toUpperCase()]).find(Boolean) ?? null;
@@ -1197,7 +1256,7 @@ export function outdatedText(scanned: boolean, outdated: number, tool: string | 
 
 export interface FlowRow {
   workflow: string; status: CiStatus; at: number | null;
-  runs: CiStatus[]; // its newest runs, oldest first, so a strip reads left to right
+  runs: RunDot[]; // its newest runs, oldest first, so a strip reads left to right
   red: string | null; // failing for ("3d", "" when its source cannot date it); null when it is not
 }
 
@@ -1214,7 +1273,7 @@ export function ciFlows(inp: MaintInput, now = Date.now()): { branch: string | n
     for (const [workflow, runs] of by) {
       const x = fails.get(workflow);
       rows.push({ workflow, status: runs[0].status, at: runs[0].at,
-        runs: runs.slice(0, CI_STRIP).map((r) => r.status).reverse(), red: x ? redFor(x, sec) ?? "" : null });
+        runs: runs.slice(0, CI_STRIP).map(dotOf).reverse(), red: x ? redFor(x, sec) ?? "" : null });
     }
   }
   return { branch, rows: rows.sort((a, b) => Number(b.red !== null) - Number(a.red !== null) || a.workflow.localeCompare(b.workflow)) };
@@ -1232,7 +1291,7 @@ export function forgeText(inp: MaintInput): string {
 
 export interface Hygiene {
   trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[]; gone: string[];
-  stale: string[]; idle: number; fetchedAt: number | null;
+  stale: string[]; idle: number; idleNames: string[]; fetchedAt: number | null; // idleNames: each worktree's folder
   mergedRead: boolean; // false: no trunk, or git.rs could not read the protect list, so `merged` is empty for nothing
 }
 /** Git hygiene's counts, or null until a source read them. */
@@ -1241,7 +1300,8 @@ export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
   if (!rep) return null;
   const h = rep.facts as HygieneFacts, { stale, idle } = aged(h, th, now / 1000);
   return { trunk: h.trunk, unpushed: h.unpushed, localOnly: h.localOnly, merged: h.merged, gone: h.gone,
-    stale: stale.map((b) => b.name), idle: idle.length, fetchedAt: h.fetchedAt,
+    stale: stale.map((b) => b.name), idle: idle.length, idleNames: idle.map((w) => w.path.split(/[\\/]/).filter(Boolean).pop() ?? w.path),
+    fetchedAt: h.fetchedAt,
     mergedRead: h.trunk !== null && !inp.reports[rep.source].gaps.some((g) => g.startsWith("merged branches not read")) };
 }
 

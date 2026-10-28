@@ -101,7 +101,7 @@
       "blind": []
     },
     "github-work": {
-      "facet": "work", "label": "GitHub issues", "cost": "forge", "forge": ["github"], "detect": [],
+      "facet": "work", "label": "GitHub issues", "cost": "forge", "forge": ["github"], "detect": [], "queue": true,
       "sees": ["work.issues", "work.prs", "work.review-requested"],
       "blind": []
     },

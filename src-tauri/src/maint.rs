@@ -348,6 +348,8 @@ pub(crate) struct SourceMeta {
     sends: Option<String>, // what a `public` source sends, which every door to it discloses
     #[serde(default)]
     settings: Option<String>, // the forge page that switches it on, `{path}` the repository's
+    #[serde(default)]
+    queue: bool, // the dashboard's queue lists its threads, so a Work count opens it
     sees: Vec<String>,
     blind: Vec<String>,
 }
@@ -419,6 +421,9 @@ impl Manifest {
             // One page per forge: a source any forge may answer has no single settings page.
             if s.settings.as_deref().is_some_and(|u| !u.starts_with("https://") || !u.contains("{path}") || s.cost != Cost::Forge || s.forge.len() != 1) {
                 return Err(format!("{id}: settings is an https page with {{path}}, on a forge source of one forge"));
+            }
+            if s.queue && s.facet != Facet::Work {
+                return Err(format!("{id}: only a work source's threads are in the queue"));
             }
             well_formed(id, &s.forge, &s.detect)?;
         }
@@ -1427,6 +1432,9 @@ mod tests {
             m.sources.get_mut("dependabot-alerts").unwrap().forge = forge.clone();
             assert!(m.check().unwrap_err().contains("settings"), "one page per forge: {forge:?}");
         }
+        let mut m: Manifest = serde_json::from_str(man).unwrap();
+        m.sources.get_mut("git-tags").unwrap().queue = true;
+        assert!(m.check().unwrap_err().contains("queue"), "only a work source's threads are in the queue");
         assert!(serde_json::from_str::<Manifest>(&needs).unwrap().check().unwrap_err().contains("sarfi"), "a key config cannot set");
         let ok = |f: &[&str], k| forge_admits(&f.iter().map(|s| s.to_string()).collect::<Vec<_>>(), k);
         assert!(ok(&["!github"], ForgeKind::None) && !ok(&["!github"], ForgeKind::Github) && ok(&[], ForgeKind::Github));
@@ -1478,7 +1486,7 @@ mod tests {
     }
 
     fn meta(facet: Facet, cost: Cost) -> SourceMeta {
-        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, settings: None, sees: vec![], blind: vec![] }
+        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, settings: None, queue: false, sees: vec![], blind: vec![] }
     }
 
     fn calls_tool(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
