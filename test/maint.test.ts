@@ -204,7 +204,7 @@ describe("facet rules over ok facts", () => {
     expect(c).toMatchObject({ level: "bad", text: "failing" });
     expect(c.tip.join(" ")).not.toMatch(/first red|2d/);
     const f = findings("/r", input(ok("forge-commit-status", ci(run("ci/jenkins", "fail", S - 2 * D)))), MAINT_DEFAULTS, NOW);
-    expect(f[0]).toMatchObject({ key: "ci:ci/jenkins", text: "CI failing", detail: "ci/jenkins on main" });
+    expect(f[0]).toMatchObject({ key: "ci", text: "CI failing", detail: "ci/jenkins on main", ref: "ci/jenkins" });
   });
 
   it("dates failing-since over the recorded gh run list as Rust parsed it", () => {
@@ -215,10 +215,10 @@ describe("facet rules over ok facts", () => {
     expect(ciFailures([gha])[0].since).toBe(Date.parse("2026-10-24T09:00:00Z") / 1000);
   });
 
-  it("security names its worst, and a capped list is a floor", () => {
+  it("security names its mix, worst first, and a capped list is a floor", () => {
     const two = [adv({ id: "A", severity: "medium" }), adv({ id: "B", severity: "critical" }), adv({ id: "C", severity: "critical" })];
-    expect(cell("security", input(ok("s", { kind: "advisories", items: two })))).toMatchObject({ level: "bad", text: "2 critical" });
-    expect(cell("security", input(ok("s", { kind: "advisories", items: two }, { truncated: true }))).text).toBe("2+ critical");
+    expect(cell("security", input(ok("s", { kind: "advisories", items: two })))).toMatchObject({ level: "bad", text: "2 critical · 1 med" });
+    expect(cell("security", input(ok("s", { kind: "advisories", items: two }, { truncated: true }))).text).toBe("2+ critical · 1+ med");
     expect(cell("security", input(ok("s", { kind: "advisories", items: [adv({ severity: "medium" })] })))).toMatchObject({ level: "warn" });
     expect(cell("security", input(ok("s", { kind: "advisories", items: [adv({ kind: "secret" })] })))).toMatchObject({ level: "bad", text: "1 secret" });
   });
@@ -328,7 +328,7 @@ describe("mergeAdvisories", () => {
     expect(rows[0]).toMatchObject({ key: "CVE-2026-1234", aliases: ["GHSA-aaaa-bbbb-cccc", "RUSTSEC-2026-0007"], tools: ["t1", "t2", "t3"] });
     expect(rows[0].items.length, "every report stays behind the row").toBe(3);
     const c = cell("security", input(ok("a", { kind: "advisories", items: rows.flatMap((r) => r.items) })));
-    expect(c, "counted once, at its worst").toMatchObject({ level: "bad", text: "1 critical" });
+    expect(c, "counted once, at its worst").toMatchObject({ level: "bad", text: "1 critical · 1 low" });
   });
 
   it("keeps a rule firing in two places as two rows, and two reporters at one place as one", () => {
@@ -341,8 +341,76 @@ describe("mergeAdvisories", () => {
       ["js/sql-injection@src/db.js:42", "critical", ["t1", "t2"]], ["js/sql-injection@src/q.js:7", "high", ["t1"]],
     ]);
     const f = findings("/r", input(ok("s", { kind: "advisories", items: rows.flatMap((r) => r.items) })), MAINT_DEFAULTS, NOW);
-    expect(f.map((x) => [x.key, x.verb])).toEqual([["security:js/sql-injection@src/db.js:42", "fix"], ["security:js/sql-injection@src/q.js:7", "fix"]]);
+    expect(f.map((x) => [x.key, x.verb, x.text, x.detail]), "two rows, one line: a card folds a kind").toEqual([
+      ["security:code", "fix", "2 code findings", "1 critical · 1 high · src/db.js:42, src/q.js:7"],
+    ]);
     expect(f[0].detail, "code has no published fix to miss").not.toMatch(/fix/);
+  });
+});
+
+describe("one line per kind, and the severity mix", () => {
+  const dep = (id: string, severity: Advisory["severity"], ...pkgs: string[]) =>
+    pkgs.map((pkg) => adv({ id, severity, pkg, summary: `${id} in ${pkg}`, fixed: null }));
+  const four = [...dep("GHSA-d", "medium", "@vitest/mocker"), ...dep("GHSA-a", "high", "source-map-js"),
+    ...dep("GHSA-b", "medium", "@vitest/mocker", "vitest"), ...dep("GHSA-c", "medium", "postcss")];
+  const sec = (items: Advisory[], o: Partial<SourceReport> = {}) => input(ok("s", { kind: "advisories", items }, o));
+  const lines = (inp: MaintInput) => findings("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.facet === "security");
+
+  it("folds four advisories into one line at the worst level, packages deduped worst first", () => {
+    expect(lines(sec(four)).map((f) => [f.key, f.level, f.verb, f.text, f.detail, f.ref])).toEqual([[
+      "security:dependency", "bad", "patch", "4 advisories", "1 high · 3 medium · source-map-js, @vitest/mocker, vitest …", "dependency",
+    ]]);
+    expect(cell("security", sec(four))).toMatchObject({ level: "bad", text: "1 high · 3 med" });
+    expect(lines(sec(four, { truncated: true }))[0].text, "a capped list is a floor").toBe("4+ advisories");
+  });
+
+  it("still reads one advisory as it always did", () => {
+    expect(lines(sec([adv()])).map((f) => [f.text, f.detail])).toEqual([["high advisory", "lodash · fixed in 4.17.21 · Prototype pollution"]]);
+  });
+
+  it("names the two worst buckets in the cell, coloured by the worst", () => {
+    const of = (...s: Advisory["severity"][]) => cell("security", sec(s.map((severity, i) => adv({ id: `X-${i}`, severity }))));
+    expect(of("critical", "critical")).toMatchObject({ level: "bad", text: "2 critical" });
+    expect(of("low", "critical", "high", "critical")).toMatchObject({ level: "bad", text: "2 critical · 1 high" });
+    expect(of("medium", "unknown", "unknown")).toMatchObject({ level: "warn", text: "1 med · 2 unknown" });
+    // An unrated advisory is still one: never the grey dot, never muted, as loud as low.
+    expect(of("unknown")).toMatchObject({ level: "info", text: "1 unknown" });
+    expect(of("unknown", "low")).toMatchObject({ level: "info", text: "1 low · 1 unknown" });
+    const secret = adv({ id: "K", kind: "secret", pkg: null, severity: "unknown", location: "a.env" });
+    expect(cell("security", sec([adv({ severity: "medium" }), secret]))).toMatchObject({ level: "bad", text: "1 secret · 1 med" });
+  });
+
+  it("folds code, config and secret findings the same way, one line per kind", () => {
+    const at = (kind: Advisory["kind"], id: string, location: string, severity: Advisory["severity"] = "unknown") =>
+      adv({ id, kind, location, severity, pkg: null, ecosystem: null, version: null, fixed: null });
+    const inp = sec([at("code", "r1", "a.ts:1", "high"), at("code", "r2", "b.ts:2", "low"), at("config", "c1", "Dockerfile:3", "medium"),
+      at("secret", "k1", "seed.ts"), at("secret", "k2", ".env")]);
+    expect(lines(inp).map((f) => [f.key, f.level, f.verb, f.text, f.detail])).toEqual([
+      ["security:code", "bad", "fix", "2 code findings", "1 high · 1 low · a.ts:1, b.ts:2"],
+      ["security:secret", "bad", "rotate", "2 secrets reported", "seed.ts, .env"],
+      ["security:config", "warn", "fix", "medium misconfiguration", "Dockerfile:3 · Prototype pollution"],
+    ]);
+  });
+
+  it("makes a count a floor only for the kinds a capped source reported", () => {
+    const secret = adv({ id: "K", kind: "secret", pkg: null, location: "seed.ts", summary: "API key" });
+    const inp = input(ok("deps", { kind: "advisories", items: four }, { truncated: true }), ok("sec", { kind: "advisories", items: [secret] }));
+    expect(lines(inp).map((f) => [f.key, f.text, f.detail])).toEqual([
+      ["security:dependency", "4+ advisories", "1+ high · 3+ medium · source-map-js, @vitest/mocker, vitest …"],
+      ["security:secret", "secret reported", "seed.ts · API key"],
+    ]);
+    // One row from a capped source is still a floor: the cap hid how many more of its kind there are.
+    const mixed = sec([adv({ id: "r1", kind: "code", pkg: null, location: "a.ts:1" }), ...four], { truncated: true });
+    expect(lines(mixed).find((f) => f.key === "security:code")!.text).toBe("1+ code findings");
+  });
+
+  it("folds every red workflow into one CI line, oldest first, while Today keeps a row each", () => {
+    const inp = input(ok(GHA, ci(run("lint", "fail", S - D), run("build", "fail", S - 3 * D), run("e2e", "fail", S - 2 * H), run("site", "pass", S))));
+    const f = findings("/r", inp, MAINT_DEFAULTS, NOW).filter((x) => x.facet === "ci");
+    expect(f.map((x) => [x.key, x.level, x.verb, x.text, x.detail, x.ref])).toEqual([
+      ["ci", "bad", "fix", "3 workflows failing", "build 3d, lint 1d, e2e 2h on main", null],
+    ]);
+    expect(ciRows(inp, undefined, NOW).map((r) => r.key)).toEqual(["ci:build", "ci:lint", "ci:e2e"]);
   });
 });
 
@@ -362,12 +430,12 @@ describe("findings → verbs", () => {
 
   it("gives every finding the verb that answers it, worst first", () => {
     expect(fs.map((f) => [f.key, f.level, f.verb])).toEqual([
-      ["ci:e2e", "bad", "fix"], ["security:A", "bad", "patch"], ["security:K@seed.ts", "bad", "rotate"], ["prod:api", "bad", "fix"],
+      ["ci", "bad", "fix"], ["security:dependency", "bad", "patch"], ["security:secret", "bad", "rotate"], ["prod:api", "bad", "fix"],
       ["deps:b", "warn", "review"], ["release", "warn", "release"], ["git:unpushed", "warn", "push"], ["prod:cert:app", "warn", "fix"],
       ["git:tidy", "info", "tidy"],
     ]);
     expect(fs.every((f) => f.root === "/r")).toBe(true);
-    expect(fs.find((f) => f.key === "security:A")).toMatchObject({ source: "s", ref: "A" });
+    expect(fs.find((f) => f.key === "security:dependency")).toMatchObject({ source: "s", ref: "dependency", text: "critical advisory" });
   });
 
   it("finds nothing in a facet that is off or a source that is skipped", () => {
@@ -489,6 +557,15 @@ describe("the cross-project tabs", () => {
     expect(needsCount(all)).toBe(6);
   });
 
+  it("counts a folded kind once in a tab and its badge, however many rows are behind it", () => {
+    const items = [adv({ id: "A", severity: "high" }), adv({ id: "B", severity: "medium", pkg: "postcss" }),
+      adv({ id: "C", severity: "medium", pkg: "vitest" }), adv({ id: "K", kind: "secret", pkg: null, location: "seed.ts" })];
+    const rows = tabFindings("/a", input(ok("s", { kind: "advisories", items })), MAINT_DEFAULTS, NOW);
+    expect(tabRows("security", rows).filter((f) => f.facet === "security").map((f) => [f.key, f.text]))
+      .toEqual([["security:dependency", "3 advisories"], ["security:secret", "secret reported"]]);
+    expect(tabTally(rows).security).toEqual({ n: 2, level: "bad" });
+  });
+
   // A lockfile project on GitHub: Dependabot answered, npm audit and OSV.dev were never clicked.
   const offering = (root: string, ...extra: SourceReport[]): MaintInput => {
     const reps = [ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
@@ -500,7 +577,7 @@ describe("the cross-project tabs", () => {
 
   it("keeps a never-run source out of every finding, row and count: it is an offer", () => {
     const inp = offering("/a"), rows = tabFindings("/a", inp, MAINT_DEFAULTS, NOW);
-    expect(tabRows("security", rows).map((f) => f.key)).toEqual(["security:A-1"]);
+    expect(tabRows("security", rows).map((f) => f.key)).toEqual(["security:dependency"]);
     expect(rows.some((f) => f.verb === "run")).toBe(false);
     expect(tabTally(rows).security).toEqual({ n: 1, level: "bad" });
     expect(offers("/a", inp).map((f) => [f.key, f.verb, f.text])).toEqual([
@@ -718,7 +795,7 @@ describe("the cold-boot snapshot (cc-maint)", () => {
     const snap = takeSnap("/r", red(), NOW);
     expect(clampSnaps(JSON.parse(JSON.stringify({ "/r": snap })))).toEqual({ "/r": snap });
     expect(snap.cells.map((c) => c.facet)).toEqual([...FACETS]);
-    expect(snap.findings.map((f) => f.key)).toContain("ci:build");
+    expect(snap.findings.map((f) => f.key)).toContain("ci");
   });
 
   it("writes only what it will read back: long words are cut, an overlong key is left out, the root survives", () => {
@@ -791,29 +868,29 @@ describe("Today's red default branch", () => {
   ] };
 
   it("reads this session's CI once its cell has an answer, dated by the first red run", () => {
-    expect(ciRows("/r", failing(), snap, NOW)).toEqual([
+    expect(ciRows(failing(), snap, NOW)).toEqual([
       { key: "ci:build", text: "CI failing 3d", detail: "build on main · first red at abcdef1", since: (S - 3 * D) * 1000, asOf: null },
     ]);
-    expect(ciRows("/r", input(ok(GHA, ci(run("build", "pass", S - D)))), snap, NOW)).toEqual([]); // green beats the snapshot
+    expect(ciRows(input(ok(GHA, ci(run("build", "pass", S - D)))), snap, NOW)).toEqual([]); // green beats the snapshot
   });
 
   it("falls back to the last check's lines while the cell is unread, and says when that was", () => {
     const reading: MaintInput = { det: det([GHA]), reports: {} };
     for (const inp of [null, reading]) {
-      expect(ciRows("/r", inp, snap, NOW)).toEqual([{ key: "ci:deploy", text: "CI failing 1d", detail: "deploy", since: null, asOf: snap.at }]);
+      expect(ciRows(inp, snap, NOW)).toEqual([{ key: "ci:deploy", text: "CI failing 1d", detail: "deploy", since: null, asOf: snap.at }]);
     }
-    expect(ciRows("/r", null, undefined, NOW)).toEqual([]);
+    expect(ciRows(null, undefined, NOW)).toEqual([]);
   });
 
   it("keeps the last known red when this session's read failed: a failed read is no verdict", () => {
     const past = [{ key: "ci:deploy", text: "CI failing 1d", detail: "deploy", since: null, asOf: snap.at }];
     for (const cov of [{ state: "error", reason: "HTTP 502" }, { state: "noAccess", reason: "auth expired" }] as Coverage[]) {
-      expect(ciRows("/r", input(not(GHA, "ci", cov)), snap, NOW)).toEqual(past);
+      expect(ciRows(input(not(GHA, "ci", cov)), snap, NOW)).toEqual(past);
     }
     const marked: MaintInput = { det: det([], { markers: [{ facet: "ci", label: "GitLab CI", found: [".gitlab-ci.yml"] }] }), reports: {} };
-    expect(ciRows("/r", marked, snap, NOW)).toEqual(past);
+    expect(ciRows(marked, snap, NOW)).toEqual(past);
     const noCi: MaintInput = { det: det([]), reports: {} };
-    expect(ciRows("/r", noCi, snap, NOW), "no CI at all is a verdict").toEqual([]);
+    expect(ciRows(noCi, snap, NOW), "no CI at all is a verdict").toEqual([]);
   });
 
   it("a scan whose CI read failed keeps the last known red in the snapshot it leaves, dated as then", () => {
@@ -822,8 +899,8 @@ describe("Today's red default branch", () => {
     const next = clampSnaps(JSON.parse(JSON.stringify({ "/r": takeSnap("/r", failed, NOW, red) })))["/r"];
     expect(next.at).toBe(NOW);
     expect(next.cells.find((c) => c.facet === "ci")).toEqual({ ...red.cells.find((c) => c.facet === "ci"), at: red.at });
-    const line = red.findings.find((f) => f.key === "ci:build")!;
-    expect(ciRows("/r", null, next, NOW)).toEqual([{ key: "ci:build", text: line.text, detail: "build", since: null, asOf: red.at }]);
+    const line = red.findings.find((f) => f.key === "ci")!;
+    expect(ciRows(null, next, NOW)).toEqual([{ key: "ci", text: line.text, detail: "", since: null, asOf: red.at }]);
     expect(pastCells(next, NOW).find((c) => c.facet === "ci")!.tip[0]).toBe("as of the last check, 2d ago");
     const green = takeSnap("/r", input(ok(GHA, ci(run("build", "pass", S - H)))), NOW, red);
     expect(green.findings.filter((f) => f.facet === "ci")).toEqual([]); // a verdict replaces it
