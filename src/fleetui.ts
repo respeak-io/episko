@@ -19,11 +19,11 @@ import {
 import {
   clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, tabExtras,
   tabFindings, tabModel,
-  type BoardId, type Cell, type Finding, type MaintInput, type MaintTab, type ProjectPick, type TabProject,
+  type BoardId, type Cell, type Finding, type MaintInput, type MaintTab, type TabProject,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import { askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet } from "./maintscan";
-import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost } from "./maintui";
+import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import {
   maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSub, type MaintView,
 } from "./maintview";
@@ -106,8 +106,8 @@ export function setFleetRange(n: number) {
   localStorage.setItem("cc-fleet-range", String(n));
   void loadFleet();   // the commit scan is the range's, so it is re-read rather than re-sliced
 }
-// Activity by default: a home stage that reshuffles itself on upgrade is a bug report. A boot that
-// lands on Maintenance paints the cache and asks nothing; choosing the view is the ask (docs/maintenance.md).
+// Activity by default: a home stage that reshuffles itself on upgrade is a bug report. Choosing the
+// view is the ask, and so is a boot that lands on it (`maintOnBoot`, docs/maintenance.md).
 export let fleetView: FleetViewKind = localStorage.getItem("cc-fleet-view") === "maint" ? "maint" : "activity";
 export function setFleetView(v: FleetViewKind) {
   fleetView = v === "maint" ? "maint" : "activity";
@@ -116,6 +116,14 @@ export function setFleetView(v: FleetViewKind) {
   renderFleet();
 }
 const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
+
+/** main.ts, once, after the boot picked its stage: Maintenance on screen re-reads what is older than the window.
+ *  Not from `openFleet`, which every exit from the stage runs too. */
+export function maintOnBoot(): void {
+  if (fleetView !== "maint" || !fleetMirror() || fleetScanning) return;
+  const now = Date.now();
+  if (maintRoots().some((r) => { const e = maintOf(r); return !e || now - e.at > MAINT_FRESH_MS; })) checkFleet(false);
+}
 // Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a nav
 // field: `{kind:"fleet"}` stays field-less, so no mirror read site changes (docs/maintenance.md).
 let maintSub: MaintSub = "overview";
@@ -376,13 +384,14 @@ function maintProjects(): Map<string, ProjGroup> {
 }
 
 // The picker's list, on a click only: every project, with the rows buildMaint counts for the tab badges.
-function maintPicks(tab: MaintTab): ProjectPick[] {
+function maintPicks(tab: MaintTab): PickRow[] {
   const now = Date.now(), byRoot = maintProjects(), rows: Finding[] = [];
   for (const root of byRoot.keys()) {
     const inp = maintInput(root);
     if (inp) rows.push(...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds), now));
   }
-  return projectPicks(tab, rows, [...byRoot].map(([root, p]) => ({ root, name: p.name })));
+  return projectPicks(tab, rows, [...byRoot].map(([root, p]) => ({ root, name: p.name })))
+    .map((k) => { const p = byRoot.get(k.root)!; return { ...k, accent: p.accent, icon: iconFor(p.path) }; });
 }
 
 function buildMaint(now: number): MaintView {
@@ -413,10 +422,13 @@ function buildMaint(now: number): MaintView {
     const prod = prodChecks(inp);
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
     const fs = findings(root, inp, th, now);
+    const stale = !!e && (e.detecting || e.out > 0) && e.at > 0; // an earlier answer, drawn while its re-read is out
     seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
-      sub: e?.kept ? `as of ${relTime(e.at)}` : e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
+      sub: stale ? `refreshing · as of ${relTime(e.at)}` : e?.kept ? `as of ${relTime(e.at)}`
+        : e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
+      stale,
       cells, findings: fs, band: projectBand(cells), past: snap,
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });

@@ -11,6 +11,7 @@ import {
 } from "./maint";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import type { DeployCfg } from "./deploy";
+import { icon } from "./svgicons";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
@@ -22,6 +23,7 @@ export interface MaintCard {
   path: string; name: string; accent: string; icon: string | null; sub: string;
   cells: Cell[]; findings: Finding[]; band: Band;
   reading: boolean; // a read is still out: only then is an unread cell a shimmer rather than a dash
+  stale: boolean; // drawn from an earlier answer while it is re-read: dimmed until the new one lands
   err: string | null;
   past?: MaintSnap; // drawn from the last boot's snapshot: muted, as of then, its lines verb-less
 }
@@ -91,7 +93,7 @@ function prodHtml(p: MaintProd, root?: string): string {
 
 /** The fleet head's right-hand note: when this was last asked, and the one way to ask again. */
 export function maintWhenHtml(v: MaintView): string {
-  if (v.scanning) return `<span class="fl-when mono">checking every project…</span>`;
+  if (v.scanning) return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing every project…" : "checking every project…"}</span>`;
   if (!v.checked) {
     return `<span class="fl-when mono">${v.kept ? `as of ${esc(relTime(v.kept))}` : "Not checked this session"}</span>
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
@@ -232,7 +234,7 @@ function cardHtml(c: MaintCard, compact: boolean): string {
   const finds = compact ? ""
     : c.findings.length ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f, undefined, true)).join("")}</div>`
     : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map((f) => pastHtml(f, c.path)).join("")}</div>` : "";
-  return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}">${id}${cells}${finds}</article>`;
+  return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}${c.stale ? " stale" : ""}"${c.stale ? ` aria-busy="true"` : ""}>${id}${cells}${finds}</article>`;
 }
 
 // ---------- hosts ----------
@@ -300,12 +302,12 @@ const SECTION: Record<Facet, string> = {
 
 // Only red and amber light a count; everything else stays muted, as on the cards.
 function tabsHtml(v: MaintTabView): string {
-  return `<div class="bvtabs mt-tabs" role="tablist">` + MAINT_SUBS.map((id) => {
+  return `<div class="bvtabs mt-tabs"><div class="mt-tablist" role="tablist">` + MAINT_SUBS.map((id) => {
     const c = id === "overview" ? null : v.tabs[id];
     const n = c?.n ? `<span class="n${c.level === "bad" ? " l-bad" : c.level === "warn" ? " l-warn" : ""}">${c.n}</span>` : "";
     return `<button class="bvtab${id === v.sub ? " on" : ""}" role="tab" aria-selected="${id === v.sub}" data-mttab="${id}"`
       + ` data-tip="${escAttr(tabTip(v, id))}">${esc(TAB_TEXT[id][0])}${n}</button>`;
-  }).join("") + `</div>`;
+  }).join("") + `</div>` + (v.sub === "overview" ? "" : `<span class="mt-grow"></span>${pickHtml(v, v.sub)}`) + `</div>`;
 }
 
 // ---------- the tabs' boards: colour only where a value needs you, a zero is the grey dot ----------
@@ -479,13 +481,14 @@ const BOARDS: Record<MaintTab, (v: MaintTabView, b: Boards) => string> = {
 const across = (sub: MaintSub, name?: string) => `<button class="aslink mt-across" data-mtacross="${sub}" data-tip="${escAttr(sub === "overview"
   ? "Every project's card" : `${TAB_TEXT[sub][0]} across every project, starting at ${name ?? "this one"}`)}">all projects</button>`;
 
+// The project picker at the tab bar's end: ./maintui opens the menu, and the root it carries is the one ticked.
+const pickHtml = (v: MaintTabView, tab: MaintTab) => v.dash ? across(tab, v.filter?.name)
+  : `<button class="mt-pick${v.filter ? " on" : ""}" data-mtpick="${tab}" data-mtroot="${escAttr(v.filter?.root ?? "")}"`
+  + ` aria-haspopup="menu" data-tip="${escAttr(v.filter ? "Show another project, or every one (Esc)" : "Show one project only")}">`
+  + `<span>Project</span><b>${esc(v.filter?.name ?? "All projects")}</b>${icon("down", "car")}</button>`;
+
 function tabHtml(v: MaintTabView, tab: MaintTab): string {
   const label = TAB_TEXT[tab][0];
-  // The project picker: ./maintui opens the menu, and the root it carries is the one ticked.
-  const pick = v.dash ? `<span class="mt-grow"></span>${across(tab, v.filter?.name)}`
-    : `<button class="mt-pick${v.filter ? " on" : ""}" data-mtpick="${tab}" data-mtroot="${escAttr(v.filter?.root ?? "")}"`
-    + ` aria-haspopup="menu" data-tip="${escAttr(v.filter ? "Show another project, or every one (Esc)" : "Show one project only")}">`
-    + `<span>Project</span><b>${esc(v.filter?.name ?? "All projects")}</b><span class="car" aria-hidden="true">▾</span></button>`;
   const boards = v.boards ? BOARDS[tab](v, v.boards) : "";
   // What no board carries (a facet nobody set up, a stale fetch with no git read) is still a line with its verb.
   const rest = FACETS.filter((f) => FACET_TAB[f] === tab).flatMap((f) => {
@@ -497,7 +500,7 @@ function tabHtml(v: MaintTabView, tab: MaintTab): string {
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
-  return `<div class="mt-top">${pick}</div>` + (tab === "servers" ? hostsHtml(v.hosts) : "")
+  return (tab === "servers" ? hostsHtml(v.hosts) : "")
     + (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
 }
 
@@ -509,7 +512,8 @@ export function maintBodyHtml(v: MaintView): string {
     return `<div class="mt-body">${bar}<p class="fl-none">${esc(why)}</p>${v.scanning ? ""
       : `<button class="aslink" data-mtscan="check">Check every project</button>`}</div>`;
   }
-  if (v.sub !== "overview") return `<div class="mt-body">${bar}${tabHtml(v, v.sub)}</div>`;
+  // A tab mixes projects, so it dims whole while any of its answers is an earlier one being re-read.
+  if (v.sub !== "overview") return `<div class="mt-body${v.cards.some((c) => c.stale) ? " stale" : ""}">${bar}${tabHtml(v, v.sub)}</div>`;
   const quiet = v.cards.filter((c) => c.band === "quiet");
   const shown = v.chip === "all" ? v.cards.filter((c) => c.band !== "quiet")
     : v.chip === "quiet" ? quiet : v.cards.filter((c) => c.band === v.chip);
