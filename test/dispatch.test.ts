@@ -429,6 +429,19 @@ describe("Maintenance's own dispatcher", () => {
     expect(MAINTVIEW).not.toMatch(/role="button" data-mtfind=/);
     expect(MAINTUI).toContain('t.matches("[data-mtfind] > .t")');
     expect(FLEETUI).toContain('$("fleetPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); })');
+    // The dashboard's To do rows are the same doors, onto its own sub-tabs.
+    expect(DASHBOARD).toContain('$("dashPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); })');
+    expect(MAINTVIEW).toMatch(/v\.rows\.map\(\(f\) => findingHtml\(f, undefined, true\)\)/);
+  });
+
+  it("opens a dashboard sub-tab where the fleet opens a tab, and never reaches for an id the fleet also draws", () => {
+    const at = DASHBOARD.indexOf("const maintHost: MaintHost = {");
+    const hostSrc = DASHBOARD.slice(at, DASHBOARD.indexOf("\n};", at));
+    expect(hostSrc).toMatch(/openTab: \(sub, _root, board\) => openMaintSub\(sub, board\)/);
+    expect(hostSrc).toMatch(/openCover: \(facet\) => openMaintSub\(FACET_TAB\[facet\], null, true\)/);
+    expect(hostSrc, "all projects lands narrowed to this project").toMatch(/openAcross: \(sub\) => host\.openFleetMaint\(sub, root\(\)\)/);
+    // Both panes draw mtb-<board>: a document-wide lookup would find the hidden pane's.
+    for (const src of [DASHBOARD, FLEETUI]) expect(src).not.toMatch(/document\.getElementById\(`mtb-/);
   });
 
   it("is asked before the fleet's own probes, so a card's click never reaches a data-fl* row", () => {
