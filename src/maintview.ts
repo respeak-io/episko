@@ -426,7 +426,8 @@ function tabHtml(v: MaintView, tab: MaintTab): string {
   // What no board carries (a facet nobody set up, a stale fetch with no git read) is still a line with its verb.
   const rest = FACETS.filter((f) => FACET_TAB[f] === tab).flatMap((f) => {
     const rows = v.rows.filter((r) => r.facet === f);
-    return rows.length ? [`<section class="mt-sec"><div class="mt-sec-h label">${esc(SECTION[f])}</div>`
+    const head = boards ? `Also · ${SECTION[f]}` : SECTION[f]; // a board above already wears the bare name
+    return rows.length ? [`<section class="mt-sec"><div class="mt-sec-h label">${esc(head)}</div>`
       + `<div class="mt-finds">${rows.map((r) => findingHtml(r, v.filter ? undefined : r.name)).join("")}</div></section>`] : [];
   }).join("");
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
