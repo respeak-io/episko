@@ -3066,7 +3066,67 @@ select.in-ctl { cursor: pointer; }
 .mt-host .hl { flex: 1; min-width: 0; font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-host .mt-rn { max-width: none; font-size: 11px; }
 .mt-host .mt-v { flex: none; max-width: 35%; }
-@media (max-width: 760px) { .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; } }
+/* A tab's boards: built for its question, muted throughout; only a value that needs you is coloured. */
+.mt-board { padding-bottom: 8px; }
+.mt-sec-h { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.mt-note { min-width: 0; font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-n { font: 11px var(--font-mono); color: var(--muted); }
+.mt-n.l-bad { color: var(--st-error); }
+.mt-n.l-warn { color: var(--st-working); }
+.mt-n.l-ok, .mt-n.l-muted { color: var(--muted-2); }
+.mt-sevs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.mt-sevb { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--hair); background: none; color: var(--muted-2); font: 10.5px var(--font-mono); cursor: pointer; }
+.mt-sevb b { font-size: 15px; font-weight: 600; color: var(--muted); }
+.mt-sevb.l-bad b { color: var(--st-error); }
+.mt-sevb.l-warn b { color: var(--st-working); }
+.mt-sevb[aria-disabled="true"] { cursor: default; opacity: .55; }
+.mt-sevb:not([aria-disabled="true"]):hover { background: var(--lift); }
+.mt-sevb.on { border-color: var(--accent-line); background: var(--accent-wash); color: var(--text); }
+.mt-advs { display: flex; flex-direction: column; border-top: 1px solid var(--hair); }
+.mt-adv { display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(0, auto); gap: 4px 12px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-adv:last-child { border-bottom: 0; }
+.mt-sevl { font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+.mt-sevl.l-bad { color: var(--st-error); }
+.mt-sevl.l-bad::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; }
+.mt-sevl.l-warn { color: var(--st-working); }
+.mt-adv .m { display: grid; min-width: 0; }
+.mt-adv .t { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-adv .t b { font-weight: 600; color: var(--text); }
+.mt-adv .s { display: flex; align-items: baseline; gap: 4px; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; }
+.mt-adv .s .aslink { padding: 0 2px; font: 10.5px var(--font-mono); }
+.mt-pcs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
+.mt-pc { display: inline-flex; align-items: baseline; gap: 2px; max-width: 100%; padding: 1px 2px 1px 8px; border-radius: 7px; border: 1px solid var(--hair); }
+.mt-pc .mt-rn { max-width: 140px; font-size: 11px; }
+.mt-pc .mt-verb { padding: 0 6px; }
+.mt-pc:hover .mt-verb { color: var(--accent-ink); }
+.mt-cis { display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--hair); }
+.mt-ci { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 120px) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-ci:last-child { border-bottom: 0; }
+.mt-ci .mt-rn, .mt-tbl .mt-rn { max-width: none; display: block; }
+.mt-ci .w { min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-ci .a:empty { display: none; }
+.mt-ci:hover .mt-verb, .mt-tbl tr:hover .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-board .mt-runs i { width: 7px; height: 13px; }
+.mt-runs i.l-run { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); }
+.mt-scroll { overflow-x: auto; margin-top: 6px; }
+.mt-tbl { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
+.mt-tbl th { padding: 4px 6px 6px; text-align: left; font: 500 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); white-space: nowrap; }
+.mt-tbl td { padding: 6px; border-bottom: 1px solid var(--hair); white-space: nowrap; vertical-align: middle; }
+.mt-tbl tr:last-child td { border-bottom: 0; }
+.mt-tbl .r { text-align: right; }
+.mt-tbl .a { width: 1%; text-align: right; }
+.mt-tbl td.mono { font: 11px var(--font-mono); color: var(--muted); }
+.mt-tbl td.u { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.mt-barc { display: inline-flex; align-items: center; gap: 8px; }
+.mt-bar { display: inline-block; width: 90px; height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.mt-bar i { display: block; height: 100%; background: var(--muted-2); }
+.mt-bar.l-warn i { background: var(--st-working); }
+.mt-bar.l-bad i { background: var(--st-error); }
+@media (max-width: 760px) {
+  .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; }
+  .mt-adv { grid-template-columns: 54px minmax(0, 1fr); } .mt-pcs { grid-column: 2; justify-content: flex-start; }
+  .mt-ci { grid-template-columns: minmax(0, 1fr) auto auto; } .mt-ci .w, .mt-ci .mt-runs { display: none; }
+}
 
 /* The project dashboard's two tabs. The Today columns are hidden behind Maintenance, never
    rebuilt, so a draft note and Landed's fit survive the look (docs/maintenance.md). */

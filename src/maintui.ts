@@ -8,7 +8,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
-import { clampMaint, coverFirst, covText, FACET_TAB, facetCell, offers, prodChecks, tabFindings } from "./maint";
+import { clampMaint, coverFirst, covText, FACET_TAB, facetCell, offers, prodChecks, SEV_BUCKETS, tabFindings, type SevBucket } from "./maint";
 import { briefFor } from "./maintbrief";
 import { askingFor, maintInput, runSource, scanProject } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
@@ -40,6 +40,8 @@ function setMaintChip(c: MaintChip) {
 }
 // Not persisted: a fold you opened is a glance, and the next visit starts with the loud cards.
 export let quietOpen = false;
+// The Security strip's bucket, a glance like the fold: a second click on it shows every row again.
+export let maintSev: SevBucket | null = null;
 
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
@@ -96,6 +98,14 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   }
   const fold = t.closest<HTMLElement>("[data-mtfold]");
   if (fold) { quietOpen = fold.dataset.mtfold === "1"; host.render(); return true; }
+  const sev = t.closest<HTMLElement>("[data-mtsev]");
+  if (sev) {
+    const b = sev.dataset.mtsev as SevBucket;
+    if (maintSev === b || !SEV_BUCKETS.includes(b)) maintSev = null;
+    else if (sev.getAttribute("aria-disabled") !== "true") maintSev = b;
+    host.render();
+    return true;
+  }
   const tab = t.closest<HTMLElement>("[data-mttab]");
   if (tab) { host.openTab(subOf(tab.dataset.mttab)); return true; }
   const clear = t.closest<HTMLElement>("[data-mtclear]");

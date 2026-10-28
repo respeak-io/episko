@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  ADVISORY_KINDS, CI_STATUSES, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
+  ADVISORY_KINDS, CI_STATUSES, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, ciFailures, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
+  advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, releaseRows, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabRows, tabTally, whyWord,
-  type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport,
+  type Advisory, type Coverage, type Detection, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
 } from "../src/maint";
 import { briefFor } from "../src/maintbrief";
 import { FACETS, type Facet } from "../src/maintsources";
@@ -844,6 +845,218 @@ describe("prod, coming up and hosts", () => {
   });
 });
 
+describe("the tabs' boards", () => {
+  // A project as buildMaint hands it to the boards: its cells and its tab lines, verbs and all.
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const alerts = (...items: Advisory[]) => ok("dependabot-alerts", { kind: "advisories", items });
+  const work = (issues: number, prs: number, reviewRequested: number | null): Facts => ({ kind: "work", issues, prs, reviewRequested });
+  const shuffled = <T>(xs: T[]) => [...xs].reverse();
+
+  it("folds one advisory reported in three projects into one row, its projects as chips, at the worst severity", () => {
+    const ps = [
+      tp("/c", alerts(adv({ id: "GHSA-x", severity: "medium", version: "4.17.19" }))),
+      tp("/a", alerts(adv({ id: "CVE-1", aliases: ["ghsa-x"], severity: "critical", fixed: "4.17.22" }))),
+      tp("/b", alerts(adv({ id: "GHSA-x", severity: "high" }), adv({ id: "B-2", pkg: "minimist", severity: "low", fixed: null }))),
+    ];
+    const { rows, read } = advisoryRows(ps);
+    expect(read).toBe(3);
+    expect(rows.map((r) => [r.id, r.bucket, r.level, r.projects.map((p) => p.root)])).toEqual([
+      ["CVE-1", "critical", "bad", ["/a", "/b", "/c"]], ["B-2", "low", "info", ["/b"]],
+    ]);
+    const [x] = rows;
+    expect([x.what, x.installed, x.fixed]).toEqual(["lodash", ["4.17.19", "4.17.20"], ["4.17.21", "4.17.22"]]);
+    // Each chip's verb is that project's own line for the kind, so a click briefs that project.
+    expect(x.projects.map((p) => [p.verb?.root, p.verb?.key, p.verb?.verb])).toEqual([
+      ["/a", "security:dependency", "patch"], ["/b", "security:dependency", "patch"], ["/c", "security:dependency", "patch"],
+    ]);
+    expect(advisoryRows(ps, "/c").rows.map((r) => [r.id, r.bucket, r.projects.length]), "narrowed: only what that project reported")
+      .toEqual([["GHSA-x", "medium", 1]]);
+  });
+
+  it("counts the strip per severity, the four always and a secret only when there is one, and filters the rows but never the strip", () => {
+    const ps = [
+      tp("/a", alerts(adv({ id: "A", severity: "critical" }), adv({ id: "B", pkg: "x", severity: "medium" }))),
+      tp("/b", alerts(adv({ id: "C", pkg: "y", severity: "medium" }))),
+    ];
+    const strip = (rows: ReturnType<typeof advisoryRows>["rows"]) => sevStrip(rows).map((c) => [c.bucket, c.n, c.level]);
+    const all = advisoryRows(ps).rows;
+    expect(strip(all)).toEqual([["critical", 1, "bad"], ["high", 0, "bad"], ["medium", 2, "warn"], ["low", 0, "info"]]);
+    const secret = tp("/s", ok("github-secret-scanning", { kind: "advisories", items: [adv({ id: "S", kind: "secret", pkg: null, severity: "unknown" })] }));
+    expect(strip(advisoryRows([...ps, secret]).rows)[0], "a secret leads, as it does in the cell").toEqual(["secret", 1, "bad"]);
+    expect(bySev(all, "medium").map((r) => r.id)).toEqual(["B", "C"]);
+    expect(bySev(all, null)).toEqual(all);
+    const b = tabBoards("security", ps, null, "critical", NOW);
+    expect(b.adv.map((r) => r.id)).toEqual(["A"]);
+    expect(b.strip.map((c) => c.n), "the strip still counts every row").toEqual([1, 0, 2, 0]);
+    // A severity filtered out still carries its projects' lines, so they never fall into the list below.
+    expect(b.drawn).toEqual(["/a|security:dependency", "/b|security:dependency"]);
+    // A secret picked and then gone (a rescan, a narrower filter) keeps its button, or nothing could clear it.
+    const gone = tabBoards("security", ps, null, "secret", NOW);
+    expect([gone.adv, gone.strip.map((c) => [c.bucket, c.n])[0]]).toEqual([[], ["secret", 0]]);
+    expect(sevStrip(all, "unknown").map((c) => c.bucket)).toEqual(["critical", "high", "medium", "low", "unknown"]);
+  });
+
+  it("lists update pull requests per project and bot: open, red, the oldest's age, red first", () => {
+    const ps = [
+      tp("/a", ok("dependabot-prs", prs(2))),
+      tp("/b", ok("dependabot-prs", prs(3, {}, "fail"))),
+      tp("/c", ok("dependabot-prs", prs(0))),
+    ];
+    expect(updatePrRows(ps, null, NOW).map((r) => [r.root, r.bot, r.open, r.red, r.oldest, r.level, r.verb?.key])).toEqual([
+      ["/b", "b", 3, 3, D, "warn", "deps:b"], ["/a", "b", 2, 0, D, "info", "deps:b"],
+    ]);
+  });
+
+  it("gives every project whose CI was read a row: failing since the first red, its last runs oldest first and capped", () => {
+    const many = Array.from({ length: 20 }, (_, i) => run("build", i < 2 ? "fail" : i === 5 ? "cancelled" : "pass", S - i * H));
+    const ps = [
+      tp("/green", ok(GHA, ci(run("build", "pass", S - H)))),
+      tp("/red", ok(GHA, ci(...many))),
+      tp("/none", ok("git-local", hyg())),
+    ];
+    const rows = ciBoard(ps, null, NOW);
+    expect(rows.map((r) => [r.root, r.level, r.text, r.since, r.why])).toEqual([
+      ["/red", "bad", "failing 1h", "1h", "build"], ["/green", "ok", "", null, "build · 1h ago"],
+    ]);
+    expect(rows[0].runs).toHaveLength(CI_STRIP);
+    expect(rows[0].runs.slice(-3), "newest last").toEqual(["pass", "fail", "fail"]);
+    expect(rows[0].runs[CI_STRIP - 6], "the cancelled run, six from the end").toBe("cancelled");
+    expect(rows[0].verb?.key).toBe("ci");
+    expect(rows[1].verb, "green has nothing to fix").toBeNull();
+  });
+
+  it("ranks the longest red first, and a running or never-run project after the red ones", () => {
+    const ps = [
+      tp("/young", ok(GHA, ci(run("t", "fail", S - H)))),
+      tp("/old", ok(GHA, ci(run("t", "fail", S - H), run("t", "fail", S - 3 * D)))),
+      tp("/never", ok(GHA, ci())),
+      tp("/busy", ok(GHA, ci(run("t", "running", S - 60)))),
+    ];
+    expect(ciBoard(ps, null, NOW).map((r) => [r.root, r.since ?? r.text])).toEqual([
+      ["/old", "3d"], ["/young", "1h"], ["/busy", "running"], ["/never", "never ran"],
+    ]);
+  });
+
+  it("draws unreleased work as a share of the largest, and a project never tagged with no count", () => {
+    const ps = [
+      tp("/small", ok("git-tags", rel({ since: 10, oldestUnreleasedAt: S - 2 * D }))),
+      tp("/big", ok("git-tags", rel({ since: 40, oldestUnreleasedAt: S - 25 * D }))),
+      tp("/done", ok("git-tags", rel())),
+      tp("/bare", ok("git-tags", rel({ tag: null, tagAt: null, since: 7 }))),
+    ];
+    expect(releaseBoard(ps, null, NOW).map((r) => [r.root, r.tag, r.since, r.ratio, r.oldest, r.level, r.verb?.verb ?? null])).toEqual([
+      ["/big", "v1.0", 40, 1, 25 * D, "warn", "release"], ["/small", "v1.0", 10, 0.25, 2 * D, "info", "release"],
+      ["/bare", null, 0, 0, null, "muted", null], ["/done", "v1.0", 0, 0, null, "ok", null],
+    ]);
+  });
+
+  it("mutes every zero in the hygiene table, lets only a non-zero count speak, and puts Push and Tidy on its row", () => {
+    const ps = [
+      tp("/clean", ok("git-local", hyg())),
+      tp("/messy", ok("git-local", hyg({ unpushed: 3, localOnly: ["wip"], merged: ["a", "b"], gone: ["c"] }))),
+      tp("/nowhere", ok("git-local", hyg({ unpushed: null }))),
+      tp("/stale", ok("git-local", hyg({ fetchedAt: S - 9 * D }))),
+    ];
+    const rows = hygieneBoard(ps, null, NOW);
+    const cnt = (r: (typeof rows)[number]) => [r.unpushed, r.localOnly, r.merged, r.gone, r.idle].map((c) => `${c.n}:${c.level}`);
+    expect(rows.map((r) => [r.root, r.level])).toEqual([["/messy", "warn"], ["/stale", "warn"], ["/nowhere", "muted"], ["/clean", "ok"]]);
+    expect(cnt(rows[0])).toEqual(["3:warn", "1:warn", "2:info", "1:info", "0:ok"]);
+    expect(cnt(rows[3]), "a zero is the grey dot, never a number").toEqual(["0:ok", "0:ok", "0:ok", "0:ok", "0:ok"]);
+    expect(cnt(rows[2])[0], "no remote is unknown, not zero").toBe("null:muted");
+    expect(rows[0].verbs.map((f) => f.verb)).toEqual(["push", "tidy"]);
+    expect([rows[1].fetched.level, rows[1].verbs.map((f) => f.verb)]).toEqual(["warn", ["fetch"]]);
+  });
+
+  it("never calls merged zero when nothing was compared: no trunk, or a protect list git.rs could not read", () => {
+    const merged = (...reps: SourceReport[]) => hygieneBoard([tp("/r", ...reps)], null, NOW)[0].merged;
+    expect(merged(ok("git-local", hyg({ trunk: null })))).toEqual({ n: null, level: "muted" });
+    expect(merged(ok("git-local", hyg(), { gaps: ["merged branches not read: .episko/episko.toml unreadable"] })))
+      .toEqual({ n: null, level: "muted" });
+    expect(merged(ok("git-local", hyg()))).toEqual({ n: 0, level: "ok" });
+  });
+
+  it("sorts open work by reviews waiting on you, then by size, and scales each bar to its column", () => {
+    const ps = [
+      tp("/big", ok("github-work", work(40, 10, 0))),
+      tp("/asked", ok("github-work", work(2, 1, 2))),
+      tp("/small", ok("github-work", work(4, 5, 0))),
+      tp("/blind", ok("github-work", work(1, 0, null))),
+    ];
+    expect(workBoard(ps).map((r) => [r.root, r.review, r.issuesRatio, r.prsRatio, r.level, r.verbs[0]?.key])).toEqual([
+      ["/asked", 2, 0.05, 0.1, "warn", "work:review"], ["/big", 0, 1, 1, "info", "work:open"],
+      ["/small", 0, 0.1, 0.5, "info", "work:open"], ["/blind", null, 0.025, 0, "info", "work:open"],
+    ]);
+    // Both lines are the row's, so the open-work one never repeats below the board.
+    expect(workBoard(ps)[0].verbs.map((f) => f.key)).toEqual(["work:review", "work:open"]);
+    expect(tabBoards("work", ps, "/asked", null, NOW).drawn).toEqual(["/asked|work:open", "/asked|work:review"]);
+  });
+
+  it("keeps the reviews one source counted when another's search failed, as a floor", () => {
+    const ps = [
+      tp("/half", ok("github-work", work(1, 0, 3)), ok("gitlab-work", work(0, 0, null))),
+      tp("/big", ok("github-work", work(40, 10, 0))),
+    ];
+    const rows = workBoard(ps);
+    expect(rows.map((r) => [r.root, r.review, r.reviewPartial, r.level])).toEqual([["/half", 3, true, "warn"], ["/big", 0, false, "info"]]);
+  });
+
+  it("lists every address last checked, the worst answer first", () => {
+    const p = (name: string, code: number | null, days: number) => ({ name, url: `https://${name}`, code, ms: 9, certNotAfter: S + days * D, err: code ? null : "refused" });
+    const ps = [
+      tp("/a", ok("h", { kind: "probes", items: [p("app", 200, 90), p("api", null, 90)] })),
+      tp("/b", ok("h", { kind: "probes", items: [p("www", 200, 5)] })),
+    ];
+    expect(probeBoard(ps, null, NOW).map((r) => [r.root, r.name, r.code, r.level, r.certLevel, r.verb?.key ?? null])).toEqual([
+      ["/a", "api", null, "bad", "ok", "prod:api"], ["/b", "www", 200, "ok", "warn", "prod:cert:www"], ["/a", "app", 200, "ok", "ok", null],
+    ]);
+  });
+
+  it("says an address is not checked yet only for a project in the filter whose check nobody asked for", () => {
+    const pp = (path: string, coverage: Coverage) => {
+      const inp: MaintInput = { det: det(["http-probe"]), reports: { "http-probe": { ...not("http-probe", "prod", coverage), cost: "remote" } } };
+      return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+    };
+    const ps = [pp("/never", { state: "notRun" }), pp("/broke", { state: "error", reason: "refused" }), tp("/bare", ok("git-local", hyg()))];
+    expect(tabBoards("servers", ps, null, null, NOW).unchecked).toBe(1);
+    expect(tabBoards("servers", ps, "/bare", null, NOW).unchecked, "a project with no [deploy] is not 'not checked'").toBe(0);
+    expect(tabBoards("servers", ps, "/broke", null, NOW).unchecked, "a check that failed is Coverage's to explain").toBe(0);
+  });
+
+  it("honours the project filter and sorts the same whatever order the projects came in", () => {
+    const probe = (name: string, code: number) => ok("h", { kind: "probes", items: [{ name, url: `https://${name}`, code, ms: 9, certNotAfter: S + 90 * D, err: null }] });
+    // /b the bigger on every board, so the reversed order exercises the ranking keys and not only the path tiebreak.
+    const ps = [
+      tp("/a", alerts(adv()), ok(GHA, ci(run("t", "pass", S))), ok("git-tags", rel({ since: 3 })), ok("git-local", hyg()),
+        ok("github-work", work(1, 1, 0)), ok("dependabot-prs", prs(1)), probe("app", 200)),
+      tp("/b", alerts(adv()), ok(GHA, ci(run("t", "fail", S))), ok("git-tags", rel({ since: 9 })), ok("git-local", hyg({ unpushed: 2 })),
+        ok("github-work", work(5, 2, 1)), ok("dependabot-prs", prs(2, {}, "fail")), probe("www", 500)),
+    ];
+    for (const tab of MAINT_TABS) {
+      const b = tabBoards(tab, ps, null, null, NOW);
+      expect(tabBoards(tab, shuffled(ps), null, null, NOW), `${tab}: a repaint never reorders`).toEqual(b);
+      const one = tabBoards(tab, ps, "/b", null, NOW);
+      const roots = [...one.adv.flatMap((r) => r.projects.map((p) => p.root)), ...[one.prs, one.ci, one.releases, one.hygiene, one.work, one.probes]
+        .flat().map((r) => r.root)];
+      expect(new Set(roots), `${tab}: narrowed to /b`).toEqual(new Set(["/b"]));
+      expect(one.drawn.every((k) => k.startsWith("/b|")), tab).toBe(true);
+      const firsts = [b.prs, b.ci, b.releases, b.hygiene, b.work, b.probes].flatMap((xs) => xs.length ? [xs[0].root] : []);
+      expect(firsts.every((r) => r === "/b"), `${tab}: the bigger first`).toBe(true);
+    }
+    expect(tabBoards("delivery", ps, "/b", null, NOW).read).toEqual({ ci: 1, release: 1 });
+  });
+
+  it("leaves a line no board carries to the list below them, and claims only the lines it draws a verb for", () => {
+    const ps = [tp("/r", ok("git-local", hyg({ unpushed: 2, merged: ["x"] })))];
+    const rows = ps[0].rows;
+    expect(rows.map((f) => f.key)).toEqual(expect.arrayContaining(["ci:setup", "git:unpushed", "git:tidy"]));
+    expect(tabBoards("code", ps, null, null, NOW).drawn).toEqual(["/r|git:tidy", "/r|git:unpushed"]);
+    expect(tabBoards("delivery", ps, null, null, NOW).drawn, "Set up is no board's: it stays a line").toEqual([]);
+  });
+});
+
 describe("the project tab's cards", () => {
   it("lists every workflow once, the red ones first, with its run strip oldest first", () => {
     const flows = ciFlows(input(ok(GHA, ci(run("lint", "pass", S - H), run("test", "fail", S - H), run("test", "fail", S - 3 * D), run("test", "pass", S - 4 * D)))), NOW);
@@ -1072,7 +1285,7 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "quietOpen", "MaintHost"],
+    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen", "MaintHost"],
     ["maint_read", "maint_detect"]);
   const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
