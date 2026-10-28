@@ -531,6 +531,7 @@ pub fn run() {
             stack::propose_stack,
             stack::write_stack,
             deploy::deploy_config,
+            deploy::episko_toml_path,
             deploy::propose_deploy,
             deploy::write_deploy,
             github::gh_threads,

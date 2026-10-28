@@ -350,13 +350,15 @@ const DEPLOY_TS = read(SRC, "deploy.ts");
 const cfgHead = /pub\(crate\)\s+struct\s+DeployConfig\s*\{/.exec(DEPLOY_RS);
 
 describe("where a project runs", () => {
-  it("reads the three [deploy] calls as literals", () => {
-    for (const cmd of ["deploy_config", "propose_deploy", "write_deploy"]) {
+  it("reads the [deploy] calls as literals", () => {
+    for (const cmd of ["deploy_config", "propose_deploy", "write_deploy", "episko_toml_path"]) {
       const at = sites.filter((s) => s.cmd === cmd);
       expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
       expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
     }
     expect(cmds.get("write_deploy")!.required).toEqual(["dir", "deploy", "create"]);
+    // Open file asks Rust which file Apply writes; a subfolder project's own path is another file.
+    expect(cmds.get("episko_toml_path")!.required).toEqual(["dir"]);
   });
 
   it("names in DeployCfg exactly what DeployConfig carries, camelCased both ways", () => {

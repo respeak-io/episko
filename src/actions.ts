@@ -793,6 +793,14 @@ export async function proposeStack(root: string): Promise<void> {
 
 // ---------- where it runs ----------
 
+// The repo root's file, not `root`'s: a subfolder project or a worktree shares its main checkout's.
+const teamFile = (root: string) => invoke<string>("episko_toml_path", { dir: root });
+
+/** Open the file `[deploy]` and `[maintenance]` are written to. */
+export async function openTeamFile(root: string): Promise<void> {
+  await openFileOrRead(await teamFile(root).catch(() => `${root}/.episko/episko.toml`));
+}
+
 // A new committable file is asked about once more: Apply answered for the table, not the file.
 async function writeTable(root: string, table: string, write: (create: boolean) => Promise<unknown>): Promise<boolean> {
   try {
@@ -801,7 +809,9 @@ async function writeTable(root: string, table: string, write: (create: boolean) 
   } catch (e) {
     if (String(e) !== NO_FILE) throw e;
   }
-  const make = await ask(`${basename(root)} has no \`.episko/episko.toml\` yet. Create it to hold \`[${table}]\`? It is a new file to commit.`,
+  const file = await teamFile(root).catch(() => "");
+  const at = file ? basename(file.replace(/[\\/]\.episko[\\/]episko\.toml$/, "")) : basename(root);
+  const make = await ask(`${at} has no \`.episko/episko.toml\` yet. Create it to hold \`[${table}]\`? It is a new file to commit.`,
     { title: "Create .episko/episko.toml", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
   if (make) await write(true);
   return make;
@@ -826,7 +836,7 @@ export async function proposeDeploy(root: string): Promise<void> {
     const deploy = checked.deploy;
     if (!await writeTable(root, "deploy", (create) => invoke("write_deploy", { dir: root, deploy, create }))) return;
     toast("[deploy] written. Commit .episko/ to share it");
-    // Only a project Maintenance already read: the write dropped Rust's detection, every report stays.
+    // Only a project Maintenance already read: the write dropped the detection and the old probe.
     if (maintOf(root)) void scanProject(root, false);
   } catch (e) {
     toast(`No deploy proposal: ${e}`);

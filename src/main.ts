@@ -40,7 +40,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
-  openDevtools, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
+  openDevtools, openTeamFile, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -234,7 +234,7 @@ setProjSetHost({
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
   setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
-  setupDeploy: proposeDeploy, setupMaint: proposeMaint,
+  openTeamFile: (root) => void openTeamFile(root), setupDeploy: proposeDeploy, setupMaint: proposeMaint,
   trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
@@ -311,7 +311,7 @@ setDashHost({
   openFleetMaint: (sub, root) => { showFleetMaint(sub, root); openFleet(); },
   proposeDeploy: (root) => { void proposeDeploy(root); },
   proposeMaint: (root) => { void proposeMaint(root); },
-  openConfig: (root) => { void openFileOrRead(`${root}/.episko/episko.toml`); },
+  openConfig: (root) => { void openTeamFile(root); },
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
