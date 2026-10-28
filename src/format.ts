@@ -30,6 +30,9 @@ export function dialogBody(text: string): string {
     })
     .join("");
 }
+// Text typed into a prompt as keystrokes: every C0/C1 control (ESC, DEL, CSI) becomes a space,
+// so repo-controlled text can never carry a key sequence that submits the prefill.
+export const typable = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
 // Both separators, so a Windows path collapses to its leaf too.
 export function basename(p: string) { const parts = p.replace(/[/\\]+$/, "").split(/[/\\]/); return parts[parts.length - 1] || p; }
 // One spelling for a path compared by exact string: the macOS folder dialog hands back a

@@ -144,7 +144,8 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 /// `2026-08-17T08:08:18.686Z` -> epoch seconds, `None` for any other shape: the caller's
-/// mtime fallback beats a misparsed date. The offset is ignored, since Claude writes UTC.
+/// mtime fallback beats a misparsed date. A `±hh:mm` offset is applied: a self-hosted
+/// GitLab writes its own zone; `Z` or no suffix is UTC.
 pub(crate) fn iso_epoch_secs(ts: &str) -> Option<u64> {
     let b = ts.as_bytes();
     if b.len() < 19
@@ -162,7 +163,23 @@ pub(crate) fn iso_epoch_secs(ts: &str) -> Option<u64> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
         return None;
     }
-    u64::try_from(days_from_civil(y, mo, d) * 86_400 + h * 3_600 + mi * 60 + s).ok()
+    let tail = ts[19..].trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let off = match tail.as_bytes().first() {
+        None | Some(b'Z' | b'z') if tail.len() <= 1 => 0,
+        Some(&sign @ (b'+' | b'-')) => {
+            let hm = tail[1..].replacen(':', "", 1);
+            if hm.len() != 4 || !hm.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let (oh, om) = (hm[0..2].parse::<i64>().ok()?, hm[2..4].parse::<i64>().ok()?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            (oh * 3_600 + om * 60) * if sign == b'-' { -1 } else { 1 }
+        }
+        _ => return None,
+    };
+    u64::try_from(days_from_civil(y, mo, d) * 86_400 + h * 3_600 + mi * 60 + s - off).ok()
 }
 
 /// The newest `"timestamp"` in one line. A substring scan rather than a parse: this runs
@@ -2684,6 +2701,15 @@ mod tests {
         assert_eq!(iso_epoch_secs("2026-08-17T08:08:18.686Z"), Some(1_786_954_098));
         assert_eq!(iso_epoch_secs("2024-02-29T12:00:00Z"), Some(1_709_208_000));
         assert_eq!(iso_epoch_secs("2100-03-01T00:00:00Z"), Some(4_107_542_400));
+        assert_eq!(iso_epoch_secs("2026-08-17T08:08:18"), Some(1_786_954_098), "no suffix is UTC");
+
+        // A forge in another zone: the same instant whatever offset it is spelled in.
+        let utc = iso_epoch_secs("2026-10-27T15:17:57.002Z");
+        assert_eq!(iso_epoch_secs("2026-10-27T17:17:57.002+02:00"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T10:17:57-0500"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57+00:00"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57+2:00"), None);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57Zjunk"), None);
 
         // Off-shape is None: the caller falls back to the mtime rather than invent a date.
         assert_eq!(iso_epoch_secs(""), None);

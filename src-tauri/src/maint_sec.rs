@@ -13,7 +13,7 @@ use crate::git::glob_match;
 use crate::github::who_for;
 use crate::lockfile::{Pkg, LOCKFILES};
 use crate::maint::exec::HttpReq;
-use crate::maint::{found_paths, github_repo, Advisory, AdvisoryKind, Coverage, Ctx, Exec, Facts, Read, Severity, SKIP_DIRS};
+use crate::maint::{found_paths, github_repo, read_capped, Advisory, AdvisoryKind, Coverage, Ctx, Exec, Facts, Read, Severity, SKIP_DIRS};
 
 /// A reporter's severity word, case-blind; GraphQL's `MODERATE` is REST's `medium`. A word nobody
 /// taught us is `Unknown`, and the raw one rides beside it.
@@ -63,10 +63,11 @@ fn located(path: &str, line: Option<u64>) -> Option<String> {
     })
 }
 
-/// One line, at most 200 characters: a scanner's message can run to paragraphs.
+/// One line, at most 200 characters: a scanner's message can run to paragraphs. A control
+/// character (ESC above all) becomes a space, since a summary may be typed into a prompt.
 pub(crate) fn summary_of(s: &str) -> String {
     let line = s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
-    line.chars().take(200).collect()
+    line.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect()
 }
 
 const SECRET_TOOLS: &[&str] = &["gitleaks", "trufflehog", "detect-secrets", "ggshield"];
@@ -407,11 +408,7 @@ pub(crate) fn sarif_files(ctx: &Ctx, _ex: &dyn Exec) -> Result<Read, Coverage> {
     let (mut items, mut seen, mut read) = (vec![], BTreeSet::new(), 0);
     for f in &files {
         let path = root.join(f);
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > SARIF_BYTES) {
-            gaps.push(format!("{f} is too large to read"));
-            continue;
-        }
-        match std::fs::read_to_string(&path).map_err(|e| format!("{f}: {e}")).and_then(|t| parse_sarif(&t, f, ctx.root)) {
+        match read_capped(&path, SARIF_BYTES).map_err(|e| format!("{f}: {e}")).and_then(|t| parse_sarif(&t, f, ctx.root)) {
             Ok(found) => {
                 read += 1;
                 // Two logs of one run (or one log listed twice) report a finding once.
@@ -502,11 +499,14 @@ fn installed(root: &str, gaps: &mut Vec<String>) -> Result<Vec<(Pkg, String)>, C
     let (mut out, mut read, mut broken) = (BTreeMap::new(), 0, false);
     for f in &files {
         let path = Path::new(root).join(f);
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOCK_BYTES) {
-            gaps.push(format!("{f} is too large to read"));
-            continue;
-        }
-        match std::fs::read_to_string(&path).map_err(|e| format!("{f}: {e}")).and_then(|t| crate::lockfile::parse(f, &t)) {
+        let text = match read_capped(&path, LOCK_BYTES) {
+            Err(e) if e.kind() == std::io::ErrorKind::Other => {
+                gaps.push(format!("{f} is {e}"));
+                continue;
+            }
+            text => text,
+        };
+        match text.map_err(|e| format!("{f}: {e}")).and_then(|t| crate::lockfile::parse(f, &t)) {
             Ok(p) => {
                 // A version no parser knows read nothing, however cleanly.
                 read += usize::from(!p.pkgs.is_empty() || p.gaps.is_empty());
@@ -850,6 +850,11 @@ mod tests {
             Facts::Advisories { items } => items,
             other => panic!("not advisories: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_summary_carries_no_control_character() {
+        assert_eq!(summary_of("\n  Run: x\u{1b}[13u y\u{7f}\u{9b}z  \nmore"), "Run: x [13u y  z");
     }
 
     #[test]

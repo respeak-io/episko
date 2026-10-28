@@ -374,10 +374,8 @@ pub(crate) fn match_project(root: &str, asks: &[SweepAsk]) -> SweepFacts {
         let path = Path::new(root).join(file);
         if !LOCKFILES.contains(&file.rsplit('/').next().unwrap_or(file)) {
             f.unread.push(unread(file, eco, "a lockfile Episko does not read".into()));
-        } else if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOCK_BYTES) {
-            f.unread.push(unread(file, eco, "too large to read".into()));
         } else {
-            match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| crate::lockfile::parse(file, &t)) {
+            match crate::maint::read_capped(&path, LOCK_BYTES).map_err(|e| e.to_string()).and_then(|t| crate::lockfile::parse(file, &t)) {
                 Err(e) => f.unread.push(unread(file, eco, e)),
                 // A version no parser knows read nothing, however cleanly.
                 Ok(p) if p.pkgs.is_empty() && p.unpinned.is_empty() && !p.gaps.is_empty() => f.unread.push(unread(file, eco, p.gaps.join("; "))),

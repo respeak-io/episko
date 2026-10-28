@@ -529,7 +529,7 @@ pub(crate) fn parse_maint(text: &str) -> MaintConfig {
 
 /// No file is not a broken one: an unconfigured project reads as readable and empty.
 pub(crate) fn read_config(root: &str) -> MaintConfig {
-    match std::fs::read_to_string(Path::new(root).join(".episko").join("episko.toml")) {
+    match read_capped(&Path::new(root).join(".episko").join("episko.toml"), CONFIG_CAP) {
         Ok(text) => parse_maint(&text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => MaintConfig::default(),
         Err(_) => MaintConfig { readable: false, ..Default::default() },
@@ -708,18 +708,33 @@ fn enabled(cfg: &MaintConfig, id: &str, facet: Facet) -> bool {
 
 pub(crate) const SKIP_DIRS: &[&str] = &["node_modules", "target", "dist", "build", "vendor", "venv", "__pycache__"];
 const JSON_CAP: u64 = 2 * 1024 * 1024;
+pub(crate) const CONFIG_CAP: u64 = 1024 * 1024;
 const DETECT_TTL: Duration = Duration::from_secs(30);
+
+/// A project file, refused unless its target is a regular file and bounded by the read itself:
+/// a symlink to `/dev/zero` reports length 0 and never ends, and opening a FIFO blocks.
+pub(crate) fn read_capped(path: &Path, cap: u64) -> std::io::Result<String> {
+    use std::io::{Error, Read};
+    let regular = |m: std::fs::Metadata| if m.is_file() { Ok(()) } else { Err(Error::other("not a regular file")) };
+    regular(std::fs::metadata(path)?)?;
+    let f = std::fs::File::open(path)?;
+    regular(f.metadata()?)?;
+    let mut buf = Vec::new();
+    f.take(cap + 1).read_to_end(&mut buf)?;
+    if buf.len() as u64 > cap {
+        return Err(Error::other("too large to read"));
+    }
+    String::from_utf8(buf).map_err(|_| Error::new(std::io::ErrorKind::InvalidData, "not UTF-8 text"))
+}
 
 fn present(p: &Path, dir: bool, key: Option<&str>) -> bool {
     if dir {
         return std::fs::read_dir(p).is_ok_and(|mut d| d.next().is_some());
     }
-    let Some(key) = key else { return p.exists() };
-    p.is_file()
-        && std::fs::metadata(p).is_ok_and(|m| m.len() <= JSON_CAP)
-        && std::fs::read_to_string(p).ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .is_some_and(|v| v.get(key).is_some())
+    let Some(key) = key else { return p.exists() }; // `.git` is a folder, or a file in a worktree
+    read_capped(p, JSON_CAP).ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v.get(key).is_some())
 }
 
 /// Each `detect` entry found under `root`, with where. A trailing `/` wants a non-empty
@@ -1018,8 +1033,22 @@ pub(crate) mod exec {
                 cmd.env("npm_config_prefix", dir);
             }
         }
-        cmd.env("PATH", path).args(args);
+        // The child searches what `resolve_bin` did: a relative or empty entry is the project.
+        let safe = std::env::join_paths(std::env::split_paths(path).filter(|d| d.is_absolute())).map_err(|e| e.to_string())?;
+        cmd.env("PATH", safe).args(args);
         Ok(cmd)
+    }
+
+    /// curl's `-w` trailer is the status. A failed transfer still prints `000`, so a non-zero
+    /// exit is curl's own error (DNS, refused, timeout), never an HTTP answer.
+    pub(crate) fn http_answer(out: Output) -> Result<HttpResp, String> {
+        let (body, code) = out.stdout.rsplit_once('\n').unwrap_or(("", out.stdout.as_str()));
+        let code: u16 = code.trim().parse().unwrap_or(0);
+        if code == 0 || out.code != Some(0) {
+            let e = out.stderr.trim();
+            return Err(if e.is_empty() { "no HTTP answer".into() } else { e.to_string() });
+        }
+        Ok(HttpResp { code, body: body.to_string() })
     }
 
     /// The real seam, made per read with that source's cost.
@@ -1088,10 +1117,7 @@ pub(crate) mod exec {
                 input = Some(body.clone());
             }
             cmd.arg(&req.url);
-            let out = run_fed(cmd, input, req.secs + 5)?;
-            let (body, code) = out.stdout.rsplit_once('\n').unwrap_or(("", out.stdout.as_str()));
-            let code = code.trim().parse().map_err(|_| out.stderr.trim().to_string())?;
-            Ok(HttpResp { code, body: body.to_string() })
+            http_answer(run_fed(cmd, input, req.secs + 5)?)
         }
 
         fn ssh(&self, alias: &str, script: &str, secs: u64) -> Result<Output, String> {
@@ -1488,6 +1514,28 @@ mod tests {
         std::fs::write(p, text).unwrap();
     }
 
+    #[test]
+    fn a_capped_read_refuses_what_is_not_a_bounded_regular_file() {
+        let dir = scratch_dir();
+        write(&dir, "small.txt", "hello");
+        write(&dir, "big.txt", &"x".repeat(65));
+        assert_eq!(read_capped(&dir.join("small.txt"), 64).unwrap(), "hello");
+        assert_eq!(read_capped(&dir.join("big.txt"), 64).unwrap_err().to_string(), "too large to read");
+        assert_eq!(read_capped(&dir, 64).unwrap_err().to_string(), "not a regular file");
+        assert_eq!(read_capped(&dir.join("none"), 64).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        // The device reports length 0, so only the read itself can stop it.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/dev/zero", dir.join("CHANGELOG.md")).unwrap();
+            assert_eq!(read_capped(&dir.join("CHANGELOG.md"), 64).unwrap_err().to_string(), "not a regular file");
+            let cfg = MaintConfig::default();
+            let forge = Forge { kind: ForgeKind::Unknown, host: None, path: None, by: ForgeBy::Table, api: None };
+            let root = dir.to_string_lossy().to_string();
+            let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true };
+            assert!(matches!(crate::maint_git::changelog(&ctx, &FakeExec::answering(Ok(""))), Err(Coverage::Unsupported { .. })));
+        }
+    }
+
     /// A repo every local source can answer: a tag, a changelog, a trunk and a SARIF report named in config.
     fn fixture_repo() -> PathBuf {
         let dir = scratch_dir();
@@ -1803,6 +1851,8 @@ mod tests {
         assert_eq!(cmd.get_program(), bin.join(name).as_os_str(), "the absolute file, so nothing searches the project");
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert_eq!(args, ["audit", "--json"]);
+        let child_path = cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v).unwrap();
+        assert_eq!(std::env::split_paths(child_path).collect::<Vec<_>>(), std::slice::from_ref(&bin), "nor does the child's own lookup");
         let out = cmd.current_dir(&proj).output().unwrap();
         let said = String::from_utf8_lossy(&out.stdout);
         assert!(said.contains("REAL audit --json") && !said.contains("PLANTED"), "{said}");
@@ -1811,6 +1861,16 @@ mod tests {
         }
         assert!(exec::tool_cmd("npm", &["audit"], ".").is_err(), "a relative PATH entry is never searched");
         assert!(exec::resolve_bin("npm", &path).is_some_and(|p| p.starts_with(&bin)));
+    }
+
+    #[test]
+    fn a_failed_transfer_is_curls_error_never_http_0() {
+        let out = |code, stdout: &str, stderr: &str| exec::Output { code, stdout: stdout.into(), stderr: stderr.into() };
+        let dns = exec::http_answer(out(Some(6), "\n000", "curl: (6) Could not resolve host: api.osv.dev"));
+        assert_eq!(dns.err().as_deref(), Some("curl: (6) Could not resolve host: api.osv.dev"));
+        assert_eq!(exec::http_answer(out(Some(28), "\n000", "")).err().as_deref(), Some("no HTTP answer"));
+        let ok = exec::http_answer(out(Some(0), "{\"a\":1}\n404", "")).unwrap();
+        assert_eq!((ok.code, ok.body.as_str()), (404, "{\"a\":1}"), "a status is the server's answer, even a 404");
     }
 
     /// The real shim, executed: a project `.npmrc` naming a prefix that holds its own npm-cli.js.

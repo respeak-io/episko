@@ -111,7 +111,7 @@ pub(crate) fn parse_deploy(text: &str) -> Option<DeployConfig> {
 }
 
 pub(crate) fn read(dir: &str) -> Option<DeployConfig> {
-    std::fs::read_to_string(file_of(dir)).ok().and_then(|t| parse_deploy(&t))
+    crate::maint::read_capped(&file_of(dir), crate::maint::CONFIG_CAP).ok().and_then(|t| parse_deploy(&t))
 }
 
 #[tauri::command]

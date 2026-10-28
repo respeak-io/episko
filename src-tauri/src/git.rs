@@ -1434,10 +1434,14 @@ fn primary_remote(remotes: &[String]) -> &str {
 /// never guesses further, since a wrong default makes every branch look (un)merged.
 fn remote_default(repo_dir: &str, remote: &str) -> Option<String> {
     let git = |args: &[&str]| git_cmd(repo_dir, args).output();
+    let resolves = |short: &str| {
+        git(&["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{short}^{{commit}}")]).is_ok_and(|o| o.status.success())
+    };
+    // `fetch --prune` after a master→main rename leaves `<remote>/HEAD` dangling; trust it only if it resolves.
     if let Ok(o) = git(&["symbolic-ref", "--quiet", "--short", &format!("refs/remotes/{remote}/HEAD")]) {
         if o.status.success() {
             let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if !s.is_empty() {
+            if !s.is_empty() && resolves(&s) {
                 return Some(s);
             }
         }
@@ -2911,7 +2915,9 @@ pub(crate) fn maint_trunk(dir: &str, asked: Option<&str>) -> Result<String, Stri
     if remotes.is_empty() {
         return Err("no remote, so no default branch: set [maintenance] trunk".into());
     }
-    remote_default(dir, primary_remote(&remotes)).ok_or_else(|| "no default branch known: set [maintenance] trunk".into())
+    let remote = primary_remote(&remotes);
+    remote_default(dir, remote)
+        .ok_or_else(|| format!("no default branch known: run `git remote set-head {remote} -a` or set [maintenance] trunk"))
 }
 
 fn lines_of(s: &str) -> impl Iterator<Item = &str> {
@@ -2965,13 +2971,17 @@ pub(crate) fn hygiene(dir: &str, trunk: Option<&str>) -> Result<Option<Hygiene>,
             let default = (!remotes.is_empty()).then(|| remote_default(dir, primary_remote(&remotes))).flatten();
             let skip: Vec<String> = [Some(t.to_string()), half(t), default.as_deref().and_then(half)].into_iter().flatten().collect();
             // Checked out anywhere is never offered: a fresh session worktree is "merged" too.
-            let merged = git_out(dir, &["branch", "--format=%(refname:short)\t%(worktreepath)", "--merged", t])?;
-            // `git_out` trims, so the last row may have lost its empty worktree column.
-            h.merged = lines_of(&merged)
-                .map(|l| l.split_once('\t').unwrap_or((l, "")))
-                .filter(|(b, wt)| wt.trim().is_empty() && !skip.iter().any(|s| s == b) && protected_by(&protect, b).is_empty())
-                .map(|(b, _)| b.trim().to_string())
-                .collect();
+            match git_out(dir, &["branch", "--format=%(refname:short)\t%(worktreepath)", "--merged", t]) {
+                Err(e) => h.gaps.push(format!("merged branches not read: {e}")),
+                // `git_out` trims, so the last row may have lost its empty worktree column.
+                Ok(merged) => {
+                    h.merged = lines_of(&merged)
+                        .map(|l| l.split_once('\t').unwrap_or((l, "")))
+                        .filter(|(b, wt)| wt.trim().is_empty() && !skip.iter().any(|s| s == b) && protected_by(&protect, b).is_empty())
+                        .map(|(b, _)| b.trim().to_string())
+                        .collect()
+                }
+            }
         }
         None => {}
     }
@@ -3762,6 +3772,30 @@ canonicalizehostname false
         let h = hygiene(&d, Some(&trunk)).unwrap().unwrap();
         assert!(h.merged.is_empty(), "an unreadable protect list offers nothing: {:?}", h.merged);
         assert!(h.gaps.iter().any(|g| g.contains("unreadable")), "{:?}", h.gaps);
+    }
+
+    /// A rename upstream plus our own `fetch --prune` leaves `origin/HEAD` naming a deleted ref.
+    #[test]
+    fn a_dangling_origin_head_falls_through_to_a_branch_that_exists() {
+        let up = scratch_dir();
+        git(&up, &["init", "-q", "-b", "master"]);
+        commit(&up, "base");
+        let top = scratch_dir();
+        git(&top, &["clone", "-q", &up.to_string_lossy(), "c"]);
+        let dir = top.join("c");
+        let d = dir.to_string_lossy().to_string();
+        git(&up, &["branch", "-q", "-m", "master", "main"]);
+        git(&dir, &["fetch", "-q", "--prune"]);
+        assert_eq!(maint_trunk(&d, None), Ok("origin/main".into()));
+        let h = hygiene(&d, Some("origin/main")).unwrap().unwrap();
+        assert_eq!(h.gone, ["master"], "{:?}", h.gaps);
+
+        git(&up, &["branch", "-q", "-m", "main", "trunk"]);
+        git(&dir, &["fetch", "-q", "--prune"]);
+        let e = maint_trunk(&d, None).unwrap_err();
+        assert!(e.contains("git remote set-head origin -a"), "{e}");
+        let h = hygiene(&d, Some("origin/master")).unwrap().expect("the rest still reads");
+        assert!(h.gaps.iter().any(|g| g.starts_with("merged branches not read")), "{:?}", h.gaps);
     }
 
     #[test]

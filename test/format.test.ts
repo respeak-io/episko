@@ -3,7 +3,7 @@ import {
   ageBucket, barRow, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc,
   fmtClock, fmtDay, fmtDayLong, fmtDur, fmtSince,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
-  fmtShort, fmtSpan, fmtUntil, hslToHex, initials, nameHue, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
+  fmtShort, fmtSpan, fmtUntil, hslToHex, initials, nameHue, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra, typable,
   TITLE_DEFAULTS, TITLE_EXTRA_MAX, uDelta,
   uTok, uUsd, uUsd2,
 } from "../src/format";
@@ -225,6 +225,19 @@ describe("tilde — home-dir abbreviation", () => {
     expect(tilde("/Volumes/backup/Users/ada/x")).toBe("/Volumes/backup/Users/ada/x");
     // Nor is a sibling whose name starts with it.
     expect(tilde("/Users/ada2/code")).toBe("/Users/ada2/code");
+  });
+});
+
+describe("typable — a prefill can never press a key", () => {
+  it("turns every escape sequence that means Enter into plain text", () => {
+    for (const k of ["\x1bOM", "\x1b[13u", "\x9b13u", "\x1b[13;28;13;1;0;1_"]) {
+      expect(typable(`fix ${k} now`)).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    }
+    expect(typable("a\x1b[13ub")).toBe("a [13ub");
+  });
+  it("folds line breaks, ^C and DEL to one space, and keeps ordinary text", () => {
+    expect(typable("one\r\ntwo\x03\x7fthree")).toBe("one two three");
+    expect(typable("Fix CVE-2026-1 in ö 🚀")).toBe("Fix CVE-2026-1 in ö 🚀");
   });
 });
 

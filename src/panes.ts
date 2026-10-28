@@ -10,7 +10,7 @@ import { $, clearStageBadges, dashOnMaint, setHeadPath, takeStage, toast } from 
 import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
-import { basename, cleanTitle, esc } from "./format";
+import { basename, cleanTitle, esc, typable } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   phaseText, providerCapabilities, providerSessionKey, resumeAgent,
@@ -131,7 +131,7 @@ function newAgentTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fit
 // burst as a paste: under 1KB it collapses to "[Pasted text]", which nobody can read before
 // Enter, and past 1KB it drops the first 1024-byte read outright. Small beats arrive whole.
 export async function typeInto(sid: string, text: string, size = 240, gapMs = 50): Promise<void> {
-  const chars = Array.from(text.replace(/[\r\n]+/g, " ")); // by code point: never split an emoji
+  const chars = Array.from(typable(text)); // by code point: never split an emoji
   for (let i = 0; i < chars.length; i += size) {
     await invoke("write_pty", { sessionId: sid, data: chars.slice(i, i + size).join("") });
     await new Promise((r) => setTimeout(r, gapMs));
