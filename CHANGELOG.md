@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! The new-session dialog no longer shows the previous project's worktrees and branches while
+  it loads, and opens faster in repos with several worktrees.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
