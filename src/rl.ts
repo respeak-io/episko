@@ -1,8 +1,8 @@
 // Account-wide usage limits: merge the readings, forecast whether the burn rate runs the window out.
 
-import { readList } from "./store";
+import { readList, readObj } from "./store";
 
-// Shared by every session: each statusLine reports the same account numbers.
+// The logged-in account's windows; every session follows `/login`, so all report the same ones.
 export const rl: { h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null } =
   { h5: null, h5Reset: null, d7: null, d7Reset: null };
 // Same window (resets_at ±2min skew): usage only climbs, so keep the max. A later window
@@ -35,8 +35,8 @@ export function rlReset(reset: number | null): number | null {
 export interface ScopedWin { label: string; pct: number | null; resetTs: number | null }
 // `avail` false is an account plan limits do not apply to at all (an API key, Bedrock,
 // Vertex): saying so beats an empty meter that reads as nothing used.
-export const rlScoped: { wins: ScopedWin[]; at: number; avail: boolean } =
-  { wins: [], at: 0, avail: true };
+export const rlScoped: { wins: ScopedWin[]; at: number; avail: boolean; acct: string | null } =
+  { wins: [], at: 0, avail: true, acct: null };
 
 export interface PlanLimitRow { display_name?: string; utilization?: number | null; resets_at?: string | null }
 export interface PlanLimits {
@@ -44,14 +44,18 @@ export interface PlanLimits {
   // Absent means nothing was learned and the last reading stands; `[]` is the account having
   // no per-model window at all. The same split is spelled in `usage.rs`.
   scoped?: PlanLimitRow[] | null;
+  account?: unknown; // whoever the probe ran as
 }
 export function applyPlanLimits(p: PlanLimits | null | undefined): void {
   if (!p || typeof p !== "object") return;
+  noteAccount(p.account);
+  rlScoped.acct = account?.id ?? null;
   rlScoped.at = Date.now();
   rlScoped.avail = p.available !== false;
   if (!rlScoped.avail) { rlScoped.wins = []; return; }
   if (!Array.isArray(p.scoped)) return; // nothing known — keep what the last answer gave us
   rlScoped.wins = p.scoped.map(scopedWin).filter((w): w is ScopedWin => w != null);
+  saveAccts();
 }
 // A row with no name has nothing to label a meter with; a missing figure is null, not 0%.
 function scopedWin(row: PlanLimitRow): ScopedWin | null {
@@ -147,6 +151,7 @@ export interface FcLogEntry {
   at?: number;            // fraction of the window elapsed at the snapshot
   late?: number;          // seconds between the window's real reset and us noticing
   flat?: boolean;         // snapshot had ~no burn: correct-but-uninformative
+  acct?: string;          // whose window: plans differ, so a calibration groups by it
 }
 export const fcLog: FcLogEntry[] = readList<FcLogEntry>("cc-forecast-log");
 export interface MidSnap { proj: number; used: number; burn: number; at: number }
@@ -178,6 +183,7 @@ function logWindowClose(win: RlWin, finalPct: number | null, prevReset: number |
     at: snap ? snap.at : undefined,
     late: prevReset != null ? Math.max(0, now - prevReset) : undefined,
     flat: snap ? snap.burn <= 0 : undefined,
+    acct: account?.id,
   };
   fcLog.push(e);
   if (fcLog.length > 200) fcLog.splice(0, fcLog.length - 200);
@@ -201,3 +207,133 @@ export function onRlUpdate(win: RlWin, prevPct: number | null, prevReset: number
   pushRlSample(win, rlPct(win === "h5" ? rl.h5 : rl.d7, newReset));
   maybeMidSnap(win, newReset);
 }
+
+// ---------- whose limits these are ----------
+// `/login` swaps the account under every running session, so a switch swaps the meters: read
+// as a reading, it logged both windows "closed" and could hide the account in use for a week.
+export interface ClaudeAccount { id: string; tier: string | null; kind: string | null; email: string | null }
+export interface RlSlot {
+  acct: ClaudeAccount; seen: number;
+  h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null;
+  scoped: { wins: ScopedWin[]; at: number };
+}
+export let account: ClaudeAccount | null = null;
+/** When this run saw the account change. A pane silent at the API since still holds the old figures. */
+export let acctSince = 0;
+const ACCTS = "cc-rl-accounts", MAX_ACCTS = 8;
+
+export function asAccount(v: unknown): ClaudeAccount | null {
+  const o = v && typeof v === "object" ? v as Record<string, unknown> : null;
+  if (!o || typeof o.id !== "string" || !o.id) return null;
+  const str = (x: unknown) => (typeof x === "string" && x ? x : null);
+  return { id: o.id, tier: str(o.tier), kind: str(o.kind), email: str(o.email) };
+}
+const numOr = (x: unknown) => (typeof x === "number" && isFinite(x) ? x : null);
+function asSlot(v: unknown): RlSlot | null {
+  const o = v && typeof v === "object" ? v as Record<string, unknown> : null;
+  const acct = asAccount(o?.acct);
+  if (!o || !acct) return null;
+  const sc = o.scoped && typeof o.scoped === "object" ? o.scoped as Record<string, unknown> : {};
+  const wins = Array.isArray(sc.wins) ? (sc.wins as ScopedWin[]).filter((w) => !!w && typeof w.label === "string") : [];
+  return {
+    acct, seen: numOr(o.seen) ?? 0, h5: numOr(o.h5), h5Reset: numOr(o.h5Reset), d7: numOr(o.d7), d7Reset: numOr(o.d7Reset),
+    scoped: { wins, at: numOr(sc.at) ?? 0 },
+  };
+}
+export const rlAccts: Record<string, RlSlot> = {};
+export function loadAccts() {
+  for (const k of Object.keys(rlAccts)) delete rlAccts[k];
+  for (const v of Object.values(readObj<unknown>(ACCTS))) { const slot = asSlot(v); if (slot) rlAccts[slot.acct.id] = slot; }
+}
+loadAccts();
+
+function slotNow(acct: ClaudeAccount): RlSlot {
+  return { acct, seen: Date.now(), ...rl, scoped: { wins: rlScoped.wins, at: rlScoped.at } };
+}
+// Only-when-changed: this runs on the statusLine path (docs/architecture.md, storage cadences).
+let savedAccts = "";
+export function saveAccts() {
+  if (account) rlAccts[account.id] = slotNow(account);
+  const keep = Object.values(rlAccts).sort((a, b) => b.seen - a.seen).slice(0, MAX_ACCTS);
+  for (const k of Object.keys(rlAccts)) if (!keep.some((x) => x.acct.id === k)) delete rlAccts[k];
+  const json = JSON.stringify(keep.map((x) => ({ ...x, seen: 0 }))); // a newer stamp alone is no write
+  if (json === savedAccts) return;
+  savedAccts = json;
+  localStorage.setItem(ACCTS, JSON.stringify(Object.fromEntries(keep.map((x) => [x.acct.id, x]))));
+}
+
+/** Records who is logged in; true when that changed and the meters were swapped. */
+export function noteAccount(raw: unknown): boolean {
+  const a = asAccount(raw);
+  if (!a) return false;
+  const prev = account;
+  account = a;
+  if (prev?.id === a.id) return false;
+  if (!prev) { // first sighting this run: a held per-model reading may be another account's
+    if (rlScoped.acct && rlScoped.acct !== a.id) { rlScoped.wins = []; rlScoped.at = 0; }
+    rlScoped.acct = a.id;
+    return false;
+  }
+  rlAccts[prev.id] = slotNow(prev);
+  const next = rlAccts[a.id];
+  rl.h5 = next?.h5 ?? null; rl.h5Reset = next?.h5Reset ?? null;
+  rl.d7 = next?.d7 ?? null; rl.d7Reset = next?.d7Reset ?? null;
+  rlScoped.wins = next?.scoped.wins ?? []; rlScoped.at = next?.scoped.at ?? 0;
+  rlScoped.avail = true; rlScoped.acct = a.id;
+  rlSamples.h5 = []; rlSamples.d7 = [];
+  midSnap.h5 = midSnap.d7 = null;
+  // A restored window was not watched closing here, so its rotation must not be logged as one.
+  lastClosed.h5 = rl.h5Reset; lastClosed.d7 = rl.d7Reset;
+  acctSince = Date.now();
+  saveAccts();
+  rlLog("info", `limits · account switched to ${planName(a) ?? "?"} ${a.id.slice(0, 8)}`);
+  return true;
+}
+
+/** One statusLine's `rate_limits`, onto the logged-in account's meters. */
+export function applyRlReadings(limits: any): void {
+  const r5 = limits?.five_hour, r7 = limits?.seven_day;
+  if (r5) {
+    const p = rl.h5, pr = rl.h5Reset;
+    [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
+    onRlUpdate("h5", p, pr, rl.h5Reset);
+  }
+  if (r7) {
+    const p = rl.d7, pr = rl.d7Reset;
+    [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
+    onRlUpdate("d7", p, pr, rl.d7Reset);
+  }
+  if (account && (r5 || r7)) saveAccts();
+}
+
+/** Another machine's reading. One from a different account updates that account's slot instead. */
+export function mergePeerRl(p: Record<string, unknown>): boolean {
+  const from = typeof p.acct === "string" && p.acct ? p.acct : null;
+  const slot = from && account && from !== account.id ? rlAccts[from] : null;
+  if (from && account && from !== account.id && !slot) return false; // no name to show it under
+  const t = slot ?? rl;
+  [t.h5, t.h5Reset] = mergeRl(t.h5, t.h5Reset, p.h5, p.h5Reset);
+  [t.d7, t.d7Reset] = mergeRl(t.d7, t.d7Reset, p.d7, p.d7Reset);
+  if (slot) saveAccts();
+  return true;
+}
+
+/** "Max 5x" from the server's tier name, else the organisation type; null when neither says. */
+export function planName(a: ClaudeAccount): string | null {
+  const x = /max_(\d+x)\b/i.exec(a.tier ?? "");
+  if (x) return `Max ${x[1].toLowerCase()}`;
+  const k = (a.kind ?? "").replace(/^claude_/, "");
+  return k ? k[0].toUpperCase() + k.slice(1) : null;
+}
+export function accountName(a: ClaudeAccount): string {
+  return [planName(a), a.email ?? a.id.slice(0, 8)].filter(Boolean).join(" · ");
+}
+/** The accounts not logged in, newest first, with the last figures this machine saw for each. */
+export function otherAccounts(): { acct: ClaudeAccount; h5: Forecast; d7: Forecast }[] {
+  return Object.values(rlAccts)
+    .filter((x) => x.acct.id !== account?.id && (x.h5 != null || x.d7 != null))
+    .sort((a, b) => b.seen - a.seen)
+    .map((x) => ({ acct: x.acct, h5: forecastWin(x.h5, x.h5Reset, null, H5_LEN), d7: forecastWin(x.d7, x.d7Reset, null, D7_LEN) }));
+}
+/** Test seam: forget who was logged in. */
+export function resetAccount() { account = null; acctSince = 0; savedAccts = ""; }

@@ -21,7 +21,7 @@ import { FOOT_SEGS, footShown } from "./footprefs";
 import {
   activeId, availEngines, engineDef, footPrefs, keyPrefs, sessions, setTermEngine, telemetryUp, termEngine,
 } from "./state";
-import { providerAdapter } from "./providers";
+import { providerAdapter, type AgentProviderAdapter } from "./providers";
 import { dayDetail, daySpend, dayTotal, todayKey } from "./usage";
 import { spendByMachine } from "./synclink";
 
@@ -45,7 +45,7 @@ export function renderFoot() {
   $("fRlLabel").textContent = limitShort(one?.windowMins ?? 300);
   $("fRl7Label").textContent = limitShort(two?.windowMins ?? 10080);
   $("fUsageSeg").title = limits
-    ? `${limits.label} usage limits${limits.forecast ? " & forecast" : ""} · click for detail`
+    ? `${limits.label} usage limits${limits.forecast ? " & forecast" : ""}${limits.account ? ` · ${limits.account.name}` : ""} · click for detail`
     : "No integrated usage limits for the selected pane";
   paintFootRl("fRl", "fRlReset", one?.forecast ?? emptyForecast());
   paintFootRl("fRl7", "fRl7Reset", two?.forecast ?? emptyForecast());
@@ -58,7 +58,8 @@ export function renderFoot() {
 }
 
 interface LimitWindowView extends AgentRateLimit { forecast: Forecast; label?: string; sub?: string; note?: string }
-interface SelectedLimits { id: string; label: string; forecast: boolean; reported: boolean; windows: LimitWindowView[] }
+type LimitAccount = NonNullable<ReturnType<NonNullable<AgentProviderAdapter["limitAccount"]>>>;
+interface SelectedLimits { id: string; label: string; forecast: boolean; reported: boolean; windows: LimitWindowView[]; account: LimitAccount | null }
 
 const emptyForecast = (): Forecast => forecastWin(null, null, null);
 const limitShort = (mins: number | null): string => mins === 300 ? "5h"
@@ -92,6 +93,7 @@ function selectedLimits(): SelectedLimits | null {
     forecast: !!specialized?.length,
     reported: windows.some((window) => window.forecast.used != null),
     windows,
+    account: adapter?.limitAccount?.() ?? null,
   };
 }
 
@@ -139,11 +141,16 @@ function renderUsagePop() {
     const [title, sub] = limitName(window.windowMins);
     return usageRow(window.label ?? title, window.sub ?? sub, window.forecast, window.note);
   }).join("") ?? "";
+  // Logins this machine has seen before: what each had left when you switched away, and when it frees up.
+  const others = limits?.account?.others.map((o) => `<div class="up-other">${esc(o.name)} <span>· last seen</span></div>` +
+    o.windows.map((w) => { const [title, sub] = limitName(w.windowMins); return usageRow(title, sub, w.forecast, "level only · not logged in"); }).join("")).join("") ?? "";
   const html = `<div class="up-h">${esc(limits ? `${limits.label} usage limits` : "Usage limits")}${
     popGoHtml({ go: "usage", label: "Usage & spend", sub: "the burn rate behind these, and every day so far" })
   }</div>
+    ${limits?.account ? `<div class="up-acct">${esc(limits.account.name)}</div>` : ""}
     ${rows}
-    <div class="up-foot"><span>today <b>$${dayTotal(todayKey()).toFixed(2)}</b></span><span>${sessions.size} live${limits ? ` · ${esc(limits.label)} account` : ""}</span></div>
+    ${others}
+    <div class="up-foot"><span>today <b>$${dayTotal(todayKey()).toFixed(2)}</b></span><span>${sessions.size} live${limits && !limits.account ? ` · ${esc(limits.label)} account` : ""}</span></div>
     ${!limits ? `<div class="up-note">Select an integrated agent session to see its account limits.</div>`
       : !limits.reported ? `<div class="up-note">Waiting for ${esc(limits.label)} to report account limits.</div>` : ""}`;
   if (html === lastUsagePop) return;

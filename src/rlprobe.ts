@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
-import { applyPlanLimits, rlScoped, type PlanLimits } from "./rl";
+import { account, applyPlanLimits, rlScoped, type PlanLimits } from "./rl";
 
 // Each probe is a short-lived `claude` process, so a popover opened, closed and reopened is
 // answered from the last reading. Stamped before the call and on failure too: a machine with
@@ -15,7 +15,8 @@ let inflight: Promise<void> | null = null;
 
 export function refreshScopedLimits(force = false): Promise<void> {
   if (inflight) return inflight; // both surfaces open at once still asks once
-  if (!force && lastTry && Date.now() - lastTry < TTL) return Promise.resolve();
+  const fresh = rlScoped.acct === (account?.id ?? null); // a `/login` since makes the last answer someone else's
+  if (!force && fresh && lastTry && Date.now() - lastTry < TTL) return Promise.resolve();
   lastTry = Date.now();
   inflight = invoke<PlanLimits>("claude_usage_limits")
     .then(applyPlanLimits)

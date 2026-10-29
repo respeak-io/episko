@@ -2611,6 +2611,9 @@ select.in-ctl { cursor: pointer; }
 .usagepop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 5px 2px 1px; border-top: 1px solid var(--hair); }
 .usagepop .up-foot b { color: var(--text); }
 .usagepop .up-note { font-size: 10px; color: var(--muted-2); padding: 2px; line-height: 1.4; }
+.usagepop .up-acct { font: 500 10px var(--font-mono); color: var(--muted); padding: 0 2px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usagepop .up-other { font: 600 10px var(--font-mono); color: var(--muted); padding: 7px 2px 0; margin-top: 3px; border-top: 1px solid var(--hair); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usagepop .up-other span { color: var(--muted-2); font-weight: 500; }
 
 /* today's-spend popover: borrows .usagepop's header and note; a spend row is a name + a bar + money */
 .costpop { min-width: 252px; max-width: 320px; gap: 3px; padding: 10px; }

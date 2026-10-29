@@ -136,6 +136,10 @@ describe("mergeScoped", () => {
     expect(mergeScoped(held, { at: 20 })).toBe(held);
     expect(mergeScoped(held, { at: 20, wins: [] })).toEqual({ at: 20, wins: [] });
   });
+  it("carries the account a reading belongs to, and only a real one", () => {
+    expect(mergeScoped(held, { at: 20, wins: [], acct: "acct-b" })).toEqual({ at: 20, wins: [], acct: "acct-b" });
+    expect(mergeScoped(held, { at: 20, wins: [], acct: 7 })).toEqual({ at: 20, wins: [] });
+  });
   it("keeps the held reading against an older one or garbage", () => {
     expect(mergeScoped(held, { at: 5, wins: [] })).toBe(held);
     for (const bad of [null, "x", { wins: [] }]) expect(mergeScoped(held, bad)).toBe(held);

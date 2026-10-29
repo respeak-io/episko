@@ -7,8 +7,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::git::repo_root_of;
 use crate::platform::{augmented_path, home_dir, nfc, norm_path, physical_cwd, resolve_claude, sys_command};
@@ -1548,6 +1548,8 @@ pub(crate) struct ScopedLimit {
 pub(crate) struct PlanLimits {
     available: bool,
     scoped: Option<Vec<ScopedLimit>>,
+    /// Who answered: the probe runs as whoever is logged in when it starts.
+    account: Option<ClaudeAccount>,
 }
 
 /// No `initialize` handshake: the CLI answers this cold, one request and one line.
@@ -1561,7 +1563,62 @@ const PROBE_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// Ask the CLI what this account has spent against its plan. No model turn, so no tokens.
 #[tauri::command(async)]
 pub(crate) fn claude_usage_limits() -> Result<PlanLimits, String> {
-    parse_usage_limits(&run_usage_probe()?)
+    let mut limits = parse_usage_limits(&run_usage_probe()?)?;
+    limits.account = current_account();
+    Ok(limits)
+}
+
+/// Who `claude` is logged in as: `oauthAccount` in its global config, which `/login` rewrites.
+/// Running sessions follow it too (a pane opened before a switch answers `/usage` for the new
+/// account), so it names whose limits a statusLine carries.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct ClaudeAccount {
+    id: String,
+    tier: Option<String>,
+    kind: Option<String>,
+    email: Option<String>,
+}
+
+fn claude_config_file() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join(".claude.json"));
+    }
+    let home = home_dir();
+    (!home.is_empty()).then(|| Path::new(&home).join(".claude.json"))
+}
+
+/// `None` for text that is not JSON (a write caught halfway); `Some(None)` is nobody logged in.
+fn parse_account(text: &str) -> Option<Option<ClaudeAccount>> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let a = &v["oauthAccount"];
+    let field = |k: &str| a[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    Some(field("accountUuid").map(|id| ClaudeAccount {
+        id,
+        tier: field("organizationRateLimitTier").or_else(|| field("userRateLimitTier")),
+        kind: field("organizationType"),
+        email: field("emailAddress"),
+    }))
+}
+
+/// Stat per call, parse only when the file moved: the statusLine path asks on every POST. A
+/// file caught mid-write keeps the last good answer and is read again next time.
+pub(crate) fn current_account() -> Option<ClaudeAccount> {
+    type Seen = (SystemTime, u64, Option<ClaudeAccount>);
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let path = claude_config_file()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    let (mtime, len) = (meta.modified().ok()?, meta.len());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((t, n, acct)) = seen.as_ref() {
+        if *t == mtime && *n == len {
+            return acct.clone();
+        }
+    }
+    let Some(acct) = std::fs::read_to_string(&path).ok().and_then(|t| parse_account(&t)) else {
+        return seen.as_ref().and_then(|(_, _, a)| a.clone());
+    };
+    *seen = Some((mtime, len, acct.clone()));
+    acct
 }
 
 /// Hooks are off (a probe must not fire somebody's SessionStart), and stdin is CLOSED rather
@@ -1655,6 +1712,7 @@ fn parse_usage_limits(line: &str) -> Result<PlanLimits, String> {
     Ok(PlanLimits {
         available: body["rate_limits_available"].as_bool().unwrap_or(false),
         scoped,
+        account: None,
     })
 }
 
@@ -1707,6 +1765,20 @@ mod tests {
             Some("2026-09-22T19:00:00.276554+00:00"),
             "the ISO string is passed through; the frontend parses it"
         );
+    }
+
+    #[test]
+    fn the_account_is_read_from_the_login_and_a_torn_write_is_not_an_answer() {
+        let cfg = r#"{"numStartups":3,"oauthAccount":{"accountUuid":"2c03","emailAddress":"a@b.c",
+            "organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_5x","userRateLimitTier":null}}"#;
+        let a = parse_account(cfg).unwrap().unwrap();
+        assert_eq!(a.id, "2c03");
+        assert_eq!(a.tier.as_deref(), Some("default_claude_max_5x"));
+        assert_eq!(a.kind.as_deref(), Some("claude_max"));
+        assert_eq!(a.email.as_deref(), Some("a@b.c"));
+        assert_eq!(parse_account(r#"{"numStartups":3}"#), Some(None), "logged out is an answer");
+        assert_eq!(parse_account(r#"{"oauthAccount":{"accountUuid":""}}"#), Some(None));
+        assert_eq!(parse_account(r#"{"oauthAccount":{"accountU"#), None, "half a file is not");
     }
 
     /// The distinction the whole struct exists for: absent means nothing was learned (a cached

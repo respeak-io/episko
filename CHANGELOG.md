@@ -36,6 +36,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! The four-second check of which ports and processes your panes hold, link hovers, diffs and icon
   reads no longer run on the thread that moves and paints the window.
 ! On Windows, closing a pane stops everything it started, not only its top process.
+! Switching Claude accounts with `/login` no longer reads as both limit windows resetting. Each
+  account keeps its own meters, and the limits popover names the account and shows the other one's.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

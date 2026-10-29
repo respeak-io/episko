@@ -9,7 +9,7 @@ import {
   agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
 import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
-import { forecast5h, forecast7d, scopedForecasts, type Forecast } from "../rl";
+import { account, accountName, forecast5h, forecast7d, otherAccounts, scopedForecasts, type Forecast } from "../rl";
 
 const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇", asks: true },
@@ -42,6 +42,8 @@ export interface AgentProviderAdapter {
   // `label`/`sub` override the window's name where its length cannot say what it is: two
   // weekly windows differ by the model they cover, not by their span.
   rateLimitForecasts?: () => { windowMins: number; forecast: Forecast; label?: string; sub?: string; note?: string }[];
+  /** Whose limits those are, and the last figures seen for the provider's other logins. */
+  limitAccount?: () => { name: string; others: { name: string; windows: { windowMins: number; forecast: Forecast }[] }[] } | null;
 }
 
 const claudeHistory: ProviderHistory = {
@@ -121,7 +123,13 @@ export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
       windowMins: 10080, forecast: w.forecast, label: w.label, sub: "weekly · this model",
       note: "level only · no pace behind it",
     })),
-  ] },
+  ], limitAccount: () => account && {
+    name: accountName(account),
+    others: otherAccounts().map((o) => ({
+      name: accountName(o.acct),
+      windows: [{ windowMins: 300, forecast: o.h5 }, { windowMins: 10080, forecast: o.d7 }],
+    })),
+  } },
   { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
 ];
 

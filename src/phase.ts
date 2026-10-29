@@ -7,7 +7,7 @@ import { cleanPrompt, clearsOutline, isEnvelope, noteAnswer, notePrompt, parseRe
 import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
-import { mergeRl, onRlUpdate, rl } from "./rl";
+import { acctSince, applyRlReadings, noteAccount, rl } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
 import { clearPermissionState, pendingPermissionIds, releaseAnswered } from "./permissions";
 
@@ -337,6 +337,7 @@ export function pushHist(arr: number[], v: number, cap = 24) { arr.push(v); if (
 export function applyStatusline(s: Sess, data: any) {
   // A statusLine only fires from a live REPL, so it un-ends a pane SessionEnd marked on /clear or /compact.
   if (s.phase === "ended") setPhase(s, "idle");
+  noteAccount(data.episko_account); // before the API clock below, which is judged against it
   if (data.model?.display_name) s.model = data.model.display_name;
   const ctx = data.context_window?.used_percentage;
   if (typeof ctx === "number") { s.ctxPct = ctx; pushHist(s.ctxHist, ctx); }
@@ -358,18 +359,8 @@ export function applyStatusline(s: Sess, data: any) {
   if (s.phase === "thinking" && now - s.phaseSince >= TURN_STALL_MS && now - s.apiMsSince >= TURN_STALL_MS) {
     setPhase(s, "idle");
   }
-  const r5 = data.rate_limits?.five_hour;
-  if (r5) {
-    const p = rl.h5, pr = rl.h5Reset;
-    [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
-    onRlUpdate("h5", p, pr, rl.h5Reset);
-  }
-  const r7 = data.rate_limits?.seven_day;
-  if (r7) {
-    const p = rl.d7, pr = rl.d7Reset;
-    [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, r7.used_percentage, r7.resets_at);
-    onRlUpdate("d7", p, pr, rl.d7Reset);
-  }
+  // A pane that has not reached the API since `/login` still reports the old account's figures.
+  if (typeof api !== "number" || s.apiMsSince >= acctSince) applyRlReadings(data.rate_limits);
   // The per-session shape shared surfaces read; global `rl` stays the account-wide authority.
   s.rateLimits = [
     ...(rl.h5 == null ? [] : [{ usedPercent: rl.h5, resetsAt: rl.h5Reset, windowMins: 300 }]),
