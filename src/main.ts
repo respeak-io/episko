@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isClaude, isExited, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, liveCount, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -194,7 +194,7 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
-  const repair = driftRepair(s.drift, driftAuto);
+  const repair = driftRepair(s.drift, driftAuto, liveCount(s) > 0);
   if (repair) void followSessionDrift(s.id, repair);
 });
 setTaskLauncher(launchTask);
