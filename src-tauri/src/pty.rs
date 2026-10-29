@@ -89,7 +89,10 @@ pub(crate) fn spawn_claude(
     resume: Option<String>,
     mode: Option<String>,
     tools: bool,
+    account: Option<String>,
 ) -> Result<(), String> {
+    // Before anything is written: a token that cannot be read is a launch that cannot happen.
+    let token = account.as_deref().map(|a| crate::accounts::token_for(&app, a)).transpose()?;
     let port = state.port.load(std::sync::atomic::Ordering::Relaxed);
     // A resume must land in its ORIGINAL cwd: Claude looks the id up under
     // `~/.claude/projects/<enc(cwd)>/`, and creating the dir would only fail later.
@@ -148,16 +151,23 @@ pub(crate) fn spawn_claude(
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("CC_LAUNCHER_SESSION", &session_id);
+    // An API key outranks the token in Claude's own order, so the account chosen would not be used.
+    if let Some(t) = &token {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", t);
+        cmd.env_remove("ANTHROPIC_API_KEY");
+        cmd.env_remove("ANTHROPIC_AUTH_TOKEN");
+    }
     apply_utf8_locale(&mut cmd);
     apply_retry_ceiling(&mut cmd);
 
     log::info!(
-        "spawn claude · {session_id} · {workdir}{}{}",
+        "spawn claude · {session_id} · {workdir}{}{}{}",
         resume
             .as_deref()
             .map(|r| format!(" · resume {r}"))
             .unwrap_or_default(),
-        perm.map(|m| format!(" · {m}")).unwrap_or_default()
+        perm.map(|m| format!(" · {m}")).unwrap_or_default(),
+        account.as_deref().map(|a| format!(" · account {a}")).unwrap_or_default()
     );
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);

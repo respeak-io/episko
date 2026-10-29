@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -50,6 +50,8 @@ import {
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
+import { pickAcct } from "./accounts";
+import { acctReading, TOKEN_ID } from "./rl";
 
 // The app-wide repaint belongs to main.ts, which wires this at startup.
 let renderAll: () => void = () => {};
@@ -154,7 +156,14 @@ export async function freshReady(sid: string): Promise<void> {
   await wait(PREFILL_SETTLE_MS);
 }
 
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
+/** The setup-token account a new embedded Claude session takes, or null for the login (docs/accounts.md). */
+export function launchAccount(): string | null {
+  if (termEngine !== "embedded") return null; // an external terminal gets no token: it would land in its scrollback
+  return pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), Date.now())?.label ?? null;
+}
+
+// `account`: a label to launch on whatever the pick says (a resume on the next account), null for the login.
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string; account?: string | null } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
@@ -177,6 +186,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
   const external = termEngine !== "embedded";
+  const account = external ? null : opts.account !== undefined ? opts.account : launchAccount();
   const eng = engineDef(termEngine);
   const pane = newPane(id);
 
@@ -196,7 +206,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
-    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
+    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane, ...(account ? { account } : {}),
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => applyOscTitle(s, t));
@@ -206,13 +216,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // Read here rather than passed as an opt: it is a preference, like termEngine.
   const permission = launchPermission(agent, colorKey);
   const mode = permission.mode;
-  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}${account ? ` · on ${account}` : ""}`);
 
   let spawned = true;
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey) });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey), account });
   } catch (e) {
     spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);

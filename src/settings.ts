@@ -21,7 +21,10 @@ import {
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
+  claudeAccts, acctChecks, foundTokens,
 } from "./state";
+import { acctFull, addAcct, moveAcct, pickAcct, toggleAcct, validLabel, type ClaudeAcct } from "./accounts";
+import { accountsPanelHtml } from "./accountsview";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
@@ -64,7 +67,7 @@ import {
 import { isDone, parseTourState, pickerChapters, TOUR_KEY } from "./tour";
 import { costPopHtml, ioPopHtml, usageRow } from "./usageview";
 import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
-import type { Forecast } from "./rl";
+import { acctReading, accountName, loginAcct, TOKEN_ID, type Forecast } from "./rl";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
@@ -132,6 +135,13 @@ export interface SettingsHost {
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
   openProjectSettings: (colorKey: string) => void;
+  // Claude accounts (docs/accounts.md): ./actions stores, checks and reads tokens; none reaches here.
+  saveClaudeAccts: (list: ClaudeAcct[]) => void;
+  listClaudeTokens: () => Promise<string[]>;
+  checkClaudeAcct: (label: string) => Promise<void>;
+  addClaudeToken: (label: string, token: string) => Promise<boolean>;
+  setupClaudeToken: (label: string) => Promise<void>;
+  removeClaudeAcct: (label: string) => Promise<void>;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -179,6 +189,8 @@ let host: SettingsHost = {
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
   syncSetHeaders: () => Promise.resolve(), openProjectSettings: () => {},
   syncReview: () => {},
+  saveClaudeAccts: () => {}, listClaudeTokens: () => Promise.resolve([]), checkClaudeAcct: () => Promise.resolve(),
+  addClaudeToken: () => Promise.resolve(false), setupClaudeToken: () => Promise.resolve(), removeClaudeAcct: () => Promise.resolve(),
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -215,6 +227,7 @@ type SetShape =
   | { kind: "note"; hint: string }
   | { kind: "guide" }
   | { kind: "sync" }
+  | { kind: "accounts" }
   | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
@@ -497,6 +510,16 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
+    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends",
+    controls: () => [
+      { kind: "accounts", id: "claudeaccts", key: "cc-claude-accounts", label: "Claude accounts",
+        hint: "Subscriptions a new Claude session can start on, in order. When the first is full, the next takes over.",
+        more: "Each account is a long-lived token from claude setup-token, kept in this machine's keychain and handed to one session at a time, so nothing is logged in or out. A running session keeps its account; when one hits its limit, Episko offers to resume it on the next. The usage probe answers nothing for a token, so a model's own weekly window (Fable's) shows only for the account you're logged in to.",
+        aliases: ["subscription", "login", "logout", "max", "pro", "token", "setup-token", "fallback", "limit", "quota", "oauth", "keychain", "second account"], since: "0.39.0",
+        summary: () => acctSummary() },
+    ],
+  },
+  {
     id: "attention", label: "Attention", glyph: "◆", group: "work", sub: "Highlight, badge, sounds",
     controls: () => [
       { kind: "attn", id: "attn", key: "cc-attn", label: "When a session wants you", hint: "How a session tells you it needs you.",
@@ -739,6 +762,7 @@ let spyHold = 0;                        // the spy stands down until then: a rai
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() {
   $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings();
+  void host.listClaudeTokens(); // a token added by hand since shows up without a restart
   $("setQ").focus(); // typing filters at once
 }
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
@@ -1466,6 +1490,21 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "sound": ctl = sw(soundPrefs.enabled, `data-setsound="toggle"`) + fold(c.summary!()); panel = renderSoundControl(); break;
     case "keys": ctl = sw(keyPrefs.enabled, `data-setkey="toggle"`) + fold(c.summary!()); panel = renderKeysControl(); break;
     case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
+    case "accounts": {
+      ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
+      const now = Date.now();
+      const next = pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), now);
+      panel = accountsPanelHtml({
+        rows: claudeAccts.map((acct) => {
+          const reading = acctReading(TOKEN_ID + acct.label);
+          return { acct, reading, full: acctFull(reading, now), check: acctChecks[acct.label], next: next?.label === acct.label };
+        }),
+        found: foundTokens.filter((f) => !claudeAccts.some((a) => a.label === f)),
+        login: loginAcct ? accountName(loginAcct) : null, draft: acctDraft, external: termEngine !== "embedded", now,
+      });
+      always = true;
+      break;
+    }
     case "sync":
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
       panel = syncPanelHtml({
@@ -1662,6 +1701,33 @@ function applySyncSetting(verb: string) {
     const [, key, keep] = verb.split("|");
     setExcluded(key, keep === "1");
     renderSettings();
+  }
+}
+
+// Settings › Accounts. The token field is write-only: emptied once saved, never filled back in.
+const acctDraft = { name: "", token: "" };
+function acctSummary(): string {
+  const on = claudeAccts.filter((a) => a.on).map((a) => a.label);
+  return on.length ? `${on.join(", then ")}, then your login` : "Your login only";
+}
+function applyAcctSetting(verb: string) {
+  const [v, label = ""] = verb.split("|");
+  if (v === "up" || v === "down") host.saveClaudeAccts(moveAcct(claudeAccts, label, v === "up" ? -1 : 1));
+  else if (v === "toggle") host.saveClaudeAccts(toggleAcct(claudeAccts, label));
+  else if (v === "add") { host.saveClaudeAccts(addAcct(claudeAccts, label)); void host.checkClaudeAcct(label); }
+  else if (v === "check") void host.checkClaudeAcct(label);
+  else if (v === "remove") void host.removeClaudeAcct(label);
+  else if (v === "setup") {
+    const name = acctDraft.name.trim();
+    if (!validLabel(name)) { toast(name ? "A name may use letters, digits, dots, dashes and underscores" : "Name the account first"); return; }
+    acctDraft.name = "";
+    closeSettings(); // the shell it opens is on stage, under this dialog
+    void host.setupClaudeToken(name);
+  }
+  else if (v === "paste") {
+    void host.addClaudeToken(acctDraft.name.trim(), acctDraft.token.replace(/\s+/g, "")).then((ok) => {
+      if (ok) { acctDraft.name = ""; acctDraft.token = ""; renderSettings(); }
+    });
   }
 }
 
@@ -1940,6 +2006,8 @@ $("setBody").addEventListener("click", (e) => {
   if (pj) { host.openProjectSettings(pj.dataset.setproj!); return; }
   const sy = (e.target as HTMLElement).closest<HTMLElement>("[data-setsync]");
   if (sy) { applySyncSetting(sy.dataset.setsync!); return; }
+  const ac = (e.target as HTMLElement).closest<HTMLElement>("[data-setacct]");
+  if (ac) { applyAcctSetting(ac.dataset.setacct!); return; }
   const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
   if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
@@ -1966,6 +2034,8 @@ $("setBody").addEventListener("input", (e) => {
   if (f) applyTitleExtra(f);
   const sf = (e.target as HTMLElement).closest<HTMLInputElement>("[data-syncfield]");
   if (sf) syncDraft[sf.dataset.syncfield as keyof SyncDraft] = sf.value;
+  const af = (e.target as HTMLElement).closest<HTMLInputElement>("[data-acctfield]");
+  if (af) acctDraft[af.dataset.acctfield as "name" | "token"] = af.value;
 });
 
 // Delegated on the persistent #setBody: renderSettings() replaces the demo DOM on every press.

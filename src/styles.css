@@ -2179,6 +2179,21 @@ select.in-ctl { cursor: pointer; }
 .syncbox .sync-pref > span { flex: 1; min-width: 0; }
 .syncbox .sync-pref .sync-seg { border: 1px solid var(--hair); }
 .syncbox .sync-pref .sync-seg + .sync-seg { border-left: 0; }
+/* Settings › Accounts (./accountsview): one row per setup-token account, in launch order. */
+.syncbox .acct-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.syncbox .acct-row + .acct-row { border-top: 1px solid var(--hair); }
+.syncbox .acct-row.off .acct-main { opacity: .55; }
+.syncbox .acct-n { flex: 0 0 16px; font: 650 11px var(--font-mono); color: var(--muted); text-align: right; }
+.syncbox .acct-main { flex: 1; min-width: 0; }
+.syncbox .acct-l { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; }
+.syncbox .acct-f { margin-top: 2px; font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.syncbox .acct-f b { font-weight: 650; }
+.syncbox .acct-bad { color: var(--st-error); }
+.syncbox .acct-tag { font-size: 10px; font-weight: 600; padding: 0 6px; border-radius: 999px; color: var(--muted); border: 1px solid var(--hair); }
+.syncbox .acct-tag.next { color: var(--accent); border-color: var(--accent-line); }
+.syncbox .acct-tag.full { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 40%, transparent); }
+.syncbox .acct-btns { display: flex; align-items: center; gap: 4px; flex: none; }
+.syncbox .acct-btns .set-fbtn:disabled { opacity: .35; cursor: default; }
 .syncbox .sync-invite { display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; border-radius: 8px; border: 1px dashed var(--accent); }
 .syncbox .sync-invite .mono { font-size: 14px; font-weight: 700; user-select: all; }
 .syncbox .sync-diff { display: flex; align-items: baseline; gap: 6px; font-size: 10.5px; color: var(--muted); min-width: 0; }

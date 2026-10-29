@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ *Settings › Accounts* lists Claude subscriptions in order. A new session starts on the first one
+  that isn't full and keeps it, so a second subscription needs no `/login`. *Sign in* runs
+  `claude setup-token` and keeps the token in your keychain.
++ A session that hits its limit offers to resume on the next account.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

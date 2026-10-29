@@ -3,9 +3,10 @@
 // assign; the persistence and the repaint are this layer's.
 
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
+import { $, actToast, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
@@ -48,8 +49,11 @@ import {
   shareByProject, setShareMode, shareModeOf, type ShareMode,
   handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
+  claudeAccts, setClaudeAccts, acctChecks, setFoundTokens,
   type SortMode, type WtGroup,
 } from "./state";
+import { addAcct, hitUntil, pickAcct, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
+import { acctReading, applyAccountReadings, limitHits, loginAcct, showAccount, TOKEN_ID, tokenAccount } from "./rl";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
@@ -804,5 +808,145 @@ export async function proposeStack(root: string): Promise<void> {
     toast(`No dev stack proposal: ${e}`);
   } finally {
     proposing.delete(root);
+  }
+}
+
+// ---------- Claude accounts (./accounts decides, docs/accounts.md) ----------
+
+const readingOf = (label: string) => acctReading(TOKEN_ID + label);
+
+export function saveClaudeAccts(list: ClaudeAcct[]) {
+  setClaudeAccts(list);
+  localStorage.setItem("cc-claude-accounts", JSON.stringify(claudeAccts));
+  syncShownAccount();
+  renderSettings();
+  renderAll();
+}
+
+/** The meters show the account a new session would start on. */
+export function syncShownAccount() {
+  const pick = pickAcct(claudeAccts, readingOf, Date.now());
+  const target = pick ? tokenAccount(pick.label) : loginAcct;
+  if (target) showAccount(target);
+}
+
+export async function listClaudeTokens(): Promise<string[]> {
+  const found = await invoke<string[]>("claude_tokens").catch(() => []);
+  setFoundTokens(found);
+  renderSettings();
+  return found;
+}
+
+/** One cheap turn on the token: proves it, and its answer is the account's first reading. */
+export async function checkClaudeAcct(label: string) {
+  acctChecks[label] = { ok: acctChecks[label]?.ok ?? false, error: null, at: acctChecks[label]?.at ?? 0, busy: true };
+  renderSettings();
+  try {
+    const c = await invoke<{ ok: boolean; error: string | null; h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null }>("claude_token_check", { label });
+    acctChecks[label] = { ok: c.ok, error: c.error, at: Date.now() };
+    if (c.ok) {
+      delete limitHits[TOKEN_ID + label];
+      applyAccountReadings(tokenAccount(label), {
+        five_hour: c.h5 == null ? undefined : { used_percentage: c.h5, resets_at: c.h5Reset },
+        seven_day: c.d7 == null ? undefined : { used_percentage: c.d7, resets_at: c.d7Reset },
+      });
+      syncShownAccount();
+    }
+  } catch (e) {
+    acctChecks[label] = { ok: false, error: String(e), at: Date.now() };
+  }
+  renderSettings();
+  renderAll();
+}
+
+/** A pasted token: stored first, then listed and checked. */
+export async function addClaudeToken(label: string, token: string): Promise<boolean> {
+  try {
+    await invoke("claude_token_save", { label, token });
+  } catch (e) {
+    toast(String(e));
+    return false;
+  }
+  saveClaudeAccts(addAcct(claudeAccts, label));
+  void listClaudeTokens();
+  void checkClaudeAcct(label);
+  return true;
+}
+
+export async function removeClaudeAcct(label: string) {
+  const ok = await ask(`Remove ${label}?\n\nIts token is deleted from this machine's keychain too. Sessions running on it keep running.`,
+    { title: "Remove account", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" });
+  if (!ok) return;
+  await invoke("claude_token_forget", { label }).catch((e) => toast(String(e)));
+  delete acctChecks[label];
+  saveClaudeAccts(claudeAccts.filter((a) => a.label !== label));
+  void listClaudeTokens();
+}
+
+// A pane's text with xterm's soft wraps joined back; a hard wrap is ./accounts' to undo.
+function paneLines(s: Sess): string[] {
+  const b = s.term?.buffer.active;
+  const out: string[] = [];
+  if (!b) return out;
+  for (let i = 0; i < b.length; i++) {
+    const line = b.getLine(i);
+    if (!line) continue;
+    const t = line.translateToString(true);
+    if (line.isWrapped && out.length) out[out.length - 1] += t; else out.push(t);
+  }
+  return out;
+}
+
+const SETUP_WATCH_MS = 15 * 60_000;
+/**
+ * `claude setup-token` prefilled in a shell; the token it prints is read off the pane, stored,
+ * and the shell closed so it is not left on screen. Nobody copies a wrapped line by hand.
+ */
+export async function setupClaudeToken(label: string) {
+  if (!validLabel(label)) { toast("A name may use letters, digits, dots, dashes and underscores"); return; }
+  const home = await homeDir().catch(() => "");
+  if (!home) { toast("No home folder to open the shell in"); return; }
+  const id = await launchShell("claude setup-token", home);
+  setTimeout(() => { void invoke("write_pty", { sessionId: id, data: "claude setup-token" }).catch(() => {}); }, 600);
+  toast(`Press Enter, then sign in as ${label} in the browser`);
+  const until = Date.now() + SETUP_WATCH_MS;
+  const t = window.setInterval(() => {
+    const s = sessions.get(id);
+    if (!s || Date.now() > until) { clearInterval(t); return; }
+    const token = tokenFromLines(paneLines(s));
+    if (!token) return;
+    clearInterval(t);
+    void addClaudeToken(label, token).then((ok) => {
+      if (!ok) return;
+      closeSession(id);
+      toast(`Saved ${label}. The shell is closed so the token isn't left on screen`);
+    });
+  }, 1000);
+}
+
+/** A turn refused for its quota: that account sits out, and the session is offered the next one. */
+export function onLimitHit(s: Sess) {
+  const id = s.account ? TOKEN_ID + s.account : loginAcct?.id;
+  if (id) limitHits[id] = hitUntil(acctReading(id), Date.now());
+  syncShownAccount();
+  if (s.external || !claudeAccts.length) return;
+  const next = pickAcct(claudeAccts, readingOf, Date.now(), s.account);
+  if (!next) return;
+  actToast(`${s.account ?? "Your account"} is at its limit. Resume this session on ${next.label}?`,
+    [{ label: `Resume on ${next.label}`, run: () => void resumeOnAccount(s.id, next.label) }], 30_000);
+}
+
+export async function resumeOnAccount(id: string, label: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  const { project, colorKey, resumeId } = s;
+  const { workdir, worktree, branch } = s.home ?? s;
+  await stopForTranscript(id);
+  const release = holdNav();
+  try {
+    closeSession(id);
+    await launch(project, workdir, { colorKey, worktree, branch, resume: resumeId, account: label });
+  } finally {
+    release();
   }
 }
