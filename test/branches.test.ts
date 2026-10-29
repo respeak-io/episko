@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  anyDeletable, branchRows, checkoutRows, chosenCheckouts, chosenWorktrees,
+  anyDeletable, branchRows, checkoutName, checkoutRows, chosenCheckouts, chosenWorktrees, cleanupBrief,
   filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows,
   removableCheckouts, remoteFor, remoteOf, remotePicks, selectable, switchable, switchOptions,
   trunkOf, trunkOptions, trunkText, whereText, midFlightText, syncText,
@@ -24,8 +24,8 @@ const B = (name: string, o: Partial<BranchInfo> = {}): BranchInfo => ({
 const LOCAL = (name: string, o: Partial<BranchInfo> = {}) =>
   B(name, { upstream: "", remote_ref: "", remote_sha: "", ...o });
 const W = (branch: string, o: Partial<WtInfo> = {}): WtInfo => ({
-  path: `/wt/${branch}`, branch, is_main: false, dirty: false, merged: true,
-  locked: false, exists: true, ...o,
+  path: `/wt/${branch}`, branch, is_main: false, dirty: false, changes: 0, head: "abc1234", stray: 0,
+  merged: true, locked: false, exists: true, ...o,
 });
 const PR = (number: number, branch: string): MergedPr =>
   ({ number, branch, title: "t", url: "u", merged_at: "2026-08-01T00:00:00Z" });
@@ -351,7 +351,7 @@ describe("the checkouts half", () => {
       W("main", { path: "/repo", is_main: true }),
       W("clean"),
       W("busy"),
-      W("dirty", { dirty: true }),
+      W("dirty", { dirty: true, changes: 5 }),
       W("locked", { locked: true }),
       W("vanished", { exists: false }),
     ],
@@ -366,7 +366,7 @@ describe("the checkouts half", () => {
 
   it("refuses what remove_worktree would refuse, in its own words", () => {
     expect(at("busy").block).toBe("1 session open here");
-    expect(at("dirty").block).toBe("uncommitted changes");
+    expect(at("dirty").block).toBe("5 uncommitted files");
     expect(at("locked").block).toBe("locked");
     expect(at("clean").ok).toBe(true);
   });
@@ -375,6 +375,30 @@ describe("the checkouts half", () => {
   it("offers a vanished folder and says removing it loses nothing", () => {
     expect(at("vanished").ok).toBe(true);
     expect(at("vanished").note).toBe("folder is gone — removing only clears git's record");
+  });
+
+  // A detached HEAD has no branch to keep, and its folder is the only name worth reading.
+  describe("a detached checkout", () => {
+    const det = (o: Partial<WtInfo> = {}) => checkoutRows(cctx({
+      worktrees: [W("(detached)", { path: "/wt/pub-1.0.2", merged: false, ...o })],
+    }))[0];
+
+    it("is named by its folder and sha", () => {
+      expect(det().name).toBe("pub-1.0.2 @ abc1234");
+      expect(checkoutName(W("(detached)", { path: "/wt/x", head: "" }))).toBe("x");
+      expect(checkoutName(W("feat/a"))).toBe("feat/a");
+    });
+
+    it("says nothing is lost when every commit is on a branch", () => {
+      expect(det().ok).toBe(true);
+      expect(det().note).toBe("detached, and every commit is on a branch — nothing is lost");
+    });
+
+    // git removes it without a word, and the commits only it held go with it.
+    it("is refused while it holds commits no branch has", () => {
+      expect(det({ stray: 2 }).ok).toBe(false);
+      expect(det({ stray: 2 }).block).toBe("2 commits on no branch");
+    });
   });
 
   it("hands the command only what it may act on", () => {
@@ -471,5 +495,50 @@ describe("globMatch", () => {
     // `rest.endsWith(part)` on an empty remainder would otherwise let `ab*ab` match `abab`… twice.
     expect(globMatch("ab*ab", "ab")).toBe(false);
     expect(globMatch("ab*ab", "abab")).toBe(true);
+  });
+});
+
+describe("cleanupBrief", () => {
+  const ctx = { project: "pii", trunk: "origin/main", remote: "origin" };
+  const cos = checkoutRows({
+    worktrees: [
+      W("dev", { path: "/repo", is_main: true }),
+      W("feat/wip", { dirty: true, changes: 14 }),
+      W("(detached)", { path: "/wt/scratch", stray: 0 }),
+      W("feat/done"),
+    ],
+    liveIn: () => 0, externalIn: () => false, protect: NO_PROTECT,
+  });
+  const brs = branchRows({
+    branches: [
+      LOCAL("feat/wip"), B("feat/done", { merged: true }), B("dev", { current: true }),
+      B("old", { remote: true, merged: true, upstream: "origin/old" }),
+    ],
+    worktrees: [], prs: [], liveIn: () => 0, externalIn: () => false, protect: NO_PROTECT,
+  });
+  const text = cleanupBrief(cos, brs, ctx);
+
+  it("hands over the facts the view already has", () => {
+    expect(text).toContain("feat/wip (14 uncommitted files, /wt/feat/wip)");
+    expect(text).toContain("scratch @ abc1234 (nothing on no branch, /wt/scratch)");
+    expect(text).toContain("not merged into origin/main: feat/wip.");
+    expect(text).not.toMatch(/merged into origin\/main: [^.]*(feat\/done|dev)/);
+  });
+
+  // The whole point of a prefill: the agent proposes, the person decides.
+  it("asks for a plan before any write", () => {
+    expect(text).toMatch(/wait for my go-ahead before you commit, discard, delete, force or push anything\.$/);
+  });
+
+  it("is one line, since the REPL would submit at a newline", () => {
+    expect(text).not.toMatch(/\n/);
+  });
+
+  it("caps a long list rather than pasting a wall", () => {
+    const many = checkoutRows({
+      worktrees: Array.from({ length: 20 }, (_, i) => W(`b${i}`, { dirty: true, changes: 1 })),
+      liveIn: () => 0, externalIn: () => false, protect: NO_PROTECT,
+    });
+    expect(cleanupBrief(many, [], ctx)).toContain("and 5 more");
   });
 });

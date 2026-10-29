@@ -3290,6 +3290,7 @@ select.in-ctl { cursor: pointer; }
 .dbwt.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
 .dbwt.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
 .dbwt .tags .warn { font: 10px var(--font-mono); color: var(--st-working); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbwt .tags .lnk { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .dbwt .tags .dim { font: 10px var(--font-ui); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbwt-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbwt-hd .r { text-align: right; }
@@ -3473,6 +3474,8 @@ select.in-ctl { cursor: pointer; }
 .dbbr-act { display: flex; align-items: center; gap: 8px; padding: 12px 9px 4px; }
 .brgo { font: 600 11.5px var(--font-ui); padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 10%, transparent); color: var(--st-error); }
 .brgo:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); }
+/* The shared write: filled, so it never reads as the same weight as the local one beside it. */
+.brgo.share:not([disabled]) { background: color-mix(in srgb, var(--st-error) 24%, transparent); }
 .brgo[disabled] { opacity: .4; cursor: not-allowed; background: transparent; border-color: var(--hair-strong); color: var(--muted-2); }
 .dbbr-note { font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); padding: 2px 0 8px; }
 .dbbr-note.warn { color: var(--st-working); }
@@ -3531,20 +3534,12 @@ select.in-ctl { cursor: pointer; }
   background: var(--bg); box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, .55); }
 .bvbar.on { border-color: var(--hair-strong); }
 .bvbar .sel { font: 600 11px var(--font-ui); color: var(--text); }
-.bvbar .scopes { display: flex; align-items: center; gap: 6px; font: 10.5px var(--font-ui); color: var(--muted-2); }
 .bvbar .what { font: 10px var(--font-mono); color: var(--muted-2); }
 .bvbar .hint { font: 10px var(--font-ui); color: var(--st-working); }
 .bvbar .note { flex: 1 0 100%; order: 9; margin-top: 2px; font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); }
-.bvbar .note.warn { color: var(--st-working); }
+.bvbar .note .warn { color: var(--st-working); }
 .bvbar .note b { color: var(--text); font: 600 10px var(--font-mono); }
-.bvbar.sharing { border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
 .bvbar .hint b { font: 600 10px var(--font-mono); }
-.bvsw { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
-  border: 1px solid var(--hair-strong); background: var(--surface-2); font: 10.5px var(--font-ui); color: var(--muted); }
-.bvsw i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--hair-strong); display: grid; place-items: center; }
-.bvsw.on { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
-.bvsw.on i { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
-.bvsw.on i::after { content: "✓"; font: 700 8.5px/1 var(--font-ui); color: var(--st-error); }
 /* The Repository card's picker and a session's branch chip: the same control, two sizes. */
 .gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .gitb.brpick .c, .bsw .c { flex: none; color: var(--muted-2); font-size: 9px; }
@@ -3635,6 +3630,7 @@ select.in-ctl { cursor: pointer; }
 
 .bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }
+.bk-ask { font-family: var(--font-ui); font-size: 10.5px; padding: 3px 9px; }
 .bk-cmp:hover, .bk-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 .br, .tg, .kept, .lst-hd { grid-template-columns: var(--cols); }
 .lst-hd { display: grid; gap: 10px; align-items: center; padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
