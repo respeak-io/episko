@@ -41,6 +41,8 @@ Markers: `+` new · `~` changed · `!` fixed
 + The inspector shows a session's effort level beside its model.
 ! Merging a pull request no longer deletes its branch unless you tick *Delete the branch
   afterwards*, and keeps a protected branch or one other pull requests target, such as `dev`.
+! The new-session dialog no longer shows the previous project's worktrees and branches while
+  it loads, and opens faster in repos with several worktrees.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

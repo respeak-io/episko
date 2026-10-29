@@ -217,26 +217,29 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> 
     let main_branch = res.iter().find(|w| w.is_main)
         .map(|w| w.branch.clone())
         .filter(|b| !b.is_empty() && b != "(detached)");
-    for w in res.iter_mut() {
-        if w.is_main {
-            continue;
-        }
-        w.dirty = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
-            .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false);
-        if let Some(mb) = &main_branch {
-            if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
-                // `--is-ancestor A B` exits 0 when A is an ancestor of B.
-                w.merged = git_cmd(&repo_dir, &["merge-base", "--is-ancestor",
-                        &format!("refs/heads/{}", w.branch),
-                        &format!("refs/heads/{mb}")])
+    // A `status` per checkout, run in series, was most of the picker's wait; eight at a time.
+    for batch in res.chunks_mut(8) { std::thread::scope(|sc| {
+        for w in batch.iter_mut().filter(|w| !w.is_main) {
+            let (repo_dir, main_branch) = (&repo_dir, &main_branch);
+            sc.spawn(move || {
+                w.dirty = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
                     .output()
-                    .map(|o| o.status.success())
+                    .map(|o| o.status.success() && !o.stdout.is_empty())
                     .unwrap_or(false);
-            }
+                if let Some(mb) = main_branch {
+                    if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
+                        // `--is-ancestor A B` exits 0 when A is an ancestor of B.
+                        w.merged = git_cmd(repo_dir, &["merge-base", "--is-ancestor",
+                                &format!("refs/heads/{}", w.branch),
+                                &format!("refs/heads/{mb}")])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                    }
+                }
+            });
         }
-    }
+    }); }
     Ok(res)
 }
 
