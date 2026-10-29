@@ -121,6 +121,19 @@ export function notePrompt(list: Prompt[], raw: unknown, now: number): Prompt | 
   return p;
 }
 
+// The agent's closing message for a turn, filed under the question it answered: what the
+// Questions sheet shows beside it once the REPL has compacted the conversation away. A queued
+// prompt means this Stop is the previous turn's, so it belongs one entry back. The latest
+// word wins: a background task's report-back answers inside the same question.
+const ANSWER_CAP = 12_000;
+export function noteAnswer(list: Prompt[], raw: unknown, queued: boolean): Prompt | null {
+  const t = cleanPrompt(typeof raw === "string" && raw.length > ANSWER_CAP ? raw.slice(0, ANSWER_CAP) : raw);
+  const p = list[list.length - (queued ? 2 : 1)];
+  if (!t || !p) return null;
+  p.answer = t;
+  return p;
+}
+
 // SessionStart fires for all four; only `clear` starts an empty conversation on a cleared
 // screen. /compact and /resume carry on, and their prompts are still up in the scrollback.
 export const clearsOutline = (source: unknown): boolean => String(source ?? "") === "clear";
@@ -132,13 +145,14 @@ export interface SeedMsg { role: string; text: string; at?: string | null }
 
 /**
  * Everything the transcript holds predates this pane, so restored entries go in front of
- * whatever it has already recorded. Runs once: a second read would list the lot twice, and
+ * whatever it has already recorded. An assistant message answers the question before it. Runs once: a second read would list the lot twice, and
  * no dedupe can tell that from a question genuinely asked twice.
  */
 export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] {
   if (list.some((p) => p.restored)) return [];
   const restored: Prompt[] = [];
   for (const m of msgs) {
+    if (m.role === "assistant") { noteAnswer(restored, m.text, false); continue; }
     if (m.role !== "user") continue;
     const clean = cleanPrompt(m.text);
     if (!clean || isEnvelope(clean)) continue;

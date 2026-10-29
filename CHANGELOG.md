@@ -16,6 +16,10 @@ Markers: `+` new · `~` changed · `!` fixed
   with the branch name on hover.
 + *Settings › Sidebar › Shelved sessions under their checkout* lists shelved sessions under
   their branch's header instead of below the project.
++ *Your questions* opens into a sheet (⤢ in its header): every question in the session with the
+  agent's closing answer under it, so what a session was about survives Claude compacting its
+  scrollback. A resumed session gets its answers back from the transcript. *Copy all* copies the
+  whole thing as markdown.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

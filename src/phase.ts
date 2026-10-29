@@ -3,7 +3,7 @@
 
 import { liveCount, liveFanout, ORPHAN_DEAD_MS, type Agent, type Fanout, type Phase, type Prompt, type Risk, type Sess } from "./types";
 import { applyTouch, bumpTally } from "./files";
-import { cleanPrompt, clearsOutline, isEnvelope, notePrompt, parseRelay } from "./outline";
+import { cleanPrompt, clearsOutline, isEnvelope, noteAnswer, notePrompt, parseRelay } from "./outline";
 import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
@@ -289,6 +289,7 @@ export function applyHook(s: Sess, data: any) {
     }
     case "Stop": {
       const queued = s.queuedPrompt;   // endTurn consumes it; run-on-stop still needs it
+      noteAnswer(s.prompts, data.last_assistant_message, queued);
       endTurn(s); clearPending(s); s.curTool = ""; s.curArg = "";
       // Touched on Stop too: the working set must reflect the whole turn, not just its last tool.
       onSessionTouched(s, "Stop", data);
