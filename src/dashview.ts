@@ -19,7 +19,7 @@ import {
 } from "./ghwork";
 import { type QueueFilter, type QueueFold, type QueueItem, type QueueRow } from "./queue";
 import {
-  anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, localPicks, lockText,
+  anyDeletable, BRANCH_FILTERS, chosenCheckouts, filterCounts, filterRows, isDetached, localPicks, lockText,
   orderRows, remoteOf, remotePicks, syncText, trunkText, type BranchFilter, type BranchRow,
   type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
 } from "./branches";
@@ -253,7 +253,7 @@ function checkoutRow(w: WtHead, live: number, g: DiffStat | null | undefined, ma
   const tip = open ? `${tilde(w.path)} · click to review its uncommitted work` : tilde(w.path);
   return `<div class="cr"${open} data-tip="${escAttr(tip)}">`
     + `<span class="k">${main ? "⌂" : "⑃"}</span>`
-    + `<span class="ti mono">${esc(w.branch || basename(w.path))}</span>`
+    + `<span class="ti mono">${esc(isDetached(w) ? `${basename(w.path)}/` : w.branch)}</span>`
     + `<span class="rt">${live ? `<span class="tag acc">${live} live</span>` : ""}${checkoutTag(g)}</span></div>`;
 }
 
@@ -676,7 +676,6 @@ export interface BranchesView {
   filter: BranchFilter;
   query: string;
   now: number;
-  scopes: { local: boolean; remote: boolean };
   trunk: string;
   remoteName: string;
   protect: ProtectCtx;
@@ -702,6 +701,7 @@ export function branchesOverlay(o: BranchesView): string {
     + tab("branches", "Branches", o.loading ? "" : String(o.rows.length), o.tab)
     + tab("checkouts", "Checkouts", o.loading ? "" : String(o.checkouts.length), o.tab)
     + `<span class="sp"></span>`
+    + (o.loading ? "" : `<button class="bk-cmp bk-ask" data-dashbrask title="Start an agent here with what this view knows, prefilled&#10;It proposes a plan and waits before it changes anything">✦ Ask an agent to tidy up</button>`)
     + (o.tab === "branches"
       ? `<input class="bvq" id="dashBrQ" spellcheck="false" autocomplete="off" placeholder="Filter branches…"`
         + ` aria-label="Filter branches" value="${escAttr(o.query)}" />`
@@ -777,7 +777,7 @@ function branchRow(r: BranchRow, o: BranchesView): string {
       aria-checked="${on}" aria-disabled="${off}"
       title="${esc(off ? (r.local.block || r.remote.block) : "Pick this branch")}"></span></span>
     <span class="bn mono" title="${esc(syncText(b))}">${b.current ? "⌂ " : ""}${esc(r.name)}</span>
-    <span class="wh">${whereCell(r, o, on)}</span>
+    <span class="wh">${whereCell(r, on)}</span>
     <span class="why">${why}</span>
     <span class="st mono" title="${esc(b.base ? `versus ${b.base}` : "no trunk to compare against")}">${esc(trunkText(b))}</span>
     <span class="au mono">${esc(b.author)}</span>
@@ -788,62 +788,42 @@ function branchRow(r: BranchRow, o: BranchesView): string {
   </div>`;
 }
 
-function whereCell(r: BranchRow, o: BranchesView, on: boolean): string {
-  const half = (label: string, sc: { ok: boolean; block: string }, armed: boolean) => {
-    const going = on && armed && sc.ok;
-    const title = sc.block || (sc.ok ? (armed ? "this half goes" : "deletable — arm the toggle below") : "");
+function whereCell(r: BranchRow, on: boolean): string {
+  const half = (label: string, sc: { ok: boolean; block: string }) => {
+    const going = on && sc.ok;
+    const title = sc.block || (sc.ok ? "deletable" : "");
     return `<span class="hf${sc.ok ? "" : " no"}${going ? " go" : ""}" title="${esc(title)}">${esc(label)}</span>`;
   };
   const out: string[] = [];
-  if (r.hasLocal) out.push(half("local", r.local, o.scopes.local));
-  if (r.hasRemote) out.push(half(remoteOf(r.br) || "remote", r.remote, o.scopes.remote));
+  if (r.hasLocal) out.push(half("local", r.local));
+  if (r.hasRemote) out.push(half(remoteOf(r.br) || "remote", r.remote));
   if (!out.length) out.push(`<span class="hf no" title="its remote branch was deleted">local</span>`);
   return out.join("");
 }
 
-// What is ticked, where a delete would land, and what that actually runs. The counts are the
-// honest ones: a ticked row whose only half is unarmed contributes nothing and says so.
+// What is ticked and the two deletes it can take. Where a delete lands is the button, not
+// a switch beside it: a switch left off made a ticked remote-only row delete nothing.
 function actionBar(o: BranchesView): string {
   const nLocal = localPicks(o.rows, o.picked).length;
   const nRemote = remotePicks(o.rows, o.picked).length;
   const picked = o.rows.filter((r) => o.picked.has(r.name)).length;
-  const going = (o.scopes.local ? nLocal : 0) + (o.scopes.remote ? nRemote : 0);
-  const rows = o.rows.filter((r) => o.picked.has(r.name)
-    && ((o.scopes.local && r.local.ok) || (o.scopes.remote && r.remote.ok))).length;
-  const what = [
-    o.scopes.local ? `${nLocal} local ref${nLocal === 1 ? "" : "s"}` : "nothing locally",
-    o.scopes.remote ? `${nRemote} on ${esc(o.remoteName)}` : `nothing on ${esc(o.remoteName)}`,
-  ].join(" · ");
-  const hint = picked && !going
-    ? `<span class="hint">${o.scopes.local && !o.scopes.remote
-      ? `nothing ticked lives here — tick <b>on ${esc(o.remoteName)}</b>`
-      : "nothing ticked can go where the toggles point"}</span>`
-    : "";
-  // The note rides INSIDE the bar. Above the table it scrolled out of view exactly when it
-  // mattered: the bar is sticky, so a warning about a write everyone sees has to be too.
-  const warn = o.scopes.remote
-    ? `<div class="note warn"><b>git push ${esc(o.remoteName)} --delete</b> removes the branch for everyone, not just here. `
-      + `Only branches already contained in ${esc(o.trunk || "the trunk")}, or whose pull request merged, are offered, `
-      + `and each deleted branch's sha comes back so it can be restored.</div>`
-    : `<div class="note">Local refs only. Nothing on any remote is touched. Episko runs git's safe `
-      + `<b>delete</b>, and what it refuses is kept and listed with git's own words.</div>`;
-  return `<div class="bvbar${picked ? " on" : ""}${o.scopes.remote ? " sharing" : ""}">
-    <span class="sel">${picked} selected</span>
-    <span class="scopes">Delete:
-      ${scopeSw("local", "locally", o.scopes.local)}
-      ${scopeSw("remote", `on ${o.remoteName}`, o.scopes.remote)}
-    </span>${hint}<span class="sp"></span>
-    <span class="what">${what}</span>
+  const remote = esc(o.remoteName);
+  const hint = picked && !nLocal && !nRemote ? `<span class="hint">nothing ticked can be deleted</span>` : "";
+  const busy = o.busy ? busyLabel(o.prog, "Deleting") : "";
+  const here = busy || (nLocal ? `Delete ${nLocal} here` : "Delete here");
+  const both = busy || (nRemote ? `Delete ${nLocal ? `${nLocal} here + ` : ""}${nRemote} on ${remote}` : `Delete on ${remote}`);
+  const note = `<div class="note"><b>Delete here</b> runs git's safe delete on local refs only; what it refuses is kept `
+    + `and listed with git's own words. <span class="warn">On ${remote} runs <b>git push ${remote} --delete</b>, which `
+    + `removes the branch for everyone.</span> Only branches contained in ${esc(o.trunk || "the trunk")} or whose pull `
+    + `request merged are offered there, and each comes back with its sha so it can be restored.</div>`;
+  return `<div class="bvbar${picked ? " on" : ""}">
+    <span class="sel">${picked} selected</span>${hint}<span class="sp"></span>
     ${pickButtons("branches")}
-    <button class="brgo" data-dashbrrun${going && !o.busy ? "" : " disabled"}>
-      ${o.busy ? busyLabel(o.prog, "Deleting") : rows ? `Delete ${rows} branch${rows === 1 ? "" : "es"}` : "Delete"}</button>
-    ${warn}
+    <button class="brgo" data-dashbrrun="local"${nLocal && !o.busy ? "" : " disabled"}>${here}</button>
+    <button class="brgo share" data-dashbrrun="both"${nRemote && !o.busy ? "" : " disabled"}>${both}</button>
+    ${note}
   </div>`;
 }
-
-const scopeSw = (id: string, label: string, on: boolean) =>
-  `<button class="bvsw${on ? " on" : ""}" type="button" role="switch" aria-checked="${on}"`
-  + ` data-dashbrscope="${id}"><i></i>${esc(label)}</button>`;
 
 // The folder as the rail names it: a worktree lives two levels down a path nobody reads,
 // and the whole thing truncated from the left says only which drive it is on.
@@ -868,9 +848,11 @@ function checkoutsBody(o: BranchesView): string {
       <span class="ck"><span class="brck${on ? " on" : ""}" role="checkbox"
         aria-checked="${on}" aria-disabled="${!c.ok}"
         title="${esc(c.block || "Pick this checkout")}"></span></span>
-      <span class="bn mono">${c.wt.is_main ? "⌂" : "⑃"} ${esc(c.wt.branch || c.label)}</span>
+      <span class="bn mono">${c.wt.is_main ? "⌂" : "⑃"} ${esc(c.name)}</span>
       <span class="pt mono" title="${esc(c.wt.path)}">${esc(twoDeep(c.wt.path))}</span>
-      <span class="tags">${c.block ? `<span class="warn">${esc(c.block)}</span>` : `<span class="dim">${esc(c.note)}</span>`}</span>
+      <span class="tags">${c.wt.dirty && c.wt.exists && !c.wt.is_main
+        ? `<span class="warn lnk" data-dashwt="${escAttr(c.wt.path)}" title="Review its uncommitted work">${esc(c.block)}</span>`
+        : c.block ? `<span class="warn">${esc(c.block)}</span>` : `<span class="dim">${esc(c.note)}</span>`}</span>
       <span class="tags">${c.live ? `<span class="tag acc">${c.live} live</span>` : ""}</span>
       <span class="acts">${p ? progMark(p) : `<button class="act" data-dashwtadd="${escAttr(c.wt.path)}" title="New session here">＋</button>
         <button class="act" data-dashwtterm="${escAttr(c.wt.path)}" title="Open a terminal here">❯</button>`}</span>
@@ -1122,7 +1104,7 @@ function whereBlock(w: WhereView): string {
   const val = w.where.kind === "here" ? "here" : w.where.kind === "new" ? "new" : `wt:${w.where.path}`;
   const opt = (v: string, label: string) => `<option value="${escAttr(v)}"${v === val ? " selected" : ""}>${esc(label)}</option>`;
   const opts = [opt("here", `This folder${main?.branch ? ` · ${main.branch}` : ""}`)]
-    .concat(w.heads.filter((h) => !h.is_main && h.exists).map((h) => opt(`wt:${h.path}`, `Worktree · ${h.branch || basename(h.path)}`)))
+    .concat(w.heads.filter((h) => !h.is_main && h.exists).map((h) => opt(`wt:${h.path}`, `Worktree · ${isDetached(h) ? `${basename(h.path)}/` : h.branch}`)))
     .concat(opt("new", "New worktree…"));
   let fields = "";
   if (w.where.kind === "new") {

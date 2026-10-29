@@ -42,7 +42,7 @@ import {
 import { openBranchPop } from "./bpop";
 import {
   branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
-  NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable,
+  cleanupBrief, NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable,
   switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo,
   type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
   type WtInfo,
@@ -289,10 +289,9 @@ let branchProtect: ProtectCtx = NO_PROTECT;
 let branchPrs: MergedPrs | null = null;
 let branchPrsLoading = false;
 // Two sets, not one: the halves run different commands, so a tick on one side must not arm the other.
-// One selection for one table; the scopes decide where a delete lands, never what may be
-// ticked. Each table's anchor rides inside its own `Pick` (./pick), so no two share one.
+// One selection for one table; the button pressed decides where a delete lands, never what
+// may be ticked. Each table's anchor rides inside its own `Pick` (./pick), so no two share one.
 let branchSel: Pick = emptyPick();
-let branchScopes = { local: true, remote: false };
 let branchTab: "branches" | "checkouts" = "branches";
 let branchFilter: BranchFilter = "all";
 let branchQuery = "";
@@ -1025,7 +1024,6 @@ export function renderDash(): void {
       headState: pickState(pickCtx("branches"), branchSel.picked),
       coHeadState: pickState(pickCtx("checkouts"), coSel.picked),
       filter: branchFilter, query: branchQuery, now,
-      scopes: branchScopes,
       trunk: trunkOf(branchData?.branches ?? []), remoteName: remoteFor(rows),
       protect: branchProtect,
       prs: branchPrs, prsLoading: branchPrsLoading,
@@ -1294,13 +1292,7 @@ export function wireDashboard(): void {
     if (brfilter) { branchFilter = brfilter.dataset.dashbrfilter as BranchFilter; renderDash(); return; }
 
 
-    const brscope = t.closest<HTMLElement>("[data-dashbrscope]");
-    if (brscope) {
-      const k = brscope.dataset.dashbrscope as "local" | "remote";
-      branchScopes = { ...branchScopes, [k]: !branchScopes[k] };
-      renderDash();
-      return;
-    }
+    if (t.closest("[data-dashbrask]")) { void askCleanup(); return; }
     const brsw = t.closest<HTMLElement>("[data-dashbrsw]");
     if (brsw) { void switchTo(brsw.dataset.dashbrsw!); return; }
 
@@ -1317,7 +1309,8 @@ export function wireDashboard(): void {
     const brswitch = t.closest<HTMLElement>("[data-dashswitch]");
     if (brswitch) { void openSwitchPop(brswitch); return; }
 
-    if (t.closest("[data-dashbrrun]")) { void runClean(); return; }
+    const brrun = t.closest<HTMLElement>("[data-dashbrrun]");
+    if (brrun) { void runClean(brrun.dataset.dashbrrun === "both"); return; }
     if (t.closest("[data-dashbrdone]")) { branchResult = null; renderDash(); return; }
     if (t.closest("[data-dashbrterm]")) {
       const cmd = branchResult?.local?.suggest;
@@ -1645,16 +1638,22 @@ const checkoutRowsNow = (): CheckoutRow[] => branchData ? checkoutRows({
 // What the table is showing right now, which is what `All` and a shift-click range mean.
 const shownRows = () => orderRows(filterRows(branchRowsNow(), branchFilter, branchQuery, Date.now()));
 
-// Delete the ticked branches wherever the scopes point. Checkouts first (git refuses to
+// Delete the ticked branches here, or here and on the remote. Checkouts first (git refuses to
 // delete a branch a worktree holds), then the local refs, then the remote ones: a remote
 // delete that ran first would leave the evidence for the local half gone.
-async function runClean(): Promise<void> {
+async function runClean(shared: boolean): Promise<void> {
   const r = root();
   const rows = branchRowsNow();
-  const picks = branchScopes.local ? localPicks(rows, branchSel.picked) : [];
-  const rpicks = branchScopes.remote ? remotePicks(rows, branchSel.picked) : [];
+  const picks = localPicks(rows, branchSel.picked);
+  const rpicks = shared ? remotePicks(rows, branchSel.picked) : [];
   if (!r || branchBusy || (!picks.length && !rpicks.length)) return;
   const remote = remoteFor(rows);
+  // The one write other people see, so it is asked at the moment rather than armed beforehand.
+  if (shared && !await ask(`git push ${remote} --delete removes ${rpicks.length === 1 ? "this branch" : "these branches"} for everyone, `
+    + `not just on this machine.\n\nEach deleted branch's sha is reported, so it can be pushed back while somebody still has it.`
+    + (picks.length ? `\n\nThe ${picks.length} local ref${picks.length === 1 ? "" : "s"} ticked go${picks.length === 1 ? "es" : ""} too.` : ""),
+  { title: `Delete ${rpicks.length} branch${rpicks.length === 1 ? "" : "es"} on ${remote}?`, kind: "warning",
+    okLabel: `Delete on ${remote}`, cancelLabel: "Cancel" })) return;
   branchBusy = true;
   rowProg.clear();
   setProg(new Set([...picks, ...rpicks].map((p) => p.branch)), "queued");
@@ -2206,6 +2205,18 @@ async function toggleShare(id: string): Promise<void> {
   } catch (e) {
     toast(`Could not write .episko/notes.toml: ${e}`);
   }
+}
+
+// The Branches view's cleanup job, handed to an agent in the project's folder. Prefilled:
+// the brief ends in "wait for my go-ahead", and the human is the one who sends it.
+async function askCleanup(): Promise<void> {
+  const rows = branchRowsNow();
+  const text = cleanupBrief(checkoutRowsNow(), rows, {
+    project: name(), trunk: trunkOf(branchData?.branches ?? []), remote: remoteFor(rows),
+  });
+  openView = null;
+  renderDash();
+  await dispatchText(text);
 }
 
 // Start an agent on a colleague's note. Prefilled, not sent: it is somebody else's sentence.

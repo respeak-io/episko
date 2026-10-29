@@ -55,10 +55,13 @@ export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping",
 const branchHue = (c: WtCluster) => accentFor(c.isMain ? c.key : (c.branch || c.key));
 // ⌂ for the repo's own checkout (what the ⑃ dialog and "Open project folder" use), ⑃ for a worktree.
 const clusterGlyph = (c: WtCluster) => (c.isMain ? "⌂" : "⑃");
-const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project folder itself` : c.branch);
+// Five rows all reading "(detached)" name nothing; the folder is what tells them apart.
+const clusterName = (c: WtCluster) => (c.branch === "(detached)" ? `${basename(c.key)}/` : c.branch);
+const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project folder itself`
+  : c.branch === "(detached)" ? `${clusterName(c)} · detached HEAD, on no branch` : c.branch);
 const clusterChip = (c: WtCluster) =>
   `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
-  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(c.branch)}</span></span>`;
+  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(clusterName(c))}</span></span>`;
 // A shelved row sits outside every cluster, so it names its checkout the way a live row's chip does.
 const dormantChip = (d: Restorable) => clusterChip({
   key: d.worktree ?? d.colorKey, branch: d.branch, isMain: !d.worktree, sessions: [], externals: [],
@@ -163,10 +166,10 @@ export function groupBody(p: ProjGroup): string {
       const going = removingWt.has(c.key);
       // `data-root` is the repo root, the colorKey every session in the project groups by.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
-        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(clusterName(c))}">＋</span>`;
       return `<div class="wthead${going ? " going" : ""}"${going ? ` aria-busy="true"` : ` ${wtMenuAttrs(p, c)}`}>`
         + (going ? `<span class="u-spin"></span>` : `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`)
-        + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(c.branch)}</span>`
+        + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(clusterName(c))}</span>`
         + `<span class="wtcount">${going || !n ? "" : n}</span>${going ? "" : add}</div>`
         + `<div class="wtsessions${going ? " going" : ""}" style="--wtc:${col}">${body}</div>`;
     }).join("");
@@ -204,9 +207,9 @@ function peekRow(p: ProjGroup, c: WtCluster): string {
   const dirty = folderDirty(c.key)
     ? `<span class="pkdirty" title="Uncommitted changes in this checkout"></span>` : "";
   return `<div class="pkrow" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)}`
-    + ` title="${esc(`Start a session in ${c.branch} · ${tilde(c.key)}`)}">`
+    + ` title="${esc(`Start a session in ${clusterName(c)} · ${tilde(c.key)}`)}">`
     + `<span class="pkglyph" style="color:${col}">${clusterGlyph(c)}</span>`
-    + `<span class="pkname">${esc(c.branch)}</span>${dirty}`
+    + `<span class="pkname">${esc(clusterName(c))}</span>${dirty}`
     + `<span class="pkgo">＋</span></div>`;
 }
 // `data-wt` must be matched ahead of the `data-key` project menu (./projmenu): a checkout, not its repo.

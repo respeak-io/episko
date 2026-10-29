@@ -169,6 +169,9 @@ pub(crate) struct Worktree {
     branch: String,
     is_main: bool,
     dirty: bool,  // uncommitted or untracked changes; not one-click removable. Always false for main
+    changes: u32, // how many paths `dirty` stands for, so a row can say "5 uncommitted"
+    head: String, // short sha: the only name a detached checkout has besides its folder
+    stray: u32,   // detached only: commits no branch or remote ref holds, which a removal loses
     merged: bool, // fully merged into the main worktree's branch, so removal loses nothing
     locked: bool, // `git worktree lock`; git refuses removal even with --force. Always false for main
     exists: bool, // a hand-deleted folder stays in .git/worktrees until pruned; never launch into it
@@ -192,7 +195,7 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> 
             let is_main = res.is_empty();
             let exists = std::path::Path::new(&path).is_dir();
             res.push(Worktree {
-                path, branch, is_main, dirty: false, merged: false,
+                path, branch, is_main, dirty: false, changes: 0, head: String::new(), stray: 0, merged: false,
                 locked: locked && !is_main,
                 exists,
             });
@@ -222,10 +225,19 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> 
         for w in batch.iter_mut().filter(|w| !w.is_main) {
             let (repo_dir, main_branch) = (&repo_dir, &main_branch);
             sc.spawn(move || {
-                w.dirty = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
+                w.changes = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
                     .output()
-                    .map(|o| o.status.success() && !o.stdout.is_empty())
-                    .unwrap_or(false);
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() as u32)
+                    .unwrap_or(0);
+                w.dirty = w.changes > 0;
+                w.head = git_out(&w.path, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_default();
+                if w.branch == "(detached)" {
+                    // Unreadable counts as one: a failed read must never make a removal look free.
+                    w.stray = git_out(&w.path, &["rev-list", "--count", "HEAD", "--not", "--branches", "--remotes"])
+                        .ok().and_then(|n| n.parse().ok()).unwrap_or(1);
+                }
                 if let Some(mb) = main_branch {
                     if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
                         // `--is-ancestor A B` exits 0 when A is an ancestor of B.
@@ -5188,7 +5200,16 @@ canonicalizehostname false
         let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
         assert!(by("merged-wt").merged && !by("merged-wt").dirty, "merged-wt should be merged+clean: {wts:?}");
         assert!(!by("ahead-wt").merged && !by("ahead-wt").dirty, "ahead-wt should be unmerged+clean: {wts:?}");
-        assert!(by("dirty-wt").dirty, "dirty-wt should be dirty: {wts:?}");
+        assert!(by("dirty-wt").dirty && by("dirty-wt").changes == 1, "dirty-wt should count one change: {wts:?}");
+
+        // Detached: at a commit a branch holds, nothing is stray; one commit past it, one is.
+        let det = scratch_dir().join("det");
+        git(&dir, &["worktree", "add", "-q", "--detach", det.to_str().unwrap(), "dev"]);
+        let det_path = |wts: &[Worktree]| wts.iter().find(|w| w.branch == "(detached)").map(|w| (w.stray, w.head.len()));
+        assert_eq!(det_path(&list_worktrees(repo.clone()).unwrap()), Some((0, 7)), "at dev, nothing on no branch");
+        commit(&det, "loose");
+        assert_eq!(det_path(&list_worktrees(repo.clone()).unwrap()), Some((1, 7)), "one commit only HEAD holds");
+        git(&dir, &["worktree", "remove", "--force", det.to_str().unwrap()]);
 
         // A plain folder is Ok(empty) and every other failure is Err: the dialog words the first
         // itself ("isn't a git repository") and quotes the second, so these must not collapse.
