@@ -47,7 +47,7 @@ import {
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
 import {
-  closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
+  closeServersPop, paneClosing, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
 } from "./serversui";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
@@ -56,7 +56,7 @@ import {
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
-  scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
+  scheduleDismiss, setActive, setPanesOnClose, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
@@ -242,6 +242,7 @@ setTaskRunSetActive(setActive);
 setTaskRunCloseSession(closeSession);
 setTaskRunLaunchTask(launchTask);
 setPanesRenderAll(renderAll);
+setPanesOnClose(paneClosing);
 setActionsRenderAll(renderAll);
 setMirrorSetActive(setActive);
 setMirrorLaunch(launch);

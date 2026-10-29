@@ -660,7 +660,7 @@ pub(crate) fn parse_protect(text: &str) -> ProtectList {
 
 /// The branches this project refuses to delete. No file is not a broken one: it reads as
 /// readable and empty, which is what an unconfigured repo means.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_protected_branches(repo_dir: String) -> ProtectList {
     match std::fs::read_to_string(episko_toml(&repo_dir)) {
         Err(_) => ProtectList { patterns: vec![], readable: true },
@@ -682,7 +682,7 @@ fn protection(repo_dir: &str, branch: &str) -> String {
 /// one branch under it was unprotected would quietly unprotect its siblings. `create` gates the
 /// first write, as the keep list's does — a new committable file in someone's repo is a real
 /// side effect.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn set_protected_branch(
     repo_dir: String, branch: String, protect: bool, create: bool,
 ) -> Result<(), String> {
@@ -2023,7 +2023,7 @@ pub(crate) fn cap_patch(patch: &mut String) -> bool {
 /// The full uncommitted diff behind the working-set card. Tracked changes from `diff HEAD`;
 /// untracked files appended via `diff --no-index` against `/dev/null`, which unlike `add -N`
 /// never touches the index while a live session may be staging.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     // Each untracked file costs a whole git process (`--no-index` is one pair at a time), so
     // this bounds a process storm, not output size; 300 once meant ~600 spawns on one click.

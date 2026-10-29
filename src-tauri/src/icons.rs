@@ -244,7 +244,7 @@ fn probe_icon_dir(base: &std::path::Path) -> Option<ProjectIcon> {
 
 /// A project's favicon/logo: the conventional spots at the root, then one shallow level
 /// of subdirs (frontend-ish names first) for monorepos that keep the web app nested.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn find_project_icon(dir: String) -> Option<ProjectIcon> {
     let base = std::path::Path::new(&dir);
     if !base.is_dir() {
@@ -285,7 +285,7 @@ pub(crate) fn find_project_icon(dir: String) -> Option<ProjectIcon> {
 
 /// A user-picked logo, through the same sniff/size gate as discovery so a non-image or
 /// an oversized file is refused here rather than becoming a broken `<img>`.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_custom_icon(path: String) -> Result<ProjectIcon, String> {
     read_icon(std::path::Path::new(&path))
         .ok_or_else(|| "Not a usable image (PNG, SVG, ICO, JPEG, WEBP or GIF, max 512 KB)".to_string())

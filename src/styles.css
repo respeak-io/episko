@@ -2325,6 +2325,16 @@ select.in-ctl { cursor: pointer; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; max-width: min(620px, 88vw); text-align: center; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* A toast with buttons (dom.ts `actToast`): above the plain one, which may still be fading. */
+.act-toast { position: fixed; bottom: 40px; left: 50%; display: flex; align-items: center; gap: 6px; max-width: min(640px, 92vw); transform: translateX(-50%) translateY(14px); background: var(--surface-2); color: var(--text); border: 1px solid var(--hair-strong); padding: 6px 6px 6px 13px; border-radius: 10px; font-size: 11.5px; box-shadow: 0 18px 46px -18px rgba(0,0,0,.75); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 51; }
+.act-toast.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.act-toast .at-msg { flex: 1; min-width: 0; line-height: 1.4; }
+.act-toast .at-btn { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font: 600 11px var(--font-ui); cursor: pointer; }
+.act-toast .at-btn:hover { border-color: var(--accent-line); }
+.act-toast .at-btn.danger { border-color: color-mix(in srgb, var(--st-error) 45%, transparent); color: var(--st-error); }
+.act-toast .at-btn.danger:hover { background: color-mix(in srgb, var(--st-error) 14%, transparent); }
+.act-toast .at-x { flex: none; width: 24px; height: 24px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); cursor: pointer; }
+.act-toast .at-x:hover { background: var(--bg-2); color: var(--text); }
 
 /* The app's own confirmation dialog (./confirm): z-index 90/91, above everything, with its OWN
    backdrop, since it opens over #wtDlg / #mgrDlg and must not take #scrim from them. Darker so the
@@ -2532,6 +2542,24 @@ select.in-ctl { cursor: pointer; }
 /* The peek spans the whole row, below the six columns above it. */
 .svrpop .sv-log { grid-column: 1 / -1; margin: 2px 4px 5px; padding: 7px 8px; max-height: 148px; overflow: auto; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted); font: 500 10px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 .svrpop .sv-log-empty { color: var(--muted-2); font-style: italic; }
+/* A process tree under a pane or left behind (./serversui `procTable`): depth is an indent, the
+   whole command line lives in the row's tooltip, and ✕ kills that process and what it started. */
+.svrpop .sv-ptbl { grid-column: 1 / -1; width: calc(100% - 8px); margin: 2px 4px 6px; border-collapse: collapse; font: 500 10.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+.svrpop .sv-ptbl th { padding: 3px 6px; text-align: right; font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); }
+.svrpop .sv-ptbl th:first-child { text-align: left; }
+.svrpop .sv-ptbl td { padding: 2px 6px; text-align: right; color: var(--muted); border-bottom: 1px solid var(--hair); white-space: nowrap; }
+.svrpop .sv-ptbl tr:last-child td { border-bottom: 0; }
+.svrpop .sv-ptbl td.pn { text-align: left; color: var(--text); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; padding-left: calc(6px + var(--d, 0) * 12px); }
+.svrpop .sv-ptbl td.pn .pw { color: var(--muted-2); }
+.svrpop .sv-ptbl tr.sub td { padding-top: 7px; text-align: left; font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.svrpop .sv-ptbl td.x { width: 22px; padding: 0 2px; }
+.svrpop .sv-ptbl .sv-stop { width: 20px; height: 20px; font-size: 10px; }
+.svrpop .sv-ptbl tr:hover td { background: var(--surface-2); }
+.svrpop .sv-ptbl tr.sub:hover td { background: transparent; }
+.svrpop .sv-pall { grid-column: 1 / -1; justify-self: start; margin: 0 4px 6px; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-2); font: 500 10px var(--font-ui); cursor: pointer; }
+.svrpop .sv-pall:hover { color: var(--text); background: var(--bg-2); }
+.svrpop .sv-quiet { display: block; width: 100%; margin-top: 2px; padding: 5px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-2); font: 500 10.5px var(--font-ui); text-align: left; cursor: pointer; }
+.svrpop .sv-quiet:hover { background: var(--surface); color: var(--muted); }
 .svrpop .sv-foot { padding: 6px 5px 2px; margin-top: 3px; border-top: 1px solid var(--hair); font-size: 9.5px; color: var(--muted-2); }
 .svrpop .sv-foot code { font-family: var(--font-mono); color: var(--muted); }
 /* A stack: one bordered block whose head carries the summed state, then a line per pane and container. */

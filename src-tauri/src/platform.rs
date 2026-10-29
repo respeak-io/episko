@@ -95,7 +95,7 @@ pub(crate) struct PathHolder {
 }
 
 /// `p` is `root` or beneath it; case-insensitive on Windows, where the filesystem is.
-fn under(p: &std::path::Path, root: &std::path::Path) -> bool {
+pub(crate) fn under(p: &std::path::Path, root: &std::path::Path) -> bool {
     let (a, b) = (p.to_string_lossy(), root.to_string_lossy());
     let (a, b) = if cfg!(windows) {
         (norm_path(&a).to_lowercase(), norm_path(&b).to_lowercase())
@@ -549,7 +549,7 @@ const LINK_PROBE_BUDGET: usize = 1024;
 /// `cands` arrives longest-first and the first that resolves wins; `bases` is tried in
 /// order for a relative one. No globbing or fuzzy match: this is what keeps links off
 /// ordinary prose. The index says how many words of the line the underline claims.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn resolve_link_path(bases: Vec<String>, cands: Vec<String>) -> Option<(usize, String)> {
     let home = home_dir();
     let mut budget = LINK_PROBE_BUDGET;
@@ -608,7 +608,7 @@ pub(crate) struct MdText {
 }
 
 /// One markdown document for the in-app reader, cut at `MD_READ_CAP` rather than refused.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_markdown(path: String) -> Result<MdText, String> {
     use std::io::Read;
     let p = std::path::Path::new(&path);
@@ -639,7 +639,7 @@ fn image_mime(ext: &str) -> Option<&'static str> {
 
 /// An image a markdown document shows, as a data URI: the webview has no asset protocol,
 /// and an `<img>` never runs an SVG's scripts, so a data URI is the whole trust story.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_md_image(path: String) -> Result<String, String> {
     use base64::Engine as _;
     let p = std::path::Path::new(&path);
