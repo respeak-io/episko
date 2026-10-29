@@ -20,12 +20,6 @@ Markers: `+` new · `~` changed · `!` fixed
   agent's closing answer under it, so what a session was about survives Claude compacting its
   scrollback. A resumed session gets its answers back from the transcript. *Copy all* copies the
   whole thing as markdown.
-
-! **Claim & start puts the prompt in the new session again.** A fresh Claude session redraws its
-  input box about half a second after it first appears, and anything typed into it at that moment
-  was thrown away. The prefill was typed on a fixed timer that often landed right then, so the
-  session sometimes opened empty. Episko now waits until the session has really started before
-  typing. The same goes for dispatching a note and for handing review feedback to a new session.
 + The servers menu lists processes left running under *Left behind*: anything still going after
   its pane closed, or after the script that started it died, with the memory it holds and a ✕ that
   stops it and everything it started.
@@ -33,16 +27,33 @@ Markers: `+` new · `~` changed · `!` fixed
   servers an agent starts with itself, and the shells and `npx` wrappers around everything, are folded.
 + Closing or shelving a pane says what stopped with it, and a process that outlives its pane is
   announced once, with *Kill* and *Show*.
++ The inspector shows a session's effort level beside its model.
++ The Branches view can ask an agent to tidy up: *✦ Ask an agent to tidy up* starts a session with
+  a brief listing the dirty and detached checkouts and the unmerged branches, asking for a verdict
+  per item and a plan before anything is deleted. Prefilled, never sent.
+~ The Branches view's scope toggles are two buttons, *Delete N here* and *Delete N here + M on
+  origin*, and the second asks before it deletes anything on the remote.
+~ A detached checkout is named by its folder and commit (`pub-1.0.2 @ b1e3b1c`) instead of
+  *(detached)*, and one holding commits no branch has can no longer be removed without a word.
+  A dirty checkout says how many files are uncommitted, and the count opens the diff.
+~ The ✕ on a running agent session asks before closing it, and points at ⇩ Shelve. Shells, tasks
+  and ended sessions still close at once.
+! **Claim & start puts the prompt in the new session again.** A fresh Claude session redraws its
+  input box about half a second after it first appears, and anything typed into it at that moment
+  was thrown away. The prefill was typed on a fixed timer that often landed right then, so the
+  session sometimes opened empty. Episko now waits until the session has really started before
+  typing. The same goes for dispatching a note and for handing review feedback to a new session.
 ! The four-second check of which ports and processes your panes hold, link hovers, diffs and icon
   reads no longer run on the thread that moves and paints the window.
 ! On Windows, closing a pane stops everything it started, not only its top process.
 ! Switching Claude accounts with `/login` no longer reads as both limit windows resetting. Each
   account keeps its own meters, and the limits popover names the account and shows the other one's.
-+ The inspector shows a session's effort level beside its model.
 ! Merging a pull request no longer deletes its branch unless you tick *Delete the branch
   afterwards*, and keeps a protected branch or one other pull requests target, such as `dev`.
 ! The new-session dialog no longer shows the previous project's worktrees and branches while
   it loads, and opens faster in repos with several worktrees.
+! Subagents writing in two worktrees no longer make their parent session follow its drift back
+  and forth, with a toast each time. The drift is still shown on the chip.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
