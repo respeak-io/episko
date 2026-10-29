@@ -157,7 +157,7 @@ fn parse_stack(text: &str) -> StackConfig {
 }
 
 /// Every `[run."<id>"]` entry, or none: forgiving on read like `[stack]`.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn run_infos(dir: String) -> std::collections::BTreeMap<String, RunInfo> {
     std::fs::read_to_string(std::path::Path::new(&dir).join(".episko").join("episko.toml"))
         .ok()
@@ -166,7 +166,7 @@ pub(crate) fn run_infos(dir: String) -> std::collections::BTreeMap<String, RunIn
         .unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn stack_config(dir: String) -> StackConfig {
     std::fs::read_to_string(std::path::Path::new(&dir).join(".episko").join("episko.toml"))
         .map(|t| parse_stack(&t))
@@ -239,7 +239,7 @@ pub(crate) async fn propose_stack(dir: String, prompt: String) -> Result<StackPr
 
 /// Write `[stack]` as accepted, through `toml_edit` so every other table and comment survives.
 /// Creating the file is fine here: the dialog that showed the proposal was the question.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn write_stack(
     dir: String, stack: StackConfig, run: std::collections::BTreeMap<String, RunInfo>,
 ) -> Result<(), String> {

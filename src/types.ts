@@ -65,6 +65,7 @@ export interface Relay { kind: "agent" | "session"; from: string; name: string; 
 export interface Prompt {
   id: string; text: string; at: number; restored?: boolean;
   relay?: Relay; // set, and `text` is the message without its frame
+  answer?: string; // the agent's last words on it (./outline's noteAnswer)
   found?: boolean; lost?: boolean; // ./terminal's: the line was located, or its one search missed
 }
 export interface DiffStat {
@@ -404,7 +405,7 @@ export interface Sess {
   // another checkout of this repo (Drift.via, ./gitwatch); display-only, workdir is unchanged until followed
   drift: Drift | null;
   home?: Home | null;
-  model: string; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
+  model: string; effort: string | null; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   apiMs: number | null; apiMsSince: number; // the API's own clock and when it last moved (./phase)
   tokenUsage: AgentTokenUsage | null;
   rateLimits: AgentRateLimit[];

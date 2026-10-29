@@ -7,8 +7,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::git::repo_root_of;
 use crate::platform::{augmented_path, home_dir, nfc, norm_path, physical_cwd, resolve_claude, sys_command};
@@ -719,6 +719,7 @@ fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
 
 /// Both readers answer with the END of what they found: a mirror shows how a conversation
 /// finished, and an outline seeded with the first 200 questions of one would list the wrong day.
+/// (The asked reader trims by question instead, so each keeps its answer.)
 fn last_n(mut msgs: Vec<TranscriptMsg>, limit: usize) -> Vec<TranscriptMsg> {
     let n = msgs.len();
     if n > limit {
@@ -755,14 +756,29 @@ fn read_asked_in(
     use std::io::BufRead;
     let reader = transcript_reader(base, cwd, session_id, false)?;
     let mut msgs: Vec<TranscriptMsg> = Vec::new();
+    // Only the LAST assistant message before the next question: the answer the Questions
+    // sheet shows, never the running commentary between a turn's tool calls.
+    let mut answer: Option<TranscriptMsg> = None;
     for line in reader.lines() {
         let Ok(line) = line else { continue };
         match transcript_msg(&line) {
-            Some(msg) if msg.role == "user" => msgs.push(msg),
-            _ => {}
+            Some(msg) if msg.role == "user" => {
+                msgs.extend(answer.take());
+                msgs.push(msg);
+            }
+            Some(msg) => answer = Some(msg),
+            None => {}
         }
     }
-    Ok(last_n(msgs, limit))
+    msgs.extend(answer);
+    // `limit` counts questions; each keeps the answer that follows it.
+    let users = msgs.iter().filter(|m| m.role == "user").count();
+    if users > limit {
+        let first_kept = msgs.iter().enumerate().filter(|(_, m)| m.role == "user").nth(users - limit);
+        let cut = first_kept.map(|(i, _)| i).unwrap_or(0);
+        msgs.drain(..cut);
+    }
+    Ok(msgs)
 }
 
 /// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`: the
@@ -1532,6 +1548,8 @@ pub(crate) struct ScopedLimit {
 pub(crate) struct PlanLimits {
     available: bool,
     scoped: Option<Vec<ScopedLimit>>,
+    /// Who answered: the probe runs as whoever is logged in when it starts.
+    account: Option<ClaudeAccount>,
 }
 
 /// No `initialize` handshake: the CLI answers this cold, one request and one line.
@@ -1545,7 +1563,62 @@ const PROBE_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// Ask the CLI what this account has spent against its plan. No model turn, so no tokens.
 #[tauri::command(async)]
 pub(crate) fn claude_usage_limits() -> Result<PlanLimits, String> {
-    parse_usage_limits(&run_usage_probe()?)
+    let mut limits = parse_usage_limits(&run_usage_probe()?)?;
+    limits.account = current_account();
+    Ok(limits)
+}
+
+/// Who `claude` is logged in as: `oauthAccount` in its global config, which `/login` rewrites.
+/// Running sessions follow it too (a pane opened before a switch answers `/usage` for the new
+/// account), so it names whose limits a statusLine carries.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub(crate) struct ClaudeAccount {
+    id: String,
+    tier: Option<String>,
+    kind: Option<String>,
+    email: Option<String>,
+}
+
+fn claude_config_file() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join(".claude.json"));
+    }
+    let home = home_dir();
+    (!home.is_empty()).then(|| Path::new(&home).join(".claude.json"))
+}
+
+/// `None` for text that is not JSON (a write caught halfway); `Some(None)` is nobody logged in.
+fn parse_account(text: &str) -> Option<Option<ClaudeAccount>> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let a = &v["oauthAccount"];
+    let field = |k: &str| a[k].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    Some(field("accountUuid").map(|id| ClaudeAccount {
+        id,
+        tier: field("organizationRateLimitTier").or_else(|| field("userRateLimitTier")),
+        kind: field("organizationType"),
+        email: field("emailAddress"),
+    }))
+}
+
+/// Stat per call, parse only when the file moved: the statusLine path asks on every POST. A
+/// file caught mid-write keeps the last good answer and is read again next time.
+pub(crate) fn current_account() -> Option<ClaudeAccount> {
+    type Seen = (SystemTime, u64, Option<ClaudeAccount>);
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let path = claude_config_file()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    let (mtime, len) = (meta.modified().ok()?, meta.len());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((t, n, acct)) = seen.as_ref() {
+        if *t == mtime && *n == len {
+            return acct.clone();
+        }
+    }
+    let Some(acct) = std::fs::read_to_string(&path).ok().and_then(|t| parse_account(&t)) else {
+        return seen.as_ref().and_then(|(_, _, a)| a.clone());
+    };
+    *seen = Some((mtime, len, acct.clone()));
+    acct
 }
 
 /// Hooks are off (a probe must not fire somebody's SessionStart), and stdin is CLOSED rather
@@ -1639,6 +1712,7 @@ fn parse_usage_limits(line: &str) -> Result<PlanLimits, String> {
     Ok(PlanLimits {
         available: body["rate_limits_available"].as_bool().unwrap_or(false),
         scoped,
+        account: None,
     })
 }
 
@@ -1691,6 +1765,20 @@ mod tests {
             Some("2026-09-22T19:00:00.276554+00:00"),
             "the ISO string is passed through; the frontend parses it"
         );
+    }
+
+    #[test]
+    fn the_account_is_read_from_the_login_and_a_torn_write_is_not_an_answer() {
+        let cfg = r#"{"numStartups":3,"oauthAccount":{"accountUuid":"2c03","emailAddress":"a@b.c",
+            "organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_5x","userRateLimitTier":null}}"#;
+        let a = parse_account(cfg).unwrap().unwrap();
+        assert_eq!(a.id, "2c03");
+        assert_eq!(a.tier.as_deref(), Some("default_claude_max_5x"));
+        assert_eq!(a.kind.as_deref(), Some("claude_max"));
+        assert_eq!(a.email.as_deref(), Some("a@b.c"));
+        assert_eq!(parse_account(r#"{"numStartups":3}"#), Some(None), "logged out is an answer");
+        assert_eq!(parse_account(r#"{"oauthAccount":{"accountUuid":""}}"#), Some(None));
+        assert_eq!(parse_account(r#"{"oauthAccount":{"accountU"#), None, "half a file is not");
     }
 
     /// The distinction the whole struct exists for: absent means nothing was learned (a cached
@@ -2805,6 +2893,35 @@ mod tests {
 
 
     #[test]
+    fn asked_keeps_each_questions_last_answer_and_trims_by_question() {
+        let cwd = "/Users/tim/dev/answers";
+        let (base, proj) = fixture(cwd);
+        let line = |role: &str, text: &str| {
+            serde_json::json!({ "type": role, "message": { "content": [{ "type": "text", "text": text }] } }).to_string()
+        };
+        let tool_result = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        let file = [
+            line("user", "q1"), line("assistant", "let me look"), tool_result.to_string(), line("assistant", "a1"),
+            line("user", "q2"), line("assistant", "a2"),
+            line("user", "q3"),
+        ]
+        .join("
+");
+        std::fs::write(proj.join("sid.jsonl"), file).unwrap();
+
+        let all: Vec<(String, String)> = read_asked_in(&base, cwd, "sid", 10).unwrap()
+            .into_iter().map(|m| (m.role, m.text)).collect();
+        let pair = |r: &str, t: &str| (r.to_string(), t.to_string());
+        assert_eq!(all, vec![pair("user", "q1"), pair("assistant", "a1"), pair("user", "q2"), pair("assistant", "a2"), pair("user", "q3")]);
+
+        // Two questions kept: q1 goes, and its answer with it.
+        let two: Vec<String> = read_asked_in(&base, cwd, "sid", 2).unwrap().into_iter().map(|m| m.text).collect();
+        assert_eq!(two, vec!["q2", "a2", "q3"]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn asked_reads_past_the_tail_the_mirror_stops_at() {
         let cwd = "/Users/tim/dev/long";
         let (base, proj) = fixture(cwd);
@@ -2828,9 +2945,12 @@ mod tests {
         std::fs::write(proj.join("sid.jsonl"), &file).unwrap();
 
         let asked = read_asked_in(&base, cwd, "sid", 100).unwrap();
-        let texts: Vec<&str> = asked.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(texts, vec!["the first thing anybody asked", "and the last one"]);
+        let users: Vec<&str> = asked.iter().filter(|m| m.role == "user").map(|m| m.text.as_str()).collect();
+        assert_eq!(users, vec!["the first thing anybody asked", "and the last one"]);
         assert_eq!(asked[0].at.as_deref(), Some("2026-09-04T18:50:00.000Z"));
+        // Of 700 assistant messages between them, only the last one comes back, as the answer.
+        assert_eq!(asked.len(), 3);
+        assert_eq!(asked[1].role, "assistant");
 
         // The mirror is unchanged and still cannot reach the first question, which is the point.
         let mirror = read_transcript_in(&base, cwd, "sid", 100).unwrap();

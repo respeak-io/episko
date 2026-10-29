@@ -4,7 +4,8 @@ import {
   bgPeekEmpty, bgRetire, bgSentinel, bgStopId, bgTaskId, bgTimedOut, cmdLabel, endBg,
   failedServers, forgetServer, isJob, markKilled, liveServers, logLines, logTail, serverUrl,
   foldPages, pageName, portOf, reconcilePorts, servingUrls, shownServers, usefulPort,
-  type BgRead,
+  AT_LAUNCH_S, branchLabels, isDaemon, LEFT_GRACE_MS, leftLead, leftMem, leftShown, nameList, newlyLeft, procLabel, procRows, splitLaunch,
+  type BgRead, type LeftBehind, type PaneProcs, type ProcInfo,
 } from "../src/servers";
 import type { BgMissReason, BgServer } from "../src/types";
 
@@ -695,5 +696,137 @@ describe("cmdLabel", () => {
 
   it("truncates rather than wrapping a row", () => {
     expect(cmdLabel("pnpm --filter @acme/web dev --host --port 5173 --strictPort", 20)).toHaveLength(20);
+  });
+});
+
+// ---------- left behind ----------
+
+const proc = (pid: number, name: string, cmd: string[], mem = 1e6, ppid: number | null = null, started = 0): ProcInfo =>
+  ({ pid, ppid, started, name, cmd, cwd: "", mem });
+
+// Captured off the real leak: `scripts/dev.mjs` → `cmd /c` → vite, one worktree of PuttyParty.
+const WATCHER = proc(55028, "node.exe", ["node", String.raw`E:\Programming\projects\.cc-worktrees\PuttyParty\feat-playable\node_modules\.bin\\..\vite\bin\vite.js`, "build", "--config", "src/app-spa/vite.config.ts", "--watch"], 1.7e9, 34832);
+const tree = (procs: ProcInfo[], pid = procs[0].pid): LeftBehind => ({ pid, started: 100, sessionId: "a", root: null, procs });
+
+describe("procLabel", () => {
+  it("names a package's bin script by its package, through .bin/.. and doubled backslashes", () => {
+    expect(procLabel(WATCHER, 80)).toBe("vite build --config src/app-spa/vite.config.ts --watch");
+  });
+  it("keeps a scoped package whole", () => {
+    expect(procLabel(proc(1, "node", ["node", "/r/node_modules/@scope/tool/dist/cli.js", "serve"]))).toBe("@scope/tool serve");
+  });
+  it("names a plain script by its file, without the interpreter", () => {
+    expect(procLabel(proc(1, "node.exe", ["node", "scripts/dev.mjs", "--port", "8812"]))).toBe("dev --port 8812");
+    expect(procLabel(proc(1, "python3", ["/usr/bin/python3", "-m", "http.server"]))).toBe("-m http.server");
+  });
+  it("falls back to the process name when the OS gave no command line", () => {
+    expect(procLabel(proc(1, "esbuild.exe", []))).toBe("esbuild.exe");
+  });
+});
+
+describe("leftLead", () => {
+  it("names the row after the biggest process doing work, never the shell or the package manager", () => {
+    const g = tree([
+      proc(10, "sh.exe", ["sh", "-c", "pnpm dev"], 5e6),
+      proc(11, "node.exe", ["node", String.raw`C:\pnpm\bin\pnpm.cjs`, "dev"], 9e9),
+      proc(12, "cmd.exe", ["cmd", "/c", "vite build --watch"], 4e6),
+      WATCHER,
+    ]);
+    expect(leftLead(g).pid).toBe(55028);
+    expect(leftMem(g)).toBe(5e6 + 9e9 + 4e6 + 1.7e9);
+  });
+  it("falls back to the top when the tree is all plumbing", () => {
+    expect(leftLead(tree([proc(7, "cmd.exe", ["cmd"]), proc(8, "conhost.exe", [])], 7)).pid).toBe(7);
+  });
+});
+
+describe("leftShown", () => {
+  it("holds a tree back for the grace, then shows it, then forgets it once gone", () => {
+    const seen = new Map<string, number>();
+    const g = tree([WATCHER]);
+    expect(leftShown([g], seen, 0)).toEqual([]);
+    expect(leftShown([g], seen, LEFT_GRACE_MS)).toEqual([g]);
+    expect(leftShown([], seen, LEFT_GRACE_MS + 1)).toEqual([]);
+    expect(seen.size).toBe(0);
+    expect(leftShown([g], seen, LEFT_GRACE_MS + 2)).toEqual([]); // back again is new again
+  });
+  it("never shows a daemon that outlives its parent by design", () => {
+    const seen = new Map<string, number>();
+    const fsm = tree([proc(3, "git.exe", ["git", "fsmonitor--daemon", "run", "--detach"])]);
+    expect(isDaemon(fsm)).toBe(true);
+    leftShown([fsm], seen, 0);
+    expect(leftShown([fsm], seen, LEFT_GRACE_MS * 2)).toEqual([]);
+  });
+});
+
+// ---------- what a pane runs ----------
+
+// The shape of a real Claude pane on Windows: an MCP server behind `cmd /c` and `npx`, started
+// with the agent at t=1000, and a dev server an agent backgrounded twenty minutes later.
+const MCP = [
+  proc(10, "cmd.exe", ["cmd", "/d", "/s", "/c", "npx @sentry/mcp-server"], 6e6, 1, 1002),
+  proc(11, "conhost.exe", [], 7e6, 10, 1002),
+  proc(12, "node.exe", ["node", "C:/nodejs/node_modules/npm/bin/npx-cli.js", "@sentry/mcp-server"], 49e6, 10, 1003),
+  proc(13, "node.exe", ["node", "C:/npx/1/node_modules/@sentry/mcp-server/dist/index.js"], 52e6, 12, 1004),
+];
+const DEV = [
+  proc(20, "bash.exe", ["bash", "-c", "pnpm dev"], 5e6, 1, 2200),
+  proc(21, "node.exe", ["node", "E:/app/node_modules/vite/bin/vite.js", "--port", "5173"], 300e6, 20, 2201),
+];
+const PANE: PaneProcs = { sessionId: "s", started: 1000, procs: [...MCP, ...DEV] };
+
+describe("splitLaunch", () => {
+  it("files what began with the agent apart from what came later, by the branch's start", () => {
+    const { launch, later } = splitLaunch(PANE, true);
+    expect(launch.map((p) => p.pid)).toEqual([10, 11, 12, 13]);
+    expect(later.map((p) => p.pid)).toEqual([20, 21]);
+  });
+  it("judges a child by its branch, so a late child of an MCP server stays with it", () => {
+    const late = proc(14, "node.exe", ["node", "worker.js"], 1e6, 13, 1000 + AT_LAUNCH_S + 500);
+    expect(splitLaunch({ ...PANE, procs: [...MCP, late] }, true).later).toEqual([]);
+  });
+  it("calls a command the agent ran through a shell work, however soon after launch", () => {
+    const quick = [proc(30, "bash.exe", ["bash", "-c", "pnpm dev"], 5e6, 1, 1005), proc(31, "node.exe", ["node", "vite.js"], 9e7, 30, 1006)];
+    expect(splitLaunch({ ...PANE, procs: [...MCP, ...quick] }, true).later.map((p) => p.pid)).toEqual([30, 31]);
+  });
+  it("calls everything under a shell later work: only an agent launches helpers with itself", () => {
+    expect(splitLaunch(PANE, false).launch).toEqual([]);
+  });
+});
+
+describe("procRows", () => {
+  it("folds the wrappers away and lifts their children, unless all are asked for", () => {
+    expect(procRows(MCP).map((r) => [r.p.pid, r.depth])).toEqual([[13, 0]]);
+    expect(procRows(MCP, true).map((r) => [r.p.pid, r.depth])).toEqual([[10, 0], [11, 1], [12, 1], [13, 2]]);
+  });
+  it("survives a ppid cycle, which Windows produces after pid reuse", () => {
+    const a = proc(1, "node.exe", ["node", "a.js"], 1, 2), b = proc(2, "node.exe", ["node", "b.js"], 1, 1);
+    expect(procRows([a, b]).length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("branchLabels and nameList", () => {
+  it("names each branch by its biggest worker, biggest branch first", () => {
+    expect(branchLabels([...MCP, ...DEV])).toEqual(["vite --port 5173", "@sentry/mcp-server"]);
+  });
+  it("drops a branch of wrappers alone", () => {
+    expect(branchLabels([proc(1, "cmd.exe", ["cmd"]), proc(2, "conhost.exe", [], 1, 1)])).toEqual([]);
+  });
+  it("reads as a sentence", () => {
+    expect(nameList(["vite"])).toBe("vite");
+    expect(nameList(["vite", "tsc"])).toBe("vite and tsc");
+    expect(nameList(["vite", "tsc", "a", "b"])).toBe("vite, tsc and 2 more");
+  });
+});
+
+describe("newlyLeft", () => {
+  it("tells once per tree, forgets a tree that has gone, and never tells a folder match", () => {
+    const told = new Set<string>();
+    const g = tree([WATCHER]);
+    const stray = { ...tree([proc(9, "node.exe", ["node", "x.js"])]), sessionId: null };
+    expect(newlyLeft([g, stray], told)).toEqual([g]);
+    expect(newlyLeft([g, stray], told)).toEqual([]);
+    expect(newlyLeft([], told)).toEqual([]);
+    expect(newlyLeft([g], told)).toEqual([g]); // back again after it went is news again
   });
 });

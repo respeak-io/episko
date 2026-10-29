@@ -1114,6 +1114,38 @@ html.win .wctl { display: flex; }
 .call-pre.dim { color: var(--muted-2); font-style: italic; }
 .call-empty { color: var(--muted); font-size: 12px; padding: 26px 18px; text-align: center; }
 
+/* --- the Questions sheet (modal): the call sheet's frame, the outline's rows, answers as prose */
+.qdlg .diff-head .call-copy { margin-left: auto; margin-right: 8px; }
+.ol-open { margin-left: auto; align-self: center; width: 20px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--muted-2); cursor: pointer; font-size: 11px; line-height: 1; }
+.ol-open:hover, .ol-open:focus-visible { color: var(--text); border-color: var(--hair-strong); background: var(--surface-2); }
+.q-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 8px; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; font: inherit; }
+.q-row:hover { background: var(--lift); }
+.q-row.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.q-rn { font: 10px var(--font-mono); color: var(--muted-2); text-align: right; font-variant-numeric: tabular-nums; }
+.q-rt { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-row.relay .q-rt { color: var(--muted); }
+.q-rc { color: var(--muted-2); font-size: 12px; } /* · = no answer recorded */
+.q-thread { overflow-y: auto; padding: 8px 22px 40px; min-width: 0; }
+.q-ent { padding: 16px 0 18px; border-bottom: 1px solid var(--hair); }
+.q-ent:last-child { border-bottom: 0; }
+.q-h { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.q-n { font: 650 11px var(--font-mono); color: var(--accent-ink); }
+.q-who { font: 11px var(--font-mono); color: var(--muted); }
+.q-t { font: 10.5px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.q-b { margin-right: 4px; }
+.q-h .q-act:first-of-type { margin-left: auto; }
+.q-act { font: 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; cursor: pointer; opacity: .6; }
+.q-ent:hover .q-act { opacity: 1; border-color: var(--hair); }
+.q-act:hover, .q-act:focus-visible { color: var(--text); opacity: 1; border-color: var(--hair-strong); background: var(--surface-2); }
+/* Your words: the outline's own highlight, kept as typed */
+.q-ask { padding: 10px 13px; border-radius: var(--radius-sm); background: var(--accent-wash); border: 1px solid var(--accent-line); font: 13px/1.55 var(--font-ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.q-ent.relay .q-ask { background: var(--surface); border-color: var(--hair); color: var(--muted); }
+.q-ans.mdr { --mdr-fs: 13px; margin: 10px 0 0; padding: 2px 2px 0 14px; max-width: none; border-left: 2px solid var(--hair-strong); }
+.q-ans.mdr > :last-child { margin-bottom: 0; }
+.q-ans.mdr h1.mdr-h, .q-ans.mdr h2.mdr-h { font-size: 1.2em; padding-bottom: 0; border-bottom: 0; }
+.q-none { margin-top: 9px; padding-left: 14px; font-size: 12px; font-style: italic; color: var(--muted-2); }
+.q-none.run { color: var(--st-working); }
+
 /* --- project commit graph (modal). .grow's height MUST equal ROW_H in graph.ts (lane lines are
    drawn edge-to-edge per row), so nothing may add to a row's box: selection is a background,
    "current" an inset shadow. */
@@ -2293,6 +2325,16 @@ select.in-ctl { cursor: pointer; }
 
 .toast { position: fixed; bottom: 40px; left: 50%; max-width: min(620px, 88vw); text-align: center; transform: translateX(-50%) translateY(14px); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 9px; font-size: 11.5px; font-weight: 600; box-shadow: 0 18px 46px -20px rgba(0,0,0,.7); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 50; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* A toast with buttons (dom.ts `actToast`): above the plain one, which may still be fading. */
+.act-toast { position: fixed; bottom: 40px; left: 50%; display: flex; align-items: center; gap: 6px; max-width: min(640px, 92vw); transform: translateX(-50%) translateY(14px); background: var(--surface-2); color: var(--text); border: 1px solid var(--hair-strong); padding: 6px 6px 6px 13px; border-radius: 10px; font-size: 11.5px; box-shadow: 0 18px 46px -18px rgba(0,0,0,.75); opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 51; }
+.act-toast.show { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
+.act-toast .at-msg { flex: 1; min-width: 0; line-height: 1.4; }
+.act-toast .at-btn { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font: 600 11px var(--font-ui); cursor: pointer; }
+.act-toast .at-btn:hover { border-color: var(--accent-line); }
+.act-toast .at-btn.danger { border-color: color-mix(in srgb, var(--st-error) 45%, transparent); color: var(--st-error); }
+.act-toast .at-btn.danger:hover { background: color-mix(in srgb, var(--st-error) 14%, transparent); }
+.act-toast .at-x { flex: none; width: 24px; height: 24px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); cursor: pointer; }
+.act-toast .at-x:hover { background: var(--bg-2); color: var(--text); }
 
 /* The app's own confirmation dialog (./confirm): z-index 90/91, above everything, with its OWN
    backdrop, since it opens over #wtDlg / #mgrDlg and must not take #scrim from them. Darker so the
@@ -2500,6 +2542,24 @@ select.in-ctl { cursor: pointer; }
 /* The peek spans the whole row, below the six columns above it. */
 .svrpop .sv-log { grid-column: 1 / -1; margin: 2px 4px 5px; padding: 7px 8px; max-height: 148px; overflow: auto; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--hair); color: var(--muted); font: 500 10px/1.5 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 .svrpop .sv-log-empty { color: var(--muted-2); font-style: italic; }
+/* A process tree under a pane or left behind (./serversui `procTable`): depth is an indent, the
+   whole command line lives in the row's tooltip, and ✕ kills that process and what it started. */
+.svrpop .sv-ptbl { grid-column: 1 / -1; width: calc(100% - 8px); margin: 2px 4px 6px; border-collapse: collapse; font: 500 10.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+.svrpop .sv-ptbl th { padding: 3px 6px; text-align: right; font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); }
+.svrpop .sv-ptbl th:first-child { text-align: left; }
+.svrpop .sv-ptbl td { padding: 2px 6px; text-align: right; color: var(--muted); border-bottom: 1px solid var(--hair); white-space: nowrap; }
+.svrpop .sv-ptbl tr:last-child td { border-bottom: 0; }
+.svrpop .sv-ptbl td.pn { text-align: left; color: var(--text); max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; padding-left: calc(6px + var(--d, 0) * 12px); }
+.svrpop .sv-ptbl td.pn .pw { color: var(--muted-2); }
+.svrpop .sv-ptbl tr.sub td { padding-top: 7px; text-align: left; font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.svrpop .sv-ptbl td.x { width: 22px; padding: 0 2px; }
+.svrpop .sv-ptbl .sv-stop { width: 20px; height: 20px; font-size: 10px; }
+.svrpop .sv-ptbl tr:hover td { background: var(--surface-2); }
+.svrpop .sv-ptbl tr.sub:hover td { background: transparent; }
+.svrpop .sv-pall { grid-column: 1 / -1; justify-self: start; margin: 0 4px 6px; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted-2); font: 500 10px var(--font-ui); cursor: pointer; }
+.svrpop .sv-pall:hover { color: var(--text); background: var(--bg-2); }
+.svrpop .sv-quiet { display: block; width: 100%; margin-top: 2px; padding: 5px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-2); font: 500 10.5px var(--font-ui); text-align: left; cursor: pointer; }
+.svrpop .sv-quiet:hover { background: var(--surface); color: var(--muted); }
 .svrpop .sv-foot { padding: 6px 5px 2px; margin-top: 3px; border-top: 1px solid var(--hair); font-size: 9.5px; color: var(--muted-2); }
 .svrpop .sv-foot code { font-family: var(--font-mono); color: var(--muted); }
 /* A stack: one bordered block whose head carries the summed state, then a line per pane and container. */
@@ -2551,6 +2611,9 @@ select.in-ctl { cursor: pointer; }
 .usagepop .up-foot { display: flex; justify-content: space-between; font: 600 10px var(--font-mono); color: var(--muted); padding: 5px 2px 1px; border-top: 1px solid var(--hair); }
 .usagepop .up-foot b { color: var(--text); }
 .usagepop .up-note { font-size: 10px; color: var(--muted-2); padding: 2px; line-height: 1.4; }
+.usagepop .up-acct { font: 500 10px var(--font-mono); color: var(--muted); padding: 0 2px 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usagepop .up-other { font: 600 10px var(--font-mono); color: var(--muted); padding: 7px 2px 0; margin-top: 3px; border-top: 1px solid var(--hair); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usagepop .up-other span { color: var(--muted-2); font-weight: 500; }
 
 /* today's-spend popover: borrows .usagepop's header and note; a spend row is a name + a bar + money */
 .costpop { min-width: 252px; max-width: 320px; gap: 3px; padding: 10px; }
@@ -2666,6 +2729,7 @@ select.in-ctl { cursor: pointer; }
 /* ---------- dormant (restorable) sessions ---------- */
 /* a session from a previous run, dimmed with the ended glyph so "was running" never reads as "is running" */
 .srow.pastrow { grid-template-columns: 14px 1fr auto; opacity: .62; }
+.srow.pastrow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
 .srow.pastrow:hover, .srow.pastrow.active { opacity: 1; }
 .srow.pastrow .sbranch { font-style: italic; }
 .past-tag { font: 600 8.5px var(--font-mono); letter-spacing: .04em; color: var(--muted-2); white-space: nowrap; }
@@ -3290,6 +3354,7 @@ select.in-ctl { cursor: pointer; }
 .dbwt.on { background: color-mix(in srgb, var(--st-error) 10%, transparent); }
 .dbwt.on .bn { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--st-error) 70%, transparent); }
 .dbwt .tags .warn { font: 10px var(--font-mono); color: var(--st-working); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbwt .tags .lnk { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .dbwt .tags .dim { font: 10px var(--font-ui); color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dbwt-hd { padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }
 .dbwt-hd .r { text-align: right; }
@@ -3473,6 +3538,8 @@ select.in-ctl { cursor: pointer; }
 .dbbr-act { display: flex; align-items: center; gap: 8px; padding: 12px 9px 4px; }
 .brgo { font: 600 11.5px var(--font-ui); padding: 6px 12px; border-radius: 8px; cursor: pointer; border: 1px solid color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 10%, transparent); color: var(--st-error); }
 .brgo:hover { background: color-mix(in srgb, var(--st-error) 18%, transparent); }
+/* The shared write: filled, so it never reads as the same weight as the local one beside it. */
+.brgo.share:not([disabled]) { background: color-mix(in srgb, var(--st-error) 24%, transparent); }
 .brgo[disabled] { opacity: .4; cursor: not-allowed; background: transparent; border-color: var(--hair-strong); color: var(--muted-2); }
 .dbbr-note { font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); padding: 2px 0 8px; }
 .dbbr-note.warn { color: var(--st-working); }
@@ -3531,20 +3598,12 @@ select.in-ctl { cursor: pointer; }
   background: var(--bg); box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, .55); }
 .bvbar.on { border-color: var(--hair-strong); }
 .bvbar .sel { font: 600 11px var(--font-ui); color: var(--text); }
-.bvbar .scopes { display: flex; align-items: center; gap: 6px; font: 10.5px var(--font-ui); color: var(--muted-2); }
 .bvbar .what { font: 10px var(--font-mono); color: var(--muted-2); }
 .bvbar .hint { font: 10px var(--font-ui); color: var(--st-working); }
 .bvbar .note { flex: 1 0 100%; order: 9; margin-top: 2px; font: 10.5px/1.5 var(--font-ui); color: var(--muted-2); }
-.bvbar .note.warn { color: var(--st-working); }
+.bvbar .note .warn { color: var(--st-working); }
 .bvbar .note b { color: var(--text); font: 600 10px var(--font-mono); }
-.bvbar.sharing { border-color: color-mix(in srgb, var(--st-working) 45%, transparent); }
 .bvbar .hint b { font: 600 10px var(--font-mono); }
-.bvsw { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; cursor: pointer;
-  border: 1px solid var(--hair-strong); background: var(--surface-2); font: 10.5px var(--font-ui); color: var(--muted); }
-.bvsw i { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--hair-strong); display: grid; place-items: center; }
-.bvsw.on { color: var(--st-error); border-color: color-mix(in srgb, var(--st-error) 45%, transparent); }
-.bvsw.on i { border-color: color-mix(in srgb, var(--st-error) 55%, transparent); background: color-mix(in srgb, var(--st-error) 30%, transparent); }
-.bvsw.on i::after { content: "✓"; font: 700 8.5px/1 var(--font-ui); color: var(--st-error); }
 /* The Repository card's picker and a session's branch chip: the same control, two sizes. */
 .gitb.brpick, .bsw { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
 .gitb.brpick .c, .bsw .c { flex: none; color: var(--muted-2); font-size: 9px; }
@@ -3635,6 +3694,7 @@ select.in-ctl { cursor: pointer; }
 
 .bk-sel { margin-left: auto; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
 .bk-cmp { flex: none; padding: 2px 7px; border-radius: 5px; cursor: pointer; border: 1px solid var(--hair-strong); background: var(--surface); font: 9.5px var(--font-mono); color: var(--muted); }
+.bk-ask { font-family: var(--font-ui); font-size: 10.5px; padding: 3px 9px; }
 .bk-cmp:hover, .bk-cmp.open { color: var(--accent-ink); border-color: var(--accent-line); background: var(--accent-wash); }
 .br, .tg, .kept, .lst-hd { grid-template-columns: var(--cols); }
 .lst-hd { display: grid; gap: 10px; align-items: center; padding: 0 9px 6px; font: 700 8.5px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); }

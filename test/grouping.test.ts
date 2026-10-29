@@ -16,7 +16,7 @@ import {
   allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
   foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
-  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, projectList,
+  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, projectList,
   reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
   type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
@@ -33,7 +33,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: 0, attnAt: 0, seenAt: 0, lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {},
     kind: "agent",
@@ -237,6 +237,28 @@ describe("clusterIsLive", () => {
 
 // Checkouts on disk with nothing running in them: off unless asked for, since only the sidebar
 // body wants them and splitByWorktree must not get them.
+describe("placeDormants — shelved rows under their checkout", () => {
+  const roster = () => worktreesByRepo.set("/w/epi", [
+    { path: "/w/epi", branch: "main", is_main: true, exists: true },
+    { path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true },
+  ]);
+  it("files each shelved session under the checkout its workdir is in, subfolders included", () => {
+    roster();
+    const p = grp({ dormants: [dorm({ id: "a", workdir: "/w/wt-x/src" }), dorm({ id: "b" })] });
+    const { by, rest } = placeDormants(p, clusterByWorktree(p, true));
+    expect(by.get("/w/wt-x")!.map((d) => d.id)).toEqual(["a"]);
+    expect(by.get("/w/epi")!.map((d) => d.id)).toEqual(["b"]);
+    expect(rest).toEqual([]);
+  });
+  it("keeps one whose checkout is no longer listed below the project", () => {
+    roster();
+    const p = grp({ dormants: [dorm({ id: "gone", workdir: "/w/wt-removed" })] });
+    const { by, rest } = placeDormants(p, clusterByWorktree(p, true));
+    expect(by.size).toBe(0);
+    expect(rest.map((d) => d.id)).toEqual(["gone"]);
+  });
+});
+
 describe("clusterByWorktree — session-less checkouts from the worktree roster", () => {
   const roster = (l: WtHead[]) => { worktreesByRepo.set("/w/epi", l); };
   const main = (o: Partial<WtHead> = {}): WtHead =>

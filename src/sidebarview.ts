@@ -10,10 +10,10 @@ import {
 } from "./types";
 import {
   accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, handoffs, pastMirrorId, removingWt,
-  peekPrefs, stageGroup, wtGroup,
+  peekPrefs, shelvedInTree, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups,
+  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants,
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import { peekStaysOpen } from "./peek";
@@ -55,10 +55,17 @@ export const extWorking = (e: ExtSession) => !!e.status && !["idle", "sleeping",
 const branchHue = (c: WtCluster) => accentFor(c.isMain ? c.key : (c.branch || c.key));
 // ⌂ for the repo's own checkout (what the ⑃ dialog and "Open project folder" use), ⑃ for a worktree.
 const clusterGlyph = (c: WtCluster) => (c.isMain ? "⌂" : "⑃");
-const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project folder itself` : c.branch);
+// Five rows all reading "(detached)" name nothing; the folder is what tells them apart.
+const clusterName = (c: WtCluster) => (c.branch === "(detached)" ? `${basename(c.key)}/` : c.branch);
+const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project folder itself`
+  : c.branch === "(detached)" ? `${clusterName(c)} · detached HEAD, on no branch` : c.branch);
 const clusterChip = (c: WtCluster) =>
   `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
-  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(c.branch)}</span></span>`;
+  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(clusterName(c))}</span></span>`;
+// A shelved row sits outside every cluster, so it names its checkout the way a live row's chip does.
+const dormantChip = (d: Restorable) => clusterChip({
+  key: d.worktree ?? d.colorKey, branch: d.branch, isMain: !d.worktree, sessions: [], externals: [],
+});
 
 // Title, else the branch until Claude sets one; `nested` drops the ▶ a run group's header carries.
 export const rowLabel = (s: Sess, nested = false) => s.kind === "task"
@@ -149,19 +156,21 @@ export function groupBody(p: ProjGroup): string {
   if (wtGroup === "subheader") {
     // `withEmpty`: idle checkouts count toward whether clustering is worth it, then leave the rows.
     const cl = clusterByWorktree(p, true);
-    if (cl.length >= 2) return cl.filter(clusterIsLive).map((c) => {
+    const placed = treeDormants(p)?.by;
+    if (cl.length >= 2) return cl.filter((c) => clusterIsLive(c) || placed?.has(c.key)).map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
-      const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("");
+      const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("")
+        + (placed?.get(c.key) ?? []).map((d) => dormantRow(d, sentTag(d), true)).join("");
       // Mid-removal: the spinner is the only thing on screen saying so, and neither the ＋ nor
       // the menu may stay live, or a second right-click queues a second removal of one folder.
       const going = removingWt.has(c.key);
       // `data-root` is the repo root, the colorKey every session in the project groups by.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
-        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(c.branch)}">＋</span>`;
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(clusterName(c))}">＋</span>`;
       return `<div class="wthead${going ? " going" : ""}"${going ? ` aria-busy="true"` : ` ${wtMenuAttrs(p, c)}`}>`
         + (going ? `<span class="u-spin"></span>` : `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`)
-        + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(c.branch)}</span>`
-        + `<span class="wtcount">${going ? "" : n}</span>${going ? "" : add}</div>`
+        + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(clusterName(c))}</span>`
+        + `<span class="wtcount">${going || !n ? "" : n}</span>${going ? "" : add}</div>`
         + `<div class="wtsessions${going ? " going" : ""}" style="--wtc:${col}">${body}</div>`;
     }).join("");
   } else if (wtGroup === "chip") {
@@ -183,7 +192,8 @@ export function peekBody(p: ProjGroup): string {
   if (wtGroup !== "subheader" && wtGroup !== "chip") return "";
   const cl = clusterByWorktree(p, true);
   if (cl.length < 2) return "";
-  const vacant = cl.filter((c) => !clusterIsLive(c));
+  const placed = treeDormants(p)?.by;
+  const vacant = cl.filter((c) => !clusterIsLive(c) && !placed?.has(c.key));
   if (!vacant.length) return "";
   const open = peekStaysOpen(peekPrefs, vacant.length < cl.length);
   return `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">`
@@ -197,9 +207,9 @@ function peekRow(p: ProjGroup, c: WtCluster): string {
   const dirty = folderDirty(c.key)
     ? `<span class="pkdirty" title="Uncommitted changes in this checkout"></span>` : "";
   return `<div class="pkrow" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)}`
-    + ` title="${esc(`Start a session in ${c.branch} · ${tilde(c.key)}`)}">`
+    + ` title="${esc(`Start a session in ${clusterName(c)} · ${tilde(c.key)}`)}">`
     + `<span class="pkglyph" style="color:${col}">${clusterGlyph(c)}</span>`
-    + `<span class="pkname">${esc(c.branch)}</span>${dirty}`
+    + `<span class="pkname">${esc(clusterName(c))}</span>${dirty}`
     + `<span class="pkgo">＋</span></div>`;
 }
 // `data-wt` must be matched ahead of the `data-key` project menu (./projmenu): a checkout, not its repo.
@@ -209,7 +219,13 @@ export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
 }
 // Below the live rows, outside any cluster; one shape for shelved-now and last-run rows.
 export function dormantRows(p: ProjGroup): string {
-  return p.dormants.map((d) => dormantRow(d, sentTag(d))).join("") + handedRows(p);
+  return (treeDormants(p)?.rest ?? p.dormants).map((d) => dormantRow(d, sentTag(d))).join("") + handedRows(p);
+}
+// Null unless shelved rows go under their ⑃ headers: the setting, subheader mode, and clusters to join.
+function treeDormants(p: ProjGroup): ReturnType<typeof placeDormants> | null {
+  if (!shelvedInTree || wtGroup !== "subheader" || !p.dormants.length) return null;
+  const cl = clusterByWorktree(p, true);
+  return cl.length >= 2 ? placeDormants(p, cl) : null;
 }
 // The newest send of this conversation still worth a word on its row (./handoff's rowText).
 function sentTag(d: Restorable): { id: string; tag: string; lock: string | null; recall: boolean } | undefined {
@@ -219,7 +235,8 @@ function sentTag(d: Restorable): { id: string; tag: string; lock: string | null;
   const t = rowText(r, Date.now());
   return { id: r.id, tag: t.tag, lock: handoffBusy(handoffs, d.resumeId), recall: t.actions.includes("takeback") || t.actions.includes("cancel") };
 }
-function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>): string {
+// `nested`: under its own ⑃ header, where a branch chip would repeat the header.
+function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>, nested = false): string {
   const out = !!sent?.lock;
   const busy = !out && dormantBusy(d);
   const label = pastLabel(d);
@@ -230,9 +247,11 @@ function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>): string {
   const x = out
     ? (sent!.recall ? `<span class="sclose" data-handrecall="${escAttr(sent!.id)}" title="Take it back">↶</span>` : "")
     : `<span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">✕</span>`;
-  return `<div class="srow pastrow${busy ? " busy" : ""}${out ? " out" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
+  // Untitled, the label already is the branch.
+  const chip = !nested && d.title && d.branch ? dormantChip(d) : "";
+  return `<div class="srow pastrow${chip ? " o3" : ""}${busy ? " busy" : ""}${out ? " out" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
     <span class="sglyph g-ended">${out ? "⇢" : "·"}</span>
-    <span class="sbranch">${esc(label)}</span>
+    <span class="sbranch">${esc(label)}</span>${chip ? `<span class="stags">${chip}</span>` : ""}
     <span class="past-tag">${esc(sent?.tag ?? (busy ? "busy" : when))}</span>
     ${x}</div>`;
 }

@@ -13,7 +13,7 @@ import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
-  phaseText, providerCapabilities, providerSessionKey, resumeAgent,
+  isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -54,6 +54,9 @@ import { providerPermissionMode } from "./providers";
 // The app-wide repaint belongs to main.ts, which wires this at startup.
 let renderAll: () => void = () => {};
 export function setPanesRenderAll(fn: typeof renderAll) { renderAll = fn; }
+// Told before a pane is killed, while the last poll still knows what ran under it (./serversui).
+let onPaneClose: (id: string) => void = () => {};
+export function setPanesOnClose(fn: (id: string) => void) { onPaneClose = fn; }
 
 function launchPermission(agent: AgentCli, colorKey: string) {
   if (!agent.capabilities.includes("launch-permissions")) return { mode: null, def: null };
@@ -138,6 +141,19 @@ export async function typeInto(sid: string, text: string, size = 240, gapMs = 50
   }
 }
 
+// A fresh Claude REPL draws its prompt, then remounts its input (raw mode off and on) ~0.5s later;
+// text typed across that remount is lost, and a fixed 1.4s raced it. Its first statusLine (`durMs`)
+// lands after the remount, so wait for that. Other providers keep the plain delay.
+const PREFILL_MIN_MS = 1400, PREFILL_SETTLE_MS = 300, PREFILL_CAP_MS = 15000;
+export async function freshReady(sid: string): Promise<void> {
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  await wait(PREFILL_MIN_MS);
+  const s = sessions.get(sid);
+  if (!s || !isClaude(s)) return;
+  for (let t = PREFILL_MIN_MS; t < PREFILL_CAP_MS && sessions.get(sid) === s && s.durMs == null; t += 100) await wait(100);
+  await wait(PREFILL_SETTLE_MS);
+}
+
 export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
@@ -176,7 +192,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     id, project, accent, workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
@@ -295,7 +311,7 @@ async function adoptSession(o: { id: string; workdir: string; provider: string; 
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: m?.lastActivity ?? Date.now(),
     attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null,
     queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider,
@@ -359,7 +375,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: "shell",
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -390,7 +406,7 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
     id, project, accent: accentFor(colorKey), workdir, colorKey, resumeId: opts.resume ?? id,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: agent.label,
     phase: "idle", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null, pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -445,7 +461,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
     phase: "working", phaseSince: Date.now(), attnAt: 0, seenAt: Date.now(), lastActivity: Date.now(), attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
@@ -499,6 +515,7 @@ export function closeSession(id: string) {
   const groupNext = wasActive && gid && stageGroup === gid
     ? nextInGroup(groupMembers(gid), id)
     : null;
+  onPaneClose(id);
   invoke("kill_session", { sessionId: id }).catch(() => {});
   // term.dispose() alone does not return the pooled GL slot (terminal.ts).
   detachWebgl(s);

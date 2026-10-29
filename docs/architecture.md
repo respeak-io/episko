@@ -150,4 +150,17 @@ Known and deliberately left alone: **run-on-stop still fires at the `Stop` that 
 
 **The labels are the server's, never ours.** A window arrives as `{display_name, utilization, resets_at}` and is rendered under whatever name it carries, so a new model bucket needs no release. `seven_day_opus` and `seven_day_sonnet` still exist in the payload and are null on an account whose premium window comes through `model_scoped` — reading those two by name would have shipped a meter that is empty for exactly the people who need it. Same lesson as `modelName` in ./usage, where fixed opus/sonnet/haiku columns filed a whole provider under *Other*.
 
+**The limits are an account's, and `/login` changes which.** Every running session follows a
+`/login` (a pane opened before the switch answers `/usage` for the new account), so the
+telemetry server stamps each statusLine with `oauthAccount` from `~/.claude.json` (stat per POST,
+parsed only when the file moved) and ./rl keeps one slot per account in `cc-rl-accounts`. A switch
+swaps `rl` with the new account's slot. Read as a reading, it logged both windows "closed" and,
+because `mergeRl` keeps the later reset and drops an earlier one as a lagging pane, it could hide
+the account in use until the other's week ended. Two rules hold it together. **A pane whose API
+clock has not moved since the switch is not heard**: its statusLine repeats the old account's
+cached figures every ten seconds. And **a restored window's rotation is not logged** (`lastClosed`
+is primed on the swap), since nobody watched it close. The limit chime skips a paint that switched
+accounts, and sync tags its `limits` events with the account so another machine's login lands in
+that account's slot.
+
 **It is a level and never a forecast.** The probe runs only when a surface that shows it opens (the footer's limits popover, *Usage & spend*), so there is one reading and no slope. ./rlprobe throttles on the attempt rather than the answer, so a machine with no working CLI backs off instead of spawning a process per click; the surfaces say `level only` and drop the burn rate, projection and time-to-cap rather than printing the level back with a `~` in front of it. Sampling these on a timer would buy a forecast at the price of a `claude` process every few minutes, which is a trade worth making deliberately and not by accident.

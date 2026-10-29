@@ -11,7 +11,7 @@ import {
   type DetailPeers, type NewEvent, type Peers, type Stamps, type Stream, type SyncEvent, type SyncHealth, type WireDetail,
 } from "./sync";
 import { markDetailDirty, rekeyDetail, setPeerUsage, setProjectKeyer, usage, usageDetail } from "./usage";
-import { mergeRl, rl, rlScoped } from "./rl";
+import { account, mergePeerRl, rl, rlScoped } from "./rl";
 import { readObj, safeParse } from "./store";
 import { applyWire, idOfKey, isRosterKey, mergeWire, rosterWire, wireDiff, type Roster, type Wire } from "./roster";
 import {
@@ -120,7 +120,7 @@ const sent: Sent = {
 };
 {
   const held = mergeScoped(null, safeParse(localStorage.getItem(LIMITS)));
-  if (held && held.at > rlScoped.at) { rlScoped.at = held.at; rlScoped.wins = held.wins ?? []; }
+  if (held && held.at > rlScoped.at) { rlScoped.at = held.at; rlScoped.wins = held.wins ?? []; rlScoped.acct = held.acct ?? null; }
 }
 let peers: Peers = readPeers(localStorage.getItem("cc-usage-peers"));
 let detailPeers: DetailPeers = readDetailPeers(localStorage.getItem("cc-detail-peers"));
@@ -232,12 +232,12 @@ export function flush() {
       if (usd > 0 && sharesSpend(pid)) events.push({ stream: "notes", key: spendKey(pid, day, me), at: now, payload: usd });
     }
   }
-  const rlNow = JSON.stringify(rl);
+  const rlWire = { ...rl, acct: account?.id ?? null }, rlNow = JSON.stringify(rlWire);
   if (rl.h5 !== null || rl.d7 !== null) {
-    if (rlNow !== sent.rl) { events.push({ stream: "limits", key: "rl", at: now, payload: { ...rl } }); f.rl = rlNow; }
+    if (rlNow !== sent.rl) { events.push({ stream: "limits", key: "rl", at: now, payload: rlWire }); f.rl = rlNow; }
   }
   if (rlScoped.at > sent.scopedAt && rlScoped.avail) {
-    events.push({ stream: "limits", key: "scoped", at: rlScoped.at, payload: { at: rlScoped.at, wins: rlScoped.wins } });
+    events.push({ stream: "limits", key: "scoped", at: rlScoped.at, payload: { at: rlScoped.at, wins: rlScoped.wins, acct: rlScoped.acct } });
     f.scopedAt = rlScoped.at;
   }
   if (!events.length) return;
@@ -307,16 +307,15 @@ function apply(ev: SyncEvent): boolean {
     case "limits": {
       if (ev.device === me || !ev.payload || typeof ev.payload !== "object") return false;
       const p = ev.payload as Record<string, unknown>;
-      if (ev.key === "rl") {
-        [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, p.h5, p.h5Reset);
-        [rl.d7, rl.d7Reset] = mergeRl(rl.d7, rl.d7Reset, p.d7, p.d7Reset);
-        return true;
-      }
+      if (ev.key === "rl") return mergePeerRl(p);
       if (ev.key === "scoped") {
+        // Another account's per-model level is not shown anywhere, so it is simply not this one's.
+        if (typeof p.acct === "string" && account && p.acct !== account.id) return false;
         const held = { at: rlScoped.at, wins: rlScoped.wins };
         const next = mergeScoped(held, p);
         if (!next || next === held) return false;
         rlScoped.at = next.at; rlScoped.wins = next.wins ?? []; rlScoped.avail = true;
+        if (next.acct) rlScoped.acct = next.acct;
         quiet(() => raw.set.call(localStorage, LIMITS, JSON.stringify(next)));
         return true;
       }

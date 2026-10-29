@@ -36,6 +36,7 @@ import {
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
   setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
+  setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -65,7 +66,7 @@ import type { AttnPrefs } from "./attn";
 import type { PeekPrefs } from "./peek";
 import { cleanTitle, type TitlePrefs } from "./format";
 import type { SoundPrefs } from "./sound";
-import { canShelve, CLAUDE_CLI, midWork, phaseText, type Sess } from "./types";
+import { canShelve, CLAUDE_CLI, isAgent, midWork, phaseText, type Sess } from "./types";
 import { resolveProviderPermission } from "./providers/control";
 import { removePermission } from "./permissions";
 import { providerAdapter, providerPermissionMode } from "./providers";
@@ -150,6 +151,23 @@ export async function shelveSessionAsked(id: string) {
     if (!ok) return;
   }
   if (shelveSession(id)) toast("Shelved · resume it from the sidebar");
+}
+// The sidebar's and header's ✕ sit one misclick from a live agent; ending one is only
+// undone through History, so ask. Shells, tasks and an already-ended pane close at once.
+export async function closeSessionAsked(id: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (isAgent(s) && !s.external && s.phase !== "ended") {
+    const name = s.title || s.project;
+    const lead = midWork(s) ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `${name} is still running.`;
+    const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead (⇩)." : "";
+    const ok = await ask(
+      `${lead}\n\nClosing ends the agent; the conversation comes back only from History.${alt}`,
+      { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it" },
+    );
+    if (!ok) return;
+  }
+  closeSession(id);
 }
 
 export function resolvePermission(id: string, behavior: string) {
@@ -287,6 +305,13 @@ export function setPrLinks(on: boolean) {
   setPrLinksInAppState(on);
   localStorage.setItem("cc-pr-links", on ? "1" : "0");
   renderSettings();
+}
+
+export function setShelvedTree(on: boolean) {
+  setShelvedInTreeState(on);
+  localStorage.setItem("cc-shelved-tree", on ? "1" : "0");
+  renderSettings();
+  renderAll();
 }
 
 // Read live by every pane's key handler and main.ts's window listener.

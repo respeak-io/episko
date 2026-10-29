@@ -169,6 +169,9 @@ pub(crate) struct Worktree {
     branch: String,
     is_main: bool,
     dirty: bool,  // uncommitted or untracked changes; not one-click removable. Always false for main
+    changes: u32, // how many paths `dirty` stands for, so a row can say "5 uncommitted"
+    head: String, // short sha: the only name a detached checkout has besides its folder
+    stray: u32,   // detached only: commits no branch or remote ref holds, which a removal loses
     merged: bool, // fully merged into the main worktree's branch, so removal loses nothing
     locked: bool, // `git worktree lock`; git refuses removal even with --force. Always false for main
     exists: bool, // a hand-deleted folder stays in .git/worktrees until pruned; never launch into it
@@ -192,7 +195,7 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> 
             let is_main = res.is_empty();
             let exists = std::path::Path::new(&path).is_dir();
             res.push(Worktree {
-                path, branch, is_main, dirty: false, merged: false,
+                path, branch, is_main, dirty: false, changes: 0, head: String::new(), stray: 0, merged: false,
                 locked: locked && !is_main,
                 exists,
             });
@@ -217,26 +220,38 @@ pub(crate) fn list_worktrees(repo_dir: String) -> Result<Vec<Worktree>, String> 
     let main_branch = res.iter().find(|w| w.is_main)
         .map(|w| w.branch.clone())
         .filter(|b| !b.is_empty() && b != "(detached)");
-    for w in res.iter_mut() {
-        if w.is_main {
-            continue;
-        }
-        w.dirty = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
-            .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
-            .unwrap_or(false);
-        if let Some(mb) = &main_branch {
-            if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
-                // `--is-ancestor A B` exits 0 when A is an ancestor of B.
-                w.merged = git_cmd(&repo_dir, &["merge-base", "--is-ancestor",
-                        &format!("refs/heads/{}", w.branch),
-                        &format!("refs/heads/{mb}")])
+    // A `status` per checkout, run in series, was most of the picker's wait; eight at a time.
+    for batch in res.chunks_mut(8) { std::thread::scope(|sc| {
+        for w in batch.iter_mut().filter(|w| !w.is_main) {
+            let (repo_dir, main_branch) = (&repo_dir, &main_branch);
+            sc.spawn(move || {
+                w.changes = git_cmd(&w.path, &["--no-optional-locks", "status", "--porcelain"])
                     .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-            }
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().count() as u32)
+                    .unwrap_or(0);
+                w.dirty = w.changes > 0;
+                w.head = git_out(&w.path, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_default();
+                if w.branch == "(detached)" {
+                    // Unreadable counts as one: a failed read must never make a removal look free.
+                    w.stray = git_out(&w.path, &["rev-list", "--count", "HEAD", "--not", "--branches", "--remotes"])
+                        .ok().and_then(|n| n.parse().ok()).unwrap_or(1);
+                }
+                if let Some(mb) = main_branch {
+                    if !w.branch.is_empty() && w.branch != "(detached)" && &w.branch != mb {
+                        // `--is-ancestor A B` exits 0 when A is an ancestor of B.
+                        w.merged = git_cmd(repo_dir, &["merge-base", "--is-ancestor",
+                                &format!("refs/heads/{}", w.branch),
+                                &format!("refs/heads/{mb}")])
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                    }
+                }
+            });
         }
-    }
+    }); }
     Ok(res)
 }
 
@@ -660,7 +675,7 @@ pub(crate) fn parse_protect(text: &str) -> ProtectList {
 
 /// The branches this project refuses to delete. No file is not a broken one: it reads as
 /// readable and empty, which is what an unconfigured repo means.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_protected_branches(repo_dir: String) -> ProtectList {
     match std::fs::read_to_string(episko_toml(&repo_dir)) {
         Err(_) => ProtectList { patterns: vec![], readable: true },
@@ -682,7 +697,7 @@ fn protection(repo_dir: &str, branch: &str) -> String {
 /// one branch under it was unprotected would quietly unprotect its siblings. `create` gates the
 /// first write, as the keep list's does — a new committable file in someone's repo is a real
 /// side effect.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn set_protected_branch(
     repo_dir: String, branch: String, protect: bool, create: bool,
 ) -> Result<(), String> {
@@ -2023,7 +2038,7 @@ pub(crate) fn cap_patch(patch: &mut String) -> bool {
 /// The full uncommitted diff behind the working-set card. Tracked changes from `diff HEAD`;
 /// untracked files appended via `diff --no-index` against `/dev/null`, which unlike `add -N`
 /// never touches the index while a live session may be staging.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn git_diff(workdir: String) -> Option<GitDiff> {
     // Each untracked file costs a whole git process (`--no-index` is one pair at a time), so
     // this bounds a process storm, not output size; 300 once meant ~600 spawns on one click.
@@ -5185,7 +5200,16 @@ canonicalizehostname false
         let by = |b: &str| wts.iter().find(|w| w.branch == b).unwrap_or_else(|| panic!("{b} missing from {wts:?}"));
         assert!(by("merged-wt").merged && !by("merged-wt").dirty, "merged-wt should be merged+clean: {wts:?}");
         assert!(!by("ahead-wt").merged && !by("ahead-wt").dirty, "ahead-wt should be unmerged+clean: {wts:?}");
-        assert!(by("dirty-wt").dirty, "dirty-wt should be dirty: {wts:?}");
+        assert!(by("dirty-wt").dirty && by("dirty-wt").changes == 1, "dirty-wt should count one change: {wts:?}");
+
+        // Detached: at a commit a branch holds, nothing is stray; one commit past it, one is.
+        let det = scratch_dir().join("det");
+        git(&dir, &["worktree", "add", "-q", "--detach", det.to_str().unwrap(), "dev"]);
+        let det_path = |wts: &[Worktree]| wts.iter().find(|w| w.branch == "(detached)").map(|w| (w.stray, w.head.len()));
+        assert_eq!(det_path(&list_worktrees(repo.clone()).unwrap()), Some((0, 7)), "at dev, nothing on no branch");
+        commit(&det, "loose");
+        assert_eq!(det_path(&list_worktrees(repo.clone()).unwrap()), Some((1, 7)), "one commit only HEAD holds");
+        git(&dir, &["worktree", "remove", "--force", det.to_str().unwrap()]);
 
         // A plain folder is Ok(empty) and every other failure is Err: the dialog words the first
         // itself ("isn't a git repository") and quotes the second, so these must not collapse.
@@ -5543,7 +5567,8 @@ canonicalizehostname false
 
         // A clone that never saw the pushed commit and cannot reach the remote any more.
         let cut = root.join("c");
-        git(&root, &["init", "-q", "c"]);
+        // Git 2.54 refuses to fetch into an unborn HEAD's branch, so start c on another one.
+        git(&root, &["init", "-q", "-b", "scratch", "c"]);
         git(&cut, &["fetch", "-q", &st(&b), "main:main"]);
         git(&cut, &["remote", "add", "origin", &st(&root.join("gone.git"))]);
         let refused = handoff_receive(&st(&cut), HID, &HandoffSrc::Bundle(file.clone()));

@@ -12,7 +12,7 @@ const sess = (id = "pane-1"): Sess => ({
   phase: "idle", phaseSince: 0, lastActivity: 0, attention: null,
   pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], attnAt: 0, seenAt: 0,
   agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null, revive: null, drift: null,
-  model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0, tokenUsage: null, rateLimits: [], rateLimitScope: null,
+  model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0, tokenUsage: null, rateLimits: [], rateLimitScope: null,
   curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], git: null,
   lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [], kind: "agent", external: false,
   provider: "codex", capabilities: ["session-state", "activity", "context", "usage", "permissions", "resume", "history"],
@@ -49,6 +49,14 @@ describe("Codex provider adapter", () => {
       .toMatchObject({ type: "activity-started", id: "call-1", tool: "Bash", input: "pnpm test" });
     expect(codexEvents(raw("item/commandExecution/requestApproval", { itemId: "call-1", command: "rm -rf build" }, "ask-1"))[0])
       .toMatchObject({ type: "permission", id: "ask-1", tool: "Bash", risk: "high" });
+  });
+
+  it("files Codex's completed agent message as the question's answer, never a started one", () => {
+    const s = sess();
+    for (const ev of codexEvents(raw("item/completed", { item: { type: "userMessage", id: "u1", content: [{ type: "text", text: "why?" }] } }))) applyAgentEvent(s, ev);
+    expect(codexEvents(raw("item/started", { item: { type: "agentMessage", id: "a1", text: "partial" } }))).toEqual([]);
+    for (const ev of codexEvents(raw("item/completed", { item: { type: "agentMessage", id: "a1", text: "Because." } }))) applyAgentEvent(s, ev);
+    expect(s.prompts.map((p) => [p.text, p.answer])).toEqual([["why?", "Because."]]);
   });
 
   // Asserts on `apiErr`, not on `failed`: any apiErr is what ./revive's watchdog retries

@@ -87,6 +87,9 @@ let wtSwitchTo = "";           // target of an armed root-folder branch switch
 let wtGen = 0;                 // bumps on every open/refresh; stales in-flight fetches
 let wtAgeT: number | undefined;
 let wtLoadedAt = 0;
+// Last answer per repo, so a reopen paints that repo's rows at once and re-reads behind
+// them; another repo's rows must never stand in for this one's while git is asked.
+const wtLast = new Map<string, { wts: WtInfo[]; branches: BranchInfo[]; remotes: BranchInfo[]; head: string; at: number }>();
 const wtCommits = new Map<string, CommitInfo | null>();
 // Keyed by folder; the whole working set rather than its counts, because the pane names the files.
 const wtDirty = new Map<string, WorkingSet | null>();
@@ -164,6 +167,10 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   wtCtx = { project, repoDir };
   wtSel = 0; wtArmed = ""; wtBusy = false; wtBase = ""; wtSwitchTo = ""; wtFetchedAt = 0;
   wtRepoBranch = knownBranch || "";   // seeded by requestLaunch, which already asked
+  const last = wtLast.get(repoDir);
+  wtWts = last?.wts ?? []; wtBranches = last?.branches ?? []; wtRemotes = last?.remotes ?? [];
+  if (!wtRepoBranch && last) wtRepoBranch = last.head;
+  wtLoading = !last; wtLoadedAt = last?.at ?? 0;
   wtMode = opts.manage ? "manage" : "launch";
   const manage = wtMode === "manage";
   const q = $("wtQ") as HTMLInputElement;
@@ -199,7 +206,8 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   $("scrim").classList.add("show"); $("wtDlg").classList.add("show");
   setTimeout(() => q.focus(), 30);
   clearInterval(wtAgeT); wtAgeT = window.setInterval(wtTickAge, 1000);
-  await wtLoad();
+  if (last) wtRender();   // otherwise wtLoad's own first paint is the skeleton
+  await wtLoad(!!last);
   // After the first read, which builds the rows. `>= 0` because index 0 is the repo row and
   // re-selecting it matters once `armSwitch` arms a card on it; the arm must precede the
   // render or the card only appears on the next keystroke.
@@ -229,20 +237,21 @@ export async function refreshWtDialog() {
 // silent on failure (offline, no remote, auth). A stale number beats a toast per alt-tab.
 const WT_FETCH_MIN_MS = 60_000;
 let wtFetchedAt = 0;
-let wtFetching = false;
+// The repo being fetched, not a flag: a slow fetch left over from the last project must
+// neither block this one's nor stamp its throttle.
+let wtFetching = "";
 async function wtMaybeFetch(force = false) {
-  if (!wtCtx || wtFetching) return;
+  if (!wtCtx || wtFetching === wtCtx.repoDir) return;
   if (!force && Date.now() - wtFetchedAt < WT_FETCH_MIN_MS) return;
-  const gen = wtGen, { repoDir } = wtCtx;
-  wtFetching = true;
+  const { repoDir } = wtCtx;
+  wtFetching = repoDir;
   $("wtRefresh").classList.add("spin");
   try {
     await invoke<GitActionResult>("git_action", { workdir: repoDir, op: "fetch" });
   } catch { /* offline / no remote / auth — the local read still stands */ }
-  wtFetching = false;
+  if (wtFetching === repoDir) { wtFetching = ""; $("wtRefresh").classList.remove("spin"); }
+  if (!wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on
   wtFetchedAt = Date.now();
-  $("wtRefresh").classList.remove("spin");
-  if (gen !== wtGen || !wtCtx || wtCtx.repoDir !== repoDir) return; // dialog moved on
   await wtReadLocal(true);
 }
 
@@ -266,6 +275,7 @@ async function wtReadLocal(quiet = false) {
   wtRemotes = branches.filter((b) => b.remote);
   wtLoading = false;
   wtLoadedAt = Date.now();
+  wtLast.set(repoDir, { wts, branches: wtBranches, remotes: wtRemotes, head: wtRepoBranch, at: wtLoadedAt });
   // git's own words when git itself failed: an unrunnable git reads exactly like a plain folder.
   if (!wts.length && !quiet) {
     if (gitFault) dlog("error", `worktree list failed (${repoDir}): ${gitFault}`);

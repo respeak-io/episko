@@ -80,7 +80,7 @@ export function vitalHtml(s: Sess): string {
   const tcls = (!s.attention && s.phase === "working") ? toolClass(s.curTool) : "";
   const doing = (!s.attention && s.phase === "working" && s.curTool)
     ? `<div class="doing"><span class="tk ${toolClass(s.curTool)}">${esc(s.curTool)}</span>${s.curArg ? `<code>${esc(s.curArg)}</code>` : ""}</div>` : "";
-  const chips = [s.model ? esc(s.model) : "", ...(fan ? [`${fan.done} done`, `${liveCount(s)} running`] : [])]
+  const chips = [s.model ? esc(s.model) : "", s.effort ? `${esc(s.effort)} effort` : "", ...(fan ? [`${fan.done} done`, `${liveCount(s)} running`] : [])]
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   const meta = chips || longest ? `<div class="vmeta">${chips}${longest}</div>` : "";
@@ -321,7 +321,8 @@ function itemHtml(s: Sess, it: OutlineItem, anchored: ReadonlySet<string>, prefs
 export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean, groups: ReadonlySet<string>): string {
   const items = outlineItems(s.prompts);
   const asks = items.reduce((n, it) => it.kind === "ask" ? it.n : n, 0);
-  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${asks || ""}</span></div>`;
+  const open = items.length ? `<button class="ol-open" type="button" data-olopen="${escAttr(s.id)}" title="Every question with its answer">⤢</button>` : "";
+  const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${asks || ""}</span>${open}</div>`;
   if (!items.length) {
     return `<div class="outline">${head}<div class="insp-empty" style="padding:14px 0">Nothing asked yet.</div></div>`;
   }

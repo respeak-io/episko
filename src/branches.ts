@@ -34,10 +34,23 @@ export interface WtInfo {
   branch: string;
   is_main: boolean;
   dirty: boolean;
+  changes: number; // the paths `dirty` stands for
+  head: string;    // short sha; what names a detached checkout beside its folder
+  stray: number;   // detached only: commits no branch or remote ref holds
   merged: boolean;
   locked: boolean;
   exists: boolean;
 }
+
+export const isDetached = (w: { branch: string }) => !w.branch || w.branch === "(detached)";
+
+/** What a checkout is called in a list: its branch, or for a detached HEAD the folder and the sha. */
+export function checkoutName(w: WtInfo): string {
+  if (!isDetached(w)) return w.branch;
+  return w.head ? `${basename(w.path)} @ ${w.head}` : basename(w.path);
+}
+
+const files = (n: number) => `${n} uncommitted file${n === 1 ? "" : "s"}`;
 
 export interface MergedPr {
   number: number;
@@ -385,6 +398,7 @@ export function syncText(b: BranchInfo): string {
 export interface CheckoutRow {
   wt: WtInfo;
   label: string;  // the folder name, which is what the rail and the ⑃ dialog call it
+  name: string;   // `checkoutName`: what the Branch column says
   live: number;
   gone: boolean;  // not on disk: removal only clears git's record, and nothing is lost
   ok: boolean;
@@ -409,17 +423,20 @@ export function checkoutRows(ctx: CheckoutCtx): CheckoutRow[] {
       : live ? `${live} session${live === 1 ? "" : "s"} open here`
       : ctx.externalIn(wt.path) ? "a session outside Episko is running there"
       : gone ? ""
-      : wt.dirty ? "uncommitted changes"
+      : wt.dirty ? (wt.changes ? files(wt.changes) : "uncommitted changes")
       : wt.locked ? "locked"
+      // Removing a detached checkout drops the only ref to these; git would let it.
+      : isDetached(wt) && wt.stray ? `${wt.stray} commit${wt.stray === 1 ? "" : "s"} on no branch`
       : "";
     // The lock is about the branch, so removing the folder it sat in never takes it.
     const locked = !!branchLock(wt.branch, ctx.protect);
     const note = wt.is_main ? "every other checkout branches from it"
       : gone ? "folder is gone — removing only clears git's record"
+      : isDetached(wt) ? "detached, and every commit is on a branch — nothing is lost"
       : locked ? "its branch is protected and stays"
       : wt.merged ? "merged; its branch goes with it"
       : "not merged, so its branch is kept";
-    return { wt, label: basename(wt.path), live, gone, ok: !block, block, note };
+    return { wt, label: basename(wt.path), name: checkoutName(wt), live, gone, ok: !block, block, note };
   });
 }
 
@@ -428,6 +445,42 @@ export const removableCheckouts = (rows: CheckoutRow[]) =>
 
 export function chosenCheckouts(rows: CheckoutRow[], on: ReadonlySet<string>): CheckoutRow[] {
   return rows.filter((r) => r.ok && on.has(r.wt.path));
+}
+
+// ---------- asking an agent ----------
+
+export interface BriefCtx {
+  project: string;
+  trunk: string;   // what "merged" was measured against; "" when nothing was
+  remote: string;
+}
+
+/** The cleanup job as one prompt: the facts the view already holds, so the agent starts from
+ *  them rather than re-deriving them, and a plan before any write, since half of this is
+ *  somebody's unfinished work. Prefilled, never sent. */
+export function cleanupBrief(checkouts: CheckoutRow[], rows: BranchRow[], ctx: BriefCtx): string {
+  const cap = (xs: string[]) => xs.length > 15 ? [...xs.slice(0, 15), `and ${xs.length - 15} more`] : xs;
+  const dirty = checkouts.filter((c) => !c.wt.is_main && c.wt.exists && c.wt.dirty)
+    .map((c) => `${c.name} (${files(c.wt.changes || 1)}, ${c.wt.path})`);
+  const detached = checkouts.filter((c) => !c.wt.is_main && c.wt.exists && isDetached(c.wt))
+    .map((c) => `${c.name} (${c.wt.stray ? `${c.wt.stray} commits on no branch` : "nothing on no branch"}, ${c.wt.path})`);
+  const unmerged = rows.filter((r) => r.hasLocal && !r.br.current && !r.lock && !r.br.merged && !r.pr && !r.br.gone)
+    .map((r) => r.name);
+  const shipped = rows.filter((r) => r.remote.ok).length;
+  const vs = ctx.trunk || "the trunk";
+  const facts = [
+    dirty.length ? `Checkouts with uncommitted work: ${cap(dirty).join("; ")}.` : "",
+    detached.length ? `Detached checkouts: ${cap(detached).join("; ")}.` : "",
+    unmerged.length ? `Local branches not merged into ${vs}: ${cap(unmerged).join(", ")}.` : "",
+    shipped ? `${shipped} merged branches are still on ${ctx.remote || "the remote"}.` : "",
+  ].filter(Boolean);
+  return [
+    `Help me clean up the branches and git worktrees of ${ctx.project}.`,
+    ...(facts.length ? facts : ["Episko found nothing obviously stale; check for yourself."]),
+    `For each checkout with uncommitted work, read the changes and tell me whether they should be committed, stashed, moved to a branch or discarded, and why.`,
+    `For each unmerged branch, say whether its work landed some other way (a squash, a cherry-pick, a rewrite) or is still open.`,
+    `Then propose a plan as a list, and wait for my go-ahead before you commit, discard, delete, force or push anything.`,
+  ].join(" ");
 }
 
 // ---------- switching a checkout ----------

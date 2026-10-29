@@ -362,7 +362,7 @@ fn render_digest(map: &std::collections::BTreeMap<String, String>) -> String {
     s
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_digest(root: String) -> std::collections::BTreeMap<String, String> {
     std::fs::read_to_string(digest_path(&root))
         .map(|t| parse_digest(&t))
@@ -370,14 +370,14 @@ pub(crate) fn read_digest(root: String) -> std::collections::BTreeMap<String, St
 }
 
 /// Asked before offering to create one, so "may Episko write a file into your repo" is asked once.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn has_digest(root: String) -> bool {
     digest_path(&root).is_file()
 }
 
 /// Add or replace one day. Read-modify-write, since today's line is regenerated as the
 /// day goes on; `create` gates the first write into someone's repo.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn write_digest(root: String, key: String, line: String, create: bool) -> Result<(), String> {
     let path = digest_path(&root);
     if !path.is_file() && !create {
@@ -398,7 +398,7 @@ pub(crate) fn write_digest(root: String, key: String, line: String, create: bool
 
 /// The work log moved to the sync server: the file goes, and `.episko/` too if it is now empty.
 /// Deleting is all this does; committing the deletion stays the user's.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn remove_digest(root: String) -> Result<(), String> {
     let path = digest_path(&root);
     match std::fs::remove_file(&path) {
@@ -414,7 +414,7 @@ pub(crate) fn remove_digest(root: String) -> Result<(), String> {
 
 /// Commits the work log's removal and nothing else: `--only` with the one path leaves whatever
 /// the user had staged out of it. `Ok(false)` when git never tracked the file.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn commit_digest_removal(root: String) -> Result<bool, String> {
     use crate::git::{git_cmd, git_run};
     const REL: &str = ".episko/digest.md";

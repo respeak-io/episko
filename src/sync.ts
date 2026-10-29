@@ -16,7 +16,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-copy-chord": "pref",
   "cc-agent": "pref", "cc-diff-mode": "pref", "cc-diff-tree": "pref", "cc-scrollback": "pref", "cc-sort": "pref",
   "cc-fleet-sort": "pref", "cc-fleet-layout": "pref", "cc-fleet-group": "pref", "cc-fleet-range": "pref",
-  "cc-peek": "pref", "cc-outline": "pref", "cc-markdown": "pref", "cc-pr-links": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
+  "cc-peek": "pref", "cc-outline": "pref", "cc-markdown": "pref", "cc-pr-links": "pref", "cc-shelved-tree": "pref", "cc-worktree-group": "pref", "cc-dash-summaries": "pref",
 
   "cc-usage": "account", "cc-usage-detail": "account",
 
@@ -31,7 +31,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-attn": "local", "cc-caffeinate": "local", "cc-caf-timer": "local", "cc-caf-await": "local",
   "cc-tour": "local", "cc-seen-versions": "local", "cc-seen-version": "local", "cc-claims": "local",
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
-  "cc-forecast-log": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
+  "cc-forecast-log": "local", "cc-rl-accounts": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
   "cc-dash-seen": "local",
   // A handoff is between two named machines; the server, not sync, carries its outcome.
   "cc-handoff": "local",
@@ -244,7 +244,7 @@ export function changedDays(now: Record<string, number>, sent: Record<string, nu
 
 // ---------- limits: the freshest reading wins, and absent is not empty ----------
 
-export interface ScopedReading { at: number; wins?: { label: string; pct: number | null; resetTs: number | null }[] }
+export interface ScopedReading { at: number; wins?: { label: string; pct: number | null; resetTs: number | null }[]; acct?: string }
 
 /** A reading with no `wins` learned nothing, so the last one stands (the `model_scoped` rule). */
 export function mergeScoped(held: ScopedReading | null, incoming: unknown): ScopedReading | null {
@@ -257,7 +257,7 @@ export function mergeScoped(held: ScopedReading | null, incoming: unknown): Scop
     pct: typeof w.pct === "number" && Number.isFinite(w.pct) ? w.pct : null,
     resetTs: typeof w.resetTs === "number" && Number.isFinite(w.resetTs) ? w.resetTs : null,
   }));
-  return { at: r.at, wins };
+  return typeof r.acct === "string" && r.acct ? { at: r.at, wins, acct: r.acct } : { at: r.at, wins };
 }
 
 // ---------- health: a sync nobody can hear must never look like a quiet one ----------
@@ -402,7 +402,7 @@ export const PREF_LABEL: Readonly<Record<string, string>> = {
   "cc-copy-chord": "Ctrl+Shift+C copies", "cc-agent": "Default agent", "cc-diff-mode": "Diff layout", "cc-diff-tree": "Changed files as a tree",
   "cc-scrollback": "Scrollback", "cc-sort": "Sidebar sort", "cc-fleet-sort": "Fleet sort", "cc-fleet-layout": "Fleet layout",
   "cc-fleet-group": "Fleet grouping", "cc-fleet-range": "Fleet range", "cc-peek": "Hover to reveal",
-  "cc-outline": "Conversation outline", "cc-markdown": "Markdown reader", "cc-pr-links": "Pull request links", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
+  "cc-outline": "Conversation outline", "cc-markdown": "Markdown reader", "cc-pr-links": "Pull request links", "cc-shelved-tree": "Shelved sessions under their checkout", "cc-worktree-group": "Worktree grouping", "cc-dash-summaries": "Generated summaries",
 };
 export const prefLabel = (key: string) => PREF_LABEL[key] ?? key.replace(/^cc-/, "");
 

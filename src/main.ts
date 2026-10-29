@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isClaude, isExited, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, liveCount, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { queuePermission } from "./permissions";
@@ -27,6 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
+import { closeQuestions, openQuestions, questionsOpen, renderQuestions } from "./questions";
 import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
@@ -38,15 +39,15 @@ import {
   setProjectPerm, setProjectFetch, setProjectTools, setAgentTools,
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
-  setCmpBase, shelveSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
+  setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord,
   openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
 import {
-  closeServersPop, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
+  closeServersPop, paneClosing, pollServers, renderServers, setServersCloseMenus, setServersCloseSession,
   setServersRepaint, setServersSetActive,
 } from "./serversui";
 import { exitSound, hookSound, limitCrossed, soundSnap } from "./sound";
@@ -55,7 +56,7 @@ import {
   adoptOrphans, launch, launchShell, launchTask, launchWorktree, noteDrift,
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
-  scheduleDismiss, setActive, setPanesRenderAll, shelveSession,
+  scheduleDismiss, setActive, setPanesOnClose, setPanesRenderAll, shelveSession,
   syncStageButtons, toggleRunGroup,
 } from "./panes";
 import {
@@ -85,7 +86,7 @@ import {
   toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
-import { rl, setRlLogger } from "./rl";
+import { account, rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
 import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } from "./diffview";
@@ -193,7 +194,7 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
-  const repair = driftRepair(s.drift, driftAuto);
+  const repair = driftRepair(s.drift, driftAuto, liveCount(s) > 0);
   if (repair) void followSessionDrift(s.id, repair);
 });
 setTaskLauncher(launchTask);
@@ -218,7 +219,7 @@ function openProjectFiles() {
   void openExplorer(wd, basename(wd));
 }
 setPaletteHost({
-  setActive, resolvePermission, openPlainTerminal, closeSession, shelveSession: shelveSessionAsked, addProject,
+  setActive, resolvePermission, openPlainTerminal, closeSession: closeSessionAsked, shelveSession: shelveSessionAsked, addProject,
   cycleSort, toggleInsp, toggleRail, requestLaunch,
   revealActiveFolder, openProjectFolder, openProjectFiles, openUsage, openFleet,
   settingsItems: () => settingsIndex().map((s) => ({ key: `${s.tab}/${s.row}`, label: s.label, sub: s.sub, run: () => openSettingsOn(s.tab, s.row) })),
@@ -241,6 +242,7 @@ setTaskRunSetActive(setActive);
 setTaskRunCloseSession(closeSession);
 setTaskRunLaunchTask(launchTask);
 setPanesRenderAll(renderAll);
+setPanesOnClose(paneClosing);
 setActionsRenderAll(renderAll);
 setMirrorSetActive(setActive);
 setMirrorLaunch(launch);
@@ -251,7 +253,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord,
   openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -424,6 +426,7 @@ function renderAllNow() {
     renderInspector(s); renderHeader(s);
   }
   renderCallSheet(); // no-op when closed; guarded inside against reassigning a selection
+  renderQuestions(); // likewise
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
   tourTick(); // last: it re-measures the anchor the renderers above just replaced
@@ -649,12 +652,13 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   // Sounds read ./phase's verdict, not the payload: snapshot, apply, compare, so there
   // is no second copy of the done/error decision here to drift.
   const before = soundSnap(s);
-  const rlBefore = { h5: rl.h5, d7: rl.d7 };
+  const rlBefore = { h5: rl.h5, d7: rl.d7, acct: account?.id };
   if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
   const ev = hookSound(before, soundSnap(s));
   if (ev) playSound(ev);
   // Account-wide, so outside the per-session branch: one crossing, one chime.
-  if (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null) playSound("limit");
+  // A `/login` restoring another account's 90% is a switch, not a crossing.
+  if (rlBefore.acct === account?.id && (limitCrossed(rlBefore.h5, rl.h5) !== null || limitCrossed(rlBefore.d7, rl.d7) !== null)) playSound("limit");
   queueRosterSave();
   renderAll();
 });
@@ -734,7 +738,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -743,7 +747,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
-  else if (el.dataset.close) closeSession(el.dataset.close);
+  else if (el.dataset.close) void closeSessionAsked(el.dataset.close);
   else if (el.dataset.remove) removeFavorite(el.dataset.remove);
   else if (el.dataset.add) addProject();
   else if (el.dataset.jump) jumpExternal(+el.dataset.jump);
@@ -783,6 +787,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.oljump) jumpToPrompt(el.dataset.olsid || activeId || "", el.dataset.oljump);
   else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.olgrp) toggleOutlineGroup(el.dataset.olgrp);
+  else if (el.dataset.olopen) openQuestions(el.dataset.olopen);
   else if (el.dataset.pastq) jumpPastMessage(el.dataset.pastq);
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
@@ -864,10 +869,10 @@ $("btnClose").addEventListener("click", () => {
   // Anything left on `mirror` is a read-only one (external or shelved): stepping out of it
   // is `leaveMirror`, never `closeSession` — the session it shows is not ours to close.
   if (mirror) { leaveMirror(); renderAll(); return; }
-  if (activeId) closeSession(activeId);
+  if (activeId) void closeSessionAsked(activeId);
 });
 
-$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
+$("scrim").addEventListener("click", () => { closePalette(); closeWt(); closeDiff(); closeExplorer(); closeGraph(); closeSettings(); closeUsage(); closeRunPicker(); closeInputPrompt(); closeTaskManager(); closeHistory(); closeChangelog(); closeCallSheet(); closeQuestions(); closeMdReader(); closeProjectSettings(); closeHandoff(); });
 // The verb behind each bindable action; the chords live in keyPrefs (./keys). One entry
 // per KeyAction, so an action without a body is a compile error, not a dead shortcut.
 const KEY_ACTIONS_RUN: Record<KeyAction, (e: KeyboardEvent) => void> = {
@@ -907,6 +912,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && explorerOpen) { e.preventDefault(); closeExplorer(); }
   else if (e.key === "Escape" && diffOpen) { e.preventDefault(); closeDiff(); }
   else if (e.key === "Escape" && callSheetOpen()) { e.preventDefault(); closeCallSheet(); }
+  else if (e.key === "Escape" && questionsOpen()) { e.preventDefault(); closeQuestions(); }
   // graphEscape, not closeGraph: Esc first steps out of a commit open over the panel.
   else if (e.key === "Escape" && graphOpen) { e.preventDefault(); graphEscape(); }
   else if (e.key === "Escape" && projSettingsOpen()) { e.preventDefault(); closeProjectSettings(); }
