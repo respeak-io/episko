@@ -12,6 +12,11 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.38.0 — 2026-10-29
+The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy
+up your branches, a live agent asks before ✕ closes it, and your questions open into a sheet with
+their answers.
 + A shelved session's row shows which branch it was on: a ⌂ or ⑃ in that checkout's colour,
   with the branch name on hover.
 + *Settings › Sidebar › Shelved sessions under their checkout* lists shelved sessions under
