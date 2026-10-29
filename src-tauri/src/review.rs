@@ -745,6 +745,15 @@ pub(crate) async fn pr_merge(
         let Some(branch) = deletable_head(&pull) else {
             return Ok(format!("{merged}; branch kept (it is a fork's, or the default branch)"));
         };
+        let by = crate::git::protected_by(&crate::git::list_protected_branches(root.clone()), &branch);
+        if !by.is_empty() {
+            return Ok(format!("{merged}; {branch} kept (protected by {by} in .episko/episko.toml)"));
+        }
+        // A branch other PRs target is long-lived (`dev`), and deleting it closes every one of them.
+        let based = gh(&root, acct, &["api", &format!("repos/{slug}/pulls?state=open&per_page=1&base={}", ref_path(&branch)), "--jq", "length"]);
+        if based.as_deref().map(str::trim) != Ok("0") {
+            return Ok(format!("{merged}; {branch} kept (other pull requests target it, or that could not be checked)"));
+        }
         let path = format!("repos/{slug}/git/refs/heads/{}", ref_path(&branch));
         Ok(match gh(&root, acct, &["api", "--method", "DELETE", &path]) {
             Ok(_) => format!("{merged}; deleted {branch}"),

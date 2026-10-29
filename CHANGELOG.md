@@ -39,6 +39,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! Switching Claude accounts with `/login` no longer reads as both limit windows resetting. Each
   account keeps its own meters, and the limits popover names the account and shows the other one's.
 + The inspector shows a session's effort level beside its model.
+! Merging a pull request no longer deletes its branch unless you tick *Delete the branch
+  afterwards*, and keeps a protected branch or one other pull requests target, such as `dev`.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer
