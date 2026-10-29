@@ -5567,7 +5567,8 @@ canonicalizehostname false
 
         // A clone that never saw the pushed commit and cannot reach the remote any more.
         let cut = root.join("c");
-        git(&root, &["init", "-q", "c"]);
+        // Git 2.54 refuses to fetch into an unborn HEAD's branch, so start c on another one.
+        git(&root, &["init", "-q", "-b", "scratch", "c"]);
         git(&cut, &["fetch", "-q", &st(&b), "main:main"]);
         git(&cut, &["remote", "add", "origin", &st(&root.join("gone.git"))]);
         let refused = handoff_receive(&st(&cut), HID, &HandoffSrc::Bundle(file.clone()));
