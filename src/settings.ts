@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
 } from "./state";
@@ -85,6 +85,7 @@ export interface SettingsHost {
   setTermSplit: (on: boolean) => void;
   setDriftAuto: (on: boolean) => void;
   setPrLinks: (on: boolean) => void;
+  setShelvedTree: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
@@ -165,7 +166,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setCopyChord: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -366,6 +367,11 @@ const SET_TABS: SetTab[] = [
         active: () => wtGroup, summary: () => WT_GROUP_SEGS.find((s) => s.value === wtGroup)?.label ?? wtGroup,
         lines: () => WT_GROUP_SEGS.map((s) => ({ label: s.label, value: s.sub ?? "" })),
         isDefault: () => wtGroup === "subheader", reset: () => host.setWtGroup("subheader") },
+      { kind: "toggle", set: "shelvedtree", key: "cc-shelved-tree", label: "Shelved sessions under their checkout",
+        hint: "A shelved session is listed under its branch's header instead of below the project.",
+        more: "Only when Worktree grouping is set to Subheader. A shelved session whose checkout is gone stays below the project.",
+        aliases: ["shelved", "dormant", "branch", "worktree", "nested", "tree"], since: "0.38.0", dim: () => wtGroup !== "subheader",
+        on: () => shelvedInTree, isDefault: () => !shelvedInTree, reset: () => host.setShelvedTree(false) },
       { kind: "peek", id: "peek", key: "cc-peek", label: "Reveal idle checkouts on hover", hint: "Idle checkouts stay hidden until you rest on the project.",
         more: "Off lists them all the time. The preview runs the real timings, so what you set is what you will feel.",
         aliases: ["hover", "idle", "peek", "slide", "collapse", "delay"],
@@ -1692,6 +1698,7 @@ function applySetting(set: string, val: string) {
   else if (set === "termsplit") host.setTermSplit(val === "1");
   else if (set === "driftauto") host.setDriftAuto(val === "1");
   else if (set === "prlinks") host.setPrLinks(val === "1");
+  else if (set === "shelvedtree") host.setShelvedTree(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);

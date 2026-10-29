@@ -2666,6 +2666,7 @@ select.in-ctl { cursor: pointer; }
 /* ---------- dormant (restorable) sessions ---------- */
 /* a session from a previous run, dimmed with the ended glyph so "was running" never reads as "is running" */
 .srow.pastrow { grid-template-columns: 14px 1fr auto; opacity: .62; }
+.srow.pastrow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
 .srow.pastrow:hover, .srow.pastrow.active { opacity: 1; }
 .srow.pastrow .sbranch { font-style: italic; }
 .past-tag { font: 600 8.5px var(--font-mono); letter-spacing: .04em; color: var(--muted-2); white-space: nowrap; }

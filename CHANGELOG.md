@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A shelved session's row shows which branch it was on: a ⌂ or ⑃ in that checkout's colour,
+  with the branch name on hover.
++ *Settings › Sidebar › Shelved sessions under their checkout* lists shelved sessions under
+  their branch's header instead of below the project.
 
 ## 0.37.0 — 2026-10-22
 Pull requests show their branches and open on the conversation tab, agent reports are no longer

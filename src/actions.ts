@@ -36,6 +36,7 @@ import {
   revivePrefs, setRevivePrefs as setRevivePrefsState,
   vitalsPrefs, setVitalsPrefs as setVitalsPrefsState,
   setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
+  setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
@@ -304,6 +305,13 @@ export function setPrLinks(on: boolean) {
   setPrLinksInAppState(on);
   localStorage.setItem("cc-pr-links", on ? "1" : "0");
   renderSettings();
+}
+
+export function setShelvedTree(on: boolean) {
+  setShelvedInTreeState(on);
+  localStorage.setItem("cc-shelved-tree", on ? "1" : "0");
+  renderSettings();
+  renderAll();
 }
 
 // Read live by every pane's key handler and main.ts's window listener.
