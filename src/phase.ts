@@ -339,6 +339,8 @@ export function applyStatusline(s: Sess, data: any) {
   if (s.phase === "ended") setPhase(s, "idle");
   noteAccount(data.episko_account); // before the API clock below, which is judged against it
   if (data.model?.display_name) s.model = data.model.display_name;
+  // Absent when the model takes no effort setting, so a stale level must not outlive a /model.
+  if (data.model) s.effort = typeof data.effort?.level === "string" ? data.effort.level : null;
   const ctx = data.context_window?.used_percentage;
   if (typeof ctx === "number") { s.ctxPct = ctx; pushHist(s.ctxHist, ctx); }
   const tok = data.context_window?.used_tokens ?? data.context_window?.tokens;

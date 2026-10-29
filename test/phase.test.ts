@@ -30,7 +30,7 @@ function sess(o: Partial<Sess> = {}): Sess {
     resumeId: "sid", branch: "main", worktree: null, title: "",
     phase: "idle", phaseSince: Date.now(), lastActivity: 0, attention: null,
     pendingCmd: "", pendingPermId: null, pendRisk: null, pendingPermissions: [], agents: new Map(), fanout: null, queuedPrompt: false, apiErr: null,
-    model: "", ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
+    model: "", effort: null, ctxPct: null, ctxTokens: null, cost: null, durMs: null, apiMs: null, apiMsSince: 0,
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null,
     git: null, res: null, lastEvent: "", activity: [], prompts: [], files: [], tally: {}, servers: [],
     kind: "agent", provider: "claude", capabilities: [...CLAUDE_CLI.capabilities], external: false, ...o,
@@ -1101,6 +1101,18 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       for (let i = 1; i <= 30; i++) applyStatusline(s, { cost: { total_cost_usd: i } });
       expect(s.costHist).toHaveLength(24);
       expect(s.costHist[23]).toBe(30);
+    });
+  });
+
+  describe("effort", () => {
+    it("follows the statusLine, and goes when the model takes no effort setting", () => {
+      const s = sess();
+      applyStatusline(s, { model: { display_name: "Opus 5.5" }, effort: { level: "xhigh" } });
+      expect(s.effort).toBe("xhigh");
+      applyStatusline(s, { cost: { total_cost_usd: 1 } }); // a partial payload says nothing about it
+      expect(s.effort).toBe("xhigh");
+      applyStatusline(s, { model: { display_name: "Haiku 5.5" } });
+      expect(s.effort).toBeNull();
     });
   });
 
