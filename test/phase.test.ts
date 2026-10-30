@@ -8,7 +8,7 @@ import { store } from "./localstorage"; // must precede the subject imports
 import { rl, rlSamples, fcLog, midSnap, resetAccount, rlAccts } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
-  abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
+  abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, confirmInterrupt, INTR_MS, noteInterruptKey, parseWorkflowMeta,
   permCmd, pushHist, riskLevel, setOnPrompt, setOnTurnEnd, setPhase, STRAGGLER_MS, toolArg, TURN_STALL_MS,
 } from "../src/phase";
 import { DETAIL_CAP } from "../src/toolio";
@@ -1025,6 +1025,58 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       const s = stale({ apiMs: null, apiMsSince: NOW_MS - TURN_STALL_MS });
       applyStatusline(s, {});
       expect(s.phase).toBe("idle");
+    });
+  });
+
+  // Measured against CLI 2.1.314: Ctrl+C and Esc mid-turn fire no Stop and no other hook, only
+  // a statusLine and the title's spinner frame turning into ✳. The pane pulsed amber until the next prompt.
+  describe("an interrupted turn", () => {
+    const busy = (phase: Sess["phase"] = "working") => sess({ phase, curTool: "Bash", rawTitle: "◐ Sleep 45 seconds" });
+    it("goes idle once the title stops spinning after the key", () => {
+      const s = busy();
+      noteInterruptKey(s);
+      vi.advanceTimersByTime(300);
+      s.rawTitle = "✳ Sleep 45 seconds";
+      expect(confirmInterrupt(s)).toBe(true);
+      expect(s).toMatchObject({ phase: "idle", curTool: "", intrAt: 0 });
+    });
+    it("goes idle on the statusLine when the title was already still", () => {
+      // A permission dialog stops the spinner before the Esc that rejects it.
+      const s = sess({ phase: "working", rawTitle: "✳ x" });
+      noteInterruptKey(s);
+      applyStatusline(s, {});
+      expect(s.phase).toBe("idle");
+    });
+    it("ignores a key that did not stop the turn", () => {
+      const s = busy("thinking");
+      noteInterruptKey(s);
+      applyStatusline(s, {});
+      expect(confirmInterrupt(s)).toBe(false);
+      expect(s.phase).toBe("thinking");
+    });
+    it("needs the key: a still title alone is not an interrupt", () => {
+      const s = busy();
+      s.rawTitle = "✳ x";
+      expect(confirmInterrupt(s)).toBe(false);
+      expect(s.phase).toBe("working");
+    });
+    it("forgets a key once the window has passed", () => {
+      const s = busy();
+      noteInterruptKey(s);
+      vi.advanceTimersByTime(INTR_MS + 1);
+      s.rawTitle = "✳ x";
+      expect(confirmInterrupt(s)).toBe(false);
+    });
+    it("is not armed from a finished pane, and a new prompt disarms it", () => {
+      const done = sess({ phase: "done", rawTitle: "✳ x" });
+      noteInterruptKey(done);
+      expect(done.intrAt).toBeUndefined();
+      const s = busy();
+      noteInterruptKey(s);
+      hook(s, "UserPromptSubmit", { prompt: "next" });
+      s.rawTitle = "✳ x";
+      expect(confirmInterrupt(s)).toBe(false);
+      expect(s.phase).toBe("thinking");
     });
   });
 

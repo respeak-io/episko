@@ -21,7 +21,7 @@ import {
 import { readList } from "./store";
 import { seedPrompts } from "./outline";
 import { readProviderAsked } from "./providers";
-import { setPhase } from "./phase";
+import { confirmInterrupt, setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
@@ -105,6 +105,8 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // cleaned title is unchanged, so Settings can re-clean a pane that has since gone quiet.
 function applyOscTitle(s: Sess, t: string) {
   s.rawTitle = t;
+  // Before the early return: "◐ x" → "✳ x" cleans to the same title.
+  if (confirmInterrupt(s)) renderAll();
   const c = cleanTitle(t, s, titlePrefs);
   if (c === s.title) return;
   s.title = c;

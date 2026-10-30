@@ -41,6 +41,24 @@ export const STRAGGLER_MS = 2_000;
 // this rule and calling a live turn dead.
 export const TURN_STALL_MS = 180_000;
 
+// An interrupt (Ctrl+C, Esc) fires no hook at all: Claude only flips its OSC title from a
+// spinner frame to ✳ and sends one statusLine. So the key arms and either of those confirms.
+export const INTR_MS = 5_000;
+const TITLE_IDLE = "✳";
+export function noteInterruptKey(s: Sess) {
+  if (s.phase === "thinking" || s.phase === "working") s.intrAt = Date.now();
+}
+// From a new OSC title and from a statusLine; true when it ended the turn.
+export function confirmInterrupt(s: Sess): boolean {
+  if (!s.intrAt || Date.now() - s.intrAt > INTR_MS || !(s.rawTitle ?? "").startsWith(TITLE_IDLE)) return false;
+  s.intrAt = 0;
+  if (s.phase !== "thinking" && s.phase !== "working") return false;
+  // Idle, not done: you stopped it, so there is nothing to badge or chime about.
+  s.queuedPrompt = false;
+  setPhase(s, "idle"); clearPending(s); s.curTool = ""; s.curArg = "";
+  return true;
+}
+
 export function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
 export function toolArg(tool: string, input: any): string {
   if (!input || typeof input !== "object") return "";
@@ -240,7 +258,7 @@ export function applyHook(s: Sess, data: any) {
   switch (ev) {
     // A fresh REPL loses everything in flight, including the SubagentStops still owed.
     case "SessionStart":
-      setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false;
+      setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false; s.intrAt = 0;
       if (clearsOutline(data.source)) s.prompts = [];
       break;
     // A prompt typed mid-turn is queued, so the next Stop is the old turn's; read before setPhase.
@@ -250,6 +268,7 @@ export function applyHook(s: Sess, data: any) {
     case "UserPromptSubmit": {
       const typed = cleanPrompt(data.prompt);
       if (s.phase === "working" && !isEnvelope(typed) && !parseRelay(typed)) s.queuedPrompt = true;
+      s.intrAt = 0;
       recordPrompt(s, data.prompt);
       setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     }
@@ -357,6 +376,7 @@ export function applyStatusline(s: Sess, data: any) {
   // and no idle Notification either (text back in the composer is not an idle REPL). Both clocks
   // must be stale: the API's is flat through any single in-flight request too, so on its own it
   // would call a long text-only turn dead (docs/architecture.md).
+  confirmInterrupt(s);
   const now = Date.now();
   if (s.phase === "thinking" && now - s.phaseSince >= TURN_STALL_MS && now - s.apiMsSince >= TURN_STALL_MS) {
     setPhase(s, "idle");

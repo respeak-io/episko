@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! A Claude turn you interrupt with Ctrl+C or Esc goes back to idle. Claude sends no hook for an
+  interrupt, so the row used to keep pulsing amber until your next prompt.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy
