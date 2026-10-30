@@ -5,7 +5,7 @@ import {
   type BgServer, type Sess,
 } from "../src/types";
 import { store } from "./localstorage"; // must precede the subject imports
-import { rl, rlSamples, fcLog, midSnap, resetAccount, rlAccts } from "../src/rl";
+import { rl, rlSamples, fcLog, midSnap, resetAccount, rlAccts, showAccount, tokenAccount } from "../src/rl";
 import { usage, usageDetail, resetCostBaselines } from "../src/usage";
 import {
   abbr, applyHook, applyPlan, applyStatusline, applyTodos, clearPending, parseWorkflowMeta,
@@ -1172,6 +1172,14 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
         applyStatusline(idle, line(B, 1400, 4, NOW_S + 3 * 86400));
         expect(rl.d7).toBe(4);
         expect(fcLog).toEqual([]);
+      });
+      it("a token pane files its figures under its own account, whoever is logged in", () => {
+        showAccount(tokenAccount("max20"));
+        const pane = sess({ id: "tok", account: "max5" });
+        applyStatusline(pane, { episko_account: A, rate_limits: { seven_day: { used_percentage: 65, resets_at: NOW_S + 86400 } } });
+        expect(rl.d7).toBeNull();
+        expect(rlAccts["tok:max5"].d7).toBe(65);
+        expect(pane.rateLimits).toEqual([{ usedPercent: 65, resetsAt: NOW_S + 86400, windowMins: 10080 }]);
       });
       it("still reads a CLI whose statusLine carries no API clock", () => {
         applyStatusline(sess(), { episko_account: A, rate_limits: { five_hour: { used_percentage: 50, resets_at: NOW_S + HOUR } } });

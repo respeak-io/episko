@@ -161,6 +161,8 @@ clock has not moved since the switch is not heard**: its statusLine repeats the 
 cached figures every ten seconds. And **a restored window's rotation is not logged** (`lastClosed`
 is primed on the swap), since nobody watched it close. The limit chime skips a paint that switched
 accounts, and sync tags its `limits` events with the account so another machine's login lands in
-that account's slot.
+that account's slot. A setup-token pane (docs/accounts.md) never follows `/login`: its readings
+go to its own account's slot whatever the stamp says, and `rl` shows whichever account a new session
+would start on, swapped the same way.
 
 **It is a level and never a forecast.** The probe runs only when a surface that shows it opens (the footer's limits popover, *Usage & spend*), so there is one reading and no slope. ./rlprobe throttles on the attempt rather than the answer, so a machine with no working CLI backs off instead of spawning a process per click; the surfaces say `level only` and drop the burn rate, projection and time-to-cap rather than printing the level back with a `~` in front of it. Sampling these on a timer would buy a forecast at the price of a `claude` process every few minutes, which is a trade worth making deliberately and not by accident.

@@ -7,7 +7,7 @@ import { cleanPrompt, clearsOutline, isEnvelope, noteAnswer, notePrompt, parseRe
 import { applyBg } from "./servers";
 import { addUsage, costDelta } from "./usage";
 import { descText, inputText, outputText } from "./toolio";
-import { acctSince, applyRlReadings, noteAccount, rl } from "./rl";
+import { acctReading, acctSince, applyAccountReadings, applyRlReadings, loginAcct, noteAccount, rl, tokenAccount } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
 import { clearPermissionState, pendingPermissionIds, releaseAnswered } from "./permissions";
 
@@ -337,7 +337,8 @@ export function pushHist(arr: number[], v: number, cap = 24) { arr.push(v); if (
 export function applyStatusline(s: Sess, data: any) {
   // A statusLine only fires from a live REPL, so it un-ends a pane SessionEnd marked on /clear or /compact.
   if (s.phase === "ended") setPhase(s, "idle");
-  noteAccount(data.episko_account); // before the API clock below, which is judged against it
+  // A token pane's account is the one it launched on; `episko_account` names the login, which it ignores.
+  if (!s.account) noteAccount(data.episko_account); // before the API clock below, which is judged against it
   if (data.model?.display_name) s.model = data.model.display_name;
   // Absent when the model takes no effort setting, so a stale level must not outlive a /model.
   if (data.model) s.effort = typeof data.effort?.level === "string" ? data.effort.level : null;
@@ -361,12 +362,17 @@ export function applyStatusline(s: Sess, data: any) {
   if (s.phase === "thinking" && now - s.phaseSince >= TURN_STALL_MS && now - s.apiMsSince >= TURN_STALL_MS) {
     setPhase(s, "idle");
   }
+  const own = s.account ? tokenAccount(s.account) : loginAcct;
+  if (s.account) applyAccountReadings(own!, data.rate_limits);
   // A pane that has not reached the API since `/login` still reports the old account's figures.
-  if (typeof api !== "number" || s.apiMsSince >= acctSince) applyRlReadings(data.rate_limits);
-  // The per-session shape shared surfaces read; global `rl` stays the account-wide authority.
+  else if (typeof api !== "number" || s.apiMsSince >= acctSince) {
+    if (own) applyAccountReadings(own, data.rate_limits); else applyRlReadings(data.rate_limits);
+  }
+  // The per-session shape shared surfaces read: this pane's own account, which may not be on show.
+  const r = (own && acctReading(own.id)) || rl;
   s.rateLimits = [
-    ...(rl.h5 == null ? [] : [{ usedPercent: rl.h5, resetsAt: rl.h5Reset, windowMins: 300 }]),
-    ...(rl.d7 == null ? [] : [{ usedPercent: rl.d7, resetsAt: rl.d7Reset, windowMins: 10080 }]),
+    ...(r.h5 == null ? [] : [{ usedPercent: r.h5, resetsAt: r.h5Reset, windowMins: 300 }]),
+    ...(r.d7 == null ? [] : [{ usedPercent: r.d7, resetsAt: r.d7Reset, windowMins: 10080 }]),
   ];
   // The branch label comes from the git HEAD poll (refreshBranches), not from here, or the two flicker.
   const wt = data.workspace?.git_worktree; if (wt) s.worktree = wt;

@@ -4,6 +4,7 @@
 //! `sync-event`. With sync unconfigured it does nothing at all.
 
 use crate::handoff::{self, HandoffCtl, HandoffEv, Transfers};
+use crate::platform::{open_secret, seal_secret, SecretSlot};
 use episko_proto::{ClientMsg, ErrorCode, NewEvent, ServerMsg, FEATURE_HANDOFF, FEATURE_MEMORY, PROTOCOL};
 use serde::Serialize;
 use std::io::ErrorKind;
@@ -294,82 +295,21 @@ fn session(url: &str, token: &str, headers: &Headers, since: u64, rx: &Receiver<
 
 // ---------- secrets, sealed per OS (docs/sync.md) ----------
 
-/// The token and the extra headers, each sealed on its own: DPAPI, a keychain item, a 0600 file.
+/// The token and the extra headers, each sealed on its own (`platform::seal_secret`).
 #[derive(Clone, Copy)]
 enum Secret { Token, Headers }
 impl Secret {
     fn file(self) -> &'static str { match self { Secret::Token => "sync.token", Secret::Headers => "sync.headers" } }
-    #[cfg(target_os = "macos")]
     fn account(self) -> &'static str { match self { Secret::Token => "sync", Secret::Headers => "sync-headers" } }
+    fn slot(self, dir: &std::path::Path) -> SecretSlot<'_> {
+        SecretSlot { dir, file: self.file(), service: KEYCHAIN_SERVICE, account: self.account() }
+    }
 }
-#[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "Episko sync";
 
-#[cfg(windows)]
-fn dpapi(data: &[u8], seal: bool) -> Result<Vec<u8>, String> {
-    use windows_sys::Win32::Foundation::LocalFree;
-    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB};
-    let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
-    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
-    // SAFETY: both blobs outlive the call; the output buffer is LocalAlloc'd and freed below.
-    let ok = unsafe {
-        if seal { CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) }
-        else { CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) }
-    };
-    if ok == 0 { return Err(std::io::Error::last_os_error().to_string()); }
-    // SAFETY: on success `pbData` points at `cbData` bytes owned by us until LocalFree.
-    let v = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
-    unsafe { LocalFree(output.pbData as _) };
-    Ok(v)
-}
-
-/// `value` must be printable ASCII with no spaces or quotes (the keychain arm types it): hex is.
-fn save_secret(dir: &std::path::Path, which: Secret, value: &str) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    { std::fs::write(dir.join(which.file()), dpapi(value.as_bytes(), true)?).map_err(|e| e.to_string()) }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = dir;
-        // `-i` reads the command from stdin, so the secret never appears in a process listing.
-        let mut child = std::process::Command::new("/usr/bin/security").arg("-i")
-            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
-        use std::io::Write;
-        let line = format!("add-generic-password -U -a {} -s \"{KEYCHAIN_SERVICE}\" -w {value}\n", which.account());
-        child.stdin.take().ok_or("no stdin")?.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
-        let st = child.wait().map_err(|e| e.to_string())?;
-        if st.success() { Ok(()) } else { Err("the keychain refused the secret".into()) }
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
-            .open(dir.join(which.file())).map_err(|e| e.to_string())?;
-        f.write_all(value.as_bytes()).map_err(|e| e.to_string())
-    }
-}
-
-fn load_secret(dir: &std::path::Path, which: Secret) -> Option<String> {
-    #[cfg(windows)]
-    { String::from_utf8(dpapi(&std::fs::read(dir.join(which.file())).ok()?, false).ok()?).ok() }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = dir;
-        let o = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-a", which.account(), "-s", KEYCHAIN_SERVICE, "-w"]).output().ok()?;
-        let t = String::from_utf8(o.stdout).ok()?.trim().to_string();
-        (o.status.success() && !t.is_empty()).then_some(t)
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    { std::fs::read_to_string(dir.join(which.file())).ok().map(|s| s.trim().to_string()) }
-}
-
-fn drop_secret(dir: &std::path::Path, which: Secret) {
-    let _ = std::fs::remove_file(dir.join(which.file()));
-    #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("/usr/bin/security").args(["delete-generic-password", "-a", which.account(), "-s", KEYCHAIN_SERVICE]).output(); }
-}
+fn save_secret(dir: &std::path::Path, which: Secret, value: &str) -> Result<(), String> { seal_secret(&which.slot(dir), value) }
+fn load_secret(dir: &std::path::Path, which: Secret) -> Option<String> { open_secret(&which.slot(dir)) }
+fn drop_secret(dir: &std::path::Path, which: Secret) { crate::platform::drop_secret(&which.slot(dir)) }
 
 fn save_token(dir: &std::path::Path, token: &str) -> Result<(), String> { save_secret(dir, Secret::Token, token) }
 fn load_token(dir: &std::path::Path) -> Option<String> { load_secret(dir, Secret::Token) }

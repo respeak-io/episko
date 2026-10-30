@@ -31,7 +31,9 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-attn": "local", "cc-caffeinate": "local", "cc-caf-timer": "local", "cc-caf-await": "local",
   "cc-tour": "local", "cc-seen-versions": "local", "cc-seen-version": "local", "cc-claims": "local",
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
-  "cc-forecast-log": "local", "cc-rl-accounts": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
+  "cc-forecast-log": "local", "cc-rl-accounts": "local",
+  // The tokens behind these labels live in this machine's keychain and nowhere else.
+  "cc-claude-accounts": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
   "cc-dash-seen": "local",
   // A handoff is between two named machines; the server, not sync, carries its outcome.
   "cc-handoff": "local",

@@ -23,6 +23,7 @@ import type { AgentCli, DiffStat, Engine, ExtSession, Res, Restorable, Sess, WtH
 import { parseFootPrefs, type FootPrefs } from "./footprefs";
 import type { GhAccount } from "./ghwork";
 import { parseMotionPrefs, type MotionPrefs } from "./motion";
+import { clampAccts, type ClaudeAcct } from "./accounts";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -102,6 +103,14 @@ export const autoFetchFor = (colorKey: string): AutoFetchPrefs => fetchFor(autoF
 export let agentTools: boolean = localStorage.getItem("cc-agent-tools") === "1";
 export function setAgentTools(on: boolean) { agentTools = on; }
 export const agentToolsFor = (colorKey: string): boolean => toolsFor(agentTools, projPrefs, colorKey);
+// Settings › Accounts: setup-token accounts in priority order; empty launches on the login (./accounts).
+export let claudeAccts: ClaudeAcct[] = clampAccts(safeParse(localStorage.getItem("cc-claude-accounts")));
+export function setClaudeAccts(list: ClaudeAcct[]) { claudeAccts = clampAccts(list); }
+// The last check per label (in memory): whether its token worked, and why not.
+export interface AcctCheck { ok: boolean; error: string | null; at: number; busy?: boolean }
+export const acctChecks: Record<string, AcctCheck> = {};
+export let foundTokens: string[] | null = null; // labels with a token in the keychain, as last listed
+export function setFoundTokens(l: string[] | null) { foundTokens = l; }
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 

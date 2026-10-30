@@ -43,6 +43,8 @@ import {
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord,
   openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
+  onLimitHit, syncShownAccount,
+  saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
@@ -120,7 +122,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
-  copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  claudeAccts, copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
@@ -267,6 +269,7 @@ setSettingsHost({
   syncReview: openReview,
   // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
   openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
+  saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -340,6 +343,8 @@ setStageHome(() => openFleet());
 setStageMoved(renderAll); // the pass after a handover is where ./nav records it
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
+syncShownAccount(); // the meters open on the account a new session would take (docs/accounts.md)
+if (claudeAccts.length) void listClaudeTokens(); // a token deleted by hand is skipped rather than failing a launch
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 // The overlay writes (commit, stash, discard): re-poll the folder at once rather than on the
@@ -653,7 +658,12 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   // is no second copy of the done/error decision here to drift.
   const before = soundSnap(s);
   const rlBefore = { h5: rl.h5, d7: rl.d7, acct: account?.id };
-  if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
+  if (kind === "statusline") { applyStatusline(s, data); syncShownAccount(); }
+  else {
+    dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`);
+    applyHook(s, data);
+    if (data.hook_event_name === "StopFailure" && s.apiErr?.kind === "rate_limit") onLimitHit(s);
+  }
   const ev = hookSound(before, soundSnap(s));
   if (ev) playSound(ev);
   // Account-wide, so outside the per-session branch: one crossing, one chime.
