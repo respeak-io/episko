@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { icon } from "../src/svgicons";
 import {
   chipText, foldBots, GRAPH_COLORS, graphWidth, inSpan, laneColor, laneX, layoutGraph,
   lineRef, lineTip, mergeBranchName, parseRefs, refChips, refChipsHtml, rowSvg, rowSvgAt,
@@ -378,14 +379,14 @@ describe("rowSvg / refChipsHtml", () => {
 
   it("marks a pushed branch with a glyph instead of a second chip", () => {
     const html = refChipsHtml(refChips("refs/heads/main, refs/remotes/origin/main"));
-    expect(html).toContain("⇡");
+    expect(html).toContain(icon("arrowUpFromLine", "solo"));
     expect(html).toContain('data-tip="main (also on origin)"');
     // A remote that isn't origin is named, since "pushed where" then matters.
-    expect(refChipsHtml(refChips("refs/heads/x, refs/remotes/fork/x"))).toContain("⇡fork");
+    expect(refChipsHtml(refChips("refs/heads/x, refs/remotes/fork/x"))).toContain(`${icon("arrowUpFromLine")}fork`);
   });
 
   it("keeps the marker out of the truncating part of the chip", () => {
-    // The name is what ellipsises; the ⇡ must not, or a long branch loses the one thing
+    // The name is what ellipsises; the push mark must not, or a long branch loses the one thing
     // the collapse added.
     const html = refChipsHtml(refChips("refs/heads/a-very-long-branch-name-indeed, refs/remotes/origin/a-very-long-branch-name-indeed"));
     expect(html).toContain('<span class="gn"><span class="gt">a-very-long-branch-name-indeed</span></span>');

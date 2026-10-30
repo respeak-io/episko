@@ -24,6 +24,7 @@ import {
 import { providerAdapter, type AgentProviderAdapter } from "./providers";
 import { dayDetail, daySpend, dayTotal, todayKey } from "./usage";
 import { spendByMachine } from "./synclink";
+import { glyphIcon, icon } from "./svgicons";
 
 // Owned by main.ts: the colour popover (project rows) and putting a pane on the stage.
 let closeColorPop: () => void = () => {};
@@ -229,7 +230,7 @@ export function closeFootMenus(keep?: string) {
 // and not rebindable; per platform since ⌘C/⌘V are native on macOS and Ctrl+C interrupts elsewhere.
 const CLIPBOARD_ROW: ShortcutRow = {
   label: "Copy / paste in a terminal",
-  chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "⇧", "C"], ["Ctrl", "⇧", "V"]],
+  chords: IS_MAC ? [["⌘", "C"], ["⌘", "V"]] : [["Ctrl", "Shift", "C"], ["Ctrl", "Shift", "V"]],
 };
 function shortcutList(): ShortcutRow[] {
   return [
@@ -274,7 +275,9 @@ export function renderAttn() {
   $("attnBadgeTxt").textContent = reactorLabel(dom, n);
   if ($("attnPop").classList.contains("show")) { if (list.length > 1) openAttnPop(list, true); else closeAttnPop(); }
 }
-function badgeLabel(s: Sess) { return s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session")); }
+function badgeLabel(s: Sess) {
+  return s.title ? esc(s.title) : s.worktree ? icon("gitBranch") + esc(s.branch) : esc(s.branch || "session");
+}
 // `refresh` is the repaint `renderAttn` does while the pop is already up: it must not
 // re-apply the one-open-menu rule, or a menu opened next to it closes on the next paint.
 function openAttnPop(list: Sess[], refresh = false) {
@@ -284,7 +287,7 @@ function openAttnPop(list: Sess[], refresh = false) {
   const html = list.map((s) => {
     const k = statusKey(s);
     const reason = s.attention || phaseText(s);
-    return `<button class="ap-item" data-sel="${s.id}"><span class="ap-dot ${GCLASS[k]}">${GLYPH[k]}</span><span class="ap-main"><span class="ap-proj">${esc(s.project)}</span><span class="ap-ttl">${esc(badgeLabel(s))}</span></span><span class="ap-reason ${GCLASS[k]}">${esc(abbr(reason, 42))}</span></button>`;
+    return `<button class="ap-item" data-sel="${s.id}"><span class="ap-dot ${GCLASS[k]}">${glyphIcon(GLYPH[k])}</span><span class="ap-main"><span class="ap-proj">${esc(s.project)}</span><span class="ap-ttl">${badgeLabel(s)}</span></span><span class="ap-reason ${GCLASS[k]}">${esc(abbr(reason, 42))}</span></button>`;
   }).join("");
   if (html !== lastAttnPop) { lastAttnPop = html; pop.innerHTML = html; }
   pop.style.right = Math.max(8, window.innerWidth - r.right) + "px";

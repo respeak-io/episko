@@ -3,6 +3,7 @@
 // events. See docs/dependencies.md.
 
 import { esc, escAttr } from "./format";
+import { glyphIcon, icon } from "./svgicons";
 import { shortAge, overlayHtml, pickButtons, pickHead } from "./dashview";
 import type { PickKind, PickState } from "./pick";
 import {
@@ -80,7 +81,7 @@ function actionBar(count: number, kind: PickKind, verb: string): string {
   return `<div class="bvbar${count ? " on" : ""}"><span class="sel">${count ? `${count} selected` : "Nothing selected"}</span>
     <span class="sp"></span>
     ${pickButtons(kind)}
-    <button class="act primary" data-dashdeprun="${escAttr(verb)}"${count ? "" : " disabled"}>▶ Start an agent${count > 1 ? ` on ${count}` : ""}</button></div>`;
+    <button class="act primary" data-dashdeprun="${escAttr(verb)}"${count ? "" : " disabled"}>${icon("playSolid")}Start an agent${count > 1 ? ` on ${count}` : ""}</button></div>`;
 }
 
 function vulnsTab(v: DepsView): string {
@@ -116,7 +117,7 @@ function advBigRow(a: Advisory, v: DepsView): string {
     <span class="dpkgs">${pkgs}</span>
     <span class="r">${fixChip(a.worst)}</span>
     <span class="age">${esc(shortAge(a.alerts[0]?.createdAt ?? ""))}</span>
-    <span class="r"><button class="gx" data-dashdepopen="${escAttr(a.url)}" title="Open on GitHub">↗</button></span>
+    <span class="r"><button class="gx" data-dashdepopen="${escAttr(a.url)}" title="Open on GitHub">${icon("externalLink", "solo")}</button></span>
   </div>`;
 }
 
@@ -134,10 +135,10 @@ function prsTab(v: DepsView): string {
       <span class="num">${p.number}</span>
       <span class="mid"><span class="ti">${esc(p.title)}</span>
         <span class="sub"><span class="mono">${esc(p.bot)}</span><span class="dim">${esc(p.branch)}</span></span></span>
-      <span class="dck ${st}">${CHECK_GLYPH[st]} ${p.checks.passed}/${Math.max(1, p.checks.total - p.checks.skipped)}</span>
+      <span class="dck ${st}">${glyphIcon(CHECK_GLYPH[st], "")}${p.checks.passed}/${Math.max(1, p.checks.total - p.checks.skipped)}</span>
       <span class="dstand">${blockers.length ? esc(blockers[0]) : `<span class="ok">ready to land</span>`}</span>
       <span class="age">${esc(shortAge(p.updatedAt))}</span>
-      <span class="r"><button class="go" data-dashdeppr="${p.number}">▶ Review</button></span>
+      <span class="r"><button class="go" data-dashdeppr="${p.number}">${icon("playSolid")}Review</button></span>
     </div>`;
   }).join("");
   return `<div class="bk">${head}${rows}</div>` + (v.dashboard ? dashboardRow(v.dashboard) : "");
@@ -148,7 +149,7 @@ function prsTab(v: DepsView): string {
 function dashboardRow(t: GhThread): string {
   return `<div class="dep-note"><b>Renovate keeps a dashboard</b> in issue #${t.number}. Its checkboxes are how
     you ask Renovate for a PR; Episko links to it rather than tacking on a second control panel.
-    <button class="act" data-dashdepopen="${escAttr(t.url)}">Open #${t.number} ↗</button></div>`;
+    <button class="act" data-dashdepopen="${escAttr(t.url)}">${icon("externalLink")}Open #${t.number}</button></div>`;
 }
 
 function staleTab(v: DepsView): string {
@@ -204,5 +205,5 @@ export function depSheet(title: string, brief: string, mode: string, lines: numb
       <p class="dim-line">Permission mode: <b>${esc(mode)}</b>. Anything that doesn't ask before acting will act unattended.</p>
     </div>
     <div class="foot"><button class="act" data-dashsheet="cancel">Cancel</button><span class="sp"></span>
-      <button class="act primary" data-dashsheet="deps">▶ Start the agent</button></div>`;
+      <button class="act primary" data-dashsheet="deps">${icon("playSolid")}Start the agent</button></div>`;
 }

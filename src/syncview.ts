@@ -2,6 +2,7 @@
 // travels where, what arrived, and each project's channel. Data in, string out; ./settings owns
 // the element and ./synclink the connection.
 import { esc, escAttr } from "./format";
+import { icon } from "./svgicons";
 import type { Activity, SyncStatus } from "./synclink";
 import {
   PREF_LABEL, STREAM_INFO, prefLabel, type DeviceInfo, type PendingPref, type Stream, type SyncHealth, type UserDevices,
@@ -152,7 +153,7 @@ function projects(p: SyncPanel): string {
       `<button class="sync-pchip" data-setproj="${escAttr(r.key)}" title="Open ${escAttr(r.name)}'s settings">${esc(r.name)}</button>`).join("")}</div>` : "";
   };
   return sect("Projects", group("server") + group("off") + group("git"),
-    `Where each project's notes and work log go. Each project chooses in its own settings: ⚙ on its dashboard, or
+    `Where each project's notes and work log go. Each project chooses in its own settings: ${icon("settings", "solo")} on its dashboard, or
     Project settings in its menu. Click a name to open it.`);
 }
 

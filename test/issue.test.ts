@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ago, inlineIssue, mdHtml, stateWord, stepThread, threadLine, type GhIssueRead } from "../src/issue";
+import { icon } from "../src/svgicons";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
 const back = (ms: number) => new Date(NOW - ms).toISOString();
@@ -70,7 +71,7 @@ describe("inlineIssue", () => {
 
   it("draws an image as a link rather than fetching it", () => {
     const out = inlineIssue("![a shot](https://example.com/s.png)");
-    expect(out).toContain("▤ a shot");
+    expect(out).toContain(`${icon("image")}a shot`);
     expect(out).not.toContain("<img");
   });
 
@@ -96,8 +97,8 @@ describe("mdHtml", () => {
   it("draws both kinds of list, a task list included", () => {
     const out = mdHtml("- one\n- [ ] two\n- [x] three\n\n1. first\n2. second");
     expect(out).toContain("<ul><li>one</li>");
-    expect(out).toContain("☐</span> two");
-    expect(out).toContain("☑</span> three");
+    expect(out).toContain(`${icon("square", "solo")}</span> two`);
+    expect(out).toContain(`${icon("squareCheck", "solo")}</span> three`);
     expect(out).toContain("<ol><li>first</li><li>second</li></ol>");
   });
 

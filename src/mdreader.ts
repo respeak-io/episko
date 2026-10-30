@@ -7,6 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, escAttr, tilde } from "./format";
+import { icon } from "./svgicons";
 import { isMarkdownPath, renderMarkdown, type MdHeading } from "./markdown";
 import { mdPrefs, sessions } from "./state";
 import { dlog } from "./debug";
@@ -110,10 +111,10 @@ function paintHead() {
   const tool = (id: string, label: string, tip: string, on = false) =>
     `<button class="mdr-tool${on ? " on" : ""}" type="button" data-mdtool="${id}" title="${escAttr(tip)}">${label}</button>`;
   $("mdTools").innerHTML = (doc ? tool("source", "Source", "Show the file as written", source) : "")
-    + tool("reload", "⟳", "Read the file again")
-    + tool("copy", "⧉", "Copy the path")
-    + tool("reveal", "◫", "Show it in its folder")
-    + tool("open", "↗", "Open it in its default app");
+    + tool("reload", icon("rotateCw", "solo"), "Read the file again")
+    + tool("copy", icon("copy", "solo"), "Copy the path")
+    + tool("reveal", icon("folderOpen", "solo"), "Show it in its folder")
+    + tool("open", icon("externalLink", "solo"), "Open it in its default app");
 }
 
 function paint(page: Page) {

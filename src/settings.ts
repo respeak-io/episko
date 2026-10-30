@@ -3,6 +3,7 @@
 // changes: every setter arrives through the SettingsHost object main.ts hands over.
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import {
   basename, cleanTitle, esc, escAttr, tccLabel, tilde, TITLE_DEFAULTS, titleExtra, TITLE_EXTRA_MAX,
   type TitlePrefs,
@@ -43,7 +44,7 @@ import {
 import { OUTLINE_DEFAULTS, OUTLINE_LINES, type OutlinePrefs } from "./outline";
 import { MD_DEFAULTS, MD_SIZES, MD_WIDTHS, type MdPrefs, type MdSize, type MdWidth } from "./markdown";
 import {
-  bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
+  bindKey, bindableCombo, comboKeys, comboOf, comboText, parseCombo, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
   type KeyAction, type KeyPrefs,
 } from "./keys";
@@ -231,6 +232,9 @@ const MD_WIDTH_LABEL: Record<MdWidth, { label: string; glyph: string; sub: strin
   wide: { label: "Wide", glyph: "▭", sub: "More room for tables and code" },
   full: { label: "Full", glyph: "▬", sub: "As wide as the window" },
 };
+// Where this file's tables mean something other than ./svgicons' shared glyph map.
+const SET_IC: Record<string, IconName> = { "▤": "squareTerminal", "⧉": "appWindow" };
+const setIcon = (g?: string) => (!g ? "" : SET_IC[g] ? icon(SET_IC[g], "solo") : glyphIcon(g));
 const MD_SIZE_LABEL: Record<MdSize, string> = { s: "Small", m: "Medium", l: "Large" };
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
@@ -244,17 +248,19 @@ const WT_GROUP_SEGS: SetSeg[] = [
 // Each row shows its segment closed and open. The closed half is the footer's real markup
 // (index.html, the `.fpv-bar` selectors in styles.css), so it cannot drift; the open half is
 // a sketch. The figures are sample data on purpose: on a fresh install the live ones are blank.
+const CARET = icon("chevronUp", "solo");
+const comboKeysOf = (c: string) => [comboKeys(parseCombo(c), IS_MAC)];
 const FPV_CLOSED: Record<FootSeg, string> = {
   sessions: `<span class="fseg">3 sessions</span>`,
-  cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">▴</span></span>`,
+  cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">${CARET}</span></span>`,
   limits: `<span class="fseg fclick"><span class="flabel">limits</span><b class="s-ok">12%</b><span class="fsub">5h</span>`
     + `<span class="freset">↻ 28m</span><span class="fmid">·</span><b class="s-ok">4%</b><span class="fsub">7d</span>`
-    + `<span class="freset">↻ 4d 7h</span><span class="fcaret">▴</span></span>`,
+    + `<span class="freset">↻ 4d 7h</span><span class="fcaret">${CARET}</span></span>`,
   io: `<span class="fseg fclick"><span class="flabel">disk</span><b>1.2 GiB</b><span class="fsub">read</span>`
-    + `<span class="fmid">·</span><b>348 MiB</b><span class="fsub">write</span><span class="fcaret">▴</span></span>`,
-  engine: `<span class="fseg fclick">new in <b>embedded</b> <span class="fcaret">▴</span></span>`,
-  shortcuts: `<span class="fseg fclick"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>`,
-  debug: `<span class="fpv-dbg">🐞</span>`,
+    + `<span class="fmid">·</span><b>348 MiB</b><span class="fsub">write</span><span class="fcaret">${CARET}</span></span>`,
+  engine: `<span class="fseg fclick">new in <b>embedded</b> <span class="fcaret">${CARET}</span></span>`,
+  shortcuts: `<span class="fseg fclick"><kbd class="fkbd">${keyCap("⌘")}</kbd><span class="flabel">Shortcuts</span><span class="fcaret">${CARET}</span></span>`,
+  debug: `<span class="fpv-dbg">${icon("bug", "solo")}</span>`,
 };
 
 const fpvRow = (l: string, r: string) => `<div class="fpv-r">${esc(l)}${r}</div>`;
@@ -311,9 +317,9 @@ const FPV_OPEN: Partial<Record<FootSeg, { cls: string; body: string }>> = {
   shortcuts: {
     cls: "shortpop",
     body: shortPopHtml([
-      { label: "Command palette", chords: [["⌘", "K"]] },
-      { label: "Toggle sidebar", chords: [["⌘", "B"]] },
-      { label: "Run a task…", chords: [["⌘", "⇧", "R"]] },
+      { label: "Command palette", chords: comboKeysOf("mod+k") },
+      { label: "Toggle sidebar", chords: comboKeysOf("mod+b") },
+      { label: "Run a task…", chords: comboKeysOf("mod+shift+r") },
     ], false),
   },
   debug: {
@@ -356,7 +362,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "sidebar", label: "Sidebar", glyph: "▤", group: "look", sub: "Order, worktrees, hover",
+    id: "sidebar", label: "Sidebar", glyph: "◧", group: "look", sub: "Order, worktrees, hover",
     controls: () => [
       { kind: "seg", set: "sort", key: "cc-sort", label: "Sort", hint: "What order projects and sessions are listed in.",
         more: "Manual is drag to arrange. The other two re-sort as things happen.", aliases: ["order", "arrange", "drag", "urgency", "recent"],
@@ -393,7 +399,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "inspector", label: "Inspector", glyph: "▯", group: "look", sub: "Your questions",
+    id: "inspector", label: "Inspector", glyph: "◨", group: "look", sub: "Your questions",
     controls: () => [
       { kind: "toggle", set: "outline:on", key: "cc-outline", label: "List your questions", hint: "Your prompts, newest first; click one to jump back to it.",
         more: "A prompt that has scrolled out of the buffer stays in the list, greyed. On the fullscreen renderer the pane is asked to page there instead.",
@@ -419,7 +425,7 @@ const SET_TABS: SetTab[] = [
       return [
         { kind: "toggle", set: "md:on", key: "cc-markdown", label: "Open markdown files in Episko",
           hint: "A .md link in a pane, the Context card or ⌘P opens in a reader here instead of your default app.",
-          more: "Off, it goes to whatever your OS opens .md files with, like every other file. The reader's ↗ does that for one file either way, and links inside a document open the next one in place, with ← to go back.",
+          more: "Off, it goes to whatever your OS opens .md files with, like every other file. The reader's open-in-app button does that for one file either way, and links inside a document open the next one in place, with ← to go back.",
           aliases: ["markdown", "readme", "md", "preview", "render", "viewer", "docs"], since: "0.33.0",
           on: () => mdPrefs.enabled, isDefault: () => mdPrefs.enabled === MD_DEFAULTS.enabled, reset: put({ enabled: MD_DEFAULTS.enabled }) },
         { kind: "seg", set: "md:width", key: "cc-markdown", label: "Reading width", hint: "How wide a line of text may run.",
@@ -452,7 +458,7 @@ const SET_TABS: SetTab[] = [
     },
   },
   {
-    id: "statusbar", label: "Status bar", glyph: "▁", group: "look", sub: "Which segments show",
+    id: "statusbar", label: "Status bar", glyph: "≡", group: "look", sub: "Which segments show",
     // One switch per ./footprefs segment. What that table omits cannot be switched off, hence the note.
     controls: () => [
       { kind: "note", label: "What the status bar shows",
@@ -497,10 +503,10 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "attention", label: "Attention", glyph: "◆", group: "work", sub: "Highlight, badge, sounds",
+    id: "attention", label: "Attention", glyph: "🔔", group: "work", sub: "Highlight, badge, sounds",
     controls: () => [
       { kind: "attn", id: "attn", key: "cc-attn", label: "When a session wants you", hint: "How a session tells you it needs you.",
-        more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the ⌂ badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
+        more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the top bar's badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
         aliases: ["badge", "highlight", "needs you", "notify", "notification", "tray", "your turn"],
         summary: () => `${onOff(attnPrefs.highlight)} · ${attnOrderLabel().toLowerCase()} · ${attnPrefs.clearOnOpen ? "clears on open" : "stays"}`,
         lines: () => [
@@ -572,7 +578,7 @@ const SET_TABS: SetTab[] = [
         lines: () => Object.entries(stopRules).map(([path, r]) => ({ label: `${basename(path)} · ${r.label}`, value: tilde(path) })),
         on: () => Object.keys(stopRules),
         segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
-        empty: "No project has one. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
+        empty: "No project has one. Set one from a project's task panel (⌘K → Manage this project's tasks)." },
       { kind: "seg", set: "dismiss", key: "cc-task-prefs", label: "Dismiss successful runs", hint: "When a passed run's pane closes on its own.",
         more: "A failed run stays until you close it.", aliases: ["auto close", "finished runs", "task", "green"],
         active: () => String(taskPrefs.dismissMs), isDefault: () => taskPrefs.dismissMs === DEFAULT_TASK_PREFS.dismissMs,
@@ -622,7 +628,7 @@ const SET_TABS: SetTab[] = [
     id: "keys", label: "Keys", glyph: "⌨", group: "work", sub: "Every chord, rebindable",
     controls: () => [
       { kind: "keys", id: "keys", key: "cc-keys", label: "Keyboard shortcuts", hint: "Click a chord and press the one you want.",
-        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
+        more: "The ban button turns one off, reset puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
         aliases: ["keybinding", "hotkey", "chord", "⌘", "rebind", "shortcut", "cmd", "keyboard"],
         summary: () => {
           if (!keyPrefs.enabled) return "off";
@@ -630,7 +636,7 @@ const SET_TABS: SetTab[] = [
           const touched = all.filter((id) => !isDefaultBind(keyPrefs.binds, id, IS_MAC)).length;
           return `${all.length} bindings${touched ? ` · ${touched} changed` : ""}`;
         },
-        lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
+        lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboText(keyPrefs.binds[id], IS_MAC) || "off" })),
         isDefault: () => isDefaultKeyPrefs(keyPrefs, IS_MAC), reset: () => applyKeySetting("resetall") },
       { kind: "toggle", set: "copychord", key: "cc-copy-chord", label: "Ctrl+Shift+C copies the selection",
         hint: "In every pane and anywhere else text is selected, instead of opening the web inspector.",
@@ -641,7 +647,7 @@ const SET_TABS: SetTab[] = [
   },
   {
     // macOS only, and hidden rather than dimmed elsewhere: nothing on it has a meaning on an OS with no TCC (docs/macos-access.md).
-    id: "privacy", label: "Privacy", glyph: "◫", group: "app", sub: "macOS permissions", when: () => IS_MAC, os: "mac",
+    id: "privacy", label: "Privacy", glyph: "🔒", group: "app", sub: "macOS permissions", when: () => IS_MAC, os: "mac",
     controls: () => [
       { kind: "note", label: "macOS permissions",
         hint: "macOS blames whichever app is responsible for a process, and every agent, task and shell here is a child of Episko. So a prompt naming Episko is usually a session reading something outside its project. Episko needs none of these permissions itself and can't grant any; the rows below open the panes macOS keeps them in." },
@@ -668,7 +674,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "diag", label: "Diagnostics", glyph: "◔", group: "app", sub: "Weight, scrollback, reload",
+    id: "diag", label: "Diagnostics", glyph: "🐞", group: "app", sub: "Weight, scrollback, reload",
     // Recording first: it is the only row that has to be switched on before the day it is needed.
     controls: () => [
       { kind: "toggle", set: "perf:vitals", key: "cc-vitals", label: "Record performance vitals", hint: "Logs what the interface is holding, one line every few minutes.",
@@ -707,7 +713,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "guide", label: "Guide", glyph: "◇", group: "app", sub: "The tour, chapter by chapter",
+    id: "guide", label: "Guide", glyph: "ⓘ", group: "app", sub: "The tour, chapter by chapter",
     controls: () => [
       { kind: "guide", id: "tour", key: "cc-tour", label: "Guided tour", hint: "Replay any chapter, any time.",
         more: "Nothing here opens by itself after the first run. When a release adds something worth showing, What's new offers the chapter and you can say no.",
@@ -842,12 +848,12 @@ export function renderSettings() {
     const n = counts.get(t.id) ?? 0;
     const chg = !searching && controls.get(t.id)!.some(isChanged);
     return `<button class="set-tab${t.id === setTab ? " on" : ""}${searching && !n ? " zero" : ""}" data-settab="${t.id}">`
-      + `<span class="set-tglyph">${t.glyph}</span>${esc(t.label)}`
+      + `<span class="set-tglyph">${setIcon(t.glyph)}</span>${esc(t.label)}`
       + (searching ? `<span class="set-tn">${n}</span>` : chg ? `<span class="set-tdot" title="Something here is changed"></span>` : "") + `</button>`;
   };
   $("setTabs").innerHTML = SET_GROUPS.map((g) => `<div class="set-grp">${esc(g.label)}</div>${tabs.filter((t) => t.group === g.id).map(tabHtml).join("")}`).join("")
     + `<div class="set-grp">Elsewhere</div>` + ELSEWHERE.map((d) =>
-      `<button class="set-tab set-door" data-setgo="${d.open}" title="Opens in its own window"><span class="set-tglyph">↗</span>${esc(d.name)}</button>`).join("");
+      `<button class="set-tab set-door" data-setgo="${d.open}" title="Opens in its own window"><span class="set-tglyph">${icon("externalLink", "solo")}</span>${esc(d.name)}</button>`).join("");
   const all = [...controls.values()].flat().filter((c) => c.kind !== "note");
   const n = { "@changed": all.filter(isChanged).length, "@new": all.filter(isNew).length,
     "@mac": tabs.filter((t) => t.os === "mac").flatMap((t) => controls.get(t.id)!.filter((c) => c.kind !== "note")).length };
@@ -866,7 +872,7 @@ function doorHtml(d: (typeof ELSEWHERE)[number], words: string[]): string {
   return `<div class="set-row" data-setrow="${d.open}"><div class="set-inline"><div class="set-itxt">`
     + `<div class="set-glabel">${highlight(d.name, words)}<span class="set-tag">own window</span></div>`
     + `<div class="set-hint">${highlight(d.hint, words)}</div><div class="set-more set-more-on">${highlight(d.more, words)}</div>`
-    + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ↗</button></div></div></div>`;
+    + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ${icon("externalLink", "solo")}</button></div></div></div>`;
 }
 // The rail lights the section under the READING LINE, a third of the way down the pane — not
 // whichever header has crept past the top edge, which lit a long section's neighbour for the
@@ -934,7 +940,7 @@ function wtDemoClusters() {
   return WT_DEMO_ORDER.map((b) => ({ branch: b, hue: WT_DEMO_HUE[b], isMain: b === "dev", sessions: WT_DEMO.filter((s) => s.branch === b) }));
 }
 function wtDemoRow(s: (typeof WT_DEMO)[number], chip = false): string {
-  const chipHtml = chip ? `<span class="p-chip" style="--h:${WT_DEMO_HUE[s.branch]}">⑃ ${esc(s.branch)}</span>` : "";
+  const chipHtml = chip ? `<span class="p-chip" style="--h:${WT_DEMO_HUE[s.branch]}">${icon("gitBranch")}${esc(s.branch)}</span>` : "";
   return `<div class="p-row"><span class="p-dot p-${s.st}"></span><span class="p-lbl">${esc(s.title)}</span>${chipHtml}<span class="p-ctx">${s.ctx}%</span></div>`;
 }
 function wtDemoHead(name: string, count: number, wt?: string): string {
@@ -945,7 +951,7 @@ function wtDemoHead(name: string, count: number, wt?: string): string {
 function wtPreviewBody(mode: WtGroup): string {
   if (mode === "subheader") {
     return wtDemoHead("episko", WT_DEMO.length) + wtDemoClusters().map((c) =>
-      `<div class="p-wthead"><span class="p-fork" style="color:${c.hue}">⑃</span>`
+      `<div class="p-wthead"><span class="p-fork" style="color:${c.hue}">${icon("gitBranch", "solo")}</span>`
       + `<span class="p-wtname" style="color:${c.hue}">${esc(c.branch)}</span>`
       + `<span class="p-wtcount">${c.sessions.length}</span></div>`
       + `<div class="p-wts" style="--h:${c.hue}">${c.sessions.map((s) => wtDemoRow(s)).join("")}</div>`
@@ -966,7 +972,7 @@ function renderWtPreview(active: string): string {
   const cards = WT_GROUP_SEGS.map((m) => {
     const on = m.value === active;
     return `<button class="wtcard${on ? " on" : ""}" data-set="wtgroup" data-val="${esc(m.value)}" aria-pressed="${on}">`
-      + `<div class="wtcard-h"><span class="wtcard-glyph">${m.glyph || ""}</span><span class="wtcard-name">${esc(m.label)}</span><span class="wtcard-check">✓</span></div>`
+      + `<div class="wtcard-h"><span class="wtcard-glyph">${setIcon(m.glyph)}</span><span class="wtcard-name">${esc(m.label)}</span><span class="wtcard-check">${icon("check", "solo")}</span></div>`
       + `<div class="p-mini">${wtPreviewBody(m.value as WtGroup)}</div>`
       + `<div class="wtcard-desc">${esc(m.sub || "")}</div></button>`;
   }).join("");
@@ -1001,8 +1007,8 @@ function peekDemoHtml(): string {
           `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
           + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>` : "")
       + `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">${p.idle.map((w) =>
-          `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${w.g}</span>`
-          + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">＋</span></div>`).join("")}</div></div>`
+          `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${glyphIcon(w.g)}</span>`
+          + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">${icon("plus", "solo")}</span></div>`).join("")}</div></div>`
       + `</div>`;
   }).join("");
   // `pinned` only sizes the box; a preview that resized as you hovered would distract.
@@ -1063,7 +1069,7 @@ function attnDemoHtml(): string {
   const on = attnPrefs.highlight ? " lit" : "";
   const rows = ATTN_DEMO.map((d) =>
     `<div class="srow${on}" style="--lit-ms:${attnPrefs.highlightMs}ms;--lit-c:${LIT_COLOR[d.k] ?? LIT_COLOR.done}">`
-    + `<span class="sglyph ${d.cls}">${d.glyph}</span>`
+    + `<span class="sglyph ${d.cls}">${glyphIcon(d.glyph)}</span>`
     + `<span class="sbranch">${esc(d.title)}</span>`
     + `<span class="sctx">${esc(d.ctx)}</span></div>`).join("");
   return `<div class="p-mini attndemo" id="attnDemo"><div class="psessions">${rows}</div></div>`;
@@ -1088,7 +1094,7 @@ function renderAttnControl(): string {
       <div class="peekstep-l">Queue order</div>
       <div class="chips">${ATTN_ORDERS.map((o) =>
         `<button class="chip-opt ${p.order === o.id ? "on" : ""}" data-setattn="order:${o.id}" title="${esc(o.sub)}">`
-        + `<span class="seg-glyph">${o.glyph}</span>${esc(o.label)}</button>`).join("")}</div>
+        + `<span class="seg-glyph">${setIcon(o.glyph)}</span>${esc(o.label)}</button>`).join("")}</div>
     </div>
     <div class="peeksub set-inline">
       <div class="set-itxt">
@@ -1146,7 +1152,7 @@ function renderReviveControl(): string {
       <div class="peekstep-l">Failures worth retrying</div>
       <div class="chips">${REVIVE_KINDS.map((k) =>
         `<button class="chip-opt ${p.kinds.includes(k.id) ? "on" : ""}" data-setrevive="kind:${k.id}" title="${escAttr(k.hint)}">`
-        + `<span class="seg-glyph">${k.glyph}</span>${esc(k.label)}</button>`).join("")}</div>
+        + `<span class="seg-glyph">${setIcon(k.glyph)}</span>${esc(k.label)}</button>`).join("")}</div>
     </div>
     <div class="peekhint">${esc(!p.enabled
       ? "Off: a turn the API kills stays killed, and the session waits at its prompt until you send it something. That is what every version of Episko before this one did."
@@ -1220,10 +1226,10 @@ function soundRow(d: SoundEventDef): string {
     : "";
   return `<div class="sndev${cfg.on ? "" : " off"}">
     <div class="sndev-h">
-      <span class="sndev-g">${d.glyph}</span>
+      <span class="sndev-g">${setIcon(d.glyph)}</span>
       <div class="sndev-t"><div class="sndev-l">${esc(d.label)}</div><div class="sndev-s">${esc(d.hint)}</div></div>
-      <button class="sndtone${open ? " on" : ""}" data-setsound="pick:${d.id}" aria-expanded="${open}">${esc(tone.label)}<span class="sndtone-c">▾</span></button>
-      <button class="sndplay" data-setsound="play:${d.id}" title="Play it" aria-label="Play ${esc(d.label)}">▶</button>
+      <button class="sndtone${open ? " on" : ""}" data-setsound="pick:${d.id}" aria-expanded="${open}">${esc(tone.label)}<span class="sndtone-c">${icon("chevronDown", "solo")}</span></button>
+      <button class="sndplay" data-setsound="play:${d.id}" title="Play it" aria-label="Play ${esc(d.label)}">${icon("playSolid", "solo")}</button>
       <button class="sw${cfg.on ? " on" : ""}" data-setsound="ev:${d.id}" role="switch" aria-checked="${cfg.on}"></button>
     </div>${strip}
   </div>`;
@@ -1247,7 +1253,7 @@ function renderSoundControl(): string {
     <div class="sndlist">${SOUND_EVENTS.map(soundRow).join("")}</div>
     <div class="peekhint">${p.enabled
       ? "The last three start switched off: they fire on routine activity, or on something you did yourself. Turning everything on is exactly how a set of alerts becomes background noise you stop hearing, which costs you the permission chime too."
-      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and ▶ still plays, since auditioning is how you decide whether to switch them back on."}</div>
+      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and the play button still plays, since auditioning is how you decide whether to switch them back on."}</div>
   </div>`;
 }
 
@@ -1265,7 +1271,7 @@ export function keyRecording() { return keyRec !== null; }
 function keyChordHtml(id: KeyAction): string {
   const keys = comboKeys(keyPrefs.binds[id], IS_MAC);
   if (!keys.length) return `<span class="kb-none">Off</span>`;
-  return keys.map((k) => `<kbd>${esc(k)}</kbd>`).join("");
+  return keys.map((k) => `<kbd>${keyCap(esc(k))}</kbd>`).join("");
 }
 function keyRow(id: KeyAction): string {
   const d = keyActionDef(id);
@@ -1279,10 +1285,10 @@ function keyRow(id: KeyAction): string {
     <div class="kb-t"><div class="kb-l">${esc(label)}</div>${d.hint ? `<div class="kb-s">${esc(d.hint)}</div>` : ""}</div>
     <button class="kb-chord${rec ? " rec" : ""}" data-setkey="rec:${id}" aria-label="Change the shortcut for ${esc(d.label)}">${
       rec ? `<span class="kb-rec">Press a chord<i>esc</i></span>` : keyChordHtml(id)}</button>
-    <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; ⟲ puts it back"
-      aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>⊘</button>
+    <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; reset puts it back"
+      aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>${icon("ban", "solo")}</button>
     <button class="kb-x" data-setkey="reset:${id}" title="Back to ${esc(comboText(defaultKeyBinds(IS_MAC)[id], IS_MAC))}"
-      aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>⟲</button>
+      aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>${icon("rotateCcw", "solo")}</button>
   </div>`;
 }
 function renderKeysControl(): string {
@@ -1455,7 +1461,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
   const id = rowId(c);
   const open = openPanels.has(id) || (hit?.lines.length ?? 0) > 0;
   const fold = (label: string) =>
-    `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">▾</span></button>`;
+    `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">${icon("chevronDown", "solo")}</span></button>`;
   const sw = (on: boolean, attr: string) => `<button class="sw${on ? " on" : ""}" ${attr} role="switch" aria-checked="${on}"></button>`;
   let ctl = "", panel = "", note = "", always = false;
   switch (c.kind) {
@@ -1510,7 +1516,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       ctl = fold(c.summary?.() ?? String(on.length));
       panel = `<div class="chips">${segs.map((s) =>
         `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
-        + `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
+        + `${s.glyph ? `<span class="seg-glyph">${setIcon(s.glyph)}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
       break;
     }
     case "seg": {
@@ -1523,7 +1529,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     }
   }
   const chg = isChanged(c);
-  const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">⟲</button>` : "";
+  const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">${icon("rotateCcw", "solo")}</button>` : "";
   const why = c.more ? `<button class="set-why" data-setwhy="${id}" aria-expanded="${openWhy.has(id)}">why</button>` : "";
   const pick = rowPicker(c);
   const cur = pick?.segs().find((s) => s.value === pick.active())?.sub;
@@ -1558,7 +1564,7 @@ function segInline(c: { set: string; label: string }, segs: SetSeg[], active: st
 function segCards(set: string, segs: SetSeg[], active: string): string {
   return `<div class="seg">${segs.map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${set}" data-val="${escAttr(s.value)}">`
-    + `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>`
+    + `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${setIcon(s.glyph)}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">${icon("check", "solo")}</span></span>`
     + `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`).join("")}</div>`;
 }
 

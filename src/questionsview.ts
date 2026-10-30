@@ -4,6 +4,8 @@
 
 import { esc, escAttr } from "./format";
 import { outlineItems, promptLabel } from "./outline";
+import { relayIcon } from "./inspectorview";
+import { icon } from "./svgicons";
 import type { Prompt, Sess } from "./types";
 
 const clock = (at: number) => at ? new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
@@ -25,7 +27,7 @@ export function qSubText(entries: readonly QEntry[]): string {
 export function qIndexHtml(entries: readonly QEntry[], sel: string | null): string {
   return entries.map(({ p, n }) =>
     `<button class="q-row${p.relay ? " relay" : ""}${p.id === sel ? " on" : ""}" type="button" data-qsel="${escAttr(p.id)}" title="${escAttr(promptLabel(p.text))}">`
-    + `<span class="q-rn">${n || (p.relay?.kind === "agent" ? "◇" : "⇄")}</span>`
+    + `<span class="q-rn">${n || relayIcon(p.relay?.kind ?? "")}</span>`
     + `<span class="q-rt">${esc(promptLabel(p.text))}</span>`
     + `<span class="q-rc">${p.answer ? "" : "·"}</span></button>`).join("");
 }
@@ -40,8 +42,8 @@ export function qThreadHtml(s: Sess, entries: readonly QEntry[], answerHtml: (p:
   if (!entries.length) return `<div class="call-empty">Nothing asked yet.</div>`;
   return entries.map(({ p, n }, i) => {
     const r = p.relay;
-    const who = r ? `<span class="q-who">${r.kind === "agent" ? "◇" : "⇄"} ${esc(r.name)} · ${r.report ? "report" : "message"}</span>` : `<span class="q-n">#${n}</span>`;
-    const back = p.restored ? `<span class="q-b" title="From before this pane was resumed">↩</span>` : "";
+    const who = r ? `<span class="q-who">${relayIcon(r.kind)} ${esc(r.name)} · ${r.report ? "report" : "message"}</span>` : `<span class="q-n">#${n}</span>`;
+    const back = p.restored ? `<span class="q-b" title="From before this pane was resumed">${icon("history", "solo")}</span>` : "";
     const head = `<div class="q-h">${who}<span class="q-t">${back}${clock(p.at)}</span>`
       + `<button class="q-act" type="button" data-qjump="${escAttr(p.id)}" title="Close this and find the question in the terminal">Find in terminal</button>`
       + `<button class="q-act" type="button" data-qcopy="${escAttr(p.id)}" title="Copy the question and its answer">Copy</button></div>`;

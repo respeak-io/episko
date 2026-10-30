@@ -1,7 +1,8 @@
 // The ⌘K palette's UI; the ranking rules are ./palette's and tested there. Renders on
 // demand, never from renderAll(). Takes one host object rather than a dozen setters.
 
-import { $, chord, FILE_MANAGER, IS_MAC } from "./dom";
+import { $, FILE_MANAGER, IS_MAC, MOD } from "./dom";
+import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import { esc, tilde } from "./format";
 import { iconFor } from "./icons";
 import { setEngine } from "./footer";
@@ -53,7 +54,7 @@ export function setPaletteHost(h: typeof host) { host = h; }
 // ---------- palette (⌘K) ----------
 // Prefixes scope the search (⟩ commands, @ sessions/projects, / by state); "Needs you" is
 // pinned on top. ⌘K on a session opens an action page you back out of with ⌫/Esc.
-interface PalGroup { name: string; count?: number; items: PalItem[] }
+interface PalGroup { name: string; count?: number; back?: boolean; items: PalItem[] }
 let palGroups: PalGroup[] = [];
 let palFlat: PalItem[] = [];   // the selectable rows, in display order
 let palSel = 0;
@@ -81,7 +82,7 @@ function sessionActions(s: Sess): PalItem[] {
   }
   // Outside the isAgent block: every pane kind has a real directory behind it, and unlike
   // `reveal` this one names *this session's* folder.
-  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "⌂", () => host.openProjectFolder(s.workdir)));
+  a.push(mk(`Reveal folder in ${FILE_MANAGER}`, "◫", () => host.openProjectFolder(s.workdir)));
   // Shelve above Close, and only where a resume exists (`canShelve` in ./types).
   if (canShelve(s)) a.push(mk("Shelve session · stop it, keep the row", "⇩", () => host.shelveSession(s.id)));
   // The sheet says why when it cannot open; a palette row has no greyed state to say it with.
@@ -96,16 +97,16 @@ const PAL_CMDS: { key: string; label: string; glyph: string; run: () => void; ac
   { key: "cmd:add", label: "Add a project folder…", glyph: "＋", run: () => host.addProject() },
   { key: "cmd:term", label: "Open a terminal in the current project", glyph: "❯", run: () => host.openPlainTerminal(), act: "terminal" },
   { key: "cmd:termother", label: "Open a terminal the other way round (own pane / beside the session)", glyph: "❯", run: () => host.openPlainTerminal({ other: true }), act: "terminalOther" },
-  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "⌂", run: () => host.revealActiveFolder(), act: "reveal" },
+  { key: "cmd:folder", label: `Reveal the current folder in ${FILE_MANAGER}`, glyph: "◫", run: () => host.revealActiveFolder(), act: "reveal" },
   { key: "cmd:files", label: "Find a file in this project…", glyph: "⌕", run: () => host.openProjectFiles(), act: "files" },
   { key: "cmd:run", label: "Run a task in the current project…", glyph: "▶", run: () => { void openRunPicker(); }, act: "runTask" },
   { key: "cmd:tasks", label: "Manage this project's tasks…", glyph: "✎", run: () => { void openTaskManager(); } },
   { key: "cmd:hist", label: "Reopen a past session in this project…", glyph: "◷", run: () => { void openHistory(true); }, act: "history" },
   { key: "cmd:histall", label: "Session history · every project…", glyph: "◷", run: () => { void openHistory(false); } },
-  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "≡", run: () => host.cycleSort() },
+  { key: "cmd:sort", label: "Change the sidebar sort order", glyph: "⇅", run: () => host.cycleSort() },
   { key: "cmd:insp", label: "Toggle the inspector", glyph: "◨", run: () => host.toggleInsp(), act: "inspector" },
   { key: "cmd:rail", label: "Toggle the sidebar", glyph: "◧", run: () => host.toggleRail(), act: "sidebar" },
-  { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▦", run: () => host.openUsage() },
+  { key: "cmd:usage", label: "Usage & spend · where the money and tokens went", glyph: "▥", run: () => host.openUsage() },
   { key: "cmd:fleet", label: "All projects · the fleet dashboard", glyph: "▦", run: () => host.openFleet() },
 ];
 // The chord as it stands now, or nothing if cleared: a hint naming a dead shortcut is worse than none.
@@ -126,7 +127,7 @@ function buildPalGroups(raw: string): PalGroup[] {
     const items = sessionActions(palActionSess).map((it) => scoreItem(it, t)).filter(Boolean) as PalItem[];
     items.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
     const label = palActionSess.title || palActionSess.branch || "session";
-    return [{ name: `↩ ${palActionSess.project} · ${label}`, items }];
+    return [{ name: `${palActionSess.project} · ${label}`, back: true, items }];
   }
   const { mode, term } = parsePal(raw);
   const searchTerm = mode === "filter" ? "" : term;   // in /filter mode the term is a state, not a name
@@ -138,7 +139,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   const sessCands: PalItem[] = [...sessions.values()].filter(matchesState).map((s) => {
     const i = order.get(s.id);
     // An agent pane's `title` is its CLI's name, so the `||` chain lands on "Codex"; no arm of its own.
-    const label = `${s.project} · ${s.kind === "task" ? "▶ " + (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
+    const label = `${s.project} · ${s.kind === "task" ? (s.run?.label ?? "task") : s.title || s.branch || (s.kind === "shell" ? "shell" : "session")}`;
     const sub = s.kind === "shell" ? "shell"
       : s.kind === "task" ? `task · ${taskStateText(s)}`
       : isAgent(s) && !hasSessionState(s) ? `agent · ${s.phase === "ended" ? "exited" : "running"}`
@@ -159,7 +160,7 @@ function buildPalGroups(raw: string): PalGroup[] {
   // Same source as the sidebar (allProjects): an externally detected project is just as launchable.
   const launchCands: PalItem[] = allProjects().map((p) => ({ kind: "launch", key: "launch:" + p.path, label: `Launch ${p.name}`, labelHtml: esc(`Launch ${p.name}`), sub: tilde(p.path), sw: accentFor(p.path), icon: iconFor(p.path) || undefined, run: () => host.requestLaunch(p.name, p.path) }));
   const cmdCands: PalItem[] = PAL_CMDS.map((c) => ({ kind: "command", key: c.key, label: c.label, labelHtml: esc(c.label), sub: "command", glyph: c.glyph, shortcut: palShortcut(c.act), run: c.run }));
-  for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`, labelHtml: esc(`New sessions in ${d.label}${id === termEngine ? " ✓" : ""}`), sub: d.sub, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
+  for (const id of availEngines) { const d = engineDef(id); cmdCands.push({ kind: "command", key: "engine:" + id, label: `New sessions in ${d.label}`, labelHtml: esc(`New sessions in ${d.label}`), sub: d.sub, on: id === termEngine, glyph: id === "embedded" ? "▤" : "⧉", run: () => setEngine(id) }); }
 
   const setCands: PalItem[] = host.settingsItems().map((s) => ({ kind: "command", key: "setting:" + s.key, label: s.label, labelHtml: esc(s.label), sub: s.sub, glyph: "⚙", run: s.run }));
 
@@ -193,24 +194,32 @@ function buildPalGroups(raw: string): PalGroup[] {
 function runPalItem(it: PalItem | undefined) { if (!it) return; bumpFrec(it.key); closePalette(); it.run(); }
 function openPalActions(s: Sess) { palPage = "actions"; palActionSess = s; const inp = $("palInput") as HTMLInputElement; inp.value = ""; palSel = 0; refreshPal(); inp.focus(); }
 function popPalPage() { palPage = "root"; palActionSess = null; const inp = $("palInput") as HTMLInputElement; inp.value = ""; palSel = 0; refreshPal(); inp.focus(); }
+// Glyphs this table means differently from ./svgicons' shared map, or that it has no entry for.
+const PAL_IC: Record<string, IconName> = {
+  "→": "arrowRight", "↑": "arrowUp", "↓": "arrowDown", "▤": "squareTerminal", "⧉": "appWindow",
+  "⃠": "ban", "▥": "chartColumn",
+};
+const palIcon = (g?: string) => (!g ? icon("chevronRight", "solo") : PAL_IC[g] ? icon(PAL_IC[g], "solo") : glyphIcon(g));
+const capsHtml = (keys: string[]) => keys.map((k) => `<span class="k">${keyCap(esc(k))}</span>`).join("");
 function renderPal() {
   let idx = 0;
   const html = palGroups.map((g) => {
     const rows = g.items.map((it) => {
       const i = idx++;
-      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="pal-sw" style="background:${it.sw}"></span>` : (it.glyph || "›");
-      const sh = it.shortcut ? `<span class="pal-sh">${it.shortcut.map((k) => `<span class="k">${esc(k)}</span>`).join("")}</span>`
-        : it.session ? `<span class="pal-sh actions"><span class="k">${chord("K")}</span></span>` : "";
+      const ic = it.icon ? `<img class="pal-icimg" src="${it.icon}" alt="" />` : it.sw ? `<span class="pal-sw" style="background:${it.sw}"></span>` : palIcon(it.glyph);
+      const sh = it.shortcut ? `<span class="pal-sh">${capsHtml(it.shortcut)}</span>`
+        : it.session ? `<span class="pal-sh actions">${capsHtml([MOD, "K"])}</span>`
+        : it.on ? `<span class="pal-sh on">${icon("check", "solo")}</span>` : "";
       return `<div class="pal-item ${i === palSel ? "on" : ""}" data-i="${i}"><span class="pal-ic">${ic}</span><span class="pal-main"><span class="pm">${it.labelHtml}</span>${it.sub ? `<span class="ps">${esc(it.sub)}</span>` : ""}</span>${sh}</div>`;
     }).join("");
-    return `<div class="pal-gh">${esc(g.name)}${g.count ? `<span class="gc">${g.count}</span>` : ""}</div>${rows}`;
+    return `<div class="pal-gh">${g.back ? icon("arrowLeft") : ""}${esc(g.name)}${g.count ? `<span class="gc">${g.count}</span>` : ""}</div>${rows}`;
   }).join("");
   $("palList").innerHTML = html || `<div class="pal-item"><span class="pal-main"><span class="pm" style="color:var(--muted)">No matches</span></span></div>`;
   $("palList").querySelectorAll<HTMLElement>(".pal-item[data-i]").forEach((el) => el.addEventListener("click", () => runPalItem(palFlat[+el.dataset.i!])));
   const foot = $("palFoot");
   foot.innerHTML = palPage === "actions"
-    ? `<span>↵ run</span><span>⌫ back</span><span class="sp"></span><span>esc close</span>`
-    : `<span class="pf-mode">⟩ command</span><span>@ project</span><span>/ state</span><span class="sp"></span><span>${chord("K")} actions · esc</span>`;
+    ? `<span>${keyCap("↵")} run</span><span>${keyCap("⌫")} back</span><span class="sp"></span><span>esc close</span>`
+    : `<span class="pf-mode">⟩ command</span><span>@ project</span><span>/ state</span><span class="sp"></span><span>${IS_MAC ? keyCap("⌘") + "K" : "Ctrl+K"} actions · esc</span>`;
   $("palList").querySelector(".pal-item.on")?.scrollIntoView({ block: "nearest" });
 }
 function refreshPal() { palGroups = buildPalGroups(($("palInput") as HTMLInputElement).value); palFlat = palGroups.flatMap((g) => g.items); palSel = 0; renderPal(); }

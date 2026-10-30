@@ -549,7 +549,7 @@ describe("brackets on a Mac", () => {
 describe("chords on screen", () => {
   it("spells the modifiers per platform and the key once", () => {
     expect(comboKeys(combo("mod+shift+b"), true)).toEqual(["⌘", "⇧", "B"]);
-    expect(comboKeys(combo("mod+shift+b"), false)).toEqual(["Ctrl", "⇧", "B"]);
+    expect(comboKeys(combo("mod+shift+b"), false)).toEqual(["Ctrl", "Shift", "B"]);
     expect(comboKeys(combo("mod+alt+k"), true)).toEqual(["⌘", "⌥", "K"]);
     expect(comboKeys(combo("mod+alt+k"), false)).toEqual(["Ctrl", "Alt", "K"]);
     expect(comboKeys(null, true)).toEqual([]);
@@ -566,7 +566,7 @@ describe("chords on screen", () => {
 
   it("joins for a toast the way each platform writes a chord", () => {
     expect(comboText(combo("mod+shift+h"), true)).toBe("⌘⇧H");
-    expect(comboText(combo("mod+shift+h"), false)).toBe("Ctrl+⇧+H");
+    expect(comboText(combo("mod+shift+h"), false)).toBe("Ctrl+Shift+H");
     expect(comboText(null, true)).toBe("");
   });
 });

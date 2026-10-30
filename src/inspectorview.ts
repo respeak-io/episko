@@ -4,6 +4,7 @@
 
 import { basename, elidePath, esc, escAttr, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
 import { FILE_MANAGER } from "./dom";
+import { glyphIcon, icon } from "./svgicons";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
   actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState,
@@ -110,9 +111,9 @@ export function fanoutHtml(s: Sess): string {
   const orph = orphanAgents(s);
   const kinds = [...new Set(orph.map((a) => a.type).filter(Boolean))].slice(0, 3).join(", ");
   const carried = orph.length
-    ? `<div class="fo-orph"><span class="fo-og">↩</span>${orph.length} still up from an earlier run${kinds ? ` · ${esc(kinds)}` : ""}</div>` : "";
+    ? `<div class="fo-orph"><span class="fo-og">${icon("history", "solo")}</span>${orph.length} still up from an earlier run${kinds ? ` · ${esc(kinds)}` : ""}</div>` : "";
   return `<div class="fanout">
-    <div class="fo-h"><span class="fo-g">◐</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
+    <div class="fo-h"><span class="fo-g">${icon("contrast", "solo")}</span><span class="fo-name" title="${esc(name)}">${esc(name)}</span><span class="fo-frac">${t.done} / ${t.total}</span></div>
     ${detail}
     <div class="fo-bar"><i style="width:${pct}%"></i></div>
     ${carried}${phases}</div>`;
@@ -159,7 +160,7 @@ export function driftHtml(s: Sess): string {
     ? `<button data-driftfollow="${esc(s.id)}">Follow it here</button>`
     : `<button data-driftfollow="${esc(s.id)}">Move session here</button><button data-drifttrack="${esc(s.id)}" title="Show this checkout without restarting; the agent keeps running where it started">Just show it here</button>`;
   return `<div class="drift">
-    <div class="drift-h"><span class="drift-g">⤳</span>Working in <span class="b">${esc(d.branch)}</span></div>
+    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span>Working in <span class="b">${esc(d.branch)}</span></div>
     <div class="drift-path" title="${esc(d.dir)}">${esc(tilde(d.dir))}</div>
     <div class="drift-note">${note}</div>
     <div class="drift-btns">${btns}</div>
@@ -170,7 +171,7 @@ export function trackedHtml(s: Sess): string {
   const h = s.home!;
   const at = esc(h.branch || basename(h.workdir));
   return `<div class="drift tracked">
-    <div class="drift-h"><span class="drift-g">⤳</span>Started in <span class="b">${at}</span></div>
+    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span>Started in <span class="b">${at}</span></div>
     <div class="drift-path" title="${esc(h.workdir)}">${esc(tilde(h.workdir))}</div>
     <div class="drift-note">Episko shows <span class="b">${esc(s.branch || basename(s.workdir))}</span>, where its work lands. The agent itself still runs in <span class="b">${at}</span>: its relative paths, project instructions and settings come from there, and resuming reopens it there.</div>
     <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">Move session here</button><button data-driftback="${esc(s.id)}">Show ${at} again</button></div>
@@ -199,7 +200,7 @@ export function wpeekHtml(dir: string, title: string, g: DiffStat): string {
     ? `<div class="stackbar"><span class="sa" style="width:${aw}%"></span><span class="sd" style="width:${100 - aw}%"></span></div>`
     : `<div class="stackbar flat"></div>`;
   return `<div class="wpeek" data-diff="${escAttr(dir)}" data-difftitle="${escAttr(title)}" title="Review the working set — ${escAttr(count)}">
-      <div class="wtop">${lines}<span class="files${lines ? "" : " lone"}">${count}</span><span class="wpeek-cue">⤢</span></div>
+      <div class="wtop">${lines}<span class="files${lines ? "" : " lone"}">${count}</span><span class="wpeek-cue">${icon("arrowUpRight", "solo")}</span></div>
       ${bar}</div>`;
 }
 export function wsetHtml(s: Sess): string {
@@ -223,7 +224,7 @@ export function wsetHtml(s: Sess): string {
   // Its own name goes in the title too, since a long branch is ellipsized to keep `sync` in.
   return `<div class="wset">${diff}
     <div class="branch"><button class="bsw" data-brswitch="${esc(s.id)}" aria-haspopup="listbox"
-        title="${escAttr((s.branch || "—") + " — switch this checkout to another branch")}">${s.worktree ? "⑃ " : ""}<span class="b">${esc(s.branch || "—")}</span><span class="c">▾</span></button>${sync}</div>
+        title="${escAttr((s.branch || "—") + " — switch this checkout to another branch")}">${s.worktree ? icon("gitBranch") : ""}<span class="b">${esc(s.branch || "—")}</span><span class="c">${icon("chevronDown", "solo")}</span></button>${sync}</div>
     ${gitBtnsHtml(s, g)}</div>`;
 }
 
@@ -275,6 +276,9 @@ function gitBtnsHtml(s: Sess, g: DiffStat): string {
 
 const promptClock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// Who relayed a message: another agent, or a person on another machine.
+export const relayIcon = (kind: string) => icon(kind === "agent" ? "bot" : "arrowLeftRight", "solo");
+
 // Three states, two classes. A restored row nobody has clicked yet is NOT greyed: it has no
 // marker because Episko never watched it, and the resume usually replayed it into the pane,
 // so the click is what settles it (./terminal searches once and stamps `lost` on a miss).
@@ -286,7 +290,7 @@ function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, prefs: Out
     : !p.restored ? "Scrolled out of the terminal"
     : p.lost ? `${sent} before this pane, and not in its scrollback`
     : `${sent} before this pane — click to look for it in the scrollback`;
-  const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">↩</span>` : "";
+  const back = p.restored ? `<span class="ol-b" title="From before this pane was resumed">${icon("history", "solo")}</span>` : "";
   const r = p.relay;
   const from = r ? `${r.name} · ${r.report ? "report" : "message"}` : "";
   // The tooltip is the fold's fallback, not a second copy: a row that unfolds under the pointer
@@ -294,7 +298,7 @@ function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, prefs: Out
   const tip = prefs.hover ? why : `${promptLabel(p.text)}\n${why}`;
   const txt = `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(p.text)}</div>`;
   return `<div class="ol-row${r ? " relay" : ""}${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(r ? `From ${r.name}${r.from ? ` (${r.from})` : ""}, not you\n${tip}` : tip)}">`
-    + (r ? `<span class="ol-n ol-g">${r.kind === "agent" ? "◇" : "⇄"}</span><div class="ol-body"><span class="ol-from">${esc(from)}</span>${txt}</div>`
+    + (r ? `<span class="ol-n ol-g">${relayIcon(r.kind)}</span><div class="ol-body"><span class="ol-from">${esc(from)}</span>${txt}</div>`
       : `<span class="ol-n">${n}</span>${txt}`)
     + `<span class="ol-t">${back}${p.at ? promptClock(p.at) : ""}</span></div>`;
 }
@@ -306,7 +310,7 @@ function relaysRow(s: Sess, id: string, ps: Prompt[], open: boolean, anchored: R
   const reports = ps.every((p) => p.relay!.report);
   const last = ps[ps.length - 1];
   const head = `<div class="ol-gh" data-olgrp="${escAttr(id)}" title="${open ? "Fold" : "Show"} these — none of them is from you">`
-    + `<span class="ol-n ol-g">${open ? "▾" : "▸"}</span>`
+    + `<span class="ol-n ol-g">${icon(open ? "chevronDown" : "chevronRight", "solo")}</span>`
     + `<div class="ol-body"><span class="ol-gt">${ps.length} ${reports ? "agent reports" : "messages from agents"}</span><span class="ol-from">${esc(who)}</span></div>`
     + `<span class="ol-t">${last.at ? promptClock(last.at) : ""}</span></div>`;
   const body = open ? `<div class="ol-gb">${ps.slice().reverse().map((p) => outlineRow(s, p, 0, anchored.has(p.id), prefs)).join("")}</div>` : "";
@@ -321,7 +325,7 @@ function itemHtml(s: Sess, it: OutlineItem, anchored: ReadonlySet<string>, prefs
 export function outlineHtml(s: Sess, prefs: OutlinePrefs, anchored: ReadonlySet<string>, all: boolean, groups: ReadonlySet<string>): string {
   const items = outlineItems(s.prompts);
   const asks = items.reduce((n, it) => it.kind === "ask" ? it.n : n, 0);
-  const open = items.length ? `<button class="ol-open" type="button" data-olopen="${escAttr(s.id)}" title="Every question with its answer">⤢</button>` : "";
+  const open = items.length ? `<button class="ol-open" type="button" data-olopen="${escAttr(s.id)}" title="Every question with its answer">${icon("arrowUpRight", "solo")}</button>` : "";
   const head = `<div class="fx-head"><span class="label">Your questions</span><span class="fx-sub">${asks || ""}</span>${open}</div>`;
   if (!items.length) {
     return `<div class="outline">${head}<div class="insp-empty" style="padding:14px 0">Nothing asked yet.</div></div>`;
@@ -359,18 +363,18 @@ export function askedHtml(msgs: readonly ProviderMessage[], show: number, jump =
 }
 
 // One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody
-// here typed, so it loses the ❯ and the highlight that mean "you".
+// here typed, so it loses the prompt mark and the highlight that mean "you".
 export function tvMsgHtml(m: { role: string; text: string }, agent: string, cap = 0): string {
   const r = m.role === "user" ? parseRelay(m.text.trim()) : null;
   const text = r ? r.body : m.text;
   const one = cap ? text.replace(/\s+/g, " ").trim() : text; // a capped preview is one run of prose
   const shown = esc(cap && one.length > cap ? one.slice(0, cap - 1) + "…" : one);
   if (r) {
-    return `<div class="tvmsg relay"><span class="tvgutter" title="${escAttr(`From ${r.relay.name}, not you`)}">${r.relay.kind === "agent" ? "◇" : "⇄"}</span>`
+    return `<div class="tvmsg relay"><span class="tvgutter" title="${escAttr(`From ${r.relay.name}, not you`)}">${relayIcon(r.relay.kind)}</span>`
       + `<div class="tvtext"><span class="ol-from">${esc(r.relay.name)} · ${r.relay.report ? "report" : "message"}</span>${shown}</div></div>`;
   }
   const user = m.role === "user";
-  return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter" title="${user ? "You" : escAttr(agent)}">${user ? "❯" : "⏺"}</span><div class="tvtext">${shown}</div></div>`;
+  return `<div class="tvmsg ${esc(m.role)}"><span class="tvgutter" title="${user ? "You" : escAttr(agent)}">${icon(user ? "chevronRight" : "dot", "solo")}</span><div class="tvtext">${shown}</div></div>`;
 }
 
 // ---------- context: what the session has been into ----------
@@ -384,18 +388,18 @@ const KIND_META: Record<TouchKind, { label: string; glyph: string }> = {
 // Rows a group shows before it folds. Read is routinely hundreds of files; the others are the point.
 const GROUP_SHOW: Record<TouchKind, number> = { created: 10, edited: 10, read: 6 };
 
-// The row is the open target and ⌂ a target inside it, so main.ts must test `freveal` before `fopen`.
+// The row is the open target and the reveal button a target inside it, so main.ts must test `freveal` before `fopen`.
 function fileRow(f: FileTouch, workdir: string): string {
   const { name, dir, outside } = fileLabel(f.path, workdir);
   // An outside path is shortened here, not by CSS: `text-overflow` drops the tail (the half
   // that identifies it) and `direction: rtl` reorders the separators at the edges.
   const where = outside ? elidePath(tilde(dir), 34) : dir;
   const times = f.n > 1 ? `<i class="fx-x">×${f.n}</i>` : "";
-  const tip = `${tilde(f.path)}\nOpen it · ⌂ reveals it in ${FILE_MANAGER}`;
+  const tip = `${tilde(f.path)}\nOpen it · the folder button reveals it in ${FILE_MANAGER}`;
   return `<div class="fx-row${outside ? " out" : ""}" data-fopen="${escAttr(f.path)}" title="${escAttr(tip)}">`
     + `<span class="fx-f">${esc(name)}</span>`
     + `<span class="fx-p">${esc(where)}</span>${times}`
-    + `<button class="fx-r" data-freveal="${escAttr(f.path)}" title="Reveal in ${FILE_MANAGER}">⌂</button></div>`;
+    + `<button class="fx-r" data-freveal="${escAttr(f.path)}" title="Reveal in ${FILE_MANAGER}">${icon("folderOpen", "solo")}</button></div>`;
 }
 
 function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: boolean): string {
@@ -408,7 +412,7 @@ function fileGroup(kind: TouchKind, files: FileTouch[], workdir: string, open: b
   const more = rest > 0 ? `<button class="fx-more" data-fgroup="${kind}">+${rest} more</button>`
     : open && files.length > lim ? `<button class="fx-more" data-fgroup="${kind}">Show fewer</button>` : "";
   return `<div class="fx-grp k-${kind}">`
-    + `<div class="fx-gh"><span class="fx-gg">${m.glyph}</span><span class="fx-gn">${m.label}</span><span class="fx-gc">${files.length}</span></div>`
+    + `<div class="fx-gh"><span class="fx-gg">${glyphIcon(m.glyph)}</span><span class="fx-gn">${m.label}</span><span class="fx-gc">${files.length}</span></div>`
     + shown.map((f) => fileRow(f, workdir)).join("") + more + `</div>`;
 }
 

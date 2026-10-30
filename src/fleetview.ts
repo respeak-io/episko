@@ -10,6 +10,7 @@ import type { DiffStat } from "./types";
 import type { ModelSeries } from "./usage";
 import type { TeamRow } from "./sync";
 import { GCLASS, GLYPH } from "./sidebarview";
+import { glyphIcon, icon } from "./svgicons";
 import { foreText } from "./usageview";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 
@@ -70,8 +71,9 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 
 // Every data-fl* here is spelled out where it is written: test/dispatch.test.ts reads these
 // calls as source, so an attribute built from a variable would be invisible to it.
+// `label` is markup: every caller passes a constant or an icon.
 const segBtn = (attr: string, on: boolean, label: string, tip: string) =>
-  `<button${on ? ` class="on"` : ""} ${attr} data-tip="${escAttr(tip)}">${esc(label)}</button>`;
+  `<button${on ? ` class="on"` : ""} ${attr} data-tip="${escAttr(tip)}">${label}</button>`;
 const rangeSeg = (cur: number) => `<div class="db-seg">` + FLEET_RANGES.map((n) =>
   segBtn(`data-flrange="${n}"`, n === cur, `${n}d`, `The last ${n} days`)).join("") + `</div>`;
 const SORTS: [FleetSort, string, string][] = [
@@ -82,8 +84,8 @@ const SORTS: [FleetSort, string, string][] = [
 const sortSeg = (cur: FleetSort) => `<div class="db-seg">` + SORTS.map(([id, label, tip]) =>
   segBtn(`data-flsort="${id}"`, id === cur, label, tip)).join("") + `</div>`;
 const layoutSeg = (cur: FleetLayout) => `<div class="db-seg">`
-  + segBtn(`data-fllayout="cards"`, cur === "cards", "▦", "One card per project")
-  + segBtn(`data-fllayout="list"`, cur === "list", "☰", "One row per project") + `</div>`;
+  + segBtn(`data-fllayout="cards"`, cur === "cards", icon("layoutGrid", "solo"), "One card per project")
+  + segBtn(`data-fllayout="list"`, cur === "list", icon("list", "solo"), "One row per project") + `</div>`;
 // One button, because it is a switch. Offered only where there is something to group BY: the
 // groups are made and named in the sidebar, and a lit toggle over none would do nothing.
 const groupSeg = (on: boolean) => `<div class="db-seg">`
@@ -134,14 +136,14 @@ function sec(label: string, count: string, link: string, body: string, empty: st
 }
 
 const closeBtn = (id: string) =>
-  `<span class="sclose" data-flclose="${escAttr(id)}" data-tip="Close this session">✕</span>`;
+  `<span class="sclose" data-flclose="${escAttr(id)}" data-tip="Close this session">${icon("x", "solo")}</span>`;
 
 // Two lines, because "which session" and "what it wants" are different questions and the
 // second is the one you came for. The row's tint follows its glyph, so an ask reads as urgent.
 function needRow(r: FleetRow): string {
   const tip = `${r.project} · ${r.label}${r.note ? ` · ${r.note}` : ""}`;
   return `<div class="fl-need ${esc(r.cls)}" data-flsel="${escAttr(r.id)}" data-tip="${escAttr(tip)}">
-    <span class="sglyph ${esc(r.cls)}">${esc(r.glyph)}</span>
+    <span class="sglyph ${esc(r.cls)}">${glyphIcon(r.glyph)}</span>
     <span class="fl-nt"><span class="t"><b style="color:${escAttr(r.accent)}">${esc(r.project)}</b>
       · ${esc(r.label)}</span><span class="w">${esc(r.note)}</span></span>
     <span class="fl-age mono">${r.since ? esc(relTime(r.since)) : ""}</span>${closeBtn(r.id)}</div>`;
@@ -153,7 +155,7 @@ function liveRow(r: FleetRow): string {
   const tip = `${r.project} · ${r.label}${r.note ? ` · ${r.note}` : ""}`;
   const open = r.ext ? `data-flext="${escAttr(r.id)}"` : `data-flsel="${escAttr(r.id)}"`;
   return `<div class="fl-row" ${open} data-tip="${escAttr(tip)}">
-    <span class="sglyph ${esc(r.cls)}">${esc(r.glyph)}</span>
+    <span class="sglyph ${esc(r.cls)}">${glyphIcon(r.glyph)}</span>
     <span class="ti">${esc(r.label)}</span>`
     + (r.ext ? `<span class="ext-tag">ext</span>` : "")
     + `<span class="pj mono">${esc(r.project)}</span>${r.ext ? "" : closeBtn(r.id)}</div>`;
@@ -164,7 +166,7 @@ function teamRow(r: TeamRow): string {
   const who = r.mine ? `${r.user} · another machine` : r.user;
   const tip = `${who} · ${r.project}${r.branch ? ` on ${r.branch}` : ""}`;
   return `<div class="fl-row fl-team" data-tip="${escAttr(tip)}">
-    <span class="sglyph ${esc(GCLASS[r.state] ?? "")}">${esc(GLYPH[r.state] ?? "·")}</span>
+    <span class="sglyph ${esc(GCLASS[r.state] ?? "")}">${glyphIcon(GLYPH[r.state] ?? "·")}</span>
     <span class="ti">${esc(who)}</span><span class="pj mono">${esc(r.project)}${r.branch ? ` · ${esc(r.branch)}` : ""}</span></div>`;
 }
 
@@ -177,7 +179,7 @@ const resumeSkel = () => [62, 48, 55].map((w) =>
 const resumeRow = (r: FleetResume) =>
   `<div class="fl-row" data-flproj="${escAttr(r.path)}" data-flname="${escAttr(r.name)}"
     data-tip="${escAttr(`${tilde(r.path)} · open this project to pick it back up`)}">
-    <span class="sglyph g-ended">◷</span><span class="ti">${esc(r.label)}</span>
+    <span class="sglyph g-ended">${icon("history", "solo")}</span><span class="ti">${esc(r.label)}</span>
     <span class="pj mono">${r.when ? esc(relTime(r.when)) : ""}</span></div>`;
 
 // ---------- the centre: one card per project ----------
@@ -222,10 +224,10 @@ const avatar = (c: FleetCard, icon: string | null | undefined) => icon
   : `<span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>`;
 const rowMark = (c: FleetCard, icon: string | null | undefined) => icon
   ? `<img class="picon k" src="${escAttr(icon)}" alt="" />`
-  : `<span class="k" style="color:${escAttr(c.accent)}">▪</span>`;
+  : `<span class="k" style="color:${escAttr(c.accent)}">${glyphIcon("■")}</span>`;
 
 const glyphRow = (x: FleetExtra | undefined) => (x?.glyphs ?? []).map((g) =>
-  `<span class="sglyph ${esc(g.cls)}" data-flsid="${escAttr(g.id)}" data-tip="${escAttr(g.title)}">${esc(g.glyph)}</span>`).join("");
+  `<span class="sglyph ${esc(g.cls)}" data-flsid="${escAttr(g.id)}" data-tip="${escAttr(g.title)}">${glyphIcon(g.glyph)}</span>`).join("");
 
 // One bar a day, in the project's own colour: a line between two counts invents the days in
 // between (./format's `barRow` is the geometry, ./dashview's ribbon the precedent).
@@ -337,7 +339,7 @@ function spendSec(u: FleetUsage): string {
       `<i class="fl-bar${b.cls ? " " + b.cls : ""}" style="height:${b.h}px"
         data-tip="${escAttr(uUsd2(u.daily[i]))}"></i>`).join("")
     : "";
-  const link = `<button class="aslink" data-flopen="usage" data-tip="Open Usage &amp; spend">Usage &amp; spend ⤢</button>`;
+  const link = `<button class="aslink" data-flopen="usage" data-tip="Open Usage &amp; spend">Usage &amp; spend ${icon("arrowUpRight", "solo")}</button>`;
   const body = bars ? `<div class="fl-bars">${bars}</div>
     <div class="fl-bfoot"><span class="mono">${esc(u.first)}</span>
       <span class="mono">today ${u.today > 0 ? esc(uUsd2(u.today)) : esc(uUsd2(0))}</span></div>` : "";
@@ -408,7 +410,7 @@ const limitsSec = (l: { h5: Forecast; d7: Forecast }) =>
     + `<p class="fl-fore${l.d7.used == null ? "" : ` s-${l.d7.status}`}">${esc(foreText(l.d7))}</p>`, "");
 
 export function fleetBodyHtml(v: FleetView): string {
-  const history = `<button class="aslink" data-flopen="history" data-tip="Every session this machine has had">History ⤢</button>`;
+  const history = `<button class="aslink" data-flopen="history" data-tip="Every session this machine has had">History ${icon("arrowUpRight", "solo")}</button>`;
   const colA = sec("Needs you", String(v.needs.length), "", v.needs.map(needRow).join(""),
       "Nothing is waiting on you.", v.needs.length ? "waiting" : "")
     + sec("Live now", String(v.live.length), "", v.live.map(liveRow).join(""), "No sessions running.")

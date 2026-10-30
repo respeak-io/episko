@@ -9,6 +9,7 @@ import { activeProjectCtx, launch } from "./panes";
 import { accentFor, availAgents } from "./state";
 import { historyProviders, readProviderHistory, type ProviderMessage } from "./providers";
 import { isEnvelope } from "./outline";
+import { icon } from "./svgicons";
 import { providerSessionKey } from "./types";
 import {
   histBucket, histBusy, histIndexOf, histInProject, histLabel, histMatches, histMerge, histProject,
@@ -122,7 +123,7 @@ export function histRender() {
       : ($("histQ") as HTMLInputElement).value.trim()
       ? ["No match", "Nothing here matches that filter."]
       : scope
-      ? [`Nothing yet in ${scope.project}`, "Switch the ◧ chip to all projects to see the rest."]
+      ? [`Nothing yet in ${scope.project}`, "Switch the scope chip to all projects to see the rest."]
       : ["No match", "Nothing here matches that filter."];
     $("histList").innerHTML = `<div class="wt-empty"><b>${esc(head)}</b>${esc(body)}</div>`;
   } else {
@@ -133,7 +134,7 @@ export function histRender() {
       const busy = histBusy(h);
       const tag = busy ? `<span class="wt-tag ext">live</span>` : !h.exists ? `<span class="wt-tag gone">no folder</span>` : "";
       html += `<button class="wt-item${i === histSel ? " on" : ""}${!h.exists && !busy ? " stale" : ""}" data-hi="${i}" role="option" aria-selected="${i === histSel}">
-        <span class="wt-ic" style="color:${accentFor(histProject(h).colorKey)}">◷</span>
+        <span class="wt-ic" style="color:${accentFor(histProject(h).colorKey)}">${icon("history", "solo")}</span>
         <span class="wt-main">
           <span class="wt-br"><span class="hd">${esc(histLabel(h))}</span></span>
           <span class="wt-sub2">${esc(h.project)}${h.branch ? ` · ${esc(h.branch)}` : ""}</span>
@@ -178,7 +179,7 @@ function histDetailHtml(h: HistEntry | undefined): string {
     ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can corrupt or interleave its state, so Episko waits for the other process to exit.</div>`
     : !h.exists
     ? `<div class="ext-note warn">Its folder is gone (a deleted worktree, most likely). Provider sessions must resume in their original directory, so this one can only be read.</div>`
-    : `<button class="ext-jump-btn" data-histact="resume">⟲ Resume this session</button>
+    : `<button class="ext-jump-btn" data-histact="resume">${icon("rotateCcw")}Resume this session</button>
        <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
   // Envelopes are dropped from both halves: a `Caveat:` preamble is not how a conversation ended.
   const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id)
