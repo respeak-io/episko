@@ -17,6 +17,7 @@ import {
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import { peekStaysOpen } from "./peek";
+import { glyphIcon, icon } from "./svgicons";
 import type { GroupDef } from "./projgroups";
 
 // ---------- the header of a user-defined project group ----------
@@ -28,7 +29,7 @@ export function foldHead(g: GroupDef, sum: GroupSummary, n: number): string {
   // Only while collapsed: open, the rows say this; collapsed, a hidden permission is a trap.
   const hidden = g.collapsed
     ? (sum.dirty ? `<span class="pfdirty" title="Uncommitted changes in this group"></span>` : "")
-      + (sum.urgent ? `<span class="pfattn ${GCLASS[statusKey(sum.urgent)]}" title="${esc(`${sum.urgent.title || sum.urgent.project} needs you`)}">${GLYPH[statusKey(sum.urgent)]}</span>` : "")
+      + (sum.urgent ? `<span class="pfattn ${GCLASS[statusKey(sum.urgent)]}" title="${esc(`${sum.urgent.title || sum.urgent.project} needs you`)}">${glyphIcon(GLYPH[statusKey(sum.urgent)])}</span>` : "")
     : "";
   const count = sum.count
     ? `<span class="pfcount live" title="${esc(plural(sum.count, "session"))}">${sum.count}</span>`
@@ -61,17 +62,24 @@ const clusterTip = (c: WtCluster) => (c.isMain ? `${c.branch} · the project fol
   : c.branch === "(detached)" ? `${clusterName(c)} · detached HEAD, on no branch` : c.branch);
 const clusterChip = (c: WtCluster) =>
   `<span class="chip" style="--wtc:${branchHue(c)}" title="${esc(clusterTip(c))}">`
-  + `<span class="fork">${clusterGlyph(c)}</span><span class="lbl">${esc(clusterName(c))}</span></span>`;
+  + `<span class="fork">${glyphIcon(clusterGlyph(c))}</span><span class="lbl">${esc(clusterName(c))}</span></span>`;
 // A shelved row sits outside every cluster, so it names its checkout the way a live row's chip does.
 const dormantChip = (d: Restorable) => clusterChip({
   key: d.worktree ?? d.colorKey, branch: d.branch, isMain: !d.worktree, sessions: [], externals: [],
 });
 
 // Title, else the branch until Claude sets one; `nested` drops the ▶ a run group's header carries.
-export const rowLabel = (s: Sess, nested = false) => s.kind === "task"
-  ? `${nested ? "" : "▶ "}${s.run?.label ?? "task"}`
-  : s.title || (s.worktree ? `⑃ ${s.branch}` : (s.branch || "session"));
-export const pastLabel = (d: Restorable) => d.title || (d.worktree ? `⑃ ${d.branch}` : d.branch) || "session";
+// The mark is kept apart so a row draws it as an icon while a menu head keeps the text.
+type Label = { mark: string; text: string };
+const rowParts = (s: Sess, nested: boolean): Label => s.kind === "task"
+  ? { mark: nested ? "" : "▶", text: s.run?.label ?? "task" }
+  : s.title ? { mark: "", text: s.title } : s.worktree ? { mark: "⑃", text: `${s.branch}` } : { mark: "", text: s.branch || "session" };
+const pastParts = (d: Restorable): Label => d.title ? { mark: "", text: d.title }
+  : d.worktree ? { mark: "⑃", text: `${d.branch}` } : { mark: "", text: d.branch || "session" };
+const labelText = (l: Label) => (l.mark ? `${l.mark} ${l.text}` : l.text);
+const labelHtml = (l: Label) => (l.mark ? glyphIcon(l.mark, "") : "") + esc(l.text);
+export const rowLabel = (s: Sess, nested = false) => labelText(rowParts(s, nested));
+export const pastLabel = (d: Restorable) => labelText(pastParts(d));
 // A shell (❯) or terminal-only agent (») has no phase; a dot once exited. Tasks keep the status
 // glyphs, since an exit code is a done/error phase. Exported with the labels above so a row's
 // right-click menu (./projmenu) heads with the row's own words, not a second spelling of them.
@@ -99,16 +107,16 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
           : s.home ? `${label} · started in ${s.home.branch || s.home.workdir}, showing ${s.branch || s.workdir}` : label;
   // The row stays under the checkout it was launched in: its identity, and where --resume goes.
   const drift = s.drift
-    ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">⤳ ${esc(s.drift.branch)}</span>`
+    ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">${icon("route")}${esc(s.drift.branch)}</span>`
     : s.home ? `<span class="sdrift tracked" title="${esc(`Started in ${s.home.workdir}`)}">from ${esc(s.home.branch || basename(s.home.workdir))}</span>` : "";
   const fanHtml = fan ? `<span class="sfan" title="${esc(`${fan.done} of ${fan.total} background agents done`)}">${fan.done}/${fan.total}</span>` : "";
   // One cell for every tag: `.srow`'s columns are fixed by CSS (`.o3` adds the fourth).
   const tags = drift + fanHtml + chipHtml;
   return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
-    <span class="sglyph ${gcls}">${glyph}</span>
-    <span class="sbranch" title="${esc(tip)}">${esc(label)}</span>${tags ? `<span class="stags">${tags}</span>` : ""}
+    <span class="sglyph ${gcls}">${glyphIcon(glyph)}</span>
+    <span class="sbranch" title="${esc(tip)}">${labelHtml(rowParts(s, nested))}</span>${tags ? `<span class="stags">${tags}</span>` : ""}
     <span class="sctx">${s.kind === "task" ? esc(taskStateText(s)) : s.ctxPct != null ? Math.round(s.ctxPct) + "%" : ""}</span>
-    <span class="sclose" data-close="${s.id}" title="Close session">✕</span></div>`;
+    <span class="sclose" data-close="${s.id}" title="Close session">${icon("x", "solo")}</span></div>`;
 }
 // One `dependsOn` launch as a block: the header carries the aggregate phase and tiles the
 // members; the ▸ is its own hit target, since "show all" and "show the steps" differ.
@@ -120,16 +128,16 @@ function runGroupRow(it: Extract<RunItem, { kind: "group" }>, chip?: WtCluster):
   const done = it.members.filter((m) => m.run?.exitCode != null || m.phase === "ended").length;
   const tally = failed ? `${failed} failed` : done < it.members.length ? `${done}/${it.members.length}` : `${it.members.length} steps`;
   const chipHtml = chip
-    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">⑃</span><span class="lbl">${esc(chip.branch)}</span></span>`
+    ? `<span class="chip" style="--wtc:${branchHue(chip)}"><span class="fork">${icon("gitBranch", "solo")}</span><span class="lbl">${esc(chip.branch)}</span></span>`
     : "";
   const head = `<div class="rgrow${tiled ? " on" : ""}" data-rungroup="${esc(it.id)}"
       title="${esc(it.label)} · ${it.members.length} steps · open them side by side">
-    <span class="rgtwist${open ? " open" : ""}" data-rgtoggle="${esc(it.id)}" title="${open ? "Collapse" : "Expand"} the steps">▸</span>
-    <span class="sglyph ${gcls}">${GLYPH[it.phase] || GLYPH.idle}</span>
+    <span class="rgtwist${open ? " open" : ""}" data-rgtoggle="${esc(it.id)}" title="${open ? "Collapse" : "Expand"} the steps">${icon("chevronRight", "solo")}</span>
+    <span class="sglyph ${gcls}">${glyphIcon(GLYPH[it.phase] || GLYPH.idle)}</span>
     <span class="rgname" title="${esc(it.label)}">${esc(it.label)}</span>${chipHtml}
     <span class="rgtally${failed ? " bad" : ""}">${esc(tally)}</span>
-    <span class="sclose rgredo" data-runagain="${esc(it.id)}" title="Stop this run and start the whole stack again">⟳</span>
-    <span class="sclose" data-closerun="${esc(it.id)}" title="Close every pane in this run">✕</span></div>`;
+    <span class="sclose rgredo" data-runagain="${esc(it.id)}" title="Stop this run and start the whole stack again">${icon("rotateCw", "solo")}</span>
+    <span class="sclose" data-closerun="${esc(it.id)}" title="Close every pane in this run">${icon("x", "solo")}</span></div>`;
   const body = open ? `<div class="rgsteps">${it.members.map((m) => sessionRow(m, undefined, true)).join("")}</div>` : "";
   return `<div class="rgroup${tiled ? " on" : ""}${open ? " open" : ""}">${head}${body}</div>`;
 }
@@ -166,9 +174,9 @@ export function groupBody(p: ProjGroup): string {
       const going = removingWt.has(c.key);
       // `data-root` is the repo root, the colorKey every session in the project groups by.
       const add = `<span class="wtadd" data-wtadd="${esc(c.key)}" data-proj="${esc(p.name)}" data-root="${esc(p.path)}"`
-        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(clusterName(c))}">＋</span>`;
+        + ` data-branch="${esc(c.branch)}" title="New session in ${esc(clusterName(c))}">${icon("plus", "solo")}</span>`;
       return `<div class="wthead${going ? " going" : ""}"${going ? ` aria-busy="true"` : ` ${wtMenuAttrs(p, c)}`}>`
-        + (going ? `<span class="u-spin"></span>` : `<span class="wtglyph" style="color:${col}">${clusterGlyph(c)}</span>`)
+        + (going ? `<span class="u-spin"></span>` : `<span class="wtglyph" style="color:${col}">${glyphIcon(clusterGlyph(c))}</span>`)
         + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(clusterName(c))}</span>`
         + `<span class="wtcount">${going || !n ? "" : n}</span>${going ? "" : add}</div>`
         + `<div class="wtsessions${going ? " going" : ""}" style="--wtc:${col}">${body}</div>`;
@@ -208,9 +216,9 @@ function peekRow(p: ProjGroup, c: WtCluster): string {
     ? `<span class="pkdirty" title="Uncommitted changes in this checkout"></span>` : "";
   return `<div class="pkrow" data-wtadd="${esc(c.key)}" ${wtMenuAttrs(p, c)}`
     + ` title="${esc(`Start a session in ${clusterName(c)} · ${tilde(c.key)}`)}">`
-    + `<span class="pkglyph" style="color:${col}">${clusterGlyph(c)}</span>`
+    + `<span class="pkglyph" style="color:${col}">${glyphIcon(clusterGlyph(c))}</span>`
     + `<span class="pkname">${esc(clusterName(c))}</span>${dirty}`
-    + `<span class="pkgo">＋</span></div>`;
+    + `<span class="pkgo">${icon("plus", "solo")}</span></div>`;
 }
 // `data-wt` must be matched ahead of the `data-key` project menu (./projmenu): a checkout, not its repo.
 export function wtMenuAttrs(p: ProjGroup, c: WtCluster): string {
@@ -239,19 +247,18 @@ function sentTag(d: Restorable): { id: string; tag: string; lock: string | null;
 function dormantRow(d: Restorable, sent?: ReturnType<typeof sentTag>, nested = false): string {
   const out = !!sent?.lock;
   const busy = !out && dormantBusy(d);
-  const label = pastLabel(d);
   const when = relTime(d.lastActivity);
   const tip = out ? `${sent!.lock} · it can't be resumed here until then`
     : busy ? "This provider session is already running, so it cannot be resumed twice"
-      : `Shelved · last active ${when} · click to look, ⟲ to resume`;
+      : `Shelved · last active ${when} · click to look, then Resume to carry on`;
   const x = out
-    ? (sent!.recall ? `<span class="sclose" data-handrecall="${escAttr(sent!.id)}" title="Take it back">↶</span>` : "")
-    : `<span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">✕</span>`;
+    ? (sent!.recall ? `<span class="sclose" data-handrecall="${escAttr(sent!.id)}" title="Take it back">${icon("undo2", "solo")}</span>` : "")
+    : `<span class="sclose" data-forget="${d.id}" title="Take off the shelf; the conversation stays on disk">${icon("x", "solo")}</span>`;
   // Untitled, the label already is the branch.
   const chip = !nested && d.title && d.branch ? dormantChip(d) : "";
   return `<div class="srow pastrow${chip ? " o3" : ""}${busy ? " busy" : ""}${out ? " out" : ""} ${d.id === pastMirrorId() ? "active" : ""}" data-past="${d.id}" data-key="${esc(d.colorKey)}" title="${esc(tip)}">
-    <span class="sglyph g-ended">${out ? "⇢" : "·"}</span>
-    <span class="sbranch">${esc(label)}</span>${chip ? `<span class="stags">${chip}</span>` : ""}
+    <span class="sglyph g-ended">${glyphIcon(out ? "⇢" : "·")}</span>
+    <span class="sbranch">${labelHtml(pastParts(d))}</span>${chip ? `<span class="stags">${chip}</span>` : ""}
     <span class="past-tag">${esc(sent?.tag ?? (busy ? "busy" : when))}</span>
     ${x}</div>`;
 }
@@ -263,8 +270,8 @@ function extRow(e: ExtSession, chip?: WtCluster): string {
   const working = extWorking(e);
   const chipHtml = chip ? clusterChip(chip) : "";
   return `<div class="srow extrow${chip ? " o3e" : ""} ${e.session_id === extMirrorId() ? "active" : ""}" data-ext="${e.session_id}" data-key="${esc(e.cwd)}">
-    <span class="sglyph ${working ? "g-work" : "g-idle"}">${working ? "●" : "○"}</span>
+    <span class="sglyph ${working ? "g-work" : "g-idle"}">${glyphIcon(working ? GLYPH.working : GLYPH.idle)}</span>
     <span class="sbranch">${esc(e.name || basename(e.cwd))}</span>${chipHtml}
     <span class="ext-tag" title="Running outside Episko · Claude v${esc(e.version)} · pid ${e.pid}">ext</span>
-    <span class="sjump" data-jump="${e.pid}" title="Jump to its terminal ↗">↗</span></div>`;
+    <span class="sjump" data-jump="${e.pid}" title="Jump to its terminal">${icon("externalLink", "solo")}</span></div>`;
 }

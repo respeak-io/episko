@@ -10,7 +10,7 @@ import {
   type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type Side,
 } from "./review";
 import type { DiffMode } from "./diff";
-import { icon } from "./svgicons";
+import { glyphIcon, icon } from "./svgicons";
 
 export type RvTab = "files" | "conversation" | "checks";
 
@@ -26,7 +26,7 @@ export function checksChip(t: CheckTally): string {
   if (!t.total) return "";
   const tone = t.fail ? "bad" : t.pending ? "wait" : "ok";
   const word = t.fail ? `${t.fail} failing` : t.pending ? `${t.pending} running` : "checks pass";
-  return `<button class="rv-chip ${tone}" data-rvtab="checks" title="${t.pass} passed · ${t.fail} failed · ${t.pending} running · ${t.skip} skipped">${tone === "ok" ? "✓" : tone === "bad" ? "✕" : "◌"} ${word}</button>`;
+  return `<button class="rv-chip ${tone}" data-rvtab="checks" title="${t.pass} passed · ${t.fail} failed · ${t.pending} running · ${t.skip} skipped">${icon(tone === "ok" ? "check" : tone === "bad" ? "x" : "circleDashed")}${word}</button>`;
 }
 
 /** The title block and the verbs that act on the whole pull request. */
@@ -45,7 +45,7 @@ export function reviewHeadHtml(pr: PrReview, now: number, busy: string | null): 
         ${btn("session", `${icon("terminal")}Session`, `Start a session on ${pr.head_ref}, in its own worktree`)}
         ${live ? btn(pr.draft ? "ready" : "draft", pr.draft ? `${icon("ready")}Ready for review` : `${icon("draft")}To draft`,
           pr.draft ? "Mark it ready for review" : "Convert it back to a draft") : ""}
-        ${live ? btn("merge", `${icon("merge")}Merge ▾`, "Merge it on GitHub", "act primary") : ""}
+        ${live ? btn("merge", `${icon("merge")}Merge${icon("chevronDown", "solo rv-dd")}`, "Merge it on GitHub", "act primary") : ""}
       </div></div>
     <div class="rv-h2">
       <span class="rv-who">${esc(pr.author || "someone")}</span> wants to merge ${plural(pr.commits.length, "commit")} into
@@ -77,7 +77,7 @@ export function reviewBarHtml(m: BarModel): string {
       ? "The branch was rewritten since your review" : `${plural(m.since.n, "new commit")} since your review`} · show</button>`
     : "";
   return `${tabs}
-    <button class="diff-fold rv-range" data-rvrange title="Which changes to show: the whole pull request, one commit, or what is new since your review">${icon(m.showingSince ? "since" : m.rangeLabel.startsWith("Commit") ? "commit" : "files")}${esc(m.rangeLabel)} ▾</button>
+    <button class="diff-fold rv-range" data-rvrange title="Which changes to show: the whole pull request, one commit, or what is new since your review">${icon(m.showingSince ? "since" : m.rangeLabel.startsWith("Commit") ? "commit" : "files")}${esc(m.rangeLabel)}${icon("chevronDown", "solo rv-dd")}</button>
     ${since}
     <span class="rv-sum"><span class="add">+${m.add}</span> <span class="del">−${m.del}</span> · ${m.viewed}/${m.files} viewed</span>
     <span class="rv-sp"></span>
@@ -101,7 +101,7 @@ export const addBtn = (fi: number, side: Side, line: number, pos: RangePos) =>
 function commentHtml(who: string, at: string, body: string, now: number, url = ""): string {
   const md = body.trim() ? mdHtml(body) : `<p class="iss-none">No text.</p>`;
   return `<div class="rv-c"><div class="rv-ch"><span class="who">${esc(who || "someone")}</span>
-    <span class="when">${esc(ago(at, now))}</span>${url ? `<button class="aslink" data-rvurl="${escAttr(url)}" title="Open this comment on github.com">↗</button>` : ""}</div>
+    <span class="when">${esc(ago(at, now))}</span>${url ? `<button class="aslink sq" data-rvurl="${escAttr(url)}" title="Open this comment on github.com">${icon("externalLink", "solo")}</button>` : ""}</div>
     <div class="md">${md}</div></div>`;
 }
 
@@ -122,7 +122,7 @@ export function threadHtml(t: PrThread, o: ThreadOpts): string {
   const tags = (t.resolved ? `<span class="rv-tag ok">resolved</span>` : "")
     + (t.outdated ? `<span class="rv-tag">outdated</span>` : "");
   const loc = `<span class="rv-loc">${o.showPath ? `${esc(t.path)} · ` : ""}${esc(where(t))}</span>`;
-  const head = `<div class="rv-th-h" data-rvthfold="${id}"><span class="dchev">▾</span>${tags}${loc}
+  const head = `<div class="rv-th-h" data-rvthfold="${id}"><span class="dchev">${icon("chevronDown", "solo")}</span>${tags}${loc}
       ${o.open ? "" : `<span class="rv-gist">${esc(first?.author ?? "")}: ${esc((first?.body ?? "").split("\n")[0].slice(0, 120))}</span>`}
       <span class="rv-sp"></span>
       <button class="rv-mini" data-rvthagent="${id}" title="Hand this thread to an agent on the PR's branch">${icon("agent")}agent</button>
@@ -178,7 +178,7 @@ export function fileBtnsHtml(fi: number, viewed: boolean, threads: number, canFi
 }
 
 export const railMark = (viewed: boolean, threads: number) =>
-  (threads ? `<span class="rv-tc">${threads}</span>` : "") + (viewed ? `<span class="rv-vw" title="Viewed">✓</span>` : "");
+  (threads ? `<span class="rv-tc">${threads}</span>` : "") + (viewed ? `<span class="rv-vw" title="Viewed">${icon("check", "solo")}</span>` : "");
 
 export const expandBtn = (fi: number, hi: number, gap: number) =>
   `<button class="dhx rv-exp" data-rvexp="${fi}:${hi}" title="Show ${Math.min(gap, 20)} more unchanged lines">${icon("unfold")}${Math.min(gap, 20)} more</button>`;
@@ -219,11 +219,11 @@ const CHECK_GLYPH: Record<string, string> = { pass: "✓", fail: "✕", pending:
 export function checksHtml(checks: PrCheck[]): string {
   if (!checks.length) return `<div class="diff-empty">No checks ran on the head commit.</div>`;
   return `<div class="rv-checks">${sortChecks(checks).map((c) => `<div class="rv-ck ${esc(c.state)}">
-      <span class="g">${CHECK_GLYPH[c.state] ?? "–"}</span><span class="nm">${esc(c.name)}</span>
+      <span class="g">${glyphIcon(CHECK_GLYPH[c.state] ?? "–")}</span><span class="nm">${esc(c.name)}</span>
       ${c.workflow ? `<span class="dim">${esc(c.workflow)}</span>` : ""}<span class="rv-sp"></span>
-      ${c.url ? `<button class="aslink" data-rvurl="${escAttr(c.url)}" title="Open the run's log">details ↗</button>` : ""}</div>`).join("")}</div>`;
+      ${c.url ? `<button class="aslink" data-rvurl="${escAttr(c.url)}" title="Open the run's log">details ${icon("externalLink", "solo")}</button>` : ""}</div>`).join("")}</div>`;
 }
 
 export function failHtml(reason: string, url: string): string {
-  return `<div class="diff-empty">${esc(reason)}${url ? `<br><button class="aslink" data-rvurl="${escAttr(url)}">Open it on GitHub ↗</button>` : ""}</div>`;
+  return `<div class="diff-empty">${esc(reason)}${url ? `<br><button class="aslink" data-rvurl="${escAttr(url)}">Open it on GitHub ${icon("externalLink", "solo")}</button>` : ""}</div>`;
 }

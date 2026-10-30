@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { $, IS_WIN, toast } from "./dom";
 import { esc } from "./format";
 import { dlog } from "./debug";
+import { glyphIcon, icon } from "./svgicons";
 
 import { sessions } from "./state";
 import { hasSessionState, isAgent } from "./types";
@@ -118,7 +119,7 @@ function fillCafPop() {
     const chip = p.kind === "timer" ? "" : cafChip(p);
     const right = chip ? `<span class="mp-flags">${esc(chip)}</span>` : "";
     const item = `<button class="mp-item ${active ? "on" : last ? "cur" : ""}" data-caf="${p.id}">`
-      + `<span class="mp-ic">${p.glyph}</span>`
+      + `<span class="mp-ic">${glyphIcon(p.glyph)}</span>`
       + `<span class="mp-main"><span class="mp-l">${esc(p.label)}</span><span class="mp-s">${esc(p.desc)}</span></span>`
       + right + `</button>`;
     let sub = "";
@@ -133,7 +134,7 @@ function fillCafPop() {
     return `<div class="caf-opt">${item}${sub}</div>`;
   }).join("");
   const off = cafArmed
-    ? `<div class="mp-sep"></div><button class="mp-item mp-off" data-caf="off"><span class="mp-ic">⏹</span><span class="mp-main"><span class="mp-l">Stop caffeinate</span></span></button>`
+    ? `<div class="mp-sep"></div><button class="mp-item mp-off" data-caf="off"><span class="mp-ic">${icon("circleStop", "solo")}</span><span class="mp-main"><span class="mp-l">Stop caffeinate</span></span></button>`
     : "";
   $("cafPop").innerHTML = rows + off;
 }

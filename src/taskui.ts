@@ -7,6 +7,7 @@ import { $, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, elidePath, esc, tilde } from "./format";
+import { icon } from "./svgicons";
 import { paneDir, type Runnable } from "./types";
 import { activeId, dashMirror, externals, extMirrorId, keyPrefs, sessions } from "./state";
 import { activeBind, comboMatches } from "./keys";
@@ -95,19 +96,19 @@ export function renderMgr() {
         const noStop = stopRuleBlocked(r);
         const tags = `${r.background ? " · bg" : ""}${overridden ? " · overridden" : ""}${r.blocked ? " · " + esc(r.blocked) : ""}${onStop ? " · runs after each turn" : ""}`;
         const editBtn = own
-          ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .episko/tasks.toml">✎</button>
-             <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .episko/tasks.toml">✕</button>`
-          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit. Writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">✎</button>`;
+          ? `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit in .episko/tasks.toml">${icon("pencil", "solo")}</button>
+             <button class="mgr-b danger" data-del="${esc(r.id)}" title="Delete from .episko/tasks.toml">${icon("x", "solo")}</button>`
+          : `<button class="mgr-b" data-edit="${esc(r.id)}" title="Edit. Writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}">${icon("pencil", "solo")}</button>`;
         const revertBtn = (overridden || dangling)
-          ? `<button class="mgr-b" data-revert="${esc(dangling ? r.id.slice("override:".length) : r.id)}" title="Revert to what ${esc(r.sourceFile)} declares">↺</button>`
+          ? `<button class="mgr-b" data-revert="${esc(dangling ? r.id.slice("override:".length) : r.id)}" title="Revert to what ${esc(r.sourceFile)} declares">${icon("undo2", "solo")}</button>`
           : "";
         return `<div class="mgr-row${hid.includes(r.id) ? " off" : ""}">
           <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.sourceFile)}${tags}</small></span>
           <span class="mgr-acts">
-            <button class="mgr-b${pins.includes(r.id) ? " on" : ""}" data-pin="${esc(r.id)}" title="${pins.includes(r.id) ? "Unpin" : "Pin to the top of the picker"}">${pins.includes(r.id) ? "★" : "☆"}</button>
-            <button class="mgr-b" data-hide="${esc(r.id)}" title="${hid.includes(r.id) ? "Show in the picker" : "Hide from the picker"}">${hid.includes(r.id) ? "◌" : "◎"}</button>
+            <button class="mgr-b${pins.includes(r.id) ? " on" : ""}" data-pin="${esc(r.id)}" title="${pins.includes(r.id) ? "Unpin" : "Pin to the top of the picker"}">${icon(pins.includes(r.id) ? "starSolid" : "star", "solo")}</button>
+            <button class="mgr-b" data-hide="${esc(r.id)}" title="${hid.includes(r.id) ? "Show in the picker" : "Hide from the picker"}">${icon(hid.includes(r.id) ? "eyeOff" : "eye", "solo")}</button>
             <button class="mgr-b${onStop ? " on" : ""}${noStop ? " quiet" : ""}" ${noStop ? "disabled" : ""} data-onstop="${esc(r.id)}"
-              title="${noStop ? esc(`Can't run after a turn: ${noStop}`) : onStop ? "Stop running this after a turn" : "Run this whenever a session in this project finishes a turn"}">⟲</button>
+              title="${noStop ? esc(`Can't run after a turn: ${noStop}`) : onStop ? "Stop running this after a turn" : "Run this whenever a session in this project finishes a turn"}">${icon("rotateCcw", "solo")}</button>
             ${revertBtn}${editable ? editBtn : ""}
           </span>
         </div>`;
@@ -167,7 +168,7 @@ async function revertMgrOverride(id: string) {
 function renderMgrForm() {
   const e = mgrEdit!;
   const note = e.kind === "override"
-    ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.episko/tasks.toml</code>. The original stays as its tool declared it; ↺ Revert removes the override.</div>`
+    ? `<div class="mgr-note">Saving writes an <b>override</b> into <code>.episko/tasks.toml</code>. The original stays as its tool declared it; Revert removes the override.</div>`
     : "";
   $("mgrBody").innerHTML = note + `
     <div class="in-field"><label class="in-lbl">Label</label>
@@ -287,9 +288,10 @@ export async function openRunPicker() {
   runInfo = null;
   srcCache.clear();
   // Elide the middle: with worktrees the last segment says which checkout this runs in.
-  const where = `${c.project}${c.worktree ? " · ⑃ " + c.branch : ""} · `;
+  const where = `${c.project}${c.worktree ? " · " + c.branch : ""} · `;
   const sub = $("runSub");
-  sub.textContent = where + elidePath(tilde(c.workdir));
+  sub.innerHTML = esc(c.project) + (c.worktree ? ` · ${icon("gitBranch")}${esc(c.branch)}` : "")
+    + ` · ${esc(elidePath(tilde(c.workdir)))}`;
   sub.title = where + tilde(c.workdir);
   const pop = $("runPop");
   pop.classList.add("show");
@@ -418,19 +420,19 @@ function renderRunPicker(term: string) {
       // The one blocked row you can act on, so it must not look disabled (docs/tasks.md).
       if (r.id.endsWith(":__untrusted") && runCtx) {
         return `<div class="run-row trustrow${on}" data-i="${idx}" title="Listing these runs ${esc(INTROSPECT_CMD[r.source] ?? r.source)} inside the folder">
-        <span class="ic">🔒</span>
+        <span class="run-ic">${icon("lock", "solo")}</span>
         <span class="txt"><b>${esc(PROVIDER_LABEL[r.source as Provider] ?? r.source)} tasks are hidden</b><small>Listing them runs code from this folder, so Episko asks first.</small></span>
         <button class="run-trust" type="button" data-trust="${idx}">Trust ${esc(runCtx.project)}…</button>
       </div>`;
       }
       return `<div class="run-row${on}${r.blocked ? " blocked" : ""}" data-i="${idx}" title="${esc(r.blocked || execCmd(ready ?? r))}">
-        <span class="ic">${r.blocked ? "⃠" : "▸"}</span>
+        <span class="run-ic">${icon(r.blocked ? "ban" : "chevronRight", "solo")}</span>
         <span class="txt"><b>${esc(r.label)}</b><small>${esc(r.detail || execCmd(r))}</small></span>
         ${lifted ? `<span class="run-src">${esc(sourceShort(r))}</span>` : ""}
-        <span class="end${r.kind === "deploy" ? " risky" : ""}"${r.note ? ` title="${esc(r.note)}"` : ""}>${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.kind ?? (r.described === "stale" ? "changed?" : r.background ? "bg" : "")}${pinned && !r.blocked ? " ★" : ""}</span>
-        <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">ⓘ</button>
-        ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">⋯</button>` : ""}
-        ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">✕</button>` : ""}
+        <span class="end${r.kind === "deploy" ? " risky" : ""}"${r.note ? ` title="${esc(r.note)}"` : ""}>${r.blocked ? esc(r.blocked) : r.id === runStackCfg.up ? "stack" : r.kind ?? (r.described === "stale" ? "changed?" : r.background ? "bg" : "")}${pinned && !r.blocked ? ` ${icon("starSolid", "solo")}` : ""}</span>
+        <button class="run-info-b" type="button" data-info="${idx}" title="What's behind this (→)">${icon("info", "solo")}</button>
+        ${asks ? `<button class="run-params" type="button" data-p="${idx}" title="Run with parameters…">${icon("ellipsis", "solo")}</button>` : ""}
+        ${g.name === "recent" ? `<button class="run-forget" type="button" data-forget="${esc(r.id)}" title="Forget — take “${esc(r.label)}” out of recent. It stays under ${esc(r.sourceFile || sourceShort(r))}.">${icon("x", "solo")}</button>` : ""}
       </div>`;
     }).join("");
     return `<div class="run-grp">${esc(g.name)}${g.sub ? `<span class="n">${esc(g.sub)}</span>` : ""}</div>${rows}`;
@@ -462,7 +464,7 @@ function renderRunStack() {
   if (!runCtx) { el.hidden = true; return; }
   const sum = stackSummary(runStackCfg);
   const up = runStackCfg.up ? runList.find((r) => r.id === runStackCfg.up && !r.blocked) : undefined;
-  const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">▶ Start stack</button>` : "";
+  const start = up ? `<button class="run-stack-go" type="button" data-stackgo title="${esc(execCmd(up))}">${icon("playSolid")}Start stack</button>` : "";
   const t = describedTally(runList);
   const todo = t.stale + t.missing;
   const setup = `<button class="run-stack-ai" type="button" data-stackai title="Claude reads this project's task, script and compose files in the background, read-only, and describes every task (what it is, what it serves, how it stops) plus the dev stack, for you to apply or discard">${t.fresh && !todo ? "Re-check…" : "Describe tasks…"}</button>`;
@@ -564,7 +566,7 @@ function renderRunInfo() {
 
   $("runList").innerHTML = `<div class="run-info">
     <div class="ri-h">
-      <button class="ri-back" type="button" data-ri="back" title="Back to the list (←)">‹</button>
+      <button class="ri-back" type="button" data-ri="back" title="Back to the list (←)">${icon("arrowLeft", "solo")}</button>
       <b>${esc(r.label)}</b><span class="run-src">${esc(sourceShort(r))}</span>${r.background ? `<span class="end">bg</span>` : ""}
     </div>
     ${overridden ? `<div class="ri-note warn">Overridden in <code>.episko/tasks.toml</code>: what runs below is the override, not the definition in ${esc(r.sourceFile)}.</div>` : ""}
@@ -575,7 +577,7 @@ function renderRunInfo() {
       <button class="ri-b" type="button" data-ri="open">Open file</button>
       <button class="ri-b" type="button" data-ri="reveal">Reveal</button>
       ${r.blocked ? "" : `<button class="ri-b" type="button" data-ri="edit" title="${r.source === "episko" ? "Edit in .episko/tasks.toml" : `Writes an override into .episko/tasks.toml, never ${esc(r.sourceFile)}`}">Edit…</button>`}
-      ${r.blocked ? "" : `<button class="ri-b go" type="button" data-ri="run">Run ▸</button>`}
+      ${r.blocked ? "" : `<button class="ri-b go" type="button" data-ri="run">Run${icon("chevronRight", "solo")}</button>`}
     </div>
   </div>`;
   $("runList").querySelectorAll<HTMLElement>("[data-ri]").forEach((el) =>

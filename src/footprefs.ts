@@ -20,7 +20,7 @@ export const FOOT_SEGS: readonly FootSegDef[] = [
   { id: "io", el: "fIoSeg", label: "Disk I/O", hint: "What today's sessions have read and written.", more: "Click it for the live rates and every window on record.", aliases: ["disk", "read", "write"] },
   { id: "engine", el: "fEngineSeg", label: "Where new sessions open", hint: "The launch engine, with a picker to change it.", aliases: ["engine", "embedded"] },
   { id: "shortcuts", el: "fShortSeg", label: "Shortcuts", hint: "The keyboard cheat sheet.", aliases: ["cheat sheet", "keys"] },
-  { id: "debug", el: "dbgBtn", label: "Debug console", hint: "The 🐞 button: the event log and live state.", aliases: ["bug", "log", "events"] },
+  { id: "debug", el: "dbgBtn", label: "Debug console", hint: "The bug button: the event log and live state.", aliases: ["bug", "log", "events"] },
 ];
 
 const IDS = new Set<string>(FOOT_SEGS.map((s) => s.id));

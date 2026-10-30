@@ -10,6 +10,7 @@ import { readList } from "./store";
 import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
+import { icon } from "./svgicons";
 import { renderFoot } from "./footer";
 import { askedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
 import { renderMini, renderSidebar } from "./sidebar";
@@ -220,7 +221,7 @@ export function renderPastHeader(d: Restorable) {
   xb.hidden = false;
   xb.title = "Close this mirror (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
-  $("extViewTxt").textContent = "Read-only mirror · shelved, not running · ⟲ Resume to carry on";
+  $("extViewTxt").textContent = "Read-only mirror · shelved, not running · Resume to carry on";
   $("hProj").textContent = d.project;
   const hb = $("hBranch"); hb.textContent = "shelved"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = d.title || "";
@@ -239,16 +240,16 @@ export function renderPastInspector(d: Restorable) {
   const why = isClaudeRow(d) && !busy ? sendGateFor(d.id) : null;
   const action = sent
     ? `<div class="ext-note warn">${esc(sent[0].toUpperCase() + sent.slice(1))}: another machine may own this conversation, so it can't be resumed here.</div>
-       ${back ? `<button class="ext-forget-btn" data-handrecall="${esc(back.id)}">↶ Take it back</button>` : ""}`
+       ${back ? `<button class="ext-forget-btn" data-handrecall="${esc(back.id)}">${icon("undo2")}Take it back</button>` : ""}`
     : busy
       ? `<div class="ext-note warn">This session is running right now. Resuming the same provider thread twice can interleave or corrupt its state, so it can't be restored until the other one exits.</div>`
-      : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">⟲ Resume this session</button>
+      : `<button class="ext-jump-btn" data-resume="${esc(d.id)}">${icon("rotateCcw")}Resume this session</button>
        <div class="ext-note">${esc(d.provider || "claude")} picks the conversation back up where it left off. A long session may compact its context first.</div>
-       ${isClaudeRow(d) ? `<button class="ext-forget-btn" data-handsend="${esc(d.id)}"${why ? ` disabled title="${esc(why)}"` : ""}>⇢ Send to…</button>
+       ${isClaudeRow(d) ? `<button class="ext-forget-btn" data-handsend="${esc(d.id)}"${why ? ` disabled title="${esc(why)}"` : ""}>${icon("send")}Send to…</button>
        ${why ? `<div class="ext-note">${esc(why)}.</div>` : ""}` : ""}`;
   const html = `
     <div class="ext-card">
-      <div class="ext-hl">· ${esc(d.provider || "claude")} · shelved</div>
+      <div class="ext-hl">${icon("archive")}${esc(d.provider || "claude")} · shelved</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
@@ -257,7 +258,7 @@ export function renderPastInspector(d: Restorable) {
       ${asked}
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
-      <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
+      <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and History can still reopen it.</div>
     </div>`;
   // Guarded like every renderAll surface: a repaint under the pointer drops the click.
   if (html === pastPainted && pastGen === stageGen) return;
@@ -381,14 +382,14 @@ export function renderExtInspector(e: ExtSession) {
   const peek = isDirty(g) ? extPeekHtml(e, g!) : "";
   $("inspector").innerHTML = `
     <div class="ext-card">
-      <div class="ext-hl">↗ Running outside Episko</div>
+      <div class="ext-hl">${icon("externalLink")}Running outside Episko</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(basename(e.cwd))}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(e.cwd))}</span></div>
       <div class="ext-meta"><span class="label">Status</span><span>${esc(e.status || "idle")}</span></div>
       <div class="ext-meta"><span class="label">Started</span><span>${esc(started)}</span></div>
       <div class="ext-meta"><span class="label">Claude</span><span>${e.version ? "v" + esc(e.version) : "–"}</span></div>
       <div class="ext-meta"><span class="label">PID</span><span class="mono">${e.pid}</span></div>
-      <button class="ext-jump-btn" data-jump="${e.pid}">↗ Jump to its terminal</button>
+      <button class="ext-jump-btn" data-jump="${e.pid}">${icon("externalLink")}Jump to its terminal</button>
       <div class="ext-note">Episko can't drive this session, because it was launched in another terminal. The panel on the left is a live read-only mirror of its transcript.</div>
     </div>${peek}`;
 }

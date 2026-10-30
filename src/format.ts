@@ -1,5 +1,7 @@
 // Display formatting: data in, string out. No DOM, no Tauri; see test/format.test.ts.
 
+import { icon } from "./svgicons";
+
 // ---------- paths & escaping ----------
 let HOME = ""; // set by main.ts once the backend answers; until then `tilde` is a no-op
 export function setHome(h: string) { HOME = h; }
@@ -313,7 +315,7 @@ export const uTok = (n: number) => n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 
 export function uDelta(cur: number, prev: number): string {
   if (prev <= 0) return `<span class="u-delta u-muted">new</span>`;
   const pct = Math.round((cur - prev) / prev * 100);
-  return `<span class="u-delta"><span class="u-arw">${pct >= 0 ? "▲" : "▼"}</span><b>${Math.abs(pct)}%</b>&nbsp;vs&nbsp;prev</span>`;
+  return `<span class="u-delta"><span class="u-arw">${icon(pct >= 0 ? "trendingUp" : "trendingDown", "solo")}</span><b>${Math.abs(pct)}%</b>&nbsp;vs&nbsp;prev</span>`;
 }
 
 // ---------- macOS permission checks (Settings › Privacy) ----------

@@ -2,10 +2,11 @@
 // assembles the rows and routes every `data-ps` click; Settings' row classes are reused so a
 // project row reads exactly like the global one it overrides (docs/settings.md).
 import { esc, escAttr } from "./format";
+import { icon } from "./svgicons";
 
 export interface PsSeg { value: string; label: string; sub?: string; off?: string }
 
-/** One row. `overridden` is the accent bar and the ⟲: this project answers for itself. */
+/** One row. `overridden` is the accent bar and the reset button: this project answers for itself. */
 export interface PsRow {
   id: string; label: string; hint: string;
   cur?: string;
@@ -28,7 +29,7 @@ export const nilCtl = (text: string): string => `<span class="set-nil">${esc(tex
 
 function rowHtml(r: PsRow): string {
   const reset = r.overridden
-    ? `<button class="set-reset" data-ps="reset|${r.id}" title="Follow Settings again" aria-label="Follow Settings for ${escAttr(r.label)}">⟲</button>` : "";
+    ? `<button class="set-reset" data-ps="reset|${r.id}" title="Follow Settings again" aria-label="Follow Settings for ${escAttr(r.label)}">${icon("rotateCcw", "solo")}</button>` : "";
   return `<div class="set-row${r.overridden ? " set-chg" : ""}" data-psrow="${r.id}">
     <div class="set-inline"><div class="set-itxt">
       <div class="set-glabel">${esc(r.label)}</div>

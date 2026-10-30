@@ -8,6 +8,7 @@ import { ask } from "./confirm";
 import { dlog } from "./debug";
 import { basename, esc } from "./format";
 import { fileSetHtml } from "./patchview";
+import { glyphIcon, icon } from "./svgicons";
 import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded, type WorkingSet } from "./types";
 import { extWorking } from "./sidebarview";
 import { checkoutDir } from "./gitwatch";
@@ -185,7 +186,7 @@ export async function openWt(project: string, repoDir: string, knownBranch?: str
   const ag = effectiveAgent(repoDir);
   const launchEngine = ag.capabilities.includes("external-terminal") ? termEngine : "embedded";
   const eng = engineDef(launchEngine);
-  $("wtEng").textContent = `${launchEngine === "embedded" ? "▤" : "⧉"} ${eng.label}`;
+  $("wtEng").innerHTML = `${icon(launchEngine === "embedded" ? "squareTerminal" : "appWindow", "solo")}${esc(eng.label)}`;
   ($("wtEng") as HTMLElement).title = launchEngine === termEngine
     ? `New sessions open in ${eng.label}`
     : `${ag.label} sessions currently stay embedded`;
@@ -430,7 +431,7 @@ function wtRender() {
     }
     html += `<button class="wt-item${d.kind === "create" ? " create" : ""}${d.stale ? " stale" : ""}${i === wtSel ? " on" : ""}"`
       + ` type="button" role="option" aria-selected="${i === wtSel}" data-wti="${i}" title="${esc(d.dir)}&#10;Double-click to ${esc(d.verb)}">`
-      + `<span class="wt-ic">${d.ic}</span>`
+      + `<span class="wt-ic">${glyphIcon(d.ic)}</span>`
       + `<span class="wt-main"><span class="wt-br">${wtName(d.label)}</span>`
       + (d.sub ? `<span class="wt-sub2">${esc(d.sub)}</span>` : "")
       + `</span><span class="wt-meta">`
@@ -889,7 +890,7 @@ const wtRefocus = () => { if ($("wtDlg").classList.contains("show")) ($("wtQ") a
 
 function wtPickBtn(kind: "base" | "switch", label: string): string {
   return `<button class="wt-pick" type="button" data-wtpick="${kind}" aria-haspopup="listbox">`
-    + `<span class="v">${esc(label)}</span><span class="c">▾</span></button>`;
+    + `<span class="v">${esc(label)}</span><span class="c">${icon("chevronDown", "solo")}</span></button>`;
 }
 
 export function closeWt() {

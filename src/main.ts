@@ -86,6 +86,7 @@ import {
   toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
+import { keyCap } from "./svgicons";
 import { account, rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
@@ -173,8 +174,8 @@ if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "
 applyFx(); // before first paint, or every infinite animation starts and is then cancelled
 
 // index.html hard-codes the mac glyphs; everything rendered from TS goes through MOD/chord.
+document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.innerHTML = IS_MAC ? keyCap("⌘") : "Ctrl"; });
 if (!IS_MAC) {
-  document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.textContent = "Ctrl"; });
   document.querySelectorAll<HTMLElement>("[title]").forEach((el) => { if (el.title.includes("⌘")) el.title = el.title.replace(/⌘/g, "Ctrl+"); });
   const fk = document.querySelector(".fseg.fk");
   if (fk) fk.textContent = `${chord("K")} · ${chord("1")}–9 switch · ${chord("B")} sidebar · ${chord("I")} inspector · ${chord("±")} font`;

@@ -1,6 +1,7 @@
 // The send sheet's markup and the rows a handed session leaves behind (docs/handoff.md). Data
 // in, string out: ./handoffui owns #handoffDlg, its listener and its guard.
 import { esc, escAttr } from "./format";
+import { glyphIcon, icon } from "./svgicons";
 import { peerName, type Brief, type GitOption, type HandoffRec, type MemoryFile, type MemoryRow, type Target } from "./handoff";
 
 export const PRIVACY = (hours: number) =>
@@ -79,23 +80,23 @@ export function reviewRestHtml(v: ReviewView): string {
     <div class="hand-priv">${esc(PRIVACY(v.ttlHours))}</div>
     <div class="sync-dim">This server accepts up to ${esc(mib(v.maxBytes))}. A snapshot leaves out files like <span class="mono">.env</span> and keys.</div>
     ${v.err ? `<div class="sync-err">${esc(v.err)}</div>` : ""}
-    ${foot(`to ${v.who}`, btn("cancel", "Cancel", "ghost", v.offering ? "Already sent. Use ↶ on its row to take it back" : "") + btn("send", v.busy ? "Sending…" : "Send", "go", blocked))}`;
+    ${foot(`to ${v.who}`, btn("cancel", "Cancel", "ghost", v.offering ? "Already sent. Use Take it back on its row" : "") + btn("send", v.busy ? "Sending…" : "Send", "go", blocked))}`;
 }
 
 /** A sent session whose handover finished: the shelved row's shape, cleared with ✕. */
 export function handoffRowHtml(r: HandoffRec, tag: string, title: string): string {
   return `<div class="srow pastrow handed" title="${escAttr(`Handed to ${peerName(r.peer)}; the conversation is theirs now`)}">
-    <span class="sglyph g-ended">⇢</span>
+    <span class="sglyph g-ended">${glyphIcon("⇢")}</span>
     <span class="sbranch">${esc(title)}</span>
     <span class="past-tag">${esc(tag)}</span>
-    <span class="sclose" data-handout="${escAttr(r.id)}" title="Clear this row">✕</span></div>`;
+    <span class="sclose" data-handout="${escAttr(r.id)}" title="Clear this row">${icon("x", "solo")}</span></div>`;
 }
 
 /** An offer to this machine, or one it is receiving: clicking opens its sheet. */
 export function incomingRowHtml(r: HandoffRec, tag: string, title: string): string {
   const taken = !!r.takenBy;
   return `<div class="srow pastrow handin${taken ? " taken" : ""}" data-handin="${escAttr(r.id)}" title="${escAttr(taken ? tag : `Sent by ${peerName(r.peer)} · click to open`)}">
-    <span class="sglyph g-ended">⇠</span>
+    <span class="sglyph g-ended">${glyphIcon("⇠")}</span>
     <span class="sbranch">${esc(title)}</span>
     <span class="past-tag">${esc(tag)}</span></div>`;
 }
@@ -103,7 +104,7 @@ export function incomingRowHtml(r: HandoffRec, tag: string, title: string): stri
 /** The rail's strip for offers whose project is not cloned here; empty when there are none. */
 export function incomingStripHtml(rows: string, n: number): string {
   if (!rows) return "";
-  return `<div class="handin-strip"><div class="phead ext-only"><span class="pname">⇠ Incoming</span>
+  return `<div class="handin-strip"><div class="phead ext-only"><span class="pname">${icon("inbox")}Incoming</span>
     <span class="pcount ext">${n} not cloned here</span></div><div class="psessions">${rows}</div></div>`;
 }
 

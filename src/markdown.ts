@@ -166,7 +166,7 @@ export function renderMarkdown(src: string, o: MdOpts): MdDoc {
     }
     // Not shown, still reachable: the reason is the tooltip, the file one click away.
     const why = t.kind === "url" ? "A web image; Settings › Reader can load these" : "An image beside the document";
-    return `<a class="mdr-a mdr-imgref" href="#"${linkAttrs(t)} title="${escAttr(why)}">▤ ${esc(alt || "image")}</a>`;
+    return `<a class="mdr-a mdr-imgref" href="#"${linkAttrs(t)} title="${escAttr(why)}"><span class="mdr-ic mdr-ic-img"></span>${esc(alt || "image")}</a>`;
   };
   const md = new Marked({ gfm: true, breaks: false, async: false });
   md.use({
@@ -193,7 +193,7 @@ export function renderMarkdown(src: string, o: MdOpts): MdDoc {
       image: ({ href, title, text }: Tokens.Image) => image(href, text, title ?? ""),
       code: ({ text, lang }: Tokens.Code) =>
         `<pre class="mdr-pre"${lang ? ` data-lang="${escAttr(lang.split(/\s/)[0])}"` : ""}><code>${esc(text).replace(/>/g, "&gt;")}</code></pre>`,
-      checkbox: ({ checked }: Tokens.Checkbox) => `<span class="mdr-tk">${checked ? "☑" : "☐"}</span> `,
+      checkbox: ({ checked }: Tokens.Checkbox) => `<span class="mdr-tk mdr-ic ${checked ? "mdr-ic-on" : "mdr-ic-off"}"></span> `,
     },
   });
   const html = md.parse(src || "") as string;

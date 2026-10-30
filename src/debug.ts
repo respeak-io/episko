@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $ } from "./dom";
 import { esc } from "./format";
+import { icon } from "./svgicons";
 import { account, rl, rlScoped } from "./rl";
 import {
   activeId, bgLogHealth, dirtyByFolder, externals, extMirrorId, folderDirty, isDirty,
@@ -132,7 +133,7 @@ function dbgTime(t: number) { const d = new Date(t); return d.toLocaleTimeString
 export function renderDbgPanel() {
   const snap = dbgSnapshot();
   const srows = snap.sessions.length
-    ? snap.sessions.map((s) => `<tr><td>${esc(s.project)}</td><td class="mono">${s.id.slice(0, 8)}</td><td class="ph-${s.phase}">${s.phase}${s.attention ? " ⚠" : ""}</td><td>${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : "–"}</td><td>${s.cost != null ? "$" + s.cost.toFixed(2) : "–"}</td><td class="mono">${esc(s.lastEvent || "–")}</td></tr>`).join("")
+    ? snap.sessions.map((s) => `<tr><td>${esc(s.project)}</td><td class="mono">${s.id.slice(0, 8)}</td><td class="ph-${s.phase}">${s.phase}${s.attention ? " " + icon("triangleAlert", "solo") : ""}</td><td>${s.ctxPct != null ? Math.round(s.ctxPct) + "%" : "–"}</td><td>${s.cost != null ? "$" + s.cost.toFixed(2) : "–"}</td><td class="mono">${esc(s.lastEvent || "–")}</td></tr>`).join("")
     : `<tr><td colspan="6" class="dbg-dim">no Episko sessions</td></tr>`;
   const logRows = dbgLog.slice().reverse().slice(0, 250)
     .map((e) => `<div class="dl ${e.lvl}"><span class="dl-t">${dbgTime(e.t)}</span><span class="dl-l">${e.lvl}</span><span class="dl-m">${esc(e.msg)}</span></div>`).join("")

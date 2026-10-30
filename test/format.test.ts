@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { icon } from "../src/svgicons";
 import {
   ageBucket, barRow, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc,
   fmtClock, fmtDay, fmtDayLong, fmtDur, fmtSince,
@@ -658,11 +659,11 @@ describe("uDelta — period-over-period change", () => {
     expect(uDelta(10, -5)).toBe('<span class="u-delta u-muted">new</span>');
   });
   it("shows the arrow by sign and the percentage by magnitude", () => {
-    expect(uDelta(150, 100)).toContain("▲");
+    expect(uDelta(150, 100)).toContain(icon("trendingUp", "solo"));
     expect(uDelta(150, 100)).toContain("<b>50%</b>");
-    expect(uDelta(50, 100)).toContain("▼");
+    expect(uDelta(50, 100)).toContain(icon("trendingDown", "solo"));
     expect(uDelta(50, 100)).toContain("<b>50%</b>"); // magnitude, not signed
-    expect(uDelta(100, 100)).toContain("▲");         // flat reads as up
+    expect(uDelta(100, 100)).toContain(icon("trendingUp", "solo"));         // flat reads as up
   });
 });
 

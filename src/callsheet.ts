@@ -5,6 +5,7 @@
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { ageBucket, esc, escAttr, fmtLatency } from "./format";
+import { icon } from "./svgicons";
 import { toolClass } from "./inspectorview";
 import { ACT_CAP } from "./phase";
 import { actClipText } from "./toolio";
@@ -124,7 +125,7 @@ function rowHtml(a: Act): string {
 function block(side: "inp" | "out", label: string, body: string, bad: boolean, dim: boolean): string {
   return `<div class="call-blk">`
     + `<div class="call-blh${bad ? " bad" : ""}">${esc(label)}`
-    + `<button class="call-bcopy" type="button" data-callcopy="${side}" title="Copy this on its own">⧉</button>`
+    + `<button class="call-bcopy" type="button" data-callcopy="${side}" title="Copy this on its own">${icon("copy", "solo")}</button>`
     + `</div>`
     + `<pre class="call-pre${bad ? " bad" : ""}${dim ? " dim" : ""}">${esc(body)}</pre>`
     + `</div>`;

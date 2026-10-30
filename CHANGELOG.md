@@ -12,6 +12,15 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ Every icon is now drawn from one set (Lucide) instead of Unicode symbols, which came from
+  whichever fallback font had them and so differed in size, weight and baseline. Icons are never
+  smaller than 13px, however small the text beside them.
+~ Keyboard shortcuts draw ⌘, ⌥, ⇧ and ⏎ as icons in their key caps; off macOS, Shift is
+  spelled out.
+~ Links that open the full view of a card (*History*, *Commit graph*, *Review*, …) are drawn as
+  small buttons with a ↗ after the label.
+! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
+  is a small square again instead of a wide box with its icon to the left.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

@@ -87,7 +87,7 @@ function fillSoPop() {
   // The headline counts what the switches left selected, so it and the button cannot disagree.
   const head = shelve.length
     ? `<div class="so-head"><b>Shelve ${plural(shelve.length, "session")}</b>`
-      + `<span>They stop, and stay in the sidebar under their project. ⟲ picks each one back up where it left off.</span></div>`
+      + `<span>They stop, and stay in the sidebar under their project. Resume picks each one back up where it left off.</span></div>`
     : `<div class="so-head"><b>Nothing to shelve</b>`
       + `<span>${p.working.length ? "Every session here is still working, and the switch below is keeping them."
         : "No session here can be resumed later, so none can be shelved."}</span></div>`;
@@ -147,7 +147,7 @@ function runSignoff() {
   dlog(missed ? "warn" : "info", `sign off · shelved ${shelved}, closed ${closed}${missed ? `, ${missed} left open` : ""}`);
   const said = [shelved ? `Shelved ${shelved}` : "", closed ? `closed ${closed}` : ""].filter(Boolean).join(" · ");
   toast(!said ? "Nothing to sign off"
-    : missed ? `${said} · ${missed} still open (see 🐞)`
+    : missed ? `${said} · ${missed} still open (see the debug console)`
       : `${said} · resume from the sidebar`);
   host.renderAll();
 }
