@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ ✕ on a session that has finished its turn can close without asking: the question has a
+  *Don't ask again* tick, and *Settings › Launching › Ask before closing a finished session*
+  brings it back. A session still working always asks. The question also stops calling a
+  finished session "still running".
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

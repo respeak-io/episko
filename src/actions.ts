@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
-import { ask } from "./confirm";
+import { ask, askOpt } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
@@ -38,6 +38,7 @@ import {
   setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
   setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
+  closeAskIdle, setCloseAskIdle as setCloseAskIdleState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -153,19 +154,25 @@ export async function shelveSessionAsked(id: string) {
   if (shelveSession(id)) toast("Shelved · resume it from the sidebar");
 }
 // The sidebar's and header's ✕ sit one misclick from a live agent; ending one is only
-// undone through History, so ask. Shells, tasks and an already-ended pane close at once.
+// undone through History, so ask. Mid-turn always asks; a finished one only while `closeAskIdle`.
 export async function closeSessionAsked(id: string) {
   const s = sessions.get(id);
   if (!s) return;
-  if (isAgent(s) && !s.external && s.phase !== "ended") {
+  const busy = midWork(s);
+  if (isAgent(s) && !s.external && s.phase !== "ended" && (busy || closeAskIdle)) {
     const name = s.title || s.project;
-    const lead = midWork(s) ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `${name} is still running.`;
+    const lead = busy ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `The agent behind ${name} is still open (${phaseText(s)}).`;
     const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead (⇩)." : "";
-    const ok = await ask(
+    const a = await askOpt(
       `${lead}\n\nClosing ends the agent; the conversation comes back only from History.${alt}`,
-      { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it" },
+      { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it",
+        optOut: busy ? undefined : "Don't ask again for a session that isn't working" },
     );
-    if (!ok) return;
+    if (!a.ok) return;
+    if (a.optOut) {
+      setCloseAskIdle(false);
+      toast("A finished session now closes without asking · Settings › Launching brings the question back");
+    }
   }
   closeSession(id);
 }
@@ -290,6 +297,13 @@ export function setAgentTools(on: boolean) {
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
   localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read at the next ✕; a session mid-turn asks whatever this says.
+export function setCloseAskIdle(on: boolean) {
+  setCloseAskIdleState(on);
+  localStorage.setItem("cc-close-ask", on ? "1" : "0");
   renderSettings();
 }
 
