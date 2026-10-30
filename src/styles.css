@@ -2378,6 +2378,10 @@ select.in-ctl { cursor: pointer; }
 .cfm-body code { font: 10.5px var(--font-mono); color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
 .cfm-body b { color: var(--text); font-weight: 650; }
 
+.cfm-opt { display: flex; align-items: center; gap: 7px; margin-top: 12px; font: 11px var(--font-ui); color: var(--muted); cursor: pointer; user-select: none; }
+.cfm-opt[hidden] { display: none; }
+.cfm-opt input { margin: 0; cursor: pointer; }
+.cfm-opt:hover { color: var(--text); }
 .cfm-foot { display: flex; align-items: center; gap: 7px; margin-top: 16px; }
 .cfm-hint { flex: 1; min-width: 0; font: 9.5px var(--font-mono); color: var(--muted-2); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .cfm-hint kbd { flex: none; font: 9px var(--font-mono); color: var(--muted); border: 1px solid var(--hair-strong); border-radius: 4px; padding: 1px 4px; }

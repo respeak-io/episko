@@ -18,7 +18,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup, shelvedInTree,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, closeAskIdle, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
 } from "./state";
@@ -87,6 +87,7 @@ export interface SettingsHost {
   setPrLinks: (on: boolean) => void;
   setShelvedTree: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
+  setCloseAskIdle: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -166,7 +167,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {}, setCloseAskIdle: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -466,7 +467,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "launching", label: "Launching", glyph: "▷", group: "work", sub: "What runs, where, how it starts",
+    id: "launching", label: "Launching", glyph: "▷", group: "work", sub: "What runs, where, how it starts and closes",
     controls: () => [
       // Outermost first: what runs, then where its terminal opens, then how it starts.
       { kind: "seg", set: "agent", key: "cc-agent", label: "Agent", hint: "What a new session runs.", more: agentMore(),
@@ -494,6 +495,11 @@ const SET_TABS: SetTab[] = [
         dim: () => termEngine !== "embedded",
         on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
         isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
+      { kind: "toggle", set: "closeask", key: "cc-close-ask", label: "Ask before closing a finished session",
+        hint: "✕ on an agent that has finished its turn asks first; off, it closes at once.",
+        more: "A session that is still working always asks, whatever this says, since closing stops the turn it is in. Either way the conversation comes back from History. The question's own tick turns this off.",
+        aliases: ["close", "confirm", "don't ask again", "quit", "end", "✕"], since: "0.39.0",
+        on: () => closeAskIdle, isDefault: () => closeAskIdle, reset: () => host.setCloseAskIdle(true) },
     ],
   },
   {
@@ -1700,6 +1706,7 @@ function applySetting(set: string, val: string) {
   else if (set === "prlinks") host.setPrLinks(val === "1");
   else if (set === "shelvedtree") host.setShelvedTree(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
+  else if (set === "closeask") host.setCloseAskIdle(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);

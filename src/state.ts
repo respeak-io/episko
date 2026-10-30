@@ -279,6 +279,9 @@ export function setPrLinksInApp(on: boolean) { prLinksInApp = on; }
 // Settings › Sidebar: shelved rows under their checkout's ⑃ header rather than below the project.
 export let shelvedInTree: boolean = localStorage.getItem("cc-shelved-tree") === "1";
 export function setShelvedInTree(on: boolean) { shelvedInTree = on; }
+// ✕ on a live agent that is NOT mid-turn asks first (on) or closes at once; mid-turn always asks.
+export let closeAskIdle: boolean = localStorage.getItem("cc-close-ask") !== "0";
+export function setCloseAskIdle(on: boolean) { closeAskIdle = on; }
 export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
 export function setDriftAuto(on: boolean) { driftAuto = on; }
 // Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.
