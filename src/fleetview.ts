@@ -56,7 +56,7 @@ export interface FleetView {
   today: string; when: string; tally: FleetTally; needsNote: string;
   needs: FleetRow[]; live: FleetRow[]; resume: FleetResume[];
   usage: FleetUsage;
-  limits: { h5: Forecast; d7: Forecast };
+  limits: { h5: Forecast | null; d7: Forecast }; // h5 null: the account has no 5-hour window
   team: TeamRow[] | null;            // null: sync is not set up, so the section is not drawn
 }
 
@@ -403,8 +403,8 @@ function limitRow(label: string, f: Forecast): string {
     <div class="fl-track${cls}"><i style="width:${w}%"></i></div>
     <span class="rs mono">${f.resetTs != null ? `resets in ${esc(fmtUntil(f.resetTs))}` : "no active window"}</span></div>`;
 }
-const limitsSec = (l: { h5: Forecast; d7: Forecast }) =>
-  sec("Account limits", "", "", limitRow("5-hour window", l.h5) + limitRow("Week", l.d7)
+const limitsSec = (l: FleetView["limits"]) =>
+  sec("Account limits", "", "", (l.h5 ? limitRow("5-hour window", l.h5) : "") + limitRow("Week", l.d7)
     + `<p class="fl-fore${l.d7.used == null ? "" : ` s-${l.d7.status}`}">${esc(foreText(l.d7))}</p>`, "");
 
 export function fleetBodyHtml(v: FleetView): string {

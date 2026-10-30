@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ An account without a 5-hour limit (verified Ultra plans, since 2026-10-30) shows only its weekly
+  one: the status bar, the limits popover, *Usage & spend* and the all-projects dashboard drop the
+  5-hour meter instead of leaving it at –. It comes back if the account reports a 5-hour window again.
+~ Plans go by their new names: Max 5x shows as *Max*, Max 20x as *Ultra*.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

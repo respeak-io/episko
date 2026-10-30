@@ -5,7 +5,7 @@
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { popGoHtml } from "./footerview";
-import { account, accountName, D7_LEN, forecast5h, forecast7d, H5_LEN, rlScoped, scopedForecasts, type Forecast } from "./rl";
+import { account, accountName, D7_LEN, forecast5h, forecast7d, H5_LEN, hasH5Window, rlScoped, scopedForecasts, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
 import type { SpendSource } from "./sync";
@@ -330,7 +330,7 @@ function forecastBlockHtml(): string {
   return `<div class="fc-block">
     <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?${account ? ` · ${esc(accountName(account))}` : ""}</span></div>
     <div class="fc-grid">
-      ${fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr")}
+      ${hasH5Window() ? fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr") : ""}
       ${fcWinHtml("Weekly", "7-day window", f7, f7.rate == null ? null : f7.rate * 24, D7_LEN, "%/day")}
     </div>
     ${scopedBlockHtml()}
