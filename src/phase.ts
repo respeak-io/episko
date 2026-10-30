@@ -10,6 +10,7 @@ import { descText, inputText, outputText } from "./toolio";
 import { acctSince, applyRlReadings, noteAccount, rl } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
 import { clearPermissionState, pendingPermissionIds, releaseAnswered } from "./permissions";
+import { titleBusy } from "./format";
 
 // Run-on-stop needs task discovery and panes (main.ts), so it arrives as a seam.
 let onTurnEnd: (s: Sess) => void = () => {};
@@ -40,6 +41,28 @@ export const STRAGGLER_MS = 2_000;
 // on purpose: a single Opus answer can take minutes to finish, and it is the only thing between
 // this rule and calling a live turn dead.
 export const TURN_STALL_MS = 180_000;
+
+// An interrupt (Ctrl+C, Esc) fires no hook at all: Claude only flips its OSC title from a
+// spinner frame to ✳. So a key typed while it spins arms, and that flip, right after, confirms.
+export const INTR_MS = 1_500;
+const busy = (s: Sess) => s.phase === "thinking" || s.phase === "working";
+export function noteInterruptKey(s: Sess) {
+  if (busy(s) && titleBusy(s.rawTitle) === true) s.intrAt = Date.now();
+}
+// From applyOscTitle with the title it replaced; true when it ended the turn.
+export function confirmInterrupt(s: Sess, prev: string | undefined): boolean {
+  if (!s.intrAt || Date.now() - s.intrAt > INTR_MS || !busy(s)) return false;
+  if (titleBusy(prev) !== true || titleBusy(s.rawTitle) !== false) return false;
+  // A permission dialog stills the title too, and its ask must stay answerable.
+  if (pendingPermissionIds(s).length || s.attention?.startsWith("permission")) return false;
+  // Idle, not done: you stopped it, so nothing to badge or chime. A queued prompt goes back to the composer.
+  s.queuedPrompt = false;
+  const now = Date.now();
+  for (const a of s.activity) if (a.durMs == null) { a.durMs = now - a.startMs; a.failed = true; a.out ||= "interrupted"; }
+  setPhase(s, "idle"); clearPending(s); s.curTool = ""; s.curArg = "";
+  onSessionTouched(s, "", {});
+  return true;
+}
 
 export function setPhase(s: Sess, p: Phase) { if (s.phase !== p) { s.phase = p; s.phaseSince = Date.now(); } }
 export function toolArg(tool: string, input: any): string {
@@ -236,11 +259,13 @@ export function applyHook(s: Sess, data: any) {
   // A tool hook must not drive the phase while a fleet is up (its agents' hooks arrive
   // under the PARENT's id) or as a straggler of the ended turn. Bounded on purpose: a bare
   // `phase === "done"` made done absorbing, since most next turns open with a tool call.
-  const bg = () => liveCount(s) > 0 || (s.phase === "done" && nowMs - s.phaseSince < STRAGGLER_MS);
+  // An interrupt's title can beat the cut-off call's own hook, which then lands on the idle pane.
+  const ended = s.phase === "done" || (s.phase === "idle" && !!s.intrAt);
+  const bg = () => liveCount(s) > 0 || (ended && nowMs - s.phaseSince < STRAGGLER_MS);
   switch (ev) {
     // A fresh REPL loses everything in flight, including the SubagentStops still owed.
     case "SessionStart":
-      setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false;
+      setPhase(s, "idle"); clearPending(s); newTurn(s); s.agents.clear(); s.fanout = null; s.queuedPrompt = false; s.intrAt = 0;
       if (clearsOutline(data.source)) s.prompts = [];
       break;
     // A prompt typed mid-turn is queued, so the next Stop is the old turn's; read before setPhase.
@@ -250,6 +275,7 @@ export function applyHook(s: Sess, data: any) {
     case "UserPromptSubmit": {
       const typed = cleanPrompt(data.prompt);
       if (s.phase === "working" && !isEnvelope(typed) && !parseRelay(typed)) s.queuedPrompt = true;
+      s.intrAt = 0;
       recordPrompt(s, data.prompt);
       setPhase(s, "thinking"); clearPending(s); newTurn(s); s.curTool = ""; s.curArg = ""; break;
     }

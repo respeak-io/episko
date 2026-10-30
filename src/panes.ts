@@ -21,7 +21,7 @@ import {
 import { readList } from "./store";
 import { seedPrompts } from "./outline";
 import { readProviderAsked } from "./providers";
-import { setPhase } from "./phase";
+import { confirmInterrupt, setPhase } from "./phase";
 import { driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
@@ -104,7 +104,10 @@ function newClaudeTerm(id: string, pane: HTMLElement): { term: Terminal; fit: Fi
 // A pane's OSC title landed, for both agent spawners. `rawTitle` is kept even when the
 // cleaned title is unchanged, so Settings can re-clean a pane that has since gone quiet.
 function applyOscTitle(s: Sess, t: string) {
+  const prev = s.rawTitle;
   s.rawTitle = t;
+  // Before the early return: "◐ x" → "✳ x" cleans to the same title.
+  if (confirmInterrupt(s, prev)) renderAll();
   const c = cleanTitle(t, s, titlePrefs);
   if (c === s.title) return;
   s.title = c;

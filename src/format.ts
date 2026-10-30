@@ -115,6 +115,14 @@ export function titleDecor(extra: string): RegExp {
   return re;
 }
 
+// Claude's lead glyph says whether its REPL is busy: a spinner frame, or ✳ once it waits on you.
+// Null for a title with neither. Built-in table only; the user's additions are about stripping.
+export function titleBusy(t: string | undefined): boolean | null {
+  const lead = TITLE_DECOR.exec(t ?? "")?.[0].trim() ?? "";
+  if (!lead) return null;
+  return !lead.startsWith("✳");
+}
+
 // The OSC auto-summary, unless it is just the folder we already show. Takes three fields
 // rather than a `Sess` to keep ./format free of a types.ts import.
 export function cleanTitle(

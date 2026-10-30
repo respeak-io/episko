@@ -14,6 +14,7 @@ import { huntFromTop, lineHasPrompt, normLine, promptKeys, screenShift, type Pro
 import { findLinks, linkBases, type PathCand } from "./termlinks";
 import { activeId, copyChord, keyPrefs, prLinksInApp, sessions, setTermFontSize, stageGroup, termFontSize } from "./state";
 import { matchAction } from "./keys";
+import { noteInterruptKey } from "./phase";
 import { inStageGroup } from "./grouping";
 
 // The bundled Nerd Font first (@font-face in styles.css) so icon glyphs draw on every OS.
@@ -169,6 +170,8 @@ export function claudeInput(id: string): (d: string) => void {
       lastIntr = now;
       warned = false;
     }
+    // A bare Esc interrupts too; an Alt chord or an arrow arrives as a longer sequence.
+    if (d === "\x03" || d === "\x1b") { const s = sessions.get(id); if (s) noteInterruptKey(s); }
     invoke("write_pty", { sessionId: id, data: d });
   };
 }
