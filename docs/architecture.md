@@ -163,4 +163,16 @@ is primed on the swap), since nobody watched it close. The limit chime skips a p
 accounts, and sync tags its `limits` events with the account so another machine's login lands in
 that account's slot.
 
+**An account may have no 5-hour window at all.** Since 2026-10-30 a verified Ultra plan (Max 20x,
+renamed) has only the week, and the CLI says so by omission. It rebuilds its windows from every
+response's headers and drops one whose reset has passed (read out of the 2.1.314 bundle), so
+`five_hour` is missing both for an account without one and from an idle pane whose window lapsed.
+Only a statusLine whose API clock just moved tells the two apart, so `applyRlReadings(…, fresh)`
+drops the held reading only then; dropping it on a lapse would also lose that window's forecast-log
+entry. The rest is derived, not stored: `hasH5Window()` is false while `rl` holds a week and no 5
+hours, every surface (footer, limits popover, *Usage & spend*, the fleet's Account limits) leaves
+the meter out rather than draw a `–` that never fills, and a peer's older 5-hour figure is not
+merged back over it. Two edges hide the meter until the next response: a webview reload over a
+lapsed window (which has nothing in it), and a failed request after a lapse.
+
 **It is a level and never a forecast.** The probe runs only when a surface that shows it opens (the footer's limits popover, *Usage & spend*), so there is one reading and no slope. ./rlprobe throttles on the attempt rather than the answer, so a machine with no working CLI backs off instead of spawning a process per click; the surfaces say `level only` and drop the burn rate, projection and time-to-cap rather than printing the level back with a `~` in front of it. Sampling these on a timer would buy a forecast at the price of a `claude` process every few minutes, which is a trade worth making deliberately and not by accident.

@@ -351,7 +351,8 @@ export function applyStatusline(s: Sess, data: any) {
   if (typeof cost === "number") { addUsage(costDelta(s.resumeId || s.id, cost, true, s.id), s); s.cost = cost; pushHist(s.costHist, cost); }
   const dur = data.cost?.total_duration_ms; if (typeof dur === "number") s.durMs = dur;
   const api = data.cost?.total_api_duration_ms;
-  if (typeof api === "number" && api !== s.apiMs) { s.apiMs = api; s.apiMsSince = Date.now(); }
+  const reached = typeof api === "number" && api !== s.apiMs;
+  if (reached) { s.apiMs = api; s.apiMsSince = Date.now(); }
   // Claude fires UserPromptSubmit the moment you press Enter, so a prompt cancelled with Esc —
   // or edited and re-sent — leaves the pane `thinking` with no hook that will ever correct it
   // and no idle Notification either (text back in the composer is not an idle REPL). Both clocks
@@ -362,7 +363,7 @@ export function applyStatusline(s: Sess, data: any) {
     setPhase(s, "idle");
   }
   // A pane that has not reached the API since `/login` still reports the old account's figures.
-  if (typeof api !== "number" || s.apiMsSince >= acctSince) applyRlReadings(data.rate_limits);
+  if (typeof api !== "number" || s.apiMsSince >= acctSince) applyRlReadings(data.rate_limits, reached);
   // The per-session shape shared surfaces read; global `rl` stays the account-wide authority.
   s.rateLimits = [
     ...(rl.h5 == null ? [] : [{ usedPercent: rl.h5, resetsAt: rl.h5Reset, windowMins: 300 }]),

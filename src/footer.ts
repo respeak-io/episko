@@ -40,10 +40,12 @@ export function renderFoot() {
     ? `Today across your machines: ${from.map((r) => `${r.label} ${uUsd2(r.usd)}`).join(" · ")} · click for detail`
     : "Today's spend · click for the split by project and session";
   const limits = selectedLimits();
-  const one = limits?.windows[0]; const two = limits?.windows[1];
+  // A per-model window carries its own label and stays in the popover; the bar meters the account's.
+  const [one, two] = limits?.windows.filter((w) => !w.label) ?? [];
   $("fLimitOwner").textContent = limits ? `${limits.label} limits` : "limits";
   $("fRlLabel").textContent = limitShort(one?.windowMins ?? 300);
   $("fRl7Label").textContent = limitShort(two?.windowMins ?? 10080);
+  $("fRl7Grp").hidden = !!limits && !two; // one window (verified Ultra has no 5-hour one), one meter
   $("fUsageSeg").title = limits
     ? `${limits.label} usage limits${limits.forecast ? " & forecast" : ""}${limits.account ? ` · ${limits.account.name}` : ""} · click for detail`
     : "No integrated usage limits for the selected pane";
