@@ -1031,51 +1031,62 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
   // Measured against CLI 2.1.314: Ctrl+C and Esc mid-turn fire no Stop and no other hook, only
   // a statusLine and the title's spinner frame turning into ✳. The pane pulsed amber until the next prompt.
   describe("an interrupted turn", () => {
-    const busy = (phase: Sess["phase"] = "working") => sess({ phase, curTool: "Bash", rawTitle: "◐ Sleep 45 seconds" });
-    it("goes idle once the title stops spinning after the key", () => {
+    const SPIN = "◐ Sleep 45 seconds", STILL = "✳ Sleep 45 seconds";
+    const busy = (phase: Sess["phase"] = "working") => sess({ phase, curTool: "Bash", rawTitle: SPIN });
+    const flip = (s: Sess, t = STILL) => { const prev = s.rawTitle; s.rawTitle = t; return confirmInterrupt(s, prev); };
+    it("goes idle when the title stops spinning right after the key", () => {
       const s = busy();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "sleep 45" } });
       noteInterruptKey(s);
       vi.advanceTimersByTime(300);
-      s.rawTitle = "✳ Sleep 45 seconds";
-      expect(confirmInterrupt(s)).toBe(true);
-      expect(s).toMatchObject({ phase: "idle", curTool: "", intrAt: 0 });
+      expect(flip(s)).toBe(true);
+      expect(s).toMatchObject({ phase: "idle", curTool: "" });
+      // The cut-off call's row is closed, or the Tools tab times it forever.
+      expect(s.activity[0]).toMatchObject({ durMs: 300, failed: true, out: "interrupted" });
     });
-    it("goes idle on the statusLine when the title was already still", () => {
-      // A permission dialog stops the spinner before the Esc that rejects it.
-      const s = sess({ phase: "working", rawTitle: "✳ x" });
+    it("keeps the cut-off call's late hook from re-driving the pane", () => {
+      const s = busy();
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_use_id: "t1", tool_input: { command: "sleep 45" } });
       noteInterruptKey(s);
-      applyStatusline(s, {});
+      flip(s);
+      hook(s, "PostToolUseFailure", { tool_name: "Bash", tool_use_id: "t1", error: "interrupted" });
       expect(s.phase).toBe("idle");
+      vi.advanceTimersByTime(STRAGGLER_MS);
+      hook(s, "UserPromptSubmit", { prompt: "next" });
+      hook(s, "PreToolUse", { tool_name: "Bash", tool_input: { command: "ls" } });
+      expect(s.phase).toBe("working");
     });
     it("ignores a key that did not stop the turn", () => {
       const s = busy("thinking");
       noteInterruptKey(s);
-      applyStatusline(s, {});
-      expect(confirmInterrupt(s)).toBe(false);
+      expect(flip(s, "◑ Sleep 45 seconds")).toBe(false);
+      vi.advanceTimersByTime(INTR_MS + 1);
+      // A turn that stills on its own later (a permission dialog, the end) is not the key's doing.
+      expect(flip(s)).toBe(false);
       expect(s.phase).toBe("thinking");
     });
     it("needs the key: a still title alone is not an interrupt", () => {
-      const s = busy();
-      s.rawTitle = "✳ x";
-      expect(confirmInterrupt(s)).toBe(false);
-      expect(s.phase).toBe("working");
+      expect(flip(busy())).toBe(false);
     });
-    it("forgets a key once the window has passed", () => {
-      const s = busy();
+    it("is not armed while the title is already still, nor from a finished pane", () => {
+      const s = sess({ phase: "working", rawTitle: STILL });
       noteInterruptKey(s);
-      vi.advanceTimersByTime(INTR_MS + 1);
-      s.rawTitle = "✳ x";
-      expect(confirmInterrupt(s)).toBe(false);
-    });
-    it("is not armed from a finished pane, and a new prompt disarms it", () => {
-      const done = sess({ phase: "done", rawTitle: "✳ x" });
+      const done = sess({ phase: "done", rawTitle: SPIN });
       noteInterruptKey(done);
-      expect(done.intrAt).toBeUndefined();
+      expect([s.intrAt, done.intrAt]).toEqual([undefined, undefined]);
+    });
+    it("leaves a held permission standing", () => {
+      const s = busy();
+      hook(s, "PermissionRequest", { tool_name: "Bash", tool_input: { command: "rm x" } });
+      noteInterruptKey(s);
+      expect(flip(s)).toBe(false);
+      expect(s.attention).toBe("permission: Bash");
+    });
+    it("is disarmed by a new prompt", () => {
       const s = busy();
       noteInterruptKey(s);
       hook(s, "UserPromptSubmit", { prompt: "next" });
-      s.rawTitle = "✳ x";
-      expect(confirmInterrupt(s)).toBe(false);
+      expect(flip(s)).toBe(false);
       expect(s.phase).toBe("thinking");
     });
   });

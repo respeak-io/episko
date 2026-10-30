@@ -396,7 +396,7 @@ export interface Sess {
   // A prompt typed mid-tool-call, queued behind a turn whose Stop has not landed. A flag, not a count:
   // exactly one Stop consumes it. Set only from working: thinking is also where a second idle prompt lands.
   queuedPrompt: boolean;
-  intrAt?: number; // when ^C/Esc was typed mid-turn, until the title confirms it (confirmInterrupt in ./phase)
+  intrAt?: number; // ^C/Esc typed mid-turn; kept past the confirm for the straggler guard, cleared by the next prompt (./phase)
   // set by StopFailure, cleared on the next turn; keeps the idle nudge from relabelling a dead turn
   // (endTurn in ./phase)
   apiErr: ApiErr | null;

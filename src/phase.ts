@@ -10,6 +10,7 @@ import { descText, inputText, outputText } from "./toolio";
 import { acctSince, applyRlReadings, noteAccount, rl } from "./rl";
 import { resolveProviderPermission } from "./providers/control";
 import { clearPermissionState, pendingPermissionIds, releaseAnswered } from "./permissions";
+import { titleBusy } from "./format";
 
 // Run-on-stop needs task discovery and panes (main.ts), so it arrives as a seam.
 let onTurnEnd: (s: Sess) => void = () => {};
@@ -42,20 +43,24 @@ export const STRAGGLER_MS = 2_000;
 export const TURN_STALL_MS = 180_000;
 
 // An interrupt (Ctrl+C, Esc) fires no hook at all: Claude only flips its OSC title from a
-// spinner frame to ✳ and sends one statusLine. So the key arms and either of those confirms.
-export const INTR_MS = 5_000;
-const TITLE_IDLE = "✳";
+// spinner frame to ✳. So a key typed while it spins arms, and that flip, right after, confirms.
+export const INTR_MS = 1_500;
+const busy = (s: Sess) => s.phase === "thinking" || s.phase === "working";
 export function noteInterruptKey(s: Sess) {
-  if (s.phase === "thinking" || s.phase === "working") s.intrAt = Date.now();
+  if (busy(s) && titleBusy(s.rawTitle) === true) s.intrAt = Date.now();
 }
-// From a new OSC title and from a statusLine; true when it ended the turn.
-export function confirmInterrupt(s: Sess): boolean {
-  if (!s.intrAt || Date.now() - s.intrAt > INTR_MS || !(s.rawTitle ?? "").startsWith(TITLE_IDLE)) return false;
-  s.intrAt = 0;
-  if (s.phase !== "thinking" && s.phase !== "working") return false;
-  // Idle, not done: you stopped it, so there is nothing to badge or chime about.
+// From applyOscTitle with the title it replaced; true when it ended the turn.
+export function confirmInterrupt(s: Sess, prev: string | undefined): boolean {
+  if (!s.intrAt || Date.now() - s.intrAt > INTR_MS || !busy(s)) return false;
+  if (titleBusy(prev) !== true || titleBusy(s.rawTitle) !== false) return false;
+  // A permission dialog stills the title too, and its ask must stay answerable.
+  if (pendingPermissionIds(s).length || s.attention?.startsWith("permission")) return false;
+  // Idle, not done: you stopped it, so nothing to badge or chime. A queued prompt goes back to the composer.
   s.queuedPrompt = false;
+  const now = Date.now();
+  for (const a of s.activity) if (a.durMs == null) { a.durMs = now - a.startMs; a.failed = true; a.out ||= "interrupted"; }
   setPhase(s, "idle"); clearPending(s); s.curTool = ""; s.curArg = "";
+  onSessionTouched(s, "", {});
   return true;
 }
 
@@ -254,7 +259,9 @@ export function applyHook(s: Sess, data: any) {
   // A tool hook must not drive the phase while a fleet is up (its agents' hooks arrive
   // under the PARENT's id) or as a straggler of the ended turn. Bounded on purpose: a bare
   // `phase === "done"` made done absorbing, since most next turns open with a tool call.
-  const bg = () => liveCount(s) > 0 || (s.phase === "done" && nowMs - s.phaseSince < STRAGGLER_MS);
+  // An interrupt's title can beat the cut-off call's own hook, which then lands on the idle pane.
+  const ended = s.phase === "done" || (s.phase === "idle" && !!s.intrAt);
+  const bg = () => liveCount(s) > 0 || (ended && nowMs - s.phaseSince < STRAGGLER_MS);
   switch (ev) {
     // A fresh REPL loses everything in flight, including the SubagentStops still owed.
     case "SessionStart":
@@ -376,7 +383,6 @@ export function applyStatusline(s: Sess, data: any) {
   // and no idle Notification either (text back in the composer is not an idle REPL). Both clocks
   // must be stale: the API's is flat through any single in-flight request too, so on its own it
   // would call a long text-only turn dead (docs/architecture.md).
-  confirmInterrupt(s);
   const now = Date.now();
   if (s.phase === "thinking" && now - s.phaseSince >= TURN_STALL_MS && now - s.apiMsSince >= TURN_STALL_MS) {
     setPhase(s, "idle");
