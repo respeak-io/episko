@@ -109,8 +109,8 @@ export function setClaudeAccts(list: ClaudeAcct[]) { claudeAccts = clampAccts(li
 // The last check per label (in memory): whether its token worked, and why not.
 export interface AcctCheck { ok: boolean; error: string | null; at: number; busy?: boolean }
 export const acctChecks: Record<string, AcctCheck> = {};
-export let foundTokens: string[] = []; // labels with a token in the keychain, as last listed
-export function setFoundTokens(l: string[]) { foundTokens = l; }
+export let foundTokens: string[] | null = null; // labels with a token in the keychain, as last listed
+export function setFoundTokens(l: string[] | null) { foundTokens = l; }
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 

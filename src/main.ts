@@ -122,7 +122,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
-  copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  claudeAccts, copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
@@ -344,6 +344,7 @@ setStageMoved(renderAll); // the pass after a handover is where ./nav records it
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
 syncShownAccount(); // the meters open on the account a new session would take (docs/accounts.md)
+if (claudeAccts.length) void listClaudeTokens(); // a token deleted by hand is skipped rather than failing a launch
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 // The overlay writes (commit, stash, discard): re-poll the folder at once rather than on the

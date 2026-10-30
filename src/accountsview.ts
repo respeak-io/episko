@@ -5,7 +5,8 @@ import { esc, escAttr } from "./format";
 import type { AcctReading, ClaudeAcct } from "./accounts";
 import type { AcctCheck } from "./state";
 
-export interface AcctRow { acct: ClaudeAcct; reading: AcctReading | null; full: boolean; check?: AcctCheck; next: boolean }
+/** `blocked`: why a launch skips it (no token in the keychain, or its last Check failed). */
+export interface AcctRow { acct: ClaudeAcct; reading: AcctReading | null; full: boolean; check?: AcctCheck; next: boolean; blocked?: string }
 export interface AcctPanel { rows: AcctRow[]; found: string[]; login: string | null; draft: { name: string; token: string }; external: boolean; now: number }
 
 const left = (resetS: number | null, now: number) => {
@@ -35,6 +36,7 @@ function row(r: AcctRow, i: number, n: number, now: number): string {
     : c && !c.ok ? `<span class="acct-bad" title="${escAttr(c.error ?? "")}">✕ ${esc(c.error ?? "failed")}</span>`
       : c ? `<span class="sync-dim">✓ worked ${ago(now - c.at)}</span>` : "";
   const tag = !r.acct.on ? `<span class="acct-tag">off</span>`
+    : r.blocked ? `<span class="acct-tag full" title="New sessions skip it until this is fixed">${esc(r.blocked)}</span>`
     : r.full ? `<span class="acct-tag full">full</span>`
       : r.next ? `<span class="acct-tag next">next session</span>` : "";
   return `<div class="acct-row${r.acct.on ? "" : " off"}">

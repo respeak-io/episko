@@ -23,7 +23,7 @@ import {
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
   claudeAccts, acctChecks, foundTokens,
 } from "./state";
-import { acctFull, addAcct, moveAcct, pickAcct, toggleAcct, validLabel, type ClaudeAcct } from "./accounts";
+import { acctFull, acctReady, addAcct, moveAcct, pickAcct, toggleAcct, validLabel, type ClaudeAcct } from "./accounts";
 import { accountsPanelHtml } from "./accountsview";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
@@ -1493,13 +1493,16 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "accounts": {
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
       const now = Date.now();
-      const next = pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), now);
+      const ready = (l: string) => acctReady(l, acctChecks[l], foundTokens);
+      const next = pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), now, undefined, ready);
       panel = accountsPanelHtml({
         rows: claudeAccts.map((acct) => {
           const reading = acctReading(TOKEN_ID + acct.label);
-          return { acct, reading, full: acctFull(reading, now), check: acctChecks[acct.label], next: next?.label === acct.label };
+          const missing = !!foundTokens && !foundTokens.includes(acct.label);
+          return { acct, reading, full: acctFull(reading, now), check: acctChecks[acct.label], next: next?.label === acct.label,
+            blocked: missing ? "no token" : ready(acct.label) ? undefined : "check failed" };
         }),
-        found: foundTokens.filter((f) => !claudeAccts.some((a) => a.label === f)),
+        found: (foundTokens ?? []).filter((f) => !claudeAccts.some((a) => a.label === f)),
         login: loginAcct ? accountName(loginAcct) : null, draft: acctDraft, external: termEngine !== "embedded", now,
       });
       always = true;

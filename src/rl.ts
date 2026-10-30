@@ -239,7 +239,7 @@ export let acctSince = 0;
 export const limitHits: Record<string, number> = {};
 export const TOKEN_ID = "tok:";
 export const tokenAccount = (label: string): ClaudeAccount => ({ id: TOKEN_ID + label, tier: null, kind: null, email: null, label });
-const ACCTS = "cc-rl-accounts", MAX_ACCTS = 8;
+const ACCTS = "cc-rl-accounts", MAX_ACCTS = 12; // ./accounts' eight, the login and a few past ones
 
 export function asAccount(v: unknown): ClaudeAccount | null {
   const o = v && typeof v === "object" ? v as Record<string, unknown> : null;
@@ -359,6 +359,7 @@ export function applyRlReadings(limits: any): void {
 /** Another machine's reading. One from a different account updates that account's slot instead. */
 export function mergePeerRl(p: Record<string, unknown>): boolean {
   const from = typeof p.acct === "string" && p.acct ? p.acct : null;
+  if (from?.startsWith(TOKEN_ID)) return false; // a label is this machine's name, so another's max20 may be another subscription
   const slot = from && account && from !== account.id ? rlAccts[from] : null;
   if (from && account && from !== account.id && !slot) return false; // no name to show it under
   const t = slot ?? rl;

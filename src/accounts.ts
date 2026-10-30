@@ -6,7 +6,7 @@ export interface ClaudeAcct { label: string; on: boolean }
 /** What ./rl last saw for one account; `hitUntil` is a refused turn the windows did not show. */
 export interface AcctReading { h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null; hitUntil?: number }
 
-const MAX_ACCTS = 8; // ./rl keeps one slot per account and holds at most eight
+const MAX_ACCTS = 8; // ./rl keeps a slot per account, with room left for the login's
 // accounts.rs's `valid_label`: the label is a keychain account and a file name.
 export const validLabel = (l: unknown): l is string => typeof l === "string" && /^[A-Za-z0-9._-]{1,40}$/.test(l);
 
@@ -45,13 +45,32 @@ export function acctFull(r: AcctReading | null, now: number): boolean {
   return full(r.h5, r.h5Reset) || full(r.d7, r.d7Reset);
 }
 
-/** The account a new session starts on: the first switched on and not full. Null is the login. */
-export function pickAcct(list: ClaudeAcct[], readingOf: (label: string) => AcctReading | null, now: number, skip?: string): ClaudeAcct | null {
-  return list.find((a) => a.on && a.label !== skip && !acctFull(readingOf(a.label), now)) ?? null;
+/**
+ * Whether a launch can use the account at all: its token was there when last listed (`found` is
+ * null before the first listing) and its last Check did not fail. A pick never lands on a 401.
+ */
+export function acctReady(label: string, check: { ok: boolean; busy?: boolean } | undefined, found: string[] | null): boolean {
+  if (found && !found.includes(label)) return false;
+  return !check || check.ok || !!check.busy;
 }
 
-/** How long a refused turn keeps an account out of the pick: to its 5h reset when known, else an hour. */
-export function hitUntil(r: AcctReading | null, now: number): number {
+/** The account a new session starts on: the first switched on, ready and not full. Null is the login. */
+export function pickAcct(list: ClaudeAcct[], readingOf: (label: string) => AcctReading | null, now: number, skip?: string, ready: (label: string) => boolean = () => true): ClaudeAcct | null {
+  return list.find((a) => a.on && a.label !== skip && ready(a.label) && !acctFull(readingOf(a.label), now)) ?? null;
+}
+
+/**
+ * Whether a refused turn was the quota rather than a passing 429, which `rate_limit` also names:
+ * the message gives a reset time, or a window was nearly full already.
+ */
+export function quotaHit(detail: string, r: AcctReading | null): boolean {
+  return /\bresets?\b|usage limit/i.test(detail) || Math.max(r?.h5 ?? 0, r?.d7 ?? 0) >= 90;
+}
+
+const SHORT_HOLD_MS = 15 * 60_000;
+/** How long a refused turn keeps an account out of the pick: the quota to its 5h reset (an hour if unknown), a passing 429 a quarter of an hour. */
+export function hitUntil(r: AcctReading | null, now: number, quota = true): number {
+  if (!quota) return now + SHORT_HOLD_MS;
   const reset = r?.h5Reset != null ? r.h5Reset * 1000 : 0;
   return reset > now ? reset : now + 3_600_000;
 }
@@ -59,17 +78,18 @@ export function hitUntil(r: AcctReading | null, now: number): number {
 const TOKEN_START = /sk-ant-oat01-[A-Za-z0-9_-]+/;
 const TOKEN_ONLY = /^[A-Za-z0-9_-]+$/;
 /**
- * The token `claude setup-token` printed, from a pane's lines (soft wraps already joined). It
- * may still be hard-wrapped, so a line that ends inside it continues on the next line made of
- * nothing but token characters. Null until a whole one is there.
+ * The token `claude setup-token` printed, from a pane's lines (soft wraps joined). A hard wrap
+ * continues on lines of nothing but token characters, and a token is whole only once something
+ * follows it: a poll between the two halves of a wrap would otherwise save the first.
  */
 export function tokenFromLines(lines: string[]): string | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = TOKEN_START.exec(lines[i]);
     if (!m) continue;
-    let tok = m[0];
+    let tok = m[0], j = i + 1;
     if (lines[i].slice(m.index + tok.length).trim() === "") {
-      for (let j = i + 1; j < lines.length && TOKEN_ONLY.test(lines[j].trim()); j++) tok += lines[j].trim();
+      for (; j < lines.length && TOKEN_ONLY.test(lines[j].trim()); j++) tok += lines[j].trim();
+      if (!lines.slice(j).some((l) => l.trim())) return null;
     }
     return tok.length >= 100 ? tok : null;
   }

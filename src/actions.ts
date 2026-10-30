@@ -11,7 +11,7 @@ import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
+import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
@@ -49,11 +49,11 @@ import {
   shareByProject, setShareMode, shareModeOf, type ShareMode,
   handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
-  claudeAccts, setClaudeAccts, acctChecks, setFoundTokens,
+  claudeAccts, setClaudeAccts, acctChecks, foundTokens, setFoundTokens,
   type SortMode, type WtGroup,
 } from "./state";
-import { addAcct, hitUntil, pickAcct, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
-import { acctReading, applyAccountReadings, limitHits, loginAcct, showAccount, TOKEN_ID, tokenAccount } from "./rl";
+import { addAcct, hitUntil, quotaHit, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
+import { acctReading, applyAccountReadings, limitHits, loginAcct, rlAccts, saveAccts, showAccount, TOKEN_ID, tokenAccount } from "./rl";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
@@ -813,7 +813,6 @@ export async function proposeStack(root: string): Promise<void> {
 
 // ---------- Claude accounts (./accounts decides, docs/accounts.md) ----------
 
-const readingOf = (label: string) => acctReading(TOKEN_ID + label);
 
 export function saveClaudeAccts(list: ClaudeAcct[]) {
   setClaudeAccts(list);
@@ -825,16 +824,18 @@ export function saveClaudeAccts(list: ClaudeAcct[]) {
 
 /** The meters show the account a new session would start on. */
 export function syncShownAccount() {
-  const pick = pickAcct(claudeAccts, readingOf, Date.now());
-  const target = pick ? tokenAccount(pick.label) : loginAcct;
+  const pick = launchAccount(); // null on an external engine, which launches on the login
+  const target = pick ? tokenAccount(pick) : loginAcct;
   if (target) showAccount(target);
 }
 
 export async function listClaudeTokens(): Promise<string[]> {
-  const found = await invoke<string[]>("claude_tokens").catch(() => []);
-  setFoundTokens(found);
+  // A failed listing leaves the last one: an empty list would bench every account.
+  const found = await invoke<string[]>("claude_tokens").catch(() => null);
+  if (found) setFoundTokens(found);
+  syncShownAccount();
   renderSettings();
-  return found;
+  return found ?? foundTokens ?? [];
 }
 
 /** One cheap turn on the token: proves it, and its answer is the account's first reading. */
@@ -850,11 +851,11 @@ export async function checkClaudeAcct(label: string) {
         five_hour: c.h5 == null ? undefined : { used_percentage: c.h5, resets_at: c.h5Reset },
         seven_day: c.d7 == null ? undefined : { used_percentage: c.d7, resets_at: c.d7Reset },
       });
-      syncShownAccount();
     }
   } catch (e) {
     acctChecks[label] = { ok: false, error: String(e), at: Date.now() };
   }
+  syncShownAccount(); // a failed check takes it out of the pick
   renderSettings();
   renderAll();
 }
@@ -879,7 +880,9 @@ export async function removeClaudeAcct(label: string) {
   if (!ok) return;
   await invoke("claude_token_forget", { label }).catch((e) => toast(String(e)));
   delete acctChecks[label];
-  saveClaudeAccts(claudeAccts.filter((a) => a.label !== label));
+  saveClaudeAccts(claudeAccts.filter((a) => a.label !== label)); // first: the meters move off it
+  delete rlAccts[TOKEN_ID + label]; // or its last figures linger under the limits' other accounts
+  saveAccts();
   void listClaudeTokens();
 }
 
@@ -888,7 +891,8 @@ function paneLines(s: Sess): string[] {
   const b = s.term?.buffer.active;
   const out: string[] = [];
   if (!b) return out;
-  for (let i = 0; i < b.length; i++) {
+  // The token is printed at the bottom of a fresh shell; this runs every second for 15 minutes.
+  for (let i = Math.max(0, b.length - 200); i < b.length; i++) {
     const line = b.getLine(i);
     if (!line) continue;
     const t = line.translateToString(true);
@@ -906,8 +910,7 @@ export async function setupClaudeToken(label: string) {
   if (!validLabel(label)) { toast("A name may use letters, digits, dots, dashes and underscores"); return; }
   const home = await homeDir().catch(() => "");
   if (!home) { toast("No home folder to open the shell in"); return; }
-  const id = await launchShell("claude setup-token", home);
-  setTimeout(() => { void invoke("write_pty", { sessionId: id, data: "claude setup-token" }).catch(() => {}); }, 600);
+  const id = await prefillShell("claude setup-token", home, "claude setup-token");
   toast(`Press Enter, then sign in as ${label} in the browser`);
   const until = Date.now() + SETUP_WATCH_MS;
   const t = window.setInterval(() => {
@@ -926,14 +929,16 @@ export async function setupClaudeToken(label: string) {
 
 /** A turn refused for its quota: that account sits out, and the session is offered the next one. */
 export function onLimitHit(s: Sess) {
-  const id = s.account ? TOKEN_ID + s.account : loginAcct?.id;
-  if (id) limitHits[id] = hitUntil(acctReading(id), Date.now());
+  const id = s.account ? TOKEN_ID + s.account : loginAcct?.id, now = Date.now();
+  const again = !!id && (limitHits[id] ?? 0) > now; // a revive retry refused again: asked once already
+  const r = id ? acctReading(id) : null;
+  if (id) limitHits[id] = hitUntil(r, now, quotaHit(s.apiErr?.detail ?? "", r));
   syncShownAccount();
-  if (s.external || !claudeAccts.length) return;
-  const next = pickAcct(claudeAccts, readingOf, Date.now(), s.account);
+  if (again || s.external || !claudeAccts.length) return;
+  const next = launchAccount(s.account);
   if (!next) return;
-  actToast(`${s.account ?? "Your account"} is at its limit. Resume this session on ${next.label}?`,
-    [{ label: `Resume on ${next.label}`, run: () => void resumeOnAccount(s.id, next.label) }], 30_000);
+  actToast(`${s.account ?? "Your account"} is at its limit. Resume this session on ${next}?`,
+    [{ label: `Resume on ${next}`, run: () => void resumeOnAccount(s.id, next) }], 30_000);
 }
 
 export async function resumeOnAccount(id: string, label: string) {

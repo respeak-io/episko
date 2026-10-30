@@ -42,7 +42,7 @@ import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, acctChecks, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror, foundTokens,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -50,7 +50,7 @@ import {
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
-import { pickAcct } from "./accounts";
+import { acctReady, pickAcct } from "./accounts";
 import { acctReading, TOKEN_ID } from "./rl";
 
 // The app-wide repaint belongs to main.ts, which wires this at startup.
@@ -157,9 +157,9 @@ export async function freshReady(sid: string): Promise<void> {
 }
 
 /** The setup-token account a new embedded Claude session takes, or null for the login (docs/accounts.md). */
-export function launchAccount(): string | null {
+export function launchAccount(skip?: string): string | null {
   if (termEngine !== "embedded") return null; // an external terminal gets no token: it would land in its scrollback
-  return pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), Date.now())?.label ?? null;
+  return pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), Date.now(), skip, (l) => acctReady(l, acctChecks[l], foundTokens))?.label ?? null;
 }
 
 // `account`: a label to launch on whatever the pick says (a resume on the next account), null for the login.
@@ -986,12 +986,18 @@ export function openShellFor(id: string) {
 
 // Prefill a command into a shell pane, or open the external terminal with it on the clipboard.
 // `from` is the session the command was refused for; the shell opens beside it when ⌘T would.
+/** A new embedded shell with `cmd` typed in and not entered; its session id. */
+export async function prefillShell(project: string, workdir: string, cmd: string, opts: Parameters<typeof launchShell>[2] = {}): Promise<string> {
+  const id = await launchShell(project, workdir, opts);
+  // The login shell needs a moment before its prompt will accept input.
+  setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
+  return id;
+}
+
 export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; from?: string } = {}) {
   if (termEngine === "embedded") {
     const { from, ...rest } = opts;
-    const id = await launchShell(project, workdir, { ...rest, beside: splitBeside(from ? sessions.get(from) : null) });
-    // The login shell needs a moment before its prompt will accept input.
-    setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
+    await prefillShell(project, workdir, cmd, { ...rest, beside: splitBeside(from ? sessions.get(from) : null) });
     toast("Prefilled in a shell. Press Enter to run");
     return;
   }
