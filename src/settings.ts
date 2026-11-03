@@ -586,7 +586,7 @@ const SET_TABS: SetTab[] = [
         segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
         empty: "No project has one. Set one from a project's task panel (⌘K → Manage this project's tasks)." },
       { kind: "seg", set: "dismiss", key: "cc-task-prefs", label: "Dismiss successful runs", hint: "When a passed run's pane closes on its own.",
-        more: "A failed run stays until you close it.", aliases: ["auto close", "finished runs", "task", "green"],
+        more: "A failed run stays until you close it or the same task runs again: a new run replaces the last finished one, so retries keep one row.", aliases: ["auto close", "finished runs", "task", "green"],
         active: () => String(taskPrefs.dismissMs), isDefault: () => taskPrefs.dismissMs === DEFAULT_TASK_PREFS.dismissMs,
         reset: () => applySetting("dismiss", String(DEFAULT_TASK_PREFS.dismissMs)),
         segs: () => [

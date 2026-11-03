@@ -34,6 +34,9 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ A shelved session now opens on its questions, each with the agent's answer under it, from the
   whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
   conversation as before.
+~ Running a task again replaces its last finished run instead of adding a row, so an agent
+  retrying a failing suite keeps one row per task rather than one per attempt. A run still going,
+  a run group's steps and the pane you are reading are left alone.
 ! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
   is a small square again instead of a wide box with its icon to the left.
 
