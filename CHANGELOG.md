@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A shelved session's panel says what it left behind: Claude's own recap of where things stood,
+  when it started, what it cost, its model and how full its context was, the pull requests it
+  opened with whether they are open or merged, the files it wrote, and anything left uncommitted
+  in its folder.
 ~ Every icon is now drawn from one set (Lucide) instead of Unicode symbols, which came from
   whichever fallback font had them and so differed in size, weight and baseline. Icons are never
   smaller than 13px, however small the text beside them.
@@ -27,6 +31,9 @@ Markers: `+` new · `~` changed · `!` fixed
   one: the status bar, the limits popover, *Usage & spend* and the all-projects dashboard drop the
   5-hour meter instead of leaving it at –. It comes back if the account reports a 5-hour window again.
 ~ Plans go by their new names: Max 5x shows as *Max*, Max 20x as *Ultra*.
+~ A shelved session now opens on its questions, each with the agent's answer under it, from the
+  whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
+  conversation as before.
 ! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
   is a small square again instead of a wide box with its icon to the left.
 

@@ -3,6 +3,8 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, clearStageBadges, setHeadPath, stageGen, takeStage, toast } from "./dom";
 import { handoffBusy } from "./handoff";
 import { confirmReturned, recallable, sendGateFor } from "./handoffui";
@@ -12,19 +14,26 @@ import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { icon } from "./svgicons";
 import { renderFoot } from "./footer";
-import { askedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
+import {
+  pastFactRows, pastFilesHtml, pastPrsHtml, recapHtml, tvMsgHtml, wpeekHtml, type PrState,
+} from "./inspectorview";
+import type { GhIssueRead } from "./issue";
+import { openFileOrRead } from "./mdreader";
+import { seedPrompts } from "./outline";
+import { answerMd, qClipText, qEntries, qThreadHtml } from "./questionsview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
-  providerAdapter, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
+  providerAdapter, readProviderAsked, readProviderFacts, readProviderHistory, reconcileProviderRestorables,
+  type ConversationFacts, type ProviderMessage,
 } from "./providers";
 import { allProjects, dormantBusy } from "./grouping";
 import {
   hasAgentCapability, isAgent, isClaudeRow, providerSessionKey,
-  type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
+  type DiffStat, type ExtSession, type LiveSess, type Prompt, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, handoffs,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, ghAccountFor, handoffs,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
   setExternals, setMirror, worktreesByRepo,
 } from "./state";
@@ -117,6 +126,8 @@ export async function refreshDirtyStates(force = false) {
   // An agent pane counts, a shell does not: each folder here costs a git_diffstat per sweep.
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
+  const past = pastOnStage();
+  if (past) folders.add(past.workdir);
   // The dashboard's Checkouts card asks about folders nothing is running in, and an
   // unmeasured one must never read as clean. Scoped to the project on the stage, so the
   // prune below drops them again as soon as it closes.
@@ -151,6 +162,8 @@ export async function refreshDirtyStates(force = false) {
   renderSidebar();
   if (fleetMirror()) renderAll(); // the fleet's figures are only repainted from renderAll's pass
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) renderExtInspector(e); }
+  const cur = pastOnStage();
+  if (cur && cur.id === past?.id) renderPastInspector(cur);
 }
 export function openExternal(sid: string) {
   const e = externals.find((x) => x.session_id === sid);
@@ -196,23 +209,92 @@ export function openDormant(id: string) {
   clearInterval(extTranscriptTimer); // a finished transcript doesn't grow — no polling
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
-  $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id, (msgs) => {
-    pastMsgs = { key: d.resumeId, msgs };
+  pastView = "qa";
+  paintPastBody(d);
+  const key = d.resumeId;
+  const here = () => pastMirrorId() === id;
+  void readProviderHistory(d.provider, key, d.workdir, 80)
+    .then((msgs) => { pastRaw = { key, msgs, err: "" }; }, (e) => { pastRaw = { key, msgs: [], err: String(e) }; })
+    .then(() => { if (here()) paintPastBody(d); });
+  void readProviderAsked(d.provider, key, d.workdir, PAST_ASK_READ)
+    .then((msgs) => { const prompts: Prompt[] = []; seedPrompts(prompts, msgs); pastAsked = { key, prompts }; },
+      (e) => { pastAsked = { key, prompts: [] }; dlog("info", `shelved: no questions to read for ${key.slice(0, 8)} (${e})`); })
+    .then(() => { if (here()) paintPastBody(d); });
+  void readProviderFacts(d.provider, key, d.workdir).catch(() => null).then((facts) => {
+    pastFacts = { key, facts };
+    if (!here()) return;
     renderPastInspector(d);
+    for (const pr of facts?.prs.slice(0, 6) ?? []) void readPrState(d, pr);
   });
+  void refreshDirtyStates(true); // forced: this folder is probably cached and would be skipped
 }
 
-// The shelved conversation's messages, kept so the card can list its questions beside the
-// mirror that is already showing them. One read: the transcript load above is the same call.
-let pastMsgs: { key: string; msgs: ProviderMessage[] } | null = null;
-const PAST_ASK_SHOW = 5;
+let pastFacts: { key: string; facts: ConversationFacts | null } | null = null;
+const prStates = new Map<string, PrState>(); // by URL; gh_issue's own cache decides how fresh
 
-/** A question in the shelved card, clicked: the mirror beside it holds the answer. */
-export function jumpPastMessage(index: string) {
-  const row = $("extBody").querySelectorAll(".tvmsg")[Number(index)];
-  row?.scrollIntoView({ block: "start", behavior: "smooth" });
+async function readPrState(d: Restorable, pr: { number: number; url: string }) {
+  const r = await invoke<GhIssueRead>("gh_issue", {
+    root: d.colorKey, number: pr.number, kind: "pr", force: false, account: ghAccountFor(d.colorKey),
+  }).catch(() => null);
+  // A PR opened in another repo has a number here too: only an answer for that very URL counts.
+  if (!r?.available || r.url.toLowerCase() !== pr.url.toLowerCase()) return;
+  prStates.set(pr.url, { state: r.state, title: r.title });
+  const cur = pastOnStage();
+  if (cur?.id === d.id) renderPastInspector(cur);
 }
+
+// The shelved stage leads with its questions and their closing answers, read from the whole
+// transcript as a resume seeds its outline; the tail of the transcript is the other tab.
+let pastAsked: { key: string; prompts: Prompt[] } | null = null;
+let pastRaw: { key: string; msgs: ProviderMessage[]; err: string } | null = null;
+let pastView: "qa" | "raw" = "qa";
+const PAST_ASK_READ = 200; // what a resumed pane's outline would keep (PROMPT_CAP)
+
+const pastOnStage = () => dormants.find((x) => x.id === pastMirrorId());
+const pastEntries = (d: Restorable) => (pastAsked?.key === d.resumeId ? qEntries(pastAsked.prompts) : null);
+
+// Painted when a read lands or the tab changes, never from renderAll: nothing here ticks.
+function paintPastBody(d: Restorable) {
+  const entries = pastEntries(d);
+  const raw = pastRaw?.key === d.resumeId ? pastRaw : null;
+  // A conversation with no questions in it has nothing for the first tab to show.
+  const qa = pastView === "qa" && entries?.length !== 0;
+  const tab = (v: typeof pastView, t: string) => `<button class="${(v === "qa") === qa ? "on" : ""}" data-pastview="${v}">${t}</button>`;
+  const acts = $("extActs");
+  acts.hidden = !entries?.length;
+  acts.innerHTML = (qa ? `<button class="q-act" type="button" data-qcopyall="1" title="Copy every question and answer as markdown">Copy all</button>` : "")
+    + `<span class="fx-seg">${tab("qa", "Questions")}${tab("raw", "Transcript")}</span>`;
+  const body = $("extBody");
+  const label = providerAdapter(d.provider)?.label ?? d.provider;
+  if (qa && entries) {
+    body.innerHTML = `<div class="ext-qa">${qThreadHtml(entries, (p) => answerMd(d.workdir, p.answer ?? ""), { running: false, live: false })}</div>`;
+    // The newest is what you came back for. The body alone: scrollIntoView would also move
+    // every ancestor that can scroll, overflow:hidden included.
+    const last = body.querySelector<HTMLElement>(".q-ent:last-child");
+    if (last) body.scrollTop += last.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
+  } else if (!qa && raw?.err) {
+    body.innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(raw.err)}</span></div>`;
+  } else if (!qa && raw) renderTranscript(raw.msgs, true, label);
+  else body.innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
+}
+
+// The stage's own listener, like the Questions sheet's: none of these reach main.ts's dispatcher.
+$("extPane").addEventListener("click", (ev) => {
+  const el = (ev.target as HTMLElement).closest<HTMLElement>("[data-pastview],[data-qcopy],[data-qcopyall],[data-mdurl],[data-mdfile]");
+  const d = pastOnStage();
+  if (!el || !d) return;
+  ev.preventDefault();
+  const v = el.dataset;
+  if (v.pastview) { pastView = v.pastview === "raw" ? "raw" : "qa"; paintPastBody(d); }
+  else if (v.qcopy || v.qcopyall) {
+    const all = pastEntries(d) ?? [];
+    const entries = v.qcopy ? all.filter((e) => e.p.id === v.qcopy) : all;
+    writeText(qClipText(entries))
+      .then(() => toast(v.qcopy ? "Question and answer copied" : `${entries.length} questions copied`))
+      .catch(() => toast("copy failed"));
+  } else if (v.mdurl) openUrl(v.mdurl).catch((e) => toast("Couldn't open the link: " + e));
+  else if (v.mdfile) void openFileOrRead(v.mdfile);
+});
 export function renderPastHeader(d: Restorable) {
   clearStageBadges();
   // ✕ steps out of the mirror; it never reaches the session behind it, which is somebody
@@ -229,10 +311,8 @@ export function renderPastHeader(d: Restorable) {
 }
 export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
-  // Above the buttons: it is what the decision to resume is made on. Absent until the
-  // transcript lands, and absent for good on a conversation with no prose in it.
-  const rows = pastMsgs?.key === d.resumeId ? askedHtml(pastMsgs.msgs, PAST_ASK_SHOW, true) : "";
-  const asked = rows ? `<div class="ext-qh"><span class="label">What you asked</span></div>${rows}` : "";
+  const facts = pastFacts?.key === d.resumeId ? pastFacts.facts : null;
+  const g = dirtyByFolder.get(d.workdir);
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const sent = handoffBusy(handoffs, d.resumeId);
@@ -250,16 +330,18 @@ export function renderPastInspector(d: Restorable) {
   const html = `
     <div class="ext-card">
       <div class="ext-hl">${icon("archive")}${esc(d.provider || "claude")} · shelved</div>
+      ${facts ? recapHtml(facts.recap) : ""}
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
-      ${asked}
+      ${facts ? pastFactRows(facts) : ""}
+      ${facts ? pastPrsHtml(facts.prs, prStates) : ""}
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
       <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and History can still reopen it.</div>
-    </div>`;
+    </div>${isDirty(g) ? extPeekHtml(d.workdir, g!) : ""}${facts ? pastFilesHtml(facts.files, d.workdir) : ""}`;
   // Guarded like every renderAll surface: a repaint under the pointer drops the click.
   if (html === pastPainted && pastGen === stageGen) return;
   pastPainted = html; pastGen = stageGen;
@@ -331,20 +413,6 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
   }
 }
 
-async function loadProviderTranscriptInto(
-  provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean,
-  onLoaded?: (msgs: ProviderMessage[]) => void,
-) {
-  const label = providerAdapter(provider)?.label ?? provider;
-  try {
-    const msgs = await readProviderHistory(provider, sessionId, cwd, 80);
-    if (!stillCurrent()) return;
-    renderTranscript(msgs, true, label);
-    onLoaded?.(msgs);
-  } catch (err) {
-    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
-  }
-}
 function renderTranscript(msgs: { role: string; text: string }[], initial: boolean, agent = "Claude") {
   const body = $("extBody");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
@@ -362,16 +430,17 @@ export function renderExtHeader(e: ExtSession) {
   xb.title = "Close this mirror (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · this session runs in another terminal";
+  $("extActs").hidden = true;
   $("hProj").textContent = basename(e.cwd);
   const hb = $("hBranch"); hb.textContent = "external"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = e.name || "";
   setHeadPath(e.cwd);
 }
 // The working-set peek minus the fetch/pull/push row: we do not drive this checkout.
-function extPeekHtml(e: ExtSession, g: DiffStat): string {
+function extPeekHtml(cwd: string, g: DiffStat): string {
   return `<div class="wset ext-wset">
     <div class="lab" style="margin-bottom:2px">Working set · in this folder</div>
-    ${wpeekHtml(e.cwd, basename(e.cwd), g)}</div>`;
+    ${wpeekHtml(cwd, basename(cwd), g)}</div>`;
 }
 export function renderExtInspector(e: ExtSession) {
   const working = extWorking(e);
@@ -379,7 +448,7 @@ export function renderExtInspector(e: ExtSession) {
   $("iPillTxt").textContent = e.status || "external";
   const started = e.started_at ? new Date(e.started_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
   const g = dirtyByFolder.get(e.cwd);
-  const peek = isDirty(g) ? extPeekHtml(e, g!) : "";
+  const peek = isDirty(g) ? extPeekHtml(e.cwd, g!) : "";
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">${icon("externalLink")}Running outside Episko</div>

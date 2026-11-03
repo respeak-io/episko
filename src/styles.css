@@ -644,10 +644,6 @@ html.win .wctl { display: flex; }
 /* History's copy of the list: the same rows, but nothing to click through to. */
 .ol-row.static { grid-template-columns: minmax(0, 1fr) auto; cursor: default; padding: 4px 0; }
 .ol-row.static:hover { background: none; }
-/* …unless the transcript is on screen beside it (./mirror's shelved card), where it is a jump. */
-.ol-row.static.jump { cursor: pointer; padding: 4px 6px; margin: 0 -6px; }
-.ol-row.static.jump:hover { background: var(--lift); }
-.ext-qh { padding-top: 3px; }
 
 .hist-qmore { font: 9.5px var(--font-mono); color: var(--muted-2); padding: 2px 0 0; }
 .wt-detail > .ol, .wt-detail > .hist-qmore { flex: none; } /* same reason as .hist-tv below */
@@ -2717,11 +2713,28 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
 .tvmsg.assistant .tvtext { color: color-mix(in srgb, var(--terminal-text) 82%, var(--terminal-bg)); }
 .ext-empty { margin: auto; text-align: center; color: var(--muted-2); font-size: 12px; line-height: 1.7; }
+/* a shelved session's questions with their answers (./mirror): the Questions sheet's thread, on the stage */
+.ext-qa { width: 100%; max-width: 980px; margin: 0 auto; font-family: var(--font-ui); line-height: normal; }
+.ext-view-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ext-view-acts[hidden] { display: none; }
+.ext-view-acts .fx-seg { margin-left: 0; }
 .ext-empty .mono { font-size: 10px; }
 
 /* inspector card for the selected external session */
 .ext-card { display: flex; flex-direction: column; gap: 9px; }
 .ext-hl { font: 700 12px var(--font-ui); color: var(--accent-ink); padding: 9px 11px; border-radius: var(--radius); background: var(--accent-wash); border: 1px solid var(--accent-line); }
+/* a shelved session's card (./mirror): Claude's own recap, then what the conversation left behind */
+.ext-recap { display: flex; flex-direction: column; gap: 4px; padding: 9px 11px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
+.ext-recap p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text); }
+.ext-sec { display: flex; flex-direction: column; }
+.ext-pr { display: flex; align-items: baseline; gap: 7px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.ext-pr:hover { background: var(--lift); }
+.ext-pr-n { font: 11px var(--font-mono); color: var(--accent-ink); flex: none; }
+.ext-pr-t { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-pr-s { flex: none; font: 600 9px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); }
+.ext-pr-s.open { color: var(--st-done); }
+.ext-pr-s.merged { color: var(--tool-task); }
+.ext-pr-s.closed { color: var(--st-error); }
 .ext-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 11.5px; }
 .ext-meta > span:last-child { text-align: right; min-width: 0; }
 .ext-meta .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; display: inline-block; vertical-align: bottom; }
