@@ -23,6 +23,10 @@ Markers: `+` new · `~` changed · `!` fixed
   *Don't ask again* tick, and *Settings › Launching › Ask before closing a finished session*
   brings it back. A session still working always asks. The question also stops calling a
   finished session "still running".
+~ An account without a 5-hour limit (verified Ultra plans, since 2026-10-30) shows only its weekly
+  one: the status bar, the limits popover, *Usage & spend* and the all-projects dashboard drop the
+  5-hour meter instead of leaving it at –. It comes back if the account reports a 5-hour window again.
+~ Plans go by their new names: Max 5x shows as *Max*, Max 20x as *Ultra*.
 ! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
   is a small square again instead of a wide box with its icon to the left.
 

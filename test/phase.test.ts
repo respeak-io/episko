@@ -1152,6 +1152,22 @@ describe("applyStatusline — the meters, and the proof a session is alive", () 
       applyStatusline(sess(), { rate_limits: { five_hour: { used_percentage: 10, resets_at: NOW_S + HOUR } } });
       expect(rl.d7).toBeNull();
     });
+    it("drops the 5-hour window only once a pane that just reached the API reports none", () => {
+      const s = sess();
+      const line = (api: number, h5?: number) => ({
+        cost: { total_api_duration_ms: api },
+        rate_limits: {
+          ...(h5 == null ? {} : { five_hour: { used_percentage: h5, resets_at: NOW_S + HOUR } }),
+          seven_day: { used_percentage: 30, resets_at: NOW_S + 3 * 86400 },
+        },
+      });
+      applyStatusline(s, line(1000, 6));
+      applyStatusline(s, line(1000)); // the clock has not moved: nothing new was heard
+      expect(rl.h5).toBe(6);
+      applyStatusline(s, line(1400));
+      expect(rl.h5).toBeNull();
+      expect(s.rateLimits.map((w) => w.windowMins)).toEqual([10080]);
+    });
     describe("after a /login to another account", () => {
       beforeEach(() => { resetAccount(); for (const k of Object.keys(rlAccts)) delete rlAccts[k]; });
       const A = { id: "acct-a", tier: "default_claude_max_20x" }, B = { id: "acct-b", tier: "default_claude_max_5x" };

@@ -4,7 +4,7 @@ import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
   rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
   lastClosed, H5_LEN, applyPlanLimits, rlScoped, scopedForecasts,
-  account, accountName, applyRlReadings, loadAccts, mergePeerRl, noteAccount, otherAccounts, planName,
+  account, accountName, applyRlReadings, hasH5Window, loadAccts, mergePeerRl, noteAccount, otherAccounts, planName,
   resetAccount, rlAccts,
 } from "../src/rl";
 
@@ -584,11 +584,60 @@ describe("accounts — a /login swaps the meters, never reads as a reset", () =>
     applyRlReadings(reading(1, NOW_S + 5 * HOUR, 0, NOW_S + 2 * DAY));
     expect(fcLog.map((e) => [e.w, e.acct])).toEqual([["h5", "acct-b"]]);
   });
-  it("names the plan from the server's tier", () => {
-    expect(planName(B)).toBe("Max 5x");
+  it("names the plan from the server's tier, by the names it has had since 2026-10-30", () => {
+    expect(planName(B)).toBe("Max");
+    expect(planName(A)).toBe("Ultra");
+    expect(planName({ id: "p", tier: "default_claude_max_40x", kind: null, email: null })).toBe("Max 40x");
     expect(planName({ id: "p", tier: null, kind: "claude_pro", email: null })).toBe("Pro");
     expect(planName({ id: "p", tier: null, kind: null, email: null })).toBeNull();
-    expect(accountName(A)).toBe("Max 20x · old@x.io");
+    expect(accountName(A)).toBe("Ultra · old@x.io");
     expect(accountName({ id: "0123456789", tier: null, kind: null, email: null })).toBe("01234567");
+  });
+});
+
+describe("an account without a 5-hour window (verified Ultra plans)", () => {
+  const DAY = 86400;
+  const week = (d7: number) => ({ seven_day: { used_percentage: d7, resets_at: NOW_S + 3 * DAY } });
+  const both = (h5: number, d7: number) => ({ five_hour: { used_percentage: h5, resets_at: NOW_S + HOUR }, ...week(d7) });
+
+  it("drops the window when a pane that just reached the API reports a week and no 5 hours", () => {
+    applyRlReadings(both(6, 30), true);
+    expect(hasH5Window()).toBe(true);
+    applyRlReadings(week(31), true);
+    expect(rl).toMatchObject({ h5: null, h5Reset: null, d7: 31 });
+    expect(hasH5Window()).toBe(false);
+    expect(rlSamples.h5).toEqual([]);
+  });
+  // An idle pane's CLI drops an expired window from its payload too, and that one is still there.
+  it("keeps a window that only lapsed, so its rotation is still logged", () => {
+    applyRlReadings(both(6, 30), true);
+    tick(90);
+    applyRlReadings(week(30));
+    expect(hasH5Window()).toBe(true);
+    expect(forecast5h()).toMatchObject({ used: 0, resetTs: null });
+    applyRlReadings({ ...week(30), five_hour: { used_percentage: 1, resets_at: NOW_S + 6 * HOUR } }, true);
+    expect(fcLog.map((e) => [e.w, e.final])).toEqual([["h5", 6]]);
+  });
+  it("brings the window back with the next reading that has one", () => {
+    applyRlReadings(week(30), true);
+    expect(hasH5Window()).toBe(false);
+    applyRlReadings(both(2, 30), true);
+    expect(hasH5Window()).toBe(true);
+    expect(rl.h5).toBe(2);
+  });
+  it("keeps the meter, at no reading, before anything has been reported", () => {
+    expect(hasH5Window()).toBe(true);
+    expect(forecast5h().used).toBeNull();
+  });
+  it("is not brought back by a peer's older reading", () => {
+    applyRlReadings(week(30), true);
+    mergePeerRl({ h5: 6, h5Reset: NOW_S + HOUR, d7: 31, d7Reset: NOW_S + 3 * DAY });
+    expect(rl).toMatchObject({ h5: null, d7: 31 });
+  });
+  it("leaves the 5-hour row off another account that had none", () => {
+    noteAccount({ id: "acct-u", tier: "default_claude_max_20x", kind: "claude_max", email: null });
+    applyRlReadings(week(30), true);
+    noteAccount({ id: "acct-m", tier: "default_claude_max_5x", kind: "claude_max", email: null });
+    expect(otherAccounts().map((o) => [o.acct.id, o.h5, o.d7.used])).toEqual([["acct-u", null, 30]]);
   });
 });

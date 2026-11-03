@@ -290,13 +290,23 @@ export function noteAccount(raw: unknown): boolean {
   return true;
 }
 
-/** One statusLine's `rate_limits`, onto the logged-in account's meters. */
-export function applyRlReadings(limits: any): void {
+// A week reported with no 5 hours is an account without that window, as verified Ultra plans
+// are since 2026-10-30. Before any reading both are null and the meter stays, at "–".
+const weekOnly = (r: { h5: number | null; d7: number | null }): boolean => r.h5 == null && r.d7 != null;
+export const hasH5Window = (): boolean => !weekOnly(rl);
+
+/** One statusLine's `rate_limits`, onto the logged-in account's meters. `fresh`: the pane just reached the API. */
+export function applyRlReadings(limits: any, fresh = false): void {
   const r5 = limits?.five_hour, r7 = limits?.seven_day;
   if (r5) {
     const p = rl.h5, pr = rl.h5Reset;
     [rl.h5, rl.h5Reset] = mergeRl(rl.h5, rl.h5Reset, r5.used_percentage, r5.resets_at);
     onRlUpdate("h5", p, pr, rl.h5Reset);
+  } else if (r7 && fresh && rl.h5 != null) {
+    // The CLI replaces its windows on every response and drops an expired one, so only a pane
+    // that just reached the API can say the window is gone rather than lapsed (docs/architecture.md).
+    rl.h5 = rl.h5Reset = null;
+    rlSamples.h5 = []; midSnap.h5 = null;
   }
   if (r7) {
     const p = rl.d7, pr = rl.d7Reset;
@@ -312,16 +322,19 @@ export function mergePeerRl(p: Record<string, unknown>): boolean {
   const slot = from && account && from !== account.id ? rlAccts[from] : null;
   if (from && account && from !== account.id && !slot) return false; // no name to show it under
   const t = slot ?? rl;
-  [t.h5, t.h5Reset] = mergeRl(t.h5, t.h5Reset, p.h5, p.h5Reset);
+  // A peer's older 5-hour reading must not bring back a window this account's panes saw go.
+  if (!weekOnly(t)) [t.h5, t.h5Reset] = mergeRl(t.h5, t.h5Reset, p.h5, p.h5Reset);
   [t.d7, t.d7Reset] = mergeRl(t.d7, t.d7Reset, p.d7, p.d7Reset);
   if (slot) saveAccts();
   return true;
 }
 
-/** "Max 5x" from the server's tier name, else the organisation type; null when neither says. */
+// Renamed on 2026-10-30; the server's tier ids still say `max_5x` and `max_20x`.
+const PLAN_NAMES: Record<string, string> = { "5x": "Max", "20x": "Ultra" };
+/** The plan's name from the server's tier id, else the organisation type; null when neither says. */
 export function planName(a: ClaudeAccount): string | null {
   const x = /max_(\d+x)\b/i.exec(a.tier ?? "");
-  if (x) return `Max ${x[1].toLowerCase()}`;
+  if (x) return PLAN_NAMES[x[1].toLowerCase()] ?? `Max ${x[1].toLowerCase()}`;
   const k = (a.kind ?? "").replace(/^claude_/, "");
   return k ? k[0].toUpperCase() + k.slice(1) : null;
 }
@@ -329,11 +342,14 @@ export function accountName(a: ClaudeAccount): string {
   return [planName(a), a.email ?? a.id.slice(0, 8)].filter(Boolean).join(" · ");
 }
 /** The accounts not logged in, newest first, with the last figures this machine saw for each. */
-export function otherAccounts(): { acct: ClaudeAccount; h5: Forecast; d7: Forecast }[] {
+export function otherAccounts(): { acct: ClaudeAccount; h5: Forecast | null; d7: Forecast }[] {
   return Object.values(rlAccts)
     .filter((x) => x.acct.id !== account?.id && (x.h5 != null || x.d7 != null))
     .sort((a, b) => b.seen - a.seen)
-    .map((x) => ({ acct: x.acct, h5: forecastWin(x.h5, x.h5Reset, null, H5_LEN), d7: forecastWin(x.d7, x.d7Reset, null, D7_LEN) }));
+    .map((x) => ({
+      acct: x.acct, h5: weekOnly(x) ? null : forecastWin(x.h5, x.h5Reset, null, H5_LEN),
+      d7: forecastWin(x.d7, x.d7Reset, null, D7_LEN),
+    }));
 }
 /** Test seam: forget who was logged in. */
 export function resetAccount() { account = null; acctSince = 0; savedAccts = ""; }

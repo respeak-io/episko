@@ -9,7 +9,7 @@ import {
   agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
 import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
-import { account, accountName, forecast5h, forecast7d, otherAccounts, scopedForecasts, type Forecast } from "../rl";
+import { account, accountName, forecast5h, forecast7d, hasH5Window, otherAccounts, scopedForecasts, type Forecast } from "../rl";
 
 const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇", asks: true },
@@ -115,7 +115,7 @@ const codexHistory: ProviderHistory = {
 
 export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
   { id: "claude", label: "Claude", history: claudeHistory, permissionModes: CLAUDE_PERMISSION_MODES, rateLimitForecasts: () => [
-    { windowMins: 300, forecast: forecast5h() },
+    ...(hasH5Window() ? [{ windowMins: 300, forecast: forecast5h() }] : []),
     { windowMins: 10080, forecast: forecast7d() },
     // Per-model weekly windows last: they are the same 7 days, named by the model they cover,
     // and they arrive from ./rlprobe rather than from the statusLine.
@@ -127,7 +127,7 @@ export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
     name: accountName(account),
     others: otherAccounts().map((o) => ({
       name: accountName(o.acct),
-      windows: [{ windowMins: 300, forecast: o.h5 }, { windowMins: 10080, forecast: o.d7 }],
+      windows: [...(o.h5 ? [{ windowMins: 300, forecast: o.h5 }] : []), { windowMins: 10080, forecast: o.d7 }],
     })),
   } },
   { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
