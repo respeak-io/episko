@@ -16,6 +16,9 @@ Markers: `+` new · `~` changed · `!` fixed
   when it started, what it cost, its model and how full its context was, the pull requests it
   opened with whether they are open or merged, the files it wrote, and anything left uncommitted
   in its folder.
++ A large pull request opens as a list of folded files, and each file's diff is drawn when you open
+  it and put away when you fold it, so a review of tens of thousands of lines stays quick. Smaller
+  pull requests open as before.
 ~ Every icon is now drawn from one set (Lucide) instead of Unicode symbols, which came from
   whichever fallback font had them and so differed in size, weight and baseline. Icons are never
   smaller than 13px, however small the text beside them.
@@ -39,6 +42,13 @@ Markers: `+` new · `~` changed · `!` fixed
   a run group's steps and the pane you are reading are left alone.
 ! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
   is a small square again instead of a wide box with its icon to the left.
+! **A review shows all of a big pull request, and says so at the top when it cannot.** It read
+  only the first 800 KB of the diff and the newest 100 commits, so a large pull request showed a
+  fraction of its files with short counts and the wrong commit total, and the only warning sat
+  below the last file. Every file is now listed with its counts, the ones too large to load at
+  once are marked, the bar says how many, and the header gives GitHub's commit count. *Since your
+  review* no longer calls the branch rewritten when your review is older than the newest 100.
+! Showing more lines around a change in a review no longer clears that file's *Viewed* tick.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

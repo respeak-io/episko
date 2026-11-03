@@ -128,10 +128,11 @@ export function tickHtml(i: number, on: boolean | null): string {
 }
 
 /** What a host adds to a file: its buttons, its tick, a hunk's button by index, and (a review)
- *  per-line hooks, blocks under the header and a control after the last hunk. */
+ *  per-line hooks, blocks under the header and a control after the last hunk. `bodyless`
+ *  draws the header alone, for a large review's folded file. */
 export interface FileActs {
   btns: string; tick: boolean | null; hunk: (hi: number) => string;
-  lines?: LineHooks; top?: string; tail?: string; cls?: string;
+  lines?: LineHooks; top?: string; tail?: string; cls?: string; bodyless?: boolean;
 }
 
 // `acts` comes from ./diffview, the only place that knows the absolute path the buttons need.
@@ -144,8 +145,9 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
   const counts = f.binary ? `<span class="d-bin">binary</span>`
     : `<span class="add">+${f.added}</span> <span class="del">−${f.removed}</span>`;
   const draw = mode === "split" ? splitHunkHtml : hunkHtml;
-  const body = f.binary
+  const body = acts.bodyless ? "" : f.binary
     ? `<div class="d-binbody">Binary file, no textual diff.</div>`
+    : f.cut ? `<div class="d-binbody">Not loaded: this pull request's diff is too large for the review to read at once. GitHub has this file in full.</div>`
     : f.large !== null ? `<div class="d-binbody">Too large to show here: over 250 KB of diff for this one file.</div>`
     : f.hunks.map((h, hi) => draw(h, acts.hunk(hi), acts.lines)).join("") || `<div class="d-binbody">No line changes (mode or metadata only).</div>`;
   // Head and chips share one sticky box: a chip walks between marks far apart and must stay reachable.
@@ -154,7 +156,7 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
         <div class="dfhead" data-dtoggle="${i}">${tickHtml(i, acts.tick)}<span class="dchev">${icon("chevronDown", "solo")}</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${acts.btns}</div>
         ${chipsHtml(chips, i)}
       </div>
-      <div class="dfbody">${acts.top ?? ""}${body}${acts.tail ?? ""}</div></section>`;
+      <div class="dfbody">${acts.bodyless ? "" : `${acts.top ?? ""}${body}${acts.tail ?? ""}`}</div></section>`;
 }
 
 /** The rail's own head: what it lists, and the switch between a folder tree and a flat list. */

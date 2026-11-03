@@ -5,7 +5,7 @@ export interface DiffLine { kind: "ctx" | "add" | "del"; text: string; oldNo: nu
 // `at` is git's own `@@ -a,b +c,d @@`: what `git_discard_hunk` matches a hunk by.
 export interface DiffHunk { at: string; header: string; lines: DiffLine[]; }
 export type DiffMode = "unified" | "split"; // ./state persists it and must not import a view
-export interface DiffFile { path: string; oldPath: string | null; status: "modified" | "added" | "deleted" | "renamed"; binary: boolean; large: string | null; added: number; removed: number; hunks: DiffHunk[]; }
+export interface DiffFile { path: string; oldPath: string | null; status: "modified" | "added" | "deleted" | "renamed"; binary: boolean; large: string | null; added: number; removed: number; hunks: DiffHunk[]; cut?: boolean; }
 
 // Paths come from the ---/+++ headers (tab-terminated by git, so spaces survive), with the
 // `diff --git`/rename lines as fallback; /dev/null sides and "Binary files" are handled.
@@ -34,11 +34,12 @@ export function parsePatch(patch: string): DiffFile[] {
     if (line.startsWith("rename to ")) { cur.path = line.slice(10); cur.status = "renamed"; continue; }
     if (line.startsWith("Binary files")) { cur.binary = true; continue; }
     if (!hunk && line.startsWith("index ")) { index = line; continue; }
-    // The backend's stub for a file too big to send (git.rs `stub_large_files`): git's counts, and
-    // its blob ids standing in for the hunks a review's Viewed would sign.
-    if (!hunk && line.startsWith("Large diff not shown: ")) {
+    // The backend's stubs for a file too big to send (git.rs `stub_large_files`) or past a review's
+    // cap (`cut`): git's counts, and its blob ids standing in for the hunks Viewed would sign.
+    if (!hunk && (line.startsWith("Large diff not shown: ") || line.startsWith("Diff not loaded: "))) {
       const m = line.match(/\+(\d+) -(\d+)$/);
       cur.large = index; cur.added = m ? +m[1] : 0; cur.removed = m ? +m[2] : 0;
+      if (line[0] === "D") cur.cut = true;
       continue;
     }
     // Both gated on `!hunk`: inside a hunk a removed `-- sql comment` arrives as `--- …` and

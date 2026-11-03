@@ -27,7 +27,37 @@ describe("parsePatch", () => {
       "+y",
     ));
     expect(big).toMatchObject({ path: "snap.json", large: "index 83db48f..e0c9b5e 100644", added: 4, removed: 3, hunks: [] });
+    expect(big.cut).toBeFalsy();
     expect(next).toMatchObject({ path: "pipeline.py", large: null, added: 1, removed: 0 });
+  });
+
+  it("marks a file a review's cap left out as cut, with its counts, blob ids and rename", () => {
+    const [kept, cut, moved] = parsePatch(patch(
+      "diff --git a/a.py b/a.py",
+      "index 1111111..2222222 100644",
+      "--- a/a.py",
+      "+++ b/a.py",
+      "@@ -1 +1,2 @@",
+      " x",
+      "+y",
+      "diff --git a/b.py b/b.py",
+      "index 3333333..4444444 100644",
+      "--- a/b.py",
+      "+++ b/b.py",
+      "Diff not loaded: +120 -7",
+      "diff --git a/old.ts b/new.ts",
+      "similarity index 91%",
+      "rename from old.ts",
+      "rename to new.ts",
+      "index 5555555..6666666 100644",
+      "--- a/old.ts",
+      "+++ b/new.ts",
+      "Diff not loaded: +3 -1",
+    ));
+    expect(kept).toMatchObject({ path: "a.py", added: 1, hunks: [{ at: "@@ -1 +1,2 @@" }] });
+    expect(kept.cut).toBeFalsy();
+    expect(cut).toMatchObject({ path: "b.py", cut: true, large: "index 3333333..4444444 100644", added: 120, removed: 7, hunks: [] });
+    expect(moved).toMatchObject({ path: "new.ts", oldPath: "old.ts", status: "renamed", cut: true, added: 3, removed: 1 });
   });
 
   it("parses a modified file: counts, hunk, and per-line numbers", () => {

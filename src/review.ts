@@ -9,7 +9,7 @@ import type { GhComment } from "./issue";
 // ---------- the backend's shapes (review.rs) ----------
 
 export interface PrCheck { name: string; state: string; url: string; workflow: string }
-export interface PrCommit { oid: string; headline: string; author: string; at: string }
+export interface PrCommit { oid: string; headline: string; author: string; at: string; parent: string | null }
 export interface PrComment { id: string; db_id: number; author: string; body: string; at: string; url: string; diff_hunk: string }
 export interface PrThread {
   id: string; resolved: boolean; outdated: boolean; path: string;
@@ -25,8 +25,10 @@ export interface PrReview {
   mergeable: string; merge_state: string; review_decision: string | null; merge_methods: string[];
   viewer: string | null;
   checks: PrCheck[]; commits: PrCommit[]; threads: PrThread[]; reviews: PrReviewEntry[]; comments: GhComment[];
+  commit_count: number; // the whole PR's; `commits` is only its latest 100
+  forced_at: string | null; // the latest force-push
 }
-export interface PrDiff { patch: string; truncated: boolean }
+export interface PrDiff { patch: string; truncated: boolean; dropped: number }
 
 export type Side = "LEFT" | "RIGHT";
 export interface Anchor { side: Side; line: number }
@@ -52,9 +54,38 @@ export function rangeArgs(pr: PrReview, r: Range): { headOid: string; fromOid: s
   if (r.kind === "since") return { headOid: pr.head_oid, fromOid: r.from };
   if (r.kind === "commit") {
     const i = pr.commits.findIndex((c) => c.oid === r.oid);
-    return { headOid: r.oid, fromOid: i > 0 ? pr.commits[i - 1].oid : null };
+    return { headOid: r.oid, fromOid: pr.commits[i]?.parent ?? (i > 0 ? pr.commits[i - 1].oid : null) };
   }
   return { headOid: pr.head_oid, fromOid: null };
+}
+
+/** The PR's commit count, which the list GitHub sent (its latest 100) may fall short of. */
+export const commitTotal = (pr: PrReview) => Math.max(pr.commit_count, pr.commits.length);
+
+/** The view's name in the bar: a commit is numbered in the whole PR, not in the list read. */
+export function rangeLabel(pr: PrReview, r: Range): string {
+  if (r.kind === "all") return "All changes";
+  if (r.kind === "since") return "Since your review";
+  const i = pr.commits.findIndex((c) => c.oid === r.oid);
+  const n = commitTotal(pr);
+  return i < 0 ? "One commit" : `Commit ${n - pr.commits.length + i + 1} of ${n}`;
+}
+
+/** The range menu's heading over the commits, saying so when they are only the latest. */
+export function commitsHeading(pr: PrReview): string {
+  const n = commitTotal(pr);
+  return n > pr.commits.length ? `One commit · latest ${pr.commits.length} of ${n}` : "One commit";
+}
+
+// ---------- how much a view draws at once ----------
+
+export const LARGE_ROWS = 10_000;
+
+/** Past LARGE_ROWS diff rows a view draws a file's body only while it is open (docs/review.md). */
+export function isLargeDiff(files: DiffFile[]): boolean {
+  let rows = 0;
+  for (const f of files) for (const h of f.hunks) rows += h.lines.length;
+  return rows > LARGE_ROWS;
 }
 
 /** The sides whose line numbers mean what GitHub means by them in this view. */
@@ -65,19 +96,27 @@ export function liveSides(pr: PrReview, r: Range): Set<Side> {
   return new Set();
 }
 
+const myLastReview = (pr: PrReview) => (pr.viewer ? pr.reviews
+  .filter((r) => r.author === pr.viewer && r.commit && r.state !== "PENDING" && r.at)
+  .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] : undefined);
+
 /** The head your last submitted review saw, when the PR has moved since: "since your review". */
 export function lastReviewed(pr: PrReview): string | null {
-  if (!pr.viewer) return null;
-  const mine = pr.reviews
-    .filter((r) => r.author === pr.viewer && r.commit && r.state !== "PENDING" && r.at)
-    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+  const mine = myLastReview(pr);
   return mine && mine.commit !== pr.head_oid ? mine.commit : null;
 }
 
-/** How many of the PR's commits came after `oid`; null when a rewrite took `oid` out of it. */
-export function commitsSince(pr: PrReview, oid: string): number | null {
+export type SinceCount = number | { atLeast: number } | null;
+
+/** How many of the PR's commits came after `oid`; null when a rewrite took `oid` out of it.
+ *  Missing from a partial list it is older than the list, unless a force-push followed your review. */
+export function commitsSince(pr: PrReview, oid: string): SinceCount {
   const i = pr.commits.findIndex((c) => c.oid === oid);
-  return i < 0 ? null : pr.commits.length - 1 - i;
+  if (i >= 0) return pr.commits.length - 1 - i;
+  const mine = myLastReview(pr);
+  const seen = mine?.commit === oid ? Date.parse(mine.at) : NaN;
+  const forced = pr.forced_at !== null && !(Date.parse(pr.forced_at) < seen);
+  return !forced && commitTotal(pr) > pr.commits.length ? { atLeast: pr.commits.length } : null;
 }
 
 // ---------- where a comment may go ----------
@@ -127,28 +166,36 @@ export interface Placed<T> {
 }
 
 // A context row is one row on both sides, drawn once under its new-side key; an old-side
-// pin on it must find that row.
-function rowKeys(files: DiffFile[]): Map<string, string> {
-  const m = new Map<string, string>();
-  for (const f of files) for (const h of f.hunks) for (const l of h.lines) {
+// pin on it must find that row. Memoised per file: a DiffFile is never mutated once parsed.
+const rowMemo = new WeakMap<DiffFile, Map<string, string>>();
+function rowKeys(f: DiffFile): Map<string, string> {
+  let m = rowMemo.get(f);
+  if (m) return m;
+  m = new Map<string, string>();
+  for (const h of f.hunks) for (const l of h.lines) {
     const a = anchorOf(l);
     if (!a) continue;
     const k = anchorKey(f.path, a);
     m.set(k, k);
     if (l.kind === "ctx" && l.oldNo) m.set(anchorKey(f.path, { side: "LEFT", line: l.oldNo }), k);
   }
+  rowMemo.set(f, m);
   return m;
 }
 
 export function place<T extends Pinned>(items: T[], shown: DiffFile[], sides: Set<Side>): Placed<T> {
-  const rows = rowKeys(shown);
-  const paths = new Set(shown.map((f) => f.path));
+  const byPath = new Map<string, DiffFile[]>();
+  for (const f of shown) { const l = byPath.get(f.path); if (l) l.push(f); else byPath.set(f.path, [f]); }
   const out: Placed<T> = { at: new Map(), loose: new Map(), elsewhere: [] };
   const push = (m: Map<string, T[]>, k: string, t: T) => { const l = m.get(k); if (l) l.push(t); else m.set(k, [t]); };
   for (const t of items) {
-    const row = t.line && t.side && sides.has(t.side) ? rows.get(anchorKey(t.path, { side: t.side, line: t.line })) : undefined;
+    let row: string | undefined;
+    if (t.line && t.side && sides.has(t.side)) {
+      const k = anchorKey(t.path, { side: t.side, line: t.line });
+      for (const f of byPath.get(t.path) ?? []) row = rowKeys(f).get(k) ?? row;
+    }
     if (row) push(out.at, row, t);
-    else if (paths.has(t.path)) push(out.loose, t.path, t);
+    else if (byPath.has(t.path)) push(out.loose, t.path, t);
     else out.elsewhere.push(t);
   }
   return out;
@@ -234,8 +281,16 @@ export const suggestion = (lines: string[]) => "```suggestion\n" + lines.join("\
 export interface ViewedEntry { at: number; files: Record<string, string> }
 export type ViewedStore = Record<string, ViewedEntry>;
 
+const sigMemo = new WeakMap<DiffFile, string>();
+
 /** FNV-1a over what the file's diff says, so a push that touches it clears the tick. */
 export function fileSig(f: DiffFile): string {
+  let s = sigMemo.get(f);
+  if (s === undefined) sigMemo.set(f, s = hashFile(f));
+  return s;
+}
+
+function hashFile(f: DiffFile): string {
   let h = 0x811c9dc5;
   const feed = (s: string) => { for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } };
   feed(`${f.status}\u0000${f.oldPath ?? ""}\u0000${f.path}`);
@@ -256,7 +311,11 @@ export function clampViewed(raw: unknown): ViewedStore {
   return out;
 }
 
-export const isViewed = (s: ViewedStore, key: string, f: DiffFile) => s[key]?.files[f.path] === fileSig(f);
+// A file nobody ticked is never hashed: this runs per file on every paint.
+export const isViewed = (s: ViewedStore, key: string, f: DiffFile) => {
+  const want = s[key]?.files[f.path];
+  return want !== undefined && want === fileSig(f);
+};
 
 export function setViewed(s: ViewedStore, key: string, f: DiffFile, on: boolean, now: number): ViewedStore {
   const files = { ...(s[key]?.files ?? {}) };
