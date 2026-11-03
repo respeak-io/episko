@@ -12,13 +12,13 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-~ A shelved session now opens on its questions, each with the agent's answer under it, from the
-  whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
-  conversation as before.
 + A shelved session's panel says what it left behind: Claude's own recap of where things stood,
   when it started, what it cost, its model and how full its context was, the pull requests it
   opened with whether they are open or merged, the files it wrote, and anything left uncommitted
   in its folder.
+~ A shelved session now opens on its questions, each with the agent's answer under it, from the
+  whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
+  conversation as before.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy
