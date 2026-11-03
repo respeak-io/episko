@@ -2,6 +2,7 @@
 // figures, the keychain items not yet listed, and the two ways to add one. Data in, string out;
 // ./settings owns the element and ./actions every verb (docs/accounts.md).
 import { esc, escAttr } from "./format";
+import { icon } from "./svgicons";
 import type { AcctReading, ClaudeAcct } from "./accounts";
 import type { AcctCheck } from "./state";
 
@@ -24,7 +25,7 @@ function figures(r: AcctReading | null, now: number): string {
   const win = (name: string, pct: number | null, reset: number | null) => {
     if (pct == null) return "";
     const past = reset != null && reset * 1000 <= now;
-    return `${name} <b>${past ? 0 : Math.round(pct)}%</b>${!past && reset != null ? ` <span class="sync-dim">↻ ${left(reset, now)}</span>` : ""}`;
+    return `${name} <b>${past ? 0 : Math.round(pct)}%</b>${!past && reset != null ? ` <span class="sync-dim">${icon("refreshCw")}${left(reset, now)}</span>` : ""}`;
   };
   return [win("5h", r.h5, r.h5Reset), win("7d", r.d7, r.d7Reset)].filter(Boolean).join(`<span class="sync-dim"> · </span>`);
 }
@@ -33,8 +34,8 @@ function row(r: AcctRow, i: number, n: number, now: number): string {
   const l = escAttr(r.acct.label);
   const c = r.check;
   const state = c?.busy ? `<span class="sync-dim">checking…</span>`
-    : c && !c.ok ? `<span class="acct-bad" title="${escAttr(c.error ?? "")}">✕ ${esc(c.error ?? "failed")}</span>`
-      : c ? `<span class="sync-dim">✓ worked ${ago(now - c.at)}</span>` : "";
+    : c && !c.ok ? `<span class="acct-bad" title="${escAttr(c.error ?? "")}">${icon("x")}${esc(c.error ?? "failed")}</span>`
+      : c ? `<span class="sync-dim">${icon("check")}worked ${ago(now - c.at)}</span>` : "";
   const tag = !r.acct.on ? `<span class="acct-tag">off</span>`
     : r.blocked ? `<span class="acct-tag full" title="New sessions skip it until this is fixed">${esc(r.blocked)}</span>`
     : r.full ? `<span class="acct-tag full">full</span>`
@@ -44,11 +45,11 @@ function row(r: AcctRow, i: number, n: number, now: number): string {
     <div class="acct-main"><div class="acct-l"><span class="mono">${esc(r.acct.label)}</span>${tag}</div>
       <div class="acct-f">${figures(r.reading, now)}${state ? ` <span class="sync-dim">·</span> ${state}` : ""}</div></div>
     <div class="acct-btns">
-      <button class="set-fbtn" data-setacct="up|${l}" title="Earlier in the order"${i === 0 ? " disabled" : ""}>↑</button>
-      <button class="set-fbtn" data-setacct="down|${l}" title="Later in the order"${i === n - 1 ? " disabled" : ""}>↓</button>
+      <button class="set-fbtn" data-setacct="up|${l}" title="Earlier in the order"${i === 0 ? " disabled" : ""}>${icon("arrowUp", "solo")}</button>
+      <button class="set-fbtn" data-setacct="down|${l}" title="Later in the order"${i === n - 1 ? " disabled" : ""}>${icon("arrowDown", "solo")}</button>
       <button class="set-freset" data-setacct="check|${l}"${c?.busy ? " disabled" : ""} title="One short Haiku turn: proves the token and reads its limits">Check</button>
       <button class="sw${r.acct.on ? " on" : ""}" data-setacct="toggle|${l}" role="switch" aria-checked="${r.acct.on}" title="${r.acct.on ? "Skip this account" : "Use this account"}"></button>
-      <button class="set-fbtn" data-setacct="remove|${l}" title="Remove, and delete its token from this machine">✕</button>
+      <button class="set-fbtn" data-setacct="remove|${l}" title="Remove, and delete its token from this machine">${icon("x", "solo")}</button>
     </div>
   </div>`;
 }
@@ -63,7 +64,7 @@ export function accountsPanelHtml(p: AcctPanel): string {
     : `<div class="thint">None yet, so every session starts on ${login}.</div>`;
   const ext = p.external ? `<div class="thint">New sessions open in an external terminal, which always uses ${login}: a token there would end up in its scrollback.</div>` : "";
   const found = p.found.length ? sect("In your keychain",
-    `<div class="sync-pchips">${p.found.map((f) => `<button class="sync-pchip" data-setacct="add|${escAttr(f)}" title="Add ${escAttr(f)} at the end of the order">+ ${esc(f)}</button>`).join("")}</div>`,
+    `<div class="sync-pchips">${p.found.map((f) => `<button class="sync-pchip" data-setacct="add|${escAttr(f)}" title="Add ${escAttr(f)} at the end of the order">${icon("plus")}${esc(f)}</button>`).join("")}</div>`,
     `Tokens stored under <span class="mono">episko-claude-token</span> that aren't in the order yet.`) : "";
   const d = p.draft;
   const add = sect("Add an account", `

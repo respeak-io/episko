@@ -43,7 +43,7 @@ function noAnswer(running: boolean, last: boolean): string {
 export const answerMd = (workdir: string, text: string): string =>
   renderMarkdown(text, { docPath: joinPath(workdir, "answer.md"), root: workdir, images: false, remote: false }).html;
 
-/** `live`: a pane holds the conversation, so a question can be found in it and ↩ means something. */
+/** `live`: a pane holds the conversation, so a question can be found in it and the restored mark means something. */
 export function qThreadHtml(entries: readonly QEntry[], answerHtml: (p: Prompt) => string, at: { running: boolean; live: boolean }): string {
   if (!entries.length) return `<div class="call-empty">Nothing asked yet.</div>`;
   return entries.map(({ p, n }, i) => {

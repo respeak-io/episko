@@ -515,7 +515,7 @@ const SET_TABS: SetTab[] = [
         on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
         isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
       { kind: "toggle", set: "closeask", key: "cc-close-ask", label: "Ask before closing a finished session",
-        hint: "✕ on an agent that has finished its turn asks first; off, it closes at once.",
+        hint: "Closing an agent that has finished its turn asks first; off, it closes at once.",
         more: "A session that is still working always asks, whatever this says, since closing stops the turn it is in. Either way the conversation comes back from History. The question's own tick turns this off.",
         aliases: ["close", "confirm", "don't ask again", "quit", "end", "✕"], since: "0.39.0",
         on: () => closeAskIdle, isDefault: () => closeAskIdle, reset: () => host.setCloseAskIdle(true) },
