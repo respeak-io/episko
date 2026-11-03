@@ -58,6 +58,8 @@ export interface FleetHost {
   // Launch an agent and type `text` into it with no newline: a person reads it and presses Enter.
   prefill: (project: string, path: string, text: string) => void;
   session: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>;
+  // A shell with `cmd` typed in and never sent, as the dashboard's.
+  terminal: (project: string, path: string, cmd: string) => void;
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -71,6 +73,7 @@ let host: FleetHost = {
   openDashboard: () => {},
   prefill: () => {},
   session: async () => {},
+  terminal: () => {},
   openUsage: () => {},
   openHistory: () => {},
   refreshUsage: () => {},
@@ -469,7 +472,7 @@ function buildMaint(now: number): MaintView {
     }
     read.push({ root, inp });
     const ticked = hostSummary(inp, th, now);
-    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: !!ticked?.allowed });
+    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: (inp.hosts ?? []).includes(inp.det?.deploy?.host ?? "") });
     const prod = prodChecks(inp);
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
     if (prod.length) prodEach[root] = { sources: prod, hosts: ticked?.allowed ? [ticked.alias] : [] };
@@ -626,6 +629,7 @@ const maintHost: MaintHost = {
   scan: (force) => checkFleet(force),
   nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
   prefill: (project, path, text) => host.prefill(project, path, text),
+  terminal: (project, path, cmd) => host.terminal(project, path, cmd),
   openDashboard: (name, path, tab, door) => host.openDashboard(name, path, tab, door),
   openTab: (sub, root, board) => setMaintTab(sub, root, board),
   picks: (tab) => maintPicks(tab),

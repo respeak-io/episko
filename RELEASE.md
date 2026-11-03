@@ -591,6 +591,14 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       names that one. With an external terminal engine the bar says why and Start is disabled.
       Press Enter in one tile and confirm its agent starts on the brief, with no second prompt
       needed.
+- [ ] **A host's card connects only when asked, and its doors only type.** Name a host in a
+      project's `[deploy]` and open *Servers*: its card says *not allowed on this machine* and
+      offers only *Allow*. Allow it: nothing connects until *Check*, then the card fills (disk,
+      updates, reboot, containers, load, uptime), coloured only where a part needs you, a `?`
+      for what could not be read. *SSH* opens a shell with `ssh <alias>` typed and **not sent**,
+      *Brief* starts an agent with the brief typed and **not sent**, and *Disallow* puts the card
+      back. Two projects naming one host draw one card, and a line its Brief does not say stays
+      below the boards with its own *Fix*.
 
 ### Sessions Episko doesn't own
 

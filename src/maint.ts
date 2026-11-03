@@ -819,11 +819,13 @@ const skipped = (id: string, reason = "skipped on this machine"): SourceReport =
  *  never by id, and skipped as `MaintPrefs.off` is. A teammate's commit never picks where this machine connects. */
 export function hostSkips(det: Detection | null, hosts: readonly string[]): string[] {
   const h = det?.deploy?.host;
-  return !det || !h || hosts.includes(h) ? [] : det.sources.filter((id) => !!findSource(id)?.sees.includes("prod.host"));
+  return !det || !h || hosts.includes(h) ? [] : det.sources.filter(readsHost);
 }
 /** Whether `id` is skipped here because the host it reads is not allowed on this machine. */
 const unticked = (inp: MaintInput, id: string): boolean =>
   !!inp.skip?.includes(id) && hostSkips(inp.det, inp.hosts ?? []).includes(id);
+/** Whether a source reads the `[deploy] host`: found by what it sees, never by its id. */
+export const readsHost = (id: string): boolean => !!findSource(id)?.sees.includes("prod.host");
 const notAllowed = (inp: MaintInput) => `${inp.det?.deploy?.host ?? "the host"} is not allowed on this machine`;
 
 /** A click's answer outlives a `[deploy]` edited by hand or a pull (Rust keeps it 24 h, `cc-maint-scan`
@@ -1209,7 +1211,7 @@ export function offers(root: string, inp: MaintInput): Finding[] {
     const r = inp.reports[id], facet = findSource(id)?.facet;
     if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
     out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: ${offerWord(id)}`,
-      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: findSource(id)?.sees.includes("prod.host") ? inp.det?.deploy?.host ?? null : null,
+      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: readsHost(id) ? inp.det?.deploy?.host ?? null : null,
       ...(inp.asking?.includes(id) ? { busy: true } : {}) });
   }
   return out;
@@ -1274,6 +1276,7 @@ export const BOARD_IDS = [
   "releases",
   "hygiene",
   "work",
+  "hosts",
   "addresses",
 ] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
@@ -1285,7 +1288,7 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
-  prod: [["addresses", /^prod:(?!setup$|host:)/]],
+  prod: [["hosts", /^prod:host:/], ["addresses", /^prod:(?!setup$)/]],
   work: [["work", /^work:(review|open)$/]],
 };
 
@@ -1726,6 +1729,53 @@ export function probeBoard(ps: readonly TabProject[], root: string | null = null
   }))).sort((a, b) => worst(a) - worst(b) || a.root.localeCompare(b.root) || a.name.localeCompare(b.name));
 }
 
+/** A host as the Servers board draws it: `facts` and `state` stay null until a read this machine may draw. */
+export interface HostBoardRow {
+  host: string;
+  projects: string[]; // every project naming it, over the filter
+  at: number | null; // when the read drawn answered, or else the one that failed
+  facts: HostFacts | null;
+  state: HostState | null;
+  why: string | null; // that failed read, in a word (Coverage says the rest)
+  gaps: string[]; // what the read drawn could not read
+  allowed: boolean;
+  checking: boolean;
+  sources: string[]; // what its Check asks
+  verbs: Finding[]; // the lines the card carries, worst first: the first is its Brief, and each says what that brief says
+}
+
+/** One card per `[deploy] host` over the filter, worst first, then the alias: the newest read among the
+ *  projects naming it, judged against every service any of them names. A failure newer than it speaks instead. */
+export function hostBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): HostBoardRow[] {
+  const by = new Map<string, { p: TabProject; sum: HostSummary }[]>();
+  for (const p of within(ps, root)) {
+    const sum = p.inp.det?.config.off.includes("prod") ? null : hostSummary(p.inp, thOf(p), now);
+    if (sum) by.set(sum.alias, [...(by.get(sum.alias) ?? []), { p, sum }]);
+  }
+  return [...by].map(([host, mine]): HostBoardRow => {
+    const reads = mine.flatMap(({ p }) => okFacts(p.inp, "prod").flatMap((r) => {
+      const h = r.facts.kind === "hosts" ? r.facts.items.find((x) => x.alias === host) : undefined, rep = p.inp.reports[r.source];
+      return h ? [{ p, h, truncated: r.truncated, at: rep?.at ?? 0, gaps: rep?.gaps ?? [] }] : [];
+    })).sort((a, b) => b.at - a.at || a.p.path.localeCompare(b.p.path));
+    const allowed = mine.some((m) => m.sum.allowed), projects = mine.map((m) => m.p.path).sort((a, b) => a.localeCompare(b));
+    const failed = allowed ? mine.map((m) => m.sum).filter((s) => s.why).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0] : undefined;
+    const read = failed && (failed.at ?? 0) > (reads[0]?.at ?? 0) ? undefined : reads[0];
+    const compose = [...new Set(mine.flatMap((m) => m.p.inp.det?.deploy?.compose ?? []))].sort();
+    const state = read ? hostState(read.h, compose, thOf(read.p), now, read.truncated) : null;
+    // The Brief is one project's own read, so only what it also says is carried; anything else stays listed below, with its Fix.
+    const who = [...new Set([...reads.map((x) => x.p), ...mine.map((m) => m.p)])];
+    const lines = (state?.lines ?? []).flatMap((l) => who.flatMap((p) => verbOf(p, `prod:host:${l.kind}`) ?? []));
+    const said = lines.filter((f) => f.root === lines[0].root);
+    return {
+      host, projects, at: read?.at ?? failed?.at ?? null, facts: read?.h ?? null, state,
+      why: read ? null : failed?.why ?? null, gaps: read?.gaps ?? [],
+      allowed, checking: mine.some((m) => m.p.inp.asking?.some(readsHost)),
+      sources: [...new Set(mine.flatMap((m) => prodChecks(m.p.inp).filter(readsHost)))],
+      verbs: lines.filter((f) => said.some((s) => s.key === f.key && s.text === f.text && s.detail === f.detail)),
+    };
+  }).sort((a, b) => byRank({ level: a.state?.level ?? "muted" }, { level: b.state?.level ?? "muted" }) || a.host.localeCompare(b.host));
+}
+
 export interface Boards {
   adv: AdvRow[];
   strip: SevCount[];
@@ -1742,9 +1792,10 @@ export interface Boards {
   releases: RelRow[];
   hygiene: HygRow[];
   work: WorkRow[];
+  hosts: HostBoardRow[];
   probes: ProbeBoardRow[];
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
-  unchecked: number; // projects in the filter whose *Check prod* nobody has clicked yet
+  unchecked: number; // projects in the filter whose addresses nobody has checked yet; a host's card asks for itself
   drawn: string[]; // `root|key` of every line a board carries the verb for; the rest are listed below them
   one: boolean; // narrowed to one project, so no row names it: the column would only repeat the name
 }
@@ -1767,6 +1818,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     releases: [],
     hygiene: [],
     work: [],
+    hosts: [],
     probes: [],
     read: {},
     unchecked: 0,
@@ -1786,10 +1838,11 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   if (tab === "code") b.hygiene = hygieneBoard(ps, root, now);
   if (tab === "work") b.work = workBoard(ps, root);
   if (tab === "servers") {
+    b.hosts = hostBoard(ps, root, now);
     b.probes = probeBoard(ps, root, now);
     // A check that ran and failed is Coverage's to explain, never "not checked yet".
     b.unchecked = mine.filter((p) => {
-      const ids = prodChecks(p.inp);
+      const ids = prodChecks(p.inp).filter((id) => !readsHost(id));
       return ids.length && ids.every((id) => (p.inp.reports[id]?.coverage.state ?? "notRun") === "notRun");
     }).length;
   }
@@ -1804,6 +1857,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.releases.map((r) => r.verb),
     ...b.hygiene.flatMap((r) => r.verbs),
     ...b.work.flatMap((r) => r.verbs),
+    ...b.hosts.flatMap((r) => r.verbs),
     ...b.probes.map((r) => r.verb),
   ];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
@@ -1864,6 +1918,7 @@ const DOORS = {
     idle: { to: "checkouts" }, fetched: { to: "fetch" },
   },
   work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
+  hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null }, // no view to open: the card's verbs act
   addresses: { address: "url" },
 } as const satisfies { [B in BoardId]: Readonly<Record<string, Door | "url" | null>> };
 /** A board's own column names, so a view that asks for one the table lacks fails tsc, not a click. */
@@ -1888,8 +1943,8 @@ export function boardDoor(board: BoardId, col: string, v: number | string | null
 }
 
 /** A count's tip: the first names it counts, and how many more. */
-export function peekNames(names: readonly string[], n = 6): string {
-  return names.slice(0, n).join(", ") + (names.length > n ? ` +${names.length - n} more` : "");
+export function peekNames(names: readonly string[], n = 6, total = names.length): string {
+  return names.slice(0, n).join(", ") + (total > n ? ` +${total - n} more` : "");
 }
 
 /** An advisory row's fix verdict from the dashboard's own dependency read, by any of its ids. */
@@ -1973,7 +2028,7 @@ export function coverRows(inp: MaintInput): CoverRow[] {
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
-    const alias = findSource(id)?.sees.includes("prod.host") ? det.deploy?.host : null;
+    const alias = readsHost(id) ? det.deploy?.host : null;
     const host = alias ? { alias, allowed: (inp.hosts ?? []).includes(alias) } : null;
     const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null) =>
       out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text), host });
@@ -2079,11 +2134,16 @@ export type HostKind = (typeof HOST_KINDS)[number];
 /** One kind of trouble on a host: its card line's words, and the points its brief lists. */
 export interface HostLine { kind: HostKind; level: Finding["level"]; text: string; detail: string; points: string[] }
 export interface HostPart { level: Level; text: string }
-/** A host judged part by part; `level`/`text` are the worst judged part's, `summary` the whole in one line. */
+export interface HostDisk { mount: string; pct: number; level: "bad" | "warn" | "ok"; free: string }
+export interface HostFail { text: string; level: "bad" | "warn"; tip: string }
+/** A host judged part by part; `level`/`text` are the worst judged part's, `summary` the whole in one line.
+ *  The last row is what a board's card prints beside the parts, judged here so the two cannot differ. */
 export interface HostState {
   alias: string; level: Level; text: string; tip: string[]; summary: string;
   disk: HostPart; updates: HostPart; reboot: HostPart; containers: HostPart; load: HostPart; uptime: HostPart;
   lines: HostLine[];
+  disks: HostDisk[]; failing: HostFail[]; running: string | null; lists: { age: number; level: "warn" | "ok" } | null; perCpu: number | null;
+  pending: { text: string; level: "warn" | "info" } | null;
 }
 
 /** How full, as df counts it: used of what a user may use, rounded up. */
@@ -2091,11 +2151,14 @@ export const diskPct = (d: Disk): number => d.usedKb + d.availKb > 0 ? Math.ceil
 const MB = 1024, GB = 1024 * 1024; // df's kilobytes
 const size = (kb: number) => kb >= GB ? `${(kb / GB).toFixed(kb >= 100 * GB ? 0 : 1)} GB` : `${Math.round(kb / MB)} MB`;
 const isUp = (c: HostContainer) => c.state === "running";
+// Under a day longSpan's floor would call a host booted minutes ago a day old.
+export const upSpan = (sec: number): string => sec < DAY ? span(sec) : longSpan(sec);
+
+const diskLevel = (pct: number, th: MaintThresholds): HostDisk["level"] => pct >= th.diskBadPct ? "bad" : pct >= th.diskWarnPct ? "warn" : "ok";
 
 function diskParts(h: HostFacts, th: MaintThresholds, on: string): [HostPart, HostLine | null] {
-  const all = h.disks.map((d) => ({ d, pct: diskPct(d) }))
-    .map((x) => ({ ...x, level: x.pct >= th.diskBadPct ? "bad" as const : x.pct >= th.diskWarnPct ? "warn" as const : null }));
-  const filling = all.filter((x) => x.level).sort((a, b) => b.pct - a.pct), root = all[0];
+  const all = h.disks.map((d) => ({ d, pct: diskPct(d), level: diskLevel(diskPct(d), th) }));
+  const filling = all.filter((x) => x.level !== "ok").sort((a, b) => b.pct - a.pct), root = all[0];
   if (!root) return [{ level: "muted", text: "disk unknown" }, null];
   if (!filling.length) return [{ level: "ok", text: `${root.d.mount} ${root.pct}%` }, null];
   const x = filling[0], level = filling.some((y) => y.level === "bad") ? "bad" : "warn";
@@ -2107,9 +2170,15 @@ function diskParts(h: HostFacts, th: MaintThresholds, on: string): [HostPart, Ho
 }
 
 // Package lists as old as the host's own update timer: past `fetchStaleDays`, its counts drift too.
+function listsOf(h: HostFacts, th: MaintThresholds, at: number): HostState["lists"] {
+  if (h.listsAt === null) return null;
+  const age = at - h.listsAt;
+  return { age, level: age > th.fetchStaleDays * DAY ? "warn" : "ok" };
+}
+
 function updateParts(h: HostFacts, th: MaintThresholds, at: number, on: string): [HostPart, HostLine | null] {
   if (h.updates === null) return [{ level: "muted", text: "updates unknown" }, null];
-  const age = h.listsAt === null ? null : at - h.listsAt, stale = age !== null && age > th.fetchStaleDays * DAY;
+  const lists = listsOf(h, th, at), age = lists?.age ?? null, stale = lists?.level === "warn";
   const sec = h.security ?? 0, n = h.updates, old = stale ? `lists ${span(age!)} old` : "";
   const part: HostPart = sec ? { level: "warn", text: `${sec} security` } : stale ? { level: "warn", text: old }
     : n ? { level: "info", text: plural(n, "update") } : { level: "ok", text: "up to date" };
@@ -2128,11 +2197,13 @@ function updateParts(h: HostFacts, th: MaintThresholds, at: number, on: string):
 }
 
 type Failing = { name: string; why: string; level: "bad" | "warn"; c: HostContainer | null };
+// A count past the cap is a floor.
+const runningOf = (cs: readonly HostContainer[], capped: boolean) => `${cs.filter(isUp).length}/${cs.length}${capped ? "+" : ""}`;
 // Restarting, dead or unhealthy is red, and so is a named service with no replica up; a running one
 // that keeps restarting is amber. An exit nobody named cannot tell a leftover from a failure: a tip.
-function containerParts(h: HostFacts, compose: readonly string[], th: MaintThresholds, on: string, tip: string[], capped: boolean): [HostPart | null, HostLine | null] {
+function containerParts(h: HostFacts, compose: readonly string[], th: MaintThresholds, on: string, tip: string[], capped: boolean): [HostPart | null, HostLine | null, HostFail[]] {
   const cs = h.containers;
-  if (!cs) return [compose.length ? { level: "muted", text: "containers unknown" } : null, null];
+  if (!cs) return [compose.length ? { level: "muted", text: "containers unknown" } : null, null, []];
   const name = (c: HostContainer) => c.service ?? c.name, fails: Failing[] = [];
   for (const c of cs) {
     if (c.state === "restarting" || c.state === "dead") fails.push({ name: name(c), why: c.state, level: "bad", c });
@@ -2151,18 +2222,21 @@ function containerParts(h: HostFacts, compose: readonly string[], th: MaintThres
     if (projects.length > 1) tip.push(`${s} is a service of ${projects.length} projects on ${h.alias}: ${projects.join(", ")}`);
   }
   if (cut.length) tip.push(`${cut.join(", ")} not among the first ${cs.length} containers on ${h.alias}`);
-  const up = cs.filter(isUp).length, bad = fails.filter((f) => f.level === "bad");
-  if (!fails.length) return [cut.length ? { level: "muted", text: "containers unknown" } : { level: "ok", text: `${up}/${cs.length}${capped ? "+" : ""} up` }, null];
+  const bad = fails.filter((f) => f.level === "bad");
+  if (!fails.length) return [cut.length ? { level: "muted", text: "containers unknown" } : { level: "ok", text: `${runningOf(cs, capped)} up` }, null, []];
   const worst = bad.length ? bad : fails, one = worst.length === 1;
   const point = (f: Failing) => f.c
     ? `${f.c.name}${f.c.service ? ` (service ${f.c.service})` : ""}: ${f.c.state}${f.c.health ? `, ${f.c.health}` : ""}, restarted ${plural(f.c.restarts, "time")}${f.c.exit ? `, last exit ${f.c.exit}` : ""}`
     : `service ${f.name} has no running container${cs.some((c) => c.service === f.name) ? "" : ", and none exists"}`;
+  const chips = fails.map((f): HostFail => ({
+    text: `${f.name} ${f.why}${f.c?.restarts && !f.why.startsWith("restarted") ? ` · ${plural(f.c.restarts, "restart")}` : ""}`, level: f.level, tip: point(f),
+  })).sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]);
   return [{ level: worst[0].level, text: one ? `${worst[0].name} ${worst[0].why}` : `${worst.length} ${bad.length ? "failing" : "restarting"}` }, {
     kind: "containers", level: worst[0].level,
     text: one ? `${worst[0].name} ${worst[0].why}${on}` : `${worst.length} containers ${bad.length ? "failing" : "restarting often"}${on}`,
     detail: fails.slice(0, 4).map((f) => `${f.name} ${f.why}`).join(", ") + (fails.length > 4 ? " …" : ""),
     points: fails.map(point),
-  }];
+  }, chips];
 }
 
 /** One host judged against `[maintenance.thresholds]`. A part nothing read is muted, never the dot, and
@@ -2171,7 +2245,7 @@ function containerParts(h: HostFacts, compose: readonly string[], th: MaintThres
 export function hostState(h: HostFacts, compose: readonly string[], th: MaintThresholds = MAINT_DEFAULTS, now = Date.now(), capped = false): HostState {
   const at = h.now ?? now / 1000, on = ` on ${h.alias}`, tip: string[] = [];
   const [disk, dl] = diskParts(h, th, on), [updates, ul] = updateParts(h, th, at, on);
-  const [containers, cl] = containerParts(h, compose, th, on, tip, capped);
+  const [containers, cl, failing] = containerParts(h, compose, th, on, tip, capped);
   const reboot: HostPart = h.reboot === null ? { level: "muted", text: "reboot unknown" } : h.reboot ? { level: "warn", text: "reboot needed" } : { level: "ok", text: "" };
   const rl: HostLine | null = h.reboot ? { kind: "reboot", level: "warn", text: `${h.alias} needs a reboot`, detail: h.rebootWhy.slice(0, 3).join(", "),
     points: [`it needs a reboot${h.rebootWhy.length ? `: ${h.rebootWhy.join(", ")}` : ""}`] } : null;
@@ -2180,7 +2254,7 @@ export function hostState(h: HostFacts, compose: readonly string[], th: MaintThr
   const load: HostPart = per === null ? { level: "muted", text: "load unknown" } : { level: hot ? "warn" : "ok", text: `load ${per.toFixed(1)}/cpu` };
   const ll: HostLine | null = hot ? { kind: "load", level: "warn", text: `${h.alias} load ${per!.toFixed(1)} per CPU`, detail: `15-minute load ${h.load![2]} on ${plural(h.cpus!, "CPU")}`,
     points: [`its 15-minute load is ${h.load![2]} on ${plural(h.cpus!, "CPU")}, ${per!.toFixed(1)} per CPU`] } : null;
-  const uptime: HostPart = { level: "ok", text: h.uptime === null ? "" : `up ${longSpan(h.uptime)}` };
+  const uptime: HostPart = { level: "ok", text: h.uptime === null ? "" : `up ${upSpan(h.uptime)}` };
   const judged = [disk, updates, ...(h.reboot !== null ? [reboot] : []), ...(containers ? [containers] : []), ...(per !== null ? [load] : [])];
   const worst = [...judged].sort(byRank)[0];
   const lines = [dl, cl, ul, rl, ll].filter((l): l is HostLine => !!l).sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]);
@@ -2189,6 +2263,9 @@ export function hostState(h: HostFacts, compose: readonly string[], th: MaintThr
     alias: h.alias, level: worst.level, text: worst.level === "ok" ? "" : worst.text, summary,
     tip: [`${h.alias}: ${summary}`, ...lines.map((l) => l.text), ...tip],
     disk, updates, reboot, containers: containers ?? { level: "ok", text: "" }, load, uptime, lines,
+    disks: h.disks.map((d) => ({ mount: d.mount, pct: diskPct(d), level: diskLevel(diskPct(d), th), free: size(d.availKb) })),
+    failing, running: h.containers && runningOf(h.containers, capped), lists: listsOf(h, th, at), perCpu: per,
+    pending: h.updates ? { text: `${h.updates}${h.security ? ` · ${h.security} security` : ""}`, level: h.security ? "warn" : "info" } : null,
   };
 }
 
@@ -2197,7 +2274,7 @@ export function hostState(h: HostFacts, compose: readonly string[], th: MaintThr
  *  `[deploy] host` is read here (none, or its source switched off). */
 export interface HostSummary { alias: string; allowed: boolean; at: number | null; state: HostState | null; why: string | null; gaps: string[] }
 export function hostSummary(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): HostSummary | null {
-  const alias = inp.det?.deploy?.host, ids = (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes("prod.host"));
+  const alias = inp.det?.deploy?.host, ids = (inp.det?.sources ?? []).filter((id) => readsHost(id) && (!inp.skip?.includes(id) || unticked(inp, id)));
   if (!alias || !ids.length) return null;
   const allowed = (inp.hosts ?? []).includes(alias);
   const reps = ids.map((id) => inp.reports[id]), rep = reps.find((r) => r?.coverage.state === "ok" && r.facts?.kind === "hosts");

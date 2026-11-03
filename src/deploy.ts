@@ -34,6 +34,8 @@ export function narrowDeploy(raw: unknown): DeployCfg | null {
 const isWord = (v: string) => v !== "" && !v.startsWith("-") && !/\s/.test(v);
 // deploy.rs's `ssh_alias`: the host reaches `ssh <alias>` in a shell prefill, where `;` or `$(` is a command.
 const isAlias = (v: string) => v.length <= 253 && /^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(v);
+/** The SSH door's prefill, or null: a kept scan may hold a host from before the alias rule, and this is a shell's. */
+export const sshPrefill = (alias: string): string | null => isAlias(alias) ? `ssh ${alias}` : null;
 const isHttp = (u: string) => /^https?:\/\/\S+$/i.test(u);
 const PART = "[A-Za-z0-9][A-Za-z0-9._-]*";
 const isOrgProject = (s: string) => new RegExp(`^${PART}/${PART}$`).test(s);

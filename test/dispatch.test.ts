@@ -403,7 +403,7 @@ describe("Maintenance's own dispatcher", () => {
     // the Security strip's filter; pick the tab's project picker and find a card line.
     // door is a board number's (./maint boardDoor): a branch filter, a queue chip, a fetch.
     // sweep is the advisory sweep's: submit, a row's Patch or agent check, the report and a recent run.
-    // host is a per-machine Allow or Disallow on a [deploy] host: Coverage's and the Runs on card's.
+    // host is a [deploy] host's own doors: Allow and Disallow, a card's Check, and SSH.
     for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev", "door", "sweep", "host"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
@@ -425,6 +425,15 @@ describe("Maintenance's own dispatcher", () => {
     expect(FLEETUI, "a closing note is optional, so tsc would not catch dropping it").toContain("host.session(label, rows, notes)");
     expect(DASHBOARD).not.toMatch(/lines: \(\) =>/);
     expect(MAINTUI).toContain('t.matches("[data-mttick]")');
+  });
+
+  it("acts on every door a host card or the Runs on line draws", () => {
+    for (const act of ["check", "ssh"]) {
+      expect(MAINTVIEW, `data-mthost="${act}" is never drawn`).toContain(`data-mthost="${act}"`);
+      expect(MAINTUI, `maintui ignores ${act}`).toContain(`act === "${act}"`);
+    }
+    expect(MAINTVIEW).toContain(`data-mthost="${"$"}{on ? "allow" : "deny"}"`);
+    for (const act of ["allow", "deny"]) expect(MAINTUI, `maintui ignores ${act}`).toContain(`act === "${act}"`);
   });
 
   it("steps out of a project filter on Escape before it leaves the fleet", () => {

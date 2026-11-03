@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   checkDeploy, checkMaintCfg, deployLosses, deployPrompt, deploySummary, deployText, deployToml, isEmptyDeploy, isEmptyMaintCfg,
-  maintCfgLosses, maintCfgSummary, maintCfgText, maintCfgToml, maintPrompt, narrowDeploy, narrowMaintCfg, NO_FILE,
+  maintCfgLosses, maintCfgSummary, maintCfgText, maintCfgToml, maintPrompt, narrowDeploy, narrowMaintCfg, NO_FILE, sshPrefill,
   type DeployCfg, type DeployProposal, type MaintCfg, type MaintCfgProposal,
 } from "../src/deploy";
 
@@ -58,6 +58,10 @@ describe("checkDeploy", () => {
       expect(out.dropped, `${c.field} = ${c.value}`).toEqual(c.refused ? [c.refused] : []);
       expect(isEmptyDeploy(out.deploy), `${c.field} = ${c.value}`).toBe(!!c.refused);
     }
+    // The SSH door types what the rule keeps and nothing it refuses, even out of a scan kept from before it.
+    const hosts = table.cases.filter((c) => c.field === "host");
+    expect(hosts.length).toBeGreaterThan(3);
+    for (const c of hosts) expect(sshPrefill(c.value), c.value).toBe(c.refused ? null : `ssh ${c.value}`);
   });
 });
 

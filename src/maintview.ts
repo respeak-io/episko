@@ -5,8 +5,8 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, prodTip, rtName, span, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostSummary, type HygCount,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, prodTip, rtName, span, upSpan, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -43,7 +43,6 @@ export interface MaintProd extends ProdAsks { projects: number; checking: boolea
 export interface MaintTabView extends TabModel {
   sub: MaintSub;
   filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell or the picker
-  hosts: MaintHostRow[]; // hostRows' order, over the filter
   prod: MaintProd;
   sev: SevBucket | null; // the Security strip's pick
   names: Record<string, string>; // every root's project name
@@ -65,6 +64,7 @@ export interface MaintDashExtra {
   fixes: Record<string, string>; // an advisory id's fix verdict, upper-case keys
 }
 export interface MaintView extends MaintTabView {
+  hosts: MaintHostRow[]; // hostRows' order: the Overview's compact rows; Servers draws the Hosts board
   cards: MaintCard[]; // rankMaint's order
   chip: MaintChip; quietOpen: boolean;
   checked: number; // the last finished sweep this session (ms), 0 for none
@@ -131,6 +131,9 @@ function prodHtml(p: MaintProd, root?: string): string {
 const ALLOW_TIP = "Let Check prod run one read-only command on this host over your own ssh, from this machine only. Nothing connects now";
 const allowHtml = (alias: string, on = true) => `<button class="aslink" data-mthost="${on ? "allow" : "deny"}" data-mtkey="${escAttr(alias)}"`
   + ` data-tip="${escAttr(on ? ALLOW_TIP : "Check prod stops reaching this host from this machine")}">${on ? "Allow" : "Disallow"}</button>`;
+// A shell with the command typed in and never sent: the same contract as every other prefill.
+const sshHtml = (alias: string, root: string, cls = "mt-verb") => `<button class="${cls}" data-mthost="ssh" data-mtkey="${escAttr(alias)}" data-mtroot="${escAttr(root)}"`
+  + ` data-tip="${escAttr(`A shell with ssh ${alias} typed in and never sent: you press Enter`)}">SSH</button>`;
 
 // ---------- the head ----------
 
@@ -204,9 +207,9 @@ function runText(f: Finding): [string, string, string] {
 }
 
 const verbText = (f: Finding): [string, string, string] => f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
-// `why` says what the verb covers where a row shows less than its line does.
-function verbHtml(f: Finding, why = ""): string {
-  const [label, tip] = verbText(f), ag = tip === "agent", said = ag ? AGENT_TIP : tip;
+// `why` says what the verb covers where a row shows less than its line does; `as` renames it there.
+function verbHtml(f: Finding, why = "", as = ""): string {
+  const [word, tip] = verbText(f), label = as || word, ag = tip === "agent", said = ag ? AGENT_TIP : tip;
   return f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
       data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(why ? `${why}
 ${said}` : said)}">${ag ? icon("agent") : ""}${esc(label)}</button>`;
@@ -661,9 +664,59 @@ function workHtml(v: MaintTabView, b: Boards): string {
     table([...projCol(b), ">Review requested", "Issues", "Pull requests", ""], rows));
 }
 
-function serversHtml(v: MaintTabView, b: Boards): string {
+// ---------- the Hosts board: a card per [deploy] host, each with its own verbs ----------
+
+const unknownHtml = (tip: string) => `<span class="dim" data-tip="${escAttr(tip)}">?</span>`;
+const vitalHtml = (k: string, v: string) => `<div class="hv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;
+
+// A host's numbers have no view to open (DOORS.hosts); only red and amber are coloured, a zero is the dot, an unknown a ?.
+function vitalsHtml(r: HostBoardRow, h: HostFacts, s: HostState): string {
+  const root = r.projects[0] ?? "", gaps = r.gaps.join("\n");
+  const part = (col: BoardCol<"hosts">, text: string, level: Level, tip = "") =>
+    doorHtml(esc(text), `mt-n${level === "bad" || level === "warn" ? ` ${LEVEL_CLS[level]}` : ""}`, ["hosts", col, root], null, tip);
+  const diskOf = (d: HostDisk) => part("disk", `${d.mount} ${d.pct}%`, d.level, `${d.free} free`);
+  const [top, ...rest] = s.disks, other = [...rest].sort((a, b) => b.pct - a.pct)[0];
+  const disk = top ? `<span class="mt-barc">${barHtml(top.pct / 100, top.level)}${diskOf(top)}</span>${other ? diskOf(other) : ""}` : unknownHtml(gaps || "No disk was read");
+  const names = [h.pm ?? "", h.packages.length ? peekNames(h.packages, 6, h.updates ?? 0) : "", h.security === null ? "this package manager does not tell security updates apart" : ""];
+  const count = s.pending ? part("updates", s.pending.text, s.pending.level, names.filter(Boolean).join("\n")) : DOT;
+  const lists = s.lists ? part("updates", `lists ${span(s.lists.age)} old`, s.lists.level, "When this host last refreshed its package lists") : "";
+  const updates = h.updates === null ? unknownHtml(gaps || "No package manager was read") : count + lists;
+  const reboot = h.reboot === null ? unknownHtml(`Nothing on ${r.host} says whether it needs a reboot`)
+    : h.reboot ? part("reboot", "required", s.reboot.level, h.rebootWhy.join("\n")) : DOT;
+  const chips = s.failing.map((f) => `<span class="mt-n mt-hchip ${LEVEL_CLS[f.level]}" data-tip="${escAttr(f.tip)}">${esc(f.text)}</span>`).join("");
+  const cut = s.containers.level === "muted" ? unknownHtml(s.tip.join("\n")) : "";
+  const boxes = !h.containers ? unknownHtml(gaps || "Containers were not read")
+    : !h.containers.length && !chips && !cut ? DOT : part("containers", `${s.running} up`, "muted") + cut + chips;
+  const load = s.perCpu === null ? unknownHtml(gaps || "Load was not read") : part("load", `${s.perCpu.toFixed(1)}/cpu`, s.load.level, `15-minute load ${h.load?.[2]} on ${plural(h.cpus ?? 0, "CPU")}`);
+  const up = h.uptime === null ? unknownHtml(gaps || "Uptime was not read") : part("uptime", upSpan(h.uptime), "muted");
+  return [["Disk", disk], ["Updates", updates], ["Reboot", reboot], ["Containers", boxes], ["Load", load], ["Up", up]].map(([k, x]) => vitalHtml(k, x)).join("");
+}
+
+function hostCardHtml(v: MaintTabView, b: Boards, r: HostBoardRow): string {
+  const s = r.state, root = r.projects[0] ?? "";
+  const runs = b.one ? "" : `<div class="hl">runs ${r.projects.map((p) => projHtml(p, nameOf(v, p))).join(", ")}</div>`;
+  const word = !r.allowed ? "not allowed on this machine" : s ? s.text : r.checking ? "checking…" : r.why ?? "not checked";
+  const level = r.allowed && s ? s.level : "muted";
+  const tip = [...(s?.tip ?? []), ...r.gaps].join("\n");
+  const head = `<div class="hh"><span class="hn mono"${tip ? ` data-tip="${escAttr(tip)}"` : ""}>${esc(r.host)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[level]}">${level === "ok" && !word ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(word)}</span></div>`;
+  const check = r.checking ? `<span class="fl-when mono">checking…</span>` : !r.sources.length ? ""
+    : `<button class="mt-verb" data-mthost="check" data-mtkey="${escAttr(r.host)}" data-tip="${escAttr(prodTip(r.sources, [r.host]))}">Check</button>`;
+  const acts = !r.allowed ? allowHtml(r.host)
+    : check + sshHtml(r.host, root) + (r.verbs[0] ? verbHtml(r.verbs[0], `Everything ${nameOf(v, r.verbs[0].root)}'s read of this host found, in one brief`, "Brief") : "") + allowHtml(r.host, false);
+  const when = r.at ? `checked ${relTime(r.at * 1000)}` : "";
+  return `<article class="mt-hostcard">${head}${runs}${s && r.facts ? vitalsHtml(r, r.facts, s) : ""}`
+    + `<div class="hfoot"><span class="mt-note mono">${esc(when)}</span>${acts}</div></article>`;
+}
+
+function hostBoardHtml(v: MaintTabView, b: Boards): string {
+  return b.hosts.length ? board("hosts", "Hosts", "as last checked · nothing connects until you ask",
+    `<div class="mt-hostgrid">${b.hosts.map((r) => hostCardHtml(v, b, r)).join("")}</div>`) : "";
+}
+
+function addressBoardHtml(v: MaintTabView, b: Boards): string {
   if (!b.probes.length) {
-    return b.unchecked ? board("addresses", "Prod", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
+    return b.unchecked ? board("addresses", "Addresses", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
       + `<p class="fl-none">${prodHtml(v.prod, v.filter?.root)}</p>`) : "";
   }
   const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${projTd(v, b, r.root)}`
@@ -671,8 +724,12 @@ function serversHtml(v: MaintTabView, b: Boards): string {
     + td(`<span class="mt-n ${LEVEL_CLS[r.level]}">${esc(r.code === null ? "no answer" : String(r.code))}</span>`, "r mono")
     + td(r.ms === null ? DASH : esc(`${r.ms}ms`), "r mono")
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);
-  return board("addresses", "Addresses", `as last checked · ${readNote(b.read.prod)}`,
+  return board("addresses", "Addresses", `as last checked · ${readNote(new Set(b.probes.map((r) => r.root)).size)}`,
     table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows));
+}
+
+function serversHtml(v: MaintTabView, b: Boards): string {
+  return hostBoardHtml(v, b) + addressBoardHtml(v, b);
 }
 
 // ---------- the advisory sweep: one question asked of every project's lockfiles ----------
@@ -776,8 +833,7 @@ function tabHtml(v: MaintTabView, tab: MaintTab): string {
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
-  return (tab === "servers" ? hostsHtml(v.hosts) : "")
-    + (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
+  return (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
 }
 
 export function maintBodyHtml(v: MaintView): string {
@@ -877,7 +933,7 @@ function runsCard(v: MaintDash): string {
   // DeployConfig::targets asks a version_url that is also a named url once, under that name.
   const versionName = named.some(([, u]) => u === d.versionUrl) ? null : named.some(([n]) => n === "version") ? "version_url" : "version";
   const rows = [
-    v.host ? hostLineHtml(v.host) : d.host ? kv("Host", `${d.host} · ssh alias`) : "",
+    v.host ? hostLineHtml(v.host, v.card.path) : d.host ? kv("Host", `${d.host} · ssh alias`) : "",
     d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
     ...named.map(([n, u]) => addr(n, u)),
     ...Object.entries(d.envs).map(([n, p]) => kv(`Env ${n}`, `tagged ${p}`)),
@@ -892,13 +948,13 @@ function runsCard(v: MaintDash): string {
     rows + `<p class="ac-empty">Nothing connects until you ask${esc(checked)}. ${doors}</p>`);
 }
 
-// The host in one line once read, else why not; Allow or Disallow beside it, Check riding Check prod.
-function hostLineHtml(h: HostSummary): string {
+// The host in one line once read, else why not; Allow or Disallow and SSH beside it, Check riding Check prod.
+function hostLineHtml(h: HostSummary, root: string): string {
   const s = h.state, said = !h.allowed ? "not allowed on this machine" : s ? s.summary : h.why ?? "not checked";
   const tip = [...(s?.tip ?? []), ...(s ? h.gaps : []), h.allowed ? "" : "Check prod reaches it only once it is allowed here"].filter(Boolean).join("\n");
   return `<div class="mt-probe mt-hostl"${tip ? ` data-tip="${escAttr(tip)}"` : ""}><span class="k">Host</span>`
     + `<span class="u mono">${esc(`${h.alias} · ${said}`)}</span>`
-    + `<span class="mt-v ${LEVEL_CLS[s && s.level !== "ok" ? s.level : "muted"]}">${esc(s?.text ?? "")}</span>${allowHtml(h.alias, !h.allowed)}</div>`;
+    + `<span class="mt-v ${LEVEL_CLS[s && s.level !== "ok" ? s.level : "muted"]}">${esc(s?.text ?? "")}</span>${h.allowed ? sshHtml(h.alias, root, "aslink") : ""}${allowHtml(h.alias, !h.allowed)}</div>`;
 }
 
 function probeHtml(label: string, p: ProbeRow): string {

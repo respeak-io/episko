@@ -3194,6 +3194,23 @@ select.in-ctl { cursor: pointer; }
 .mt-host .hl { flex: 1; min-width: 0; font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-host .mt-rn { max-width: none; font-size: 11px; }
 .mt-host .mt-v { flex: none; max-width: 35%; }
+/* The Hosts board on Servers: a card per host, muted; only a part that needs you is coloured. */
+.mt-hostgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 8px; margin-top: 6px; }
+.mt-hostcard { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 8px 10px 6px; border: 1px solid var(--hair); border-radius: var(--radius-sm); }
+.mt-hostcard .hh { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.mt-hostcard .hn { min-width: 0; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-hostcard .hh .mt-v { flex: none; max-width: 60%; white-space: normal; text-align: right; }
+.mt-hostcard .hl { font-size: 11px; color: var(--muted-2); overflow-wrap: anywhere; }
+.mt-hostcard .mt-rn { max-width: none; font-size: 11px; }
+.mt-hostcard .hv { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 11px; }
+.mt-hostcard .hv .k { color: var(--muted-2); }
+.mt-hostcard .hv .v { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
+.mt-hchip { padding: 0 5px; border: 1px solid var(--hair); border-radius: 5px; overflow-wrap: anywhere; }
+.mt-hostcard .hfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: auto; padding-top: 5px; }
+.mt-hostcard .hfoot .mt-note { flex: 1 0 auto; }
+.mt-hostcard .hfoot .aslink { flex: none; font-size: 11px; }
+.mt-hostcard .mt-verb { padding: 0 6px; }
+.mt-hostcard:hover .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
 /* A tab's boards: built for its question, muted throughout; only a value that needs you is coloured. */
 .mt-board { padding-bottom: 8px; scroll-margin-top: 10px; }
 .mt-sec-h { display: flex; align-items: baseline; gap: 10px; min-width: 0; }

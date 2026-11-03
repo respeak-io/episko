@@ -349,6 +349,7 @@ setFleetHost({
     });
   },
   session: (label, rows, notes) => launchTogether(label, rows, notes),
+  terminal: (project, path, cmd) => { void handToTerminal(project, path, cmd, { colorKey: path }); },
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts

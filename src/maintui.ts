@@ -7,9 +7,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { actToast, toast } from "./dom";
 import { dlog } from "./debug";
+import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, prodNone, SEV_BUCKETS, sweepReport,
+  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
   sweepRows, tabFindings,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionLeft, sessionPlan, sweepGate, sweepLine, VERB_KIND,
   type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
@@ -30,6 +31,7 @@ export interface MaintHost {
   scan: (force: boolean) => void; // the fleet's every project, the dashboard's one
   nameOf: (root: string) => string;
   prefill: (project: string, path: string, text: string) => void;
+  terminal: (project: string, path: string, cmd: string) => void; // a shell with `cmd` typed in and never sent
   // `door` opens the view a board number counts (./maint Door); on its own dashboard, that view in place.
   openDashboard: (name: string, path: string, tab?: "today" | "maint", door?: Door) => void;
   // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
@@ -115,6 +117,31 @@ async function checkProd(roots: readonly string[]): Promise<void> {
   const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
   const failed = reps.filter((x) => x.coverage.state !== "ok").length;
   if (failed) toast(`Prod: ${failed} of ${reps.length} checks could not run. The Prod cell says why`);
+}
+
+// One host's card asks every project naming it, and Rust's join makes that one round trip. prodChecks
+// is the consent: a host disallowed since this button was drawn has nothing to ask.
+async function checkHost(alias: string, host: MaintHost): Promise<void> {
+  const jobs = host.roots().flatMap((r) => {
+    const inp = maintInput(r);
+    return inp?.det?.deploy?.host === alias ? prodChecks(inp).filter(readsHost).map((id) => [r, id] as const) : [];
+  });
+  if (!jobs.length) { toast(`${alias} is not allowed on this machine`); return; }
+  const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
+  const failed = reps.find((x) => x.coverage.state !== "ok");
+  if (failed) toast(`${alias}: ${covText(failed.coverage)}`);
+}
+
+// Allow and Disallow are a per-machine tick and connect nowhere; only Check connects, and SSH only types.
+function hostAct(at: HTMLElement, host: MaintHost): void {
+  const act = at.dataset.mthost, alias = at.dataset.mtkey ?? "", root = at.dataset.mtroot ?? "";
+  if (act === "allow" || act === "deny") { setMaintHost(alias, act === "allow"); host.render(); }
+  if (act === "check") void checkHost(alias, host);
+  if (act === "ssh" && root) {
+    const cmd = sshPrefill(alias);
+    if (cmd) host.terminal(host.nameOf(root), root, cmd);
+    else toast(`${alias} is not an ssh alias or host name`);
+  }
 }
 
 // ---------- the advisory sweep: nothing runs until the person submits ----------
@@ -315,9 +342,8 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
     void writeText(text).then(() => toast("Copied")).catch(() => toast(text));
     return true;
   }
-  // A per-machine tick, nothing more: no connection is made until Check prod is clicked.
-  const allow = t.closest<HTMLElement>("[data-mthost]");
-  if (allow) { setMaintHost(allow.dataset.mtkey ?? "", allow.dataset.mthost === "allow"); host.render(); return true; }
+  const hostDoor = t.closest<HTMLElement>("[data-mthost]");
+  if (hostDoor) { hostAct(hostDoor, host); return true; }
   const door = t.closest<HTMLElement>("[data-mtdoor]");
   if (door) { openDoor(door.dataset.mtdoor ?? "", door.dataset.mtroot!, host); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");

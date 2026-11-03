@@ -13,7 +13,7 @@ import {
   type Band, type SessionCtx, type SessionLine, type SessionPlan, type Verb,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
-  currentHosts, diskPct, HOST_KINDS, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, type HostFacts,
+  currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -1671,11 +1671,8 @@ describe("a host's vitals", () => {
       ]);
       expect(fs.every((f) => f.source === "h" && f.facet === "prod")).toBe(true);
       expect(HOST_KINDS.map((k) => `prod:host:${k}`).sort()).toEqual(fs.map((f) => f.key).sort());
-      // Lines open the Servers tab's top until a board carries them, and stay listed with their verb.
-      expect(findingTarget({ facet: "prod", key: "prod:host:disk" })).toEqual({ tab: "servers", board: null });
+      expect(findingTarget({ facet: "prod", key: "prod:host:disk" })).toEqual({ tab: "servers", board: "hosts" });
       expect(findingTarget({ facet: "prod", key: "prod:app" })).toEqual({ tab: "servers", board: "addresses" });
-      const model = tabModel("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: fs }], null, null, NOW);
-      expect(model.rows.map((r) => r.key)).toContain("prod:host:disk");
     });
   });
 
@@ -1776,6 +1773,225 @@ describe("a host's vitals", () => {
     });
 
     const probes1 = (): Facts => ({ kind: "probes", items: [{ name: "app", url: "https://app", code: 200, ms: 9, certNotAfter: S + 90 * D, err: null }] });
+  });
+
+  describe("what a card prints, from the one judge", () => {
+    it("judges every disk it lists, with what is free", () => {
+      expect(judge({ disks: [disk("/", 96), disk("/srv", 86), disk("/boot", 40)] }).disks).toEqual([
+        { mount: "/", pct: 96, level: "bad", free: "4.0 GB" }, { mount: "/srv", pct: 86, level: "warn", free: "14.0 GB" }, { mount: "/boot", pct: 40, level: "ok", free: "60.0 GB" },
+      ]);
+      expect(judge({ disks: [disk("/", 90)] }, clampMaint({ disk_warn_pct: 91 })).disks[0].level, "the thresholds move it too").toBe("ok");
+      expect(judge({ disks: [] }).disks).toEqual([]);
+    });
+
+    it("says each failing container with its health and restarts, the red ones first", () => {
+      expect(judge({ containers: [box({ health: "unhealthy", restarts: 3 })] }).failing).toEqual([
+        { text: "api unhealthy · 3 restarts", level: "bad", tip: "acme-api-1 (service api): running, unhealthy, restarted 3 times" },
+      ]);
+      expect(judge({ containers: [box({ name: "w", service: "worker", restarts: 12 }), box({ state: "dead", restarts: 1 })] }).failing.map((f) => [f.text, f.level])).toEqual([
+        ["api dead · 1 restart", "bad"], ["worker restarted 12 times", "warn"],
+      ]);
+      expect(judge({ containers: [], compose: ["api"] }).failing.map((f) => f.text), "named, and none there").toEqual(["api not running"]);
+      expect(judge().failing).toEqual([]);
+      expect(judge({ containers: null }).failing).toEqual([]);
+    });
+
+    it("counts containers as running of all, a floor past the cap, and nothing it could not read", () => {
+      expect(judge({ containers: [box(), box({ state: "exited" })] }).running).toBe("1/2");
+      const h = host();
+      expect(hostState(h, h.compose, MAINT_DEFAULTS, NOW, true).running).toBe("1/1+");
+      expect(judge({ containers: null }).running).toBeNull();
+    });
+
+    it("ages the package lists on the host's clock, and states no age nothing gave", () => {
+      expect(judge({ listsAt: S - D }).lists).toEqual({ age: D, level: "ok" });
+      expect(judge({ listsAt: S - 12 * D }).lists).toEqual({ age: 12 * D, level: "warn" });
+      expect(judge({ listsAt: S - 12 * D, now: S + 5 * D }).lists?.age).toBe(17 * D);
+      expect(judge({ listsAt: null }).lists).toBeNull();
+    });
+
+    it("gives load per CPU only when both were read", () => {
+      expect(judge({ load: [1, 1, 3], cpus: 2 }).perCpu).toBe(1.5);
+      expect(judge({ load: null }).perCpu).toBeNull();
+      expect(judge({ cpus: null }).perCpu).toBeNull();
+    });
+
+    it("says uptime in the unit it has: a host booted minutes ago was never up a day", () => {
+      expect([300, 23 * H, D, 41 * D].map((up) => judge({ uptime: up }).uptime.text)).toEqual(["up 5m", "up 23h", "up 1d", "up 41d"]);
+      expect(judge({ uptime: 300 }).summary).toContain("up 5m");
+      expect([upSpan(300), upSpan(90 * D)]).toEqual(["5m", "3mo"]);
+    });
+
+    it("judges what is pending: amber on a security update, a count otherwise, nothing at zero or unread", () => {
+      expect(judge({ updates: 14, security: 6 }).pending).toEqual({ text: "14 · 6 security", level: "warn" });
+      expect(judge({ updates: 3, security: 0 }).pending).toEqual({ text: "3", level: "info" });
+      expect(judge({ updates: 3, security: null }).pending).toEqual({ text: "3", level: "info" });
+      expect(judge({ updates: 0 }).pending).toBeNull();
+      expect(judge({ updates: null }).pending).toBeNull();
+    });
+  });
+
+  describe("the Hosts board", () => {
+    const named = (alias = "prod-1", compose: string[] = [], urls: Record<string, string> = {}) =>
+      det(["ssh-host", ...(Object.keys(urls).length ? ["http-probe"] : [])], { deploy: { host: alias, compose, urls, sentry: null, versionUrl: null, envs: {} } });
+    const project = (path: string, de: Detection, reports: SourceReport[], o: Partial<MaintInput> = {}): TabProject => {
+      const allowed = o.hosts ?? ["prod-1", "edge"];
+      const inp: MaintInput = { det: de, reports: Object.fromEntries(reports.map((r) => [r.source, r])), skip: hostSkips(de, allowed), hosts: allowed, ...o };
+      return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+    };
+    const read = (o: Partial<HostFacts> = {}, at = S) => ok("ssh-host", hosts(o), { at, cost: "remote" });
+    const asked = { ...not("ssh-host", "prod", { state: "notRun" }), cost: "remote" as const };
+    const board = (...ps: TabProject[]) => hostBoard(ps, null, NOW);
+
+    it("finds a host source by what it sees, never by its id", () => {
+      expect([readsHost("ssh-host"), readsHost("http-probe"), readsHost("nonsense")]).toEqual([true, false, false]);
+    });
+
+    it("joins the projects naming one alias, the newest read speaking, judged against every service any names", () => {
+      const a = project("/a", named("prod-1", ["api"]), [read({ disks: [disk("/", 96)], compose: ["api"] }, S - D)]);
+      const b = project("/b", named("prod-1", ["web"]), [read({ compose: ["web"] })]);
+      const [row, ...rest] = board(a, b);
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({ host: "prod-1", projects: ["/a", "/b"], at: S, allowed: true, checking: false, sources: ["ssh-host"], why: null });
+      expect(row.state, "/b's read, so the disk is its 62%").toMatchObject({ level: "bad", text: "web not running", disk: { text: "/ 62%" } });
+      expect(row.facts?.disks[0].mount).toBe("/");
+    });
+
+    it("carries a line of each project naming it, so none is listed twice, and the first is its Brief", () => {
+      const fact = { disks: [disk("/", 96)], reboot: true };
+      const a = project("/a", named(), [read(fact)]), b = project("/b", named(), [read(fact)]);
+      const [row] = board(b, a);
+      expect(row.verbs.map((f) => [f.root, f.key])).toEqual([
+        ["/a", "prod:host:disk"], ["/b", "prod:host:disk"], ["/a", "prod:host:reboot"], ["/b", "prod:host:reboot"],
+      ]);
+      const model = tabModel("servers", [a, b], null, null, NOW);
+      expect(model.boards?.drawn).toEqual(["/a|prod:host:disk", "/a|prod:host:reboot", "/b|prod:host:disk", "/b|prod:host:reboot"]);
+      expect(model.rows).toEqual([]);
+      expect(tabBoards("servers", [a], "/a", null, NOW).one).toBe(true);
+    });
+
+    it("leaves a line the newest read no longer shows on the project that still says it", () => {
+      const old = project("/old", named(), [read({ disks: [disk("/", 96)] }, S - D)]), fresh = project("/new", named(), [read()]);
+      const model = tabModel("servers", [old, fresh], null, null, NOW);
+      expect(model.boards?.hosts[0]).toMatchObject({ verbs: [], state: { level: "ok" } });
+      expect(model.rows.map((r) => [r.root, r.key])).toEqual([["/old", "prod:host:disk"]]);
+    });
+
+    it("offers a Brief when the newest read's project has no line but another names what failed", () => {
+      const a = project("/a", named("prod-1", ["api"]), [read({ compose: ["api"] })]);
+      const b = project("/b", named("prod-1", ["web"]), [read({ compose: ["web"] }, S - D)]);
+      expect(board(a, b)[0].verbs.map((f) => [f.root, f.key])).toEqual([["/b", "prod:host:containers"]]);
+    });
+
+    it("carries only what its Brief says: another project's service stays listed, with its Fix", () => {
+      const a = project("/a", named("prod-1", ["api"]), [read({ containers: [], compose: ["api"] })]);
+      const b = project("/b", named("prod-1", ["web"]), [read({ containers: [], compose: ["web"] })]);
+      const model = tabModel("servers", [a, b], null, null, NOW), [row] = model.boards!.hosts;
+      expect(row.state?.failing.map((f) => f.text), "the card says both").toEqual(["api not running", "web not running"]);
+      expect(row.verbs.map((f) => [f.root, f.key])).toEqual([["/a", "prod:host:containers"]]);
+      expect(model.rows.map((r) => [r.root, r.text])).toEqual([["/b", "web not running on prod-1"]]);
+    });
+
+    it("reads a line's detail too, since two different pairs of services count the same", () => {
+      const pair = (path: string, compose: string[]) => project(path, named("prod-1", compose), [read({ containers: [], compose })]);
+      const model = tabModel("servers", [pair("/a", ["a1", "a2"]), pair("/b", ["b1", "b2"])], null, null, NOW);
+      expect(model.rows.map((r) => [r.root, r.text, r.detail])).toEqual([["/b", "2 containers failing on prod-1", "b1 not running, b2 not running"]]);
+    });
+
+    it("holds what is carried against the Brief's project, not the first to say each kind", () => {
+      const a = project("/a", named("prod-1", ["api"]), [read({ compose: ["api"], reboot: true })]);
+      const b = project("/b", named("prod-1", ["web"]), [read({ compose: ["web"] }, S - D)]);
+      const model = tabModel("servers", [a, b], null, null, NOW);
+      expect(model.boards?.hosts[0].verbs.map((f) => [f.root, f.key]), "/b's brief says nothing of the reboot").toEqual([["/b", "prod:host:containers"]]);
+      expect(model.rows.map((r) => [r.root, r.key])).toEqual([["/a", "prod:host:reboot"]]);
+    });
+
+    it("offers its Check, not a Brief, for a red only a project nobody has read names", () => {
+      const a = project("/a", named("prod-1", ["api"]), [read({ compose: ["api"] })]), b = project("/b", named("prod-1", ["web"]), [asked]);
+      expect(board(a, b)[0]).toMatchObject({ state: { level: "bad", text: "web not running" }, verbs: [], sources: ["ssh-host"] });
+      expect(a.cells.find((c) => c.facet === "prod")?.level, "/a's own cell is clean until /b is checked").toBe("ok");
+    });
+
+    it("lets the newest attempt speak: a failure newer than every read, and one failure's word with its own time", () => {
+      const refused = (at: number) => ({ ...not("ssh-host", "prod", { state: "noAccess", reason: "prod-1 refused every key", fix: "ssh prod-1" }), at, cost: "remote" as const });
+      const broke = (at: number) => ({ ...not("ssh-host", "prod", { state: "error", reason: "no answer after 45s" }), at, cost: "remote" as const });
+      expect(board(project("/a", named(), [refused(S - 3 * D)]), project("/b", named(), [broke(S - 60)]))[0]).toMatchObject({ why: "read failed", at: S - 60, state: null });
+      expect(board(project("/a", named(), [broke(S - 3 * D)]), project("/b", named(), [refused(S - 60)]))[0]).toMatchObject({ why: "no access", at: S - 60, state: null });
+      const stale = project("/a", named(), [read({ disks: [disk("/", 96)] }, S - 3 * D)]);
+      const model = tabModel("servers", [stale, project("/b", named(), [refused(S - 60)])], null, null, NOW);
+      expect(model.boards?.hosts[0]).toMatchObject({ why: "no access", at: S - 60, facts: null, state: null, verbs: [] });
+      expect(model.rows.map((r) => [r.root, r.key]), "the older read's line is still said, on its project").toEqual([["/a", "prod:host:disk"]]);
+      expect(board(project("/a", named(), [read()]), project("/b", named(), [refused(S - 60)]))[0], "a read newer than the failure stands").toMatchObject({ why: null, at: S, state: { level: "ok" } });
+    });
+
+    it("sorts worst first, then by alias, whatever order the projects came in", () => {
+      const ps = [
+        project("/a", named("edge"), [read({ alias: "edge" })]),
+        project("/b", named("prod-1"), [read({ disks: [disk("/", 96)] })]),
+        project("/c", named("zeta"), [asked], { hosts: ["zeta"] }),
+        project("/d", named("alpha"), [asked], { hosts: [] }),
+      ];
+      const hostsOf = (xs: TabProject[]) => hostBoard(xs, null, NOW).map((r) => r.host);
+      expect(hostsOf(ps)).toEqual(["prod-1", "alpha", "zeta", "edge"]);
+      expect(hostsOf([...ps].reverse())).toEqual(hostsOf(ps));
+      const twins = [project("/x", named(), [read({ disks: [disk("/", 40)] })]), project("/y", named(), [read({ disks: [disk("/", 50)] })])];
+      expect(hostBoard(twins, null, NOW)[0].state?.disk.text, "one instant: the first path, either way round").toBe("/ 40%");
+      expect(hostBoard([...twins].reverse(), null, NOW)[0].state?.disk.text).toBe("/ 40%");
+    });
+
+    it("draws nothing it read for a host this machine has not allowed, and offers only Allow", () => {
+      const [row] = board(project("/a", named(), [read({ disks: [disk("/", 96)] })], { hosts: [] }));
+      expect(row).toMatchObject({ host: "prod-1", allowed: false, at: null, why: null, facts: null, state: null, verbs: [], sources: [], gaps: [] });
+      const failed = { ...not("ssh-host", "prod", { state: "error", reason: "no answer after 45s" }), at: S - H, cost: "remote" as const };
+      expect(board(project("/a", named(), [failed], { hosts: [] }))[0], "nor a kept failure").toMatchObject({ allowed: false, at: null, why: null });
+    });
+
+    it("has no card for a source switched off here, and one for a host nobody allowed", () => {
+      const de = named(), reports = { "ssh-host": read() };
+      expect(hostSummary({ det: de, reports, skip: ["ssh-host"], hosts: ["prod-1"] }, MAINT_DEFAULTS, NOW)).toBeNull();
+      expect(board(project("/a", de, [read()], { skip: ["ssh-host"] }))).toEqual([]);
+      expect(hostSummary({ det: de, reports, skip: ["ssh-host"], hosts: [] }, MAINT_DEFAULTS, NOW)).toMatchObject({ alias: "prod-1", allowed: false });
+    });
+
+    it("says a read failed, and says nothing was asked when nothing was", () => {
+      const failed = { ...not("ssh-host", "prod", { state: "noAccess", reason: "prod-1 refused every key", fix: "ssh prod-1" }), at: S - H, cost: "remote" as const };
+      expect(board(project("/a", named(), [failed]))[0]).toMatchObject({ why: "no access", at: S - H, state: null, facts: null, allowed: true, sources: ["ssh-host"] });
+      expect(board(project("/a", named(), [asked]))[0]).toMatchObject({ why: null, at: null, state: null, sources: ["ssh-host"] });
+      expect(board(project("/a", named(), []))[0], "not even asked yet").toMatchObject({ why: null, at: null, state: null });
+    });
+
+    it("keeps what the read could not read", () => {
+      const [row] = board(project("/a", named(), [{ ...read(), gaps: ["no docker on prod-1"] }]));
+      expect(row.gaps).toEqual(["no docker on prod-1"]);
+    });
+
+    it("says it is checking while a host source is out, and only then", () => {
+      expect(board(project("/a", named(), [asked], { asking: ["ssh-host"] }))[0].checking).toBe(true);
+      expect(board(project("/a", named(), [asked], { asking: ["http-probe"] }))[0].checking).toBe(false);
+    });
+
+    it("honours the filter, skips a project naming no host, and has no card where prod is switched off", () => {
+      const a = project("/a", named(), [read()]), b = project("/b", named(), [read()]);
+      expect(hostBoard([a, b], "/a", NOW)[0].projects).toEqual(["/a"]);
+      expect(hostBoard([a, b], "/none", NOW)).toEqual([]);
+      const de = named();
+      expect(board(project("/off", { ...de, config: { ...de.config, off: ["prod"] } }, [read()]))).toEqual([]);
+      expect(board(project("/x", det(["http-probe"]), []))).toEqual([]);
+    });
+
+    it("is built on Servers alone", () => {
+      const a = project("/a", named(), [read()]);
+      expect(tabBoards("servers", [a], null, null, NOW).hosts).toHaveLength(1);
+      expect(tabBoards("code", [a], null, null, NOW).hosts).toEqual([]);
+    });
+
+    it("lets a card ask for its host, so *not checked yet* speaks for the addresses alone", () => {
+      const urls = { app: "https://app" }, probe = { ...not("http-probe", "prod", { state: "notRun" }), cost: "remote" as const };
+      const n = (p: TabProject) => tabBoards("servers", [p], null, null, NOW).unchecked;
+      expect(n(project("/h", named(), [asked])), "a host alone has its card's Check").toBe(0);
+      expect(n(project("/b", named("prod-1", [], urls), [asked, probe]))).toBe(1);
+      expect(n(project("/r", named("prod-1", [], urls), [read(), probe])), "the host answered and the addresses did not").toBe(1);
+    });
   });
 
   describe("Check prod's words", () => {
@@ -2044,6 +2260,7 @@ describe("a board's numbers are doors", () => {
       stale: branches("untouched"), idle: { to: "checkouts" }, fetched: { to: "fetch" },
     },
     work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
+    hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null },
     addresses: { address: "url" },
   };
 
@@ -2085,6 +2302,7 @@ describe("a board's numbers are doors", () => {
     expect(peekNames([])).toBe("");
     expect(peekNames(["a", "b"])).toBe("a, b");
     expect(peekNames(["a", "b", "c", "d"], 2)).toBe("a, b +2 more");
+    expect(peekNames(["a", "b", "c"], 2, 120), "a capped list counts against the true total").toBe("a, b +118 more");
     const [r] = hygieneBoard([{ path: "/r", ...(() => {
       const inp = input(ok("git-local", hyg({
         localOnly: ["wip"], merged: ["a", "b"], gone: ["c"], branches: [{ name: "wip", at: S - 40 * D }],
@@ -2154,11 +2372,16 @@ describe("a card line opens what it summarises", () => {
     const src = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
     const map = /const BOARDS: Record<MaintTab,[^\n]*\{([^}]*)\}/.exec(src)![1];
     const fnOf = Object.fromEntries([...map.matchAll(/(\w+): (\w+Html)/g)].map((m) => [m[1], m[2]]));
+    const bodyOf = (fn: string) => {
+      const at = src.indexOf(`function ${fn}(`);
+      expect(at, fn).toBeGreaterThan(-1);
+      const rest = src.slice(at);
+      return rest.slice(0, rest.search(/\n\}\r?\n/));
+    };
+    // A board with a function of its own (`hostBoardHtml`) is in whichever tab's renderer calls it.
     const emitted = (tab: string) => {
-      const at = src.indexOf(`function ${fnOf[tab]}(`);
-      expect(at, fnOf[tab]).toBeGreaterThan(-1);
-      const rest = src.slice(at), body = rest.slice(0, rest.search(/\n\}\r?\n/));
-      return [...body.matchAll(/board\("([\w-]+)"/g)].map((m) => m[1]);
+      const own = bodyOf(fnOf[tab]), called = [...own.matchAll(/\b(\w+BoardHtml)\(/g)].map((m) => bodyOf(m[1]));
+      return [own, ...called].flatMap((body) => [...body.matchAll(/board\("([\w-]+)"/g)].map((m) => m[1]));
     };
     const sample: Record<Facet, string> = {
       ci: "ci", release: "release", security: "security:code", deps: "deps:b", git: "git:tidy", prod: "prod:api", work: "work:open",

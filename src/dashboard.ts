@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostRead, hostRows, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
+  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -1291,8 +1291,7 @@ function maintNow(now: number): MaintDash {
   const cells = facetCells(inp, th, now), rows = tabFindings(r, inp, th, now), prod = prodChecks(inp);
   const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
   const quiet = depSilent(tally, depTools) && !depLoading;
-  const at = inp.det?.deploy?.host, host = hostSummary(inp, th, now);
-  const hosts = at ? hostRows([{ path: r, hosts: [at], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: !!host?.allowed }]) : [];
+  const host = hostSummary(inp, th, now);
   return {
     card: {
       path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
@@ -1303,7 +1302,6 @@ function maintNow(now: number): MaintDash {
     tab: {
       ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
       sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
-      hosts: hosts.map((h) => ({ ...h, projects: [{ root: r, name: nm }] })),
       prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod), sources: prod, hosts: host?.allowed ? [host.alias] : [] },
       dash: {
         outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
@@ -1340,6 +1338,7 @@ const maintHost: MaintHost = {
   scan: (force) => { void loadMaint(force); },
   nameOf: (r) => r === root() ? name() : basename(r),
   prefill: (project, path, text) => { void prefillAgent(project, path, text); },
+  terminal: (project, path, cmd) => host.handToTerminal(project, path, cmd),
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
   openDashboard: (n, p, tab, door) => {
     if (p !== root()) openDashboard(n, p, tab, door);
