@@ -38,6 +38,8 @@ export const MAINT_CAPS = [
   "sec.runtime",
   "deps.update-prs",
   "deps.pr-checks",
+  "deps.latest",
+  "deps.transitive",
   "work.issues",
   "work.prs",
   "work.review-requested",

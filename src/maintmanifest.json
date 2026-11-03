@@ -94,6 +94,18 @@
       "sees": ["deps.update-prs", "deps.pr-checks"],
       "blind": []
     },
+    "npm-registry": {
+      "facet": "deps", "label": "npm registry", "cost": "public", "forge": [], "detect": ["package-lock.json", "pnpm-lock.yaml"],
+      "sends": "the name of each package this project's lockfiles list as a direct dependency, never a version or a path. A private one goes too unless an .npmrc in the project names its registry, whatever your own npm config says",
+      "sees": ["deps.latest"],
+      "blind": ["deps.transitive"]
+    },
+    "crates-registry": {
+      "facet": "deps", "label": "crates.io", "cost": "public", "forge": [], "detect": ["Cargo.lock"],
+      "sends": "the name of each crate this project's Cargo.lock lists as a direct dependency from crates.io, never a version or a path",
+      "sees": ["deps.latest"],
+      "blind": ["deps.transitive"]
+    },
     "git-local": {
       "facet": "git", "label": "local branches", "cost": "local", "forge": [], "detect": [".git"],
       "sees": ["git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age"],

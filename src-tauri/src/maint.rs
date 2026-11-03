@@ -159,6 +159,20 @@ pub(crate) struct UpdatePr {
     pub(crate) checks: CiStatus,
 }
 
+/// One direct dependency and the newest release its registry names; one at its newest is only counted.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PkgLatest {
+    pub(crate) name: String,           // the package's own name, an npm alias resolved
+    pub(crate) ecosystem: String,      // lockfile.rs's spelling: npm, crates.io
+    pub(crate) importers: Vec<String>, // who declares it: ".", a workspace folder, a member crate
+    pub(crate) installed: Vec<String>, // each version the lockfiles resolved for it; empty: none
+    pub(crate) latest: Option<String>, // None: see `why`
+    pub(crate) dev: Option<bool>,      // declared for development or build only; None: nothing read says
+    pub(crate) url: Option<String>,    // its page on the registry
+    pub(crate) why: Option<String>,    // why it could not be placed: from git, not on the registry
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ForgeRelease {
@@ -330,6 +344,7 @@ pub(crate) enum Facts {
     CiReruns { days: u32, since: Option<u64>, runs: u32, reran: u32, jobs: Vec<RerunJob> },
     Advisories { items: Vec<Advisory> },
     UpdatePrs { bot: String, configured: bool, prs: Vec<UpdatePr>, dashboard: Option<u64> },
+    Packages { items: Vec<PkgLatest>, current: u32 }, // items: behind or unplaced; current: at their newest
     Release(ReleaseFacts),
     Releases { latest: Option<ForgeRelease>, count: u32 },
     Changelog { unreleased: Option<u32>, latest: Option<String>, latest_at: Option<u64> },
@@ -347,7 +362,7 @@ impl Facts {
         match self {
             Facts::CiRuns { .. } | Facts::CiReruns { .. } => Facet::Ci,
             Facts::Advisories { .. } | Facts::Runtimes { .. } => Facet::Security,
-            Facts::UpdatePrs { .. } => Facet::Deps,
+            Facts::UpdatePrs { .. } | Facts::Packages { .. } => Facet::Deps,
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } | Facts::Deployments { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
             Facts::Work { .. } => Facet::Work,
@@ -473,6 +488,8 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "sec.runtime",
     "deps.update-prs",
     "deps.pr-checks",
+    "deps.latest",
+    "deps.transitive",
     "work.issues",
     "work.prs",
     "work.review-requested",
@@ -1521,6 +1538,8 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "runtime-eol", read: crate::maint_eol::runtime_eol },
     SourceDef { id: "dependabot-prs", read: crate::maint_repo::dependabot_prs },
     SourceDef { id: "renovate-prs", read: crate::maint_repo::renovate_prs },
+    SourceDef { id: "npm-registry", read: crate::maint_pkgs::npm_registry },
+    SourceDef { id: "crates-registry", read: crate::maint_pkgs::crates_registry },
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
     SourceDef { id: "git-tags", read: crate::maint_git::git_tags },
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
@@ -2498,6 +2517,15 @@ off = [\"prod\"]
             number: 42, title: "Update serde".into(), url: "https://github.com/acme/app/pull/42".into(),
             branch: "renovate/serde".into(), draft: false, at: Some(1_790_000_000), checks: CiStatus::Pass,
         };
+        let pkg = |name: &str, installed: &[&str], latest: Option<&str>, dev: Option<bool>, why: Option<&str>| PkgLatest {
+            name: name.into(), ecosystem: "npm".into(), importers: vec![".".into()], installed: installed.iter().map(|v| v.to_string()).collect(),
+            latest: latest.map(Into::into), dev, url: latest.map(|_| format!("https://www.npmjs.com/package/{name}")), why: why.map(Into::into),
+        };
+        let packages = vec![
+            pkg("react", &["17.0.2"], Some("19.2.0"), Some(false), None),
+            pkg("lodash", &["4.17.20"], Some("4.18.1"), None, None),
+            pkg("left-pad", &[], None, Some(true), Some("from git")),
+        ];
         let release = ReleaseFacts {
             trunk: Some("origin/main".into()), tag: Some("v1.2.0".into()), tag_at: Some(1_789_000_000), since: 12,
             oldest_unreleased_at: Some(1_789_100_000), tags_seen: 9, fetched_at: Some(1_790_000_000),
@@ -2558,6 +2586,7 @@ off = [\"prod\"]
             ok("github-actions-reruns", Facet::Ci, Cost::Forge, reruns),
             ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![advisory] }),
             ok("renovate-prs", Facet::Deps, Cost::Forge, Facts::UpdatePrs { bot: "renovate".into(), configured: true, prs: vec![update_pr], dashboard: Some(7) }),
+            ok("npm-registry", Facet::Deps, Cost::Public, Facts::Packages { items: packages, current: 12 }),
             ok("git-tags", Facet::Release, Cost::Local, Facts::Release(release)),
             ok("github-releases", Facet::Release, Cost::Forge, Facts::Releases { latest: Some(published), count: 9 }),
             ok("github-deployments", Facet::Release, Cost::Forge, deployments),
@@ -2608,6 +2637,7 @@ envs = { prod = \"prod-*\" }
         "ciReruns",
         "advisories",
         "updatePrs",
+        "packages",
         "release",
         "releases",
         "changelog",
@@ -2637,6 +2667,7 @@ envs = { prod = \"prod-*\" }
             Facts::CiReruns { .. } => "ciReruns",
             Facts::Advisories { .. } => "advisories",
             Facts::UpdatePrs { .. } => "updatePrs",
+            Facts::Packages { .. } => "packages",
             Facts::Release(_) => "release",
             Facts::Releases { .. } => "releases",
             Facts::Changelog { .. } => "changelog",

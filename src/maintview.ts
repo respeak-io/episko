@@ -5,9 +5,9 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, prodTip, rtName, span, upSpan, type AdvRow, type Band,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
-  type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
+  type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
   SESSION_MAX, SESSION_OVER, sessionKey, sessionPickable,
@@ -110,6 +110,8 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "sec.runtime": "runtimes at their end of life",
   "deps.update-prs": "open update pull requests",
   "deps.pr-checks": "the checks on each update pull request",
+  "deps.latest": "how far each direct dependency is behind its newest release",
+  "deps.transitive": "packages that arrive through another",
   "work.issues": "open issues",
   "work.prs": "open pull requests",
   "work.review-requested": "reviews requested of you",
@@ -387,7 +389,7 @@ function weekHtml(v: MaintView): string {
 
 const TAB_TEXT: Record<MaintSub, [string, string]> = {
   overview: ["Overview", "One card per project, worst first"],
-  security: ["Security", "Advisories, scanner findings, runtimes at their end of life and update pull requests, across every project"],
+  security: ["Security", "Advisories, scanner findings, runtimes at their end of life, update pull requests and packages behind their newest major, across every project"],
   delivery: ["Delivery", "CI on the default branch, flaky jobs and unreleased work, across every project"],
   code: ["Code", "Unpushed work, branches to tidy and stale fetches, across every project"],
   servers: ["Servers", "Where the projects run and whether it answers, across every project"],
@@ -427,7 +429,8 @@ function doorText(d: Door): string {
     case "checkouts": return "Click: Branches › Checkouts, where a worktree is removed";
     case "queue": return `Click: Today's queue, ${d.filter === "iss" ? "issues" : "pull requests"}`;
     case "landed": return "Click: Today's Landed, the commits since";
-    case "deps": return "Click: every update pull request, in the dependency view";
+    case "deps": return d.tab === "stale" ? "Click: the dependency view's Out of date tab, where the package manager is asked"
+      : "Click: every update pull request, in the dependency view";
     case "fetch": return "Click: git fetch here, then check this project again";
     case "url": return `Click: open ${d.url}`;
   }
@@ -518,13 +521,53 @@ function securityHtml(v: MaintTabView, b: Boards): string {
     + td(ageOf(r.oldest), "r mono") + verbTd(r.verb) + `</tr>`))
     : empty("No open update pull request.");
   const out = v.dash?.outdated, first = !hasAdv && !hasPrs;
-  const pkgs = out || (door && first) ? board("packages", "Packages", "this project's package manager", out
-    ? `<div class="mt-kv"><span>Out of date</span><span class="mono">${esc(out)}</span></div>`
-    : empty("Every advisory and update pull request the dependency read found opens from this board's arrow."), first ? door : "") : "";
+  const kv = out ? `<div class="mt-kv"><span>Out of date</span><span class="mono">${esc(out)}</span></div>` : "";
+  const pkgs = b.pkgRead || out || (door && first) ? board("packages", "Packages",
+    b.pkgRead ? `majors behind each registry's newest · ${readNote(b.pkgRead)}` : "this project's package manager",
+    b.pkgRead ? pkgsHtml(v, b) + kv : kv || empty("Every advisory and update pull request the dependency read found opens from this board's arrow."),
+    first ? door : "") : "";
   const eol = b.eol.length ? board("runtimes", "Runtime end-of-life",
     `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b)) : "";
   const sweep = v.sweep ? sweepHtml(v, b, v.sweep) : "";
   return adv + sweep + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
+}
+
+const kindHtml = (dev: boolean | null) => dev === false ? "shipped" : dev ? "dev" : `<span class="dim" data-tip="nothing read says whether it ships">?</span>`;
+const notPlaced = (ps: readonly PkgState[]) => ps.map((p) => `${p.name} (${unplacedWhy(p)})`);
+// Across projects a row per project, ordered by majors behind, a sum that says when it is a floor;
+// narrowed to one, a row per package with its registry page. Behind opens where <pm> outdated is asked.
+function pkgsHtml(v: MaintTabView, b: Boards): string {
+  if (b.one) {
+    const r = b.pkgs[0];
+    if (!r) return "";
+    let verb = r.verb; // once, on the first row, as one project's CI board carries its Fix
+    const rows = r.behind.map((p) => {
+      const mine = verb;
+      verb = null;
+      return `<tr>${projTd(v, b, r.root)}` + td(esc(p.name), "mono") + td(esc(p.installed.join(", ")), "mono")
+        + td(doorHtml(esc(p.latest ?? ""), "mt-n", ["packages", "latest", r.root], p.url), "r mono")
+        + td(`<span class="mt-n l-info">${esc(majorsText(p).replace(/ majors?$/, ""))}</span>`, "r") + td(kindHtml(p.dev)) + verbTd(mine) + `</tr>`;
+    });
+    const said = [`${plural(r.current, "package")} at their newest major`, ...(r.unplaced.length ? [`not placed: ${notPlaced(r.unplaced).join(", ")}`] : []),
+      ...r.gaps, ...(r.capped ? ["more were not asked: a read stops at its cap"] : [])].join(" · ");
+    const none = r.floor ? "None of those it could place is a major behind." : "No direct dependency is a major behind.";
+    return (rows.length ? table([...projCol(b), "Package", "Installed", ">Latest", ">Majors", "Kind", ""], rows) : empty(none))
+      + `<p class="fl-none">${esc(said)}</p>`;
+  }
+  return table([...projCol(b), ">Behind", ">Majors", "Most behind", ">Unplaced", "Effort", ""], b.pkgs.map((r) => {
+    const h = r.behind[0], why = [r.unplaced.length && `${r.unplaced.length} not placed`, r.capped && "a list cut at its cap",
+      ...r.gaps, r.behind.some((p) => p.floor) && "a leap from 0.x"].filter(Boolean).join(", "), floor = r.floor ? `; a floor: ${why}` : "";
+    const unplaced = r.unplaced.length ? `<span class="mt-n l-muted" data-tip="${escAttr(notPlaced(r.unplaced).join("\n"))}">${r.unplaced.length}</span>` : DOT;
+    // A zero only where everything was placed: below a floor it is an unknown, never the grey dot.
+    const unknown = `<span class="dim" data-tip="${escAttr(`nothing behind among those it could place; a floor: ${why}`)}">?</span>`;
+    return `<tr>${projTd(v, b, r.root)}`
+      + td(r.floor && !r.behind.length ? unknown
+        : num(r.behind.length, "info", peekNames(r.behind.map((p) => p.name)), ["packages", "behind", r.root]) + (r.partial && r.behind.length ? "+" : ""), "r")
+      + td(r.majors ? `<span class="mt-n l-info">${r.majors}${r.floor ? "+" : ""}</span>` : r.floor ? unknown : DOT, "r")
+      + td(h ? esc(`${h.name} ${h.from} → ${h.latest}`) : DASH, "mono") + td(unplaced, "r")
+      + td(`<span class="mt-barc" data-tip="${escAttr(`majors behind, summed over its direct dependencies${floor}`)}">${barHtml(r.ratio, r.level)}</span>`)
+      + verbTd(r.verb) + `</tr>`;
+  }));
 }
 
 // One row per runtime cycle a project declares; its end opens the page that dates it, muted unless it needs you.

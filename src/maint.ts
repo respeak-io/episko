@@ -5,7 +5,7 @@
 import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet, type MaintCap } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
-import { parseVer, satisfies, verCmpStr } from "./deps";
+import { cmpVer, parseVer, satisfies, verCmpStr } from "./deps";
 import { fmtDay, nfcKeys } from "./format";
 import { whereProblem, type DispatchWhere } from "./claim";
 import { SLUG_MAX, worktreeDirLen } from "./handoff";
@@ -38,6 +38,11 @@ export interface Advisory {
   fixed: string | null; location: string | null; url: string | null; tool: string;
 }
 export interface UpdatePr { number: number; title: string; url: string; branch: string; draft: boolean; at: number | null; checks: CiStatus }
+/** A direct dependency and its registry's newest release; one at its newest is only counted (`current`). */
+export interface PkgLatest {
+  name: string; ecosystem: string; importers: string[]; installed: string[];
+  latest: string | null; dev: boolean | null; url: string | null; why: string | null; // why: it could not be placed
+}
 export interface ForgeRelease { tag: string; name: string; at: number | null; url: string | null }
 export interface Probe { name: string; url: string; code: number | null; ms: number | null; certNotAfter: number | null; err: string | null }
 export interface Disk { mount: string; sizeKb: number; usedKb: number; availKb: number }
@@ -82,6 +87,7 @@ export type Facts =
   | { kind: "ciReruns"; days: number; since: number | null; runs: number; reran: number; jobs: RerunJob[] } // every branch; since: a cut window
   | { kind: "advisories"; items: Advisory[] }
   | { kind: "updatePrs"; bot: string; configured: boolean; prs: UpdatePr[]; dashboard: number | null }
+  | { kind: "packages"; items: PkgLatest[]; current: number }
   | { kind: "release"; trunk: string | null; tag: string | null; tagAt: number | null; since: number;
       oldestUnreleasedAt: number | null; tagsSeen: number; fetchedAt: number | null }
   | { kind: "releases"; latest: ForgeRelease | null; count: number }
@@ -102,6 +108,7 @@ export const FACT_FACET: Record<FactKind, Facet> = {
   ciReruns: "ci",
   advisories: "security",
   updatePrs: "deps",
+  packages: "deps",
   release: "release",
   releases: "release",
   changelog: "release",
@@ -163,6 +170,9 @@ const isRuntime = shape({
   product: str, name: str, declared: str, cycle: opt(str), eol: (v) => v === null || num(v) || bool(v),
   latest: opt(str), newest: opt(str), file: str, url: opt(str),
 });
+const isPkg = shape({
+  name: str, ecosystem: str, importers: list(str), installed: list(str), latest: opt(str), dev: opt(bool), url: opt(str), why: opt(str),
+});
 
 const isDeployed = shape({
   env: str, tier: oneOf(ENV_TIERS), sha: opt(str), tag: opt(str), branch: opt(str), at: opt(num), url: opt(str),
@@ -176,6 +186,7 @@ const FACT_SHAPES: Record<FactKind, Is> = {
     steps: list(str), seen: list(shape({ sha: str, branch: str, at: opt(num), passed: bool, url: opt(str) })) })) }),
   advisories: shape({ items: list(isAdvisory) }),
   updatePrs: shape({ bot: str, configured: bool, prs: list(isPr), dashboard: opt(num) }),
+  packages: shape({ items: list(isPkg), current: num }),
   release: shape({ trunk: opt(str), tag: opt(str), tagAt: opt(num), since: num, oldestUnreleasedAt: opt(num), tagsSeen: num, fetchedAt: opt(num) }),
   releases: shape({ latest: opt(shape({ tag: str, name: str, at: opt(num), url: opt(str) })), count: num }),
   changelog: shape({ unreleased: opt(num), latest: opt(str), latestAt: opt(num) }),
@@ -380,7 +391,7 @@ export function whyWord(c: Coverage, facet: Facet): string {
 
 /** A facet's verdict from one kind of facts. `blind`: what it read cannot answer the facet alone. */
 export interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean }
-interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: CiReport[]; tagged?: readonly string[] }
+interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: (CiReport & Pick<SourceReport, "gaps">)[]; tagged?: readonly string[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
 const kinds = <K extends FactKind>(facts: Facts[], k: K): FactsOf<K>[] =>
@@ -647,8 +658,10 @@ export const envsFailed = (envs: readonly EnvState[]): EnvState[] =>
   envs.filter((e) => !e.idle && e.last?.state === "fail" && (e.tier === "production" || e.tier === "staging"));
 
 // A bot nothing shows to be alive is silent, not healthy: open PRs are the only trace it leaves.
-const depsRule: Rule = (facts, c) => {
+function botRule(facts: Facts[], ctx: Ctx): Judged | null {
   const ups = kinds(facts, "updatePrs");
+  if (!ups.length) return null;
+  const c = { ...ctx, trunc: ctx.reps.some((r) => r.truncated && r.facts?.kind === "updatePrs") };
   const prs = ups.flatMap((u) => u.prs);
   if (!prs.length && !ups.some((u) => u.configured)) return { level: "muted", text: facetDef("deps").none, tip: [] };
   const red = prs.filter((p) => p.checks === "fail").length;
@@ -663,6 +676,87 @@ const depsRule: Rule = (facts, c) => {
   if (ups.some((u) => u.prs.length >= c.th.botPrBacklog)) return { level: "warn", text: `${count(prs.length, c)} PRs`, tip };
   if (silent) return { level: "muted", text: "silent", tip };
   return prs.length ? { level: "info", text: `${count(prs.length, c)} PR${prs.length === 1 ? "" : "s"}`, tip } : { level: "ok", text: "", tip };
+}
+
+// ---------- packages behind their newest major ----------
+
+/** How many majors `to` is past `from`: below 1.0 the minor counts (the patch below 0.1), and 0.x to
+ *  1 or later is a floor, since no version list is read. Null when either does not parse. */
+export function majorsBehind(from: string, to: string): { n: number; floor: boolean } | null {
+  const a = parseVer(from), b = parseVer(to);
+  if (!a || !b) return null;
+  if (cmpVer(a, b) >= 0) return { n: 0, floor: false };
+  if (a.major > 0) return { n: b.major - a.major, floor: false };
+  if (b.major > 0) return { n: b.major, floor: true };
+  if (a.minor > 0 || b.minor > 0) return { n: b.minor - a.minor, floor: a.minor === 0 };
+  return { n: b.patch - a.patch, floor: false };
+}
+
+/** One direct dependency as judged: `from` is the lowest installed version that parses, the copy furthest behind. */
+export interface PkgState extends PkgLatest { from: string | null; majors: number | null; floor: boolean; source: string }
+export interface PkgStates {
+  behind: PkgState[]; // a major or more behind, the most first
+  current: number; // at their newest major
+  unplaced: PkgState[]; // no newest release, nothing installed, or a version that does not compare
+  majors: number; // summed over `behind`: what orders projects
+  floor: boolean; // something unplaced or not read, or a 0.x leap: every figure is at least this
+  capped: boolean;
+  gaps: string[]; // what the read could not read: a lockfile, a name that failed
+  partial: boolean; // cut at a cap or with a gap: more may be behind than `behind` names
+}
+type PkgReport = Pick<SourceReport, "source" | "truncated" | "gaps"> & { facts: FactsOf<"packages"> };
+const pkgReports = (reps: readonly Pick<SourceReport, "source" | "truncated" | "gaps" | "facts">[]): PkgReport[] =>
+  reps.flatMap((r) => r.facts?.kind === "packages" ? [{ source: r.source, truncated: r.truncated, gaps: r.gaps, facts: r.facts }] : []);
+
+function judgePkgs(reps: readonly PkgReport[]): PkgStates {
+  const all = reps.flatMap((r) => r.facts.items.map((p): PkgState => {
+    const vs = p.installed.flatMap((v) => { const x = parseVer(v); return x ? [{ v, x }] : []; }).sort((a, b) => cmpVer(a.x, b.x));
+    const from = vs[0]?.v ?? null, m = from !== null && p.latest !== null ? majorsBehind(from, p.latest) : null;
+    return { ...p, from, majors: m?.n ?? null, floor: !!m?.floor, source: r.source };
+  }));
+  const byName = (a: PkgState, b: PkgState) => a.name.localeCompare(b.name) || a.ecosystem.localeCompare(b.ecosystem);
+  const unplaced = all.filter((p) => p.latest === null || !p.installed.length || p.majors === null).sort(byName);
+  const behind = all.filter((p) => (p.majors ?? 0) > 0).sort((a, b) => b.majors! - a.majors! || byName(a, b));
+  const capped = reps.some((r) => r.truncated), gaps = reps.flatMap((r) => r.gaps), partial = capped || gaps.length > 0;
+  return {
+    behind, unplaced, capped, gaps, partial, majors: behind.reduce((n, p) => n + p.majors!, 0),
+    current: reps.reduce((n, r) => n + r.facts.current, 0) + all.filter((p) => p.majors === 0).length,
+    floor: partial || unplaced.length > 0 || behind.some((p) => p.floor),
+  };
+}
+
+/** A project's direct dependencies as its registry sources read them. */
+export const pkgStates = (inp: MaintInput): PkgStates => judgePkgs(pkgReports(okFacts(inp, "deps")));
+export const majorsText = (p: Pick<PkgState, "majors" | "floor">): string =>
+  `${p.majors ?? "?"}${p.floor ? "+" : ""} major${p.majors === 1 && !p.floor ? "" : "s"}`;
+/** Why a package could not be placed, in a few words. */
+export const unplacedWhy = (p: PkgState): string =>
+  p.why ?? (p.latest === null ? "no newest release" : !p.installed.length ? "not installed" : "a version that does not compare");
+
+const TIP_PKGS = 8;
+// Drift is a ranking, never amber: nearly every repository is a major behind on something. Blind:
+// a registry read cannot say whether anything opens updates, or what another registry would answer.
+function pkgRule(c: Ctx): Judged | null {
+  const reps = pkgReports(c.reps);
+  if (!reps.length) return null;
+  const s = judgePkgs(reps), more = s.behind.length - TIP_PKGS;
+  const tip = [...s.behind.slice(0, TIP_PKGS).map((p) => `${p.name} ${p.from} → ${p.latest} · ${majorsText(p)}`),
+    ...(more > 0 ? [`+${more} more behind`] : []),
+    ...(s.unplaced.length ? [`not placed: ${peekNames(s.unplaced.map((p) => `${p.name} (${unplacedWhy(p)})`))}`] : []),
+    `${plural(s.current, "package")} at their newest major`];
+  if (s.behind.length) return { level: "info", text: `${s.behind.length}${s.partial ? "+" : ""} behind`, tip, blind: true };
+  if (s.unplaced.length) return { level: "muted", text: `${s.unplaced.length} unplaced`, tip, blind: true };
+  if (!s.partial) return { level: "ok", text: "", tip, blind: true };
+  return { level: "muted", text: "partly read", tip: [s.capped ? "more names than one read asks about" : "a lockfile or a name could not be read", ...tip], blind: true };
+}
+
+// Each kind judged alone and joined by worseOf; a bot nobody set up never speaks over packages that were read.
+// Beside a bot that answered, packages are blind to the bots and not to themselves: "3 unplaced" still speaks.
+const depsRule: Rule = (facts, c) => {
+  const bots = botRule(facts, c), pkgs = pkgRule(c), none = facetDef("deps").none;
+  if (!pkgs) return bots ?? { level: "muted", text: none, tip: [] };
+  if (!bots) return pkgs;
+  return bots.level === "muted" && bots.text === none ? { ...pkgs, tip: [...pkgs.tip, none] } : worseOf(bots, { ...pkgs, blind: false });
 };
 
 const releaseHalf: Rule = (facts, c) => {
@@ -867,8 +961,9 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const head = det.config.readable ? [] : ["episko.toml unreadable: its settings are not applied"];
   const markers = det.markers.filter((m) => m.facet === facet);
   const found = markers.map((m) => `${m.label}: found ${m.found.length ? m.found.join(", ") : "on this forge"}, nothing reads it yet`);
+  const marked = `can't check (${markers.map((m) => m.label).join(", ")})`;
   if (!reps.length && !markers.length) return cell("none", "muted", facetDef(facet).none, head);
-  if (!reps.length) return cell("markers", "muted", `can't check (${markers.map((m) => m.label).join(", ")})`, [...head, ...found]);
+  if (!reps.length) return cell("markers", "muted", marked, [...head, ...found]);
   const ranked = [...reps].sort((a, b) => COV_RANK.indexOf(a.coverage.state) - COV_RANK.indexOf(b.coverage.state));
   const notes = ranked.filter((r) => r.coverage.state !== "ok").map((r) => `${labelOf(r.source)}: ${covText(r.coverage)}`);
   const fix = ranked.map((r) => fixOf(r.coverage)).find((f) => f) ?? null;
@@ -881,6 +976,8 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok, tagged: taggedEnvs(inp) });
   if (unsure(j) && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
+  // What a marker names nothing reads, so a blind verdict cannot vouch for it either.
+  if (unsure(j) && markers.length) return cell("markers", "muted", marked, [...head, ...j.tip, ...found]);
   const asOf = j.asOf ?? null;
   let { level, text } = j;
   const age = asOf !== null ? now / 1000 - asOf : null;
@@ -965,11 +1062,11 @@ export interface Finding {
 }
 
 /** A facet's reports a card may judge: detected, not off, read, and not skipped here. */
-export const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; facts: Facts }[] =>
+export const okFacts = (inp: MaintInput, facet: Facet): { source: string; truncated: boolean; gaps: string[]; facts: Facts }[] =>
   inp.det?.config.off.includes(facet) ? [] : (inp.det?.sources ?? [])
     .map((id) => inp.reports[id])
     .filter((r): r is SourceReport => !!r && r.coverage.state === "ok" && !!r.facts && FACT_FACET[r.facts.kind] === facet && !inp.skip?.includes(r.source))
-    .map((r) => ({ source: r.source, truncated: r.truncated, facts: r.facts! }));
+    .map((r) => ({ source: r.source, truncated: r.truncated, gaps: r.gaps, facts: r.facts! }));
 
 const LEVEL_RANK = { bad: 0, warn: 1, info: 2 } as const;
 // The newest fetch any git or release read carries: what its counts are as old as.
@@ -1047,6 +1144,14 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
     add("deps", { key: `deps:${facts.bot}`, level: red || pile ? "warn" : "info",
       text: red ? `${plural(red, "update PR")} red` : `${plural(facts.prs.length, "update PR")} open`,
       detail: facts.prs.slice(0, 3).map((p) => `#${p.number} ${p.title}`).join(" · "), verb: "review", source, ref: facts.bot });
+  }
+  // Every package a major or more behind is one Upgrade, the most first; info, so never a badge.
+  const pk = pkgStates(inp);
+  if (pk.behind.length) {
+    const p = pk.behind[0], one = pk.behind.length === 1 && !pk.partial;
+    add("deps", { key: "deps:packages", level: "info", verb: "upgrade", source: p.source, ref: "packages",
+      text: one ? `${p.name} ${majorsText(p)} behind` : `${pk.behind.length}${pk.partial ? "+" : ""} packages a major or more behind`,
+      detail: pk.behind.slice(0, 3).map((x) => `${x.name} ${x.from} → ${x.latest}`).join(", ") + (pk.behind.length > 3 ? " …" : "") });
   }
   for (const { source, facts } of okFacts(inp, "release")) {
     if (facts.kind !== "release" || !facts.tag || !facts.since) continue;
@@ -1145,14 +1250,21 @@ export const FACET_TAB: Record<Facet, MaintTab> = {
   ci: "delivery", release: "delivery", security: "security", deps: "security", git: "code", prod: "servers", work: "work",
 };
 
+// A deps source that answers packages rather than update pull requests.
+const isRegistry = (id: string, inp: MaintInput) => !!findSource(id)?.sees.includes("deps.latest") || inp.reports[id]?.facts?.kind === "packages";
+
 // A facet nothing could ever have read: no remote, or a bot nobody configured and that opened nothing.
+// Deps asks its bots alone: a registry read says nothing about whether anything opens updates.
 function wantsSetup(facet: "ci" | "deps", inp: MaintInput, th: MaintThresholds, now: number): boolean {
-  const forge = inp.det?.forge.kind;
-  if (!forge || forge === "none" || inp.det!.markers.some((m) => m.facet === facet)) return false;
-  const state = facetCell(facet, inp, th, now).state;
-  if (state === "none") return true;
-  const ups = okFacts(inp, "deps").flatMap((r) => r.facts.kind === "updatePrs" ? [r.facts] : []);
-  return facet === "deps" && state === "read" && ups.length > 0 && ups.every((u) => !u.prs.length && !u.configured);
+  const det = inp.det, forge = det?.forge.kind;
+  if (!det || !forge || forge === "none" || det.markers.some((m) => m.facet === facet)) return false;
+  if (facet === "ci") return facetCell(facet, inp, th, now).state === "none";
+  if (det.config.off.includes("deps")) return false;
+  // A registry read answers packages; every other deps source is an update bot's.
+  const bots = det.sources.filter((id) => (findSource(id)?.facet ?? inp.reports[id]?.facet) === "deps" && !isRegistry(id, inp));
+  if (bots.some((id) => !inp.skip?.includes(id) && !inp.reports[id])) return false; // a read still out
+  const ups = okFacts(inp, "deps").flatMap((r) => bots.includes(r.source) && r.facts.kind === "updatePrs" ? [r.facts] : []);
+  return !bots.length || (ups.length > 0 && ups.every((u) => !u.prs.length && !u.configured));
 }
 
 const SETUP_DETAIL = { ci: "nothing runs the checks on the default branch", deps: "nothing opens dependency updates" };
@@ -1286,7 +1398,7 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   ci: [["flaky", /^ci:flaky$/], ["ci", /^ci$|^ci:(?!setup$)/]],
   release: [["deployments", /^release:deploy(-failed)?$/], ["releases", /^release$/]],
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
-  deps: [["update-prs", /^deps:(?!setup$)/]],
+  deps: [["packages", /^deps:packages$/], ["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
   prod: [["hosts", /^prod:host:/], ["addresses", /^prod:(?!setup$)/]],
   work: [["work", /^work:(review|open)$/]],
@@ -1317,12 +1429,13 @@ const readFailed = (inp: MaintInput, only: (id: string) => boolean) => (inp.det?
   const s = inp.reports[id]?.coverage.state;
   return only(id) && !inp.skip?.includes(id) && !!s && s !== "ok" && s !== "notRun";
 });
-// A verdict rests on its facet's first kind: re-runs beside a failed runs read, or environments beside a
-// failed release read, speak for themselves and not for it. Each prod kind answers only for itself.
+// A verdict rests on its facet's first kind: re-runs beside a failed runs read, environments beside a failed
+// release read, or packages beside a failed bot read, speak for themselves and not for it. Each prod kind answers only for itself.
 const vouched = (x: Cell, inp: MaintInput) => {
   if (x.state !== "read") return true;
   const facts = okFacts(inp, x.facet).map((r) => r.facts);
   if (x.facet === "ci") return facts.some((f) => f.kind === "ciRuns");
+  if (x.facet === "deps") return facts.some((f) => f.kind === "updatePrs") || !readFailed(inp, (id) => findSource(id)?.facet === "deps" && !isRegistry(id, inp));
   if (x.facet === "prod") return !readFailed(inp, (id) => findSource(id)?.facet === "prod");
   return x.facet !== "release" || releaseSaid(facts) || !readFailed(inp, (id) => findSource(id)?.facet === "release");
 };
@@ -1391,6 +1504,11 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
   for (const { path, inp, cells } of projects) {
     if (root !== null && path !== root) continue;
     const det = inp.det, th = clampMaint(det?.config.thresholds);
+    const markerRows = (d: Detection, facet: Facet) => {
+      for (const m of d.markers.filter((x) => x.facet === facet)) {
+        add(path, { key: `marker:${m.label}`, facet, what: m.label, why: "nothing reads it yet", detail: `found ${m.found.join(", ") || "on this forge"}` });
+      }
+    };
     const explain = (facet: Facet, only?: (id: string) => boolean) => {
       if (!det) return;
       for (const id of det.sources) {
@@ -1409,32 +1527,41 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     for (const c of cells) {
       const facet = c.facet, label = facetDef(facet).label;
       const noRuns = isVerdict(c) && !vouched(c, inp);
-      if (FACET_TAB[facet] !== tab || isNone(c)) continue;
+      if (FACET_TAB[facet] !== tab) continue;
+      // One deps cell, two questions: what one kind said vouches for nothing the other could not read.
+      const both = facet === "deps" && c.state === "read" && !!det?.sources.some((id) => isRegistry(id, inp));
+      if (isNone(c) && !both) continue;
       // A release verdict speaks for tags alone: a token refused everywhere must not look like no deployments.
       if (c.state === "read" && facet === "release") explain(facet, (id) => !!findSource(id)?.sees.includes("rel.deployed"));
-      if (isVerdict(c) && !noRuns) continue;
+      if (isVerdict(c) && !noRuns && !both) continue;
       if (c.state === "past" || c.state === "unread" || !det) {
         const why = c.state === "past" ? "not checked this session" : "not read yet";
         add(path, { key: `${facet}|${c.state}`, facet, what: label, why, detail: "" });
       } else if (c.state === "markers") {
-        for (const m of det.markers.filter((x) => x.facet === facet)) {
-          add(path, { key: `marker:${m.label}`, facet, what: m.label, why: "nothing reads it yet", detail: `found ${m.found.join(", ") || "on this forge"}` });
-        }
-      } else if (c.state === "cantCheck" || noRuns) {
+        markerRows(det, facet);
+      } else if (c.state === "cantCheck") {
         explain(facet);
-      } else if (facet === "deps" && c.text === "silent") {
-        // depsRule's silence, bot by bot: only a dated PR can say a bot has gone quiet.
-        for (const { source, facts: f } of okFacts(inp, "deps")) {
-          if (f.kind !== "updatePrs") continue;
-          const dated = f.prs.flatMap((p) => p.at !== null ? [p.at] : []);
-          const old = dated.length > 0 && now / 1000 - Math.max(...dated) > th.botSilentDays * DAY;
-          if (!old && (f.prs.length || !f.configured || f.dashboard !== null)) continue;
-          const why = old ? `opened nothing in ${th.botSilentDays}+ days` : "configured, no open pull request";
-          add(path, { key: `${source}|silent|${why}`, facet, source, what: labelOf(source), why,
-            detail: "open pull requests are the only trace an update bot leaves" }, null, true);
-        }
       } else {
-        add(path, { key: `${facet}|${c.text}`, facet, what: label, why: c.text, detail: c.tip[0] ?? "" });
+        if (both) markerRows(det, facet);
+        if (both || noRuns) explain(facet);
+        const reads = facet === "deps" ? okFacts(inp, "deps") : [];
+        // depsRule's silence, bot by bot: only a dated PR can say a bot has gone quiet.
+        if (botRule(reads.map((r) => r.facts), { th, now, trunc: false, reps: [] })?.text === "silent") {
+          for (const { source, facts: f } of reads) {
+            if (f.kind !== "updatePrs") continue;
+            const dated = f.prs.flatMap((p) => p.at !== null ? [p.at] : []);
+            const old = dated.length > 0 && now / 1000 - Math.max(...dated) > th.botSilentDays * DAY;
+            if (!old && (f.prs.length || !f.configured || f.dashboard !== null)) continue;
+            const why = old ? `opened nothing in ${th.botSilentDays}+ days` : "configured, no open pull request";
+            add(path, { key: `${source}|silent|${why}`, facet, source, what: labelOf(source), why,
+              detail: "open pull requests are the only trace an update bot leaves" }, null, true);
+          }
+        }
+        if (!isVerdict(c) && !isNone(c) && !(facet === "deps" && c.text === "silent")) {
+          // The count is each project's own: a row is grouped by the reason.
+          const unplaced = facet === "deps" && /^\d+ unplaced$/.test(c.text);
+          add(path, { key: `${facet}|${unplaced ? "unplaced" : c.text}`, facet, what: label, why: unplaced ? "packages not placed" : c.text, detail: c.tip[0] ?? "" });
+        }
       }
     }
     for (const o of offers(path, inp)) {
@@ -1469,7 +1596,7 @@ const rowRank = (l: Level) => HOST_RANK.indexOf(l);
 /** Projects whose facet some source answered, of the one kind its board counts where a facet has two. */
 const readOf = (ps: readonly TabProject[], facet: Facet, of?: readonly FactKind[]) =>
   ps.filter((p) => okFacts(p.inp, facet).some((r) => !of || of.includes(r.facts.kind))).length;
-const READ_KIND: Partial<Record<Facet, readonly FactKind[]>> = { ci: ["ciRuns"], release: RELEASE_KINDS };
+const READ_KIND: Partial<Record<Facet, readonly FactKind[]>> = { ci: ["ciRuns"], deps: ["updatePrs"], release: RELEASE_KINDS };
 
 /** The Security strip's buckets, a secret worse than any severity, as the cell has it. */
 export const SEV_BUCKETS = ["secret", ...SEVERITIES] as const;
@@ -1550,6 +1677,26 @@ export function updatePrRows(ps: readonly TabProject[], root: string | null = nu
   }
   return out.sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.red - a.red || b.open - a.open
     || a.root.localeCompare(b.root) || a.bot.localeCompare(b.bot));
+}
+
+export interface PkgRow {
+  root: string; behind: PkgState[]; // the most majors first: one project's board lists them
+  majors: number; ratio: number; // majors behind, summed, and its share of the board's largest, for a bar
+  floor: boolean; capped: boolean; gaps: string[]; partial: boolean; current: number; unplaced: PkgState[]; level: Level; verb: Finding | null;
+}
+/** Which project costs most to bring current: one row per project a registry source answered, the
+ *  most majors behind first. Nothing behind but something unplaced is muted, never the grey dot. */
+export function packagesBoard(ps: readonly TabProject[], root: string | null = null): PkgRow[] {
+  const out = within(ps, root).flatMap((p): PkgRow[] => {
+    const reps = pkgReports(okFacts(p.inp, "deps"));
+    if (!reps.length) return [];
+    const s = judgePkgs(reps);
+    return [{ root: p.path, behind: s.behind, majors: s.majors, ratio: 0, floor: s.floor, capped: s.capped, gaps: s.gaps, partial: s.partial, current: s.current,
+      unplaced: s.unplaced, level: s.behind.length ? "info" : s.floor ? "muted" : "ok", verb: verbOf(p, "deps:packages") }];
+  });
+  const max = Math.max(1, ...out.map((r) => r.majors));
+  return out.map((r) => ({ ...r, ratio: r.majors / max }))
+    .sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.majors - a.majors || a.root.localeCompare(b.root));
 }
 
 export const CI_STRIP = 12;
@@ -1794,6 +1941,8 @@ export interface Boards {
   work: WorkRow[];
   hosts: HostBoardRow[];
   probes: ProbeBoardRow[];
+  pkgs: PkgRow[];
+  pkgRead: number; // projects a registry source answered: what the packages board may claim
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
   unchecked: number; // projects in the filter whose addresses nobody has checked yet; a host's card asks for itself
   drawn: string[]; // `root|key` of every line a board carries the verb for; the rest are listed below them
@@ -1820,6 +1969,8 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     work: [],
     hosts: [],
     probes: [],
+    pkgs: [],
+    pkgRead: 0,
     read: {},
     unchecked: 0,
     drawn: [],
@@ -1831,6 +1982,8 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   if (tab === "security") {
     Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, advRead: all.read,
       eol: eolBoard(ps, root, now), prs: updatePrRows(ps, root, now) });
+    b.pkgs = packagesBoard(ps, root);
+    b.pkgRead = b.pkgs.length;
   }
   if (tab === "delivery") Object.assign(b, { ci: ciBoard(ps, root, now), releases: releaseBoard(ps, root, now) });
   if (tab === "delivery") b.flaky = flakyIn(ps, root, now);
@@ -1851,6 +2004,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...all.rows.flatMap((r) => r.projects.map((x) => x.verb)),
     ...b.eol.map((r) => r.verb),
     ...b.prs.map((r) => r.verb),
+    ...b.pkgs.map((r) => r.verb),
     ...b.ci.map((r) => r.verb),
     ...b.flaky.rows.map((r) => r.verb),
     ...b.deploys.flatMap((r) => r.verbs),
@@ -1906,7 +2060,7 @@ const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to:
 // Every number column of every board; "url" takes the cell's own address, null is a number with no door.
 const DOORS = {
   advisories: {}, // the severity strip filters in place
-  packages: {}, // its door is its ⤢
+  packages: { behind: { to: "deps", tab: "stale" }, latest: "url" }, // where <pm> outdated is asked; the package's page
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
   ci: { run: "url" },
@@ -1952,7 +2106,7 @@ export const advFix = (r: Pick<AdvRow, "id" | "aliases">, fixes: Readonly<Record
   [r.id, ...r.aliases].map((k) => fixes[k.toUpperCase()]).find(Boolean) ?? null;
 
 /** The dashboard's out-of-date line: the count once a package manager answered, else what its door
- *  runs; null when it has neither. No source reads this, so no fleet board carries it. */
+ *  runs; null when it has neither. It stays the dashboard's own; the board's rows are the registries'. */
 export function outdatedText(scanned: boolean, outdated: number, tool: string | null): string | null {
   if (scanned) return outdated ? `${plural(outdated, "package")} out of date` : "nothing out of date";
   return tool ? `not checked · the arrow above runs ${tool}` : null;

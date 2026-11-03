@@ -11,6 +11,17 @@ pub(crate) struct Pkg {
     pub(crate) version: String,
 }
 
+/// A dependency a project, workspace folder or member crate declares itself, as the lockfile resolved it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Direct {
+    pub(crate) ecosystem: &'static str,
+    pub(crate) importer: String, // "." or a workspace folder; a member crate's own name
+    pub(crate) name: String,     // the package's own name, an npm alias resolved
+    pub(crate) version: Option<String>, // the default registry's copy; None: from elsewhere, or not resolved
+    pub(crate) from: Option<String>,    // where a copy came from when that is not the default registry
+    pub(crate) dev: Option<bool>,       // declared for development only; None: the lockfile does not say
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Parsed {
     pub(crate) pkgs: Vec<Pkg>,
@@ -19,6 +30,8 @@ pub(crate) struct Parsed {
     pub(crate) unpinned: Vec<Pkg>,
     /// A path or a link: the project's own package, or a vendored or patched copy of someone else's.
     pub(crate) local: Vec<Pkg>,
+    /// What each importer declares itself; a link or path to the project's own package is left out.
+    pub(crate) direct: Vec<Direct>,
 }
 
 /// The lockfiles a parser exists for, as detection's entries.
@@ -38,6 +51,8 @@ pub(crate) fn parse(file: &str, text: &str) -> Result<Parsed, String> {
         v.sort();
         v.dedup();
     }
+    p.direct.sort();
+    p.direct.dedup();
     Ok(p)
 }
 
@@ -57,7 +72,7 @@ fn cargo_lock(text: &str, file: &str) -> Result<Parsed, String> {
     for p in doc.get("package").and_then(|v| v.as_array()).into_iter().flatten() {
         let s = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
         let src = s("source");
-        if src.contains("crates.io-index") || src.contains("index.crates.io") {
+        if on_crates_io(src) {
             out.pkgs.push(pkg("crates.io", s("name"), s("version")));
         } else if !src.is_empty() {
             other += 1;
@@ -70,7 +85,36 @@ fn cargo_lock(text: &str, file: &str) -> Result<Parsed, String> {
         out.gaps.push(format!("{file}: {other} from git or another registry not checked"));
     }
     out.pkgs.retain(|p| !p.name.is_empty() && !p.version.is_empty());
+    out.direct = cargo_direct(doc.get("package").and_then(|v| v.as_array()).map_or(&[][..], |a| a.as_slice()));
     Ok(out)
+}
+
+/// crates.io's own index in the two spellings Cargo writes; a URL that only looks like it is another registry.
+fn on_crates_io(src: &str) -> bool {
+    src == "registry+https://github.com/rust-lang/crates.io-index" || src.trim_end_matches('/') == "sparse+https://index.crates.io"
+}
+
+/// A sourceless package's `dependencies`, each `name`, `name version` or `name version (source)`,
+/// resolved to its entry; a path dependency or another member is the project's own.
+fn cargo_direct(all: &[toml::Value]) -> Vec<Direct> {
+    let s = |p: &toml::Value, k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let mut out = vec![];
+    for m in all.iter().filter(|p| s(p, "source").is_empty() && !s(p, "name").is_empty()) {
+        for dep in m.get("dependencies").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()) {
+            let mut w = dep.splitn(3, ' ');
+            let (name, ver, src) = (w.next().unwrap_or(""), w.next(), w.next().map(|x| x.trim_matches(['(', ')'])));
+            let hit = all.iter().find(|p| s(p, "name") == name
+                && ver.is_none_or(|v| s(p, "version") == v) && src.is_none_or(|x| s(p, "source") == x));
+            let (version, from) = match hit.map(|p| (s(p, "version"), s(p, "source"))) {
+                Some((_, src)) if src.is_empty() => continue,
+                Some((v, src)) if on_crates_io(&src) => (Some(v), None),
+                Some((_, src)) => (None, Some(src)),
+                None => (None, None),
+            };
+            out.push(Direct { ecosystem: "crates.io", importer: s(m, "name"), name: name.to_string(), version, from, dev: None });
+        }
+    }
+    out
 }
 
 /// What OSV cannot be asked about is said, so a lockfile of them never reads as clean.
@@ -109,7 +153,52 @@ fn package_lock(text: &str, file: &str) -> Result<Parsed, String> {
         }
     }
     unchecked(&mut out, file, other);
+    if let Some(all) = doc.get("packages").and_then(Value::as_object) {
+        out.direct = package_direct(all);
+    }
     Ok(out)
+}
+
+/// A `resolved` that is npm's public registry, the only one a registry read may ask about.
+fn on_npm(resolved: &str) -> bool {
+    let rest = resolved.strip_prefix("https://").or_else(|| resolved.strip_prefix("http://"));
+    rest.is_some_and(|r| r.split('/').next().is_some_and(|h| h.eq_ignore_ascii_case("registry.npmjs.org")))
+}
+
+/// The root's and each workspace folder's dependency maps, each name resolved as Node would: the
+/// folder's own `node_modules` first, then the hoisted copy. A link is a workspace package.
+fn package_direct(all: &serde_json::Map<String, Value>) -> Vec<Direct> {
+    let mut out = vec![];
+    for (path, e) in all.iter().filter(|(p, _)| !p.contains("node_modules/")) {
+        let importer = if path.is_empty() { "." } else { path.as_str() };
+        let mut seen = std::collections::BTreeSet::new();
+        // A package in both dependencies and devDependencies ships.
+        for (key, dev) in [("dependencies", false), ("optionalDependencies", false), ("devDependencies", true)] {
+            for name in e.get(key).and_then(Value::as_object).into_iter().flat_map(|m| m.keys()) {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let nested = (!path.is_empty()).then(|| all.get(&format!("{path}/node_modules/{name}"))).flatten();
+                let Some(c) = nested.or_else(|| all.get(&format!("node_modules/{name}"))) else {
+                    out.push(Direct { ecosystem: "npm", importer: importer.into(), name: name.clone(), version: None, from: None, dev: Some(dev) });
+                    continue;
+                };
+                if c.get("link").and_then(Value::as_bool) == Some(true) {
+                    continue;
+                }
+                let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
+                let (version, resolved) = (s("version"), s("resolved"));
+                // Git, a path, a tarball or another registry's host: only npm's own copy is asked about.
+                let from = if version.contains(':') { Some(version) }
+                    else if !resolved.is_empty() && !on_npm(resolved) { Some(resolved) }
+                    else { None };
+                let version = (from.is_none() && !version.is_empty()).then(|| version.to_string());
+                let real = c.get("name").and_then(Value::as_str).unwrap_or(name);
+                out.push(Direct { ecosystem: "npm", importer: importer.into(), name: real.into(), version, from: from.map(str::to_string), dev: Some(dev) });
+            }
+        }
+    }
+    out
 }
 
 /// pnpm 8's `6.x` and pnpm 9's `9.0`, line by line: a `packages:` key is `name@version`, after a
@@ -159,7 +248,91 @@ fn pnpm_lock(text: &str, file: &str) -> Result<Parsed, String> {
     }
     other += usize::from(bare.is_some());
     unchecked(&mut out, file, other);
+    out.direct = pnpm_direct(text);
     Ok(out)
+}
+
+/// `dependencies` and `optionalDependencies` ship; `devDependencies` do not; any other key is no list.
+fn dep_section(key: &str) -> Option<bool> {
+    match key {
+        "dependencies" | "optionalDependencies" => Some(false),
+        "devDependencies" => Some(true),
+        _ => None,
+    }
+}
+
+/// An importer's `version:`: `1.2.3(peer@x)`, an alias's `real@1.2.3` (`/real@1.2.3` in 6.x), a
+/// `link:` (the project's own, so None), or where a copy came from.
+fn pnpm_version(name: &str, v: &str) -> Option<(String, Option<String>, Option<String>)> {
+    let v = v.trim().trim_matches(['\'', '"']);
+    let v = v.split('(').next().unwrap_or(v);
+    let v = v.strip_prefix('/').unwrap_or(v);
+    let (name, v) = pnpm_key(v).unwrap_or((name, v));
+    if v.starts_with("link:") {
+        return None;
+    }
+    let at = v.starts_with(|c: char| c.is_ascii_digit());
+    Some((name.to_string(), at.then(|| v.to_string()), (!at).then(|| v.to_string())))
+}
+
+/// `packages:` entries whose `resolution` names a tarball or registry off npm, as `name@version`: an
+/// importer's bare version cannot tell such a copy from npm's.
+fn pnpm_elsewhere(text: &str) -> std::collections::BTreeMap<String, String> {
+    let (mut out, mut inside, mut key) = (std::collections::BTreeMap::new(), false, None::<String>);
+    for line in text.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() {
+            inside = line.trim_end() == "packages:";
+        } else if !inside {
+            continue;
+        } else if let Some(k) = line.strip_prefix("  ").filter(|k| !k.starts_with(' ')).and_then(|k| k.trim_end().strip_suffix(':')) {
+            let k = k.trim_matches(['\'', '"']);
+            let k = k.strip_prefix('/').unwrap_or(k);
+            key = Some(k.split('(').next().unwrap_or(k).to_string());
+        } else if let (Some(k), Some(r)) = (&key, line.trim().strip_prefix("resolution:")) {
+            let urls = ["tarball:", "registry:"].into_iter().filter_map(|f| r.split(f).nth(1));
+            let url = urls.map(|u| u.split([',', '}']).next().unwrap_or("").trim().trim_matches(['\'', '"'])).find(|u| !on_npm(u));
+            if let Some(url) = url {
+                out.insert(k.clone(), url.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 9.x and a 6.x workspace list each importer (indent 2), its sections (4), names (6) and their
+/// `version:` (8); a 6.x single project has the sections at the top, a level shallower.
+fn pnpm_direct(text: &str) -> Vec<Direct> {
+    let elsewhere = pnpm_elsewhere(text);
+    let (mut out, mut importers, mut importer, mut dev, mut name) = (vec![], false, String::from("."), None, None::<String>);
+    for line in text.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let key = t.strip_suffix(':').map(|k| k.trim_matches(['\'', '"']));
+        // A section's names sit two deeper than it, and their fields two deeper again.
+        let base = if importers { 4 } else { 0 };
+        match (indent, key) {
+            (0, k) => {
+                importers = k == Some("importers");
+                (importer, dev, name) = (".".into(), k.and_then(dep_section), None);
+            }
+            (2, Some(k)) if importers => (importer, dev, name) = (k.to_string(), None, None),
+            (4, Some(k)) if importers => (dev, name) = (dep_section(k), None),
+            (i, Some(k)) if i == base + 2 && dev.is_some() => name = Some(k.to_string()),
+            (i, None) if i == base + 4 => {
+                let (Some(n), Some(v)) = (&name, t.strip_prefix("version:")) else { continue };
+                if let Some((real, version, from)) = pnpm_version(n, v) {
+                    let far = version.as_ref().and_then(|v| elsewhere.get(&format!("{real}@{v}"))).cloned();
+                    let (version, from) = if far.is_some() { (None, far) } else { (version, from) };
+                    out.push(Direct { ecosystem: "npm", importer: importer.clone(), name: real, version, from, dev });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Split at the first `@` after a scope's leading one, since a git source has `@` in it too; a
@@ -248,6 +421,95 @@ version = \"1.6.0\"
         assert_eq!(p.gaps, ["pnpm-lock.yaml: 2 from git, a tarball or a path not checked"]);
         let old = parse("pnpm-lock.yaml", "lockfileVersion: 5.4\npackages:\n  /a/1.0.0:\n    dev: false\n").unwrap();
         assert_eq!((old.pkgs.len(), old.gaps), (0, vec!["pnpm-lock.yaml: lockfileVersion 5.4 not read".to_string()]));
+        let unknown = "lockfileVersion: '10.0'\nimporters:\n  .:\n    dependencies:\n      a:\n        specifier: ^1\n        version: 1.0.0\n";
+        let unknown = parse("pnpm-lock.yaml", unknown).unwrap();
+        assert!(unknown.direct.is_empty(), "a version not read declares nothing, however readable its importers look");
+        assert_eq!(unknown.gaps, ["pnpm-lock.yaml: lockfileVersion 10.0 not read"]);
         assert!(parse("pnpm-lock.yaml", "packages:\n").is_err(), "no version line is not a lockfile");
+    }
+
+    type Row<'a> = (&'a str, &'a str, Option<&'a str>, Option<&'a str>, Option<bool>);
+
+    fn direct(p: &Parsed) -> Vec<Row<'_>> {
+        p.direct.iter().map(|d| (d.importer.as_str(), d.name.as_str(), d.version.as_deref(), d.from.as_deref(), d.dev)).collect()
+    }
+
+    #[test]
+    fn every_recorded_lockfile_names_what_its_project_declares() {
+        let want = [(".", "@types/minimist", Some("1.2.5"), None, Some(false)), (".", "lodash", Some("4.17.20"), None, Some(false)),
+            (".", "minimist", Some("1.2.5"), None, Some(false))];
+        for (name, f) in [("pnpm-lock.yaml", "lock-pnpm-v9.yaml"), ("package-lock.json", "lock-npm-v3.json"), ("package-lock.json", "lock-npm-v2.json")] {
+            assert_eq!(direct(&parse(name, &FakeExec::testdata(f)).unwrap()), want, "{f}");
+        }
+        let c = parse("Cargo.lock", &FakeExec::testdata("lock-cargo.lock")).unwrap();
+        assert_eq!(direct(&c), [("rec", "itoa", Some("1.0.18"), None, None), ("rec", "smallvec", Some("1.6.0"), None, None)], "Cargo.lock says nothing of dev");
+    }
+
+    #[test]
+    fn pnpm_reads_a_single_project_and_a_workspace_alike() {
+        let v6 = "lockfileVersion: '6.0'\n\ndependencies:\n  react:\n    specifier: ^18\n    version: 18.2.0\n  \
+                  '@scope/ui':\n    specifier: ^1\n    version: 1.0.0(react@18.2.0)\n\ndevDependencies:\n  vitest:\n    specifier: ^1\n    \
+                  version: 1.6.0(@types/node@20.0.0)\n\npackages:\n\n  /react@18.2.0:\n    dev: false\n";
+        assert_eq!(direct(&parse("pnpm-lock.yaml", v6).unwrap()), [(".", "@scope/ui", Some("1.0.0"), None, Some(false)),
+            (".", "react", Some("18.2.0"), None, Some(false)), (".", "vitest", Some("1.6.0"), None, Some(true))], "a peer suffix is no version");
+        let ws = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    devDependencies:\n      typescript:\n        specifier: ^5\n        \
+                  version: 5.4.0\n\n  packages/app:\n    dependencies:\n      lib:\n        specifier: workspace:*\n        version: link:../lib\n      \
+                  str:\n        specifier: npm:string-width@^4\n        version: string-width@4.2.3\n      gone:\n        specifier: github:a/b\n        \
+                  version: github.com/a/b/abc123\n    dependenciesMeta:\n      lib:\n        injected: true\n\npackages:\n\n  typescript@5.4.0: {}\n";
+        assert_eq!(direct(&parse("pnpm-lock.yaml", ws).unwrap()), [(".", "typescript", Some("5.4.0"), None, Some(true)),
+            ("packages/app", "gone", None, Some("github.com/a/b/abc123"), Some(false)),
+            ("packages/app", "string-width", Some("4.2.3"), None, Some(false))], "a link is the project's own and an alias its real name");
+    }
+
+    #[test]
+    fn pnpm_names_a_copy_its_packages_section_places_off_npm() {
+        let lock = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      '@acme/ui':\n        specifier: ^1\n        version: 1.0.0(react@18.2.0)\n      \
+                    lodash:\n        specifier: ^4\n        version: 4.17.20\n      left:\n        specifier: ^1\n        version: 1.0.0\n      odd:\n        specifier: ^1\n        \
+                    version: 2.0.0\n\npackages:\n\n  '@acme/ui@1.0.0':\n    resolution: {integrity: sha512-a, tarball: https://npm.pkg.github.com/download/@acme/ui/1.0.0/abc}\n\n  \
+                    lodash@4.17.20:\n    resolution: {integrity: sha512-b}\n\n  left@1.0.0:\n    resolution: {integrity: sha512-c, tarball: https://registry.npmjs.org/left/-/left-1.0.0.tgz}\n\n  \
+                    odd@2.0.0:\n    resolution: {integrity: sha512-d, registry: https://npm.acme.example/}\n";
+        assert_eq!(direct(&parse("pnpm-lock.yaml", lock).unwrap()), [
+            (".", "@acme/ui", None, Some("https://npm.pkg.github.com/download/@acme/ui/1.0.0/abc"), Some(false)),
+            (".", "left", Some("1.0.0"), None, Some(false)), (".", "lodash", Some("4.17.20"), None, Some(false)),
+            (".", "odd", None, Some("https://npm.acme.example/"), Some(false))]);
+    }
+
+    #[test]
+    fn package_lock_resolves_a_workspace_folders_own_copy_before_the_hoisted_one() {
+        let ws = r#"{"lockfileVersion": 3, "packages": {
+          "": {"workspaces": ["packages/*"], "devDependencies": {"x": "^1"}},
+          "packages/app": {"name": "app", "dependencies": {"x": "^2", "y": "^1", "lib": "*", "al": "npm:real@^3"}, "devDependencies": {"y": "^1"}},
+          "node_modules/x": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/x/-/x-1.0.0.tgz"},
+          "packages/app/node_modules/x": {"version": "2.1.0", "resolved": "https://registry.npmjs.org/x/-/x-2.1.0.tgz"},
+          "node_modules/y": {"version": "1.0.0", "resolved": "https://npm.acme.example/y/-/y-1.0.0.tgz"},
+          "node_modules/lib": {"link": true, "resolved": "packages/lib"},
+          "node_modules/al": {"name": "real", "version": "3.0.0", "resolved": "https://registry.npmjs.org/real/-/real-3.0.0.tgz"}}}"#;
+        assert_eq!(direct(&parse("package-lock.json", ws).unwrap()), [(".", "x", Some("1.0.0"), None, Some(true)),
+            ("packages/app", "real", Some("3.0.0"), None, Some(false)), ("packages/app", "x", Some("2.1.0"), None, Some(false)),
+            ("packages/app", "y", None, Some("https://npm.acme.example/y/-/y-1.0.0.tgz"), Some(false))]);
+    }
+
+    #[test]
+    fn cargo_lock_tells_two_versions_apart_and_names_a_git_source() {
+        let lock = "version = 4\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"base64 0.22.1\",\n \"forked\",\n \"util\",\n]\n\
+                    [[package]]\nname = \"base64\"\nversion = \"0.21.7\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                    [[package]]\nname = \"base64\"\nversion = \"0.22.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                    [[package]]\nname = \"forked\"\nversion = \"0.3.0\"\nsource = \"git+https://example.com/forked#abc\"\n\
+                    [[package]]\nname = \"util\"\nversion = \"0.1.0\"\n";
+        assert_eq!(direct(&parse("Cargo.lock", lock).unwrap()), [("app", "base64", Some("0.22.1"), None, None),
+            ("app", "forked", None, Some("git+https://example.com/forked#abc"), None)], "a path crate is the project's own");
+    }
+
+    #[test]
+    fn only_crates_io_itself_is_crates_io() {
+        let entry = |name: &str, source: &str| format!("[[package]]\nname = \"{name}\"\nversion = \"1.0.0\"\nsource = \"{source}\"\n");
+        let lock = format!("version = 4\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"a\",\n \"b\",\n \"c\",\n \"d\",\n]\n{}{}{}{}",
+            entry("a", "registry+https://github.com/rust-lang/crates.io-index"), entry("b", "sparse+https://index.crates.io/"),
+            entry("c", "registry+https://gitlab.acme.example/mirrors/crates.io-index"), entry("d", "git+https://github.com/acme/crates.io-index-tools#abc"));
+        let p = parse("Cargo.lock", &lock).unwrap();
+        assert_eq!(direct(&p), [("app", "a", Some("1.0.0"), None, None), ("app", "b", Some("1.0.0"), None, None),
+            ("app", "c", None, Some("registry+https://gitlab.acme.example/mirrors/crates.io-index"), None),
+            ("app", "d", None, Some("git+https://github.com/acme/crates.io-index-tools#abc"), None)], "a look-alike is never sent as a crates.io name");
+        assert_eq!(p.pkgs.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["a", "b"], "nor asked of OSV under that ecosystem");
     }
 }

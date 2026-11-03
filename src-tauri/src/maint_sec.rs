@@ -430,8 +430,8 @@ pub(crate) fn sarif_files(ctx: &Ctx, _ex: &dyn Exec) -> Result<Read, Coverage> {
 // ---------- versions and CVSS, as the lockfile reporters need them ----------
 
 /// A version's numeric core (`1.6.0-rc.1` is `1.6.0`): enough to place an installed version
-/// between an advisory's bounds, which is all it is asked.
-fn ver(v: &str) -> [u64; 4] {
+/// between an advisory's bounds, or to rank a registry's releases.
+pub(crate) fn ver(v: &str) -> [u64; 4] {
     let mut out = [0; 4];
     let core = v.trim().trim_start_matches(['v', '=']).split(['-', '+']).next().unwrap_or("");
     for (slot, part) in out.iter_mut().zip(core.split('.')) {

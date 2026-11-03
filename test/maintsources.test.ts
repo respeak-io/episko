@@ -123,6 +123,11 @@ describe("what a mode may run", () => {
     expect(disclosure(sourceDef("osv"))).toMatch(/^OSV\.dev receives .*lockfiles\. Nothing else leaves this machine\.$/);
     expect(disclosure(sourceDef("runtime-eol")), "a runtime's name only").toMatch(/receives the name of each runtime .*never a version or a path\. Nothing else/);
     expect(sourceDef("runtime-eol")).toMatchObject({ facet: "security", cost: "public", sees: ["sec.runtime"] });
+    for (const id of ["npm-registry", "crates-registry"]) {
+      expect(disclosure(sourceDef(id)), id).toMatch(/ receives the name of each (package|crate) .*as a direct dependency.*never a version or a path.*\. Nothing else leaves this machine\.$/);
+      expect(sourceDef(id), id).toMatchObject({ facet: "deps", cost: "public", sees: ["deps.latest"], blind: ["deps.transitive"] });
+    }
+    expect(disclosure(sourceDef("npm-registry")), "a private name goes too, whatever the user's own config says").toMatch(/private one goes too.*whatever your own npm config says/);
   });
 });
 
@@ -163,6 +168,7 @@ describe("the frontend never names a vendor", () => {
     "deploy",
     "deployments",
     "ssh", // a protocol, as SARIF is a standard
+    "registry", // "npm registry": maint.ts already says "the registry's copy"
   ]);
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([
@@ -170,7 +176,7 @@ describe("the frontend never names a vendor", () => {
     ...manifest.bots.map((b) => b.id), ...manifest.markers.flatMap((m) => m.forge), "gh", "glab",
   ].filter((w) => w && !generic.has(w)));
   it("knows the vendors it guards against", () => {
-    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate"]));
+    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate", "npm", "crates", "io"]));
   });
   for (const f of ["src/maintsources.ts", "src/maint.ts", "src/maintbrief.ts"]) {
     it(f, () => {

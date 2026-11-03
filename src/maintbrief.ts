@@ -3,7 +3,7 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
   type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
@@ -235,6 +235,26 @@ const upgradeBrief: Brief = (_f, inp, ctx) => {
   ];
 };
 
+// Every direct dependency a major or more behind, as the one Upgrade line counts them, the most first.
+const packagesBrief: Brief = (_f, inp, ctx) => {
+  const s = pkgStates(inp);
+  if (!s.behind.length) return null;
+  const kind = (dev: boolean | null) => dev === false ? "shipped" : dev ? "development only" : "";
+  return [
+    `Bring ${plural(s.behind.length, "direct dependency", "direct dependencies")} of ${ctx.project} to their newest major, the most`
+      + " majors behind first. Each is a breaking upgrade: one at a time, and say which you would defer and why.",
+    "",
+    ...s.behind.map((p) => bullet([`${p.name} ${p.from} → ${p.latest}`, `${majorsText(p)}${p.floor ? " (a floor: from 0.x)" : ""}`,
+      kind(p.dev), `declared in ${p.importers.join(", ")}`, p.url ?? ""].filter(Boolean).join(" · "))),
+    ...(s.unplaced.length ? ["", `Not compared: ${s.unplaced.map((p) => `${p.name} (${unplacedWhy(p)})`).join(", ")}`] : []),
+    ...(s.gaps.length ? ["", `Not read: ${s.gaps.join("; ")}`] : []),
+    ...cappedNote(s.capped, "packages"),
+    "",
+    ...compatBlock(),
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
 const releaseBrief: Brief = (f, inp, ctx) => {
   const r = factsOf(f, inp, "release");
   if (!r?.tag || !r.since) return null;
@@ -444,7 +464,7 @@ const BRIEFS: Record<Verb, Brief> = {
   fix: (f, inp, ctx) => FIX.find(([test]) => test(f))?.[1](f, inp, ctx) ?? null,
   patch: patchBrief,
   rotate: rotateBrief,
-  upgrade: upgradeBrief,
+  upgrade: (f, inp, ctx) => (f.facet === "deps" ? packagesBrief : upgradeBrief)(f, inp, ctx),
   release: releaseBrief,
   deploy: deployBrief,
   push: pushBrief,

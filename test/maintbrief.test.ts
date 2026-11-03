@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
+  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
 } from "../src/maint";
 import { typable } from "../src/format";
 
@@ -349,6 +349,38 @@ describe("briefFor", () => {
     const fine = input(ok("runtime-eol", { kind: "runtimes", items: [rt("go", "1.27", false, "go.mod")] }));
     expect(briefFor(f, fine, ctx), "nothing left to upgrade").toBeNull();
   });
+
+  it("brings every package a major or more behind to its newest major, the most first, naming what it could not compare", () => {
+    const pkg = (name: string, installed: string[], latest: string | null, o: Partial<PkgLatest> = {}): PkgLatest =>
+      ({ name, ecosystem: "npm", importers: ["."], installed, latest, dev: false, url: latest ? `https://reg.example/${name}` : null, why: null, ...o });
+    const reg = (items: PkgLatest[], truncated = false) => ({ ...ok("npm-registry", { kind: "packages", items, current: 4 }), truncated });
+    const items = [
+      pkg("lodash", ["4.17.20"], "4.18.1"), pkg("react", ["18.2.0", "17.0.2"], "19.2.0", { importers: [".", "packages/app"] }),
+      pkg("vitest", ["1.6.0"], "4.1.0", { dev: true }), pkg("left-pad", [], null, { why: "from git" }), pkg("tiny", ["0.9.0"], "2.1.0", { dev: null }),
+    ];
+    const pk = input(reg(items));
+    const f = findings("/r", pk, MAINT_DEFAULTS, NOW).find((x) => x.key === "deps:packages")!;
+    const cut = { ...pk, reports: { ...pk.reports, "npm-registry": { ...pk.reports["npm-registry"]!, gaps: ["yarn.lock not read"] } } };
+    expect(briefFor(f, cut, ctx), "a lockfile nobody read is named").toContain("Not read: yarn.lock not read");
+    expect([f.verb, f.facet, f.level, f.text]).toEqual(["upgrade", "deps", "info", "3 packages a major or more behind"]);
+    const b = briefFor(f, pk, ctx)!;
+    expect(b).toMatch(/^Bring 3 direct dependencies of acme to their newest major, the most majors behind first\. Each is a breaking upgrade/);
+    expect(b).toContain([
+      "- vitest 1.6.0 → 4.1.0 · 3 majors · development only · declared in . · https://reg.example/vitest",
+      "- react 17.0.2 → 19.2.0 · 2 majors · shipped · declared in ., packages/app · https://reg.example/react",
+      "- tiny 0.9.0 → 2.1.0 · 2+ majors (a floor: from 0.x) · declared in . · https://reg.example/tiny",
+      "",
+      "Not compared: left-pad (from git)",
+    ].join("\n"));
+    expect(b, "a minor behind is no breaking upgrade").not.toContain("lodash");
+    expect(b).toContain("## Before you change anything");
+    expect(b).toContain("pnpm test");
+    expect(b).not.toContain("page cap");
+    expect(b.endsWith("\n")).toBe(false);
+    expect(briefFor(f, input(reg(items, true)), ctx)).toContain("page cap, so more packages may exist");
+    expect(briefFor(f, input(reg(items.slice(0, 1))), ctx), "nothing a major behind").toBeNull();
+    expect(briefFor({ ...f, facet: "security" }, pk, ctx), "Upgrade on a security line is the runtimes' brief").toBeNull();
+  });
 });
 
 // A sweep's affected project is briefed as any Patch is, and the read-only agent is asked from the
@@ -492,6 +524,18 @@ describe("a session's briefs", () => {
       expect(b.startsWith(alone), key).toBe(true);
       expect(b.slice(alone.length), key).toContain(`a new checkout on ${branch}, cut from origin/main`);
     }
+  });
+
+  it("sends a package line to its own branch, on the packages brief", () => {
+    const pk = input(ok("npm-registry", { kind: "packages", current: 0, items: [
+      { name: "react", ecosystem: "npm", importers: ["."], installed: ["17.0.2"], latest: "19.2.0", dev: false, url: null, why: null },
+    ] }));
+    const f = lineIn(pk, "deps:packages"), branch = "maint/deps-packages";
+    expect(VERB_KIND[f.verb]).toBe("branch");
+    const alone = briefFor(f, pk, ctx)!, b = sessionBrief(f, pk, ctx, { kind: "new", branch, base: "origin/main" })!;
+    expect(alone).toMatch(/^Bring 1 direct dependenc/);
+    expect(b.startsWith(alone)).toBe(true);
+    expect(b.slice(alone.length)).toContain(`a new checkout on ${branch}, cut from origin/main`);
   });
 
   it("tells an existing checkout to read what is already there first", () => {

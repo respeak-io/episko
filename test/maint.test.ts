@@ -14,6 +14,7 @@ import {
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
   currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
+  majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -68,6 +69,11 @@ const prs = (n: number, o: Partial<Extract<Facts, { kind: "updatePrs" }>> = {}, 
   prs: Array.from({ length: n }, (_, i) => ({ number: i + 1, title: `Update p${i}`, url: `u${i}`, branch: `b/p${i}`, draft: false, at: S - D, checks })),
   ...o,
 });
+// A direct dependency as a registry source reports one; `reg` the report, `current` the ones at their newest.
+const pkg = (name: string, installed: string[], latest: string | null, o: Partial<PkgLatest> = {}): PkgLatest =>
+  ({ name, ecosystem: "npm", importers: ["."], installed, latest, dev: false, url: latest ? `https://reg.example/${name}` : null, why: null, ...o });
+const reg = (items: PkgLatest[], current = 0, o: Partial<SourceReport> = {}): SourceReport =>
+  ({ ...ok("npm-registry", { kind: "packages", items, current }, o), cost: "public" });
 const cell = (f: Facet, inp: MaintInput) => facetCell(f, inp, MAINT_DEFAULTS, NOW);
 
 describe("the wire", () => {
@@ -1384,6 +1390,224 @@ describe("runtime end-of-life", () => {
   });
 });
 
+describe("packages behind their newest major", () => {
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const deps = (...reps: SourceReport[]) => cell("deps", input(...reps));
+  const notRun = { ...not("npm-registry", "deps", { state: "notRun" }), cost: "public" as const };
+
+  it("narrows the wire's packages, and refuses one of the wrong shape", () => {
+    const r = wire.reports.find((x) => (x.facts as { kind?: string } | null)?.kind === "packages")!;
+    expect(narrowMaint(r, "npm-registry")).toEqual(r);
+    const facts = r.facts as Extract<Facts, { kind: "packages" }>;
+    expect(facts.items.map((p) => [p.name, p.latest, p.dev])).toEqual([["react", "19.2.0", false], ["lodash", "4.18.1", null], ["left-pad", null, true]]);
+    const bad = (f: unknown) => narrowMaint({ ...r, facts: f }, "npm-registry").coverage.state;
+    expect(bad({ ...facts, items: [{ ...facts.items[0], dev: "yes" }] })).toBe("error");
+    expect(bad({ kind: "packages", items: [] }), "current counts the rest, so it is never missing").toBe("error");
+  });
+
+  it("counts majors behind: the minor below 1.0, the patch below 0.1, and a floor from 0.x to 1 or later", () => {
+    const t: [string, string, { n: number; floor: boolean } | null][] = [
+      ["17.0.2", "19.2.0", { n: 2, floor: false }], ["4.17.20", "4.18.1", { n: 0, floor: false }], ["0.9.0", "0.12.1", { n: 3, floor: false }],
+      ["0.0.3", "0.0.5", { n: 2, floor: false }], ["0.9.4", "2.1.0", { n: 2, floor: true }], ["0.0.3", "0.2.0", { n: 2, floor: true }],
+      ["2.0.0-rc.1", "2.0.0", { n: 0, floor: false }], ["1.0.0-beta.2", "3.1.0", { n: 2, floor: false }], ["3.0.0", "2.9.0", { n: 0, floor: false }],
+      ["main", "2.0.0", null], ["1.0.0", "", null],
+    ];
+    for (const [a, b, want] of t) expect(majorsBehind(a, b), `${a} → ${b}`).toEqual(want);
+    expect([majorsText({ majors: 1, floor: false }), majorsText({ majors: 2, floor: true }), majorsText({ majors: null, floor: false })])
+      .toEqual(["1 major", "2+ majors", "? majors"]);
+  });
+
+  it("judges each package from its lowest installed copy, the most majors first, and counts the current ones", () => {
+    const s = pkgStates(input(reg([
+      pkg("react", ["18.2.0", "17.0.2"], "19.2.0"), pkg("vitest", ["1.6.0"], "4.1.0", { dev: true }), pkg("lodash", ["4.17.20"], "4.18.1"),
+      pkg("tiny", ["0.9.0"], "2.1.0"), pkg("gone", [], null, { why: "from git" }), pkg("odd", ["main"], "1.0.0"), pkg("lost", ["1.0.0"], null),
+    ], 5)));
+    expect(s.behind.map((p) => [p.name, p.from, p.majors, p.floor])).toEqual([["vitest", "1.6.0", 3, false], ["react", "17.0.2", 2, false], ["tiny", "0.9.0", 2, true]]);
+    expect(s.unplaced.map((p) => [p.name, unplacedWhy(p)])).toEqual([["gone", "from git"], ["lost", "no newest release"], ["odd", "a version that does not compare"]]);
+    expect([s.current, s.majors, s.floor, s.capped]).toEqual([6, 7, true, false]);
+    expect(pkgStates(input(reg([pkg("react", ["17.0.0"], "19.0.0")]))).floor, "all placed, no leap from 0.x: exact").toBe(false);
+    expect(pkgStates(input(reg([], 3, { truncated: true })))).toMatchObject({ capped: true, floor: true, current: 3 });
+  });
+
+  it("says how many are behind at info, never amber however far, and the grey dot only when every one was placed", () => {
+    const far = deps(reg([pkg("react", ["1.0.0"], "19.0.0"), pkg("vue", ["1.0.0"], "3.0.0")]));
+    expect([far.state, far.level, far.text]).toEqual(["read", "info", "2 behind"]);
+    expect(far.tip).toContain("react 1.0.0 → 19.0.0 · 18 majors");
+    expect(deps(reg([pkg("lodash", ["4.17.20"], "4.18.1")], 9))).toMatchObject({ level: "ok", text: "" });
+    expect(deps(reg([pkg("gone", [], null, { why: "from git" })], 9)), "unplaced is unknown, never the dot").toMatchObject({ level: "muted", text: "1 unplaced" });
+    expect(deps(reg([], 9, { truncated: true })), "past the cap nothing vouches for the rest").toMatchObject({ level: "muted", text: "partly read" });
+    expect(deps(reg([pkg("react", ["17.0.0"], "19.0.0")], 0, { truncated: true })).text).toBe("1+ behind");
+    expect(projectBand(facetCells(input(reg([pkg("react", ["1.0.0"], "19.0.0")])), MAINT_DEFAULTS, NOW)), "a ranking, never drifting").toBe("quiet");
+  });
+
+  it("joins the update bots through worseOf: the worse kind speaks and both tips are kept", () => {
+    const red = deps(ok("dependabot-prs", prs(2, {}, "fail")), reg([pkg("react", ["17.0.0"], "19.0.0")]));
+    expect([red.level, red.text]).toEqual(["warn", "2 red"]);
+    expect(red.tip.some((t) => t.startsWith("react 17.0.0 → 19.0.0")), "the packages are still in the tip").toBe(true);
+    expect(deps(ok("dependabot-prs", prs(1)), reg([pkg("react", ["17.0.0"], "19.0.0")])).text, "a tie keeps the bots' words").toBe("1 PR");
+    const old = prs(1, { prs: [{ number: 1, title: "x", url: "u", branch: "b", draft: false, at: S - 90 * D, checks: "pass" }] });
+    const quiet = deps(ok("dependabot-prs", old), reg([pkg("react", ["17.0.0"], "19.0.0")]));
+    expect([quiet.text, quiet.tip.some((t) => t.startsWith("newest PR 90d old"))], "what was found speaks over a muted kind, which keeps its tip").toEqual(["1 behind", true]);
+  });
+
+  it("never lets a registry read vouch for what it could not read: a bot, another registry or a marker", () => {
+    const out = not("dependabot-prs", "deps", { state: "noTool", tool: "gh", fix: "gh auth login" });
+    const failed = { ...not("crates-registry", "deps", { state: "error", reason: "HTTP 503" }), cost: "public" as const };
+    const unasked = { ...not("crates-registry", "deps", { state: "notRun" }), cost: "public" as const };
+    expect(deps(reg([], 12)), "alone and every one placed, the dot").toMatchObject({ state: "read", level: "ok", text: "" });
+    expect(deps(out, reg([], 12)), "the bot's read failed").toMatchObject({ state: "cantCheck", text: "signed out", fix: "gh auth login" });
+    expect(deps(reg([], 12), failed), "the other registry's did").toMatchObject({ state: "cantCheck", text: "read failed" });
+    expect(deps(reg([], 12), unasked), "or nobody asked it").toMatchObject({ state: "cantCheck", text: "not checked" });
+    expect(deps(out, reg([pkg("gone", [], null, { why: "from git" })], 1)), "an unknown is no answer either").toMatchObject({ state: "cantCheck", text: "signed out" });
+    expect(deps(out, ok("renovate-prs", prs(0, { configured: false })), reg([], 2)), "nor is a bot nobody set up").toMatchObject({ state: "cantCheck", text: "signed out" });
+    expect(deps(out, reg([pkg("react", ["17.0.0"], "19.0.0")])), "what it found speaks, and the fix stays").toMatchObject({ state: "read", level: "info", text: "1 behind", fix: "gh auth login" });
+    const marked = (...reps: SourceReport[]): MaintInput => ({ ...input(...reps),
+      det: det(reps.map((r) => r.source), { markers: [{ facet: "deps", label: "Renovate", found: ["renovate.json"] }] }) });
+    expect(cell("deps", marked(reg([], 3))), "a marker nothing reads").toMatchObject({ state: "markers", level: "muted", text: "can't check (Renovate)" });
+    expect(cell("deps", marked(reg([pkg("react", ["17.0.0"], "19.0.0")]))), "again what it found speaks").toMatchObject({ state: "read", level: "info", text: "1 behind" });
+  });
+
+  it("keeps a bot's answer from hiding what could not be placed, and vouches once both answered", () => {
+    const up = ok("dependabot-prs", prs(0, { dashboard: 7 }));
+    expect(deps(up, reg([], 5))).toMatchObject({ state: "read", level: "ok", text: "" });
+    expect(deps(up, reg([pkg("gone", [], null, { why: "from git" })], 5))).toMatchObject({ level: "muted", text: "1 unplaced" });
+    expect(deps(up, reg([], 5, { gaps: ["yarn.lock not read"] }))).toMatchObject({ level: "muted", text: "partly read" });
+    expect(deps(ok("dependabot-prs", prs(0)), reg([pkg("gone", [], null)], 5)), "a tie keeps the bot's silence").toMatchObject({ level: "muted", text: "silent" });
+  });
+
+  it("reads a gap as a read cut short: a lockfile nobody read earns no dot and no exact count", () => {
+    const gap = { gaps: ["web/pnpm-lock.yaml: lockfileVersion 5.4 not read"] };
+    const c = deps(reg([], 3, gap));
+    expect([c.level, c.text, c.tip[0]]).toEqual(["muted", "partly read", "a lockfile or a name could not be read"]);
+    expect(c.tip, "the facet ladder names which").toContain(`npm registry: ${gap.gaps[0]}`);
+    expect(deps(reg([pkg("react", ["17.0.0"], "19.0.0")], 0, gap)).text).toBe("1+ behind");
+    expect(pkgStates(input(reg([], 3, gap)))).toMatchObject({ floor: true, partial: true, capped: false, gaps: gap.gaps });
+    expect(findings("/r", input(reg([pkg("react", ["17.0.0"], "19.0.0")], 0, gap)), MAINT_DEFAULTS, NOW).find((f) => f.key === "deps:packages")?.text)
+      .toBe("1+ packages a major or more behind");
+    expect(packagesBoard([tp("/r", reg([], 3, gap))]).map((r) => [r.level, r.floor, r.majors, r.gaps])).toEqual([["muted", true, 0, gap.gaps]]);
+  });
+
+  it("claims update pull requests only of projects a bot was read for, whatever the registries answered", () => {
+    const read = (...ps: TabProject[]) => { const b = tabBoards("security", ps, null, null, NOW); return [b.read.deps, b.pkgRead]; };
+    expect(read(tp("/gl", reg([pkg("react", ["17.0.0"], "19.0.0")], 2))), "a registry is no update-PR read").toEqual([0, 1]);
+    expect(read(tp("/gh", not("dependabot-prs", "deps", { state: "noAccess", reason: "no", fix: null }), reg([], 2))), "nor beside a bot that failed").toEqual([0, 1]);
+    expect(read(tp("/gh", ok("dependabot-prs", prs(1)), reg([], 2)), tp("/gl", reg([], 2)))).toEqual([1, 2]);
+    expect(tabBoards("delivery", [tp("/r", ok("github-actions", ci()))], null, null, NOW).read.ci, "the other facets count as before").toBe(1);
+  });
+
+  it("lists what a package count cannot answer in Coverage, and groups one reason across projects", () => {
+    const rows = (...ps: TabProject[]) => coverGroups("security", ps, null, NOW).filter((g) => g.facet === "deps").map((g) => [g.key, g.why, g.quiet, g.roots.length, g.action?.kind ?? null]);
+    const behind = reg([pkg("react", ["17.0.0"], "19.0.0")], 2);
+    const out = not("dependabot-prs", "deps", { state: "noTool", tool: "gh", fix: "gh auth login" });
+    expect(rows(tp("/a", out, behind)), "a failed bot keeps its row and fix").toEqual([["dependabot-prs|noTool|gh auth login", "signed out", false, 1, "fix"]]);
+    expect(rows(tp("/a", out, reg([], 2))), "and beside a read with nothing behind").toEqual([["dependabot-prs|noTool|gh auth login", "signed out", false, 1, "fix"]]);
+    const failed = { ...not("crates-registry", "deps", { state: "error", reason: "HTTP 503" }), cost: "public" as const };
+    expect(rows(tp("/a", behind, failed)).map((r) => r[0]), "a failed registry beside one that answered").toEqual(["crates-registry|error|"]);
+    const quiet = ok("dependabot-prs", prs(0));
+    expect(rows(tp("/a", quiet)), "a silent bot, on its own").toEqual([["dependabot-prs|silent|configured, no open pull request", "configured, no open pull request", true, 1, null]]);
+    expect(rows(tp("/a", quiet, behind)), "stays beside a package behind").toEqual(rows(tp("/a", quiet)));
+    expect(rows(tp("/a", ok("dependabot-prs", prs(0, { configured: false })), behind)), "a bot nobody set up is Set up's, never a gap").toEqual([]);
+    expect(rows(tp("/a", ok("dependabot-prs", prs(1)), behind)), "nothing to list").toEqual([]);
+    const gone = (n: number) => reg(Array.from({ length: n }, (_, i) => pkg(`g${i}`, [], null, { why: "from git" })), 1);
+    expect(rows(tp("/a", gone(1)), tp("/b", gone(2))), "the count is each project's own").toEqual([["deps|unplaced", "packages not placed", false, 2, null]]);
+    expect(rows(tp("/a", reg([], 1, { truncated: true }))).map((r) => r[1])).toEqual(["partly read"]);
+    const marked = (...reps: SourceReport[]): TabProject => {
+      const inp = { ...input(...reps), det: det(reps.map((r) => r.source), { markers: [{ facet: "deps", label: "Renovate", found: ["renovate.json"] }] }) };
+      return { path: "/m", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: [] };
+    };
+    expect(rows(marked(reg([], 2))).map((r) => r[0]), "a marker beside a clean read").toEqual(["marker:Renovate"]);
+    expect(rows(marked(behind)).map((r) => r[0]), "and beside one that found something").toEqual(["marker:Renovate"]);
+  });
+
+  it("keeps the last known red when only a registry answered beside a failed bot read", () => {
+    const deps1 = (s: ReturnType<typeof takeSnap>) => s.cells.find((c) => c.facet === "deps");
+    const red = takeSnap("/r", input(ok("dependabot-prs", prs(2, {}, "fail"))), NOW - D * 1000), was = deps1(red)!;
+    const behind = reg([pkg("react", ["17.0.0"], "19.0.0")], 2);
+    const failed = input(not("dependabot-prs", "deps", { state: "noAccess", reason: "no", fix: null }), behind);
+    expect(cell("deps", failed), "what it found is drawn").toMatchObject({ state: "read", level: "info", text: "1 behind" });
+    const next = takeSnap("/r", failed, NOW, red);
+    expect(deps1(next)).toMatchObject({ level: was.level, text: was.text, at: red.at });
+    expect(next.findings.filter((f) => f.facet === "deps").map((f) => f.key)).toEqual(red.findings.filter((f) => f.facet === "deps").map((f) => f.key));
+    expect(deps1(takeSnap("/r", input(ok("dependabot-prs", prs(1)), behind), NOW, red))?.at, "a bot that answered replaces it").toBeUndefined();
+    expect(deps1(takeSnap("/r", input(behind), NOW, red))?.at, "as does a project with no bot to fail").toBeUndefined();
+    const unasked = input(not("dependabot-prs", "deps", { state: "notRun" }), behind);
+    expect(deps1(takeSnap("/r", unasked, NOW, red))?.at, "a bot nobody asked did not fail").toBeUndefined();
+  });
+
+  it("names a package line's fix branch off its key", () => {
+    expect(fixBranch({ key: "deps:packages" })).toBe("maint/deps-packages");
+  });
+
+  it("keeps no update bot beside a registry nobody asked, and says it only in the tip beside packages that were read", () => {
+    const none = ok("dependabot-prs", prs(0, { configured: false }));
+    expect(deps(none, notRun)).toMatchObject({ state: "read", level: "muted", text: "no update bot" });
+    const read = deps(none, reg([], 3));
+    expect([read.level, read.text, read.tip.includes("no update bot")]).toEqual(["ok", "", true]);
+    expect(deps(none, reg([pkg("react", ["17.0.0"], "19.0.0")]))).toMatchObject({ level: "info", text: "1 behind" });
+  });
+
+  it("asks Set up of the update bots alone, so a registry never takes it from a project nothing opens updates for", () => {
+    const at = (kind: string, sources: string[], ...reps: SourceReport[]): MaintInput =>
+      ({ ...input(...reps), det: det(sources, { forge: { kind, host: `${kind}.com`, path: "o/r", by: "table" } }) });
+    const ids = (reps: SourceReport[]) => reps.map((r) => r.source);
+    const setups = (i: MaintInput) => tabExtras("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.facet === "deps").map((f) => f.key);
+    const gl = (...reps: SourceReport[]) => at("gitlab", ids(reps), ...reps), gh = (...reps: SourceReport[]) => at("github", ids(reps), ...reps);
+    expect(cell("deps", gl(notRun)), "its only deps source never asked").toMatchObject({ state: "cantCheck", text: "not checked" });
+    expect(setups(gl(notRun))).toEqual(["deps:setup"]);
+    expect(setups(gl(reg([pkg("react", ["17.0.0"], "19.0.0")]))), "a registry read is no bot").toEqual(["deps:setup"]);
+    expect(setups(gh(ok("dependabot-prs", prs(0)), reg([], 2))), "a configured bot is silent, not absent").toEqual([]);
+    expect(setups(gh(ok("dependabot-prs", prs(0, { configured: false })), reg([], 2)))).toEqual(["deps:setup"]);
+    expect(setups(at("github", ["dependabot-prs", "npm-registry"], reg([], 2))), "a bot read still out decides nothing").toEqual([]);
+  });
+
+  it("folds every package behind into one Upgrade line, the most first, and a capped count with a +", () => {
+    const line = (...reps: SourceReport[]) => findings("/r", input(...reps), MAINT_DEFAULTS, NOW).filter((f) => f.facet === "deps")
+      .map((f) => [f.key, f.level, f.verb, f.text, f.detail, f.ref, f.source]);
+    expect(line(reg([pkg("react", ["17.0.2"], "19.2.0"), pkg("lodash", ["4.17.20"], "4.18.1")])))
+      .toEqual([["deps:packages", "info", "upgrade", "react 2 majors behind", "react 17.0.2 → 19.2.0", "packages", "npm-registry"]]);
+    expect(line(reg([pkg("tiny", ["0.9.0"], "2.1.0")]))[0][3]).toBe("tiny 2+ majors behind");
+    const four = [pkg("a", ["1.0.0"], "2.0.0"), pkg("b", ["1.0.0"], "5.0.0"), pkg("c", ["1.0.0"], "3.0.0"), pkg("d", ["1.0.0"], "3.0.0")];
+    expect(line(reg(four))[0].slice(3, 5)).toEqual(["4 packages a major or more behind", "b 1.0.0 → 5.0.0, c 1.0.0 → 3.0.0, d 1.0.0 → 3.0.0 …"]);
+    expect(line(reg(four.slice(0, 1), 0, { truncated: true }))[0][3]).toBe("1+ packages a major or more behind");
+    expect(line(reg([pkg("lodash", ["4.17.20"], "4.18.1"), pkg("gone", [], null)])), "nothing a major behind is no line").toEqual([]);
+    expect(needsCount(findings("/r", input(reg(four)), MAINT_DEFAULTS, NOW)), "never counted in a badge").toBe(0);
+  });
+
+  it("ranks projects by majors behind with a bar, and a project it could not place muted after them", () => {
+    const ps = [
+      tp("/small", reg([pkg("a", ["1.0.0"], "2.0.0")], 3)),
+      tp("/big", reg([pkg("a", ["1.0.0"], "4.0.0"), pkg("b", ["0.9.0"], "1.0.0")], 1)),
+      tp("/unknown", reg([pkg("gone", [], null, { why: "not on the registry" })], 2)),
+      tp("/fine", reg([], 7)),
+      tp("/none", ok("git-local", hyg())),
+    ];
+    const rows = (xs: TabProject[], root: string | null = null) => packagesBoard(xs, root)
+      .map((r) => [r.root, r.majors, r.ratio, r.floor, r.level, r.behind.length, r.unplaced.length, r.current, r.verb?.key ?? null]);
+    expect(rows(ps)).toEqual([
+      ["/big", 4, 1, true, "info", 2, 0, 1, "deps:packages"], ["/small", 1, 0.25, false, "info", 1, 0, 3, "deps:packages"],
+      ["/unknown", 0, 0, true, "muted", 0, 1, 2, null], ["/fine", 0, 0, false, "ok", 0, 0, 7, null],
+    ]);
+    expect(rows([...ps].reverse()), "a repaint never reorders").toEqual(rows(ps));
+    expect(rows(ps, "/small").map((r) => r[0])).toEqual(["/small"]);
+    const b = tabBoards("security", ps, null, null, NOW);
+    expect([b.pkgRead, b.drawn.filter((k) => k.endsWith("|deps:packages"))]).toEqual([4, ["/big|deps:packages", "/small|deps:packages"]]);
+    expect(findingTarget({ facet: "deps", key: "deps:packages" })).toEqual({ tab: "security", board: "packages" });
+    expect(findingTarget({ facet: "deps", key: "deps:renovate" }).board, "a bot's line stays on its board").toBe("update-prs");
+    expect(tabBoards("delivery", ps, null, null, NOW).pkgs, "only Security draws it").toEqual([]);
+  });
+
+  it("opens Behind where the package manager is asked, and Latest on the package's page only over http(s)", () => {
+    expect(boardDoor("packages", "behind", 3)).toEqual({ to: "deps", tab: "stale" });
+    expect(boardDoor("packages", "behind", 0)).toBeNull();
+    expect(boardDoor("packages", "latest", "https://reg.example/react")).toEqual({ to: "url", url: "https://reg.example/react" });
+    expect(boardDoor("packages", "latest", null)).toBeNull();
+    expect(boardDoor("packages", "latest", "file:///etc/passwd")).toBeNull();
+  });
+});
+
 describe("prod, coming up and hosts", () => {
   const p = (name: string, days: number | null, o = {}) =>
     ({ name, url: `https://${name}`, code: 200, ms: 1, certNotAfter: days === null ? null : S + days * D, err: null, ...o });
@@ -2249,7 +2473,7 @@ describe("a board's numbers are doors", () => {
   const branches = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
   // Every number column of every board, and where it opens: "url" takes the cell's own address.
   const WHERE: Record<BoardId, Record<string, Door | "url" | null>> = {
-    advisories: {}, packages: {}, runtimes: { ends: "url" },
+    advisories: {}, packages: { behind: { to: "deps", tab: "stale" }, latest: "url" }, runtimes: { ends: "url" },
     "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
     ci: { run: "url" },
     flaky: { passed: null, last: "url" },
@@ -2332,6 +2556,7 @@ describe("a card line opens what it summarises", () => {
       ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
       scan([adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" }), adv({ id: "S-1", kind: "secret", pkg: null, location: "k" })]),
       ok("dependabot-prs", prs(2)),
+      reg([pkg("react", ["17.0.2"], "19.2.0")]),
       ok("git-tags", rel({ since: 10, fetchedAt: S - 9 * D })),
       ok("github-deployments", { kind: "deployments", trunk: "main", fetchedAt: S - 9 * D, envs: [{ env: "prod", tier: "production", sha: "a".repeat(40), tag: null, branch: null, at: S - D, url: null,
         behind: 3, behindAt: S - D, ahead: 0, last: { state: "fail", raw: "FAILURE", sha: "b".repeat(40), at: S - H, url: null } }] }),
@@ -2344,7 +2569,7 @@ describe("a card line opens what it summarises", () => {
       ci: "delivery/ci", "ci:flaky": "delivery/flaky", release: "delivery/releases",
       "release:deploy": "delivery/deployments", "release:deploy-failed": "delivery/deployments",
       "security:dependency": "security/advisories", "security:code": "security/advisories", "security:secret": "security/advisories",
-      "deps:b": "security/update-prs",
+      "deps:b": "security/update-prs", "deps:packages": "security/packages",
       "git:unpushed": "code/hygiene", "git:tidy": "code/hygiene", "git:fetch": "code/hygiene",
       "work:review": "work/work", "work:open": "work/work",
       "prod:api": "servers/addresses", "prod:cert:www": "servers/addresses",
@@ -2431,6 +2656,7 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
     not("github-secret-scanning", "security", { state: "off", reason: "secret scanning is off" }),
     tool("npm-audit"),
     ok("dependabot-prs", prs(2)),
+    reg([pkg("react", ["17.0.2"], "19.2.0"), pkg("gone", [], null, { why: "from git" })], 4),
     ok("git-tags", rel({ since: 12, oldestUnreleasedAt: S - 3 * D })),
     ok("github-releases", { kind: "releases", latest: { tag: "v1.0", name: "v1.0", at: S - 2 * D, url: null }, count: 4 }),
     ok("changelog", { kind: "changelog", unreleased: 3, latest: "1.0", latestAt: S - 2 * D }),

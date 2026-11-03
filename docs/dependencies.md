@@ -19,7 +19,7 @@ one write it makes anywhere is the launch itself.
 
 ## Where the facts come from
 
-Four sources, on three different gates, and they do **not** all need GitHub:
+Five sources, on four different gates, and they do **not** all need GitHub:
 
 - **Dependabot alerts** — `gh api repos/{owner}/{repo}/dependabot/alerts`. GitHub tier only.
 - **The bots' pull requests** — one `gh pr list` with `statusCheckRollup`, `mergeable` and
@@ -31,6 +31,10 @@ Four sources, on three different gates, and they do **not** all need GitHub:
   that makes a *verdict* possible, and it is why the Security boards are useful on a GitLab remote.
 - **What a package manager says is out of date** — `pnpm/npm/yarn outdated`, `cargo
   outdated`, `go list -m -u`, `pip list --outdated`. Any tier, and **only when asked**.
+- **What the registries say is newest** — Maintenance's `npm-registry` and `crates-registry`
+  (`public`, docs/maintenance.md), which feed the Packages board's majors behind and never this
+  overlay. `<pm> outdated` stays the one command this pane runs, and the board's *Behind* number
+  leads to it.
 
 **The two GitHub halves are shared reads** (`alerts_read`, `bot_prs_read`), each with its own
 2-minute cache keyed by root, repository and account, because Maintenance's
@@ -225,10 +229,11 @@ working in exactly one of them. They now share one rule and one pair of controls
   as `dashview.ts`** — the pane's markup outgrew one file and the contract had to follow it
   rather than quietly stop covering what moved out. That test also fails if a *third*
   `*view.ts` starts emitting `data-dash*` without joining the list.
-- **The Packages board and the ⤢ are absent when the read has nothing to say AND nothing
-  that could be asked** (`depSilent`) — a repo with a clean read but a `package.json` still
+- **The ⤢ and the Packages board's out-of-date line are absent when the read has nothing to say
+  AND nothing that could be asked** (`depSilent`) — a repo with a clean read but a `package.json` still
   gets them, because the scan is something it can offer, and it is why `depSilent` reads the
-  **tools** as well as the tally. The ⤢ sits once, on the first Security board drawn (the
+  **tools** as well as the tally. The board itself is also drawn from Maintenance's registry
+  sources, whatever this read says. The ⤢ sits once, on the first Security board drawn (the
   advisories, else the update pull requests, else Packages, drawn to carry it). The boards
   live on the Maintenance tab's Security sub-tab; Today keeps the advisory and bot-PR
   **rows** in its queue, so nothing urgent hides behind the tab nobody opened.
