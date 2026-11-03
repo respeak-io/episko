@@ -13,15 +13,15 @@ import { openMenu } from "./menu";
 import { icon, type IconName } from "./svgicons";
 import { fileHtml, railHeadHtml, railHtml, treeRailHtml, type LineHooks } from "./patchview";
 import {
-  agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsSince, draftBrief,
-  expandGap, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey, rangeArgs,
-  reviewComments, setViewed, submitBlock, suggestion, threadBrief, threadPin, treeOrder, treeRows, withDraft,
+  agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince, draftBrief,
+  expandGap, gapAt, isLargeDiff, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey,
+  rangeArgs, rangeLabel, reviewComments, setViewed, submitBlock, suggestion, threadBrief, threadPin, treeOrder, treeRows, withDraft,
   type Anchor, type Commentable, type DraftComment, type DraftStore, type PrDiff, type PrReview, type PrThread,
   type RailLayout, type Range, type ReviewEvent, type Side, type ViewedStore,
 } from "./review";
 import {
   addBtn, rangePos, checksHtml, composeHtml, conversationHtml, draftHtml, elsewhereHtml, expandBtn, failHtml, fileBtnsHtml,
-  railMark, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, type RvTab,
+  railMark, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, truncNoteHtml, type RvTab,
 } from "./reviewview";
 import {
   accentFor, diffMode, FAVORITES, ghAccountFor, railLayout, reviewMirror, sessions, setActiveId, setDiffMode, setMirror,
@@ -60,6 +60,9 @@ let full: DiffFile[] = []; // GitHub's diff, merge base → head: what comments 
 let shown: DiffFile[] = []; // the view's diff, with any context revealed
 let truncated = false;
 let fullTruncated = false; // the "all" view reuses `full`, and its note with it
+let dropped = 0, fullDropped = 0; // files past even the stubs' cap, counted by the backend
+let large = false; // per view (isLargeDiff): a folded file is drawn as its header alone
+let viewAt = ""; // the view loadDiffs last drew: range, whitespace, head
 let commentable: Commentable = new Map();
 let range: Range = { kind: "all" };
 let ws = false;
@@ -77,7 +80,7 @@ let event: ReviewEvent = "COMMENT";
 let mergeMethod = "";
 let deleteBranch = false; // a shared write is armed by you, never by default: a PR's head may be `dev`
 let gen = 0;
-let seeded = false; // the first diff of a review folds what you have viewed; after that, folds are yours
+let seeded = false; // the first diff folds what you have viewed; after that folds are yours, bar a large view's
 
 let drafts: DraftStore = clampDrafts(readObj("cc-review-drafts"));
 let viewed: ViewedStore = clampViewed(readObj("cc-review-viewed"));
@@ -104,7 +107,8 @@ export function openPrReview(project: string, path: string, number: number): voi
   takeStage("review");
   document.documentElement.style.setProperty("--accent", accentFor(path));
   if (!same) {
-    pr = null; failed = ""; full = []; shown = []; truncated = false; fullTruncated = false; commentable = new Map();
+    pr = null; failed = ""; full = []; shown = []; truncated = false; fullTruncated = false; large = false; commentable = new Map();
+    dropped = 0; fullDropped = 0; viewAt = "";
     range = { kind: "all" }; ws = false; tab = "conversation"; compose = null; convText = "";
     replies.clear(); threadOpen.clear(); collapsed.clear(); railFolded.clear(); tailDone.clear();
     activeFile = -1; event = "COMMENT"; mergeMethod = ""; seeded = false;
@@ -208,12 +212,12 @@ async function load(fresh: boolean): Promise<void> {
   } else paintAll();
 }
 
-async function readDiff(r: Range, ignore: boolean): Promise<{ files: DiffFile[]; truncated: boolean }> {
+async function readDiff(r: Range, ignore: boolean): Promise<{ files: DiffFile[]; truncated: boolean; dropped: number }> {
   const a = rangeArgs(pr!, r);
   const d = await invoke<PrDiff>("pr_diff", {
     root: root(), number: pr!.number, baseOid: pr!.base_oid, headOid: a.headOid, fromOid: a.fromOid, ignoreWs: ignore,
   });
-  return { files: treeOrder(parsePatch(d.patch)), truncated: d.truncated };
+  return { files: treeOrder(parsePatch(d.patch)), truncated: d.truncated, dropped: d.dropped };
 }
 
 async function loadDiffs(mine = ++gen): Promise<void> {
@@ -226,17 +230,25 @@ async function loadDiffs(mine = ++gen): Promise<void> {
       if (mine !== gen) return;
       full = f.files;
       fullTruncated = f.truncated;
+      fullDropped = f.dropped;
       commentable = commentableIn(full);
+      indexFull();
     }
-    const v = range.kind === "all" && !ws ? { files: full, truncated: fullTruncated } : await readDiff(range, ws);
+    const v = range.kind === "all" && !ws ? { files: full, truncated: fullTruncated, dropped: fullDropped } : await readDiff(range, ws);
     if (mine !== gen) return;
     shown = v.files;
     truncated = v.truncated;
+    dropped = v.dropped;
+    large = isLargeDiff(shown);
+    // Arriving at a large view (a range, the whitespace switch, a push) folds it all; a ⟳ does not.
+    const view = `${range.kind === "commit" ? range.oid : range.kind === "since" ? `since:${range.from}` : "all"}|${ws}|${pr.head_oid}`;
+    const arrived = view !== viewAt;
+    viewAt = view;
     tailDone.clear();
-    if (!seeded) {
+    if (!seeded || (large && arrived)) {
       seeded = true;
       const k = key();
-      for (const f of shown) if (shown.length > OPEN_ALL_UNDER || isViewed(viewed, k, sigFile(f))) collapsed.add(f.path);
+      for (const f of shown) if (shown.length > OPEN_ALL_UNDER || large || isViewed(viewed, k, sigFile(f))) collapsed.add(f.path);
     }
     failed = "";
   } catch (e) {
@@ -248,8 +260,18 @@ async function loadDiffs(mine = ++gen): Promise<void> {
   paintAll();
 }
 
-// Viewed is measured on GitHub's diff, so a tick made in one commit's view means the same file.
-const sigFile = (f: DiffFile) => full.find((x) => x.path === f.path) ?? f;
+// Viewed is measured on GitHub's diff as read, so a tick made in one commit's view means the same
+// file, and context expand() reveals into `full` (the all view's `shown`) never reaches it.
+let fullAt: { of: DiffFile[]; at: Map<string, DiffFile> } = { of: full, at: new Map() };
+function indexFull() {
+  const at = new Map<string, DiffFile>();
+  for (const x of full) if (!at.has(x.path)) at.set(x.path, x);
+  fullAt = { of: full, at };
+}
+function sigFile(f: DiffFile): DiffFile {
+  if (fullAt.of !== full) indexFull();
+  return fullAt.at.get(f.path) ?? f;
+}
 
 // ---------- painting ----------
 
@@ -265,13 +287,7 @@ function paintHead() {
   $("rvHead").innerHTML = pr?.available ? reviewHeadHtml(pr, Date.now(), busy) : "";
 }
 
-function rangeLabel(): string {
-  if (!pr || range.kind === "all") return "All changes";
-  if (range.kind === "since") return "Since your review";
-  const r = range;
-  const i = pr.commits.findIndex((c) => c.oid === r.oid);
-  return `Commit ${i + 1} of ${pr.commits.length}`;
-}
+const notLoaded = () => shown.filter((f) => f.cut).length + dropped;
 
 function paintBar() {
   const bar = $("rvBar");
@@ -279,11 +295,12 @@ function paintBar() {
   const since = lastReviewed(pr);
   const k = key();
   bar.innerHTML = reviewBarHtml({
-    tab, pr, rangeLabel: rangeLabel(),
+    tab, pr, rangeLabel: rangeLabel(pr, range),
     since: since ? { oid: since, n: commitsSince(pr, since) } : null, showingSince: range.kind === "since",
-    ws, mode: diffMode, allOpen: shown.every((f) => !collapsed.has(f.path)),
-    files: shown.length, add: shown.reduce((a, f) => a + f.added, 0), del: shown.reduce((a, f) => a + f.removed, 0),
-    viewed: shown.filter((f) => isViewed(viewed, k, sigFile(f))).length, truncated,
+    ws, mode: diffMode, allOpen: shown.every((f) => !collapsed.has(f.path)), anyOpen: shown.some((f) => !collapsed.has(f.path)), large,
+    files: shown.length, filesOf: dropped ? shown.length + dropped : null,
+    add: shown.reduce((a, f) => a + f.added, 0), del: shown.reduce((a, f) => a + f.removed, 0),
+    viewed: shown.filter((f) => isViewed(viewed, k, sigFile(f))).length, truncated, notLoaded: notLoaded(),
   });
 }
 
@@ -347,6 +364,7 @@ function sectionHtml(i: number, pl: Placements): string {
     top: top ? `<div class="rv-top">${top}</div>` : "",
     tail: tail && f.hunks.length && !tailDone.has(f.path) ? tailBtn(i, f.hunks.length) : "",
     cls: isV ? " rv-isviewed" : "",
+    bodyless: large && collapsed.has(f.path),
   });
 }
 
@@ -364,8 +382,8 @@ function paintBody() {
   if (!shown.length) { body.innerHTML = `<div class="diff-empty">No changes in this view.</div>`; return; }
   const pl = placements();
   const away = pl.threads.elsewhere.map((t) => threadBlock(t, true, true));
-  const note = truncated ? `<div class="diff-trunc">Diff truncated: too large to show in full here. GitHub has the rest.</div>` : "";
-  keepPlace(() => { body.innerHTML = shown.map((_, i) => sectionHtml(i, pl)).join("") + note + elsewhereHtml(away); });
+  const note = truncated ? truncNoteHtml(notLoaded()) : "";
+  keepPlace(() => { body.innerHTML = note + shown.map((_, i) => sectionHtml(i, pl)).join("") + elsewhereHtml(away); });
   refocus();
 }
 
@@ -459,10 +477,17 @@ function spy() {
   });
 }
 
+// Opens a folded file; the caller repaints it, which in a large view is when its body is drawn.
+function unfold(f: DiffFile): boolean {
+  if (!collapsed.delete(f.path)) return false;
+  if (large) paintBar(); // "collapse all" appears with the first open file
+  return true;
+}
+
 function revealFile(i: number) {
   const f = shown[i];
   if (!f) return;
-  if (collapsed.delete(f.path)) paintFile(i);
+  if (unfold(f)) paintFile(i);
   section(i)?.scrollIntoView({ block: "start" });
   spy();
 }
@@ -526,7 +551,7 @@ function onFileComment(fi: number) {
   if (!f) return;
   const old = compose?.fi;
   compose = { fi, path: f.path, side: null, line: null, start: null, anchor: null, text: compose?.edit ? "" : compose?.text ?? "", preview: false, edit: null };
-  collapsed.delete(f.path);
+  unfold(f);
   if (old !== undefined && old !== fi) paintFile(old);
   paintFile(fi);
 }
@@ -566,6 +591,7 @@ function editDraft(id: string) {
   if (fi < 0) { toast("That file is not in this view; switch to All changes to edit it"); return; }
   const old = compose?.fi;
   compose = { fi, path: d.path, side: d.side, line: d.line, start: d.start, anchor: d.start ?? d.line, text: d.body, preview: false, edit: id };
+  unfold(shown[fi]); // or its compose box is painted into a folded file
   if (old !== undefined && old !== fi) paintFile(old);
   paintFile(fi);
 }
@@ -775,7 +801,7 @@ function openRange(at: HTMLElement) {
         { id: "all", label: "All changes", sub: `${p.base_ref} → ${p.head_ref}${on("all")}`, logo: icon("files") },
         ...(since ? [{ id: "since", label: "Since your last review", sub: short(since) + on("since"), logo: icon("since") }] : []),
       ] },
-      { label: "One commit", items: p.commits.map((c) => ({ id: `c:${c.oid}`, label: c.headline || short(c.oid), sub: `${short(c.oid)} · ${c.author}${on(`c:${c.oid}`)}`, logo: icon("commit") })).reverse() },
+      { label: commitsHeading(p), items: p.commits.map((c) => ({ id: `c:${c.oid}`, label: c.headline || short(c.oid), sub: `${short(c.oid)} · ${c.author}${on(`c:${c.oid}`)}`, logo: icon("commit") })).reverse() },
     ],
     onPick: (id) => {
       if (id === "all") setRange({ kind: "all" });
@@ -869,9 +895,13 @@ export function wireReview(): void {
       return;
     }
     if (t.closest<HTMLElement>("[data-rvfold]")) {
-      const open = shown.some((f) => collapsed.has(f.path));
-      collapsed.clear();
-      if (!open) for (const f of shown) collapsed.add(f.path);
+      // A large view only collapses, and keeps other views' folds: each open file is a drawn body.
+      if (large) for (const f of shown) collapsed.add(f.path);
+      else {
+        const open = shown.some((f) => collapsed.has(f.path));
+        collapsed.clear();
+        if (!open) for (const f of shown) collapsed.add(f.path);
+      }
       paintBar();
       paintBody();
       return;
@@ -937,7 +967,9 @@ export function wireReview(): void {
       const f = shown[i];
       if (!f) return;
       if (!collapsed.delete(f.path)) collapsed.add(f.path);
-      section(i)?.classList.toggle("collapsed", collapsed.has(f.path));
+      // A large view's folded file has no body: opening draws it, folding puts it away.
+      if (large) paintFile(i);
+      else section(i)?.classList.toggle("collapsed", collapsed.has(f.path));
       if (collapsed.has(f.path)) section(i)?.scrollIntoView({ block: "nearest" });
       paintBar();
       spy();
