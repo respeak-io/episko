@@ -64,8 +64,14 @@ export interface FleetHost {
   renderAll: () => void;
 }
 let host: FleetHost = {
-  setActive: () => {}, closeSession: () => {}, openDashboard: () => {}, prefill: () => {},
-  openUsage: () => {}, openHistory: () => {}, refreshUsage: () => {}, renderAll: () => {},
+  setActive: () => {},
+  closeSession: () => {},
+  openDashboard: () => {},
+  prefill: () => {},
+  openUsage: () => {},
+  openHistory: () => {},
+  refreshUsage: () => {},
+  renderAll: () => {},
 };
 export function setFleetHost(h: FleetHost) { host = h; }
 

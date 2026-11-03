@@ -333,8 +333,12 @@ setDashHost({
 wireDashboard();
 // The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
 setFleetHost({
-  setActive, closeSession, openDashboard, renderAll,
-  openUsage, openHistory: () => { void openHistory(true); },
+  setActive,
+  closeSession,
+  openDashboard,
+  renderAll,
+  openUsage,
+  openHistory: () => { void openHistory(true); },
   refreshUsage: () => { void refreshTokens().then(renderAll); },
   // Typed, never sent: the two places Episko presses Enter stay two (CLAUDE.md).
   prefill: (project, path, text) => {

@@ -44,8 +44,10 @@ export function checkDeploy(p: DeployProposal): { deploy: DeployCfg; dropped: st
     deploy: {
       host: host && keep(isWord(host), `host = "${host}" is not an ssh alias or host name`) ? host : null,
       compose: d.compose.map((c) => c.trim()).filter((c) => keep(isWord(c), `compose service "${c}" is not a name`)),
+      // A name is its finding's key after `prod:`; `prod:<kind>:…` belongs to the other prod sources.
       urls: Object.fromEntries(Object.entries(d.urls).map(([n, u]) => [n.trim(), u.trim()] as const)
-        .filter(([n, u]) => keep(!!n && isHttp(u), `url ${n} = "${u}" is not an http(s) address`))),
+        .filter(([n, u]) => keep(!!n && isHttp(u), `url ${n} = "${u}" is not an http(s) address`)
+          && keep(!n.includes(":"), `url name "${n}" may not hold ':'`))),
       sentry: sentry && keep(isOrgProject(sentry), `sentry = "${sentry}" is not org/project`) ? sentry : null,
       versionUrl: versionUrl && keep(isHttp(versionUrl), `version_url = "${versionUrl}" is not an http(s) address`) ? versionUrl : null,
     },

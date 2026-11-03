@@ -320,11 +320,27 @@ const setupBrief: Brief = (f, inp, ctx) => {
   return null;
 };
 
+// Fix's brief per kind, the first row whose test passes; each test is exact, so a new kind is one row.
+// A url name holds no ':', so a probe's keys are `prod:<name>` and `prod:cert:<name>`, and any
+// other `prod:<kind>:…` is another source's.
+export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
+  [(f) => f.key === "ci", ciBrief],
+  [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
+  [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
+];
+
 const BRIEFS: Record<Verb, Brief> = {
-  fix: (f, inp, ctx) => f.facet === "prod" ? prodBrief(f, inp, ctx) : f.facet === "ci" ? ciBrief(f, inp, ctx)
-    : f.facet === "security" ? codeBrief(f, inp, ctx) : null,
-  patch: patchBrief, rotate: rotateBrief, upgrade: upgradeBrief, release: releaseBrief, push: pushBrief, tidy: tidyBrief, review: reviewBrief,
-  setup: setupBrief, fetch: () => null, run: () => null, // a fetch and a read are not an agent's work
+  fix: (f, inp, ctx) => FIX.find(([test]) => test(f))?.[1](f, inp, ctx) ?? null,
+  patch: patchBrief,
+  rotate: rotateBrief,
+  upgrade: upgradeBrief,
+  release: releaseBrief,
+  push: pushBrief,
+  tidy: tidyBrief,
+  review: reviewBrief,
+  setup: setupBrief,
+  fetch: () => null, // a fetch and a read are not an agent's work
+  run: () => null,
 };
 
 /** The brief a finding's verb prefills, or null once the facts behind it are gone. */

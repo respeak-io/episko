@@ -64,8 +64,16 @@ type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
 
 /** The one facet each kind may answer (`Facts::facet`); a record, so a new kind fails to compile here. */
 export const FACT_FACET: Record<FactKind, Facet> = {
-  ciRuns: "ci", advisories: "security", updatePrs: "deps", release: "release", releases: "release",
-  changelog: "release", hygiene: "git", work: "work", probes: "prod", runtimes: "security",
+  ciRuns: "ci",
+  advisories: "security",
+  updatePrs: "deps",
+  release: "release",
+  releases: "release",
+  changelog: "release",
+  hygiene: "git",
+  work: "work",
+  probes: "prod",
+  runtimes: "security",
 };
 export const FACT_KINDS = Object.keys(FACT_FACET) as FactKind[];
 
@@ -198,13 +206,24 @@ export interface MaintThresholds {
   eolWarnDays: number; // a runtime whose cycle ends sooner is drifting
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
-  unreleasedCommits: 30, unreleasedDays: 21, staleBranchDays: 30,
-  certWarnDays: 21, botSilentDays: 30, botPrBacklog: 5, fetchStaleDays: 7, eolWarnDays: 90,
+  unreleasedCommits: 30,
+  unreleasedDays: 21,
+  staleBranchDays: 30,
+  certWarnDays: 21,
+  botSilentDays: 30,
+  botPrBacklog: 5,
+  fetchStaleDays: 7,
+  eolWarnDays: 90,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
-  unreleasedCommits: "unreleased_commits", unreleasedDays: "unreleased_days",
-  staleBranchDays: "stale_branch_days", certWarnDays: "cert_warn_days", botSilentDays: "bot_silent_days",
-  botPrBacklog: "bot_pr_backlog", fetchStaleDays: "fetch_stale_days", eolWarnDays: "eol_warn_days",
+  unreleasedCommits: "unreleased_commits",
+  unreleasedDays: "unreleased_days",
+  staleBranchDays: "stale_branch_days",
+  certWarnDays: "cert_warn_days",
+  botSilentDays: "bot_silent_days",
+  botPrBacklog: "bot_pr_backlog",
+  fetchStaleDays: "fetch_stale_days",
+  eolWarnDays: "eol_warn_days",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -278,7 +297,8 @@ export function whyWord(c: Coverage, facet: Facet): string {
   }
 }
 
-interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean } // blind: not the facet's own question
+/** A facet's verdict from one kind of facts. `blind`: what it read cannot answer the facet alone. */
+export interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean }
 interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: SourceReport[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
@@ -524,8 +544,29 @@ const workRule: Rule = (facts, c) => {
   return w.some((x) => x.reviewRequested === null) ? { level: "muted", text: "reviews unknown", tip } : { level: "ok", text: "", tip };
 };
 
+const SAYS: readonly Level[] = ["bad", "warn", "info"];
+// A blind verdict that found nothing cannot vouch; one that found something speaks like any other.
+const unsure = (j: Judged) => !!j.blind && !SAYS.includes(j.level);
+/** Two kinds' verdicts on one facet, the second null when its kind has no facts: the worse level
+ *  speaks and both tips are kept. A blind kind speaks over one that can answer only with something
+ *  it found, never with an unknown or a pass, and the pair is blind only while neither found any. */
+export function worseOf(a: Judged, b: Judged | null): Judged {
+  if (!b) return a;
+  const rank = (j: Judged, o: Judged) => unsure(j) && !o.blind ? HOST_RANK.length : HOST_RANK.indexOf(j.level);
+  const w = rank(b, a) < rank(a, b) ? b : a;
+  const at = [a.asOf, b.asOf].filter((x): x is number => typeof x === "number");
+  return { level: w.level, text: w.text, tip: [...a.tip, ...b.tip], asOf: at.length ? Math.min(...at) : null, blind: unsure(a) && unsure(b) };
+}
+
+// A facet whose second kind of facts lands combines the two here, through worseOf.
 const RULES: Record<Facet, Rule> = {
-  ci: ciRule, security: securityRule, deps: depsRule, release: releaseRule, git: gitRule, prod: prodRule, work: workRule,
+  ci: ciRule,
+  security: securityRule,
+  deps: depsRule,
+  release: releaseRule,
+  git: gitRule,
+  prod: prodRule,
+  work: workRule,
 };
 
 const skipped = (id: string): SourceReport => ({
@@ -568,7 +609,7 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   if (!ok.length) return cell("cantCheck", "muted", why, [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
-  if (j.blind && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
+  if (unsure(j) && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
   const asOf = j.asOf ?? null;
   let { level, text } = j;
   const age = asOf !== null ? now / 1000 - asOf : null;
@@ -892,15 +933,28 @@ export function tabTally(rows: readonly Finding[], root: string | null = null): 
 }
 
 /** The boards a cross-project tab draws (`tabBoards`), each an anchor a card line can open on. */
-export const BOARD_IDS = ["advisories", "runtimes", "update-prs", "packages", "ci", "releases", "hygiene", "work", "addresses"] as const;
+export const BOARD_IDS = [
+  "advisories",
+  "runtimes",
+  "update-prs",
+  "packages",
+  "ci",
+  "releases",
+  "hygiene",
+  "work",
+  "addresses",
+] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
 // Each facet's boards and the keys each carries a verb for, the first match winning; a pre-fold
 // snapshot's `ci:<workflow>` is CI's too.
 const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
-  ci: [["ci", /^ci$|^ci:(?!setup$)/]], release: [["releases", /^release$/]],
+  ci: [["ci", /^ci$|^ci:(?!setup$)/]],
+  release: [["releases", /^release$/]],
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
-  deps: [["update-prs", /^deps:(?!setup$)/]], git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
-  prod: [["addresses", /^prod:(?!setup$)/]], work: [["work", /^work:(review|open)$/]],
+  deps: [["update-prs", /^deps:(?!setup$)/]],
+  git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
+  prod: [["addresses", /^prod:(?!setup$)/]],
+  work: [["work", /^work:(review|open)$/]],
 };
 
 /** Where a card line opens: its facet's tab, at the board that summarises it, or the tab's top
@@ -1256,10 +1310,17 @@ export function probeBoard(ps: readonly TabProject[], root: string | null = null
 }
 
 export interface Boards {
-  adv: AdvRow[]; strip: SevCount[]; capped: boolean; prs: PrRow[];
+  adv: AdvRow[];
+  strip: SevCount[];
+  capped: boolean;
+  prs: PrRow[];
   advRead: number; // projects an advisory source answered: what the advisories board may claim
   eol: EolRow[];
-  ci: CiBoardRow[]; releases: RelRow[]; hygiene: HygRow[]; work: WorkRow[]; probes: ProbeBoardRow[];
+  ci: CiBoardRow[];
+  releases: RelRow[];
+  hygiene: HygRow[];
+  work: WorkRow[];
+  probes: ProbeBoardRow[];
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
   unchecked: number; // projects in the filter whose *Check prod* nobody has clicked yet
   drawn: string[]; // `root|key` of every line a board carries the verb for; the rest are listed below them
@@ -1269,8 +1330,21 @@ export interface Boards {
 /** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
 export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
   const b: Boards = {
-    adv: [], strip: [], capped: false, prs: [], advRead: 0, eol: [], ci: [], releases: [], hygiene: [], work: [], probes: [], read: {},
-    unchecked: 0, drawn: [], one: root !== null,
+    adv: [],
+    strip: [],
+    capped: false,
+    prs: [],
+    advRead: 0,
+    eol: [],
+    ci: [],
+    releases: [],
+    hygiene: [],
+    work: [],
+    probes: [],
+    read: {},
+    unchecked: 0,
+    drawn: [],
+    one: root !== null,
   };
   const mine = within(ps, root);
   for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f);
@@ -1291,8 +1365,16 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     }).length;
   }
   // A filtered-out severity hides its rows, not their lines: those are still the board's.
-  const verbs = [...all.rows.flatMap((r) => r.projects.map((x) => x.verb)), ...b.eol.map((r) => r.verb), ...b.prs.map((r) => r.verb), ...b.ci.map((r) => r.verb),
-    ...b.releases.map((r) => r.verb), ...b.hygiene.flatMap((r) => r.verbs), ...b.work.flatMap((r) => r.verbs), ...b.probes.map((r) => r.verb)];
+  const verbs = [
+    ...all.rows.flatMap((r) => r.projects.map((x) => x.verb)),
+    ...b.eol.map((r) => r.verb),
+    ...b.prs.map((r) => r.verb),
+    ...b.ci.map((r) => r.verb),
+    ...b.releases.map((r) => r.verb),
+    ...b.hygiene.flatMap((r) => r.verbs),
+    ...b.work.flatMap((r) => r.verbs),
+    ...b.probes.map((r) => r.verb),
+  ];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
   return b;
 }
@@ -1338,7 +1420,8 @@ export type Door =
 const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
 // Every number column of every board; "url" takes the cell's own address, null is a number with no door.
 const DOORS = {
-  advisories: {}, packages: {}, // the severity strip filters in place; Packages' door is its ⤢
+  advisories: {}, // the severity strip filters in place
+  packages: {}, // its door is its ⤢
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
   ci: { run: "url" },

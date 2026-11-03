@@ -117,9 +117,36 @@ describe("what a mode may run", () => {
 describe("the frontend never names a vendor", () => {
   // A feature gated on a vendor id is a feature the next vendor silently lacks.
   // Every word a label or ForgeKind holds, less the generic ones, so a new vendor row is caught unlisted.
-  const generic = new Set(["ci", "on", "host", "actions", "pipelines", "alerts", "code", "scanning", "secret", "dev",
-    "audit", "releases", "issues", "local", "branches", "git", "tags", "changelog", "md", "commit", "statuses",
-    "unknown", "none", "sarif", "files", "url", "checks", "date"]); // SARIF is an open standard; "date" is endoflife.date's TLD, "endoflife" the vendor
+  const generic = new Set([
+    "ci",
+    "on",
+    "host",
+    "actions",
+    "pipelines",
+    "alerts",
+    "code",
+    "scanning",
+    "secret",
+    "dev",
+    "audit",
+    "releases",
+    "issues",
+    "local",
+    "branches",
+    "git",
+    "tags",
+    "changelog",
+    "md",
+    "commit",
+    "statuses",
+    "unknown",
+    "none",
+    "sarif", // an open standard
+    "files",
+    "url",
+    "checks",
+    "date", // endoflife.date's TLD; "endoflife" is the vendor
+  ]);
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([
     ...labels.flatMap((l) => l.toLowerCase().split(/[^a-z0-9]+/)), ...variants("ForgeKind", forgeRs),

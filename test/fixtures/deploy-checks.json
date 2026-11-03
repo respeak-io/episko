@@ -1,5 +1,5 @@
 {
-  "note": "One table for deploy.rs's keep and deploy.ts's checkDeploy: `refused` is the line both must say, null keeps the value. A url case is named app.",
+  "note": "One table for deploy.rs's keep and deploy.ts's checkDeploy: `refused` is the line both must say, null keeps the value. A url case is named app; a url_name case names https://app.example.com.",
   "cases": [
     { "field": "url", "value": "https://app.example.com", "refused": null },
     { "field": "url", "value": "HTTPS://x.example", "refused": null },
@@ -7,6 +7,9 @@
     { "field": "url", "value": "https://a b", "refused": "url app = \"https://a b\" is not an http(s) address" },
     { "field": "url", "value": "javascript:alert(1)", "refused": "url app = \"javascript:alert(1)\" is not an http(s) address" },
     { "field": "url", "value": "file:///etc/passwd", "refused": "url app = \"file:///etc/passwd\" is not an http(s) address" },
+    { "field": "url_name", "value": "staging.web", "refused": null },
+    { "field": "url_name", "value": "host:disk", "refused": "url name \"host:disk\" may not hold ':'" },
+    { "field": "url_name", "value": "cert:", "refused": "url name \"cert:\" may not hold ':'" },
     { "field": "version_url", "value": "http://v.example/version", "refused": null },
     { "field": "version_url", "value": "ftp://v.example", "refused": "version_url = \"ftp://v.example\" is not an http(s) address" },
     { "field": "host", "value": "prod-1", "refused": null },

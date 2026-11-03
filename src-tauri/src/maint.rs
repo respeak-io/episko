@@ -323,16 +323,43 @@ impl MaintConfig {
 
 /// The closed capability vocabulary `sees`/`blind` may use; `maint.ts`'s `MAINT_CAPS` mirrors it.
 pub(crate) const MAINT_CAPS: &[&str] = &[
-    "ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled", "ci.external", "ci.other-branches",
-    "git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age",
-    "git.squash-merged", "rel.unreleased", "rel.last", "rel.published", "rel.changelog",
-    "sec.dependency", "sec.code", "sec.secret", "sec.runtime", "deps.update-prs", "deps.pr-checks",
-    "work.issues", "work.prs", "work.review-requested", "prod.status", "prod.cert", "prod.host",
+    "ci.default-branch",
+    "ci.per-workflow",
+    "ci.failing-since",
+    "ci.disabled",
+    "ci.external",
+    "ci.other-branches",
+    "git.unpushed",
+    "git.local-only",
+    "git.merged",
+    "git.gone",
+    "git.branch-age",
+    "git.worktree-age",
+    "git.squash-merged",
+    "rel.unreleased",
+    "rel.last",
+    "rel.published",
+    "rel.changelog",
+    "sec.dependency",
+    "sec.code",
+    "sec.secret",
+    "sec.runtime",
+    "deps.update-prs",
+    "deps.pr-checks",
+    "work.issues",
+    "work.prs",
+    "work.review-requested",
+    "prod.status",
+    "prod.cert",
+    "prod.host",
 ];
 
 /// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and
 /// `deploy.urls`, an address in `[deploy]`.
-const NEEDS: &[&str] = &["sarif", "deploy.urls"];
+const NEEDS: &[&str] = &[
+    "sarif",
+    "deploy.urls",
+];
 
 fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
     match key {
@@ -1157,6 +1184,7 @@ pub(crate) mod exec {
     #[cfg(test)]
     pub(crate) struct FakeExec {
         answers: Vec<(Vec<String>, Result<String, String>)>,
+        codes: Vec<(Vec<String>, u16)>, // an HTTP status other than 200, by argv prefix
         fallback: Result<String, String>,
         calls: std::sync::Mutex<Vec<Vec<String>>>,
         accounts: std::sync::Mutex<Vec<Option<String>>>,
@@ -1171,7 +1199,7 @@ pub(crate) mod exec {
         pub(crate) fn answering(fallback: Result<&str, &str>) -> Self {
             let fallback = fallback.map(str::to_string).map_err(str::to_string);
             Self {
-                answers: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None,
+                answers: vec![], codes: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None,
                 exit: (0, String::new()), missing: vec![], fail_in: None,
             }
         }
@@ -1194,6 +1222,13 @@ pub(crate) mod exec {
         pub(crate) fn on(mut self, prefix: &[&str], answer: Result<&str, &str>) -> Self {
             let answer = answer.map(str::to_string).map_err(str::to_string);
             self.answers.push((prefix.iter().map(|s| s.to_string()).collect(), answer));
+            self
+        }
+
+        /// An `http` call whose argv starts with `prefix` answers `status` with whatever body `on`
+        /// gives it; every other one answers 200. The first matching rule wins.
+        pub(crate) fn coded(mut self, prefix: &[&str], status: u16) -> Self {
+            self.codes.push((prefix.iter().map(|s| s.to_string()).collect(), status));
             self
         }
 
@@ -1255,7 +1290,9 @@ pub(crate) mod exec {
                 (Some(b), _) => &["--data", b],
                 _ => &[],
             };
-            self.answer(Self::argv("curl", &[&[req.url.as_str()][..], mode].concat())).map(|body| HttpResp { code: 200, body })
+            let argv = Self::argv("curl", &[&[req.url.as_str()][..], mode].concat());
+            let code = self.codes.iter().find(|(p, _)| argv.starts_with(p)).map_or(200, |(_, c)| *c);
+            self.answer(argv).map(|body| HttpResp { code, body })
         }
         fn ssh(&self, alias: &str, _script: &str, _secs: u64) -> Result<Output, String> {
             self.answer(Self::argv("ssh", &[alias])).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
@@ -2181,50 +2218,56 @@ host = \"-oProxyCommand=x\"
             source: id.into(), facet: Some(Facet::Security), cost: Some(Cost::Forge), coverage, at: None,
             truncated: false, gaps: vec![], facts: None,
         };
+        // A kind's facts are bound here and its report is one line below, so a new kind is two insertions.
         let (gh_runs, _) = crate::maint_ci::parse_runs(&FakeExec::testdata("gh-run-list.json")).unwrap();
+        let advisory = Advisory {
+            id: "GHSA-xxxx-yyyy-zzzz".into(), aliases: vec!["CVE-2026-0001".into()], kind: AdvisoryKind::Dependency,
+            pkg: Some("lodash".into()), ecosystem: Some("npm".into()), version: Some("4.17.20".into()),
+            severity: Severity::High, raw_severity: "HIGH".into(), summary: "Prototype pollution".into(),
+            fixed: Some("4.17.21".into()), location: Some("package-lock.json".into()), url: None, tool: "osv".into(),
+        };
+        let update_pr = UpdatePr {
+            number: 42, title: "Update serde".into(), url: "https://github.com/acme/app/pull/42".into(),
+            branch: "renovate/serde".into(), draft: false, at: Some(1_790_000_000), checks: CiStatus::Pass,
+        };
+        let release = ReleaseFacts {
+            trunk: Some("origin/main".into()), tag: Some("v1.2.0".into()), tag_at: Some(1_789_000_000), since: 12,
+            oldest_unreleased_at: Some(1_789_100_000), tags_seen: 9, fetched_at: Some(1_790_000_000),
+        };
+        let published = ForgeRelease { tag: "v1.2.0".into(), name: "1.2.0".into(), at: Some(1_789_000_000), url: None };
+        let hygiene = Hygiene {
+            trunk: Some("origin/main".into()), unpushed: Some(2), local_only: vec!["wip".into()], merged: vec!["old".into()],
+            gone: vec!["gone".into()], branches: vec![crate::git::BranchAge { name: "wip".into(), at: 1_790_000_000 }],
+            worktrees: vec![crate::git::WtAge { path: "/repo-wt".into(), branch: "wip".into(), at: None }],
+            fetched_at: None, gaps: vec!["never on the wire".into()],
+        };
+        let probe = Probe {
+            name: "app".into(), url: "https://app.example.com".into(), code: Some(200), ms: Some(120),
+            cert_not_after: Some(1_795_000_000), err: None,
+        };
+        let runtimes = vec![Runtime {
+            product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
+            eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
+            file: ".nvmrc".into(), url: Some("https://endoflife.date/nodejs".into()),
+        }, Runtime {
+            product: "nodejs".into(), name: "node".into(), declared: "3".into(), cycle: Some("3".into()),
+            eol: Some(Eol::Flag(true)), latest: None, newest: Some("26".into()), file: "Dockerfile".into(), url: None,
+        }, Runtime {
+            product: "postgresql".into(), name: "postgres".into(), declared: "99".into(), cycle: None,
+            eol: None, latest: None, newest: Some("18".into()), file: "compose.yml".into(), url: None,
+        }];
         let reports = vec![
             // The recorded list as parsed, so maint.test.ts dates failing-since over the real join.
             ok("github-actions", Facet::Ci, Cost::Forge, Facts::CiRuns { branch: "main".into(), runs: gh_runs }),
-            ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![Advisory {
-                id: "GHSA-xxxx-yyyy-zzzz".into(), aliases: vec!["CVE-2026-0001".into()], kind: AdvisoryKind::Dependency,
-                pkg: Some("lodash".into()), ecosystem: Some("npm".into()), version: Some("4.17.20".into()),
-                severity: Severity::High, raw_severity: "HIGH".into(), summary: "Prototype pollution".into(),
-                fixed: Some("4.17.21".into()), location: Some("package-lock.json".into()), url: None, tool: "osv".into(),
-            }] }),
-            ok("renovate-prs", Facet::Deps, Cost::Forge, Facts::UpdatePrs { bot: "renovate".into(), configured: true, prs: vec![UpdatePr {
-                number: 42, title: "Update serde".into(), url: "https://github.com/acme/app/pull/42".into(),
-                branch: "renovate/serde".into(), draft: false, at: Some(1_790_000_000), checks: CiStatus::Pass,
-            }], dashboard: Some(7) }),
-            ok("git-tags", Facet::Release, Cost::Local, Facts::Release(ReleaseFacts {
-                trunk: Some("origin/main".into()), tag: Some("v1.2.0".into()), tag_at: Some(1_789_000_000), since: 12,
-                oldest_unreleased_at: Some(1_789_100_000), tags_seen: 9, fetched_at: Some(1_790_000_000),
-            })),
-            ok("github-releases", Facet::Release, Cost::Forge, Facts::Releases { latest: Some(ForgeRelease {
-                tag: "v1.2.0".into(), name: "1.2.0".into(), at: Some(1_789_000_000), url: None,
-            }), count: 9 }),
+            ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![advisory] }),
+            ok("renovate-prs", Facet::Deps, Cost::Forge, Facts::UpdatePrs { bot: "renovate".into(), configured: true, prs: vec![update_pr], dashboard: Some(7) }),
+            ok("git-tags", Facet::Release, Cost::Local, Facts::Release(release)),
+            ok("github-releases", Facet::Release, Cost::Forge, Facts::Releases { latest: Some(published), count: 9 }),
             ok("changelog", Facet::Release, Cost::Local, Facts::Changelog { unreleased: Some(3), latest: Some("1.2.0".into()), latest_at: Some(1_788_998_400) }),
-            ok("git-local", Facet::Git, Cost::Local, Facts::Hygiene(Hygiene {
-                trunk: Some("origin/main".into()), unpushed: Some(2), local_only: vec!["wip".into()], merged: vec!["old".into()],
-                gone: vec!["gone".into()], branches: vec![crate::git::BranchAge { name: "wip".into(), at: 1_790_000_000 }],
-                worktrees: vec![crate::git::WtAge { path: "/repo-wt".into(), branch: "wip".into(), at: None }],
-                fetched_at: None, gaps: vec!["never on the wire".into()],
-            })),
+            ok("git-local", Facet::Git, Cost::Local, Facts::Hygiene(hygiene)),
             ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: Some(1) }),
-            ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![Probe {
-                name: "app".into(), url: "https://app.example.com".into(), code: Some(200), ms: Some(120),
-                cert_not_after: Some(1_795_000_000), err: None,
-            }] }),
-            ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: vec![Runtime {
-                product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
-                eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
-                file: ".nvmrc".into(), url: Some("https://endoflife.date/nodejs".into()),
-            }, Runtime {
-                product: "nodejs".into(), name: "node".into(), declared: "3".into(), cycle: Some("3".into()),
-                eol: Some(Eol::Flag(true)), latest: None, newest: Some("26".into()), file: "Dockerfile".into(), url: None,
-            }, Runtime {
-                product: "postgresql".into(), name: "postgres".into(), declared: "99".into(), cycle: None,
-                eol: None, latest: None, newest: Some("18".into()), file: "compose.yml".into(), url: None,
-            }] }),
+            ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![probe] }),
+            ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: runtimes }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
             // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
             not("dependabot-alerts", crate::deps::coverage_of("HTTP 403: token lacks security_events", None)),
@@ -2235,11 +2278,7 @@ host = \"-oProxyCommand=x\"
             not("gitlab-ci", Coverage::Unsupported { reason: "no default branch known".into() }),
             not("npm-audit", Coverage::NotRun),
             not("github-secret-scanning", Coverage::Error { reason: "HTTP 502".into() }),
-            SourceReport {
-                truncated: true,
-                gaps: vec!["yarn.lock not read".into()],
-                ..ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![] })
-            },
+            SourceReport { truncated: true, gaps: vec!["yarn.lock not read".into()], ..ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![] }) },
             report("nope", None, Coverage::Error { reason: "nope is not a maintenance source".into() }),
         ];
         let cfg = parse_maint("[maintenance]\nforge = \"github\"\noff = [\"prod\"]\nsources = { ci = [\"woodpecker\"] }\nbots = [\"acme-renovate\"]\ntrunk = \"main\"\ntag_pattern = \"v*\"\nsarif = [\"reports/*.sarif\"]\n[maintenance.params]\nwoodpecker_server = \"https://ci.example.com\"\n[maintenance.thresholds]\nstale_branch_days = 24\n");
@@ -2263,7 +2302,18 @@ version_url = \"https://app.example.com/version\"
     /// A new variant stops at these exhaustive matches; name it in `ALL_*` beside them, and
     /// `wire_fixture_is_current` then fails until the sample carries it.
     const ALL_STATES: [&str; 7] = ["ok", "off", "noAccess", "noTool", "unsupported", "notRun", "error"];
-    const ALL_KINDS: [&str; 10] = ["ciRuns", "advisories", "updatePrs", "release", "releases", "changelog", "hygiene", "work", "probes", "runtimes"];
+    const ALL_KINDS: &[&str] = &[
+        "ciRuns",
+        "advisories",
+        "updatePrs",
+        "release",
+        "releases",
+        "changelog",
+        "hygiene",
+        "work",
+        "probes",
+        "runtimes",
+    ];
 
     fn state_of(c: &Coverage) -> &'static str {
         match c {
@@ -2307,7 +2357,7 @@ version_url = \"https://app.example.com/version\"
             }
         }
         assert_eq!(states, BTreeSet::from(ALL_STATES), "every Coverage state");
-        assert_eq!(kinds, BTreeSet::from(ALL_KINDS), "every Facts kind");
+        assert_eq!(kinds, ALL_KINDS.iter().copied().collect::<BTreeSet<&str>>(), "every Facts kind");
         assert!(!got["reports"].to_string().contains("never on the wire"), "Hygiene's gaps ride on the report");
 
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../test/fixtures/maint-wire.json");

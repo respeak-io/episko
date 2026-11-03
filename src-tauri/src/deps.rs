@@ -3,6 +3,7 @@
 // verb this feeds is an agent someone dispatched. Rules in src/deps.ts; docs/dependencies.md.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::Hash;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -83,17 +84,79 @@ impl DepReport {
     }
 }
 
+// ---------- one read in flight per key ----------
+
+type Slot<T> = Arc<OnceLock<T>>;
+type Entries<K, T> = HashMap<K, (Instant, Slot<T>)>;
+
+/// One read in flight per key, for any read that is shared: a second reader of a key waits on the
+/// first's answer. An answer serves for `keep`, a forced read joins one younger than `force`, and
+/// a read still in flight past `stall` is stuck and no longer joined (docs/maintenance.md).
+pub(crate) struct Shared<K, T> {
+    entries: Mutex<Option<Entries<K, T>>>,
+    keep: Duration,
+    force: Duration,
+    stall: Duration,
+}
+
+impl<K: Eq + Hash, T: Clone> Shared<K, T> {
+    pub(crate) const fn new(keep: Duration, force: Duration, stall: Duration) -> Self {
+        Self { entries: Mutex::new(None), keep, force, stall }
+    }
+
+    /// The answer for `key`: a fresh one, the one in flight, or `fill`'s, which a failure is too.
+    pub(crate) fn get(&self, key: K, force: bool, fill: impl FnOnce() -> T) -> T {
+        let fresh = if force { self.force } else { self.keep };
+        let slot = {
+            let Ok(mut g) = self.entries.lock() else { return fill() };
+            let m = g.get_or_insert_with(HashMap::new);
+            match m.get(&key) {
+                Some((at, s)) if at.elapsed() < if s.get().is_none() { self.stall } else { fresh } => s.clone(),
+                _ => {
+                    // An entry past every window serves nobody, so a miss sweeps them out: keys may be per package.
+                    let (done, stall) = (self.keep.max(self.force), self.stall);
+                    m.retain(|_, (at, s)| at.elapsed() < if s.get().is_none() { stall } else { done });
+                    let s: Slot<T> = Arc::default();
+                    m.insert(key, (Instant::now(), s.clone()));
+                    s
+                }
+            }
+        };
+        slot.get_or_init(fill).clone()
+    }
+
+    /// Drops every key `gone` names; a reader already waiting on one still gets its answer.
+    pub(crate) fn forget(&self, gone: impl Fn(&K) -> bool) {
+        if let Ok(mut g) = self.entries.lock() {
+            if let Some(m) = g.as_mut() {
+                m.retain(|k, _| !gone(k));
+            }
+        }
+    }
+
+    /// Makes the entries `which` names `by` older, as time passing would.
+    #[cfg(test)]
+    pub(crate) fn age(&self, by: Duration, which: impl Fn(&K) -> bool) {
+        let mut g = self.entries.lock().unwrap();
+        for (k, (at, _)) in g.as_mut().into_iter().flatten() {
+            if which(k) {
+                *at = at.checked_sub(by).unwrap();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds(&self, which: impl Fn(&K) -> bool) -> bool {
+        self.entries.lock().unwrap().as_ref().is_some_and(|m| m.keys().any(which))
+    }
+}
+
 // ---------- the shared reads ----------
 // Each half has its own cache, shared by `dep_report` and the Maintenance sources: a scan's two
 // bot sources ask for one `gh pr list` together, forced or not, and the second waits on the first.
 
 type Key = (String, String, String); // root, the repo as gh is told it, account
-type Slot<T> = Arc<OnceLock<Result<T, String>>>;
-type Entries<T> = HashMap<Key, (Instant, Slot<T>)>;
-struct Shared<T>(Mutex<Option<Entries<T>>>);
-
-static ALERTS: Shared<(Vec<DepAlert>, bool)> = Shared(Mutex::new(None));
-static BOT_PRS: Shared<(Vec<DepPr>, bool)> = Shared(Mutex::new(None));
+type Dep<T> = Shared<Key, Result<T, String>>;
 
 /// How old an answer a forced read still takes as its own: a ⟳ scan's two bot sources start
 /// seconds apart behind its in-flight limit, and must still share one `gh pr list`.
@@ -101,29 +164,11 @@ const FORCE_JOIN: Duration = Duration::from_secs(15);
 /// Past `gh`'s own deadline, a read still in flight is stuck, and is no longer joined.
 const STALLED: Duration = Duration::from_secs(crate::github::GH_SECS + 30);
 
-fn shared<T: Clone>(cache: &Shared<T>, key: Key, force: bool, fill: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let fresh = if force { FORCE_JOIN } else { TTL };
-    let slot = {
-        let Ok(mut g) = cache.0.lock() else { return fill() };
-        let m = g.get_or_insert_with(HashMap::new);
-        match m.get(&key) {
-            Some((at, s)) if at.elapsed() < if s.get().is_none() { STALLED } else { fresh } => s.clone(),
-            _ => {
-                let s: Slot<T> = Arc::default();
-                m.insert(key, (Instant::now(), s.clone()));
-                s
-            }
-        }
-    };
-    slot.get_or_init(fill).clone()
-}
+static ALERTS: Dep<(Vec<DepAlert>, bool)> = Shared::new(TTL, FORCE_JOIN, STALLED);
+static BOT_PRS: Dep<(Vec<DepPr>, bool)> = Shared::new(TTL, FORCE_JOIN, STALLED);
 
-fn forget<T>(cache: &Shared<T>, root: &str) {
-    if let Ok(mut g) = cache.0.lock() {
-        if let Some(m) = g.as_mut() {
-            m.retain(|(r, _, _), _| r != root);
-        }
-    }
+fn forget<T: Clone>(cache: &Dep<T>, root: &str) {
+    cache.forget(|(r, _, _)| r == root);
 }
 
 fn key(root: &str, repo: Option<&str>, account: Option<&str>) -> Key {
@@ -148,7 +193,7 @@ const ALERT_CAP: usize = 100;
 /// The open Dependabot alerts and whether the page filled. `repo` names the repository; `None` lets
 /// `gh` substitute it from cwd.
 pub(crate) fn alerts_read(ex: &dyn Exec, root: &str, repo: Option<&str>, account: Option<&str>, force: bool) -> Result<(Vec<DepAlert>, bool), String> {
-    shared(&ALERTS, key(root, repo, account), force, || {
+    ALERTS.get(key(root, repo, account), force, || {
         let path = format!("repos/{}/dependabot/alerts?state=open&per_page={ALERT_CAP}", repo.unwrap_or("{owner}/{repo}"));
         let json = json_list(ex.gh(root, account, &["api", &path])?, "gh api")?;
         Ok((parse_alerts(&json), full_page(&json, ALERT_CAP)))
@@ -158,7 +203,7 @@ pub(crate) fn alerts_read(ex: &dyn Exec, root: &str, repo: Option<&str>, account
 /// Every open PR a bot in the table (or `extra`, from `[maintenance] bots`) opened, and whether the
 /// page filled, which makes every count a floor.
 pub(crate) fn bot_prs_read(ex: &dyn Exec, root: &str, repo: Option<&str>, account: Option<&str>, extra: &[String], force: bool) -> Result<(Vec<DepPr>, bool), String> {
-    shared(&BOT_PRS, key(root, repo, account), force, || {
+    BOT_PRS.get(key(root, repo, account), force, || {
         let cap = PR_CAP.to_string();
         let mut args = vec!["pr", "list", "--state", "open", "--limit", &cap, "--json", PR_FIELDS];
         if let Some(r) = repo {
@@ -1114,17 +1159,31 @@ mod tests {
         });
     }
 
-    fn age<T>(cache: &Shared<T>, root: &str, by: Duration) {
-        let mut g = cache.0.lock().unwrap();
-        for ((r, _, _), (at, _)) in g.as_mut().unwrap().iter_mut() {
-            if r == root {
-                *at = at.checked_sub(by).unwrap();
-            }
-        }
+    fn age<T: Clone>(cache: &Dep<T>, root: &str, by: Duration) {
+        cache.age(by, |(r, _, _)| r == root);
     }
 
-    fn held_for<T>(cache: &Shared<T>, root: &str) -> bool {
-        cache.0.lock().unwrap().as_ref().is_some_and(|m| m.keys().any(|(r, _, _)| r == root))
+    fn held_for<T: Clone>(cache: &Dep<T>, root: &str) -> bool {
+        cache.holds(|(r, _, _)| r == root)
+    }
+
+    #[test]
+    fn a_shared_cache_takes_any_key_and_keeps_its_own_windows() {
+        let s = Duration::from_secs;
+        let cache: Shared<&str, u32> = Shared::new(s(60), s(5), s(20));
+        assert_eq!(cache.get("a", false, || 1), 1);
+        assert_eq!(cache.get("a", false, || 2), 1, "an answer serves for keep");
+        assert_eq!(cache.get("b", false, || 3), 3, "per key");
+        assert_eq!(cache.get("a", true, || 4), 1, "a forced read joins a young answer");
+        cache.age(s(5), |k| *k == "a");
+        assert_eq!(cache.get("a", true, || 5), 5, "and reads past one older than force");
+        cache.age(s(60), |k| *k == "b");
+        assert_eq!(cache.get("b", false, || 6), 6, "past keep, a plain read asks again");
+        cache.forget(|k| *k == "a");
+        assert!(!cache.holds(|k| *k == "a") && cache.holds(|k| *k == "b"));
+        cache.age(s(60), |k| *k == "b");
+        assert_eq!(cache.get("c", false, || 7), 7);
+        assert!(!cache.holds(|k| *k == "b"), "a miss sweeps out what no window serves");
     }
 
     #[test]

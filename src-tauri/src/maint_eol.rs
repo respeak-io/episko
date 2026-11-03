@@ -517,6 +517,18 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_other_than_200_is_a_gap_naming_its_status_and_is_never_kept() {
+        let root = repo(&[(".nvmrc", "18\n"), ("go.mod", "go 1.21\n")]);
+        let cache = Cache::default();
+        let r = read(&root, &answers().coded(&["curl", &format!("{API}/go.json")], 404), &cache, true).unwrap();
+        assert_eq!(items(&r).len(), 1, "node still answered");
+        assert_eq!(r.gaps, ["go: endoflife.date answered HTTP 404"], "the body of a 404 is never read as cycles");
+        assert!(!cache.lock().unwrap().contains_key("go"), "a refusal is not the product's cycles");
+        let Err(Coverage::Error { reason }) = read(&root, &answers().coded(&["curl"], 429), &Cache::default(), true) else { panic!() };
+        assert_eq!(reason, "go: endoflife.date answered HTTP 429; nodejs: endoflife.date answered HTTP 429");
+    }
+
+    #[test]
     fn the_files_detection_offers_it_on_are_the_files_it_reads() {
         let man: Value = serde_json::from_str(include_str!("../../src/maintmanifest.json")).unwrap();
         let detect: Vec<&str> = man.pointer("/sources/runtime-eol/detect").and_then(Value::as_array).unwrap()

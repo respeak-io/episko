@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
+import { FIX, briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
 import {
   FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Facts, type MaintInput, type SourceReport, type SweepAdvisory, type SweepFacts,
 } from "../src/maint";
@@ -93,6 +93,16 @@ describe("briefFor", () => {
     expect(briefFor({ ...by("release"), verb: "run" }, inp, ctx)).toBeNull();
     expect(briefFor({ ...by("release"), verb: "fetch" }, inp, ctx)).toBeNull();
     expect(briefFor({ ...by("prod:api"), verb: "setup" }, inp, ctx), "prod is set up by proposing [deploy]").toBeNull();
+  });
+
+  it("finds Fix's brief by the finding's key, one exact row per kind", () => {
+    const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
+    for (const key of ["ci", "prod:api", "prod:cert:app", "prod:cert", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
+    // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
+    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "ci:flaky", "release:deploy-failed", "security:dependency"]) {
+      expect(claims(key), key).toBe(0);
+    }
+    expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
   });
 
   it("sets up CI or an update bot from the facet alone, naming what is already in the tree", () => {

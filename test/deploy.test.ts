@@ -47,10 +47,11 @@ describe("checkDeploy", () => {
     const table = JSON.parse(readFileSync(new URL("./fixtures/deploy-checks.json", import.meta.url), "utf8")) as
       { cases: { field: string; value: string; refused: string | null }[] };
     const as: Record<string, (v: string) => Partial<DeployCfg>> = {
-      url: (v) => ({ urls: { app: v } }), version_url: (v) => ({ versionUrl: v }), host: (v) => ({ host: v }),
+      url: (v) => ({ urls: { app: v } }), url_name: (v) => ({ urls: { [v]: "https://app.example.com" } }),
+      version_url: (v) => ({ versionUrl: v }), host: (v) => ({ host: v }),
       compose: (v) => ({ compose: [v] }), sentry: (v) => ({ sentry: v }),
     };
-    expect(table.cases.map((c) => c.value)).toEqual(expect.arrayContaining(["https://", "https://a b", "HTTPS://x.example"]));
+    expect(table.cases.map((c) => c.value)).toEqual(expect.arrayContaining(["https://", "https://a b", "HTTPS://x.example", "host:disk"]));
     for (const c of table.cases) {
       const out = checkDeploy(prop(as[c.field](c.value)));
       expect(out.dropped, `${c.field} = ${c.value}`).toEqual(c.refused ? [c.refused] : []);

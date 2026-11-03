@@ -7,6 +7,7 @@ import {
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
+  worseOf, type Judged,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -343,6 +344,35 @@ describe("facet rules over ok facts", () => {
   it("cells come in card order", () => {
     expect(facetCells(input(), MAINT_DEFAULTS, NOW).map((c) => c.facet)).toEqual([...FACETS]);
     expect(span(30)).toBe("1m");
+  });
+});
+
+describe("worseOf: a facet's second kind of facts", () => {
+  const j = (level: Judged["level"], text: string, more: Partial<Judged> = {}): Judged => ({ level, text, tip: [text], ...more });
+
+  it("lets the worse verdict speak and keeps both tips, a kind with no facts saying nothing", () => {
+    const pass = j("ok", ""), red = j("bad", "failing 2d"), amber = j("warn", "2 flaky");
+    expect(worseOf(pass, null)).toBe(pass);
+    expect(worseOf(pass, amber)).toEqual({ level: "warn", text: "2 flaky", tip: ["", "2 flaky"], asOf: null, blind: false });
+    expect(worseOf(red, amber)).toMatchObject({ level: "bad", text: "failing 2d", tip: ["failing 2d", "2 flaky"] });
+    expect(worseOf(j("info", "running"), j("info", "3 deploys")).text, "a tie is the first kind's").toBe("running");
+    expect(worseOf(pass, j("muted", "cert unknown")).level, "unknown is never green").toBe("muted");
+  });
+
+  it("dates the pair by the older fetch", () => {
+    expect(worseOf(j("ok", "", { asOf: 200 }), j("ok", "", { asOf: 100 })).asOf).toBe(100);
+    expect(worseOf(j("ok", "", { asOf: 200 }), j("warn", "lag")).asOf, "a kind no fetch dates keeps the other's").toBe(200);
+  });
+
+  it("lets a blind kind add what it found, never an unknown or a pass over one that answered", () => {
+    const answered = j("ok", ""), blindOk = j("ok", "", { blind: true }), blindUnknown = j("muted", "not checked", { blind: true });
+    expect(worseOf(answered, blindUnknown)).toMatchObject({ level: "ok", blind: false });
+    expect(worseOf(blindUnknown, answered), "in either order").toMatchObject({ level: "ok", blind: false });
+    expect(worseOf(answered, blindOk)).toMatchObject({ level: "ok", blind: false });
+    expect(worseOf(answered, j("warn", "expires in 9d", { blind: true }))).toMatchObject({ level: "warn", text: "expires in 9d", blind: false });
+    expect(worseOf(blindOk, blindUnknown), "nothing answered the facet").toMatchObject({ level: "muted", text: "not checked", blind: true });
+    expect(worseOf(j("bad", "domain expired", { blind: true }), blindOk), "what a blind kind found needs no vouching")
+      .toMatchObject({ level: "bad", text: "domain expired", blind: false });
   });
 });
 

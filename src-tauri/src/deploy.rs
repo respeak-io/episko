@@ -62,9 +62,10 @@ fn safe_word(v: &str) -> bool {
     crate::maint::data_arg(v).is_ok()
 }
 
-// A bare list of addresses still reads: each is named by what follows its scheme.
+// A bare list of addresses still reads: each is named by what follows its scheme, a port's ':' a
+// space, since `keep` refuses a name holding one.
 fn url_name(u: &str) -> String {
-    u.split_once("://").map_or(u, |(_, r)| r).trim_end_matches('/').to_string()
+    u.split_once("://").map_or(u, |(_, r)| r).trim_end_matches('/').replace(':', " ")
 }
 
 /// Value by value, so one wrong type drops that value and not the table; `compose = "api"` is one service.
@@ -95,7 +96,11 @@ fn keep(d: DeployConfig) -> (DeployConfig, Vec<String>) {
     };
     let host = d.host.filter(|h| said(safe_word(h), format!("host = \"{h}\" is not an ssh alias or host name")));
     let compose = d.compose.into_iter().filter(|c| said(safe_word(c), format!("compose service \"{c}\" is not a name"))).collect();
-    let urls = d.urls.into_iter().filter(|(n, u)| said(!n.is_empty() && is_http(u), format!("url {n} = \"{u}\" is not an http(s) address"))).collect();
+    // A name is its finding's key after `prod:`; `prod:<kind>:…` belongs to the other prod sources.
+    let urls = d.urls.into_iter()
+        .filter(|(n, u)| said(!n.is_empty() && is_http(u), format!("url {n} = \"{u}\" is not an http(s) address"))
+            && said(!n.contains(':'), format!("url name \"{n}\" may not hold ':'")))
+        .collect();
     let sentry = d.sentry.filter(|s| said(org_project(s), format!("sentry = \"{s}\" is not org/project")));
     let version_url = d.version_url.filter(|u| said(is_http(u), format!("version_url = \"{u}\" is not an http(s) address")));
     (DeployConfig { host, compose, urls, sentry, version_url }, out)
@@ -442,13 +447,15 @@ mod tests {
     #[test]
     fn deploy_is_read_forgivingly() {
         let d = parse_deploy(
-            "[stack]\nup = \"x\"\n[deploy]\nhost = \"prod-1\"\ncompose = \"api\"\nurls = [\"https://app.example.com/\", \"ftp://x\"]\n\
+            "[stack]\nup = \"x\"\n[deploy]\nhost = \"prod-1\"\ncompose = \"api\"\nurls = [\"https://app.example.com/\", \"ftp://x\", \"http://localhost:8080/up\"]\n\
              sentry = 7\nversion_url = \"https://api.example.com/version\"\n",
         )
         .unwrap();
         assert_eq!(d.host.as_deref(), Some("prod-1"));
         assert_eq!(d.compose, ["api"], "a string is one service");
-        assert_eq!(d.urls.keys().collect::<Vec<_>>(), ["app.example.com"], "a list is named by host; ftp is dropped");
+        assert_eq!(d.urls.keys().collect::<Vec<_>>(), ["app.example.com", "localhost 8080/up"], "a list is named by host; ftp is dropped");
+        let named = parse_deploy("[deploy]\nurls = { app = \"https://a.example\", \"host:disk\" = \"https://b.example\" }\n").unwrap();
+        assert_eq!(named.urls.keys().collect::<Vec<_>>(), ["app"], "a name holding ':' could pass for another prod source's key");
         assert_eq!((d.sentry, d.version_url.as_deref()), (None, Some("https://api.example.com/version")), "a wrong type drops that value");
         let bad = parse_deploy("[deploy]\nhost = \"-oProxyCommand=x\"\nsentry = \"acme\"\ncompose = [\"a b\"]\n");
         assert_eq!(bad, None, "nothing safe is left, so there is no table");
@@ -478,6 +485,7 @@ mod tests {
             let mut d = DeployConfig::default();
             match field {
                 "url" => { d.urls.insert("app".into(), v.clone()); }
+                "url_name" => { d.urls.insert(v.clone(), "https://app.example.com".into()); }
                 "version_url" => d.version_url = Some(v.clone()),
                 "host" => d.host = Some(v.clone()),
                 "compose" => d.compose = vec![v.clone()],
