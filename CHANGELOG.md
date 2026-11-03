@@ -12,6 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ A shelved session's *Your questions* now covers the whole conversation, not just its last
+  stretch, and is numbered like a live session's. ⤢ or a click on a question opens the questions
+  sheet with the agent's answer under each one.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

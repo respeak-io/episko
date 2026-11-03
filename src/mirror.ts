@@ -11,16 +11,18 @@ import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
-import { askedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
+import { pastAskedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
+import { seedPrompts } from "./outline";
+import type { PastQuestions } from "./questionsview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
-  providerAdapter, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
+  providerAdapter, readProviderAsked, readProviderHistory, reconcileProviderRestorables,
 } from "./providers";
 import { allProjects, dormantBusy } from "./grouping";
 import {
   hasAgentCapability, isAgent, isClaudeRow, providerSessionKey,
-  type DiffStat, type ExtSession, type LiveSess, type Restorable, type Sess,
+  type DiffStat, type ExtSession, type LiveSess, type Prompt, type Restorable, type Sess,
 } from "./types";
 import {
   accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, handoffs,
@@ -196,21 +198,27 @@ export function openDormant(id: string) {
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
   $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id, (msgs) => {
-    pastMsgs = { key: d.resumeId, msgs };
+  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id);
+  void readProviderAsked(d.provider, d.resumeId, d.workdir, PAST_ASK_READ).then((msgs) => {
+    if (pastMirrorId() !== id) return;
+    const prompts: Prompt[] = [];
+    seedPrompts(prompts, msgs);
+    pastAsked = { key: d.resumeId, prompts };
     renderPastInspector(d);
-  });
+  }).catch((e) => dlog("info", `shelved: no questions to read for ${d.resumeId.slice(0, 8)} (${e})`));
 }
 
-// The shelved conversation's messages, kept so the card can list its questions beside the
-// mirror that is already showing them. One read: the transcript load above is the same call.
-let pastMsgs: { key: string; msgs: ProviderMessage[] } | null = null;
+// The shelved conversation's questions with their closing answers, from the whole transcript:
+// the mirror's tail read holds none of a long one's. The same read a resume seeds its outline with.
+let pastAsked: { key: string; prompts: Prompt[] } | null = null;
+const PAST_ASK_READ = 200; // what a resumed pane's outline would keep (PROMPT_CAP)
 const PAST_ASK_SHOW = 5;
 
-/** A question in the shelved card, clicked: the mirror beside it holds the answer. */
-export function jumpPastMessage(index: string) {
-  const row = $("extBody").querySelectorAll(".tvmsg")[Number(index)];
-  row?.scrollIntoView({ block: "start", behavior: "smooth" });
+/** What the Questions sheet shows for the shelved card on stage; null until its read lands. */
+export function pastQuestions(): PastQuestions | null {
+  const d = dormants.find((x) => x.id === pastMirrorId());
+  if (!d || pastAsked?.key !== d.resumeId) return null;
+  return { title: d.title || d.branch || d.project, workdir: d.workdir, prompts: pastAsked.prompts };
 }
 export function renderPastHeader(d: Restorable) {
   clearStageBadges();
@@ -230,8 +238,7 @@ export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
   // Above the buttons: it is what the decision to resume is made on. Absent until the
   // transcript lands, and absent for good on a conversation with no prose in it.
-  const rows = pastMsgs?.key === d.resumeId ? askedHtml(pastMsgs.msgs, PAST_ASK_SHOW, true) : "";
-  const asked = rows ? `<div class="ext-qh"><span class="label">What you asked</span></div>${rows}` : "";
+  const asked = pastAsked?.key === d.resumeId ? pastAskedHtml(pastAsked.prompts, PAST_ASK_SHOW) : "";
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const sent = handoffBusy(handoffs, d.resumeId);
@@ -330,16 +337,12 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
   }
 }
 
-async function loadProviderTranscriptInto(
-  provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean,
-  onLoaded?: (msgs: ProviderMessage[]) => void,
-) {
+async function loadProviderTranscriptInto(provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean) {
   const label = providerAdapter(provider)?.label ?? provider;
   try {
     const msgs = await readProviderHistory(provider, sessionId, cwd, 80);
     if (!stillCurrent()) return;
     renderTranscript(msgs, true, label);
-    onLoaded?.(msgs);
   } catch (err) {
     if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
   }

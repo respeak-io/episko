@@ -8,29 +8,57 @@ import { $, dropScrim, toast } from "./dom";
 import { jumpToPrompt } from "./inspector";
 import { joinPath, renderMarkdown } from "./markdown";
 import { openFileOrRead } from "./mdreader";
-import { qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml } from "./questionsview";
+import { qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml, type PastQuestions } from "./questionsview";
 import { sessions } from "./state";
-import type { Prompt, Sess } from "./types";
+import type { Prompt } from "./types";
 
+// One of the two is set while the sheet is up: a live pane, or a shelved conversation (./mirror).
 let sid: string | null = null;
+let past: PastQuestions | null = null;
 let sel: string | null = null;
 
-export function questionsOpen(): boolean { return sid !== null; }
+export function questionsOpen(): boolean { return sid !== null || past !== null; }
+
+interface Source { title: string; workdir: string; prompts: Prompt[]; running: boolean; live: boolean }
+function source(): Source | null {
+  if (past) return { ...past, running: false, live: false };
+  const s = sid ? sessions.get(sid) : undefined;
+  if (!s) return null;
+  return {
+    title: s.title || s.branch || s.project || "Session", workdir: s.workdir, prompts: s.prompts,
+    running: s.phase === "thinking" || s.phase === "working", live: true,
+  };
+}
 
 // `sessionId` travels with the click, not `activeId`, as with the call sheet.
 export function openQuestions(sessionId: string) {
+  past = null;
   sid = sessionId;
-  sel = null;
+  show(null);
+}
+
+/** A shelved conversation's sheet, opened on `select` (a prompt id) or at the newest. */
+export function openPastQuestions(q: PastQuestions, select: string | null) {
+  sid = null;
+  past = q;
+  show(select);
+}
+
+function show(select: string | null) {
+  sel = select;
   $("scrim").classList.add("show");
   $("qDlg").classList.add("show");
   renderQuestions(true);
   const t = $("qThread");
-  t.scrollTop = t.scrollHeight; // the newest question is the one you came back for
+  const at = select ? t.querySelector<HTMLElement>(`[data-qent="${CSS.escape(select)}"]`) : null;
+  if (at) at.scrollIntoView({ block: "start" });
+  else t.scrollTop = t.scrollHeight; // the newest question is the one you came back for
 }
 
 export function closeQuestions() {
-  if (sid === null) return;
+  if (!questionsOpen()) return;
   sid = null;
+  past = null;
   sel = null;
   $("qDlg").classList.remove("show");
   dropScrim();
@@ -39,10 +67,10 @@ export function closeQuestions() {
 // Rendering markdown is the costly half of a paint that rides renderAll, so each answer is
 // rendered once per text. Keyed by prompt id, which is unique app-wide.
 const mdCache = new Map<string, { src: string; html: string }>();
-function answerHtml(s: Sess, p: Prompt): string {
+function answerHtml(workdir: string, p: Prompt): string {
   const hit = mdCache.get(p.id);
   if (hit && hit.src === p.answer) return hit.html;
-  const html = renderMarkdown(p.answer ?? "", { docPath: joinPath(s.workdir, "answer.md"), root: s.workdir, images: false, remote: false }).html;
+  const html = renderMarkdown(p.answer ?? "", { docPath: joinPath(workdir, "answer.md"), root: workdir, images: false, remote: false }).html;
   mdCache.set(p.id, { src: p.answer ?? "", html });
   return html;
 }
@@ -54,21 +82,21 @@ let lastThread = "";
 // Guarded like the call sheet: a text selection dragged across an answer must survive the
 // telemetry paints that land while you read it.
 export function renderQuestions(force = false) {
-  if (sid === null) return;
-  const s = sessions.get(sid);
-  if (!s) { closeQuestions(); return; }
+  if (!questionsOpen()) return;
+  const src = source();
+  if (!src) { closeQuestions(); return; }
   if (force) { lastSub = ""; lastIndex = ""; lastThread = ""; }
-  const entries = qEntries(s);
-  const title = s.title || s.branch || s.project || "Session";
-  if ($("qTitle").textContent !== title) $("qTitle").textContent = title;
+  const entries = qEntries(src.prompts);
+  if ($("qTitle").textContent !== src.title) $("qTitle").textContent = src.title;
   const sub = qSubText(entries);
   if (sub !== lastSub) { lastSub = sub; $("qSub").textContent = sub; }
   const index = qIndexHtml(entries, sel);
   if (index !== lastIndex) { lastIndex = index; $("qIndex").innerHTML = index; }
-  const thread = qThreadHtml(s, entries, (p) => answerHtml(s, p));
+  const thread = qThreadHtml(entries, (p) => answerHtml(src.workdir, p), src);
   if (thread !== lastThread) { lastThread = thread; $("qThread").innerHTML = thread; }
   if (mdCache.size > 400) { // prompts are capped at 200 a pane; drop what no open sheet can show
     const live = new Set([...sessions.values()].flatMap((x) => x.prompts.map((p) => p.id)));
+    for (const p of past?.prompts ?? []) live.add(p.id);
     for (const k of mdCache.keys()) if (!live.has(k)) mdCache.delete(k);
   }
 }
@@ -80,9 +108,9 @@ function select(id: string) {
 }
 
 function copy(id: string | null) {
-  const s = sid ? sessions.get(sid) : null;
-  if (!s) return;
-  const all = qEntries(s);
+  const src = source();
+  if (!src) return;
+  const all = qEntries(src.prompts);
   const entries = id ? all.filter((e) => e.p.id === id) : all;
   writeText(qClipText(entries))
     .then(() => toast(id ? "Question and answer copied" : `${entries.length} questions copied`))
