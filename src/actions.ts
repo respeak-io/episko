@@ -8,6 +8,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask } from "./confirm";
 import { basename, nfcPath } from "./format";
+import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
@@ -160,7 +161,7 @@ export async function closeSessionAsked(id: string) {
   if (isAgent(s) && !s.external && s.phase !== "ended") {
     const name = s.title || s.project;
     const lead = midWork(s) ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `${name} is still running.`;
-    const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead (⇩)." : "";
+    const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead." : "";
     const ok = await ask(
       `${lead}\n\nClosing ends the agent; the conversation comes back only from History.${alt}`,
       { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it" },
@@ -584,7 +585,7 @@ export function setSort(m: SortMode, announce = true) {
   setSortMode(m);
   localStorage.setItem("cc-sort", m);
   const b = $("railSort");
-  b.textContent = SORT_META[m].glyph;
+  b.innerHTML = glyphIcon(SORT_META[m].glyph);
   b.title = `Sort: ${SORT_META[m].label} · click to change`;
   b.classList.toggle("on", m !== "manual");
   if (announce) toast(SORT_META[m].label);

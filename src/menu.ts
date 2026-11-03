@@ -6,6 +6,7 @@
 
 import { $ } from "./dom";
 import { esc, escAttr } from "./format";
+import { glyphIcon } from "./svgicons";
 
 export interface MenuItem {
   id: string;
@@ -50,10 +51,16 @@ export function closeMenu(): void {
   cursor = -1;
 }
 
+// The tick keeps the accent; any other mark is a muted icon, and an unmapped one stays text.
+function markHtml(m: string): string {
+  const ic = glyphIcon(m, m === "✓" ? "solo mk-tick" : "solo");
+  return ic === m ? esc(m) : ic;
+}
+
 function itemHtml(i: MenuItem, idx: number): string {
   const mark = i.logo
     ? `<span class="mn-mk agent-logo" aria-hidden="true">${i.logo}</span>`
-    : `<span class="mn-mk">${i.mark ? esc(i.mark) : ""}</span>`;
+    : `<span class="mn-mk">${i.mark ? markHtml(i.mark) : ""}</span>`;
   const cls = `mn-i${i.disabled ? " dis" : ""}${i.danger ? " danger" : ""}`;
   return `<button class="${cls}" role="menuitem"${i.disabled ? " disabled" : ""}`
     + `${i.disabled ? "" : ` data-mi="${escAttr(i.id)}" data-idx="${idx}"`}>${mark}`

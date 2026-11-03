@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { basename, esc, escAttr, tilde } from "./format";
+import { icon, keyCap } from "./svgicons";
 import {
   inSpan, laneColor, layoutGraph, lineTip, refChips, refChipsHtml, rowSvg, shortRel, spanNeedsMore,
   type GraphCommit, type GraphLayout, type GraphMark,
@@ -190,7 +191,7 @@ function markChip(): string {
   const hunting = !marked && more;
   return ` · <span class="g-mk"><span class="g-mk-l">${esc(mark.label)}</span>`
     + `<b>${hunting ? "…" : n}</b>`
-    + `<button class="g-mk-x" data-gmark="clear" data-tip="Stop highlighting ${escAttr(mark.label)}">✕</button></span>`;
+    + `<button class="g-mk-x" data-gmark="clear" data-tip="Stop highlighting ${escAttr(mark.label)}">${icon("x", "solo")}</button></span>`;
 }
 
 // Bring the newest commit of the span to the top of the scroller. `block: "start"` and not
@@ -227,7 +228,7 @@ function footHtml(): string {
 
 function detailHtml(): string {
   const c = commits.find((x) => x.sha === sel);
-  if (!c) return `<span class="g-dim">Pick a commit to see its branch, author and parents. ⏎ opens the whole message.</span>`;
+  if (!c) return `<span class="g-dim">Pick a commit to see its branch, author and parents. ${keyCap("⏎")} opens the whole message.</span>`;
   const when = c.unix > 0 ? new Date(c.unix * 1000).toLocaleString() : "";
   const parents = c.parents.length
     ? c.parents.map((p) => {
@@ -249,11 +250,11 @@ function detailHtml(): string {
     + `<span class="gd-subj" data-tip="${escAttr(c.subject)}">${esc(c.subject)}</span></div>`
     + `<div class="gd-l2">${lane}<span class="gd-sep">·</span><span>${esc(c.author)}</span>`
     + `<span class="g-dim">${esc(when)}</span><span class="gd-sep">·</span>`
-    + `<button class="gd-sha-b" data-gcopy="${esc(c.sha)}" data-tip="Copy the full sha\n${esc(c.sha)}">⧉ ${esc(c.short)}</button>`
+    + `<button class="gd-sha-b" data-gcopy="${esc(c.sha)}" data-tip="Copy the full sha\n${esc(c.sha)}">${icon("copy")}${esc(c.short)}</button>`
     + `<span class="gd-par">parents ${parents}</span>`
     // Shares the `gswap` footprint with the overlay's close button, so closing lands under the pointer.
     + `<button class="gd-b gswap" data-gopen="${esc(c.sha)}" data-tip="Show the whole commit (⏎)">`
-    + `⤢ Full message</button></div>`;
+    + `${icon("arrowUpRight")}Full message</button></div>`;
 }
 
 // One commit in full, over the list rather than replacing the dialog, so Esc steps back
@@ -278,10 +279,10 @@ function renderCommit() {
   el.hidden = false;
   el.innerHTML = `<div class="gco-head">`
     + `<code class="gco-sha">${esc(c.sha)}</code>`
-    + `<button class="gd-b" data-gcopy="${esc(c.sha)}">⧉ Sha</button>`
-    + `<button class="gd-b" data-gcopymsg="1">⧉ Message</button>`
+    + `<button class="gd-b" data-gcopy="${esc(c.sha)}">${icon("copy")}Sha</button>`
+    + `<button class="gd-b" data-gcopymsg="1">${icon("copy")}Message</button>`
     + `<span class="gco-sp"></span>`
-    + `<button class="diff-x" data-gclose1="1" data-tip="Back to the graph (Esc)">✕</button></div>`
+    + `<button class="diff-x" data-gclose1="1" data-tip="Back to the graph (Esc)">${icon("x", "solo")}</button></div>`
     + `<div class="gco-body">`
     + `<div class="gco-refs">${refChipsHtml(refChips(c.refs, 99))}</div>`
     + `<h3 class="gco-subj">${esc(c.subject)}</h3>`
@@ -298,7 +299,7 @@ function renderCommit() {
       + `${row.merged.length ? ` · merges ${esc(row.merged.join(", "))}` : ""}</span>` : "")
     + `<span class="gco-sp"></span><span class="gd-par">parents ${parents}</span>`
     // A second close at the bottom right, where the pointer is when you finish reading.
-    + `<button class="gd-b gswap gco-x2" data-gclose1="1" data-tip="Back to the graph (Esc)">✕ Close</button>`
+    + `<button class="gd-b gswap gco-x2" data-gclose1="1" data-tip="Back to the graph (Esc)">${icon("x")}Close</button>`
     + `</div>`;
 }
 

@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, stageGen, toast } from "./dom";
 import { esc, escAttr, tilde } from "./format";
+import { icon } from "./svgicons";
 import { pageName } from "./servers";
 import { apiErrText, hasSessionState, isAgent, phaseText, runElapsed, statusKey, type Sess } from "./types";
 import { runnableIn, pinnedIds, togglePin } from "./tasks";
@@ -100,7 +101,7 @@ export function renderInspector(s: Sess | null) {
     const permBtns = s.pendingPermId
       ? `<div class="attn-btns"><button class="allow" data-perm="allow" data-permid="${s.pendingPermId}">Allow</button><button data-perm="deny" data-permid="${s.pendingPermId}">Deny</button><button data-perm="terminal" data-permid="${s.pendingPermId}">In terminal</button></div>`
       : "";
-    html.push(`<div class="attn"><div class="attn-h">🔔 ${esc(s.attention + queued)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
+    html.push(`<div class="attn"><div class="attn-h">${icon("bell", "solo")}${esc(s.attention + queued)}${risk}</div>${s.pendingCmd ? `<code>${esc(s.pendingCmd)}</code>` : ""}${permBtns}</div>`);
   } else if (s.phase === "error" && s.apiErr) {
     // A turn the API killed: the glyph alone can't say "wait a minute" vs "your key is dead".
     const creds = s.apiErr.kind === "authentication_failed" || s.apiErr.kind === "billing_error" || s.apiErr.kind === "oauth_org_not_allowed";
@@ -109,7 +110,7 @@ export function renderInspector(s: Sess | null) {
     const note = rev ?? (creds
       ? "The agent can't reach its API with these credentials. Fix them in the terminal, then send the prompt again."
       : "The turn ended early, and the conversation is intact. Send the prompt again to pick it back up.");
-    html.push(`<div class="attn err"><div class="attn-h">⚠ ${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note${rev ? " revive" : ""}">${esc(note)}</div></div>`);
+    html.push(`<div class="attn err"><div class="attn-h">${icon("triangleAlert", "solo")}${esc(apiErrText(s.apiErr))}</div>${s.apiErr.detail ? `<code>${esc(s.apiErr.detail)}</code>` : ""}<div class="attn-note${rev ? " revive" : ""}">${esc(note)}</div></div>`);
   }
   // Above everything that reads the launch folder, which is not where the work is going.
   if (s.drift) html.push(driftHtml(s));
@@ -154,7 +155,7 @@ function renderShellInspector(s: Sess) {
   $("iPillTxt").textContent = ended ? "exited" : "shell";
   paintInspector(`
     <div class="ext-card">
-      <div class="ext-hl">❯ Plain shell</div>
+      <div class="ext-hl">${icon("squareTerminal")}Plain shell</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
       <div class="ext-note">A regular login shell running inside Episko, with no coding-agent telemetry. Handy for commands you don't want to run inside a session.</div>
@@ -169,7 +170,7 @@ function renderAgentInspector(s: Sess) {
   $("iPillTxt").textContent = ended ? "exited" : "running";
   paintInspector(`
     <div class="ext-card">
-      <div class="ext-hl">» ${esc(label)}</div>
+      <div class="ext-hl">${icon("bot")}${esc(label)}</div>
       <div class="ext-meta"><span class="label">Project</span><span>${esc(s.project)}</span></div>
       ${s.branch ? `<div class="ext-meta"><span class="label">Branch</span><span class="ell">${esc(s.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
@@ -194,7 +195,7 @@ function renderTaskInspector(s: Sess) {
   // The label is clipped to the rail's width, so the whole name lives in the tooltip.
   const who = esc(target?.title || target?.branch || "session");
   const handoff = target
-    ? `<button class="tact hero" data-send="${target.id}" title="Paste the failing output into “${who}”">↩ Send output to “${who}”</button>`
+    ? `<button class="tact hero" data-send="${target.id}" title="Paste the failing output into “${who}”">${icon("send")}Send output to “${who}”</button>`
     : "";
 
   // Not through paintInspector: this card binds per-element listeners, so a skipped repaint
@@ -202,7 +203,7 @@ function renderTaskInspector(s: Sess) {
   lastInspHtml = null;
   $("inspector").innerHTML = `
     <div class="ext-card">
-      <div class="ext-hl">▶ ${esc(r.label)}</div>
+      <div class="ext-hl">${icon("playSolid")}${esc(r.label)}</div>
       <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
       <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
@@ -212,11 +213,11 @@ function renderTaskInspector(s: Sess) {
     </div>
     <div class="tacts">
       ${handoff}
-      <button class="tact" data-rerun="1">⟳ Re-run</button>
-      ${runnableIn(r.root, r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">⋯ Parameters</button>` : ""}
-      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? "★ Unpin" : "☆ Pin"}</button>
-      <button class="tact" data-reveal="1">↗ Reveal source</button>
-      ${running ? `<button class="tact" data-kill="1">■ Stop</button>` : ""}
+      <button class="tact" data-rerun="1">${icon("rotateCw")}Re-run</button>
+      ${runnableIn(r.root, r.id)?.inputs.length ? `<button class="tact" data-reparams="1" title="Re-run, changing what it runs with">${icon("ellipsis")}Parameters</button>` : ""}
+      <button class="tact" data-pin="1">${pinnedIds(s.colorKey).includes(r.id) ? `${icon("starSolid")}Unpin` : `${icon("star")}Pin`}</button>
+      <button class="tact" data-reveal="1">${icon("folderOpen")}Reveal source</button>
+      ${running ? `<button class="tact" data-kill="1">${icon("squareSolid")}Stop</button>` : ""}
     </div>`;
 
   const insp = $("inspector");

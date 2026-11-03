@@ -3,6 +3,7 @@
 // here on purpose — this section's enlargement IS that dialog (data-dashact="graph").
 
 import { esc, escAttr, initials, nameHue } from "./format";
+import { icon } from "./svgicons";
 import {
   graphWidth, laneColor, lineTip, refChips, refChipsHtml, rowSvgAt, shortRel,
   type GraphFold, type LiteRow,
@@ -95,11 +96,11 @@ export function landedCard(v: LandedView): string {
   return `<div class="asec lg"><div class="asec-h lgh"><span class="label">Landed</span>`
     + `<span class="tag" data-tip="Every branch, not just this checkout">all refs</span>`
     + `<button class="tag${v.on ? " acc" : ""}" data-dashfold="1"`
-    + ` data-tip="${escAttr(chipTip)}">⊘ bots${v.on && v.hidden ? ` ${v.hidden}` : ""}</button>`
-    + `<button class="aslink" data-dashact="graph" data-tip="Every commit, paged, with its message">Commit graph ⤢</button></div>`
+    + ` data-tip="${escAttr(chipTip)}">${icon("ban")}bots${v.on && v.hidden ? ` ${v.hidden}` : ""}</button>`
+    + `<button class="aslink" data-dashact="graph" data-tip="Every commit, paged, with its message">Commit graph ${icon("arrowUpRight", "solo")}</button></div>`
     + `<div class="lgrows" style="${leftWidth(v.span)}">`
     + `${v.rows.map((r) => landedRowHtml(r, v.span, v.head)).join("")}</div>`
     + `<button class="lgmore" data-dashact="graph">`
-    + `<span class="c">⌄</span>`
+    + `<span class="c">${icon("chevronDown", "solo")}</span>`
     + `<span class="t">More history opens the graph panel — this page never pages</span></button></div>`;
 }

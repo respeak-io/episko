@@ -7,6 +7,7 @@
 
 import { $ } from "./dom";
 import { esc } from "./format";
+import { glyphIcon, icon } from "./svgicons";
 import type { BranchPick } from "./branches";
 
 let bPopItems: BranchPick[] = [];
@@ -26,7 +27,7 @@ export function openBranchPop(
   const at = items.findIndex((i) => i.name === current);
   bPopSel = at >= 0 && !items[at].disabled ? at : bPopFirst(items);
   const pop = $("bPop");
-  pop.innerHTML = `<div class="bp-q"><span>❯</span><input id="bPopQ" spellcheck="false" autocomplete="off" placeholder="Filter branches…" aria-label="Filter branches" /></div><div class="bp-list" id="bPopList" role="listbox"></div>`;
+  pop.innerHTML = `<div class="bp-q"><span>${icon("search", "solo")}</span><input id="bPopQ" spellcheck="false" autocomplete="off" placeholder="Filter branches…" aria-label="Filter branches" /></div><div class="bp-list" id="bPopList" role="listbox"></div>`;
   pop.classList.add("show");
   anchor.classList.add("open");
   renderBranchPop();
@@ -44,9 +45,9 @@ function renderBranchPop() {
   $("bPopList").innerHTML = shown.length
     ? shown.map((i, n) => `<button class="mp-item${n === bPopSel ? " on" : ""}${i.disabled ? " dis" : ""}" type="button" role="option"`
         + ` aria-selected="${n === bPopSel}" aria-disabled="${!!i.disabled}"${i.disabled ? " disabled" : ""} data-bpick="${esc(i.name)}">`
-        + `<span class="mp-ic">${i.disabled ? "⊘" : i.ic || "⌥"}</span><span class="mp-main"><span class="mp-l">${esc(i.name)}</span>`
+        + `<span class="mp-ic">${glyphIcon(i.disabled ? "⊘" : i.ic || "⌥")}</span><span class="mp-main"><span class="mp-l">${esc(i.name)}</span>`
         + (i.note ? `<span class="mp-s">${esc(i.note)}</span>` : "")
-        + `</span><span class="mp-check">✓</span></button>`).join("")
+        + `</span><span class="mp-check">${icon("check", "solo")}</span></button>`).join("")
     : `<div class="bp-none">No branch matches that.</div>`;
   $("bPopList").querySelector(".mp-item.on")?.scrollIntoView({ block: "nearest" });
 }

@@ -2,6 +2,8 @@
 // answers "what is this actually about?" without a browser and without losing the pane. Data
 // in, string out — ./issueview draws it, ./dashboard fetches it. See docs/dashboard.md.
 
+import { icon } from "./svgicons";
+
 /// One comment, as the backend's `GhComment` sends it.
 export interface GhComment { who: string; at: string; body: string }
 
@@ -98,7 +100,7 @@ export function inlineIssue(s: string): string {
   // An image is drawn as a link and never fetched: rendering one would reach the network for
   // whatever a stranger put in an issue.
   t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt: string, url: string) =>
-    link(url, `▤ ${alt || "image"}`));
+    link(url, `${icon("image")}${alt || "image"}`));
   t = t.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, text: string, url: string) => link(url, text));
   t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+)/g, (_m, pre: string, url: string) => pre + link(url, url));
   t = t.replace(/~~([\s\S]+?)~~/g, "<s>$1</s>")
@@ -152,7 +154,7 @@ export function mdHtml(src: string): string {
       if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
       const task = /^\[([ xX])\]\s+(.*)$/.exec(li[3]);
       const text = task
-        ? `<span class="md-tk">${task[1] === " " ? "☐" : "☑"}</span> ${inlineIssue(task[2])}`
+        ? `<span class="md-tk">${icon(task[1] === " " ? "square" : "squareCheck", "solo")}</span> ${inlineIssue(task[2])}`
         : inlineIssue(li[3]);
       out.push(`<li${li[1].length >= 2 ? ` class="in"` : ""}>${text}</li>`);
       continue;

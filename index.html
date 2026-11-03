@@ -17,18 +17,18 @@
         <!-- Back/forward ride beside ⌘K, centred as one group; nothing repaints them but main.ts's renderNav. -->
         <div class="top-mid">
           <div class="top-nav">
-            <button class="act icon" id="navBack" data-nav="back" disabled><span class="gl">‹</span></button>
-            <button class="act icon" id="navFwd" data-nav="forward" disabled><span class="gl">›</span></button>
+            <button class="act icon" id="navBack" data-nav="back" disabled><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></button>
+            <button class="act icon" id="navFwd" data-nav="forward" disabled><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
           </div>
-          <div class="kbar" id="kbar" data-tauri-drag-region="false"><span>⌕</span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd>⌘</kbd><kbd>K</kbd></span></div>
+          <div class="kbar" id="kbar" data-tauri-drag-region="false"><span><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg></span><span>Jump to a session, launch a project…</span><span class="kbd"><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg></kbd><kbd>K</kbd></span></div>
         </div>
         <div class="top-right">
           <!-- Hidden unless they have something to say. Telemetry down sits leftmost: with the hook
                server gone every reading is stale, so it must out-shout the panes. Servers ("still up")
                sit left of the reactor ("wants you now"). -->
-          <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic">⚠</span><span id="telBadgeTxt">telemetry</span></button>
-          <button class="tel-badge" id="syncBadge" aria-label="Sync server unreachable"><span class="tel-ic">⚠</span><span>sync</span></button>
-          <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic">◉</span><span id="svrBadgeTxt"></span></button>
+          <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span><span id="telBadgeTxt">telemetry</span></button>
+          <button class="tel-badge" id="syncBadge" aria-label="Sync server unreachable"><span class="tel-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span><span>sync</span></button>
+          <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.247 7.761a6 6 0 0 1 0 8.478"/><path d="M19.075 4.933a10 10 0 0 1 0 14.134"/><path d="M4.925 19.067a10 10 0 0 1 0-14.134"/><path d="M7.753 16.239a6 6 0 0 1 0-8.478"/><circle cx="12" cy="12" r="2"/></svg></span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
             <button class="caf-main" id="cafMain" aria-label="Keep this computer awake">
@@ -44,7 +44,7 @@
                   d="M16.5 11h1.8a2.6 2.6 0 0 1 0 5.2h-1.3" />
               </svg>
             </button>
-            <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode"><span class="gl">▾</span></button>
+            <button class="caf-caret" id="cafCaret" aria-label="Choose caffeinate mode"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
           </div>
           <!-- Sign off, beside caffeinate as the other machine-level control. Drawn as an SVG
                tray like the cup: the moon and power glyphs arrive as colour emoji on some fonts. -->
@@ -54,8 +54,8 @@
               <path d="M3.75 13.25h4l1.25 2.5h6l1.25-2.5h4v4.5a2.5 2.5 0 0 1-2.5 2.5h-11.5a2.5 2.5 0 0 1-2.5-2.5Z" />
             </svg>
           </button>
-          <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history"><span class="gl">◷</span></button>
-          <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings"><span class="gl">⚙</span></button>
+          <button class="ibtn" id="histBtn" title="Session history · every past conversation, all projects" aria-label="Session history"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></button>
+          <button class="ibtn" id="setBtn" title="Settings (⌘,)" aria-label="Settings"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></svg></button>
         </div>
         <!-- Window controls, Windows only (html.win); macOS floats its traffic lights over
              this header. A child of the header, not .top-right, so it can fill the full 40px
@@ -76,7 +76,7 @@
 
       <aside class="rail">
         <div class="rail-scroll">
-          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="rail-sort" id="railSort" title="Sort order">≡</button><button class="rail-add" data-add="1" title="Add a project folder">+</button><button class="rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)">«</button></div></div>
+          <div class="rail-top"><span class="label">Projects</span><div class="rt-right"><button class="ibtn rail-sort" id="railSort" title="Sort order"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></svg></button><button class="ibtn rail-add" data-add="1" title="Add a project folder"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button><button class="ibtn rail-collapse" id="railCollapse" title="Collapse sidebar (⌘B)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg></button></div></div>
           <div id="projects"></div>
         </div>
         <div class="railmini" id="railmini"></div>
@@ -99,13 +99,13 @@
           </div>
         </div>
         <div class="st-actions">
-          <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)"><span class="gl">◷</span>History</button>
-          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root"><span class="gl">❯</span>Terminal</button>
-          <button class="act" id="btnRun" title="Run a task or script from this project"><span class="gl">▶</span>Run</button>
-          <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch"><span class="gl gl-plus">＋</span>Session</button>
-          <button class="act icon" id="btnShelve" title="Shelve this session · stop it, keep it in the sidebar" hidden><span class="gl">⇩</span></button>
-          <button class="act icon" id="btnClose" title="Close session" hidden><span class="gl">✕</span></button>
-          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)"><span class="gl">◨</span></button>
+          <button class="act" id="btnHist" title="Reopen a past session in this project, including ones you closed (⌘⇧H)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>History</button>
+          <button class="act" id="btnTerm" title="Open a plain (non-Claude) terminal at the project root"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>Terminal</button>
+          <button class="act" id="btnRun" title="Run a task or script from this project"><svg class="ic solid solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>Run</button>
+          <button class="act primary" id="btnNew" title="Start a session · pick the repo, a worktree, or a branch"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Session</button>
+          <button class="act icon" id="btnShelve" title="Shelve this session · stop it, keep it in the sidebar" hidden><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
+          <button class="act icon" id="btnClose" title="Close session" hidden><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          <button class="act icon" id="inspBtn" title="Toggle inspector (⌘I)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg></button>
         </div>
       </div>
 
@@ -129,11 +129,11 @@
                 <form class="nt-form" id="dashJot">
                   <div class="nt-row">
                     <textarea id="dashNote" rows="1" placeholder="What's next here?" autocomplete="off"></textarea>
-                    <button type="submit" data-tip="Add this note to the project">＋</button>
+                    <button type="submit" data-tip="Add this note to the project"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
                   </div>
                   <p class="nt-hint">Enter adds it · Shift+Enter starts a line
                     <button type="button" class="aslink" data-dashopen-view="notes"
-                      data-tip="Open Notes, where a note of yours can be shared into the repo's .episko/notes.toml">Notes ⤢</button></p>
+                      data-tip="Open Notes, where a note of yours can be shared into the repo's .episko/notes.toml">Notes <svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg></button></p>
                 </form>
               </div>
             </div>
@@ -177,7 +177,7 @@
       </aside>
 
       <footer class="foot">
-        <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko · open on GitHub">respeak-io/episko<span class="fcaret">↗</span></a>
+        <a class="frepo" id="fRepo" href="https://github.com/respeak-io/episko" title="respeak-io/episko · open on GitHub">respeak-io/episko<span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></span></a>
         <!-- The release-notes glyph hugs the version number it explains. Inline SVG: no document glyph
              renders on both macOS and Windows, and ▤ already means "embedded pane". -->
         <span class="fvern">
@@ -193,14 +193,14 @@
         <button class="fupdate" id="fUpdate" title="Download the new version and restart Episko" hidden></button>
         <span class="fseg" id="fSessionsSeg"><span id="fSessions">0</span> sessions</span>
         <span class="fdiv" data-fdiv="cost"></span>
-        <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret">▴</span></span>
+        <span class="fseg fclick" id="fCostSeg" title="Today's spend · click for the split by project and session">today <b id="fCost">$0.00</b><span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span></span>
         <span class="fdiv" data-fdiv="limits"></span>
         <span class="fseg fclick" id="fUsageSeg" title="Usage limits for the selected agent · click for detail">
           <span class="flabel" id="fLimitOwner">limits</span>
           <b id="fRl">–</b><span class="fsub" id="fRlLabel">5h</span><span class="freset" id="fRlReset"></span>
           <span class="fmid">·</span>
           <b id="fRl7">–</b><span class="fsub" id="fRl7Label">7d</span><span class="freset" id="fRl7Reset"></span>
-          <span class="fcaret">▴</span>
+          <span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span>
         </span>
         <span class="fdiv" data-fdiv="io"></span>
         <span class="fseg fclick" id="fIoSeg" title="What today's embedded sessions have read and written · click for the live rates and every window recorded">
@@ -208,14 +208,14 @@
           <b id="fIoR">–</b><span class="fsub">read</span>
           <span class="fmid">·</span>
           <b id="fIoW">–</b><span class="fsub">write</span>
-          <span class="fcaret">▴</span>
+          <span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span>
         </span>
         <span class="fdiv" data-fdiv="engine"></span>
-        <span class="fseg fclick" id="fEngineSeg" title="Choose where new sessions open">new in <b id="fEngine">embedded</b> <span class="fcaret">▴</span></span>
+        <span class="fseg fclick" id="fEngineSeg" title="Choose where new sessions open">new in <b id="fEngine">embedded</b> <span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span></span>
         <span class="spacer"></span>
-        <span class="fseg fclick" id="fSyncSeg" title="Sync · click for Settings › Sync" hidden><span class="flabel">⇅ sync</span><b id="fSync">off</b></span>
-        <span class="fseg fclick" id="fShortSeg" title="Keyboard shortcuts"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>
-        <button class="dbg-btn" id="dbgBtn" title="Debug console · live events &amp; app state"><span class="dbg-ic">🐞</span><span class="dbg-badge" id="dbgBadge" hidden>0</span></button>
+        <span class="fseg fclick" id="fSyncSeg" title="Sync · click for Settings › Sync" hidden><span class="flabel"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg>sync</span><b id="fSync">off</b></span>
+        <span class="fseg fclick" id="fShortSeg" title="Keyboard shortcuts"><kbd class="fkbd"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg></kbd><span class="flabel">Shortcuts</span><span class="fcaret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></span></span>
+        <button class="dbg-btn" id="dbgBtn" title="Debug console · live events &amp; app state"><span class="dbg-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-9"/><path d="M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z"/><path d="M14.12 3.88 16 2"/><path d="M21 21a4 4 0 0 0-3.81-4"/><path d="M21 5a4 4 0 0 1-3.55 3.97"/><path d="M22 13h-4"/><path d="M3 21a4 4 0 0 1 3.81-4"/><path d="M3 5a4 4 0 0 0 3.55 3.97"/><path d="M6 13H2"/><path d="m8 2 1.88 1.88"/><path d="M9 7.13V6a3 3 0 1 1 6 0v1.13"/></svg></span><span class="dbg-badge" id="dbgBadge" hidden>0</span></button>
       </footer>
     </div>
 
@@ -227,13 +227,13 @@
     </div>
 
     <div class="runpop" id="runPop" role="dialog" aria-modal="true">
-      <div class="run-h"><span class="run-t">▶ Run</span><span class="run-sub" id="runSub"></span></div>
+      <div class="run-h"><span class="run-t"><svg class="ic solid" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>Run</span><span class="run-sub" id="runSub"></span></div>
       <input id="runInput" placeholder="Search tasks…" autocomplete="off" spellcheck="false" />
       <div class="run-tabs" id="runTabs" hidden></div>
       <div class="run-list" id="runList"></div>
       <div class="run-stack" id="runStack" hidden></div>
       <div class="run-foot">
-        <span><kbd>⏎</kbd> run</span><span><kbd>⌥</kbd><kbd>⏎</kbd> params</span><span><kbd>⌘</kbd><kbd>⏎</kbd> pin</span><span><kbd>→</kbd> details</span><span><kbd>⇧</kbd><kbd>⌫</kbd> forget</span><span><kbd>⇥</kbd> source</span><span><kbd>⌘</kbd><kbd>⇧</kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
+        <span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> run</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7"/><path d="M3 3h5.28a1 1 0 0 1 .948.684l5.544 16.632a1 1 0 0 0 .949.684H21"/></svg></kbd><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> params</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg></kbd><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> pin</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></kbd> details</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-6a1 1 0 0 1 1-1h3.293a.707.707 0 0 0 .5-1.207l-7.086-7.086a1 1 0 0 0-1.414 0l-7.086 7.086a.707.707 0 0 0 .5 1.207H8a1 1 0 0 1 1 1z"/></svg></kbd><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5a2 2 0 0 0-1.344.519l-6.328 5.74a1 1 0 0 0 0 1.481l6.328 5.741A2 2 0 0 0 10 19h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/><path d="m12 9 6 6"/><path d="m18 9-6 6"/></svg></kbd> forget</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 12H3"/><path d="m11 18 6-6-6-6"/><path d="M21 5v14"/></svg></kbd> source</span><span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg></kbd><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-6a1 1 0 0 1 1-1h3.293a.707.707 0 0 0 .5-1.207l-7.086-7.086a1 1 0 0 0-1.414 0l-7.086 7.086a.707.707 0 0 0 .5 1.207H8a1 1 0 0 1 1 1z"/></svg></kbd><kbd>R</kbd> rescan</span><span><kbd>esc</kbd> close</span>
       </div>
     </div>
 
@@ -241,24 +241,24 @@
       <div class="wt-h">Run<span class="in-sub" id="inSub"></span></div>
       <div class="in-body" id="inBody"></div>
       <div class="in-foot">
-        <span class="in-hint"><kbd>⏎</kbd> run<span class="in-dot">·</span><kbd>esc</kbd> cancel</span>
+        <span class="in-hint"><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> run<span class="in-dot">·</span><kbd>esc</kbd> cancel</span>
         <button class="in-cancel" id="inCancel">Cancel</button>
-        <button class="wt-go" id="inGo">Run ▸</button>
+        <button class="wt-go" id="inGo">Run <svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
       </div>
     </div>
 
     <div class="mgrdlg" id="mgrDlg" role="dialog" aria-modal="true" aria-label="Project tasks">
       <div class="mgr-head">
         <b>Tasks</b><span class="run-sub" id="mgrSub"></span>
-        <button class="diff-x" id="mgrClose" title="Close (Esc)">✕</button>
+        <button class="diff-x" id="mgrClose" title="Close (Esc)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="mgr-body" id="mgrBody"></div>
       <div class="mgr-foot">
-        <button class="tact" id="mgrBack">‹ Back</button>
-        <button class="tact" id="mgrRescan" title="Re-read task files, ignoring the cache">⟳ Rescan</button>
-        <button class="tact" id="mgrOpen">↗ Open tasks.toml</button>
+        <button class="tact" id="mgrBack"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>Back</button>
+        <button class="tact" id="mgrRescan" title="Re-read task files, ignoring the cache"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>Rescan</button>
+        <button class="tact" id="mgrOpen"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>Open tasks.toml</button>
         <span class="mgr-sp"></span>
-        <button class="tact" id="mgrNew">＋ New task</button>
+        <button class="tact" id="mgrNew"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New task</button>
         <button class="tact hero" id="mgrSave">Save</button>
       </div>
     </div>
@@ -277,12 +277,12 @@
           <!-- Only shown when the launch is NOT the standard ask-me mode (see openWt). -->
           <span class="wt-eng" id="wtMode" hidden></span>
           <button class="wt-chip" id="wtRefresh" type="button" title="Re-read worktrees and branches">
-            <span class="ic">⟳</span><span id="wtAge">now</span>
+            <svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg><span id="wtAge">now</span>
           </button>
         </div>
       </div>
       <div class="wt-q">
-        <span class="wt-caret">❯</span>
+        <span class="wt-caret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></span>
         <input id="wtQ" spellcheck="false" autocomplete="off" aria-label="Filter destinations, or type a new branch name"
                placeholder="Filter, or type a new branch name…" />
         <span class="wt-count" id="wtCount"></span>
@@ -292,8 +292,8 @@
         <div class="wt-detail" id="wtDetail" aria-live="polite"></div>
       </div>
       <div class="wt-foot">
-        <span><span class="k">↑</span><span class="k">↓</span> move</span>
-        <span><span class="k">⏎</span> <span class="wt-verb" id="wtVerb">start session</span></span>
+        <span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></span> move</span>
+        <span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></span> <span class="wt-verb" id="wtVerb">start session</span></span>
         <span class="sp"></span>
         <span><span class="k">esc</span> close</span>
       </div>
@@ -307,15 +307,15 @@
         <div class="wt-headrow">
           <span class="wt-path">Every Claude Code conversation on this machine. Pick one up where it left off.</span>
           <button class="wt-chip" id="histScope" type="button" title="Limit the list to the project on screen">
-            <span class="ic">◧</span><span id="histScopeTxt">all projects</span>
+            <svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></svg><span id="histScopeTxt">all projects</span>
           </button>
           <button class="wt-chip" id="histRefresh" type="button" title="Re-read the transcripts on disk">
-            <span class="ic">⟳</span><span id="histAge">now</span>
+            <svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg><span id="histAge">now</span>
           </button>
         </div>
       </div>
       <div class="wt-q">
-        <span class="wt-caret">◷</span>
+        <span class="wt-caret"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></span>
         <input id="histQ" spellcheck="false" autocomplete="off" aria-label="Search past sessions"
                placeholder="Search by title, project, branch or path…" />
         <span class="wt-count" id="histN"></span>
@@ -325,8 +325,8 @@
         <div class="wt-detail" id="histDetail" aria-live="polite"></div>
       </div>
       <div class="wt-foot">
-        <span><span class="k">↑</span><span class="k">↓</span> move</span>
-        <span><span class="k">⏎</span> resume</span>
+        <span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg></span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg></span> move</span>
+        <span><span class="k"><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></span> resume</span>
         <span class="sp"></span>
         <span><span class="k">esc</span> close</span>
       </div>
@@ -336,12 +336,12 @@
          across the project. The scope chips filter the same rows. Read-only; see ./explorer. -->
     <div class="expdlg" id="expDlg" role="dialog" aria-modal="true" aria-label="Project files">
       <div class="exp-top">
-        <span class="exp-mag" aria-hidden="true">⌕</span>
+        <span class="exp-mag" aria-hidden="true"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg></span>
         <input class="exp-in" id="expIn" type="text" placeholder="Find a file, or browse the project…"
                aria-label="Find a file in this project" role="combobox" aria-expanded="true"
                aria-controls="expList" aria-autocomplete="list" autocomplete="off" spellcheck="false">
         <span class="exp-mode" id="expMode">browse</span>
-        <button class="exp-x" id="expClose" title="Close (Esc)" type="button">✕</button>
+        <button class="exp-x" id="expClose" title="Close (Esc)" type="button"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="exp-bar" id="expBar">
         <button class="exp-chip on" id="expScope-all" data-expscope="all" type="button">All</button>
@@ -355,9 +355,9 @@
       <div class="exp-foot">
         <span class="exp-act" id="expAct"></span>
         <span class="exp-keys">
-          <span id="expReveal"><kbd>⌘⏎</kbd> reveal</span>
-          <span><kbd>⌥⏎</kbd> copy path</span>
-          <span><kbd>⌫</kbd> up a folder</span>
+          <span id="expReveal"><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/></svg><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> reveal</span>
+          <span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7"/><path d="M3 3h5.28a1 1 0 0 1 .948.684l5.544 16.632a1 1 0 0 0 .949.684H21"/></svg><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> copy path</span>
+          <span><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5a2 2 0 0 0-1.344.519l-6.328 5.74a1 1 0 0 0 0 1.481l6.328 5.741A2 2 0 0 0 10 19h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/><path d="m12 9 6 6"/><path d="m18 9-6 6"/></svg></kbd> up a folder</span>
         </span>
       </div>
     </div>
@@ -373,7 +373,7 @@
         <button class="diff-fold" id="diffCopy" hidden>copy findings</button>
         <button class="diff-fold" id="diffMode" hidden>side by side</button>
         <button class="diff-fold" id="diffFold" hidden>expand all</button>
-        <button class="diff-x" id="diffClose" title="Close (Esc)">✕</button>
+        <button class="diff-x" id="diffClose" title="Close (Esc)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <!-- The index and the stream, as a pull request review has; the rail hides for a single-file diff. -->
       <div class="diff-main">
@@ -398,8 +398,8 @@
         <div class="diff-title-wrap"><b id="graphTitle"></b><span class="diff-sub" id="graphSub"></span></div>
         <span class="graph-path" id="graphPath"></span>
         <div class="gseg" id="graphScope"></div>
-        <button class="graph-ref" id="graphRefresh" type="button" title="Re-read history from git">⟳</button>
-        <button class="diff-x" id="graphClose" title="Close (Esc)">✕</button>
+        <button class="graph-ref" id="graphRefresh" type="button" title="Re-read history from git"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></button>
+        <button class="diff-x" id="graphClose" title="Close (Esc)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="graph-body" id="graphBody" tabindex="0"></div>
       <div class="graph-detail" id="graphDetail"></div>
@@ -454,15 +454,15 @@
       <nav class="set-rail">
         <div class="set-title">Settings<span class="set-count" id="setCount"></span></div>
         <div class="set-search" id="setSearch">
-          <span class="set-sic" aria-hidden="true">⌕</span>
+          <span class="set-sic" aria-hidden="true"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg></span>
           <input id="setQ" type="search" placeholder="Search settings" autocomplete="off" spellcheck="false" aria-label="Search settings">
-          <button class="set-sclr" id="setQClear" type="button" aria-label="Clear the search">✕</button>
+          <button class="set-sclr" id="setQClear" type="button" aria-label="Clear the search"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         </div>
         <div class="set-chips" id="setChips"></div>
         <div class="set-tabs" id="setTabs"></div>
       </nav>
       <section class="set-pane">
-        <button class="set-x" id="setClose" title="Close (Esc)" aria-label="Close settings">✕</button>
+        <button class="set-x" id="setClose" title="Close (Esc)" aria-label="Close settings"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
         <div class="set-status" id="setStatus"></div>
         <div class="set-body" id="setBody"></div>
       </section>
@@ -471,19 +471,19 @@
     <!-- Usage & spend. Its own window rather than a Settings tab: nothing in it is a setting,
          and the status bar's money and limits popovers open straight into it (./usagedlg). -->
     <div class="usagedlg" id="usageDlg" role="dialog" aria-modal="true" aria-label="Usage and spend">
-      <button class="set-x" id="usageClose" title="Close (Esc)" aria-label="Close usage">✕</button>
+      <button class="set-x" id="usageClose" title="Close (Esc)" aria-label="Close usage"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       <div class="u-body" id="usageBody"></div>
     </div>
 
     <!-- One project's settings: its overrides of the global ones and its team's choices (./projsettings). -->
     <div class="projdlg" id="projDlg" role="dialog" aria-modal="true" aria-label="Project settings">
-      <button class="set-x" id="projClose" title="Close (Esc)" aria-label="Close project settings">✕</button>
+      <button class="set-x" id="projClose" title="Close (Esc)" aria-label="Close project settings"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       <div class="ps-wrap" id="projBody"></div>
     </div>
 
     <!-- Handing a session to another machine (src/handoffui.ts): on the shared #scrim, below ./confirm. -->
     <div class="cfm hand k-info" id="handoffDlg" role="dialog" aria-modal="true" aria-labelledby="handTitle">
-      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true">⇢</span><b id="handTitle">Send to…</b></div>
+      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg></span><b id="handTitle">Send to…</b></div>
       <div class="cfm-body hand-body" id="handBody"></div>
     </div>
 
@@ -494,7 +494,7 @@
         <span class="dbg-hspacer"></span>
         <button class="dbg-x" id="dbgCopy" title="Copy full snapshot to clipboard">copy</button>
         <button class="dbg-x" id="dbgClear" title="Clear the event log">clear</button>
-        <button class="dbg-x" id="dbgClose" title="Close">✕</button>
+        <button class="dbg-x" id="dbgClose" title="Close"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="dbg-body" id="dbgBody"></div>
     </div>
@@ -508,7 +508,7 @@
       <div class="cfm-foot">
         <!-- Generic verbs, not the button labels: ⏎ always fires the right-hand button and esc the left,
              and the labels are named an inch away. Same wording as #inDlg's. -->
-        <span class="cfm-hint"><kbd>⏎</kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
+        <span class="cfm-hint"><kbd><svg class="ic solo key" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v7a4 4 0 0 1-4 4H4"/><path d="m9 10-5 5 5 5"/></svg></kbd> confirm<span class="cfm-dot">·</span><kbd>esc</kbd> cancel</span>
         <button class="cfm-btn ghost" id="cfmNo" type="button"></button>
         <button class="cfm-btn go" id="cfmYes" type="button"></button>
       </div>
@@ -517,7 +517,7 @@
     <!-- Settings another machine changed, held until answered here (src/syncreview.ts). -->
     <div class="cfm-scrim" id="srvScrim"></div>
     <div class="cfm srv k-info" id="srvDlg" role="dialog" aria-modal="true" aria-labelledby="srvTitle">
-      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true">⇅</span><b id="srvTitle">Settings from your other machines</b></div>
+      <div class="cfm-head"><span class="cfm-ic" aria-hidden="true"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/></svg></span><b id="srvTitle">Settings from your other machines</b></div>
       <div class="cfm-body srv-body" id="srvBody"></div>
       <div class="cfm-foot">
         <span class="cfm-hint">Unticked ones keep this machine's value</span>
@@ -550,7 +550,7 @@
   <div class="cl-dlg" id="clDlg">
     <div class="cl-head">
       <h3>What's new</h3><span class="cl-sub" id="clSub"></span>
-      <span class="rt"><button class="act icon" id="clClose" title="Close (Esc)">✕</button></span>
+      <span class="rt"><button class="act icon" id="clClose" title="Close (Esc)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></span>
     </div>
     <div class="cl-body">
       <div class="cl-rail" id="clRail"></div>
@@ -558,7 +558,7 @@
     </div>
     <div class="cl-foot">
       <span>Shipped with this build, so no network is needed.</span>
-      <span class="rt"><button class="act" id="clGh">↗ On GitHub</button></span>
+      <span class="rt"><button class="act" id="clGh"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>On GitHub</button></span>
     </div>
   </div>
 

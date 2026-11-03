@@ -66,7 +66,7 @@ function cellText(c: DiffCell): string {
 
 // `act` is the hunk's own button, from ./diffview; a stash or a new file's hunk has none.
 function hunkHead(h: DiffHunk, act: string): string {
-  return `<div class="dhh"><span class="dhh-at">⋯</span>${h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : ""}${act}</div>`;
+  return `<div class="dhh"><span class="dhh-at">${icon("ellipsis", "solo")}</span>${h.header ? `<span class="dhh-ctx">${esc(h.header)}</span>` : ""}${act}</div>`;
 }
 
 /** What a review hangs on a line: a control in its gutter, and blocks (threads) after its row. */
@@ -151,7 +151,7 @@ export function fileHtml(f: DiffFile, i: number, mode: DiffMode, open: boolean, 
   // Head and chips share one sticky box: a chip walks between marks far apart and must stay reachable.
   return `<section class="dfile ${cls}${open ? "" : " collapsed"}${acts.cls ?? ""}" data-fi="${i}">
       <div class="dftop">
-        <div class="dfhead" data-dtoggle="${i}">${tickHtml(i, acts.tick)}<span class="dchev">▾</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${acts.btns}</div>
+        <div class="dfhead" data-dtoggle="${i}">${tickHtml(i, acts.tick)}<span class="dchev">${icon("chevronDown", "solo")}</span><span class="dstat ${cls}">${glyph}</span><span class="dpath">${label}</span><span class="dcount">${counts}</span>${acts.btns}</div>
         ${chipsHtml(chips, i)}
       </div>
       <div class="dfbody">${acts.top ?? ""}${body}${acts.tail ?? ""}</div></section>`;
@@ -196,7 +196,7 @@ export function treeRailHtml(
   tick: (i: number) => boolean | null = () => null, mark: (i: number) => string = () => "",
 ): string {
   return rows.map((r) => r.kind === "dir"
-    ? `<button class="dr-fold${folded.has(r.path) ? " shut" : ""}" data-drdir="${escAttr(r.path)}" style="--d:${r.depth}" title="${escAttr(r.path)}"><span class="dchev">▾</span>${esc(r.name)}</button>`
+    ? `<button class="dr-fold${folded.has(r.path) ? " shut" : ""}" data-drdir="${escAttr(r.path)}" style="--d:${r.depth}" title="${escAttr(r.path)}"><span class="dchev">${icon("chevronDown", "solo")}</span>${esc(r.name)}</button>`
     : railRow(files[r.index], r.index, active, chips[r.index] ?? [], tick(r.index), mark(r.index), r.depth)).join("");
 }
 
@@ -224,7 +224,7 @@ export function stashListHtml(list: StashEntry[], branch: string): string {
 /** The strip over one stash's diff: back to the list, and the same three verbs. */
 export function stashBarHtml(e: StashEntry): string {
   const sha = escAttr(e.sha);
-  return `<div class="dstash-bar"><button class="diff-fold" data-dstash="list">← stashes</button>`
+  return `<div class="dstash-bar"><button class="diff-fold" data-dstash="list">${icon("arrowLeft")}stashes</button>`
     + `<span class="dstash-msg">${esc(e.message || "(no message)")}</span>`
     + `<span class="dstash-meta">${e.branch ? `on <span class="mono">${esc(e.branch)}</span> · ` : ""}${esc(e.rel)}</span>`
     + `<button class="diff-fold" data-dstash="apply" data-dsha="${sha}">apply</button>`

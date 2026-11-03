@@ -161,7 +161,7 @@ export function claudeInput(id: string): (d: string) => void {
       if (now - lastIntr < INTR_GUARD_MS) {
         if (!warned) { // one toast per burst, or key repeat fires it continuously
           warned = true;
-          toast("Ctrl+C interrupts. Use ✕ or /exit to end the session");
+          toast("Ctrl+C interrupts. Close the pane or type /exit to end the session");
           dlog("info", `guarded repeat ^C · ${id.slice(0, 8)}`);
         }
         return;

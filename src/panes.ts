@@ -11,6 +11,7 @@ import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
+import { icon } from "./svgicons";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
@@ -72,7 +73,7 @@ function newPane(id: string): HTMLElement {
   const cap = document.createElement("div");
   cap.className = "pane-cap";
   cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
-    + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
+    + `<span class="pc-x" data-close="${id}" title="Close this pane">${icon("x", "solo")}</span>`;
   const host = document.createElement("div");
   host.className = "term-host";
   pane.append(cap, host);
@@ -887,6 +888,9 @@ export function scheduleDismiss(s: Sess) {
   }, taskPrefs.dismissMs);
 }
 
+// "from → ⑃ to": where a drifted or tracked pane started, and where its work is.
+const branchPair = (from: string, to: string) => `${esc(from)} ${icon("arrowRight")}${icon("gitBranch")}${esc(to)}`;
+
 export function renderHeader(s: Sess | null) {
   clearStageBadges();
   // ✕ is on every stage now, and it does something different on each: every taker sets the
@@ -906,18 +910,18 @@ export function renderHeader(s: Sess | null) {
   }
   // A drifted session shows BOTH branches: the new one alone would lie about where --resume goes.
   else if (s.drift) {
-    hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
+    hb.innerHTML = branchPair(s.branch || basename(s.workdir), s.drift.branch);
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
     hb.hidden = false; hb.classList.add("drifted");
   }
   // Tracked: the same pair, because the agent and a resume still live where it started.
   else if (s.home) {
-    hb.textContent = `${s.home.branch || basename(s.home.workdir)} ⤳ ⑃ ${s.branch || basename(s.workdir)}`;
+    hb.innerHTML = branchPair(s.home.branch || basename(s.home.workdir), s.branch || basename(s.workdir));
     hb.title = `Started in ${s.home.workdir}
 Showing ${s.workdir}`;
     hb.hidden = false; hb.classList.add("tracked");
   }
-  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
+  else if (s.branch) { hb.innerHTML = (s.worktree ? icon("gitBranch") : "") + esc(s.branch); hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   setHeadPath(s.drift?.dir ?? s.workdir);
 }
@@ -1006,7 +1010,7 @@ export function syncStageButtons() {
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
   // ◷ History's disabled reason differs: the whole-machine view is one click away up top.
   set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
-      "No project selected. The ◷ button up top opens history for every project");
+      "No project selected. The History button up top opens history for every project");
   // The project pane offers Terminal / Run / History as tiles in its own first column, so the
   // header's copies are hidden there rather than sitting a hand's width from the originals.
   // The fleet has no one project for them to act on at all.

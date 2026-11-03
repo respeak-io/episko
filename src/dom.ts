@@ -1,4 +1,5 @@
 import { tilde } from "./format";
+import { icon } from "./svgicons";
 
 // Static ids from index.html only: a miss is a typo and should throw here.
 export const $ = (id: string) => document.getElementById(id)!;
@@ -28,7 +29,8 @@ export function actToast(m: string, actions: ToastAction[] = [], ms = 9000) {
   const x = document.createElement("button");
   x.className = "at-x";
   x.title = "Dismiss";
-  x.textContent = "✕";
+  x.setAttribute("aria-label", "Dismiss");
+  x.innerHTML = icon("x", "solo");
   x.onclick = hide;
   el.replaceChildren(msg, ...btns, x);
   el.onmouseenter = () => clearTimeout(actT);

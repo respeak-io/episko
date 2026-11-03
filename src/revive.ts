@@ -14,7 +14,7 @@ export type ReviveKind = "overloaded" | "rate_limit" | "server_error" | "network
 export interface ReviveKindDef { id: ReviveKind; label: string; glyph: string; hint: string }
 // Ordered by how sure we are that waiting fixes it; the settings list shows this order.
 export const REVIVE_KINDS: ReviveKindDef[] = [
-  { id: "overloaded", glyph: "▤", label: "Overloaded",
+  { id: "overloaded", glyph: "⧗", label: "Overloaded",
     hint: "The 529 everyone gets at peak. Waiting is the entire fix." },
   { id: "network", glyph: "⚡", label: "Network gone",
     hint: "DNS or the socket failed — usually the machine's Wi-Fi napping rather than anything Anthropic did." },

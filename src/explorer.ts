@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { $, dropScrim, FILE_MANAGER } from "./dom";
 import { basename, esc, escAttr } from "./format";
+import { glyphIcon, icon, keyCap } from "./svgicons";
 import { sessions } from "./state";
 import { copyPath, openTouchedFile, revealTouchedFile } from "./actions";
 import { openDiff } from "./diffview";
@@ -103,7 +104,7 @@ function marks(r: ExpRow): string {
   const st = changed.get(r.path);
   if (st) out.push(`<span class="exp-git s-${st === "?" ? "new" : st.toLowerCase()}" title="${st === "?" ? "new, not yet committed" : "changed"}">${st}</span>`);
   const t = touched.get(r.path);
-  if (t) out.push(`<span class="exp-t k-${t}" title="${t} by an agent this session">${TOUCH_GLYPH[t]}</span>`);
+  if (t) out.push(`<span class="exp-t k-${t}" title="${t} by an agent this session">${glyphIcon(TOUCH_GLYPH[t])}</span>`);
   return out.join("");
 }
 
@@ -136,7 +137,7 @@ function render() {
   $("expList").innerHTML = rows.map((r, i) => {
     const label = finding ? (r.html ?? esc(r.name)) : esc(r.name);
     return `<div class="exp-row" role="option" id="expRow${i}" aria-selected="${i === sel}" data-expi="${i}">`
-      + `<span class="exp-ico${r.dir ? " dir" : ""}">${r.dir ? "▸" : "·"}</span>`
+      + `<span class="exp-ico${r.dir ? " dir" : ""}">${r.dir ? icon("chevronRight", "solo") : "·"}</span>`
       + `<span class="exp-nm">${label}</span>`
       + `<span class="exp-marks">${marks(r)}</span></div>`;
   }).join("")
@@ -157,10 +158,11 @@ function emptyText(q: string, finding: boolean): string {
 function syncAction() {
   const a = rowAction(rows[sel], changed);
   const leaf = (p: string) => esc(p.split("/").pop() || p);
+  const enter = keyCap("↵");
   $("expAct").innerHTML = !a ? ""
-    : a.kind === "enter" ? `<b>↵</b> open ${leaf(a.path)}/`
-    : a.kind === "diff" ? `<b>↵</b> show what changed in ${leaf(a.path)}`
-    : `<b>↵</b> open ${leaf(a.path)} outside`;
+    : a.kind === "enter" ? `<b>${enter}</b> open ${leaf(a.path)}/`
+    : a.kind === "diff" ? `<b>${enter}</b> show what changed in ${leaf(a.path)}`
+    : `<b>${enter}</b> open ${leaf(a.path)} outside`;
 }
 
 function select(i: number) {
