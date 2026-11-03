@@ -39,7 +39,7 @@ import { openWt, refreshWtDialog } from "./worktree";
 import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
-import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { execCmd, exitWaiters, replacedRuns, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
   accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
@@ -456,6 +456,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   term.attachCustomKeyEventHandler(clipboardKeys(term));
 
   const cmd = execCmd(r);
+  const root = opts.discoveredIn ?? colorKey;
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
@@ -466,7 +467,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
@@ -482,6 +483,8 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
       if (first || stageGroup === gid) openRunGroup(gid);
     }
   }
+  // After the focus moved, so an old pane is spared only when this run left it on stage.
+  for (const old of replacedRuns(sessions.values(), r.id, root, activeId)) closeSession(old);
   dlog("info", `task ${r.id} · ${project} · ${cmd}`);
   term.writeln(`\x1b[90m$ ${cmd}\x1b[0m\r\n`);
   try {

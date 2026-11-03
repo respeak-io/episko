@@ -12,6 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+~ Running a task again replaces its last finished run instead of adding a row, so an agent
+  retrying a failing suite keeps one row per task rather than one per attempt. A run still going,
+  a run group's steps and the pane you are reading are left alone.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy
