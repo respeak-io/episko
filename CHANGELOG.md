@@ -19,6 +19,10 @@ Markers: `+` new · `~` changed · `!` fixed
   spelled out.
 ~ Links that open the full view of a card (*History*, *Commit graph*, *Review*, …) are drawn as
   small buttons with a ↗ after the label.
+~ ✕ on a session that has finished its turn can close without asking: the question has a
+  *Don't ask again* tick, and *Settings › Launching › Ask before closing a finished session*
+  brings it back. A session still working always asks. The question also stops calling a
+  finished session "still running".
 ! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
   is a small square again instead of a wide box with its icon to the left.
 
