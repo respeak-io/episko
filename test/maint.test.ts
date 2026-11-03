@@ -1472,7 +1472,7 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
   });
 
   it("says the package manager's answer, or the door that asks it, and the fix an advisory takes", () => {
-    expect(outdatedText(false, 0, "pnpm outdated")).toBe("not checked · ⤢ runs pnpm outdated");
+    expect(outdatedText(false, 0, "pnpm outdated")).toBe("not checked · the arrow above runs pnpm outdated");
     expect(outdatedText(true, 3, "pnpm outdated")).toBe("3 packages out of date");
     expect(outdatedText(true, 0, null)).toBe("nothing out of date");
     expect(outdatedText(false, 0, null)).toBeNull();

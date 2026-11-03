@@ -1384,7 +1384,7 @@ export const advFix = (r: Pick<AdvRow, "id" | "aliases">, fixes: Readonly<Record
  *  runs; null when it has neither. No source reads this, so no fleet board carries it. */
 export function outdatedText(scanned: boolean, outdated: number, tool: string | null): string | null {
   if (scanned) return outdated ? `${plural(outdated, "package")} out of date` : "nothing out of date";
-  return tool ? `not checked · ⤢ runs ${tool}` : null;
+  return tool ? `not checked · the arrow above runs ${tool}` : null;
 }
 
 // ---------- the project tab's cards ----------

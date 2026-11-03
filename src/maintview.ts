@@ -13,7 +13,7 @@ import {
 import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import type { DeployCfg } from "./deploy";
-import { icon } from "./svgicons";
+import { icon, type IconName } from "./svgicons";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
@@ -110,7 +110,7 @@ export function maintWhenHtml(v: MaintView): string {
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
   }
   return `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>
-    <button class="aslink" data-mtscan="force" data-tip="Check every project again, past every cache">⟳</button>${prodHtml(v.prod)}`;
+    <button class="aslink" data-mtscan="force" aria-label="Check again" data-tip="Check every project again, past every cache">${icon("rotateCw", "solo")}</button>${prodHtml(v.prod)}`;
 }
 
 const tile = (label: string, value: string, sub: string, cls = "") =>
@@ -147,9 +147,9 @@ function cellHtml(c: Cell, card: MaintCard, go = `Click: ${TAB_TEXT[FACET_TAB[c.
 }
 
 const VERB: Record<Verb, [string, string]> = {
-  fix: ["Fix ↗", "agent"], patch: ["Patch ↗", "agent"], rotate: ["Rotate ↗", "agent"], upgrade: ["Upgrade ↗", "agent"],
-  release: ["Draft release ↗", "agent"],
-  push: ["Push ↗", "agent"], tidy: ["Tidy ↗", "agent"], setup: ["Set up ↗", "agent"],
+  fix: ["Fix", "agent"], patch: ["Patch", "agent"], rotate: ["Rotate", "agent"], upgrade: ["Upgrade", "agent"],
+  release: ["Draft release", "agent"],
+  push: ["Push", "agent"], tidy: ["Tidy", "agent"], setup: ["Set up", "agent"],
   review: ["Review", "Open this project to review them"],
   fetch: ["Fetch", "git fetch here, then check this project again"],
   run: ["Run", "Run this check once, on this machine"],
@@ -167,10 +167,10 @@ function runText(f: Finding): [string, string, string] {
 const verbText = (f: Finding): [string, string, string] => f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
 // `why` says what the verb covers where a row shows less than its line does.
 function verbHtml(f: Finding, why = ""): string {
-  const [label, tip] = verbText(f), said = tip === "agent" ? AGENT_TIP : tip;
+  const [label, tip] = verbText(f), ag = tip === "agent", said = ag ? AGENT_TIP : tip;
   return f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
       data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(why ? `${why}
-${said}` : said)}">${esc(label)}</button>`;
+${said}` : said)}">${ag ? icon("agent") : ""}${esc(label)}</button>`;
 }
 
 // A project's name is its door, wherever it is drawn.
@@ -194,14 +194,14 @@ function findingHtml(f: Finding, name?: string, go = false): string {
 // A fix is the command itself, copied rather than retyped; a forge switch is its settings page.
 const copyHtml = (fix: string) => `<code class="mt-fix">${esc(fix)}</code><button class="aslink" data-mtcopy="${escAttr(fix)}"`
   + ` data-tip="Copy the command">Copy</button>`;
-const settingsHtml = (url: string, label = "Settings ↗") =>
-  `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}</button>`;
+const settingsHtml = (url: string, label = "Settings", mark = true) =>
+  `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}${mark ? ` ${icon("externalLink", "solo")}` : ""}</button>`;
 
 // Across projects a name is that project's door, or its settings page when the fix is a forge switch.
 const SHOWN = 8;
 function namesHtml(v: MaintTabView, g: CoverGroup): string {
   const urls = g.action?.kind === "settings" ? g.action.urls : {};
-  const one = (r: string) => urls[r] ? settingsHtml(urls[r], `${nameOf(v, r)} ↗`) : projHtml(r, nameOf(v, r));
+  const one = (r: string) => urls[r] ? settingsHtml(urls[r], nameOf(v, r)) : projHtml(r, nameOf(v, r));
   const rest = g.roots.slice(SHOWN).map((r) => nameOf(v, r));
   return g.roots.slice(0, SHOWN).map(one).join(", ")
     + (rest.length ? ` <span class="dim" data-tip="${escAttr(rest.join(", "))}">+${rest.length}</span>` : "");
@@ -294,7 +294,7 @@ function clearHtml(v: MaintView): string {
     ? v.soon.map((s) => `<span>${esc(s.what)} · ${esc(s.name)} <em class="mono">${esc(fmtDay(s.at * 1000))}</em></span>`).join("")
     : `<span>nothing in the next 30 days</span>`;
   const list = (caps: MaintCap[]) => caps.map((k) => CAP_TEXT[k]).join(", ");
-  return `<div class="mt-clear"><div class="mt-clear-h"><span class="mt-ring">✓</span><div>
+  return `<div class="mt-clear"><div class="mt-clear-h"><span class="mt-ring">${icon("check", "solo")}</span><div>
       <b>Nothing needs you</b><p>${esc(plural(v.cards.length, "project"))} checked ${esc(relTime(v.checked))}.</p></div></div>
     ${v.sees.length ? `<div class="mt-soon"><span class="label">Covered</span><span>${esc(list(v.sees))}</span></div>` : ""}
     ${v.blind.length ? `<div class="mt-soon"><span class="label">Not covered</span><span>${esc(list(v.blind))}</span></div>` : ""}
@@ -391,7 +391,7 @@ const verbTd = (f: Finding | null) => td(f ? verbHtml(f) : "", "a");
 // Narrowed to one project, a Project column would only repeat its name, so the board drops it.
 const projCol = (b: Boards): string[] => b.one ? [] : ["Project"];
 const projTd = (v: MaintTabView, b: Boards, root: string) => b.one ? "" : td(projHtml(root, nameOf(v, root)));
-const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" data-tip="${escAttr(tip)}">⤢</button>`;
+const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" aria-label="${escAttr(tip)}" data-tip="${escAttr(tip)}">${icon("arrowUpRight", "solo")}</button>`;
 
 const SEV_TEXT: Record<SevBucket, string> = { secret: "secret", critical: "critical", high: "high", medium: "medium", low: "low", unknown: "unknown" };
 function stripHtml(v: MaintTabView, b: Boards): string {
@@ -407,7 +407,7 @@ const KIND_WORD: Record<AdvRow["kind"], string> = { dependency: "advisory", code
 function advHtml(v: MaintTabView, b: Boards, r: AdvRow): string {
   const ver = r.kind === "dependency" ? `${r.installed.join(", ") || "?"} → ${r.fixed.join(", ") || "no fix published"}` : "";
   const fix = v.dash ? advFix(r, v.dash.fixes) : null; // the dashboard's own read knows what the fix takes
-  const id = r.url ? settingsHtml(r.url, r.id) : `<span>${esc(r.id)}</span>`;
+  const id = r.url ? settingsHtml(r.url, r.id, false) : `<span>${esc(r.id)}</span>`;
   const chips = r.projects.map((p) => {
     // The verb is the project's line for this kind, so its brief covers every row of it there.
     const why = p.verb ? `${nameOf(v, p.root)}: one brief for every ${KIND_WORD[r.kind]} there` : "";
@@ -438,7 +438,7 @@ function securityHtml(v: MaintTabView, b: Boards): string {
   const out = v.dash?.outdated, first = !hasAdv && !hasPrs;
   const pkgs = out || (door && first) ? board("packages", "Packages", "this project's package manager", out
     ? `<div class="mt-kv"><span>Out of date</span><span class="mono">${esc(out)}</span></div>`
-    : empty("Every advisory and update pull request the dependency read found is behind ⤢."), first ? door : "") : "";
+    : empty("Every advisory and update pull request the dependency read found opens from this board's arrow."), first ? door : "") : "";
   const eol = b.eol.length ? board("runtimes", "Runtime end-of-life",
     `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b)) : "";
   const sweep = v.sweep ? sweepHtml(v, b, v.sweep) : "";
@@ -458,7 +458,7 @@ function eolHtml(v: MaintTabView, b: Boards): string {
   }));
 }
 
-const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { pass: "✓", skip: "skipped" };
+const FLOW_TEXT: Partial<Record<FlowRow["status"], string>> = { skip: "skipped" };
 // Only a pass or a skip reads as fine; a cancelled, running or unknown run is unverified, so muted.
 const flowCls = (w: FlowRow) => w.red !== null ? "l-bad" : w.status === "pass" || w.status === "skip" ? "l-ok" : "l-muted";
 // One project's CI is its workflows, each with its own strip; the Fix covers every red one, so it sits once.
@@ -467,9 +467,10 @@ function flowsHtml(r: CiBoardRow): string {
   return r.flows.map((w) => {
     const ago = w.at ? relTime(w.at * 1000) : "", mine = w.red !== null ? verb : null;
     if (mine) verb = null;
-    const text = w.red !== null ? `failing ${w.red}`.trim() : `${FLOW_TEXT[w.status] ?? w.status} ${ago}`.trim();
+    const text = w.red !== null ? esc(`failing ${w.red}`.trim())
+      : w.status === "pass" ? icon("check", ago ? "" : "solo") + esc(ago) : esc(`${FLOW_TEXT[w.status] ?? w.status} ${ago}`.trim());
     return `<div class="mt-ci wf"><span class="wn">${esc(w.workflow)}</span>`
-      + `<span class="mt-v ${flowCls(w)}">${esc(text)}</span><span class="w mono"></span>${runsHtml(w.runs, r.root)}`
+      + `<span class="mt-v ${flowCls(w)}">${text}</span><span class="w mono"></span>${runsHtml(w.runs, r.root)}`
       + `<span class="a">${mine ? verbHtml(mine) : ""}</span></div>`;
   }).join("");
 }
@@ -558,8 +559,8 @@ function serversHtml(v: MaintTabView, b: Boards): string {
 const SWEEP_CLS: Record<SweepVerdict, string> = { affected: "l-bad", unsure: "l-warn", patched: "l-ok", unused: "l-muted" };
 const AGENT_CLS: Record<SweepCheck["verdict"], string> = { affected: "l-bad", "not-affected": "l-ok", unsure: "l-warn" };
 const SWEEP_TIP = "Look the advisory up and read every project's lockfiles. Nothing runs in a project";
-const sweepBtn = (act: string, label: string, tip: string, root = "") =>
-  `<button class="mt-verb" data-mtsweep="${act}"${root ? ` data-mtroot="${escAttr(root)}"` : ""} data-tip="${escAttr(tip)}">${esc(label)}</button>`;
+const sweepBtn = (act: string, label: string, tip: string, root = "", ic?: IconName) =>
+  `<button class="mt-verb" data-mtsweep="${act}"${root ? ` data-mtroot="${escAttr(root)}"` : ""} data-tip="${escAttr(tip)}">${ic ? icon(ic) : ""}${esc(label)}</button>`;
 
 // What the read-only agent said, beside the row and never in place of it.
 function agentHtml(a: SweepAgent | undefined): string {
@@ -572,7 +573,7 @@ function agentHtml(a: SweepAgent | undefined): string {
 
 function sweepRowHtml(v: MaintTabView, b: Boards, run: NonNullable<MaintSweepView["cur"]>, r: SweepRow): string {
   const a = run.agents[r.root];
-  const verb = r.verdict === "affected" ? sweepBtn("patch", "Patch ↗", AGENT_TIP, r.root)
+  const verb = r.verdict === "affected" ? sweepBtn("patch", "Patch", AGENT_TIP, r.root, "agent")
     : r.verdict === "unsure" && a?.state !== "running"
       ? sweepBtn("check", a ? "Ask again" : "Check with an agent",
         "Claude reads this project in the background, read-only (Read, Glob, Grep), and says whether it is affected. Its answer is shown here and changes nothing", r.root)
@@ -586,7 +587,7 @@ function sweepRunHtml(v: MaintTabView, b: Boards, s: MaintSweepView, run: NonNul
   if (run.state === "error") return `<p class="mt-sw-err">${esc(run.err ?? "the sweep failed")}</p>`;
   if (!run.adv) return `<p class="fl-none">Looking up ${esc(run.query)}…</p>`;
   const adv = run.adv, sev = adv.severity === "unknown" ? "" : ` · ${adv.severity}`;
-  const id = adv.url ? settingsHtml(adv.url, `${sweepTitle(adv)} ↗`) : `<span>${esc(sweepTitle(adv))}</span>`;
+  const id = adv.url ? settingsHtml(adv.url, sweepTitle(adv)) : `<span>${esc(sweepTitle(adv))}</span>`;
   const level = adv.severity === "critical" || adv.severity === "high" ? "l-bad" : adv.severity === "medium" ? "l-warn" : "l-muted";
   const head = `<div class="mt-sw-adv"><span class="mono id">${id}<span class="mt-n ${level}">${esc(sev)}</span></span>`
     + (adv.id && adv.summary ? `<b>${esc(adv.summary)}</b>` : "")
@@ -602,7 +603,7 @@ function sweepRunHtml(v: MaintTabView, b: Boards, s: MaintSweepView, run: NonNul
   const hit = n("affected");
   const acts = `<div class="mt-sw-acts"><span class="mt-note mono">${esc(tally)}</span>`
     + sweepBtn("copy", "Copy report", "Copy the verdicts drawn here as text", only)
-    + (hit ? sweepBtn("brief", `Brief ${plural(hit, "agent")} ↗`, `One agent per affected project, each with its brief prefilled and never sent: you press Enter in each`, only) : "")
+    + (hit ? sweepBtn("brief", `Brief ${plural(hit, "agent")}`, `One agent per affected project, each with its brief prefilled and never sent: you press Enter in each`, only, "agent") : "")
     + `</div>`;
   const table = used.length ? `<div class="mt-scroll"><table class="mt-tbl mt-sw-tbl"><thead><tr>`
     + [...projCol(b), "Verdict", "Evidence", "Fix", ""].map((c) => `<th>${esc(c)}</th>`).join("") + `</tr></thead><tbody>`
@@ -785,7 +786,7 @@ export function maintDashHtml(v: MaintDash): string {
   const go = (c: Cell) => `Click: ${tabName(FACET_TAB[c.facet])}${coverFirst(c) ? ", at its Coverage" : ""}`;
   const when = v.card.reading ? `<span class="fl-when mono">reading this project…</span>`
     : v.checked ? `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>`
-      + `<button class="aslink" data-mtscan="force" data-tip="Check this project again, past every cache">⟳</button>`
+      + `<button class="aslink" data-mtscan="force" aria-label="Check again" data-tip="Check this project again, past every cache">${icon("rotateCw", "solo")}</button>`
     : `<span class="fl-when mono">Not checked yet</span>`
       + `<button class="aslink" data-mtscan="check" data-tip="Read this project once. Nothing runs in it">Check</button>`;
   const err = v.card.err ? `<p class="fl-none">Could not read: ${esc(v.card.err)}</p>` : "";
