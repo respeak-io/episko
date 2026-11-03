@@ -1196,6 +1196,117 @@ pub(crate) async fn privacy_asks(app: tauri::AppHandle) -> Result<Vec<PrivacyAsk
     }
 }
 
+// ---------- secrets, sealed per OS ----------
+
+/// Where one secret lives: a login-keychain item on macOS, else `dir/file`, DPAPI-sealed on
+/// Windows and 0600 elsewhere. Sync's token and the Claude account tokens both go through here.
+pub(crate) struct SecretSlot<'a> {
+    pub(crate) dir: &'a std::path::Path,
+    pub(crate) file: &'a str,
+    pub(crate) service: &'a str,
+    pub(crate) account: &'a str,
+}
+
+#[cfg(windows)]
+fn dpapi(data: &[u8], seal: bool) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // SAFETY: both blobs outlive the call; the output buffer is LocalAlloc'd and freed below.
+    let ok = unsafe {
+        if seal { CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) }
+        else { CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) }
+    };
+    if ok == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+    // SAFETY: on success `pbData` points at `cbData` bytes owned by us until LocalFree.
+    let v = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe { LocalFree(output.pbData as _) };
+    Ok(v)
+}
+
+/// `value` must be printable ASCII with no spaces or quotes (the keychain arm types it).
+pub(crate) fn seal_secret(slot: &SecretSlot, value: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(slot.dir).map_err(|e| e.to_string())?;
+        std::fs::write(slot.dir.join(slot.file), dpapi(value.as_bytes(), true)?).map_err(|e| e.to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `-i` reads the command from stdin, so the secret never appears in a process listing.
+        let mut child = std::process::Command::new("/usr/bin/security").arg("-i")
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).spawn().map_err(|e| e.to_string())?;
+        use std::io::Write;
+        let line = format!("add-generic-password -U -a \"{}\" -s \"{}\" -w {value}\n", slot.account, slot.service);
+        child.stdin.take().ok_or("no stdin")?.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        let st = child.wait().map_err(|e| e.to_string())?;
+        if st.success() { Ok(()) } else { Err("the keychain refused the secret".into()) }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::create_dir_all(slot.dir).map_err(|e| e.to_string())?;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
+            .open(slot.dir.join(slot.file)).map_err(|e| e.to_string())?;
+        f.write_all(value.as_bytes()).map_err(|e| e.to_string())
+    }
+}
+
+pub(crate) fn open_secret(slot: &SecretSlot) -> Option<String> {
+    #[cfg(windows)]
+    { String::from_utf8(dpapi(&std::fs::read(slot.dir.join(slot.file)).ok()?, false).ok()?).ok() }
+    #[cfg(target_os = "macos")]
+    {
+        let o = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-a", slot.account, "-s", slot.service, "-w"]).output().ok()?;
+        let t = String::from_utf8(o.stdout).ok()?.trim().to_string();
+        (o.status.success() && !t.is_empty()).then_some(t)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    { std::fs::read_to_string(slot.dir.join(slot.file)).ok().map(|s| s.trim().to_string()) }
+}
+
+pub(crate) fn drop_secret(slot: &SecretSlot) {
+    let _ = std::fs::remove_file(slot.dir.join(slot.file));
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("/usr/bin/security").args(["delete-generic-password", "-a", slot.account, "-s", slot.service]).output(); }
+}
+
+/// The accounts holding a secret under `service`: on macOS the keychain's attributes (never
+/// `-d`, which would print every secret), elsewhere the files in `dir` ending in `ext`.
+pub(crate) fn sealed_accounts(dir: &std::path::Path, ext: &str, service: &str) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (dir, ext);
+        let out = std::process::Command::new("/usr/bin/security").arg("dump-keychain").output();
+        out.map(|o| keychain_accounts(&String::from_utf8_lossy(&o.stdout), service)).unwrap_or_default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = service;
+        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut v: Vec<String> = rd.filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(ext).map(str::to_string)).collect();
+        v.sort();
+        v
+    }
+}
+
+/// `security dump-keychain` prints one block per item, each opening with `keychain:`.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn keychain_accounts(dump: &str, service: &str) -> Vec<String> {
+    let attr = |block: &str, key: &str| {
+        let pre = format!("\"{key}\"<blob>=\"");
+        block.lines().find_map(|l| l.trim().strip_prefix(pre.as_str())?.strip_suffix('"').map(str::to_string))
+    };
+    let mut v: Vec<String> = dump.split("keychain: ").filter(|b| attr(b, "svce").as_deref() == Some(service))
+        .filter_map(|b| attr(b, "acct")).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1204,6 +1315,29 @@ mod tests {
     use crate::testutil::COUNTER;
     #[cfg(target_os = "macos")]
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn a_keychain_listing_names_only_the_items_under_its_service() {
+        let dump = r#"keychain: "/Users/x/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="max20"
+    "svce"<blob>="episko-claude-token"
+keychain: "/Users/x/Library/Keychains/login.keychain-db"
+class: "genp"
+attributes:
+    "acct"<blob>="sync"
+    "svce"<blob>="Episko sync"
+keychain: "/Users/x/Library/Keychains/login.keychain-db"
+class: "genp"
+attributes:
+    "acct"<blob>="max5"
+    "svce"<blob>="episko-claude-token"
+"#;
+        assert_eq!(keychain_accounts(dump, "episko-claude-token"), ["max20", "max5"]);
+        assert!(keychain_accounts(dump, "nothing").is_empty());
+    }
 
     /// `ours` matters as much as the find: the caller clears its own processes
     /// silently and only ever puts somebody else's in a dialog.

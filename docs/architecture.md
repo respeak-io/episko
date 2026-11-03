@@ -161,7 +161,9 @@ clock has not moved since the switch is not heard**: its statusLine repeats the 
 cached figures every ten seconds. And **a restored window's rotation is not logged** (`lastClosed`
 is primed on the swap), since nobody watched it close. The limit chime skips a paint that switched
 accounts, and sync tags its `limits` events with the account so another machine's login lands in
-that account's slot.
+that account's slot. A setup-token pane (docs/accounts.md) never follows `/login`: its readings
+go to its own account's slot whatever the stamp says, and `rl` shows whichever account a new session
+would start on, swapped the same way.
 
 **An account may have no 5-hour window at all.** Since 2026-10-30 a verified Ultra plan (Max 20x,
 renamed) has only the week, and the CLI says so by omission. It rebuilds its windows from every

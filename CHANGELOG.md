@@ -19,6 +19,10 @@ Markers: `+` new · `~` changed · `!` fixed
 + A large pull request opens as a list of folded files, and each file's diff is drawn when you open
   it and put away when you fold it, so a review of tens of thousands of lines stays quick. Smaller
   pull requests open as before.
++ *Settings › Accounts* lists Claude subscriptions in order. A new session starts on the first one
+  that isn't full and keeps it, so a second subscription needs no `/login`. *Sign in* runs
+  `claude setup-token` and keeps the token in your keychain.
++ A session that hits its limit offers to resume on the next account.
 ~ Every icon is now drawn from one set (Lucide) instead of Unicode symbols, which came from
   whichever fallback font had them and so differed in size, weight and baseline. Icons are never
   smaller than 13px, however small the text beside them.

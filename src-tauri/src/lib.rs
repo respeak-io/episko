@@ -2,6 +2,7 @@
 //! and the `invoke_handler!` list. Each session is a PTY keyed by the uuid passed to
 //! `claude --session-id`, instrumented per launch via `--settings` (CLAUDE.md).
 
+mod accounts;
 mod agent;
 mod deps;
 mod external;
@@ -455,6 +456,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pty::spawn_claude,
+            accounts::claude_tokens,
+            accounts::claude_token_save,
+            accounts::claude_token_forget,
+            accounts::claude_token_check,
             pty::write_pty,
             pty::resize_pty,
             pty::kill_session,
