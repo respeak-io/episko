@@ -2964,7 +2964,7 @@ fn mtime_secs(p: &std::path::Path) -> Option<u64> {
 }
 
 /// FETCH_HEAD is per worktree, and autofetch fetches in whichever checkout is on stage.
-fn fetched_at(dir: &str) -> Option<u64> {
+pub(crate) fn fetched_at(dir: &str) -> Option<u64> {
     let (_, common) = git_dirs(dir)?;
     let linked = std::fs::read_dir(common.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path());
     std::iter::once(common.clone()).chain(linked).filter_map(|d| mtime_secs(&d.join("FETCH_HEAD"))).max()
@@ -3124,6 +3124,76 @@ pub(crate) fn release_facts(dir: &str, pattern: Option<&str>, trunk: &str) -> Re
         None => f.since = git_out(dir, &["rev-list", "--count", trunk, "--"])?.parse().unwrap_or(0),
     }
     Ok(f)
+}
+
+/// How far a commit an environment runs stands from the trunk.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Lag {
+    pub(crate) behind: u32,
+    pub(crate) behind_at: Option<u64>, // the oldest trunk commit not live
+    pub(crate) ahead: u32,
+}
+
+/// `Ok(None)` is a commit this clone lacks, which a failed count says with no spawn of its own.
+/// `GIT_NO_LAZY_FETCH`: a partial clone must not fetch it, since Maintenance never touches the network here.
+pub(crate) fn deploy_lag(dir: &str, sha: &str, trunk: &str) -> Result<Option<Lag>, String> {
+    let offline = |args: &[&str]| git_cmd(dir, args).env("GIT_NO_LAZY_FETCH", "1").output().map_err(|e| format!("git: {e}"));
+    let o = offline(&["rev-list", "--left-right", "--count", &format!("{sha}...{trunk}"), "--"])?;
+    if !o.status.success() {
+        return Ok(None);
+    }
+    let counts = String::from_utf8_lossy(&o.stdout);
+    let (ahead, behind) = counts.trim().split_once('\t').ok_or_else(|| format!("git counted {counts:?}"))?;
+    let num = |s: &str| s.trim().parse::<u32>().map_err(|e| format!("git counted {s:?}: {e}"));
+    let (ahead, behind) = (num(ahead)?, num(behind)?);
+    if behind == 0 {
+        return Ok(Some(Lag { behind, behind_at: None, ahead }));
+    }
+    let log = offline(&["log", "--format=%ct", &format!("{sha}..{trunk}"), "--"])?;
+    if !log.status.success() {
+        return Err(git_says(&log));
+    }
+    let behind_at = lines_of(&String::from_utf8_lossy(&log.stdout)).filter_map(|l| l.parse().ok()).min();
+    Ok(Some(Lag { behind, behind_at, ahead }))
+}
+
+/// One tag. `commit` is what it peels to, None for a tag of anything else; `at` an annotated tag's
+/// own date, None for a lightweight one, whose commit date is no deploy time.
+#[derive(Debug, PartialEq)]
+pub(crate) struct TagRef {
+    pub(crate) name: String,
+    pub(crate) commit: Option<String>,
+    pub(crate) at: Option<u64>,
+}
+
+/// Every tag, newest first by its own date: one spawn a read, however many environments ask.
+pub(crate) fn tag_refs(dir: &str) -> Result<Vec<TagRef>, String> {
+    let out = git_out(dir, &[
+        "for-each-ref", "--sort=-creatordate",
+        "--format=%(refname:lstrip=2)\t%(objecttype)\t%(objectname)\t%(*objectname)\t%(*objecttype)\t%(creatordate:unix)", "refs/tags",
+    ])?;
+    Ok(lines_of(&out).map(|l| {
+        let mut p = l.split('\t');
+        let mut next = || p.next().unwrap_or("");
+        let (name, kind, oid, peeled, under, date) = (next(), next(), next(), next(), next(), next());
+        let commit = match (kind, under) {
+            ("commit", _) => Some(oid),
+            ("tag", "commit") => Some(peeled),
+            _ => None,
+        };
+        TagRef { name: name.to_string(), commit: commit.map(str::to_string), at: (kind == "tag").then(|| date.parse().ok()).flatten() }
+    }).collect())
+}
+
+/// The newest tag a `*` glob accepts that peels to a commit.
+pub(crate) fn newest_tag<'a>(tags: &'a [TagRef], pattern: &str) -> Option<&'a TagRef> {
+    tags.iter().find(|t| t.commit.is_some() && glob_match(pattern, &t.name))
+}
+
+/// The tag naming a commit, an annotated one included: the newest `pattern` accepts, else the newest.
+pub(crate) fn tag_at<'a>(tags: &'a [TagRef], sha: &str, pattern: Option<&str>) -> Option<&'a str> {
+    let here = || tags.iter().filter(|t| t.commit.as_deref() == Some(sha));
+    pattern.and_then(|p| here().find(|t| glob_match(p, &t.name))).or_else(|| here().next()).map(|t| t.name.as_str())
 }
 
 // ---------- a session's code handed to another machine (docs/handoff.md) ----------
@@ -4020,6 +4090,64 @@ canonicalizehostname false
         for p in ["v[0-9]*", "v?.*", r"v\*"] {
             assert!(release_facts(&d, Some(p), "main").unwrap_err().contains("only * is special"), "{p}");
         }
+    }
+
+    // Dated by hand, since `creatordate` and `%ct` only count seconds.
+    fn dated(dir: &Path, at: u64, args: &[&str]) {
+        let when = format!("@{at} +0000");
+        let out = Command::new("git").current_dir(dir).env("GIT_COMMITTER_DATE", &when).env("GIT_AUTHOR_DATE", &when)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=T", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+            .args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn rev(dir: &Path, what: &str) -> String {
+        String::from_utf8_lossy(&Command::new("git").current_dir(dir).args(["rev-parse", what]).output().unwrap().stdout).trim().to_string()
+    }
+
+    #[test]
+    fn deploy_lag_counts_both_sides_of_the_trunk() {
+        let dir = scratch_dir();
+        let d = dir.to_string_lossy().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        dated(&dir, 1_000, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let live = rev(&dir, "HEAD");
+        dated(&dir, 2_000, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        dated(&dir, 3_000, &["commit", "-q", "--allow-empty", "-m", "three"]);
+        let tip = rev(&dir, "HEAD");
+        assert_eq!(deploy_lag(&d, &live, "main").unwrap(), Some(Lag { behind: 2, behind_at: Some(2_000), ahead: 0 }), "the oldest commit not live");
+        assert_eq!(deploy_lag(&d, &tip, "main").unwrap(), Some(Lag { behind: 0, behind_at: None, ahead: 0 }));
+        git(&dir, &["checkout", "-q", "-b", "hotfix", &live]);
+        dated(&dir, 4_000, &["commit", "-q", "--allow-empty", "-m", "hotfix"]);
+        let side = rev(&dir, "HEAD");
+        assert_eq!(deploy_lag(&d, &side, "main").unwrap(), Some(Lag { behind: 2, behind_at: Some(2_000), ahead: 1 }), "left is live, right is the trunk");
+        assert_eq!(deploy_lag(&d, &"f".repeat(40), "main").unwrap(), None, "not in this clone, never 0 behind");
+    }
+
+    #[test]
+    fn deploy_tags_read_their_own_dates_and_peel_to_a_commit() {
+        let dir = scratch_dir();
+        let d = dir.to_string_lossy().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        dated(&dir, 1_000, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let one = rev(&dir, "HEAD");
+        dated(&dir, 2_000, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let two = rev(&dir, "HEAD");
+        dated(&dir, 5_000, &["tag", "-a", "prod-1", "-m", "first", &one]);
+        dated(&dir, 6_000, &["tag", "-a", "prod-2", "-m", "second", &two]);
+        dated(&dir, 7_000, &["tag", "production", &one]);
+        dated(&dir, 8_000, &["tag", "tree-1", &rev(&dir, "HEAD^{tree}")]);
+        let tags = tag_refs(&d).unwrap();
+        let hit = newest_tag(&tags, "prod-*").unwrap();
+        assert_eq!((hit.name.as_str(), hit.commit.as_deref(), hit.at), ("prod-2", Some(two.as_str()), Some(6_000)), "an annotated tag, by its own date");
+        let moving = newest_tag(&tags, "production").unwrap();
+        assert_eq!((moving.commit.as_deref(), moving.at), (Some(one.as_str()), None), "a lightweight tag has no deploy time");
+        assert_eq!(newest_tag(&tags, "tree-*"), None, "a tag of a tree names no commit");
+        assert_eq!(newest_tag(&tags, "none-*"), None);
+        assert_eq!(tag_at(&tags, &two, None), Some("prod-2"), "an annotated tag at its commit");
+        assert_eq!(tag_at(&tags, &one, None), Some("prod-1"), "the newest by its own date, a lightweight tag's its commit's");
+        assert_eq!(tag_at(&tags, &one, Some("production")), Some("production"), "the release pattern first");
+        assert_eq!(tag_at(&tags, &"f".repeat(40), None), None);
     }
 
     use std::path::{Path, PathBuf};

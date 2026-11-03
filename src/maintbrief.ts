@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
-  type Advisory, type AdvisoryKind, type CiFailure, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
+  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
@@ -250,6 +250,62 @@ const releaseBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
+const envsOf = (inp: MaintInput, ctx: MaintBriefCtx) => deployStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now);
+// What is live: its name, the commit, since when and from which branch.
+const liveText = (e: EnvState) => [e.live ?? "nothing found", e.sha && e.live !== e.sha.slice(0, 7) ? `(${e.sha.slice(0, 7)})` : "",
+  e.age !== null ? `live for ${span(e.age)}` : "", e.branch ? `from ${e.branch}` : ""].filter(Boolean).join(" ");
+
+// Every production environment behind or off the trunk, as the one Plan deploy line counts them.
+const deployBrief: Brief = (_f, inp, ctx) => {
+  const due = envsToShip(envsOf(inp, ctx));
+  if (!due.length) return null;
+  const one = due.length === 1, e = due[0];
+  const lag = (x: EnvState) => x.ahead ? `runs ${plural(x.ahead, "commit")} not on ${x.trunk ?? "the trunk"}` : `is ${plural(x.behind ?? 0, "commit")} behind ${x.trunk ?? "the trunk"}`;
+  const body = (x: EnvState) => [
+    bullet(`live: ${liveText(x)}`),
+    ...(x.behind ? [bullet(`${plural(x.behind, "commit")} on ${x.trunk} not live${x.behindAge !== null ? `, the oldest ${span(x.behindAge)} old` : ""}: \`git log ${x.sha}..${x.trunk}\``)] : []),
+    ...(x.ahead ? [bullet(`${plural(x.ahead, "commit")} live that ${x.trunk} lacks: \`git log ${x.trunk}..${x.sha}\`. Get them onto the trunk first.`)] : []),
+  ];
+  return [
+    one ? `${e.env} in ${ctx.project} ${lag(e)}. Plan its next deploy.` : `Plan the next deploy of ${due.length} environments in ${ctx.project}.`,
+    ...(one ? [""] : []),
+    ...each(due, (x) => `${x.env} ${lag(x)}`, body),
+    "",
+    "List what would ship, grouped the way this project's changelog groups changes, and flag anything risky:",
+    "migrations, config, infrastructure, removed endpoints. Find how this project deploys (its CI workflows,",
+    "its scripts and the [deploy] table in .episko/episko.toml), and say whether CI on the trunk is green.",
+    ...cappedNote(deploysCut(inp), "environments"),
+    "",
+    "Do not deploy, tag, push or trigger any workflow: a person ships it.",
+  ];
+};
+
+// A failed deploy is read and explained; production is a person's to touch, as prodBrief's line says.
+const deployFixBrief: Brief = (_f, inp, ctx) => {
+  const broke = envsFailed(envsOf(inp, ctx));
+  if (!broke.length) return null;
+  const one = broke.length === 1, e = broke[0];
+  const body = (x: EnvState) => {
+    const a = x.last!;
+    return [
+      ...(a.url ? [a.url] : []), ...(one ? [""] : []),
+      bullet(`the failed attempt: ${a.sha}${a.age !== null ? `, ${span(a.age)} ago` : ""}`),
+      bullet(`still live: ${liveText(x)}`),
+      ...(x.sha ? [bullet(`what the attempt adds: \`git log ${x.sha}..${a.sha}\``)] : []),
+    ];
+  };
+  return [
+    one ? `A deploy of ${e.env} failed in ${ctx.project}.` : `${broke.length} deploys failed in ${ctx.project}.`,
+    ...each(broke, (x) => `${x.env}: ${x.last!.text}`, body),
+    "",
+    "Read the attempt's log and say why it failed: the code it shipped, the deploy itself, or the environment.",
+    ...cappedNote(deploysCut(inp), "environments"),
+    "",
+    "Change nothing in production yourself. Say what is wrong, what you would change and how to",
+    "verify it, and wait for a person before re-running, redeploying or rolling back anything.",
+  ];
+};
+
 const pushBrief: Brief = (f, inp, ctx) => {
   const h = factsOf(f, inp, "hygiene");
   if (!h?.unpushed) return null;
@@ -357,6 +413,7 @@ const setupBrief: Brief = (f, inp, ctx) => {
 export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
   [(f) => f.key === "ci", ciBrief],
   [(f) => f.key === "ci:flaky", flakyBrief],
+  [(f) => f.key === "release:deploy-failed", deployFixBrief],
   [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
   [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
 ];
@@ -367,6 +424,7 @@ const BRIEFS: Record<Verb, Brief> = {
   rotate: rotateBrief,
   upgrade: upgradeBrief,
   release: releaseBrief,
+  deploy: deployBrief,
   push: pushBrief,
   tidy: tidyBrief,
   review: reviewBrief,

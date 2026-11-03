@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIX, briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Facts, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts,
+  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Deployed, type Facts, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts,
 } from "../src/maint";
 
 // The brief is the product: an agent is only as good as what it was told, and a person reads it
@@ -46,6 +46,87 @@ const inp = input(
 const fs = findings("/r", inp, MAINT_DEFAULTS, NOW);
 const by = (key: string) => fs.find((f) => f.key === key)!;
 const brief = (key: string) => briefFor(by(key), inp, ctx)!;
+
+describe("deploying: a plan and a diagnosis, never a deploy", () => {
+  const env = (o: Partial<Deployed> = {}): Deployed => ({
+    env: "prod", tier: "production", sha: "a".repeat(40), tag: "v1.0", branch: "main", at: S - 3 * D, url: null, last: null,
+    behind: 23, behindAt: S - 9 * D, ahead: 0, ...o,
+  });
+  const envsIn = (...envs: Deployed[]) => input(ok("gd", { kind: "deployments", trunk: "origin/main", envs, fetchedAt: S }));
+  const line = (i: MaintInput, key: string) => findings("/r", i, MAINT_DEFAULTS, NOW).find((f) => f.key === key)!;
+  const a = "a".repeat(40), b = "b".repeat(40);
+  const fail = { state: "fail" as const, raw: "FAILURE", sha: b, at: S - 2 * 3600, url: "https://ci.example/run/9" };
+
+  it("plans one environment from its facts and forbids shipping it", () => {
+    const i = envsIn(env()), text = briefFor(line(i, "release:deploy"), i, ctx)!;
+    expect(text).toContain("prod in acme is 23 commits behind origin/main.");
+    expect(text).toContain(`live: v1.0 (aaaaaaa) live for 3d from main`);
+    expect(text).toContain(`\`git log ${a}..origin/main\``);
+    expect(text).toContain("the oldest 9d old");
+    expect(text).toMatch(/migrations, config, infrastructure, removed endpoints/);
+    expect(text).toMatch(/whether CI on the trunk is green/);
+    expect(text.trim().endsWith("Do not deploy, tag, push or trigger any workflow: a person ships it.")).toBe(true);
+    expect(text).not.toContain("###");
+  });
+
+  it("says commits live that the trunk lacks must land first", () => {
+    const i = envsIn(env({ ahead: 3 })), text = briefFor(line(i, "release:deploy"), i, ctx)!;
+    expect(text).toContain("prod in acme runs 3 commits not on origin/main.");
+    expect(text).toContain(`\`git log origin/main..${a}\``);
+    expect(text).toContain("Get them onto the trunk first.");
+    expect(text).toContain(`\`git log ${a}..origin/main\``);
+  });
+
+  it("gives several environments a heading each, and leaves out what is not production", () => {
+    const i = envsIn(env(), env({ env: "eu-prod", behind: 2, behindAt: S - D }), env({ env: "staging", tier: "staging" }));
+    const text = briefFor(line(i, "release:deploy"), i, ctx)!;
+    expect(text).toContain("Plan the next deploy of 2 environments in acme.");
+    expect(text).toContain("### prod is 23 commits behind origin/main");
+    expect(text).toContain("### eu-prod is 2 commits behind origin/main");
+    expect(text).not.toContain("staging");
+  });
+
+  it("explains a failed deploy from its log and waits for a person", () => {
+    const i = envsIn(env({ behind: 0, behindAt: null, last: fail })), text = briefFor(line(i, "release:deploy-failed"), i, ctx)!;
+    expect(text).toContain("A deploy of prod failed in acme.");
+    expect(text).toContain("https://ci.example/run/9");
+    expect(text).toContain(`the failed attempt: ${b}, 2h ago`);
+    expect(text).toContain("still live: v1.0 (aaaaaaa) live for 3d from main");
+    expect(text).toContain(`\`git log ${a}..${b}\``);
+    expect(text).toMatch(/wait for a person before re-running, redeploying or rolling back anything\.$/);
+    expect(text).not.toMatch(/\bredeploy it\b/);
+  });
+
+  it("names nothing it cannot and covers staging's failure too", () => {
+    const i = envsIn(env({ sha: null, tag: null, at: null, behind: null, behindAt: null, ahead: null, last: fail }), env({ env: "stg", tier: "staging", behind: 0, behindAt: null, last: fail }));
+    const f = line(i, "release:deploy-failed");
+    expect([f.text, f.level, f.ref]).toEqual(["2 deploys failed", "bad", null]);
+    const text = briefFor(f, i, ctx)!;
+    expect(text).toContain("### prod: failed 2h ago");
+    expect(text).toContain("### stg: failed 2h ago");
+    expect(text).toContain("still live: nothing found");
+    expect(FIX.filter(([t]) => t({ key: "release:deploy-failed" })).length).toBe(1);
+  });
+
+  it("says a cut list may hold more, before the line that closes it", () => {
+    const whole = envsIn(env({ last: fail }));
+    const i = input({ ...ok("gd", { kind: "deployments", trunk: "origin/main", envs: [env({ last: fail })], fetchedAt: S }), truncated: true });
+    for (const key of ["release:deploy", "release:deploy-failed"]) {
+      expect(briefFor(line(i, key), i, ctx), key).toContain("This list hit a page cap, so more environments may exist than are named here");
+      expect(briefFor(line(whole, key), whole, ctx), key).not.toContain("page cap");
+    }
+    expect(briefFor(line(i, "release:deploy"), i, ctx)!.trim().endsWith("a person ships it.")).toBe(true);
+  });
+
+  it("answers null once the facts are gone", () => {
+    const i = envsIn(env({ last: fail }));
+    const [plan, fix] = [line(i, "release:deploy"), line(i, "release:deploy-failed")];
+    const gone = input(ok("gd", { kind: "deployments", trunk: "origin/main", envs: [], fetchedAt: S }));
+    expect([briefFor(plan, gone, ctx), briefFor(fix, gone, ctx)]).toEqual([null, null]);
+    const caught = envsIn(env({ behind: 0, behindAt: null }));
+    expect(briefFor(plan, caught, ctx), "production caught up").toBeNull();
+  });
+});
 
 describe("briefFor", () => {
   it("writes one for every finding an agent answers", () => {
@@ -97,9 +178,9 @@ describe("briefFor", () => {
 
   it("finds Fix's brief by the finding's key, one exact row per kind", () => {
     const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
-    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
+    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
     // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
-    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "release:deploy-failed", "security:dependency"]) {
+    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "release:deploy", "security:dependency"]) {
       expect(claims(key), key).toBe(0);
     }
     expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();

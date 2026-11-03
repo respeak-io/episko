@@ -10,7 +10,7 @@ import {
 // that could become a flag or a non-http request never reaches Apply.
 
 const wire = JSON.parse(readFileSync(new URL("./fixtures/maint-wire.json", import.meta.url), "utf8")) as { detection: { deploy: unknown } };
-const NONE: DeployCfg = { host: null, compose: [], urls: {}, sentry: null, versionUrl: null };
+const NONE: DeployCfg = { host: null, compose: [], urls: {}, sentry: null, versionUrl: null, envs: {} };
 const prop = (d: Partial<DeployCfg>, why: string[] = []): DeployProposal => ({ deploy: { ...NONE, ...d }, why });
 
 describe("checkDeploy", () => {
@@ -50,6 +50,7 @@ describe("checkDeploy", () => {
       url: (v) => ({ urls: { app: v } }), url_name: (v) => ({ urls: { [v]: "https://app.example.com" } }),
       version_url: (v) => ({ versionUrl: v }), host: (v) => ({ host: v }),
       compose: (v) => ({ compose: [v] }), sentry: (v) => ({ sentry: v }),
+      env: (v) => ({ envs: { prod: v } }), env_name: (v) => ({ envs: { [v]: "prod-*" } }),
     };
     expect(table.cases.map((c) => c.value)).toEqual(expect.arrayContaining(["https://", "https://a b", "HTTPS://x.example", "host:disk"]));
     for (const c of table.cases) {
@@ -67,12 +68,15 @@ describe("the table", () => {
     expect(narrowDeploy({ host: 3, compose: "api" })).toBeNull();
     expect(narrowDeploy({ host: "prod-1", urls: { a: 1, b: "https://b.example" } })).toEqual({ ...NONE, host: "prod-1", urls: { b: "https://b.example" } });
     expect(isEmptyDeploy(NONE)).toBe(true);
+    expect(narrowDeploy({ envs: { prod: "prod-*", n: 3 } }), "a table holding only envs is a table").toEqual({ ...NONE, envs: { prod: "prod-*" } });
+    expect((wire.detection.deploy as DeployCfg).envs).toEqual({ prod: "prod-*" });
   });
 
   it("says itself in one line", () => {
     expect(deploySummary(null)).toBe("");
     expect(deploySummary({ ...NONE, host: "prod-1", compose: ["api", "worker"], urls: { a: "https://a.example" }, sentry: "acme/api" }))
       .toBe("on prod-1 · compose api, worker · 1 address · errors in acme/api");
+    expect(deploySummary({ ...NONE, envs: { prod: "prod-*", staging: "staging" } })).toBe("2 environments by tag");
   });
 
   it("matches deploy.rs's refusal for a missing file", () => {
@@ -90,10 +94,14 @@ describe("the question and the review", () => {
     expect(now).toContain('version_url = "https://api.example.com/version"');
     expect(now).toContain("a value you leave out is removed");
     expect(deployPrompt(null)).toMatch(/Never write a token, password, key or any other secret/);
+    expect(deployPrompt(null), "the tag convention is one of the things it may find").toContain("- envs: an inline table, environment = tag");
+    expect(deployPrompt(null)).toContain('"- envs:"');
+    expect(deployPrompt({ ...NONE, envs: { prod: "prod-*" } })).toContain('envs = { prod = "prod-*" }');
   });
 
   it("writes the table as TOML deploy.rs reads back", () => {
     expect(deployToml({ ...NONE, host: 'a"b', compose: ["api", "worker"] })).toBe('[deploy]\nhost = "a\\"b"\ncompose = ["api", "worker"]');
+    expect(deployToml({ ...NONE, envs: { "Production – ui": "ui-*", prod: "prod-*" } })).toBe('[deploy]\nenvs = { "Production – ui" = "ui-*", prod = "prod-*" }');
   });
 
   it("names every current value a proposal removes or changes", () => {
@@ -104,6 +112,8 @@ describe("the question and the review", () => {
     ]);
     expect(deployLosses(cur, cur)).toEqual([]);
     expect(deployLosses(null, cur)).toEqual([]);
+    const tagged: DeployCfg = { ...NONE, envs: { prod: "prod-*", staging: "staging" } };
+    expect(deployLosses(tagged, { ...NONE, envs: { staging: "stg-*" } })).toEqual(['`envs.prod = "prod-*"` is removed', '`envs.staging = "staging"` becomes `"stg-*"`']);
   });
 
   it("shows each kept value with its reason and lists what it left out", () => {
@@ -115,6 +125,10 @@ describe("the question and the review", () => {
     expect(text).toContain('Changes what it says now:\n\n- `host = "old"` becomes `"prod-1"`');
     expect(deployText(p, checkDeploy(p), { ...NONE, host: "prod-1" })).not.toContain("Changes what it says now");
     expect(deployText(prop({}), checkDeploy(prop({})), null)).toBe("Claude found nothing it could support for `[deploy]`.");
+    const t = prop({ envs: { prod: "prod-*", bad: "v[0-9]*" } }, ["envs: deploy.yml deploys on push: tags: ['prod-*']"]);
+    const said = deployText(t, checkDeploy(t), null);
+    expect(said).toContain("- env prod: tagged `prod-*`\n  deploy.yml deploys on");
+    expect(said).toContain('envs.bad = "v[0-9]*" is not a tag glob');
   });
 });
 

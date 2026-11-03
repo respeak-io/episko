@@ -4,7 +4,7 @@ import {
   BOTS, COSTS, FACETS, FACET_DEFS, MAINT_CAPS, MAINT_PREFS_DEFAULT, MARKERS, SOURCES, capsOf, disclosure, facetDef,
   facetSources, findSource, permitted, runnable, sourceDef, type Cost, type Mode,
 } from "../src/maintsources";
-import { ADVISORY_KINDS, CI_STATUSES, FORGE_BY, SEVERITIES } from "../src/maint";
+import { ADVISORY_KINDS, CI_STATUSES, DEPLOY_STATES, ENV_TIERS, FORGE_BY, SEVERITIES } from "../src/maint";
 
 // Both sides read one manifest, and each keeps a list the other must agree with. TypeScript cannot
 // see the Rust half, so these joins are read from source (the provider-contract precedent).
@@ -44,6 +44,8 @@ describe("the manifest and maint.rs agree", () => {
     expect(variants("CiStatus")).toEqual([...CI_STATUSES]);
     expect(variants("Severity")).toEqual([...SEVERITIES]);
     expect(variants("AdvisoryKind")).toEqual([...ADVISORY_KINDS]);
+    expect(variants("DeployState")).toEqual([...DEPLOY_STATES]);
+    expect(variants("EnvTier")).toEqual([...ENV_TIERS]);
     expect(variants("ForgeBy", forgeRs)).toEqual([...FORGE_BY]);
   });
 
@@ -51,6 +53,10 @@ describe("the manifest and maint.rs agree", () => {
     const used = new Set(Object.values(manifest.sources).flatMap((s) => [...s.sees, ...s.blind]));
     expect([...used].filter((c) => !(MAINT_CAPS as readonly string[]).includes(c))).toEqual([]);
     expect(() => capsOf(["git.unpushed", "git.unpushd"])).toThrow(/git\.unpushd/);
+  });
+
+  it("names what each environment runs as Not covered until a source answers it", () => {
+    expect(manifest.sources["git-tags"].blind, "git-tags is on every repository").toContain("rel.deployed");
   });
 });
 
@@ -148,6 +154,8 @@ describe("the frontend never names a vendor", () => {
     "date", // endoflife.date's TLD; "endoflife" is the vendor
     "re",
     "runs",
+    "deploy",
+    "deployments",
   ]);
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([

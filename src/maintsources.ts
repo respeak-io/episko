@@ -31,6 +31,7 @@ export const MAINT_CAPS = [
   "rel.last",
   "rel.published",
   "rel.changelog",
+  "rel.deployed",
   "sec.dependency",
   "sec.code",
   "sec.secret",

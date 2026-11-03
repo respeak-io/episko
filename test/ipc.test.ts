@@ -366,7 +366,7 @@ describe("where a project runs", () => {
     expect(attrsAbove(DEPLOY_RS, cfgHead!.index)).toMatch(/rename_all\s*=\s*"camelCase"/);
     const rs = rustFields(declBody(DEPLOY_RS, cfgHead!.index + cfgHead![0].length - 1)).map(camel);
     expect(sorted(rs)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployCfg\s*\{/))));
-    expect(sorted(rs)).toEqual(["compose", "host", "sentry", "urls", "versionUrl"]);
+    expect(sorted(rs)).toEqual(["compose", "envs", "host", "sentry", "urls", "versionUrl"]);
     const prop = rustFields(bodyOf(DEPLOY_RS, /pub\(crate\)\s+struct\s+DeployProposal\s*\{/));
     expect(sorted(prop)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployProposal\s*\{/))));
   });

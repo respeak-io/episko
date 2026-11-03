@@ -18,11 +18,21 @@ pub(crate) struct DeployConfig {
     urls: BTreeMap<String, String>,
     sentry: Option<String>,
     version_url: Option<String>,
+    envs: BTreeMap<String, String>, // environment → the tag, or a `*` glob, that marks what it runs
 }
 
 impl DeployConfig {
     fn is_empty(&self) -> bool {
-        self.host.is_none() && self.compose.is_empty() && self.urls.is_empty() && self.sentry.is_none() && self.version_url.is_none()
+        !self.names_prod() && self.compose.is_empty() && self.envs.is_empty()
+    }
+
+    /// Whether it names what a prod source would read; `compose` and `envs` alone are no address.
+    pub(crate) fn names_prod(&self) -> bool {
+        self.host.is_some() || !self.urls.is_empty() || self.sentry.is_some() || self.version_url.is_some()
+    }
+
+    pub(crate) fn envs(&self) -> &BTreeMap<String, String> {
+        &self.envs
     }
 
     /// Every address `http-probe` asks, name → URL: `urls`, then `version_url` as `version`
@@ -46,7 +56,7 @@ fn file_of(dir: &str) -> PathBuf {
     path_of(&crate::maint::root_key(dir))
 }
 
-fn is_http(u: &str) -> bool {
+pub(crate) fn is_http(u: &str) -> bool {
     let l = u.to_ascii_lowercase();
     let rest = l.strip_prefix("https://").or_else(|| l.strip_prefix("http://"));
     rest.is_some_and(|r| !r.is_empty()) && !u.contains(char::is_whitespace)
@@ -68,6 +78,11 @@ fn url_name(u: &str) -> String {
     u.split_once("://").map_or(u, |(_, r)| r).trim_end_matches('/').replace(':', " ")
 }
 
+// An environment's name reaches a prefilled brief, so it may hold no control character.
+fn env_name(k: &str) -> bool {
+    !k.is_empty() && k.chars().count() <= 64 && !k.chars().any(char::is_control)
+}
+
 /// Value by value, so one wrong type drops that value and not the table; `compose = "api"` is one service.
 fn from_table(t: &toml::Table) -> DeployConfig {
     let word = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from);
@@ -82,7 +97,11 @@ fn from_table(t: &toml::Table) -> DeployConfig {
         Some(toml::Value::Array(a)) => a.iter().filter_map(trimmed).map(|u| (url_name(&u), u)).collect(),
         _ => BTreeMap::new(),
     };
-    DeployConfig { host: word("host"), compose, urls, sentry: word("sentry"), version_url: word("version_url") }
+    let envs = match t.get("envs") {
+        Some(toml::Value::Table(m)) => m.iter().filter_map(|(k, v)| trimmed(v).map(|p| (k.trim().to_string(), p))).collect(),
+        _ => BTreeMap::new(),
+    };
+    DeployConfig { host: word("host"), compose, urls, sentry: word("sentry"), version_url: word("version_url"), envs }
 }
 
 /// The values safe to keep, and one line per value that is not; deploy.ts's `checkDeploy` says the same.
@@ -103,7 +122,11 @@ fn keep(d: DeployConfig) -> (DeployConfig, Vec<String>) {
         .collect();
     let sentry = d.sentry.filter(|s| said(org_project(s), format!("sentry = \"{s}\" is not org/project")));
     let version_url = d.version_url.filter(|u| said(is_http(u), format!("version_url = \"{u}\" is not an http(s) address")));
-    (DeployConfig { host, compose, urls, sentry, version_url }, out)
+    let envs = d.envs.into_iter()
+        .filter(|(k, p)| said(env_name(k), format!("env \"{k}\" is not a name"))
+            && said(crate::maint::tag_glob(p), format!("envs.{k} = \"{p}\" is not a tag glob: * is its only wildcard")))
+        .collect();
+    (DeployConfig { host, compose, urls, sentry, version_url, envs }, out)
 }
 
 fn raw_deploy(text: &str) -> Option<DeployConfig> {
@@ -322,28 +345,28 @@ fn compose_item(cur: Option<&toml_edit::Item>, raw: &DeployConfig, old: &DeployC
     (!a.is_empty()).then_some(item)
 }
 
-/// `urls` edited in place by the same rule, key by key. A list becomes a table, since its names
-/// were never written; what `keep` refused in it is carried over.
-fn urls_item(cur: Option<&toml_edit::Item>, raw: &DeployConfig, old: &DeployConfig, d: &DeployConfig) -> Option<toml_edit::Item> {
+/// `urls` and `envs` edited in place by the same rule, key by key. A list becomes a table, since its
+/// names were never written; what `keep` refused in it is carried over.
+fn map_item(cur: Option<&toml_edit::Item>, raw: &BTreeMap<String, String>, old: &BTreeMap<String, String>, new: &BTreeMap<String, String>) -> Option<toml_edit::Item> {
     let Some(mut item) = cur.filter(|i| i.is_table_like()).cloned() else {
-        let mut urls = d.urls.clone();
-        for (k, v) in raw.urls.iter().filter(|(k, _)| !old.urls.contains_key(*k)) {
-            urls.entry(k.clone()).or_insert_with(|| v.clone());
+        let mut all = new.clone();
+        for (k, v) in raw.iter().filter(|(k, _)| !old.contains_key(*k)) {
+            all.entry(k.clone()).or_insert_with(|| v.clone());
         }
         let mut m = toml_edit::InlineTable::new();
-        for (k, v) in &urls {
+        for (k, v) in &all {
             m.insert(k, v.as_str().into());
         }
         return (!m.is_empty()).then(|| toml_edit::value(m));
     };
     let t = item.as_table_like_mut()?;
     let gone: Vec<String> = t.iter().map(|(k, _)| k.to_string())
-        .filter(|k| old.urls.contains_key(k.trim()) && (k != k.trim() || !d.urls.contains_key(k.trim())))
+        .filter(|k| old.contains_key(k.trim()) && (k != k.trim() || !new.contains_key(k.trim())))
         .collect();
     for k in gone {
         t.remove(&k);
     }
-    for (k, v) in &d.urls {
+    for (k, v) in new {
         if t.get(k).and_then(|i| i.as_str()).map(str::trim) != Some(v.as_str()) {
             t.insert(k, toml_edit::value(v.as_str()));
         }
@@ -366,7 +389,8 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployCo
     }
     let t = doc["deploy"].as_table_like_mut().ok_or("deploy is not a table")?;
     let list = compose_item(t.get("compose"), raw, old, d);
-    let urls = urls_item(t.get("urls"), raw, old, d);
+    let urls = map_item(t.get("urls"), &raw.urls, &old.urls, &d.urls);
+    let envs = map_item(t.get("envs"), &raw.envs, &old.envs, &d.envs);
     let mut put = |k: &str, same: bool, v: Option<toml_edit::Item>| match v {
         _ if same => {}
         None => {
@@ -382,6 +406,7 @@ fn set_deploy(doc: &mut toml_edit::DocumentMut, raw: &DeployConfig, d: &DeployCo
     put("urls", old.urls == d.urls, urls);
     put("sentry", old.sentry == d.sentry, word(&d.sentry));
     put("version_url", old.version_url == d.version_url, word(&d.version_url));
+    put("envs", old.envs == d.envs, envs);
     if t.is_empty() {
         doc.remove("deploy"); // an emptied table must not leave a bare header behind
     }
@@ -468,6 +493,7 @@ mod tests {
         let (d, out) = keep(DeployConfig {
             host: Some("-bad".into()), compose: vec!["api".into(), "".into()], sentry: Some("acme/api".into()),
             urls: [("app".to_string(), "javascript:alert(1)".to_string())].into_iter().collect(), version_url: Some("https://v.example".into()),
+            ..Default::default()
         });
         assert_eq!((d.host, d.compose, d.sentry.as_deref()), (None, vec!["api".to_string()], Some("acme/api")));
         assert_eq!(out.len(), 3, "{out:?}");
@@ -490,6 +516,8 @@ mod tests {
                 "host" => d.host = Some(v.clone()),
                 "compose" => d.compose = vec![v.clone()],
                 "sentry" => d.sentry = Some(v.clone()),
+                "env" => { d.envs.insert("prod".into(), v.clone()); }
+                "env_name" => { d.envs.insert(v.clone(), "prod-*".into()); }
                 other => panic!("no field {other}"),
             }
             let (kept, out) = keep(d);
@@ -497,6 +525,43 @@ mod tests {
             assert_eq!(out, want, "{field} = {v:?}");
             assert_eq!(kept.is_empty(), !want.is_empty(), "{field} = {v:?}");
         }
+    }
+
+    #[test]
+    fn envs_read_inline_or_as_their_own_table() {
+        let inline = parse_deploy("[deploy]\nenvs = { prod = \" prod-* \", staging = \"staging\", bad = \"v[0-9]*\", \"-x\" = \"a b\", n = 3 }\n").unwrap();
+        assert_eq!(inline.envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(), [("prod", "prod-*"), ("staging", "staging")], "a glob or a word; a wrong type drops that value");
+        let table = parse_deploy("[deploy.envs]\n\"Production – ui\" = \"prod-*\"\n").unwrap();
+        assert_eq!(table.envs.keys().collect::<Vec<_>>(), ["Production – ui"]);
+        assert!(!table.names_prod(), "a tag convention names no address");
+        assert_eq!(parse_deploy("[deploy]\nenvs = \"prod\"\n"), None, "only a table is a convention");
+        let long = "x".repeat(65);
+        assert!(parse_deploy(&format!("[deploy]\nenvs = {{ {long} = \"v*\" }}\n")).is_none(), "over 64 characters");
+        assert!(parse_deploy("[deploy.envs]\n\"a\\u0007b\" = \"v*\"\n").is_none(), "a control character would reach a prefill");
+    }
+
+    #[test]
+    fn envs_are_edited_key_by_key() {
+        let dir = scratch_dir();
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        let before = "[deploy]\nhost = \"prod-1\"\n\n[deploy.envs]\n# the release job moves this tag\nprod = \"production\" # moved by deploy.sh\nbad = \"v[0-9]*\"\nold = \"old-*\"\n";
+        std::fs::write(path_of(&s(&dir)), before).unwrap();
+        let shown = read(&s(&dir)).unwrap();
+        assert_eq!(shown.envs.keys().collect::<Vec<_>>(), ["old", "prod"], "the proposal never sees a refused value");
+        write_deploy(s(&dir), shown.clone(), false).unwrap();
+        assert_eq!(std::fs::read_to_string(path_of(&s(&dir))).unwrap(), before, "unchanged writes nothing");
+        let mut d = shown;
+        d.envs.remove("old");
+        d.envs.insert("staging".into(), "staging-*".into());
+        write_deploy(s(&dir), d.clone(), false).unwrap();
+        let text = std::fs::read_to_string(path_of(&s(&dir))).unwrap();
+        assert!(text.contains("prod = \"production\" # moved by deploy.sh") && text.contains("# the release job moves this tag"), "a kept entry keeps its comment: {text}");
+        assert!(text.contains("bad = \"v[0-9]*\"") && !text.contains("old-*"), "only a shown entry the proposal left out goes: {text}");
+        assert_eq!(parse_deploy(&text), Some(d.clone()));
+        d.envs.clear();
+        write_deploy(s(&dir), d, false).unwrap();
+        let text = std::fs::read_to_string(path_of(&s(&dir))).unwrap();
+        assert!(text.contains("bad = \"v[0-9]*\"") && !text.contains("production"), "what the read dropped is never removed: {text}");
     }
 
     #[test]
@@ -734,6 +799,7 @@ mod tests {
         let d = DeployConfig {
             compose: vec!["api".into(), "worker".into()], sentry: Some("acme/api".into()),
             version_url: Some("https://api.example.com/version".into()),
+            envs: [("prod".to_string(), "prod-*".to_string()), ("Production – ui".to_string(), "ui-*".to_string())].into_iter().collect(),
             ..cfg("prod-1", &[("app", "https://app.example.com"), ("api", "https://api.example.com/health")])
         };
         set_deploy(&mut doc, &DeployConfig::default(), &d).unwrap();

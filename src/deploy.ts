@@ -1,9 +1,11 @@
 // The setup rules of `[deploy]` and `[maintenance]` (docs/maintenance.md): what the agent is asked, which
 // of its values may be kept, and how a table reads in a dialog and a settings row. Rust writes them.
 
-/** Where a project runs. `host` is an ssh alias and `sentry` an org/project: nothing here is a secret. */
+/** Where a project runs. `host` is an ssh alias and `sentry` an org/project: nothing here is a secret.
+ *  `envs` maps an environment to the tag, or `*` glob, that marks what it runs. */
 export interface DeployCfg {
   host: string | null; compose: string[]; urls: Record<string, string>; sentry: string | null; versionUrl: string | null;
+  envs: Record<string, string>;
 }
 /** What `propose_deploy` hands back, unchecked, with one reason per value. */
 export interface DeployProposal { deploy: DeployCfg; why: string[] }
@@ -15,15 +17,15 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const strOr = (v: unknown): string | null => typeof v === "string" && v.trim() ? v : null;
 
 export const isEmptyDeploy = (d: DeployCfg): boolean =>
-  !d.host && !d.compose.length && !Object.keys(d.urls).length && !d.sentry && !d.versionUrl;
+  !d.host && !d.compose.length && !Object.keys(d.urls).length && !d.sentry && !d.versionUrl && !Object.keys(d.envs).length;
 
 /** The wire's table, or null for none: a wrong shape drops that value, never the rest. */
 export function narrowDeploy(raw: unknown): DeployCfg | null {
   if (!isObj(raw)) return null;
-  const urls = isObj(raw.urls) ? Object.fromEntries(Object.entries(raw.urls).filter((e): e is [string, string] => typeof e[1] === "string")) : {};
+  const named = (v: unknown) => isObj(v) ? Object.fromEntries(Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string")) : {};
   const d: DeployCfg = {
     host: strOr(raw.host), compose: Array.isArray(raw.compose) ? raw.compose.filter((x): x is string => typeof x === "string") : [],
-    urls, sentry: strOr(raw.sentry), versionUrl: strOr(raw.versionUrl),
+    urls: named(raw.urls), sentry: strOr(raw.sentry), versionUrl: strOr(raw.versionUrl), envs: named(raw.envs),
   };
   return isEmptyDeploy(d) ? null : d;
 }
@@ -33,6 +35,8 @@ const isWord = (v: string) => v !== "" && !v.startsWith("-") && !/\s/.test(v);
 const isHttp = (u: string) => /^https?:\/\/\S+$/i.test(u);
 const PART = "[A-Za-z0-9][A-Za-z0-9._-]*";
 const isOrgProject = (s: string) => new RegExp(`^${PART}/${PART}$`).test(s);
+// An environment's name reaches a prefilled brief, so it may hold no control character.
+const isEnvName = (k: string) => k !== "" && [...k].length <= 64 && !/\p{Cc}/u.test(k);
 
 /** The values Apply may write, and one line for each it may not. */
 export function checkDeploy(p: DeployProposal): { deploy: DeployCfg; dropped: string[] } {
@@ -50,6 +54,9 @@ export function checkDeploy(p: DeployProposal): { deploy: DeployCfg; dropped: st
           && keep(!n.includes(":"), `url name "${n}" may not hold ':'`))),
       sentry: sentry && keep(isOrgProject(sentry), `sentry = "${sentry}" is not org/project`) ? sentry : null,
       versionUrl: versionUrl && keep(isHttp(versionUrl), `version_url = "${versionUrl}" is not an http(s) address`) ? versionUrl : null,
+      envs: Object.fromEntries(Object.entries(d.envs).map(([k, p]) => [k.trim(), p.trim()] as const)
+        .filter(([k, p]) => keep(isEnvName(k), `env "${k}" is not a name`)
+          && keep(isTagGlob(p), `envs.${k} = "${p}" is not a tag glob: * is its only wildcard`))),
     },
     dropped,
   };
@@ -58,10 +65,11 @@ export function checkDeploy(p: DeployProposal): { deploy: DeployCfg; dropped: st
 /** One line for the project settings row; empty when there is no table. */
 export function deploySummary(d: DeployCfg | null): string {
   if (!d) return "";
-  const n = Object.keys(d.urls).length;
+  const n = Object.keys(d.urls).length, e = Object.keys(d.envs).length;
   return [
     d.host && `on ${d.host}`, d.compose.length && `compose ${d.compose.join(", ")}`,
     n && `${n} address${n === 1 ? "" : "es"}`, d.sentry && `errors in ${d.sentry}`, d.versionUrl && "a version endpoint",
+    e && `${e} environment${e === 1 ? "" : "s"} by tag`,
   ].filter(Boolean).join(" · ");
 }
 
@@ -71,9 +79,11 @@ const tkey = (k: string) => /^[A-Za-z0-9_-]+$/.test(k) ? k : tq(k);
 
 /** The table as TOML, value for value: the agent keeps only what it is shown. */
 export function deployToml(d: DeployCfg): string {
-  const urls = Object.entries(d.urls).map(([n, u]) => `${tkey(n)} = ${tq(u)}`).join(", ");
+  const pairs = (m: Record<string, string>) => Object.entries(m).map(([n, u]) => `${tkey(n)} = ${tq(u)}`).join(", ");
+  const urls = pairs(d.urls), envs = pairs(d.envs);
   return ["[deploy]", d.host && `host = ${tq(d.host)}`, d.compose.length && `compose = [${d.compose.map(tq).join(", ")}]`,
     urls && `urls = { ${urls} }`, d.sentry && `sentry = ${tq(d.sentry)}`, d.versionUrl && `version_url = ${tq(d.versionUrl)}`,
+    envs && `envs = { ${envs} }`,
   ].filter(Boolean).join("\n");
 }
 
@@ -89,6 +99,7 @@ export function deployLosses(current: DeployCfg | null, next: DeployCfg): string
   for (const [n, u] of Object.entries(current.urls)) one(`urls.${n}`, u, next.urls[n] ?? null);
   one("sentry", current.sentry, next.sentry);
   one("version_url", current.versionUrl, next.versionUrl);
+  for (const [k, p] of Object.entries(current.envs)) one(`envs.${k}`, p, next.envs[k] ?? null);
   return out;
 }
 
@@ -106,11 +117,12 @@ export function deployPrompt(current: DeployCfg | null): string {
     "- urls: an inline table, name = URL, of the public addresses it serves: the app itself, and a health endpoint if it has one.",
     "- sentry: \"org/project\" if the code reports errors to an error tracker configured with an organisation and a project.",
     "- version_url: a URL that answers with the running version, if the code serves one.",
+    "- envs: an inline table, environment = tag, when the project marks what it deploys with git tags (CI that deploys on `push: tags: ['prod-*']`, a script that runs `git tag -f production`): the tag, or a glob with * for a series. Leave it out when deploys are not tagged.",
     "Leave a field out when the files do not support it. Never write a token, password, key or any other secret.",
     now ? `The current table is below. Repeat every value in it that is still right, even one the files do not show: a value you leave out is removed.\n\`\`\`toml\n${now}\n\`\`\``
       : "There is none yet.",
     "",
-    "After the block write a line containing only WHY, then one line per value starting with \"- host:\", \"- compose:\", \"- urls:\", \"- sentry:\" or \"- version_url:\" saying which file and lines it is based on. Write nothing else.",
+    "After the block write a line containing only WHY, then one line per value starting with \"- host:\", \"- compose:\", \"- urls:\", \"- sentry:\", \"- version_url:\" or \"- envs:\" saying which file and lines it is based on. Write nothing else.",
   ].join("\n");
 }
 
@@ -126,6 +138,8 @@ export function deployText(p: DeployProposal, checked: { deploy: DeployCfg; drop
   if (Object.keys(d.urls).length && why(p, "urls")) lines.push(`  ${why(p, "urls")}`);
   if (d.sentry) lines.push(`- \`sentry = "${d.sentry}"\`${said(p, "sentry")}`);
   if (d.versionUrl) lines.push(`- \`version_url = "${d.versionUrl}"\`${said(p, "version_url")}`);
+  for (const [k, g] of Object.entries(d.envs)) lines.push(`- env ${k}: tagged \`${g}\``);
+  if (Object.keys(d.envs).length && why(p, "envs")) lines.push(`  ${why(p, "envs")}`);
   const out = [lines.length ? `For \`[deploy]\` in \`.episko/episko.toml\`:\n\n${lines.join("\n")}` : "Claude found nothing it could support for `[deploy]`."];
   const lost = lines.length ? deployLosses(current, d) : [];
   if (lost.length) out.push(`Changes what it says now:\n\n${lost.map((x) => `- ${x}`).join("\n")}`);

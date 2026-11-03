@@ -202,6 +202,57 @@ pub(crate) struct Runtime {
     pub(crate) url: Option<String>,
 }
 
+/// One vocabulary for a deployment (`maint_repo::norm_deploy` is the only map into it).
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DeployState {
+    Live,
+    Fail,
+    Running,
+    Waiting,
+    Inactive,
+    Gone,
+    Unknown,
+}
+
+/// What an environment's name says it is (`maint_git::env_tier`); the raw name stays beside it.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum EnvTier {
+    Production,
+    Staging,
+    Preview,
+    Other,
+}
+
+/// An attempt newer than what is live; `url` is its log.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeployAttempt {
+    pub(crate) state: DeployState,
+    pub(crate) raw: String,
+    pub(crate) sha: String,
+    pub(crate) at: Option<u64>,
+    pub(crate) url: Option<String>,
+}
+
+/// One environment. `sha: None` is nothing live found; `behind: None` is a lag nobody counted, never 0.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Deployed {
+    pub(crate) env: String,
+    pub(crate) tier: EnvTier,
+    pub(crate) sha: Option<String>,
+    pub(crate) tag: Option<String>,
+    pub(crate) branch: Option<String>,
+    pub(crate) at: Option<u64>, // went live; None for a lightweight tag, whose commit date is no deploy time
+    pub(crate) url: Option<String>,
+    pub(crate) last: Option<DeployAttempt>,
+    pub(crate) behind: Option<u32>,
+    pub(crate) behind_at: Option<u64>, // the oldest trunk commit not live
+    pub(crate) ahead: Option<u32>,
+}
+
 /// One run in which a job failed and was run again on the same commit.
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +287,7 @@ pub(crate) enum Facts {
     Release(ReleaseFacts),
     Releases { latest: Option<ForgeRelease>, count: u32 },
     Changelog { unreleased: Option<u32>, latest: Option<String>, latest_at: Option<u64> },
+    Deployments { trunk: Option<String>, envs: Vec<Deployed>, fetched_at: Option<u64> },
     Hygiene(Hygiene),
     Work { issues: u32, prs: u32, review_requested: Option<u32> },
     Probes { items: Vec<Probe> },
@@ -249,7 +301,7 @@ impl Facts {
             Facts::CiRuns { .. } | Facts::CiReruns { .. } => Facet::Ci,
             Facts::Advisories { .. } | Facts::Runtimes { .. } => Facet::Security,
             Facts::UpdatePrs { .. } => Facet::Deps,
-            Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } => Facet::Release,
+            Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } | Facts::Deployments { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
             Facts::Work { .. } => Facet::Work,
             Facts::Probes { .. } => Facet::Prod,
@@ -367,6 +419,7 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "rel.last",
     "rel.published",
     "rel.changelog",
+    "rel.deployed",
     "sec.dependency",
     "sec.code",
     "sec.secret",
@@ -382,15 +435,17 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
 ];
 
 /// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and
-/// `deploy.urls`, an address in `[deploy]`.
+/// `[deploy]`'s: `deploy.urls` an address, `deploy.envs` a tag convention.
 const NEEDS: &[&str] = &[
     "sarif",
     "deploy.urls",
+    "deploy.envs",
 ];
 
 fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
     match key {
         "deploy.urls" => deploy.is_some_and(|d| !d.targets().is_empty()),
+        "deploy.envs" => deploy.is_some_and(|d| !d.envs().is_empty()),
         k => cfg.has(k),
     }
 }
@@ -628,7 +683,7 @@ fn ref_word(v: &str) -> bool {
 }
 
 // `glob_match`'s dialect: `describe --match` would read any other wildcard as wildmatch.
-fn tag_glob(v: &str) -> bool {
+pub(crate) fn tag_glob(v: &str) -> bool {
     data_arg(v).is_ok() && !v.contains(['?', '[', ']', '\\'])
 }
 
@@ -895,9 +950,10 @@ fn detect_now(root: &str) -> Detection {
                 .map(|found| Marker { facet: m.facet, label: m.label.replace("{host}", &host), found })
         })
         .collect();
-    // A table nothing reads yet must not be drawn as "no deploy": it is found, and said so.
+    // A key a prod source would read, with none reading it, must not be drawn as "no deploy": it is
+    // found, and said so. `envs` alone is Release's: there is no address to miss.
     let prod_read = sources.iter().any(|id| MANIFEST.sources[id.as_str()].facet == Facet::Prod);
-    if deploy.is_some() && !prod_read && !facet_off(&config, Facet::Prod) {
+    if deploy.as_ref().is_some_and(|d| d.names_prod()) && !prod_read && !facet_off(&config, Facet::Prod) {
         markers.push(Marker { facet: Facet::Prod, label: "[deploy]".into(), found: vec![".episko/episko.toml".into()] });
     }
     Detection { repo_root, forge, sources, markers, config, deploy }
@@ -1381,7 +1437,9 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "git-local", read: crate::maint_git::git_local },
     SourceDef { id: "git-tags", read: crate::maint_git::git_tags },
     SourceDef { id: "changelog", read: crate::maint_git::changelog },
+    SourceDef { id: "deploy-tags", read: crate::maint_git::deploy_tags },
     SourceDef { id: "github-releases", read: crate::maint_repo::github_releases },
+    SourceDef { id: "github-deployments", read: crate::maint_repo::github_deployments },
     SourceDef { id: "github-work", read: crate::maint_repo::github_work },
     SourceDef { id: "gitlab-work", read: crate::maint_repo::gitlab_work },
     SourceDef { id: "http-probe", read: crate::deploy::http_probe },
@@ -1645,7 +1703,7 @@ mod tests {
         git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1.0"]);
         commit(&dir, "two");
         write(&dir, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n+ a thing\n\n## 1.0 — 2026-10-01\n+ first\n");
-        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nurls = { app = \"https://app.example.com\" }\n");
+        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nurls = { app = \"https://app.example.com\" }\nenvs = { prod = \"v*\" }\n");
         write(&dir, "reports/scan.sarif", "{\"version\": \"2.1.0\", \"runs\": []}");
         dir
     }
@@ -2133,7 +2191,7 @@ mod tests {
     fn sources_follow_files_and_config() {
         let gh = ["dependabot-alerts", "github-code-scanning", "github-secret-scanning", "dependabot-prs", "renovate-prs"];
         let dir = repo_with("https://github.com/a/b.git", &[("CHANGELOG.md", "# Changelog\n")]);
-        let rest = ["git-local", "git-tags", "changelog", "github-releases", "github-work"];
+        let rest = ["git-local", "git-tags", "changelog", "github-releases", "github-deployments", "github-work"];
         assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &rest].concat());
         write(&dir, ".episko/episko.toml", "[maintenance]\nsources = { release = [\"changelog\"] }\n");
         assert_eq!(detect(&s(&dir), true).sources, [&gh[..], &["git-local", "changelog", "github-work"]].concat());
@@ -2180,6 +2238,24 @@ host = \"-oProxyCommand=x\"
         write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\nurls = { app = \"https://app.example.com\" }\n");
         let d = detect(&s(&dir), true);
         assert!(d.sources.iter().any(|x| x == "http-probe") && !labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+    }
+
+    /// A tag convention is what `deploy-tags` reads: it says nothing about where production answers.
+    #[test]
+    fn a_table_holding_only_envs_is_a_release_source_and_no_prod_marker() {
+        let dir = repo_with("https://gitlab.com/a/b.git", &[(".episko/episko.toml", "[deploy]\nenvs = { prod = \"prod-*\" }\n")]);
+        let d = detect(&s(&dir), true);
+        assert!(d.deploy.is_some() && d.sources.iter().any(|x| x == "deploy-tags"), "{:?}", d.sources);
+        assert!(d.markers.iter().all(|m| m.facet != Facet::Prod), "{:?}", labels(&d));
+        assert!(needs_met("deploy.envs", &d.config, d.deploy.as_ref()) && !needs_met("deploy.urls", &d.config, d.deploy.as_ref()));
+        write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\n");
+        let d = detect(&s(&dir), true);
+        assert!(!d.sources.iter().any(|x| x == "deploy-tags"), "no convention, no source: {:?}", d.sources);
+        assert!(labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+        write(&dir, ".episko/episko.toml", "[deploy]\nsentry = \"acme/api\"\nenvs = { prod = \"prod-*\" }\n");
+        assert!(labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "a key only a prod source reads");
+        write(&dir, ".episko/episko.toml", "[deploy]\ncompose = [\"api\"]\n");
+        assert!(!labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "services alone name nothing to check");
     }
 
     /// A scan never touches the user's infrastructure, forced or with the public opt-in; a click does.
@@ -2274,6 +2350,21 @@ host = \"-oProxyCommand=x\"
             name: "app".into(), url: "https://app.example.com".into(), code: Some(200), ms: Some(120),
             cert_not_after: Some(1_795_000_000), err: None,
         };
+        let blank = |env: &str, tier: EnvTier| Deployed {
+            env: env.into(), tier, sha: Some("a".repeat(40)), tag: None, branch: None, at: Some(1_789_000_000), url: None,
+            last: None, behind: None, behind_at: None, ahead: None,
+        };
+        let deployments = Facts::Deployments { trunk: Some("origin/main".into()), fetched_at: Some(1_790_000_000), envs: vec![
+            Deployed {
+                tag: Some("v1.2.0".into()), branch: Some("main".into()), url: Some("https://app.example.com".into()),
+                behind: Some(23), behind_at: Some(1_789_000_100), ahead: Some(0),
+                last: Some(DeployAttempt { state: DeployState::Fail, raw: "FAILURE".into(), sha: "b".repeat(40), at: Some(1_789_900_000), url: Some("https://ci.example/run/9".into()) }),
+                ..blank("production", EnvTier::Production)
+            },
+            Deployed { behind: Some(0), ahead: Some(0), ..blank("Preview – ui", EnvTier::Preview) },
+            blank("staging", EnvTier::Staging),
+            Deployed { sha: None, at: None, ..blank("automations", EnvTier::Other) },
+        ] };
         let runtimes = vec![Runtime {
             product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
             eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
@@ -2293,6 +2384,7 @@ host = \"-oProxyCommand=x\"
             ok("renovate-prs", Facet::Deps, Cost::Forge, Facts::UpdatePrs { bot: "renovate".into(), configured: true, prs: vec![update_pr], dashboard: Some(7) }),
             ok("git-tags", Facet::Release, Cost::Local, Facts::Release(release)),
             ok("github-releases", Facet::Release, Cost::Forge, Facts::Releases { latest: Some(published), count: 9 }),
+            ok("github-deployments", Facet::Release, Cost::Forge, deployments),
             ok("changelog", Facet::Release, Cost::Local, Facts::Changelog { unreleased: Some(3), latest: Some("1.2.0".into()), latest_at: Some(1_788_998_400) }),
             ok("git-local", Facet::Git, Cost::Local, Facts::Hygiene(hygiene)),
             ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: Some(1) }),
@@ -2324,6 +2416,7 @@ compose = [\"api\", \"worker\"]
 urls = { app = \"https://app.example.com\" }
 sentry = \"acme/api\"
 version_url = \"https://app.example.com/version\"
+envs = { prod = \"prod-*\" }
 "),
         };
         (det, reports)
@@ -2340,6 +2433,7 @@ version_url = \"https://app.example.com/version\"
         "release",
         "releases",
         "changelog",
+        "deployments",
         "hygiene",
         "work",
         "probes",
@@ -2367,6 +2461,7 @@ version_url = \"https://app.example.com/version\"
             Facts::Release(_) => "release",
             Facts::Releases { .. } => "releases",
             Facts::Changelog { .. } => "changelog",
+            Facts::Deployments { .. } => "deployments",
             Facts::Hygiene(_) => "hygiene",
             Facts::Work { .. } => "work",
             Facts::Probes { .. } => "probes",
@@ -2516,15 +2611,16 @@ version_url = \"https://app.example.com/version\"
         write(&dir, ".episko/episko.toml", "[deploy]\nurls = { app = \"https://old.example\" }\n");
         let key = root_key(&s(&dir));
         let held = |id: &str| REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&(key.clone(), id.into(), String::new())));
-        for id in ["http-probe", "git-tags"] {
+        for id in ["http-probe", "deploy-tags", "git-tags"] {
             REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
                 .insert((key.clone(), id.into(), String::new()), (Instant::now(), report(id, None, Coverage::NotRun)));
         }
         let urls = |u: &str| serde_json::from_value(serde_json::json!({ "urls": { "app": u } })).unwrap();
         crate::deploy::write_deploy(s(&dir), urls("https://old.example"), false).unwrap();
-        assert!(held("http-probe"), "an unchanged file keeps the probe");
+        assert!(held("http-probe") && held("deploy-tags"), "an unchanged file keeps both");
         crate::deploy::write_deploy(s(&dir), urls("https://new.example"), false).unwrap();
         assert!(!held("http-probe"), "the old addresses' answers are not served as the new ones'");
+        assert!(!held("deploy-tags"), "a tag convention is [deploy] too");
         assert!(held("git-tags"), "a read that never looks at [deploy] stays");
     }
 

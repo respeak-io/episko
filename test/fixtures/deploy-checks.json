@@ -1,5 +1,5 @@
 {
-  "note": "One table for deploy.rs's keep and deploy.ts's checkDeploy: `refused` is the line both must say, null keeps the value. A url case is named app; a url_name case names https://app.example.com.",
+  "note": "One table for deploy.rs's keep and deploy.ts's checkDeploy: `refused` is the line both must say, null keeps the value. A url case is named app; a url_name case names https://app.example.com. An env case is named prod; an env_name case is tagged prod-*.",
   "cases": [
     { "field": "url", "value": "https://app.example.com", "refused": null },
     { "field": "url", "value": "HTTPS://x.example", "refused": null },
@@ -22,6 +22,15 @@
     { "field": "sentry", "value": "acme", "refused": "sentry = \"acme\" is not org/project" },
     { "field": "sentry", "value": "a/b/c", "refused": "sentry = \"a/b/c\" is not org/project" },
     { "field": "sentry", "value": "-a/b", "refused": "sentry = \"-a/b\" is not org/project" },
-    { "field": "sentry", "value": "acme/", "refused": "sentry = \"acme/\" is not org/project" }
+    { "field": "sentry", "value": "acme/", "refused": "sentry = \"acme/\" is not org/project" },
+    { "field": "env", "value": "prod-*", "refused": null },
+    { "field": "env", "value": "production", "refused": null },
+    { "field": "env", "value": "v[0-9]*", "refused": "envs.prod = \"v[0-9]*\" is not a tag glob: * is its only wildcard" },
+    { "field": "env", "value": "-x", "refused": "envs.prod = \"-x\" is not a tag glob: * is its only wildcard" },
+    { "field": "env", "value": "a b", "refused": "envs.prod = \"a b\" is not a tag glob: * is its only wildcard" },
+    { "field": "env_name", "value": "Production – ui", "refused": null },
+    { "field": "env_name", "value": "", "refused": "env \"\" is not a name" },
+    { "field": "env_name", "value": "a\u0007b", "refused": "env \"a\u0007b\" is not a name" },
+    { "field": "env_name", "value": "0123456789012345678901234567890123456789012345678901234567890123x", "refused": "env \"0123456789012345678901234567890123456789012345678901234567890123x\" is not a name" }
   ]
 }

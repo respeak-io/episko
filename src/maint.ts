@@ -48,6 +48,17 @@ export interface WtAge { path: string; branch: string; at: number | null }
 export interface Rerun { sha: string; branch: string; at: number | null; passed: boolean; url: string | null }
 /** A job that passed on a re-run of its commit at least once in the window; `seen` newest first. */
 export interface RerunJob { workflow: string; job: string; reruns: number; passed: number; steps: string[]; seen: Rerun[] }
+export const DEPLOY_STATES = ["live", "fail", "running", "waiting", "inactive", "gone", "unknown"] as const;
+export type DeployState = (typeof DEPLOY_STATES)[number];
+export const ENV_TIERS = ["production", "staging", "preview", "other"] as const;
+export type EnvTier = (typeof ENV_TIERS)[number];
+/** An attempt newer than what is live; `url` is its log. */
+export interface DeployAttempt { state: DeployState; raw: string; sha: string; at: number | null; url: string | null }
+/** One environment. `sha: null` is nothing live found; `behind: null` a lag nobody counted, never 0. */
+export interface Deployed {
+  env: string; tier: EnvTier; sha: string | null; tag: string | null; branch: string | null; at: number | null; url: string | null;
+  last: DeployAttempt | null; behind: number | null; behindAt: number | null; ahead: number | null;
+}
 
 // Every time is unix seconds, as the wire carries it.
 export type Facts =
@@ -59,6 +70,7 @@ export type Facts =
       oldestUnreleasedAt: number | null; tagsSeen: number; fetchedAt: number | null }
   | { kind: "releases"; latest: ForgeRelease | null; count: number }
   | { kind: "changelog"; unreleased: number | null; latest: string | null; latestAt: number | null }
+  | { kind: "deployments"; trunk: string | null; envs: Deployed[]; fetchedAt: number | null }
   | { kind: "hygiene"; trunk: string | null; unpushed: number | null; localOnly: string[]; merged: string[];
       gone: string[]; branches: BranchAge[]; worktrees: WtAge[]; fetchedAt: number | null }
   | { kind: "work"; issues: number; prs: number; reviewRequested: number | null } // null: the search failed
@@ -76,6 +88,7 @@ export const FACT_FACET: Record<FactKind, Facet> = {
   release: "release",
   releases: "release",
   changelog: "release",
+  deployments: "release",
   hygiene: "git",
   work: "work",
   probes: "prod",
@@ -124,6 +137,12 @@ const isRuntime = shape({
   latest: opt(str), newest: opt(str), file: str, url: opt(str),
 });
 
+const isDeployed = shape({
+  env: str, tier: oneOf(ENV_TIERS), sha: opt(str), tag: opt(str), branch: opt(str), at: opt(num), url: opt(str),
+  last: opt(shape({ state: oneOf(DEPLOY_STATES), raw: str, sha: str, at: opt(num), url: opt(str) })),
+  behind: opt(num), behindAt: opt(num), ahead: opt(num),
+});
+
 const FACT_SHAPES: Record<FactKind, Is> = {
   ciRuns: shape({ branch: str, runs: list(isCiRun) }),
   ciReruns: shape({ days: num, since: opt(num), runs: num, reran: num, jobs: list(shape({ workflow: str, job: str, reruns: num, passed: num,
@@ -133,6 +152,7 @@ const FACT_SHAPES: Record<FactKind, Is> = {
   release: shape({ trunk: opt(str), tag: opt(str), tagAt: opt(num), since: num, oldestUnreleasedAt: opt(num), tagsSeen: num, fetchedAt: opt(num) }),
   releases: shape({ latest: opt(shape({ tag: str, name: str, at: opt(num), url: opt(str) })), count: num }),
   changelog: shape({ unreleased: opt(num), latest: opt(str), latestAt: opt(num) }),
+  deployments: shape({ trunk: opt(str), envs: list(isDeployed), fetchedAt: opt(num) }),
   hygiene: shape({
     trunk: opt(str), unpushed: opt(num), localOnly: list(str), merged: list(str), gone: list(str),
     branches: list(shape({ name: str, at: num })), worktrees: list(shape({ path: str, branch: str, at: opt(num) })), fetchedAt: opt(num),
@@ -213,6 +233,9 @@ export interface MaintThresholds {
   fetchStaleDays: number; // release and git counts are as old as the last fetch
   eolWarnDays: number; // a runtime whose cycle ends sooner is drifting
   flakyReruns: number; // a job that passed on a re-run of its own commit this often in the window is flaky
+  deployBehindCommits: number; // production this many trunk commits behind is drifting
+  deployBehindDays: number; // or whose oldest commit not live is this old
+  deployIdleDays: number; // no attempt for this long: listed, never judged
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
   unreleasedCommits: 30,
@@ -224,6 +247,9 @@ export const MAINT_DEFAULTS: MaintThresholds = {
   fetchStaleDays: 7,
   eolWarnDays: 90,
   flakyReruns: 2,
+  deployBehindCommits: 20,
+  deployBehindDays: 14,
+  deployIdleDays: 180,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   unreleasedCommits: "unreleased_commits",
@@ -235,6 +261,9 @@ const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   fetchStaleDays: "fetch_stale_days",
   eolWarnDays: "eol_warn_days",
   flakyReruns: "flaky_reruns",
+  deployBehindCommits: "deploy_behind_commits",
+  deployBehindDays: "deploy_behind_days",
+  deployIdleDays: "deploy_idle_days",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -310,7 +339,7 @@ export function whyWord(c: Coverage, facet: Facet): string {
 
 /** A facet's verdict from one kind of facts. `blind`: what it read cannot answer the facet alone. */
 export interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean }
-interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: CiReport[] }
+interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: CiReport[]; tagged?: readonly string[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
 const kinds = <K extends FactKind>(facts: Facts[], k: K): FactsOf<K>[] =>
@@ -488,6 +517,94 @@ function judgeRuntimes(items: readonly Runtime[], th: MaintThresholds, now: numb
 export const runtimeStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): RuntimeState[] =>
   judgeRuntimes(okFacts(inp, "security").flatMap((r) => r.facts.kind === "runtimes" ? r.facts.items : []), th, now);
 
+// ---------- deployments: what each environment runs ----------
+
+/** A newer attempt than what is live. Only a failure moves a level: no agent can answer a wait or a run. */
+export interface EnvAttempt { state: DeployState; text: string; level: Level; sha: string; age: number | null; url: string | null }
+/** One environment, merged across sources and judged. Previews are hidden, and every other tier is
+ *  listed; only production, and a staging that failed, may speak in the Release cell (`judged`). */
+export interface EnvState {
+  env: string; tier: EnvTier; source: string; trunk: string | null;
+  live: string | null; // its tag, else the short sha; null: nothing live found
+  sha: string | null; branch: string | null; age: number | null; url: string | null;
+  behind: number | null; behindAge: number | null; ahead: number | null; last: EnvAttempt | null;
+  idle: boolean; hidden: boolean; judged: boolean;
+  lag: Level; lagText: string; // what its distance from the trunk says alone, a failure aside
+  level: Level; text: string;
+}
+
+const FAIL_LEVEL: Record<EnvTier, Level> = { production: "bad", staging: "warn", preview: "info", other: "info" };
+
+function lagOf(e: Deployed, th: MaintThresholds, sec: number): Seg {
+  const prod = e.tier === "production", ahead = e.ahead ?? 0;
+  if (!e.sha) return ["muted", `${e.env}: nothing live`];
+  if (prod && ahead) return ["warn", `${e.env} off trunk`];
+  if (e.behind === null) return ["muted", `${e.env} behind unknown`];
+  if (!e.behind) return ahead ? ["info", `${e.env} ${ahead} ahead`] : ["ok", ""];
+  const far = e.behind >= th.deployBehindCommits || (e.behindAt !== null && sec - e.behindAt >= th.deployBehindDays * DAY);
+  return [prod && far ? "warn" : "info", `${e.env} ${e.behind} behind`];
+}
+
+// An idle environment is listed and never judged, so its old failure is history: muted, as its row is.
+function attemptOf(e: Deployed, idle: boolean, sec: number): EnvAttempt | null {
+  const a = e.last;
+  if (!a) return null;
+  const age = a.at === null ? null : sec - a.at, when = age === null ? "" : span(age);
+  const [level, text]: Seg = a.state === "fail" ? [FAIL_LEVEL[e.tier], `failed${when && ` ${when} ago`}`]
+    : a.state === "waiting" ? ["muted", `waiting${when && ` ${when}`}`]
+    : a.state === "running" ? ["muted", "deploying"] : ["muted", a.raw.toLowerCase()];
+  return { state: a.state, text, level: idle ? "muted" : level, sha: a.sha, age, url: a.url };
+}
+
+function judgeEnv({ source, trunk, e }: SeenEnv, tagged: ReadonlySet<string>, th: MaintThresholds, sec: number): EnvState {
+  const failed = e.last?.state === "fail", hidden = e.tier === "preview", newest = Math.max(e.at ?? 0, e.last?.at ?? 0);
+  const idle = !tagged.has(e.env.toLowerCase()) && newest > 0 && sec - newest > th.deployIdleDays * DAY;
+  const [lag, lagText] = lagOf(e, th, sec);
+  const [level, text]: Seg = idle ? ["info", `idle ${longSpan(sec - newest)}`] : failed ? [FAIL_LEVEL[e.tier], `${e.env} deploy failed`] : [lag, lagText];
+  return {
+    env: e.env, tier: e.tier, source, trunk, live: e.tag ?? (e.sha && e.sha.slice(0, 7)), sha: e.sha, branch: e.branch,
+    age: e.at === null ? null : sec - e.at, url: e.url, behind: e.behind, ahead: e.ahead,
+    behindAge: e.behindAt === null ? null : sec - e.behindAt, last: attemptOf(e, idle, sec), idle, hidden,
+    judged: !idle && !hidden && (e.tier === "production" || (e.tier === "staging" && failed)), lag, lagText, level, text,
+  };
+}
+
+type SeenEnv = { source: string; trunk: string | null; e: Deployed };
+// A clash keeps the one with a live commit, then the newer `at`, then the forge's; a newer failure stays either way.
+function mergeEnv(a: SeenEnv, b: SeenEnv): SeenEnv {
+  const forge = (x: SeenEnv) => findSource(x.source)?.cost === "forge", at = (x: SeenEnv) => x.e.at ?? 0;
+  const first = !a.e.sha !== !b.e.sha ? (a.e.sha ? a : b) : at(a) !== at(b) ? (at(a) > at(b) ? a : b) : forge(b) && !forge(a) ? b : a;
+  const other = first === a ? b : a, late = other.e.last && (other.e.last.at ?? 0) > at(first) ? other.e.last : null;
+  return { ...first, e: { ...first.e, last: first.e.last ?? late } };
+}
+
+function judgeEnvs(reps: readonly CiReport[], tagged: readonly string[], th: MaintThresholds, now: number): EnvState[] {
+  const by = new Map<string, SeenEnv>();
+  for (const { source, facts: f } of reps) {
+    if (f?.kind !== "deployments") continue;
+    for (const e of f.envs) {
+      const k = e.env.toLowerCase(), had = by.get(k), mine = { source, trunk: f.trunk, e };
+      by.set(k, had ? mergeEnv(had, mine) : mine);
+    }
+  }
+  const named = new Set(tagged.map((n) => n.toLowerCase()));
+  return [...by.values()].map((x) => judgeEnv(x, named, th, now / 1000))
+    .sort((a, b) => byRank(a, b) || ENV_TIERS.indexOf(a.tier) - ENV_TIERS.indexOf(b.tier) || a.env.localeCompare(b.env));
+}
+const taggedEnvs = (inp: MaintInput) => Object.keys(inp.det?.deploy?.envs ?? {});
+
+/** A project's environments as its release sources read them, worst first. */
+export const deployStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): EnvState[] =>
+  judgeEnvs(okFacts(inp, "release"), taggedEnvs(inp), th, now);
+/** A deployments list that hit its cap, or a read in part: its counts are floors and it vouches for nothing. */
+export const deploysCut = (inp: MaintInput): boolean => okFacts(inp, "release").some((r) => r.truncated && r.facts.kind === "deployments");
+/** What *Plan deploy* covers: production running other than the trunk. */
+export const envsToShip = (envs: readonly EnvState[]): EnvState[] =>
+  envs.filter((e) => !e.idle && e.tier === "production" && e.sha !== null && !!(e.behind || e.ahead));
+/** What a deploy's *Fix* covers: a failure production or staging has not got past. */
+export const envsFailed = (envs: readonly EnvState[]): EnvState[] =>
+  envs.filter((e) => !e.idle && e.last?.state === "fail" && (e.tier === "production" || e.tier === "staging"));
+
 // A bot nothing shows to be alive is silent, not healthy: open PRs are the only trace it leaves.
 const depsRule: Rule = (facts, c) => {
   const ups = kinds(facts, "updatePrs");
@@ -507,7 +624,7 @@ const depsRule: Rule = (facts, c) => {
   return prs.length ? { level: "info", text: `${count(prs.length, c)} PR${prs.length === 1 ? "" : "s"}`, tip } : { level: "ok", text: "", tip };
 };
 
-const releaseRule: Rule = (facts, c) => {
+const releaseHalf: Rule = (facts, c) => {
   const [rel] = kinds(facts, "release"), [pub] = kinds(facts, "releases"), [log] = kinds(facts, "changelog");
   const now = c.now / 1000, tip: string[] = [];
   if (log?.unreleased) tip.push(`CHANGELOG.md: ${plural(log.unreleased, "entry", "entries")} under Unreleased`);
@@ -526,6 +643,31 @@ const releaseRule: Rule = (facts, c) => {
   if (log?.unreleased) return { level: "info", text: `${log.unreleased} in Unreleased`, tip, asOf };
   if (log?.latest) return { level: "ok", text: `${log.latest}${log.latestAt ? `, ${span(now - log.latestAt)}` : ""}`, tip, asOf };
   return { level: "muted", text: rel ? "no tags" : facetDef("release").none, tip, asOf };
+};
+
+const envTip = (e: EnvState) => `${e.env}: ${[e.live ? `runs ${e.live}` : "nothing live found",
+  e.behind !== null && `${plural(e.behind, "commit")} behind ${e.trunk ?? "the trunk"}`, !!e.ahead && `${plural(e.ahead, "commit")} not on it`,
+  e.last?.text].filter(Boolean).join(", ")}`;
+// The worst environment that may speak; none is null, so a project with no deployments reads as it did.
+const deployHalf = (facts: Facts[], c: Ctx): Judged | null => {
+  const envs = judgeEnvs(c.reps, c.tagged ?? [], c.th, c.now).filter((e) => e.judged);
+  if (!envs.length) return null;
+  const asOf = kinds(facts, "deployments").find((d) => d.fetchedAt !== null)?.fetchedAt ?? null;
+  // A cut list cannot vouch for what it left out.
+  return { level: envs[0].level, text: envs[0].text, tip: envs.map(envTip), asOf, blind: c.reps.some((r) => r.truncated && r.facts?.kind === "deployments") };
+};
+const RELEASE_KINDS: readonly FactKind[] = ["release", "releases", "changelog"];
+// What the release half can vouch with: a tag read, or a published release or changelog that said something.
+const releaseSaid = (facts: Facts[]) => facts.some((f) => f.kind === "release" || (f.kind === "releases" && !!f.latest) || (f.kind === "changelog" && (!!f.unreleased || !!f.latest)));
+// A muted half yields to one with a verdict: production counted at 0 behind answers *no tags*. But with
+// no tag read to say that, a failed read beside it keeps the cell at can't check: nothing vouches for releases.
+const releaseRule: Rule = (facts, c) => {
+  const base = releaseHalf(facts, c), dep = deployHalf(facts, c);
+  if (!dep) return facts.some((f) => RELEASE_KINDS.includes(f.kind)) ? base : { ...base, blind: true };
+  const yields = (j: Judged) => j.level === "muted" ? { ...j, blind: true } : j;
+  const j = worseOf(yields(base), yields(dep));
+  const said = [base, dep].filter((x) => x.level !== "ok" && (x.level !== "muted" || j.level === "muted")).sort(byRank).map((x) => x.text);
+  return { ...j, text: said.join(" · ") || j.text, blind: !releaseSaid(facts) };
 };
 
 type HygieneFacts = FactsOf<"hygiene">;
@@ -650,7 +792,7 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const why = inp.skip?.includes(ranked[0].source) ? "skipped here" : whyWord(ranked[0].coverage, facet);
   if (!ok.length) return cell("cantCheck", "muted", why, [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
-  const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok });
+  const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok, tagged: taggedEnvs(inp) });
   if (unsure(j) && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
   const asOf = j.asOf ?? null;
   let { level, text } = j;
@@ -661,7 +803,8 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   }
   const fetched = age !== null ? [`as of last fetch ${span(age)} ago`] : [];
   const gaps = ok.flatMap((r) => r.gaps.map((g) => `${labelOf(r.source)}: ${g}`));
-  const capped = trunc ? ["a list hit its page cap, so counts are floors"] : [];
+  // A cut environment list has no figure in the cell to floor; its gap says what was listed.
+  const capped = ok.some((r) => r.truncated && r.facts!.kind !== "deployments") ? ["a list hit its page cap, so counts are floors"] : [];
   return cell("read", level, text, [...head, ...fetched, ...j.tip, ...notes, ...gaps, ...capped, ...found], fix, asOf);
 }
 
@@ -725,7 +868,7 @@ const KIND_VERB: Record<AdvisoryKind, Verb> = { dependency: "patch", code: "fix"
 
 // ---------- findings, the lines under a card ----------
 
-export type Verb = "fix" | "patch" | "rotate" | "upgrade" | "release" | "push" | "tidy" | "review" | "fetch" | "run" | "setup";
+export type Verb = "fix" | "patch" | "rotate" | "upgrade" | "release" | "deploy" | "push" | "tidy" | "review" | "fetch" | "run" | "setup";
 export interface Finding {
   root: string; facet: Facet; key: string; level: "bad" | "warn" | "info";
   text: string; detail: string; verb: Verb;
@@ -820,6 +963,23 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
     const drift = facts.since >= th.unreleasedCommits || old >= th.unreleasedDays * DAY;
     add("release", { key: "release", level: drift ? "warn" : "info", text: `${plural(facts.since, "commit")} since ${facts.tag}`,
       detail: old ? `oldest unreleased ${span(old)}` : "", verb: "release", source, ref: facts.tag });
+  }
+  // One Plan deploy over production and one Fix over the failures, as four advisories are one Patch.
+  const envs = deployStates(inp, th, now), ship = envsToShip(envs), broke = envsFailed(envs), cut = deploysCut(inp) ? "+" : "";
+  if (ship.length) {
+    const e = ship[0], many = ship.length > 1;
+    add("release", { key: "release:deploy", level: ship.some((x) => x.lag === "warn") ? "warn" : "info", verb: "deploy", source: e.source, ref: many ? null : e.env,
+      text: many ? `${ship.length}${cut} environments ${ship.every((x) => !x.ahead) ? "behind" : "not at the trunk"}`
+        : e.ahead ? `${e.env} runs ${plural(e.ahead, "commit")} not on ${e.trunk ?? "the trunk"}` : `${e.env} is ${plural(e.behind ?? 0, "commit")} behind`,
+      detail: many ? ship.slice(0, 3).map((x) => x.lagText).join(", ") + (ship.length > 3 ? " …" : "")
+        : [`runs ${e.live}`, e.ahead && e.behind ? `${e.behind} behind` : "", e.behindAge !== null ? `oldest undeployed ${span(e.behindAge)}` : ""].filter(Boolean).join(" · ") });
+  }
+  if (broke.length) {
+    const e = broke[0], many = broke.length > 1;
+    add("release", { key: "release:deploy-failed", level: broke.some((x) => x.tier === "production") ? "bad" : "warn", verb: "fix", source: e.source, ref: many ? null : e.env,
+      text: many ? `${broke.length}${cut} deploys failed` : `${e.env} deploy ${e.last!.text}`,
+      detail: many ? broke.slice(0, 3).map((x) => `${x.env} ${x.last!.text}`).join(", ") + (broke.length > 3 ? " …" : "")
+        : e.live ? `still running ${e.live}` : "nothing live found" });
   }
   for (const { source, facts } of okFacts(inp, "git")) {
     if (facts.kind !== "hygiene") continue;
@@ -993,6 +1153,7 @@ export const BOARD_IDS = [
   "packages",
   "ci",
   "flaky",
+  "deployments",
   "releases",
   "hygiene",
   "work",
@@ -1003,7 +1164,7 @@ export type BoardId = (typeof BOARD_IDS)[number];
 // snapshot's `ci:<workflow>` is CI's too.
 const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   ci: [["flaky", /^ci:flaky$/], ["ci", /^ci$|^ci:(?!setup$)/]],
-  release: [["releases", /^release$/]],
+  release: [["deployments", /^release:deploy(-failed)?$/], ["releases", /^release$/]],
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
@@ -1031,8 +1192,19 @@ export function projectPicks(tab: MaintTab, rows: readonly Finding[], projects: 
 // Muted is unknown ("never ran", "reviews unknown"), except a read that found the facet's none.
 const isNone = (x: Cell) => x.state === "none" || x.state === "off" || (x.state === "read" && x.level === "muted" && x.text === facetDef(x.facet).none);
 const isVerdict = (x: Cell) => x.state === "read" && x.level !== "muted" && x.level !== "unread";
-// CI's verdict is the default branch's: re-runs read beside a failed runs read speak for themselves and not for it.
-const vouched = (x: Cell, inp: MaintInput) => x.facet !== "ci" || x.state !== "read" || okFacts(inp, "ci").some((r) => r.facts.kind === "ciRuns");
+// A source that was asked and did not answer: neither one nobody asked (`notRun`) nor one skipped here.
+const readFailed = (inp: MaintInput, only: (id: string) => boolean) => (inp.det?.sources ?? []).some((id) => {
+  const s = inp.reports[id]?.coverage.state;
+  return only(id) && !inp.skip?.includes(id) && !!s && s !== "ok" && s !== "notRun";
+});
+// A verdict rests on its facet's first kind: re-runs beside a failed runs read, or environments beside a
+// failed release read, speak for themselves and not for it.
+const vouched = (x: Cell, inp: MaintInput) => {
+  if (x.state !== "read") return true;
+  const facts = okFacts(inp, x.facet).map((r) => r.facts);
+  if (x.facet === "ci") return facts.some((f) => f.kind === "ciRuns");
+  return x.facet !== "release" || releaseSaid(facts) || !readFailed(inp, (id) => findSource(id)?.facet === "release");
+};
 
 /** What an empty tab may claim: projects it reached a verdict on and projects with none of it set
  *  up. What the rest do not know is `coverGroups`'. */
@@ -1097,10 +1269,28 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
   for (const { path, inp, cells } of projects) {
     if (root !== null && path !== root) continue;
     const det = inp.det, th = clampMaint(det?.config.thresholds);
+    const explain = (facet: Facet, only?: (id: string) => boolean) => {
+      if (!det) return;
+      for (const id of det.sources) {
+        const r = inp.reports[id];
+        if ((findSource(id)?.facet ?? r?.facet) !== facet || (only && !only(id))) continue;
+        if (inp.skip?.includes(id)) { if (!only) add(path, { key: `${id}|skipped`, facet, source: id, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
+        if (!r || r.coverage.state === "ok" || r.coverage.state === "notRun") continue; // an offer, below
+        const fix = fixOf(r.coverage), url = settingsFor(r, det);
+        // Grouped by the fix where there is one: an account name in the reason must not split a row.
+        const key = `${id}|${r.coverage.state}|${fix ?? (r.coverage.state === "error" ? "" : covText(r.coverage))}`;
+        // Every off row collects links, so a first project with none cannot strip the rest of theirs.
+        add(path, { key, facet, source: id, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
+          fix ? { kind: "fix", fix } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
+      }
+    };
     for (const c of cells) {
       const facet = c.facet, label = facetDef(facet).label;
       const noRuns = isVerdict(c) && !vouched(c, inp);
-      if (FACET_TAB[facet] !== tab || (isVerdict(c) && !noRuns) || isNone(c)) continue;
+      if (FACET_TAB[facet] !== tab || isNone(c)) continue;
+      // A release verdict speaks for tags alone: a token refused everywhere must not look like no deployments.
+      if (c.state === "read" && facet === "release") explain(facet, (id) => !!findSource(id)?.sees.includes("rel.deployed"));
+      if (isVerdict(c) && !noRuns) continue;
       if (c.state === "past" || c.state === "unread" || !det) {
         const why = c.state === "past" ? "not checked this session" : "not read yet";
         add(path, { key: `${facet}|${c.state}`, facet, what: label, why, detail: "" });
@@ -1109,18 +1299,7 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
           add(path, { key: `marker:${m.label}`, facet, what: m.label, why: "nothing reads it yet", detail: `found ${m.found.join(", ") || "on this forge"}` });
         }
       } else if (c.state === "cantCheck" || noRuns) {
-        for (const id of det.sources) {
-          const r = inp.reports[id];
-          if ((findSource(id)?.facet ?? r?.facet) !== facet) continue;
-          if (inp.skip?.includes(id)) { add(path, { key: `${id}|skipped`, facet, source: id, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
-          if (!r || r.coverage.state === "ok" || r.coverage.state === "notRun") continue; // an offer, below
-          const fix = fixOf(r.coverage), url = settingsFor(r, det);
-          // Grouped by the fix where there is one: an account name in the reason must not split a row.
-          const key = `${id}|${r.coverage.state}|${fix ?? (r.coverage.state === "error" ? "" : covText(r.coverage))}`;
-          // Every off row collects links, so a first project with none cannot strip the rest of theirs.
-          add(path, { key, facet, source: id, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
-            fix ? { kind: "fix", fix } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
-        }
+        explain(facet);
       } else if (facet === "deps" && c.text === "silent") {
         // depsRule's silence, bot by bot: only a dated PR can say a bot has gone quiet.
         for (const { source, facts: f } of okFacts(inp, "deps")) {
@@ -1158,9 +1337,9 @@ const verbOf = (p: TabProject, key: string): Finding | null => p.rows.find((f) =
 const thOf = (p: TabProject) => clampMaint(p.inp.det?.config.thresholds);
 const rowRank = (l: Level) => HOST_RANK.indexOf(l);
 /** Projects whose facet some source answered, of the one kind its board counts where a facet has two. */
-const readOf = (ps: readonly TabProject[], facet: Facet, kind?: FactKind) =>
-  ps.filter((p) => okFacts(p.inp, facet).some((r) => !kind || r.facts.kind === kind)).length;
-const READ_KIND: Partial<Record<Facet, FactKind>> = { ci: "ciRuns" };
+const readOf = (ps: readonly TabProject[], facet: Facet, of?: readonly FactKind[]) =>
+  ps.filter((p) => okFacts(p.inp, facet).some((r) => !of || of.includes(r.facts.kind))).length;
+const READ_KIND: Partial<Record<Facet, readonly FactKind[]>> = { ci: ["ciRuns"], release: RELEASE_KINDS };
 
 /** The Security strip's buckets, a secret worse than any severity, as the cell has it. */
 export const SEV_BUCKETS = ["secret", ...SEVERITIES] as const;
@@ -1298,7 +1477,7 @@ function flakyIn(ps: readonly TabProject[], root: string | null, now: number): B
   const reps = mine.flatMap((p) => okFacts(p.inp, "ci").flatMap((r) => r.facts.kind === "ciReruns" ? [{ ...r, facts: r.facts }] : []));
   const days = Math.max(0, ...reps.map((r) => r.facts.days)), cut = reps.some((r) => r.truncated || r.facts.since !== null);
   return {
-    rows: flakyBoard(ps, root, now), read: readOf(mine, "ci", "ciReruns"), days,
+    rows: flakyBoard(ps, root, now), read: readOf(mine, "ci", ["ciReruns"]), days,
     runs: reps.reduce((n, r) => n + r.facts.runs, 0), reran: reps.reduce((n, r) => n + r.facts.reran, 0),
     cut, short: reps.some((r) => r.facts.since !== null),
     clear: cut ? "No flaky job in what could be read." : `No job needed a re-run to pass in ${days} days.`,
@@ -1336,6 +1515,24 @@ export function releaseBoard(ps: readonly TabProject[], root: string | null = nu
   const max = Math.max(1, ...out.map((r) => r.since));
   return out.map((r) => ({ ...r, ratio: r.since / max }))
     .sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.since - a.since || a.root.localeCompare(b.root));
+}
+
+export type DeployRow = EnvState & { root: string; verbs: Finding[] };
+/** One row per environment of each project: worst first, an idle one last, then by project, tier and
+ *  name. Previews are counted, not drawn. A row carries the verb of each line it is under. */
+export function deployBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): { rows: DeployRow[]; hidden: number; read: number; cut: boolean } {
+  const mine = within(ps, root), all = mine.flatMap((p) => {
+    const envs = deployStates(p.inp, thOf(p), now), ship = envsToShip(envs), broke = envsFailed(envs);
+    return envs.map((e): DeployRow => ({ ...e, root: p.path, verbs: [
+      ...(broke.includes(e) ? [verbOf(p, "release:deploy-failed")] : []), ...(ship.includes(e) ? [verbOf(p, "release:deploy")] : []),
+    ].filter((f): f is Finding => !!f) }));
+  });
+  const rank = (r: DeployRow) => r.idle ? HOST_RANK.length : rowRank(r.level);
+  return {
+    rows: all.filter((r) => !r.hidden).sort((a, b) => rank(a) - rank(b) || a.root.localeCompare(b.root)
+      || ENV_TIERS.indexOf(a.tier) - ENV_TIERS.indexOf(b.tier) || a.env.localeCompare(b.env)),
+    hidden: all.filter((r) => r.hidden).length, read: readOf(mine, "release", ["deployments"]), cut: mine.some((p) => deploysCut(p.inp)),
+  };
 }
 
 /** A hygiene count: zero is the grey dot (`ok`), null is unknown; `names` what it counts, for its tip. */
@@ -1411,6 +1608,10 @@ export interface Boards {
   eol: EolRow[];
   ci: CiBoardRow[];
   flaky: { rows: FlakyRow[]; read: number; days: number; runs: number; reran: number; cut: boolean; short: boolean; clear: string }; // read: projects re-runs were read for
+  deploys: DeployRow[];
+  deployHidden: number; // preview environments not drawn
+  deployRead: number; // projects a deployments source answered
+  deployCut: boolean; // a list hit its cap, or came back in part: more may exist than are drawn
   releases: RelRow[];
   hygiene: HygRow[];
   work: WorkRow[];
@@ -1432,6 +1633,10 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     eol: [],
     ci: [],
     flaky: { rows: [], read: 0, days: 0, runs: 0, reran: 0, cut: false, short: false, clear: "" },
+    deploys: [],
+    deployHidden: 0,
+    deployRead: 0,
+    deployCut: false,
     releases: [],
     hygiene: [],
     work: [],
@@ -1450,6 +1655,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   }
   if (tab === "delivery") Object.assign(b, { ci: ciBoard(ps, root, now), releases: releaseBoard(ps, root, now) });
   if (tab === "delivery") b.flaky = flakyIn(ps, root, now);
+  if (tab === "delivery") { const d = deployBoard(ps, root, now); Object.assign(b, { deploys: d.rows, deployHidden: d.hidden, deployRead: d.read, deployCut: d.cut }); }
   if (tab === "code") b.hygiene = hygieneBoard(ps, root, now);
   if (tab === "work") b.work = workBoard(ps, root);
   if (tab === "servers") {
@@ -1467,6 +1673,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.prs.map((r) => r.verb),
     ...b.ci.map((r) => r.verb),
     ...b.flaky.rows.map((r) => r.verb),
+    ...b.deploys.flatMap((r) => r.verbs),
     ...b.releases.map((r) => r.verb),
     ...b.hygiene.flatMap((r) => r.verbs),
     ...b.work.flatMap((r) => r.verbs),
@@ -1523,6 +1730,7 @@ const DOORS = {
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
   ci: { run: "url" },
   flaky: { passed: null, last: "url" }, // the newest failed attempt's log
+  deployments: { site: "url", behind: { to: "landed" }, log: "url" }, // its page, the commits it lacks, the newer attempt's log
   releases: { since: { to: "landed" }, changelog: null },
   hygiene: {
     unpushed: br("unpushed"), localOnly: br("localonly"), merged: br("merged"), gone: br("gone"), stale: br("untouched"),
@@ -1746,8 +1954,12 @@ export const snapFor = (snaps: MaintSnaps, root: string, account: string | null)
 
 const VERDICT: readonly CellState[] = ["read", "none", "off"];
 const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
-// Re-runs read beside a failed runs read reach no verdict on CI, so the last known red stands.
-const reached = (c: Cell, inp: MaintInput) => VERDICT.includes(c.state) && vouched(c, inp);
+// A second kind read beside a failed read of the first reaches no verdict on the facet, so the last
+// known red stands. Only a fresh red replaces it, and re-runs are never red.
+const reached = (c: Cell, inp: MaintInput) => VERDICT.includes(c.state) && (vouched(c, inp) || c.level === "bad");
+// Release's only red is a deploy's, and tags cannot speak for it: a failed environments read leaves its lines standing.
+const deployStands = (c: Cell, inp: MaintInput, prev: MaintSnap) => c.facet === "release" && c.state === "read" && c.level !== "bad"
+  && prev.findings.some((f) => f.key.startsWith("release:deploy")) && readFailed(inp, (id) => !!findSource(id)?.sees.includes("rel.deployed"));
 
 /** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
  *  A facet this scan reached no verdict on keeps `prev`'s cell and lines, dated as then: a failed read
@@ -1755,7 +1967,7 @@ const reached = (c: Cell, inp: MaintInput) => VERDICT.includes(c.state) && vouch
 export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
-  const kept = new Set(prev ? live.filter((c) => !reached(c, inp)).map((c) => c.facet) : []);
+  const kept = new Set(prev ? live.filter((c) => !reached(c, inp) || deployStands(c, inp, prev)).map((c) => c.facet) : []);
   const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
   const cells = live.map((c): SnapCell => {
     const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;

@@ -31,6 +31,9 @@
         "api",
         "worker"
       ],
+      "envs": {
+        "prod": "prod-*"
+      },
       "host": "prod-1",
       "sentry": "acme/api",
       "urls": {
@@ -272,6 +275,82 @@
       },
       "gaps": [],
       "source": "github-releases",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "release",
+      "facts": {
+        "envs": [
+          {
+            "ahead": 0,
+            "at": 1789000000,
+            "behind": 23,
+            "behindAt": 1789000100,
+            "branch": "main",
+            "env": "production",
+            "last": {
+              "at": 1789900000,
+              "raw": "FAILURE",
+              "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "state": "fail",
+              "url": "https://ci.example/run/9"
+            },
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tag": "v1.2.0",
+            "tier": "production",
+            "url": "https://app.example.com"
+          },
+          {
+            "ahead": 0,
+            "at": 1789000000,
+            "behind": 0,
+            "behindAt": null,
+            "branch": null,
+            "env": "Preview – ui",
+            "last": null,
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tag": null,
+            "tier": "preview",
+            "url": null
+          },
+          {
+            "ahead": null,
+            "at": 1789000000,
+            "behind": null,
+            "behindAt": null,
+            "branch": null,
+            "env": "staging",
+            "last": null,
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tag": null,
+            "tier": "staging",
+            "url": null
+          },
+          {
+            "ahead": null,
+            "at": null,
+            "behind": null,
+            "behindAt": null,
+            "branch": null,
+            "env": "automations",
+            "last": null,
+            "sha": null,
+            "tag": null,
+            "tier": "other",
+            "url": null
+          }
+        ],
+        "fetchedAt": 1790000000,
+        "kind": "deployments",
+        "trunk": "origin/main"
+      },
+      "gaps": [],
+      "source": "github-deployments",
       "truncated": false
     },
     {

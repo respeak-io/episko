@@ -6,7 +6,7 @@ import { esc, escAttr, fmtDay, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
   advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type Door, type Finding, type FlowRow, type HygCount,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
 } from "./maint";
@@ -94,6 +94,7 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "rel.last": "the last release tag",
   "rel.published": "published releases",
   "rel.changelog": "the changelog's Unreleased section",
+  "rel.deployed": "what each environment runs, and how far behind the trunk",
   "sec.dependency": "advisories in dependencies",
   "sec.code": "code scanning findings",
   "sec.secret": "committed secrets",
@@ -169,6 +170,7 @@ const VERB: Record<Verb, [string, string]> = {
   rotate: ["Rotate", "agent"],
   upgrade: ["Upgrade", "agent"],
   release: ["Draft release", "agent"],
+  deploy: ["Plan deploy", "agent"],
   push: ["Push", "agent"],
   tidy: ["Tidy", "agent"],
   setup: ["Set up", "agent"],
@@ -508,6 +510,33 @@ function flakyHtml(v: MaintTabView, b: Boards): string {
     + verbTd(r.verb) + `</tr>`));
 }
 
+// A count is a door to the commits it lacks, and one nobody counted is a `?`, never the dot.
+function behindHtml(r: DeployRow): string {
+  if (r.behind === null) {
+    const why = !r.sha ? "nothing live was found" : r.trunk ? `not counted: this clone lacks ${r.sha.slice(0, 7)}; a fetch may bring it` : "not counted: no trunk is known. Coverage says how to set one";
+    return `<span class="dim" data-tip="${escAttr(why)}">?</span>`;
+  }
+  const lag = r.idle ? "muted" : r.lag;
+  return num(r.behind, lag, `commits on ${r.trunk ?? "the trunk"} not live`, ["deployments", "behind", r.root])
+    + (r.behindAge === null ? "" : `<span class="dim"> · ${esc(span(r.behindAge))}</span>`)
+    + (r.ahead ? ` <span class="mt-n ${LEVEL_CLS[lag]}" data-tip="commits live that the trunk lacks">+${r.ahead}</span>` : "");
+}
+function deploysHtml(v: MaintTabView, b: Boards): string {
+  return table([...projCol(b), "Env", "Live", ">Behind main", ">When", ""], b.deploys.map((r) => {
+    const tip = [r.sha, r.branch && `from ${r.branch}`].filter(Boolean).join("\n");
+    const live = r.live ? `<span data-tip="${escAttr(tip)}">${esc(r.live)}</span>` : DASH;
+    const last = r.last ? ` ${doorHtml(esc(r.last.text), `mt-v ${LEVEL_CLS[r.last.level]}`, ["deployments", "log", r.root], r.last.url)}` : "";
+    return `<tr>${projTd(v, b, r.root)}` + td(doorHtml(esc(r.env), r.idle ? "dim" : "", ["deployments", "site", r.root], r.url, r.idle ? r.text : ""))
+      + td(live, "mono") + td(behindHtml(r), "r mono") + td(ageOf(r.age) + last, "r mono")
+      + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`;
+  }));
+}
+function deployNote(b: Boards): string {
+  const trunks = [...new Set(b.deploys.flatMap((r) => r.trunk ? [r.trunk] : []))];
+  const on = trunks.length === 1 ? `against ${trunks[0]}` : trunks.length ? "against each project's trunk" : "";
+  return [on, readNote(b.deployRead), b.deployHidden ? `${plural(b.deployHidden, "preview environment")} not shown` : "", b.deployCut ? "more may exist than are listed" : ""].filter(Boolean).join(" · ");
+}
+
 const untagged = (b: Boards, r: RelRow) => {
   const on = `no release tag on ${r.trunk ?? "the trunk"}`;
   return `<span class="dim" data-tip="${escAttr(on)}">${esc(b.one ? on : "never tagged")}</span>`;
@@ -533,6 +562,7 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
   return (b.ci.length ? board("ci", "CI on the default branch", `${on}last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
     + (fl.read ? board("flaky", "Flaky jobs", `${fl.days} days · failed, then passed on a re-run of the same commit · ${fl.reran}${fl.cut ? "+" : ""} of ${fl.runs} runs re-run${part} · ${readNote(fl.read)}`,
       fl.rows.length ? flakyHtml(v, b) : empty(fl.clear)) : "")
+    + (b.deploys.length ? board("deployments", "Deployments", deployNote(b), deploysHtml(v, b)) : "")
     + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
 }
 
@@ -781,6 +811,7 @@ function runsCard(v: MaintDash): string {
     d.host ? kv("Host", `${d.host} · ssh alias`) : "",
     d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
     ...named.map(([n, u]) => addr(n, u)),
+    ...Object.entries(d.envs).map(([n, p]) => kv(`Env ${n}`, `tagged ${p}`)),
     d.sentry ? kv("Errors", d.sentry) : "",
     d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
   ].join("");

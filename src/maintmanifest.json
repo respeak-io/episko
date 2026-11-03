@@ -102,16 +102,26 @@
     "git-tags": {
       "facet": "release", "label": "git tags", "cost": "local", "forge": [], "detect": [".git"],
       "sees": ["rel.unreleased", "rel.last"],
-      "blind": ["rel.published"]
+      "blind": ["rel.published", "rel.deployed"]
     },
     "changelog": {
       "facet": "release", "label": "CHANGELOG.md", "cost": "local", "forge": [], "detect": ["./CHANGELOG.md"],
       "sees": ["rel.changelog"],
       "blind": []
     },
+    "deploy-tags": {
+      "facet": "release", "label": "deploy tags", "cost": "local", "forge": [], "detect": [".git"], "needs": ["deploy.envs"],
+      "sees": ["rel.deployed"],
+      "blind": []
+    },
     "github-releases": {
       "facet": "release", "label": "GitHub releases", "cost": "forge", "forge": ["github"], "detect": [],
       "sees": ["rel.published"],
+      "blind": []
+    },
+    "github-deployments": {
+      "facet": "release", "label": "GitHub deployments", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["rel.deployed"],
       "blind": []
     },
     "github-work": {

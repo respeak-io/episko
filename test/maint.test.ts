@@ -8,6 +8,7 @@ import {
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
+  deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -113,6 +114,9 @@ describe("clampMaint", () => {
     expect(clampMaint({ stale_branch_days: 0, unreleased_days: -1, cert_warn_days: "9" })).toEqual(MAINT_DEFAULTS);
     expect(clampMaint({ stale_branch_days: 6, cert_warn_days: 10 })).toMatchObject({ staleBranchDays: 6, certWarnDays: 10 });
     expect(clampMaint(narrowDetection(wire.detection)!.config.thresholds).staleBranchDays).toBe(24);
+    expect(clampMaint({ deploy_behind_commits: 5, deploy_behind_days: 2, deploy_idle_days: 30 })).toMatchObject({ deployBehindCommits: 5, deployBehindDays: 2, deployIdleDays: 30 });
+    expect(clampMaint({ deploy_behind_commits: 0, deploy_behind_days: 0, deploy_idle_days: -1 })).toEqual(MAINT_DEFAULTS);
+    expect(MAINT_DEFAULTS).toMatchObject({ deployBehindCommits: 20, deployBehindDays: 14, deployIdleDays: 180 });
   });
 });
 
@@ -509,6 +513,294 @@ describe("flaky jobs: noise beside a red default branch, never in place of it", 
     expect(boardDoor("flaky", "last", b.flaky.rows[0].url)).toEqual({ to: "url", url: `https://ci.example/job/${S - D}` });
     expect(boardDoor("flaky", "last", "file:///etc/passwd")).toBeNull();
     expect(boardDoor("flaky", "passed", 3), "a count with no door, as the changelog's").toBeNull();
+  });
+});
+
+describe("deployments: what each environment runs", () => {
+  const GD = "github-deployments", DT = "deploy-tags";
+  const env = (o: Partial<Deployed> = {}): Deployed => ({
+    env: "prod", tier: "production", sha: "a".repeat(40), tag: "v1.0", branch: "main", at: S - D, url: "https://app.example", last: null,
+    behind: 0, behindAt: null, ahead: 0, ...o,
+  });
+  const deps = (envs: Deployed[], o: Partial<Extract<Facts, { kind: "deployments" }>> = {}): Facts => ({ kind: "deployments", trunk: "origin/main", envs, fetchedAt: S - H, ...o });
+  const fail = (at = S - 2 * H) => ({ state: "fail" as const, raw: "FAILURE", sha: "b".repeat(40), at, url: "https://ci.example/9" });
+  const one = (e: Deployed, inp = input(ok(GD, deps([e])))) => deployStates(inp, MAINT_DEFAULTS, NOW)[0];
+  const lines = (i: MaintInput) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.key.startsWith("release:deploy"));
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+
+  it("narrows the backend's report, and a wrong shape fails that source alone", () => {
+    const r = wire.reports.find((x) => x.source === GD)!;
+    const f = narrowMaint(r, GD).facts as Extract<Facts, { kind: "deployments" }>;
+    expect(f.envs.map((e) => [e.env, e.tier, e.behind])).toEqual([["production", "production", 23], ["Preview – ui", "preview", 0], ["staging", "staging", null], ["automations", "other", null]]);
+    expect(f.envs[0].last?.state).toBe("fail");
+    expect(f.envs[3].sha).toBeNull();
+    expect(FACT_FACET.deployments).toBe("release");
+    expect(narrowMaint({ ...r, facts: { ...f, envs: [{ ...f.envs[0], tier: "prod" }] } }, GD).coverage.state).toBe("error");
+    expect(narrowMaint({ ...r, facts: { ...f, envs: [{ ...f.envs[0], last: { ...f.envs[0].last, state: "done" } }] } }, GD).coverage.state).toBe("error");
+    expect(narrowMaint({ ...r, facts: { ...f, fetchedAt: "soon" } }, GD).coverage.state).toBe("error");
+    expect([...DEPLOY_STATES, ...ENV_TIERS]).toContain("gone");
+  });
+
+  it("levels production on the thresholds, either of them", () => {
+    expect(one(env())).toMatchObject({ level: "ok", text: "", judged: true });
+    expect(one(env({ behind: 19, behindAt: S - 13 * D }))).toMatchObject({ level: "info", text: "prod 19 behind" });
+    expect(one(env({ behind: 20, behindAt: S - D }))).toMatchObject({ level: "warn", text: "prod 20 behind", behind: 20 });
+    expect(one(env({ behind: 2, behindAt: S - 14 * D }))).toMatchObject({ level: "warn", text: "prod 2 behind" });
+    expect(one(env({ ahead: 3, behind: 1 }))).toMatchObject({ level: "warn", text: "prod off trunk" });
+  });
+
+  it("never reads a lag nobody counted, or nothing live, as fine", () => {
+    expect(one(env({ behind: null, ahead: null }))).toMatchObject({ level: "muted", text: "prod behind unknown", live: "v1.0" });
+    expect(one(env({ sha: null, tag: null, behind: null, ahead: null }))).toMatchObject({ level: "muted", text: "prod: nothing live", live: null });
+    expect(one(env({ tag: null })).live, "the short sha when no tag names it").toBe("aaaaaaa");
+  });
+
+  it("judges a failure by its tier and lets a wait or a run change nothing", () => {
+    expect(one(env({ last: fail() }))).toMatchObject({ level: "bad", text: "prod deploy failed", judged: true });
+    expect(one(env({ env: "stg", tier: "staging", last: fail() }))).toMatchObject({ level: "warn", judged: true });
+    expect(one(env({ env: "ops", tier: "other", last: fail() }))).toMatchObject({ level: "info", judged: false });
+    for (const [state, text] of [["waiting", "waiting 2h"], ["running", "deploying"]] as const) {
+      const s = one(env({ behind: 3, behindAt: S - D, last: { ...fail(), state, raw: state.toUpperCase() } }));
+      expect(s).toMatchObject({ level: "info", text: "prod 3 behind" });
+      expect(s.last).toMatchObject({ text, level: "muted" });
+    }
+    expect(one(env({ last: { ...fail(), state: "gone", raw: "DESTROYED" } })).last?.text).toBe("destroyed");
+  });
+
+  it("lists staging and the rest, without letting their lag speak", () => {
+    const s = one(env({ env: "stg", tier: "staging", behind: 40, behindAt: S - 30 * D }));
+    expect(s).toMatchObject({ level: "info", text: "stg 40 behind", judged: false });
+    expect(one(env({ env: "stg", tier: "staging", ahead: 2 }))).toMatchObject({ level: "info", text: "stg 2 ahead" });
+    expect(one(env({ env: "ops", tier: "other", behind: 40 }))).toMatchObject({ level: "info", judged: false });
+    expect(one(env({ env: "Preview", tier: "preview" }))).toMatchObject({ hidden: true, judged: false });
+  });
+
+  it("calls an environment nobody touched idle, and never judges it", () => {
+    const old = env({ env: "Production", at: S - 5 * 365 * D, behind: 9000, behindAt: S - 5 * 365 * D });
+    expect(one(old)).toMatchObject({ idle: true, judged: false, level: "info", text: "idle 5y" });
+    expect(one(env({ ...old, at: S - 179 * D }))).toMatchObject({ idle: false, judged: true, level: "warn" });
+    expect(one(env({ ...old, last: fail() })), "a recent attempt is activity").toMatchObject({ idle: false, level: "bad" });
+    expect(lines(input(ok(GD, deps([old])))), "and it has no line").toEqual([]);
+    const inp = { ...input(ok(GD, deps([old]))) };
+    inp.det = det([GD], { deploy: { host: null, compose: [], urls: {}, sentry: null, versionUrl: null, envs: { production: "prod-*" } } });
+    expect(one(old, inp), "a tag convention someone wrote is never idle").toMatchObject({ idle: false, judged: true });
+    expect(deployStates(input(ok(GD, deps([old]))), clampMaint({ deploy_idle_days: 3000 }), NOW)[0].idle).toBe(false);
+  });
+
+  it("merges one environment from both sources, case-blind", () => {
+    const merged = (a: Deployed, b: Deployed) => deployStates(input(ok(GD, deps([a])), ok(DT, deps([b]), { cost: "local" })), MAINT_DEFAULTS, NOW);
+    const tagged = env({ env: "Prod", sha: "c".repeat(40), tag: "prod-9", at: S - H, url: null });
+    const forge = env({ at: S - D });
+    expect(merged(forge, tagged).map((e) => [e.env, e.source, e.live])).toEqual([["Prod", DT, "prod-9"]]);
+    expect(merged(env({ at: S - H }), tagged).map((e) => e.source), "a tie goes to the forge").toEqual([GD]);
+    expect(merged(env({ at: S - H }), { ...tagged, at: null }).map((e) => e.source), "a date beats none").toEqual([GD]);
+    expect(merged(env({ sha: null, tag: null, at: null }), tagged).map((e) => e.source), "something live beats nothing").toEqual([DT]);
+    expect(merged(env({ at: S - D, last: fail(S - 60) }), tagged)[0], "a newer failure survives the merge").toMatchObject({ source: DT, level: "bad" });
+    expect(merged(env({ at: S - 2 * D, last: fail(S - D) }), tagged)[0].last, "an older one does not").toBeNull();
+  });
+
+  describe("the Release cell", () => {
+    const fixtures: Facts[] = [rel(), rel({ since: 3 }), rel({ since: 40, oldestUnreleasedAt: S - 30 * D }), rel({ tag: null, tagAt: null })];
+    it("reads exactly as before with no environment that may speak", () => {
+      for (const r of fixtures) {
+        const before = cell("release", input(ok("git-tags", r)));
+        expect(cell("release", input(ok("git-tags", r), ok(GD, deps([])))), "envs: []").toEqual(before);
+        expect(cell("release", input(ok("git-tags", r), ok(GD, deps([env({ env: "Preview", tier: "preview", behind: 9 })])))), "a preview").toEqual(before);
+        expect(cell("release", input(ok("git-tags", r), ok(GD, deps([env({ env: "ops", tier: "other", behind: 90, last: fail() })])))), "listed only").toEqual(before);
+        expect(cell("release", input(ok("git-tags", r), ok(GD, deps([env({ env: "stg", tier: "staging", behind: 90 })])))), "a staging behind").toEqual(before);
+        expect(cell("release", input(ok("git-tags", r), ok(GD, deps([env({ at: S - 400 * D, behind: 900 })])))), "idle").toEqual(before);
+      }
+    });
+    it("takes an empty answer for no answer beside a read that failed", () => {
+      const failed = not("git-tags", "release", { state: "unsupported", reason: "no trunk" });
+      expect(cell("release", input(failed, ok(GD, deps([]))))).toMatchObject({ state: "cantCheck", text: "unavailable" });
+      expect(cell("release", input(failed, ok(GD, deps([env({ behind: null, ahead: null })]))))).toMatchObject({ state: "cantCheck", text: "unavailable" });
+    });
+    it("lets production at zero speak for itself and never for a release read that failed", () => {
+      const failed = not("git-tags", "release", { state: "error", reason: "git exploded" });
+      expect(cell("release", input(failed, ok(GD, deps([env()]))))).toMatchObject({ state: "cantCheck", level: "muted" });
+      const emptyLog = ok("changelog", { kind: "changelog", unreleased: null, latest: null, latestAt: null });
+      expect(cell("release", input(failed, emptyLog, ok(GD, deps([env()])))), "a changelog that said nothing answers nothing").toMatchObject({ state: "cantCheck" });
+      expect(cell("release", input(failed, ok(GD, deps([env({ behind: 30, behindAt: S - D })])))), "what it found still speaks").toMatchObject({ state: "read", level: "warn", text: "prod 30 behind" });
+      expect(cell("release", input(ok(GD, deps([env()])))), "nothing failed: the count is the evidence").toMatchObject({ state: "read", level: "ok", text: "" });
+    });
+    it("lets a cut list vouch for nothing, and floors no figure it did not cut", () => {
+      const gaps = ["the 12 most recently active of 15 environments are listed"];
+      const cut = (e: Deployed) => ok(GD, deps([e]), { truncated: true, gaps });
+      expect(cell("release", input(ok("git-tags", rel({ tag: null, tagAt: null })), cut(env())))).toMatchObject({ level: "muted", text: "no tags" });
+      expect(cell("release", input(ok("git-tags", rel()), cut(env())))).toMatchObject({ level: "ok", text: "v1.0, 2d" });
+      const behind = cell("release", input(ok("git-tags", rel({ since: 3 })), cut(env({ behind: 30, behindAt: S - D }))));
+      expect(behind).toMatchObject({ level: "warn", text: "prod 30 behind · 3 unreleased" });
+      expect(behind.tip.join("\n")).toContain(`GitHub deployments: ${gaps[0]}`);
+      expect(behind.tip.join("\n"), "3 unreleased and 30 behind are exact").not.toContain("floors");
+      expect(cell("release", input(ok("github-releases", { kind: "releases", latest: null, count: 100 }, { truncated: true }))).tip.join("\n")).toContain("floors");
+    });
+    it("draws the dot only on production counted at zero behind", () => {
+      const noTags = ok("git-tags", rel({ tag: null, tagAt: null }));
+      expect(cell("release", input(noTags, ok(GD, deps([env()]))))).toMatchObject({ level: "ok", text: "" });
+      expect(cell("release", input(noTags, ok(GD, deps([env({ behind: null, ahead: null })]))))).toMatchObject({ level: "muted", text: "no tags · prod behind unknown" });
+      expect(cell("release", input(noTags, ok(GD, deps([env(), env({ env: "eu-prod", sha: null, tag: null, behind: null, ahead: null })])))), "one unknown holds the dot back")
+        .toMatchObject({ level: "muted" });
+      expect(cell("release", input(ok("git-tags", rel()), ok(GD, deps([env({ behind: null, ahead: null })])))), "a muted half yields").toMatchObject({ level: "ok", text: "v1.0, 2d" });
+    });
+    it("names both halves, the worse first, at the worse level", () => {
+      const three = ok("git-tags", rel({ since: 3 }));
+      const c = cell("release", input(three, ok(GD, deps([env({ behind: 30, behindAt: S - D })]))));
+      expect(c).toMatchObject({ level: "warn", text: "prod 30 behind · 3 unreleased" });
+      expect(c.tip.join("\n")).toContain("prod: runs v1.0, 30 commits behind origin/main");
+      expect(c.tip.join("\n")).toContain("3 commits since v1.0");
+      expect(cell("release", input(three, ok(GD, deps([env({ last: fail() })]))))).toMatchObject({ level: "bad", text: "prod deploy failed · 3 unreleased" });
+      expect(cell("release", input(three, ok(GD, deps([env()]))))).toMatchObject({ level: "info", text: "3 unreleased" });
+      expect(cell("release", input(three, ok(GD, deps([env({ env: "stg", tier: "staging", last: fail() })]))))).toMatchObject({ level: "warn", text: "stg deploy failed · 3 unreleased" });
+      expect(cell("release", input(ok("git-tags", rel({ tag: null, tagAt: null })), ok(GD, deps([env({ behind: 30 })]))))).toMatchObject({ level: "warn", text: "prod 30 behind" });
+    });
+    it("dates a stale count by its fetch and says so in a line", () => {
+      const stale = input(ok(GD, deps([env()], { fetchedAt: S - 9 * D })));
+      expect(cell("release", stale)).toMatchObject({ level: "warn", text: "fetched 9d ago", asOf: S - 9 * D });
+      expect(findings("/r", stale, MAINT_DEFAULTS, NOW).map((f) => f.key)).toEqual(["git:fetch"]);
+    });
+  });
+
+  it("files one line per kind, with its verb", () => {
+    const behind = (env_: string, n: number) => env({ env: env_, behind: n, behindAt: S - D });
+    expect(lines(input(ok(GD, deps([behind("prod", 23)]))))).toMatchObject([{ key: "release:deploy", level: "warn", verb: "deploy", ref: "prod", source: GD, text: "prod is 23 commits behind", detail: "runs v1.0 · oldest undeployed 1d" }]);
+    expect(lines(input(ok(GD, deps([behind("prod", 3)])))), "below both thresholds").toMatchObject([{ level: "info", text: "prod is 3 commits behind" }]);
+    expect(lines(input(ok(GD, deps([env({ ahead: 3, behind: 2 })]))))).toMatchObject([{ level: "warn", text: "prod runs 3 commits not on origin/main", detail: "runs v1.0 · 2 behind" }]);
+    expect(lines(input(ok(GD, deps([behind("prod", 23), behind("eu-prod", 2)]))))).toMatchObject([{ key: "release:deploy", level: "warn", ref: null, text: "2 environments behind", detail: "prod 23 behind, eu-prod 2 behind" }]);
+    expect(lines(input(ok(GD, deps([env({ last: fail() })]))))).toMatchObject([{ key: "release:deploy-failed", level: "bad", verb: "fix", ref: "prod", text: "prod deploy failed 2h ago", detail: "still running v1.0" }]);
+    expect(lines(input(ok(GD, deps([env({ env: "stg", tier: "staging", last: fail() })]))))).toMatchObject([{ level: "warn", text: "stg deploy failed 2h ago" }]);
+    expect(lines(input(ok(GD, deps([env({ last: fail() }), env({ env: "stg", tier: "staging", last: fail() })]))))).toMatchObject([{ level: "bad", text: "2 deploys failed" }]);
+    expect(lines(input(ok(GD, deps([env({ last: fail(), behind: 40 })])))).map((f) => f.key), "broken and behind are two lines").toEqual(["release:deploy-failed", "release:deploy"]);
+    const key = (i: MaintInput) => lines(i).find((f) => f.key === "release:deploy");
+    expect(key(input(ok(GD, deps([env({ behind: 30, behindAt: S - D, last: fail() }), behind("eu-prod", 2)])))), "the failure has its own line")
+      .toMatchObject({ text: "2 environments behind", detail: "prod 30 behind, eu-prod 2 behind" });
+    expect(key(input(ok(GD, deps([env({ ahead: 2 }), env({ env: "eu-prod", ahead: 1 })])))), "neither is behind")
+      .toMatchObject({ text: "2 environments not at the trunk", detail: "eu-prod off trunk, prod off trunk" });
+    expect(key(input(ok(GD, deps([behind("prod", 30), behind("eu-prod", 2)]), { truncated: true })))?.text, "a cut list's count is a floor").toBe("2+ environments behind");
+    expect(lines(input(ok(GD, deps([env({ last: fail() }), env({ env: "stg", tier: "staging", last: fail() })]), { truncated: true })))[0].text).toBe("2+ deploys failed");
+    for (const quiet of [env(), env({ behind: null, ahead: null }), env({ env: "stg", tier: "staging", behind: 40 }), env({ env: "ops", tier: "other", behind: 40, last: fail() }), env({ env: "pr-1", tier: "preview", behind: 40, last: fail() })]) {
+      expect(lines(input(ok(GD, deps([quiet])))), quiet.env).toEqual([]);
+    }
+    expect(envsToShip(deployStates(input(ok(GD, deps([env({ env: "stg", tier: "staging", behind: 4 })]))), MAINT_DEFAULTS, NOW))).toEqual([]);
+    expect(envsFailed(deployStates(input(ok(GD, deps([env({ env: "stg", tier: "staging", last: fail() })]))), MAINT_DEFAULTS, NOW))).toHaveLength(1);
+  });
+
+  it("opens both lines on the board that draws their verbs", () => {
+    expect(findingTarget({ facet: "release", key: "release:deploy" })).toEqual({ tab: "delivery", board: "deployments" });
+    expect(findingTarget({ facet: "release", key: "release:deploy-failed" })).toEqual({ tab: "delivery", board: "deployments" });
+    expect(findingTarget({ facet: "release", key: "release" })).toEqual({ tab: "delivery", board: "releases" });
+    expect(findingTarget({ facet: "release", key: "release:other" }), "a new kind claims no board").toEqual({ tab: "delivery", board: null });
+    expect(boardDoor("deployments", "behind", 3)).toEqual({ to: "landed" });
+    expect(boardDoor("deployments", "site", "https://app.example")).toEqual({ to: "url", url: "https://app.example" });
+    expect(boardDoor("deployments", "log", "javascript:alert(1)")).toBeNull();
+    expect(boardDoor("deployments", "behind", 0), "a zero is the dot").toBeNull();
+  });
+
+  it("lists the board worst first, previews counted and idle last, carrying each verb", () => {
+    const a = tp("/a", ok(GD, deps([env({ behind: 30, behindAt: S - D }), env({ env: "Preview – ui", tier: "preview" }), env({ env: "old", at: S - 400 * D, behind: 900 })])));
+    const b = tp("/b", ok(GD, deps([env({ last: fail() }), env({ env: "stg", tier: "staging" }), env({ env: "ops", tier: "other", behind: 4 })])));
+    const c = tp("/c", ok(GD, deps([])));
+    const d = deployBoard([c, a, b], null, NOW);
+    expect(d.rows.map((r) => `${r.root} ${r.env} ${r.level}`)).toEqual(["/b prod bad", "/a prod warn", "/b ops info", "/b stg ok", "/a old info"]);
+    expect([d.hidden, d.read]).toEqual([1, 3]);
+    expect(d.rows[0].verbs.map((f) => f.verb)).toEqual(["fix"]);
+    expect(d.rows[1].verbs.map((f) => f.verb)).toEqual(["deploy"]);
+    expect(d.rows[2].verbs, "listed only").toEqual([]);
+    const both = tp("/d", ok(GD, deps([env({ behind: 30, last: fail() })])));
+    expect(deployBoard([both], null, NOW).rows[0].verbs.map((f) => f.key), "a row carries each line it is under").toEqual(["release:deploy-failed", "release:deploy"]);
+    const retired = deployBoard([tp("/e", ok(GD, deps([env({ env: "old", sha: null, tag: null, at: null, behind: null, ahead: null, last: fail(S - 400 * D) })])))], null, NOW).rows[0];
+    expect(retired).toMatchObject({ idle: true, level: "info", verbs: [] });
+    expect(retired.last, "a failure from 13 months ago is history, not red").toMatchObject({ level: "muted", text: "failed 400d ago" });
+    const tb = tabBoards("delivery", [a, b, c], null, null, NOW);
+    expect(tb.deploys.length).toBe(5);
+    expect([tb.deployHidden, tb.deployRead]).toEqual([1, 3]);
+    expect(tb.deployCut).toBe(false);
+    expect(tabBoards("delivery", [a, tp("/s", ok(GD, deps([env()]), { truncated: true }))], null, null, NOW).deployCut, "the board says a list was cut").toBe(true);
+    expect(tb.drawn).toEqual(expect.arrayContaining(["/a|release:deploy", "/b|release:deploy-failed"]));
+    const narrowed = tabBoards("delivery", [a, b, c], "/a", null, NOW);
+    expect(narrowed.deploys.map((r) => r.env)).toEqual(["prod", "old"]);
+    expect(narrowed.one).toBe(true);
+    expect(tabBoards("security", [a], null, null, NOW).deploys).toEqual([]);
+    // Environments are not releases: the release table's note counts what it lists.
+    expect(tabBoards("delivery", [a], null, null, NOW).read.release).toBe(0);
+    expect(tabModel("delivery", [a, b], null, null, NOW).rows.filter((f) => f.key.startsWith("release:")), "every verb is on the board").toEqual([]);
+  });
+
+  it("lists a refused read of the environments in Coverage, whatever the release half said", () => {
+    const refused = not(GD, "release", { state: "noAccess", reason: "token scope", fix: "pick the GitHub account" });
+    const row = (...reps: SourceReport[]) => coverGroups("delivery", [tp("/r", ...reps)], null, NOW).filter((g) => g.source !== null).map((g) => [g.source, g.why, g.action]);
+    const said = [[GD, "token scope", { kind: "fix", fix: "pick the GitHub account" }]];
+    expect(row(ok("git-tags", rel()), refused), "beside a verdict").toEqual(said);
+    expect(row(ok("git-tags", rel({ tag: null, tagAt: null })), refused), "beside no tags").toEqual(said);
+    const groups = coverGroups("delivery", [tp("/a", ok("git-tags", rel()), refused), tp("/b", ok("git-tags", rel()), refused)], null, NOW);
+    expect(groups.map((g) => g.roots), "one row, however many projects").toEqual([["/a", "/b"]]);
+    expect(row(ok("git-tags", rel()), ok(GD, deps([]))), "an answer with no environments is no gap").toEqual([]);
+    expect(row(ok("git-tags", rel()), not("github-releases", "release", { state: "error", reason: "x" })), "only the environments' own sources").toEqual([]);
+    const inp = { ...input(ok("git-tags", rel()), refused), skip: [GD] };
+    expect(coverGroups("delivery", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW), "a skip someone chose is not news beside a verdict").toEqual([]);
+  });
+
+  describe("a failed read beside the other half", () => {
+    const tagsFailed = not("git-tags", "release", { state: "error", reason: "git exploded" });
+    const refused = not(GD, "release", { state: "noAccess", reason: "token scope", fix: null });
+    const tags = ok("git-tags", rel());
+    const behind = ok(GD, deps([env({ behind: 30, behindAt: S - D })])), broke = ok(GD, deps([env({ last: fail() })]));
+    const relOf = (s: ReturnType<typeof takeSnap>) => ({
+      cell: s.cells.find((c) => c.facet === "release"), lines: s.findings.filter((f) => f.facet === "release").map((f) => [f.key, f.at]),
+    });
+    const red = takeSnap("/r", input(tags, broke), NOW - D * 1000);
+
+    it("lists a failed release read in Coverage beside what the environments found", () => {
+      const row = (...reps: SourceReport[]) => coverGroups("delivery", [tp("/r", ...reps)], null, NOW).map((g) => g.source);
+      expect(cell("release", input(tagsFailed, behind)), "the cell still says what it found").toMatchObject({ state: "read", level: "warn" });
+      expect(row(tagsFailed, behind), "amber for production, and still no word on the tags").toEqual(["git-tags"]);
+      expect(row(tagsFailed, broke), "red for production too").toEqual(["git-tags"]);
+      const emptyLog = ok("changelog", { kind: "changelog", unreleased: null, latest: null, latestAt: null });
+      expect(row(tagsFailed, emptyLog, behind), "a changelog that said nothing answers nothing").toEqual(["git-tags"]);
+      const published = ok("github-releases", { kind: "releases", latest: { tag: "v2", name: "v2", at: S - D, url: null }, count: 1 });
+      expect(row(tagsFailed, published, behind), "a published release answers for the half").toEqual([]);
+      expect(row(behind), "nothing failed: the environments' count is the evidence").toEqual([]);
+      expect(row(tagsFailed, refused, ok("deploy-tags", deps([env({ behind: 30, behindAt: S - D })]), { cost: "local" })).sort(), "each failed read once").toEqual(["git-tags", GD]);
+    });
+
+    it("keeps the last known deploy red while the environments cannot be read", () => {
+      expect(relOf(red)).toMatchObject({ cell: { level: "bad", text: "prod deploy failed" }, lines: [["release:deploy-failed", undefined]] });
+      const next = relOf(takeSnap("/r", input(tags, refused), NOW, red));
+      expect(next.cell, "dated as then, not the tags' dot").toMatchObject({ level: "bad", text: "prod deploy failed", at: red.at });
+      expect(next.lines).toEqual([["release:deploy-failed", red.at]]);
+      expect(relOf(takeSnap("/r", input(tags, ok(GD, deps([env()]))), NOW, red)).lines, "an answer with no failure replaces it").toEqual([]);
+      const skip = { ...input(tags, refused), skip: [GD] };
+      expect(relOf(takeSnap("/r", skip, NOW, red)).cell, "a skip someone chose is no failed read").toMatchObject({ level: "ok", text: "v1.0, 2d" });
+    });
+
+    it("keeps nothing a failed environments read could not have said", () => {
+      const quiet = takeSnap("/r", input(tags), NOW - D * 1000);
+      const next = relOf(takeSnap("/r", input(ok("git-tags", rel({ since: 3 })), refused), NOW, quiet));
+      expect(next.cell, "a token never allowed the read: the tags stay live").toEqual({ facet: "release", level: "info", text: "3 unreleased" });
+      expect(next.lines).toEqual([["release", undefined]]);
+    });
+
+    it("keeps the last known red over amber when the release read failed, and lets a fresh red replace anything", () => {
+      const held = relOf(takeSnap("/r", input(tagsFailed, behind), NOW, red));
+      expect(held.cell).toMatchObject({ level: "bad", text: "prod deploy failed", at: red.at });
+      expect(held.lines).toEqual([["release:deploy-failed", red.at]]);
+      const amber = takeSnap("/r", input(ok("git-tags", rel({ since: 40, oldestUnreleasedAt: S - 30 * D }))), NOW - D * 1000);
+      const fresh = relOf(takeSnap("/r", input(tagsFailed, broke), NOW, amber));
+      expect(fresh.cell, "a red nobody had seen is never dropped").toEqual({ facet: "release", level: "bad", text: "prod deploy failed" });
+      expect(fresh.lines).toEqual([["release:deploy-failed", undefined]]);
+    });
+  });
+
+  it("puts the Release tab's numbers on the tally", () => {
+    const p = tp("/a", ok(GD, deps([env({ last: fail() })])));
+    expect(tabTally(p.rows).delivery).toEqual({ n: 1, level: "bad" });
+    expect(projectBand(p.cells)).toBe("needs");
+    const noisy = tp("/b", ok(GD, deps([env({ env: "ops", tier: "other", last: fail() })])));
+    expect(tabTally(noisy.rows).delivery.n, "listed only is no count").toBe(0);
+    expect(projectBand(noisy.cells)).not.toBe("needs");
   });
 });
 
@@ -1404,6 +1696,7 @@ describe("a board's numbers are doors", () => {
     "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
     ci: { run: "url" },
     flaky: { passed: null, last: "url" },
+    deployments: { site: "url", behind: { to: "landed" }, log: "url" },
     releases: { since: { to: "landed" }, changelog: null },
     hygiene: {
       unpushed: branches("unpushed"), localOnly: branches("localonly"), merged: branches("merged"), gone: branches("gone"),
@@ -1481,6 +1774,8 @@ describe("a card line opens what it summarises", () => {
       scan([adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" }), adv({ id: "S-1", kind: "secret", pkg: null, location: "k" })]),
       ok("dependabot-prs", prs(2)),
       ok("git-tags", rel({ since: 10, fetchedAt: S - 9 * D })),
+      ok("github-deployments", { kind: "deployments", trunk: "main", fetchedAt: S - 9 * D, envs: [{ env: "prod", tier: "production", sha: "a".repeat(40), tag: null, branch: null, at: S - D, url: null,
+        behind: 3, behindAt: S - D, ahead: 0, last: { state: "fail", raw: "FAILURE", sha: "b".repeat(40), at: S - H, url: null } }] }),
       ok("git-local", hyg({ unpushed: 2, merged: ["x"], fetchedAt: S - 9 * D })),
       ok("github-work", { kind: "work", issues: 3, prs: 1, reviewRequested: 1 }),
       ok("h", { kind: "probes", items: [probe("api", null, 90), probe("www", 200, 5)] }),
@@ -1488,6 +1783,7 @@ describe("a card line opens what it summarises", () => {
     const at = Object.fromEntries(p.rows.map((f) => { const t = findingTarget(f); return [f.key, `${t.tab}/${t.board}`]; }));
     expect(at).toEqual({
       ci: "delivery/ci", "ci:flaky": "delivery/flaky", release: "delivery/releases",
+      "release:deploy": "delivery/deployments", "release:deploy-failed": "delivery/deployments",
       "security:dependency": "security/advisories", "security:code": "security/advisories", "security:secret": "security/advisories",
       "deps:b": "security/update-prs",
       "git:unpushed": "code/hygiene", "git:tidy": "code/hygiene", "git:fetch": "code/hygiene",
