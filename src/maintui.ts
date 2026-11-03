@@ -5,21 +5,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { toast } from "./dom";
+import { actToast, toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
 import {
   BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, sweepReport,
   sweepRows, tabFindings,
-  type BoardId, type Door, type MaintTab, type ProjectPick, type SevBucket,
+  fixBranch, parseSessionKey, sessionGate, sessionKey, sessionLeft, sessionPlan, sweepGate, sweepLine, VERB_KIND,
+  type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
-import { briefFor, sweepBrief, sweepPrompt } from "./maintbrief";
+import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
 import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
+import { checkoutBusy } from "./grouping";
 import { openMenu } from "./menu";
+import { applyPick, emptyPick, pickNone, rangeOutcome } from "./pick";
+import { termEngine } from "./state";
 import { discoverTasks, execCmd } from "./tasks";
-import type { GitActionResult } from "./types";
+import type { GitActionResult, WtHead } from "./types";
 
 /** What a pane hosting Maintenance does on its behalf; one object, the DashHost precedent. */
 export interface MaintHost {
@@ -39,6 +43,8 @@ export interface MaintHost {
   setup?: (root: string, what: "propose" | "file") => void; // a Coverage row a [maintenance] key answers
   openCover?: (facet: Facet) => void; // the dashboard's: the facet's tab at its Coverage, which says why
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
+  lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
+  session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -51,6 +57,8 @@ function setMaintChip(c: MaintChip) {
 export let quietOpen = false;
 // The Security strip's bucket, a glance like the fold: a second click on it shows every row again.
 export let maintSev: SevBucket | null = null;
+// The ticked card lines (`sessionKey`), a glance too: never persisted, and cleared by the session they start.
+export let maintPicked = emptyPick();
 
 async function fetchHere(root: string, name: string): Promise<void> {
   try {
@@ -66,11 +74,13 @@ async function verifyFor(root: string): Promise<string[]> {
   return verifyCommands(tasks.map((x) => ({ cmd: execCmd(x), group: x.group, blocked: x.blocked })));
 }
 
+const lineOf = (root: string, key: string, inp: MaintInput) =>
+  [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)].find((x) => x.key === key);
+
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
   const inp = maintInput(root);
-  const f = inp && [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)]
-    .find((x) => x.key === key);
+  const f = inp && lineOf(root, key, inp);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
   const name = host.nameOf(root);
   if (f.verb === "fetch") { await fetchHere(root, name); return; }
@@ -115,13 +125,104 @@ function startSweep(at: HTMLElement, host: MaintHost): void {
   void runSweep(q, host.roots());
 }
 
+// ---------- a session: one click, one tiled agent per line ----------
+
+type BriefOf = (l: SessionLine, ctx: MaintBriefCtx, where: SessionWhere) => string | null;
+interface LineRun { gate?: typeof sessionGate; notes?: readonly string[]; begin?: () => void }
+// Held until the last pane has landed: a pane joins `sessions` only once its worktree exists, so a
+// second click any sooner would plan over the same checkouts.
+let starting = false;
+
+const branchExists = (root: string, branch: string) =>
+  invoke<unknown>("git_commit_info", { dir: root, rev: `refs/heads/${branch}` }).then((c) => !!c, () => false);
+// Asked as a line is ticked, so the bar can say "earlier" before the click. Start asks again.
+const earlierSeen = new Set<string>();
+export const maintEarlier = (root: string, branch: string) => earlierSeen.has(sessionKey({ root, key: branch }));
+async function noteEarlier(tick: string, host: MaintHost): Promise<void> {
+  const { root, key } = parseSessionKey(tick), branch = fixBranch({ key }), at = sessionKey({ root, key: branch });
+  const has = await branchExists(root, branch);
+  if (has === earlierSeen.has(at)) return;
+  if (has) earlierSeen.add(at); else earlierSeen.delete(at);
+  host.render();
+}
+
+// Re-planned from fresh heads and branches: the bar's plan is a paint old and can under-state a busy checkout.
+async function launchLines(label: string, lines: readonly SessionLine[], briefOf: BriefOf, host: MaintHost, run: LineRun = {}): Promise<void> {
+  if (!host.session || !lines.length) return;
+  if (starting) { toast("Still starting the last ones"); return; }
+  starting = true;
+  try {
+    const roots = [...new Set(lines.map((l) => l.f.root))];
+    const heads = new Map(await Promise.all(roots.map(async (r) =>
+      [r, await invoke<WtHead[]>("worktree_heads", { dir: r }).catch(() => null)] as const)));
+    const headsOf = (r: string) => heads.get(r) ?? [];
+    const earlier = new Set<string>();
+    await Promise.all(lines.filter((l) => VERB_KIND[l.f.verb] === "branch").map(async ({ f }) => {
+      const b = fixBranch(f);
+      if (await branchExists(f.root, b)) earlier.add(sessionKey({ root: f.root, key: b }));
+    }));
+    const plan = sessionPlan(lines, {
+      heads: headsOf, plain: (r) => heads.get(r)?.length === 0, earlier: (r, b) => earlier.has(sessionKey({ root: r, key: b })),
+      busy: (path, r) => checkoutBusy(path, headsOf(r)), name: host.nameOf, now: Date.now(),
+    });
+    const why = (run.gate ?? sessionGate)(plan, termEngine === "embedded");
+    if (why) { actToast(why); return; }
+    const verify = new Map(await Promise.all(roots.map(async (r) => [r, await verifyFor(r)] as const)));
+    const rows = plan.rows.flatMap((row) => {
+      const l = lines.find((x) => x.f.root === row.root && x.f.key === row.key), project = host.nameOf(row.root);
+      const text = l && briefOf(l, { project, verify: verify.get(row.root) ?? [] }, row.where);
+      return text ? [{ root: row.root, project, where: row.where, branch: row.branch, text, what: row.text }] : [];
+    });
+    if (!rows.length) { toast("That has changed since the last check. Check again"); return; }
+    run.begin?.();
+    await host.session(label, rows, [...(run.notes ?? []), ...sessionLeft(plan)]);
+  } finally { starting = false; }
+}
+
+async function startSession(host: MaintHost): Promise<void> {
+  const ticks = [...maintPicked.picked].map(parseSessionKey);
+  const lines = ticks.flatMap(({ root, key }) => {
+    const inp = maintInput(root), f = inp && lineOf(root, key, inp);
+    return f && inp ? [{ f, inp }] : [];
+  });
+  const gone = ticks.length - lines.length;
+  const notes = gone ? [`${gone} line${gone === 1 ? "" : "s"} changed since the last check`] : [];
+  const clear = () => { maintPicked = pickNone(); host.render(); };
+  if (!lines.length) { if (gone) toast(notes[0]); clear(); return; }
+  await launchLines("Maintenance", lines, ({ f, inp }, ctx, where) => sessionBrief(f, inp, ctx, where), host, { notes, begin: clear });
+}
+
+// A range over ten lines may tick two, and unsaid that reads as the range not having worked.
+function tickLine(key: string, host: MaintHost, shift: boolean): void {
+  const o = host.lines?.();
+  if (!o) return;
+  if (shift) window.getSelection()?.removeAllRanges(); // one anchored outside the cards still paints over them
+  const before = maintPicked, ctx = { ...o, range: shift };
+  maintPicked = applyPick(before, key, ctx);
+  for (const k of maintPicked.picked) if (!before.picked.has(k)) void noteEarlier(k, host);
+  host.render();
+  if (!shift || !before.anchor || before.anchor === key) return;
+  const { took, refused } = rangeOutcome(ctx, before.anchor, key);
+  if (refused) toast(`${took} ticked · ${refused} not offered: no agent answers those lines`);
+}
+
 // Each affected project's brief, prefilled and never sent; the facts are the run's, as drawn.
+// With agents opening outside Episko there are no panes to tile: one each, in the project's own folder.
 async function briefSweep(roots: readonly string[], host: MaintHost): Promise<void> {
-  const s = shownSweep();
-  if (!s?.adv) return;
+  const s = shownSweep(), adv = s?.adv;
+  if (!s || !adv) return;
+  if (host.session && termEngine === "embedded") {
+    const lines = roots.map((root) => ({ f: sweepLine(adv, root), inp: maintInput(root) ?? { det: null, reports: {} } }));
+    const briefOf: BriefOf = ({ f, inp }, ctx, where) => {
+      const facts = s.facts.find((x) => x.root === f.root);
+      return facts ? sweepSessionBrief(adv, facts, f, inp, ctx, where) : null;
+    };
+    await launchLines("Advisory sweep", lines, briefOf, host, { gate: sweepGate });
+    return;
+  }
   for (const root of roots) {
     const f = s.facts.find((x) => x.root === root), name = host.nameOf(root);
-    const text = f && sweepBrief(s.adv, f, { project: name, verify: await verifyFor(root) });
+    const text = f && sweepBrief(adv, f, { project: name, verify: await verifyFor(root) });
     if (text) host.prefill(name, root, text);
   }
 }
@@ -165,7 +266,13 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 }
 
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
-export function maintClick(t: HTMLElement, host: MaintHost): boolean {
+export function maintClick(t: HTMLElement, host: MaintHost, shift = false): boolean {
+  const tick = t.closest<HTMLElement>("[data-mttick]");
+  if (tick) { tickLine(sessionKey({ root: tick.dataset.mtroot!, key: tick.dataset.mttick! }), host, shift); return true; }
+  const none = t.closest<HTMLElement>("[data-mtpicknone]");
+  if (none) { maintPicked = pickNone(); host.render(); return true; }
+  const start = t.closest<HTMLElement>("[data-mtsession]");
+  if (start) { void startSession(host); return true; }
   const scan = t.closest<HTMLElement>("[data-mtscan]");
   if (scan) { host.scan(scan.dataset.mtscan === "force"); return true; }
   const sweep = t.closest<HTMLElement>("[data-mtsweep]");
@@ -235,8 +342,15 @@ export function maintClick(t: HTMLElement, host: MaintHost): boolean {
   return false;
 }
 
+// A tick is rebuilt by the repaint it causes, so the keyboard goes back to its successor.
+function refocusTick(key: string, root: string): void {
+  for (const el of document.querySelectorAll<HTMLElement>("[data-mttick]")) {
+    if (el.dataset.mttick === key && el.dataset.mtroot === root) { el.focus({ preventScroll: true }); return; }
+  }
+}
+
 /** Enter or Space on a card line's text opens it as a click would; its verb is a button of its own.
- *  Enter in the sweep's box submits it, and nothing else typed there is Maintenance's. */
+ *  On a tick they toggle it. Enter in the sweep's box submits it, and nothing else typed there is Maintenance's. */
 export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
   const t = e.target;
   if (t instanceof HTMLInputElement && t.matches(".mt-sweepq")) {
@@ -246,6 +360,13 @@ export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
     return true;
   }
   if ((e.key !== "Enter" && e.key !== " ") || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
+  if (t instanceof HTMLElement && t.matches("[data-mttick]")) {
+    e.preventDefault();
+    const { mttick, mtroot } = t.dataset;
+    maintClick(t, host);
+    refocusTick(mttick ?? "", mtroot ?? "");
+    return true;
+  }
   if (!(t instanceof HTMLElement) || !t.matches("[data-mtfind] > .t")) return false;
   e.preventDefault();
   return maintClick(t, host);

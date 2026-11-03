@@ -12,7 +12,7 @@ import { basename, nfcPath } from "./format";
 import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillShell, shelveSession, tickAutoFetch } from "./panes";
+import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillFresh, prefillShell, refreshGitViews, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
@@ -22,7 +22,7 @@ import {
   checkDeploy, checkMaintCfg, deployPrompt, deployText, isEmptyDeploy, maintCfgLosses, maintCfgText, maintPrompt, narrowDeploy,
   isEmptyMaintCfg, narrowMaintCfg, NO_FILE, type DeployProposal, type MaintCfgProposal,
 } from "./deploy";
-import { coverRows } from "./maint";
+import { coverRows, SESSION_EXTERNAL, sessionDone, type SessionLaunch } from "./maint";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -97,6 +97,35 @@ export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
 // above this layer and owns the fetch, so it arrives as a hook rather than an import.
 let ghReload: (root: string) => void = () => {};
 export function setGhReload(fn: typeof ghReload) { ghReload = fn; }
+
+// One pane per row, tiled as one group, each prefilled and never sent: Enter stays the person's.
+// Roots run in parallel and one root's rows in turn, since git holds a repo's worktree lock.
+export async function launchTogether(label: string, rows: readonly SessionLaunch[], notes: readonly string[] = []): Promise<void> {
+  if (termEngine !== "embedded") { toast(SESSION_EXTERNAL); return; }
+  const id = crypto.randomUUID(), fails: string[] = [];
+  let started = 0;
+  const one = async (row: SessionLaunch, n: number) => {
+    const w = row.where;
+    try {
+      const dir = w.kind === "here" ? row.root : w.kind === "wt" ? w.path
+        : await invoke<string>("create_worktree", { repoDir: row.root, branch: w.branch, base: w.base || null });
+      const sid = await launch(row.project, dir, {
+        colorKey: row.root, worktree: dir === row.root ? null : row.branch, branch: row.branch ?? undefined,
+        group: { id, label, what: row.what, n },
+      });
+      if (typeof sid !== "string") { fails.push(`${row.project}: it did not start`); return; }
+      started++;
+      prefillFresh(sid, row.text);
+    } catch (e) { fails.push(`${row.project}: worktree: ${e}`); }
+  };
+  const byRoot = new Map<string, number[]>();
+  rows.forEach((r, n) => byRoot.set(r.root, [...(byRoot.get(r.root) ?? []), n]));
+  await Promise.all([...byRoot.values()].map(async (ns) => { for (const n of ns) await one(rows[n], n); }));
+  void refreshGitViews();
+  const said = sessionDone(started, rows.length, fails, notes);
+  // What failed or was left out names somewhere to go and look, so it outlives the plain toast's two seconds.
+  if (started < rows.length || notes.length) actToast(said); else toast(said);
+}
 
 export function openTerminalIn(project: string, dir: string) {
   if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }

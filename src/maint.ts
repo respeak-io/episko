@@ -7,6 +7,9 @@ import { narrowDeploy, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
 import { parseVer, satisfies, verCmpStr } from "./deps";
 import { fmtDay, nfcKeys } from "./format";
+import { whereProblem, type DispatchWhere } from "./claim";
+import { SLUG_MAX, worktreeDirLen } from "./handoff";
+import type { WtHead } from "./types";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
 
@@ -886,6 +889,10 @@ export const okFacts = (inp: MaintInput, facet: Facet): { source: string; trunca
     .map((r) => ({ source: r.source, truncated: r.truncated, facts: r.facts! }));
 
 const LEVEL_RANK = { bad: 0, warn: 1, info: 2 } as const;
+// The newest fetch any git or release read carries: what its counts are as old as.
+const lastFetch = (inp: MaintInput) => [...okFacts(inp, "git"), ...okFacts(inp, "release")]
+  .flatMap(({ source, facts }) => "fetchedAt" in facts && facts.fetchedAt !== null ? [{ source, at: facts.fetchedAt }] : [])
+  .sort((a, b) => b.at - a.at)[0];
 const workFacts = (inp: MaintInput) => okFacts(inp, "work")
   .flatMap((r) => r.facts.kind === "work" ? [{ source: r.source, facts: r.facts }] : []);
 
@@ -991,9 +998,7 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
       detail: tidy.slice(0, 4).join(", ") + (tidy.length > 4 ? " …" : ""), verb: "tidy", source, ref: null });
   }
   // One line for the amber a stale fetch lifts onto the Git and Release cells, so it never goes unexplained.
-  const fetched = [...okFacts(inp, "git"), ...okFacts(inp, "release")]
-    .flatMap(({ source, facts }) => "fetchedAt" in facts && facts.fetchedAt !== null ? [{ source, at: facts.fetchedAt }] : [])
-    .sort((a, b) => b.at - a.at)[0];
+  const fetched = lastFetch(inp);
   if (fetched && sec - fetched.at > th.fetchStaleDays * DAY) {
     add("git", { key: "git:fetch", level: "warn", text: `last fetch ${span(sec - fetched.at)} ago`,
       detail: "release and branch counts are as old as it", verb: "fetch", source: fetched.source, ref: null });
@@ -2433,6 +2438,161 @@ export function weekNotCompared(d: WeekDigest, names: Readonly<Record<string, st
     ...(d.unmarked.length ? [line("checked once so far", d.unmarked)] : []), ...(d.unread.length ? [line("not checked yet", d.unread)] : [])];
   return { line: `Not compared: ${parts.join(" · ")}`, tip };
 }
+
+// ---------- a maintenance session: ticked lines, one tiled agent each (docs/maintenance.md) ----------
+
+/** Where a verb's agent works; a Record, so a new verb fails to compile until it is classified.
+ *  `here`: it works on the repo's own branches or writes nothing, so a fix branch would be one more to tidy. */
+export const VERB_KIND: Record<Verb, "branch" | "here" | null> = {
+  fix: "branch",
+  patch: "branch",
+  rotate: "branch",
+  upgrade: "branch",
+  setup: "branch",
+  release: "here",
+  deploy: "here",
+  push: "here",
+  tidy: "here",
+  review: null,
+  fetch: null,
+  run: null,
+};
+export const SESSION_MAX = 8; // one WebGL context per visible tile: terminal.ts's GL_POOL_MAX, held by a test
+export const SESSION_EXTERNAL = "Agents open outside Episko (Settings › Launching), so there are no panes to tile";
+export const SESSION_OVER = `${SESSION_MAX} at most at once: one tile each`;
+const FIX_SLUG_MAX = 40;
+
+export const sessionKey = (f: Pick<Finding, "root" | "key">) => `${f.root}\u0000${f.key}`;
+export function parseSessionKey(k: string): { root: string; key: string } {
+  const at = k.indexOf("\u0000");
+  return { root: k.slice(0, at), key: k.slice(at + 1) };
+}
+/** A line an agent could take now. A snapshot's lines are not findings, so they never reach this. */
+export const sessionPickable = (f: Pick<Finding, "verb" | "busy">) => VERB_KIND[f.verb] !== null && !f.busy;
+
+/** The cards a chip shows, quiet ones behind the fold under All. The view and the selection read this one list. */
+export function cardsShown<T extends { band: Band }>(cards: readonly T[], chip: Band | "all"): T[] {
+  return cards.filter((c) => chip === "all" ? c.band !== "quiet" : c.band === chip);
+}
+/** ./pick's context: every line on a shown card in rank order. A quiet card is drawn compact, so it has none. */
+export function sessionLines(cards: readonly { band: Band; findings: readonly Finding[] }[]): { order: string[]; pickable: Set<string> } {
+  const lines = cards.filter((c) => c.band !== "quiet").flatMap((c) => c.findings);
+  return { order: lines.map(sessionKey), pickable: new Set(lines.filter(sessionPickable).map(sessionKey)) };
+}
+
+/** What a fix branch is cut from: the git read's trunk, the release facet's (all maint_trunk's answer), then the file's. */
+export function trunkOf(inp: MaintInput): string | null {
+  for (const { facts } of [...okFacts(inp, "git"), ...okFacts(inp, "release")]) if ("trunk" in facts && facts.trunk) return facts.trunk;
+  return inp.det?.config.trunk ?? null;
+}
+/** Stable per line, so a later session lands beside the earlier work: `prod:cert:api` is `maint/prod-cert-api`. */
+export function fixBranch(f: Pick<Finding, "key">): string {
+  const slug = f.key.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").slice(0, FIX_SLUG_MAX).replace(/-+$/, "");
+  return `maint/${slug || "line"}`;
+}
+
+export interface SessionLine { f: Finding; inp: MaintInput }
+/** `old`: a fix branch an earlier session left with no checkout. create_worktree checks it out as it stands and ignores the base. */
+export type SessionWhere = DispatchWhere | { kind: "old"; branch: string; base: string };
+export interface SessionRow { root: string; key: string; text: string; where: SessionWhere; branch: string | null; from: string }
+/** `open`: an agent is already there, which is the one skip worth its own word. */
+export interface SessionSkip { root: string; key: string; why: string; open: boolean }
+export interface SessionPlan { rows: SessionRow[]; skipped: SessionSkip[]; over: number }
+export interface SessionLaunch { root: string; project: string; where: SessionWhere; branch: string | null; text: string; what: string }
+export interface SessionCtx {
+  heads: (root: string) => WtHead[];
+  plain: (root: string) => boolean; // known to be no repo, so there is no branch to cut
+  earlier: (root: string, branch: string) => boolean; // that local branch exists, with or without a checkout
+  busy: (path: string, root: string) => boolean; // an agent is at work in that checkout
+  name: (root: string) => string;
+  now: number;
+}
+
+// Maintenance never fetches, so a base is as old as the last fetch and says so; no fetch on record is not a fresh one.
+function sessionFrom(inp: MaintInput, base: string, name: string, now: number): string {
+  if (!base) return `what ${name} has checked out`;
+  const at = lastFetch(inp)?.at;
+  if (at === undefined) return `${base}, last fetch unknown`;
+  const age = now / 1000 - at;
+  return age > clampMaint(inp.det?.config.thresholds).fetchStaleDays * DAY ? `${base}, as of the last fetch ${span(age)} ago` : base;
+}
+
+/** What Start would make of the ticked lines, in ticked order. Nothing here runs; ./actions cuts the worktrees. */
+export function sessionPlan(picked: readonly SessionLine[], ctx: SessionCtx): SessionPlan {
+  const rows: SessionRow[] = [], skipped: SessionSkip[] = [], taken = new Set<string>();
+  for (const { f, inp } of picked) {
+    const { root, key, text } = f, name = ctx.name(root);
+    const skip = (why: string, open = false) => skipped.push({ root, key, why: `${name}: ${why}`, open });
+    const kind = VERB_KIND[f.verb];
+    if (!kind) { skip("no agent answers this line"); continue; }
+    if (kind === "here" || ctx.plain(root)) { rows.push({ root, key, text, where: { kind: "here" }, branch: null, from: "" }); continue; }
+    const branch = fixBranch(f), heads = ctx.heads(root), one = `${root}\u0000${branch}`;
+    if (taken.has(one)) { skip(`another ticked line lands on ${branch}`); continue; }
+    taken.add(one);
+    const on = heads.find((h) => h.exists && h.branch === branch);
+    if (on) {
+      if (ctx.busy(on.path, root)) skip(`an agent already works on ${branch}`, true);
+      else rows.push({ root, key, text, where: on.is_main ? { kind: "here" } : { kind: "wt", path: on.path }, branch, from: "" });
+      continue;
+    }
+    // git refuses a branch whose registered folder was deleted by hand, until that is pruned.
+    if (heads.some((h) => h.branch === branch)) { skip(`${branch}'s folder is gone and git still lists it: run \`git worktree prune\``); continue; }
+    const base = trunkOf(inp) ?? "";
+    const problem = whereProblem({ kind: "new", branch, base }, heads)
+      ?? (worktreeDirLen(root, branch) > SLUG_MAX ? "this folder's path is too long for Claude to file the conversation under" : null);
+    if (problem) skip(problem);
+    else if (ctx.earlier(root, branch)) rows.push({ root, key, text, where: { kind: "old", branch, base }, branch, from: "" });
+    else rows.push({ root, key, text, where: { kind: "new", branch, base }, branch, from: sessionFrom(inp, base, name, ctx.now) });
+  }
+  return { rows: rows.slice(0, SESSION_MAX), skipped, over: Math.max(0, rows.length - SESSION_MAX) };
+}
+
+/** Why Start cannot run as ticked; a person unticks what is named, so nothing is dropped behind their back. */
+export function sessionGate(plan: SessionPlan, embedded: boolean): string | null {
+  if (!embedded) return SESSION_EXTERNAL;
+  if (plan.over) return SESSION_OVER;
+  return plan.skipped[0]?.why ?? null;
+}
+/** A sweep has no ticks to untick: what cannot start is left out and named, and only nothing left refuses. */
+export function sweepGate(plan: SessionPlan, embedded: boolean): string | null {
+  return embedded && !plan.over && plan.rows.length ? null : sessionGate(plan, embedded);
+}
+/** What a launch left out, for the toast it ends on. */
+export function sessionLeft(plan: SessionPlan): string[] {
+  const [first, ...rest] = plan.skipped;
+  return first ? [`${first.why}${rest.length ? ` and ${rest.length} more` : ""}`] : [];
+}
+/** What the ticks will become, said before the click rather than asked after it. `hidden`: ticks the chip is not showing. */
+export function sessionText(plan: SessionPlan, hidden = 0): string {
+  const of = (...k: SessionWhere["kind"][]) => plan.rows.filter((r) => k.includes(r.where.kind)).length;
+  const fresh = of("new"), again = of("wt", "old"), here = of("here"), open = plan.skipped.filter((s) => s.open).length;
+  const stuck = plan.skipped.length - open;
+  return [
+    hidden && `${hidden} behind this filter`,
+    fresh && (fresh === 1 ? "1 on a new fix branch" : `${fresh} on new fix branches`),
+    again && (again === 1 ? "1 on its earlier fix branch" : `${again} on their earlier fix branches`),
+    here && (here === 1 ? "1 in its project's folder" : `${here} in their projects' folders`),
+    open && `${open} already open`,
+    stuck && `${stuck} can't start`,
+  ].filter(Boolean).join(" · ");
+}
+/** One line per row, naming where it lands. */
+export function sessionTip(plan: SessionPlan, name: (root: string) => string): string {
+  const dest = (r: SessionRow) => r.where.kind === "new" ? `${r.where.branch} from ${r.from}`
+    : r.where.kind === "wt" ? `${r.branch}, its earlier checkout` : r.where.kind === "old" ? `${r.branch}, its earlier branch`
+    : r.branch ? `${r.branch}, in its folder` : "in its folder";
+  return [...plan.rows.map((r) => `${name(r.root)} · ${r.text} → ${dest(r)}`), ...plan.skipped.map((s) => s.why)].join("\n");
+}
+/** The toast a session ends on: what started, the first thing that did not, and what was noted before it began. */
+export function sessionDone(started: number, total: number, fails: readonly string[], notes: readonly string[] = []): string {
+  const head = started !== total ? `Started ${started} of ${total}${fails.length ? ` · ${fails[0]}` : ""}`
+    : total === 1 ? "Started 1 agent, prefilled. Read it, then press Enter" : `Started ${total} agents, each prefilled. Read each, then press Enter`;
+  return [head, ...notes].join(" · ");
+}
+/** A sweep's affected project as a line, so it obeys every rule a ticked line does: `maint/<advisory id>`. */
+export const sweepLine = (adv: SweepAdvisory, root: string): Finding => ({
+  root, facet: "security", key: adv.id ?? adv.packages[0]?.name ?? "sweep", level: "bad", text: sweepTitle(adv), detail: "", verb: "patch", source: "", ref: "dependency",
+});
 
 // ---------- the advisory sweep (maint_sweep.rs; docs/maintenance.md § Advisory sweep) ----------
 // Rust resolves the advisory and reads what each project installs; whether that is affected is decided

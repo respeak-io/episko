@@ -411,6 +411,21 @@ describe("Maintenance's own dispatcher", () => {
     expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("proj"));
   });
 
+  it("wires a session's ticks and bar, a tick before the line it sits in", () => {
+    for (const k of ["tick", "picknone", "session"]) {
+      expect(emitted, `data-mt${k} is never emitted`).toContain(k);
+      expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
+    }
+    expect(probed.indexOf("tick"), "a tick sits inside its line").toBeLessThan(probed.indexOf("verb"));
+    expect(probed.indexOf("tick")).toBeLessThan(probed.indexOf("find"));
+    // The dashboard's To do rows stay tickless: the selection is the fleet's alone.
+    expect(MAINTVIEW).toMatch(/v\.rows\.map\(\(f\) => findingHtml\(f, undefined, true\)\)/);
+    expect(FLEETUI).toContain("maintClick(t, maintHost, e.shiftKey)");
+    expect(FLEETUI, "a closing note is optional, so tsc would not catch dropping it").toContain("host.session(label, rows, notes)");
+    expect(DASHBOARD).not.toMatch(/lines: \(\) =>/);
+    expect(MAINTUI).toContain('t.matches("[data-mttick]")');
+  });
+
   it("steps out of a project filter on Escape before it leaves the fleet", () => {
     const arm = MAIN.split("\n").find((l) => /e\.key === "Escape" && fleetMirror\(\)/.test(l)) ?? "";
     expect(arm).toContain("fleetEscape()");

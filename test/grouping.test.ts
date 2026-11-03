@@ -14,7 +14,7 @@ import { ATTN_DEFAULTS } from "../src/attn";
 import {
   adoptIdentity,
   allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
-  foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
+  checkoutBusy, foldRunGroups, groupFocus, groupKey, inStageGroup, memberTakesStage, paneCapName, splitAnchorFor, splitShells, stageKeyOf, stageMembers,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, projectList,
   reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
@@ -1559,5 +1559,114 @@ describe("resumeAgent — durable provider identity", () => {
 
   it("refuses an unknown provider instead of silently resuming it as Claude", () => {
     expect(resumeAgent("future-agent", [codex])).toBeUndefined();
+  });
+});
+
+describe("an agent group: a maintenance session's panes on one stage", () => {
+  const member = (id: string, n: number, o: Partial<Sess> = {}) =>
+    sess({ id, project: `p${n}`, group: { id: "g1", label: "Maintenance", what: `line ${n}`, n }, ...o });
+
+  it("is a stage group keyed by its id, and a shell split beside a member is not in it", () => {
+    const m = member("a", 0);
+    const shell = sess({ id: "sh", kind: "shell", splitOf: "a" });
+    expect(groupKey(m)).toBe("g1");
+    expect(stageKeyOf(m)).toBe("g1");
+    expect(inStageGroup(m, "g1")).toBe(true);
+    expect(groupKey(shell)).toBeUndefined();
+    expect(stageKeyOf(shell)).toBe("a");
+    expect(inStageGroup(shell, "g1")).toBe(false);
+    expect(inStageGroup(shell, "a")).toBe(true);
+  });
+
+  it("is never folded in the sidebar: its members sit under their own projects", () => {
+    const items = foldRunGroups([member("a", 0), member("b", 1)]);
+    expect(items.map((i) => i.kind)).toEqual(["one", "one"]);
+  });
+
+  it("orders a session's tiles as ticked, a chain's by when each started", () => {
+    const list = [member("c", 2), member("a", 0), member("b", 1), sess({ id: "x" })];
+    expect(stageMembers("g1", list).map((s) => s.id)).toEqual(["a", "b", "c"]);
+    const chain = [taskSess("late", {}, { groupId: "r", startedAt: 20 }), taskSess("early", {}, { groupId: "r", startedAt: 10 }), taskSess("lone", {}, { startedAt: 5 })];
+    expect(stageMembers("r", chain).map((s) => s.id)).toEqual(["early", "late"]);
+    expect(stageMembers("nobody", chain)).toEqual([]);
+  });
+
+  describe("groupFocus", () => {
+    it("takes a chain to its failure, else its newest step", () => {
+      const a = taskSess("a", {}, { groupId: "r", startedAt: 10 }), b = taskSess("b", {}, { groupId: "r", startedAt: 20 });
+      expect(groupFocus([a, b], null)?.id).toBe("b");
+      expect(groupFocus([a, b], "a")?.id, "a chain ignores the active tile").toBe("b");
+      expect(groupFocus([{ ...a, phase: "error" }, b], null)?.id).toBe("a");
+    });
+
+    it("keeps a session on the tile being read, so a late member never takes the keyboard", () => {
+      const list = [member("a", 0), member("b", 1), member("c", 2, { phase: "error" })];
+      expect(groupFocus(list, "b")?.id).toBe("b");
+      expect(groupFocus(list, "elsewhere")?.id).toBe("a");
+      expect(groupFocus(list, null)?.id).toBe("a");
+    });
+
+    it("has nothing to focus in an empty group", () => {
+      expect(groupFocus([], "a")).toBeNull();
+    });
+  });
+
+  describe("memberTakesStage", () => {
+    it("gives the first member the stage, wherever you are", () => {
+      expect(memberTakesStage(true, "g1", null, null)).toBe(true);
+      expect(memberTakesStage(true, "g1", null, "other")).toBe(true);
+    });
+    it("re-tiles for a later member while a session holds the stage on this group", () => {
+      expect(memberTakesStage(false, "g1", "g1", "a")).toBe(true);
+    });
+    it("never pulls you back to the mosaic from a mirror, which leaves stageGroup set", () => {
+      expect(memberTakesStage(false, "g1", "g1", null)).toBe(false);
+    });
+    it("leaves you on another pane or another group", () => {
+      expect(memberTakesStage(false, "g1", null, "other")).toBe(false);
+      expect(memberTakesStage(false, "g1", "g2", "other")).toBe(false);
+    });
+  });
+
+  describe("paneCapName", () => {
+    it("names a task by its label", () => {
+      expect(paneCapName(taskSess("build"))).toBe("build");
+    });
+    it("names a member by its project and what it is on, until a first prompt gives its title something to say", () => {
+      const asked = [{ id: "p", text: "go", at: 1 }];
+      expect(paneCapName(member("a", 3))).toBe("p3 · line 3");
+      expect(paneCapName(member("a", 3, { title: "Claude Code" })), "the idle REPL's own title").toBe("p3 · line 3");
+      expect(paneCapName(member("a", 3, { title: "Fix the e2e run", prompts: asked }))).toBe("p3 · Fix the e2e run");
+      expect(paneCapName(member("a", 3, { title: "", prompts: asked }))).toBe("p3 · line 3");
+    });
+    it("leaves everything else as it was", () => {
+      expect(paneCapName(sess({ title: "Claude Code" }))).toBe("Claude Code");
+      expect(paneCapName(sess({ title: "", kind: "shell" }))).toBe("shell");
+      expect(paneCapName(sess({ title: "", kind: "agent", provider: "codex" }))).toBe("codex");
+      expect(paneCapName(sess({ title: "", kind: "agent", provider: null }))).toBe("pane");
+    });
+  });
+
+  describe("checkoutBusy", () => {
+    const heads: WtHead[] = [
+      { path: "/w/epi", branch: "main", is_main: true, exists: true },
+      { path: "/wt/maint-ci", branch: "maint/ci", is_main: false, exists: true },
+    ];
+    it("answers for a live agent in that checkout, a subfolder of it included", () => {
+      expect(checkoutBusy("/wt/maint-ci", heads, [sess({ workdir: "/wt/maint-ci", phase: "working" })], [])).toBe(true);
+      expect(checkoutBusy("/wt/maint-ci", heads, [sess({ workdir: "/wt/maint-ci/src", phase: "idle" })], [])).toBe(true);
+    });
+    it("does not count another checkout, an exited agent, or a shell", () => {
+      expect(checkoutBusy("/wt/maint-ci", heads, [sess({ workdir: "/w/epi" })], [])).toBe(false);
+      expect(checkoutBusy("/wt/maint-ci", heads, [sess({ workdir: "/wt/maint-ci", phase: "ended" })], [])).toBe(false);
+      expect(checkoutBusy("/wt/maint-ci", heads, [sess({ workdir: "/wt/maint-ci", kind: "shell" })], [])).toBe(false);
+      expect(checkoutBusy("/wt/maint-ci", heads, [], [])).toBe(false);
+    });
+    it("counts an agent running outside Episko", () => {
+      expect(checkoutBusy("/wt/maint-ci", heads, [], [ext({ cwd: "/wt/maint-ci" })])).toBe(true);
+    });
+    it("still knows a checkout by its exact path when the roster has not caught up", () => {
+      expect(checkoutBusy("/wt/maint-ci", [], [sess({ workdir: "/wt/maint-ci" })], [])).toBe(true);
+    });
   });
 });

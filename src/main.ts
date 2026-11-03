@@ -43,7 +43,7 @@ import {
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   openDevtools, openTeamFile, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
-  onLimitHit, syncShownAccount,
+  onLimitHit, syncShownAccount, launchTogether,
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
@@ -59,7 +59,7 @@ import {
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesOnClose, setPanesRenderAll, shelveSession,
-  syncStageButtons, toggleRunGroup, typeInto,
+  syncStageButtons, toggleRunGroup, prefillFresh,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -131,7 +131,7 @@ import {
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
 import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
-import { orderedSessions, syncAttn } from "./grouping";
+import { groupKey, orderedSessions, stageMembers, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
@@ -344,10 +344,11 @@ setFleetHost({
   prefill: (project, path, text) => {
     void launch(project, path, { colorKey: path }).then((sid) => {
       if (typeof sid !== "string") return; // a failed launch already toasted
-      setTimeout(() => { void typeInto(sid, text).catch(() => {}); }, 1400);
+      prefillFresh(sid, text);
       toast("Started and prefilled. Read it, then press Enter");
     });
   },
+  session: (label, rows, notes) => launchTogether(label, rows, notes),
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts
@@ -475,7 +476,7 @@ const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
   || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
 function navAlive(l: Loc): boolean {
   switch (l.kind) {
-    case "session": return l.group ? [...sessions.values()].some((s) => s.run?.groupId === l.group) : sessions.has(l.id);
+    case "session": return l.group ? [...sessions.values()].some((s) => groupKey(s) === l.group) : sessions.has(l.id);
     case "ext": return externals.some((e) => e.pid === l.pid);
     case "past": return dormants.some((d) => d.id === l.id);
     case "fleet": return true;
@@ -486,6 +487,8 @@ function navName(l: Loc): string {
   const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
   switch (l.kind) {
     case "session": {
+      const tiles = l.group ? stageMembers(l.group) : [];
+      if (tiles[0]?.group) return cap(`${tiles[0].group.label} · ${tiles.length} pane${tiles.length === 1 ? "" : "s"}`);
       const s = sessions.get(l.id);
       const t = s && !l.group ? (s.kind === "task" ? s.run?.label : s.title) : "";
       return s ? cap(t ? `${s.project}: ${t}` : s.project) : "";

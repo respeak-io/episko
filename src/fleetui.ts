@@ -17,20 +17,21 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  cardsShown, clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  sessionGate, sessionKey, sessionLines, sessionPlan, sessionText, sessionTip,
   tabExtras, tabFindings, tabModel, weekDigest,
-  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type TabProject, type WeekPairIn,
+  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type SessionLaunch, type TabProject, type WeekPairIn,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import {
   askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
-import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
+import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import {
-  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSub, type MaintSweepView, type MaintView,
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView,
 } from "./maintview";
 import {
-  allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
+  allProjects, attnPending, checkoutBusy, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
 import { iconFor } from "./icons";
 import type { HistEntry } from "./history";
@@ -38,7 +39,7 @@ import { forecast5h, forecast7d, hasH5Window } from "./rl";
 import { extWorking, GCLASS, GLYPH } from "./sidebarview";
 import {
   accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, projGroups, sessions,
-  setActiveId, setMirror,
+  setActiveId, setMirror, termEngine, worktreesByRepo,
 } from "./state";
 import type { TrailCommit } from "./trail";
 import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from "./types";
@@ -56,6 +57,7 @@ export interface FleetHost {
   openDashboard: (project: string, path: string, tab?: "today" | "maint", door?: Door) => void;
   // Launch an agent and type `text` into it with no newline: a person reads it and presses Enter.
   prefill: (project: string, path: string, text: string) => void;
+  session: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>;
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -68,6 +70,7 @@ let host: FleetHost = {
   closeSession: () => {},
   openDashboard: () => {},
   prefill: () => {},
+  session: async () => {},
   openUsage: () => {},
   openHistory: () => {},
   refreshUsage: () => {},
@@ -413,8 +416,32 @@ function sweepView(projects: number): MaintSweepView {
     })),
     cur: cur && { n: cur.n, query: cur.query, state: cur.state, err: cur.err, adv: cur.adv, rows: rowsOf(cur), agents: cur.agents },
     projects, service: findSource("osv")?.label ?? "a public advisory database", // the one maint_sweep.rs asks
+    tiled: termEngine === "embedded",
   };
 }
+
+// What Start would make, from the roster this paint already has: Start itself re-plans from fresh
+// heads (./maintui), so the bar can under-state a reuse but never launches into a busy checkout.
+function sessionView(cards: readonly MaintCard[], nameOf: (root: string) => string, now: number): MaintSession {
+  const lines = new Map(cards.flatMap((c) => c.findings.map((f) => [sessionKey(f), f] as const)));
+  const picked = [...maintPicked.picked].flatMap((k) => {
+    const f = lines.get(k), inp = f && maintInput(f.root);
+    return f && inp ? [{ f, inp }] : [];
+  });
+  const headsOf = (root: string) => worktreesByRepo.get(root) ?? [];
+  const plan = sessionPlan(picked, {
+    heads: headsOf, plain: (root) => worktreesByRepo.get(root)?.length === 0, earlier: maintEarlier,
+    busy: (path, root) => checkoutBusy(path, headsOf(root)), name: nameOf, now,
+  });
+  const shown = new Set(sessionLines(cardsShown(cards, maintChip)).order);
+  const hidden = picked.filter(({ f }) => !shown.has(sessionKey(f))).length;
+  return {
+    picked: maintPicked.picked, n: picked.length, start: plan.rows.length, text: sessionText(plan, hidden),
+    tip: sessionTip(plan, nameOf), why: sessionGate(plan, termEngine === "embedded"),
+  };
+}
+
+let lastCards: readonly MaintCard[] = []; // the ranked cards as last drawn, which is what a shift-range means
 
 function buildMaint(now: number): MaintView {
   const byRoot = maintProjects();
@@ -464,6 +491,7 @@ function buildMaint(now: number): MaintView {
     else if (maintInput(root)?.det?.sources.length !== 0) unread.push(root); // a folder with nothing to read leaves no mark
   }
   const ranked = rankMaint(cards);
+  lastCards = ranked;
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
   const only = liveFilter();
   const nameOf = (r: string) => byRoot.get(r)?.name ?? basename(r);
@@ -486,6 +514,7 @@ function buildMaint(now: number): MaintView {
     prod: { projects: prodProjects, checking: prodChecking },
     sweep: maintSub === "security" ? sweepView(byRoot.size) : undefined,
     week: pairs.length ? { ...weekDigest(pairs, unmarked, unread, maintPrefs.public), stale: fleetScanning } : null,
+    session: maintSub === "overview" ? sessionView(ranked, nameOf, now) : undefined,
   };
 }
 
@@ -493,13 +522,19 @@ function buildMaint(now: number): MaintView {
 // Assign only when the markup changed: `renderFleet` is on `renderAll`'s path, and an
 // `innerHTML` assignment destroys the node under the pointer (docs/architecture.md).
 const painted = new Map<string, string>();
+let paintedSub: MaintSub = maintSub;
 function paint(id: string, html: string): void {
   if (painted.get(id) === html) return;
   painted.set(id, html);
   const el = $(id), q = el.querySelector<HTMLInputElement>(".mt-sweepq");
   // The sweep's box is typed into while answers land: its text, caret and focus survive a repaint.
   const kept = q && { v: q.value, on: document.activeElement === q, a: q.selectionStart, b: q.selectionEnd };
+  // The scroller is rebuilt too: a tick or an answer landing keeps your place, and a new tab starts at its top.
+  const top = paintedSub === maintSub ? el.querySelector(".mt-body")?.scrollTop : 0;
   el.innerHTML = html;
+  if (id === "fleetBody") paintedSub = maintSub;
+  const body = top ? el.querySelector(".mt-body") : null;
+  if (body && top) body.scrollTop = top;
   const nq = kept && el.querySelector<HTMLInputElement>(".mt-sweepq");
   if (!kept || !nq) return;
   nq.value = kept.v;
@@ -590,13 +625,15 @@ const maintHost: MaintHost = {
   picks: (tab) => maintPicks(tab),
   render: () => renderFleet(),
   roots: () => maintRoots(),
+  lines: () => sessionLines(cardsShown(lastCards, maintChip)),
+  session: (label, rows, notes) => host.session(label, rows, notes),
 };
 
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.
 export function wireFleet(): void {
   $("fleetPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
-    if (maintClick(t, maintHost)) return;
+    if (maintClick(t, maintHost, e.shiftKey)) return;
     const view = t.closest<HTMLElement>("[data-flview]");
     if (view) { setFleetView(view.dataset.flview as FleetViewKind); return; }
     const sort = t.closest<HTMLElement>("[data-flsort]");

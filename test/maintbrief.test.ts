@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { FIX, briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
+import { FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Deployed, type Facts, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts,
+  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
 } from "../src/maint";
+import { typable } from "../src/format";
 
 // The brief is the product: an agent is only as good as what it was told, and a person reads it
 // in the composer before sending. It is built from facts, so it never names who reported them.
@@ -379,5 +380,122 @@ describe("the advisory sweep's briefs", () => {
     expect(p).toContain("- package-lock.json: lodash from github:me/lodash#fix, not the registry's copy, so its version proves nothing");
     expect(p).toContain("```toml\nverdict = ");
     expect(p).toContain("nothing you answer is applied");
+  });
+});
+
+describe("a session's briefs", () => {
+  const wt = { kind: "wt" as const, path: "/wt/maint-ci" };
+  const fresh = { kind: "new" as const, branch: "maint/ci", base: "origin/main" };
+  const old = { kind: "old" as const, branch: "maint/ci", base: "origin/main" };
+  // The later kinds' lines: a job flaky on re-runs, and a production both behind and failing.
+  const later = input(
+    ok("reruns", { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 1, jobs: [{ workflow: "ci", job: "e2e", reruns: 2, passed: 2, steps: ["Cargo test"], seen: [] }] }),
+    ok("gd", { kind: "deployments", trunk: "origin/main", fetchedAt: S, envs: [{ env: "prod", tier: "production", sha: "a".repeat(40), tag: "v1.0", branch: "main", at: S - 3 * D, url: null,
+      behind: 23, behindAt: S - 9 * D, ahead: 0, last: { state: "fail", raw: "FAILURE", sha: "b".repeat(40), at: S - 7200, url: "https://ci.example/run/9" } }] }),
+  );
+  const lineIn = (i: MaintInput, key: string) => findings("/r", i, MAINT_DEFAULTS, NOW).find((f) => f.key === key)!;
+
+  it("has a brief for every verb a session can pick", () => {
+    const bare = input();
+    const rt = input(ok("eol", { kind: "runtimes", items: [
+      { product: "nodejs", name: "node", declared: "18", cycle: "18", eol: S - 30 * D, latest: "18.20", newest: "24", file: ".nvmrc", url: null },
+    ] }));
+    const sample: Partial<Record<Verb, [Finding, MaintInput]>> = {
+      fix: [by("ci"), inp], patch: [by("security:dependency"), inp], rotate: [by("security:secret"), inp],
+      release: [by("release"), inp], push: [by("git:unpushed"), inp], tidy: [by("git:tidy"), inp],
+      deploy: [lineIn(later, "release:deploy"), later],
+      setup: [{ ...by("release"), facet: "ci", verb: "setup", key: "ci:setup" }, bare],
+      upgrade: [{ ...by("release"), facet: "security", verb: "upgrade", key: "security:runtime" }, rt],
+    };
+    const pickable = Object.entries(VERB_KIND).filter(([, k]) => k !== null).map(([v]) => v as Verb);
+    expect(Object.keys(sample).sort()).toEqual([...pickable].sort());
+    for (const v of pickable) {
+      const [f, from] = sample[v]!;
+      expect(f.verb, v).toBe(v);
+      expect(briefFor(f, from, { ...ctx, now: NOW }), v).toBeTruthy();
+    }
+  });
+
+  it("ends a new checkout's brief on where it stands: the branch, the base, install first, no push", () => {
+    const b = sessionBrief(by("ci"), inp, ctx, fresh)!;
+    expect(b.startsWith(briefFor(by("ci"), inp, ctx)!)).toBe(true);
+    const note = b.slice(briefFor(by("ci"), inp, ctx)!.length);
+    expect(note).toContain("a new checkout on maint/ci, cut from origin/main for this work alone");
+    expect(note).toMatch(/Install the project's dependencies before running the checks/);
+    expect(note).toMatch(/Pushing and opening a pull request are a person's call: do neither/);
+  });
+
+  it("leaves Plan deploy in the folder with its last word intact: no note may follow *a person ships it*", () => {
+    const f = lineIn(later, "release:deploy");
+    expect(VERB_KIND[f.verb]).toBe("here");
+    const b = sessionBrief(f, later, ctx, { kind: "here" })!;
+    expect(b).toBe(briefFor(f, later, ctx));
+    expect(b.trim().endsWith("Do not deploy, tag, push or trigger any workflow: a person ships it.")).toBe(true);
+  });
+
+  it("sends a flaky job's and a failed deploy's Fix to their own branches, each on its own brief", () => {
+    for (const [key, branch] of [["ci:flaky", "maint/ci-flaky"], ["release:deploy-failed", "maint/release-deploy-failed"]]) {
+      const f = lineIn(later, key);
+      expect(VERB_KIND[f.verb], key).toBe("branch");
+      const alone = briefFor(f, later, ctx)!, b = sessionBrief(f, later, ctx, { kind: "new", branch, base: "origin/main" })!;
+      expect(b.startsWith(alone), key).toBe(true);
+      expect(b.slice(alone.length), key).toContain(`a new checkout on ${branch}, cut from origin/main`);
+    }
+  });
+
+  it("tells an existing checkout to read what is already there first", () => {
+    const b = sessionBrief(by("ci"), inp, ctx, wt)!;
+    expect(b).toContain("an existing checkout on maint/ci, which may hold earlier work: read `git log origin/main..HEAD` first");
+    expect(b).toContain("bring in what `git log HEAD..origin/main` shows it has fallen behind");
+    expect(b).toMatch(/do neither\.$/);
+    const bare = branchNote(wt, null, "maint/ci").join(" ");
+    expect(bare).toContain("`git log --oneline -20`");
+    expect(bare).not.toContain("HEAD..");
+  });
+
+  it("tells a fresh checkout of an earlier branch what it really stands on, never that it was cut from the trunk", () => {
+    const b = sessionBrief(by("ci"), inp, ctx, old)!;
+    expect(b).toContain("a new checkout of the existing branch maint/ci, which may hold earlier work");
+    expect(b).toContain("`git log origin/main..HEAD`");
+    expect(b).toContain("`git log HEAD..origin/main`");
+    expect(b).not.toContain("cut from");
+    expect(b).not.toContain("for this work alone");
+    expect(b).toMatch(/Install the project's dependencies/);
+    expect(b).toMatch(/do neither\.$/);
+  });
+
+  it("leaves a row in the project's folder as it was", () => {
+    for (const key of ["release", "git:tidy", "git:unpushed"]) {
+      expect(sessionBrief(by(key), inp, ctx, { kind: "here" })).toBe(briefFor(by(key), inp, ctx));
+    }
+  });
+
+  it("names a base it does not have in words", () => {
+    expect(branchNote({ kind: "new", branch: "maint/ci", base: "" }, null, "maint/ci").join(" ")).toContain("cut from what this project had checked out");
+  });
+
+  it("answers null once the facts are gone, rather than a note with no brief", () => {
+    expect(sessionBrief(by("release"), input(), ctx, fresh)).toBeNull();
+  });
+
+  it("adds no control character: its lines are joined, and only the join's breaks reach typable", () => {
+    for (const w of [fresh, wt, old]) expect(branchNote(w, "origin/main", "maint/ci").join("")).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    const b = sessionBrief(by("ci"), inp, ctx, fresh)!;
+    expect(b).not.toContain("\r");
+    expect(typable(b)).toContain("do neither.");
+  });
+
+  it("notes a sweep's row the same way, on the advisory's branch", () => {
+    const adv: SweepAdvisory = {
+      id: "CVE-2021-23337", aliases: [], summary: "Injection", severity: "high", rawSeverity: "HIGH", url: null, asked: [], gaps: [],
+      packages: [{ name: "lodash", ecosystem: "npm", range: "<4.17.21", events: [], versions: [] } as unknown as SweepAdvisory["packages"][number]],
+    };
+    const facts: SweepFacts = { root: "/r", locks: ["package-lock.json"], found: [{ pkg: 0, version: "4.17.20", file: "package-lock.json" }], unpinned: [], unread: [] };
+    const f = sweepLine(adv, "/r");
+    const where = { kind: "new" as const, branch: "maint/cve-2021-23337", base: "origin/main" };
+    const plain = sweepBrief(adv, facts, ctx);
+    const noted = sweepSessionBrief(adv, facts, f, inp, ctx, where);
+    if (plain === null) expect(noted).toBeNull();
+    else expect(noted).toContain(`${plain}\n\nYou are in a new checkout on maint/cve-2021-23337`);
   });
 });

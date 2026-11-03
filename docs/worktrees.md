@@ -179,6 +179,10 @@ A remote-only branch is a row like any other, carrying what GitHub's branches vi
 - One push for the batch, then **per-branch retries to attribute a failure** (capped: past a dozen, git's message is reported against every row rather than spending that many round trips to phrase it per row).
 - The note in the action bar names **both** writes, and the remote half in warning ink: the two buttons sit side by side, so one sentence has to be true of whichever is pressed.
 
+## Fix branches from a maintenance session
+
+A maintenance session (docs/maintenance.md) cuts `maint/<line>` worktrees with `create_worktree`, so they land in `.cc-worktrees` beside the rest. Branches and Checkouts list them, and *Tidy* treats them like any other branch: nothing here knows the prefix. The branch is stable per line on purpose, so a later session on the same line lands in the same checkout rather than beside a dated copy.
+
 ## Drift: the agent left the checkout it was launched in
 
 The roster answers "what is checked out where"; this answers what it cannot: **which checkout is this agent's work landing in?** Two ways an agent changes checkout, behaving as opposites, each invisible to the other's signal (verified against the real CLI and real sessions):

@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
-  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf,
+  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
@@ -437,3 +437,24 @@ const BRIEFS: Record<Verb, Brief> = {
 export function briefFor(f: Finding, inp: MaintInput, ctx: MaintBriefCtx): string | null {
   return BRIEFS[f.verb](f, inp, ctx)?.join("\n") ?? null;
 }
+
+const CHECKOUT_RULES = [
+  "Install the project's dependencies before running the checks if they are missing: a fresh worktree has no node_modules, .venv or target.",
+  "Commit your work here. Pushing and opening a pull request are a person's call: do neither.",
+];
+/** What a session's agent is told about where it stands; one in the project's own folder is told nothing. */
+export function branchNote(where: SessionWhere, trunk: string | null, branch: string): string[] {
+  if (where.kind === "here") return [];
+  const read = trunk ? `read \`git log ${trunk}..HEAD\` first, and bring in what \`git log HEAD..${trunk}\` shows it has fallen behind.` : "read `git log --oneline -20` first.";
+  const first = where.kind === "new"
+    ? `You are in a new checkout on ${where.branch}, cut from ${where.base || "what this project had checked out"} for this work alone.`
+    : `You are in ${where.kind === "wt" ? "an existing checkout on" : "a new checkout of the existing branch"} ${branch}, which may hold earlier work: ${read}`;
+  return ["", first, ...CHECKOUT_RULES];
+}
+const noted = (brief: string | null, f: Finding, inp: MaintInput, where: SessionWhere) =>
+  brief && [brief, ...branchNote(where, trunkOf(inp), fixBranch(f))].join("\n");
+/** A ticked line's brief, plus where it runs. */
+export const sessionBrief = (f: Finding, inp: MaintInput, ctx: MaintBriefCtx, where: SessionWhere) => noted(briefFor(f, inp, ctx), f, inp, where);
+/** The same for a sweep's affected project, whose line (`sweepLine`) names the advisory. */
+export const sweepSessionBrief = (adv: SweepAdvisory, facts: SweepFacts, f: Finding, inp: MaintInput, ctx: MaintBriefCtx, where: SessionWhere) =>
+  noted(sweepBrief(adv, facts, ctx), f, inp, where);

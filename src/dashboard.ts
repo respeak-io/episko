@@ -84,7 +84,7 @@ import {
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { copyText, refreshGhAccounts } from "./actions";
-import { freshReady, typeInto } from "./panes";
+import { prefillFresh } from "./panes";
 
 // What this pane does but does not own; one host object rather than a dozen setters.
 export interface DashHost {
@@ -1332,7 +1332,7 @@ function paintMaint(now: number): void {
 async function prefillAgent(project: string, path: string, text: string): Promise<void> {
   const sid = await host.launch(project, path, { colorKey: path });
   if (typeof sid !== "string") return;   // the launch already toasted
-  setTimeout(() => { void typeInto(sid, text).catch(() => {}); }, 1400);
+  prefillFresh(sid, text);
   toast("Started and prefilled. Read it, then press Enter");
 }
 
@@ -2406,12 +2406,6 @@ async function dispatchText(text: string): Promise<void> {
   if (typeof sid !== "string") return;
   prefillFresh(sid, text);
   toast("Dispatched and prefilled. Press Enter to send");
-}
-
-// Failing to type is harmless, but it is logged: a prefill that silently vanished is this bug's history.
-function prefillFresh(sid: string, text: string): void {
-  void freshReady(sid).then(() => typeInto(sid, text))
-    .catch((e) => dlog("warn", `prefill ${sid.slice(0, 8)} failed: ${e}`));
 }
 
 // Start writing the shared work log; asked once per project (see `OK_KEY`). Every closed

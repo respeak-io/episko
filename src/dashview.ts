@@ -629,7 +629,7 @@ export function overlayHtml(title: string, sub: string, body: string, foot: stri
 // exactly one of them. ./pick owns the rule; these two draw it, and `kind` is what routes
 // a click back to the right table.
 
-const PICK_MARK: Record<PickState, string> = { none: "", some: "–", all: icon("check", "solo") };
+export const PICK_MARK: Record<PickState, string> = { none: "", some: "–", all: icon("check", "solo") };
 
 /** The tri-state tick in a table header's own tick column: the select-all, where the ticks are. */
 export function pickHead(kind: PickKind, st: PickState): string {

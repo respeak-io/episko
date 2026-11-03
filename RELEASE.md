@@ -576,6 +576,21 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       *Today*. Switch it to Maintenance: every line and card names that project only, and a cell
       click scrolls to its card. A Dependencies ⤢ opens the overlay; Git hygiene's ⤢ opens Branches;
       *all projects* opens the fleet's Maintenance on that tab.
+- [ ] **A maintenance session tiles.** On the fleet's Maintenance Overview, tick 3 lines across 2
+      projects (one *Push* or *Tidy* among them) and press *Brief 3 agents*. Three tiles appear in
+      ticked order whatever order their worktrees finished in, each prefilled, none sent. The
+      others stand in `maint/<line>` worktrees and the *Push* or *Tidy* in its project's folder.
+      Back returns to the fleet and forward to the mosaic. Press Back while worktrees are still
+      being cut: the fleet stays on stage as the remaining panes land, and forward shows them all.
+      A member's sidebar row shows one pane, and its ⊞ tag tiles them again. Closing one tile keeps
+      the mosaic. Ticking a line whose `maint/<line>` checkout already has a live agent says so in
+      the bar and disables Start. Scroll to the last card and tick a line: the view stays put.
+      Remove a `maint/<line>` worktree, keep its branch and tick that line: the bar says *earlier
+      fix branch* and the brief says to read it, not that it was cut from the trunk. In an advisory
+      sweep with one project's agent already open, *Brief N agents* starts the others and the toast
+      names that one. With an external terminal engine the bar says why and Start is disabled.
+      Press Enter in one tile and confirm its agent starts on the brief, with no second prompt
+      needed.
 
 ### Sessions Episko doesn't own
 

@@ -349,6 +349,10 @@ html.win .wctl { display: flex; }
 @media (prefers-reduced-motion: no-preference) { .g-work,.g-attn{ animation: pulse 1.5s ease-in-out infinite; } .g-bg{ animation: pulse 3s ease-in-out infinite; } @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}} }
 /* the fleet tally on a sidebar row — same grid cell as the drift/branch tags */
 .sfan { flex: none; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-bg); opacity: .9; }
+/* A session member's way back to its tiles; `.sfan`'s family, but a control. */
+.sgrp { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; cursor: pointer; font: 600 9.5px var(--font-mono); color: var(--muted-2); }
+.sgrp:hover { color: var(--accent-ink); }
+.sgrp > .ic { --ic: 10px; }
 
 /* ---- worktree grouping ---- */
 /* subheader mode: a ⑃-branch cluster header, sessions nested under a tinted rule. padding-left 0
@@ -3117,6 +3121,11 @@ select.in-ctl { cursor: pointer; }
 .l-bad > .mt-sev, .mt-sev.l-bad { background: var(--st-error); }
 .l-warn > .mt-sev, .mt-sev.l-warn { background: var(--st-working); }
 .mt-find.past .t { font-weight: 500; color: var(--muted-2); }
+/* A shift-click ticks a range, so it must never paint a text selection; a line no agent answers keeps the column. */
+.mt-find .pk { flex: none; align-self: center; user-select: none; }
+.mt-finds.ticks > .mt-find:not(:has(> .pk)) { padding-left: 29px; }
+/* The scroller's padding sits under a stuck bar, so a card's line would peek out below it: the second shadow paints that gap. */
+.bvbar.mt-sbar { flex: none; margin-top: 0; box-shadow: 0 -8px 18px -10px rgba(0, 0, 0, .55), 0 14px 0 var(--bg); }
 /* a card line is a door to its tab: it looks clickable and stays as muted as it was */
 .mt-find.go { cursor: pointer; border-radius: 6px; }
 .mt-find.go:hover { background: var(--lift); }
@@ -3270,6 +3279,8 @@ select.in-ctl { cursor: pointer; }
 .mt-sw-acts { display: flex; align-items: baseline; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .mt-sw-acts .mt-note { flex: 1; }
 .mt-sw-acts .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-sw-acts .mt-verb[disabled] { color: var(--muted-2); border-color: var(--hair); cursor: default; }
+.mt-sw-why { flex: none; font-size: 10px; color: var(--muted-2); }
 .mt-sw-recent { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--hair); }
 .mt-sw-past { display: inline-flex; align-items: baseline; gap: 6px; max-width: 280px; padding: 2px 8px; border-radius: 7px; border: 1px solid var(--hair); background: none; color: var(--muted); font: 10.5px var(--font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-sw-past:hover { background: var(--lift); }

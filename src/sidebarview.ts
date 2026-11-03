@@ -13,7 +13,7 @@ import {
   peekPrefs, shelvedInTree, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants,
+  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants, stageMembers,
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import { peekStaysOpen } from "./peek";
@@ -110,8 +110,12 @@ function sessionRow(s: Sess, chip?: WtCluster, nested = false): string {
     ? `<span class="sdrift" title="${esc(`Writing to ${s.drift.dir}`)}">${icon("route")}${esc(s.drift.branch)}</span>`
     : s.home ? `<span class="sdrift tracked" title="${esc(`Started in ${s.home.workdir}`)}">from ${esc(s.home.branch || basename(s.home.workdir))}</span>` : "";
   const fanHtml = fan ? `<span class="sfan" title="${esc(`${fan.done} of ${fan.total} background agents done`)}">${fan.done}/${fan.total}</span>` : "";
+  // Inside the row's data-sel: the dispatcher's closest() lands on the tag first, and tiles the group again.
+  const tiles = s.group ? stageMembers(s.group.id).length : 0;
+  const grpHtml = s.group && tiles >= 2
+    ? `<span class="sgrp" data-rungroup="${esc(s.group.id)}" title="${esc(`${s.group.label} · ${tiles} panes: show them side by side`)}">${icon("layoutGrid", "solo")}${tiles}</span>` : "";
   // One cell for every tag: `.srow`'s columns are fixed by CSS (`.o3` adds the fourth).
-  const tags = drift + fanHtml + chipHtml;
+  const tags = drift + fanHtml + grpHtml + chipHtml;
   return `<div class="srow${tags ? " o3" : ""}${s.drift ? " drifted" : ""} ${s.id === activeId ? "active" : ""}" data-sel="${s.id}">
     <span class="sglyph ${gcls}">${glyphIcon(glyph)}</span>
     <span class="sbranch" title="${esc(tip)}">${labelHtml(rowParts(s, nested))}</span>${tags ? `<span class="stags">${tags}</span>` : ""}

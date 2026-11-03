@@ -3,13 +3,14 @@
 // sit on the fleet and on the dashboard without joining either pane's own contract.
 
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
-import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
+import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
+  SESSION_MAX, SESSION_OVER, sessionKey, sessionPickable,
 } from "./maint";
 import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
@@ -53,6 +54,7 @@ export interface MaintSweepView {
   cur: { n: number; query: string; state: SweepState; err: string | null; adv: SweepAdvisory | null; rows: SweepRow[]; agents: Record<string, SweepAgent> } | null;
   projects: number;
   service: string; // who an id is sent to, as the manifest names it
+  tiled: boolean; // agents open in panes here, so *Brief N agents* tiles them and the cap on tiles holds
 }
 /** What only the dashboard knows: its dependency read, which no Maintenance source carries. */
 export interface MaintDashExtra {
@@ -70,7 +72,10 @@ export interface MaintView extends MaintTabView {
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
   soon: MaintSoon[];
   week: (WeekDigest & { stale: boolean }) | null; // null: no project has two marks yet
+  session?: MaintSession; // the fleet's Overview only: a tick you cannot see would count in a bar you can
 }
+/** What the ticked lines will become, as the action bar says it. `why` is drawn: a disabled button's tip is never reached. */
+export interface MaintSession { picked: ReadonlySet<string>; n: number; start: number; text: string; tip: string; why: string | null }
 
 const DASH = `<span class="dim">—</span>`;
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -208,11 +213,15 @@ const goAttrs = (facet: Facet, key: string, root: string) =>
   ` data-mtfind="${facet}" data-mtkey="${escAttr(key)}" data-mtroot="${escAttr(root)}"`
   + ` data-tip="${escAttr(`Open in ${TAB_TEXT[findingTarget({ facet, key }).tab][0]}`)}"`;
 
+// ./pick's rule and ./dashview's mark, with Maintenance's own attribute: this file emits data-mt* alone.
+const tickHtml = (f: Finding, on: boolean) => `<span class="brck pk ${on ? "all" : "none"}" role="checkbox" tabindex="0" aria-checked="${on}"`
+  + ` data-mttick="${escAttr(f.key)}" data-mtroot="${escAttr(f.root)}" data-tip="Tick to brief an agent on this beside the others">${PICK_MARK[on ? "all" : "none"]}</span>`;
+
 // A tab's row names its project, and the name is that project's door, as a card's is.
-function findingHtml(f: Finding, name?: string, go = false): string {
+function findingHtml(f: Finding, name?: string, go = false, tick?: "on" | "off"): string {
   const detail = verbText(f)[2];
   const who = name === undefined ? "" : projHtml(f.root, name);
-  return `<div class="mt-find l-${f.level}${go ? " go" : ""}"${go ? goAttrs(f.facet, f.key, f.root) : ""}><i class="mt-sev"></i>${who}
+  return `<div class="mt-find l-${f.level}${go ? " go" : ""}"${go ? goAttrs(f.facet, f.key, f.root) : ""}>${tick ? tickHtml(f, tick === "on") : ""}<i class="mt-sev"></i>${who}
     <span class="t"${go ? ` tabindex="0" role="button"` : ""}>${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
     ${verbHtml(f)}</div>`;
 }
@@ -271,14 +280,15 @@ const avatar = (c: MaintCard) => c.icon
   : `<span class="fc-av" style="background:${escAttr(c.accent)}">${esc(c.name.slice(0, 1))}</span>`;
 
 // The name opens the project; a cell opens its facet's tab narrowed to this project.
-function cardHtml(c: MaintCard, compact: boolean): string {
+function cardHtml(c: MaintCard, compact: boolean, s?: MaintSession): string {
   const sub = c.err ? `could not read: ${c.err}` : c.sub;
   const id = `<div class="mt-id" data-mtproj="${escAttr(c.path)}" data-mtname="${escAttr(c.name)}"
       data-tip="${escAttr(`Open ${c.name}`)}">${avatar(c)}<span class="mt-nm">${esc(c.name)}</span>
       <span class="mt-sub mono">${esc(sub)}</span></div>`;
   const cells = `<div class="mt-cells">${c.cells.map((x) => cellHtml(x, c)).join("")}</div>`;
+  const tick = (f: Finding) => !s || !sessionPickable(f) ? undefined : s.picked.has(sessionKey(f)) ? "on" as const : "off" as const;
   const finds = compact ? ""
-    : c.findings.length ? `<div class="mt-finds">${c.findings.map((f) => findingHtml(f, undefined, true)).join("")}</div>`
+    : c.findings.length ? `<div class="mt-finds${s ? " ticks" : ""}">${c.findings.map((f) => findingHtml(f, undefined, true, tick(f))).join("")}</div>`
     : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map((f) => pastHtml(f, c.path)).join("")}</div>` : "";
   return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}${c.stale ? " stale" : ""}"${c.stale ? ` aria-busy="true"` : ""}>${id}${cells}${finds}</article>`;
 }
@@ -661,8 +671,8 @@ function serversHtml(v: MaintTabView, b: Boards): string {
 const SWEEP_CLS: Record<SweepVerdict, string> = { affected: "l-bad", unsure: "l-warn", patched: "l-ok", unused: "l-muted" };
 const AGENT_CLS: Record<SweepCheck["verdict"], string> = { affected: "l-bad", "not-affected": "l-ok", unsure: "l-warn" };
 const SWEEP_TIP = "Look the advisory up and read every project's lockfiles. Nothing runs in a project";
-const sweepBtn = (act: string, label: string, tip: string, root = "", ic?: IconName) =>
-  `<button class="mt-verb" data-mtsweep="${act}"${root ? ` data-mtroot="${escAttr(root)}"` : ""} data-tip="${escAttr(tip)}">${ic ? icon(ic) : ""}${esc(label)}</button>`;
+const sweepBtn = (act: string, label: string, tip: string, root = "", ic?: IconName, off = false) =>
+  `<button class="mt-verb" data-mtsweep="${act}"${root ? ` data-mtroot="${escAttr(root)}"` : ""} data-tip="${escAttr(tip)}"${off ? " disabled" : ""}>${ic ? icon(ic) : ""}${esc(label)}</button>`;
 
 // What the read-only agent said, beside the row and never in place of it.
 function agentHtml(a: SweepAgent | undefined): string {
@@ -702,10 +712,13 @@ function sweepRunHtml(v: MaintTabView, b: Boards, s: MaintSweepView, run: NonNul
   const rest = unused.length ? `<p class="fl-none" data-tip="${escAttr(unused.map((r) => nameOf(v, r.root)).join(", "))}">`
     + `${esc(`${plural(unused.length, "project")} ${unused.length === 1 ? "does" : "do"} not use it: `)}${unused.slice(0, SHOWN).map((r) => projHtml(r.root, nameOf(v, r.root))).join(", ")}`
     + `${unused.length > SHOWN ? ` +${unused.length - SHOWN}` : ""}</p>` : "";
-  const hit = n("affected");
+  const hit = n("affected"), over = s.tiled && hit > SESSION_MAX;
+  const where = s.tiled ? "tiled on its own fix branch" : "in its own folder";
+  // The reason is drawn: a disabled button's tip is never reached. A row's Patch still starts.
   const acts = `<div class="mt-sw-acts"><span class="mt-note mono">${esc(tally)}</span>`
+    + (over ? `<span class="mt-sw-why mono">${esc(`${SESSION_OVER}: use each row's Patch`)}</span>` : "")
     + sweepBtn("copy", "Copy report", "Copy the verdicts drawn here as text", only)
-    + (hit ? sweepBtn("brief", `Brief ${plural(hit, "agent")}`, `One agent per affected project, each with its brief prefilled and never sent: you press Enter in each`, only, "agent") : "")
+    + (hit ? sweepBtn("brief", `Brief ${plural(hit, "agent")}`, `One agent per affected project, ${where}, each with its brief prefilled and never sent: you press Enter in each`, only, "agent", over) : "")
     + `</div>`;
   const table = used.length ? `<div class="mt-scroll"><table class="mt-tbl mt-sw-tbl"><thead><tr>`
     + [...projCol(b), "Verdict", "Evidence", "Fix", ""].map((c) => `<th>${esc(c)}</th>`).join("") + `</tr></thead><tbody>`
@@ -769,10 +782,8 @@ export function maintBodyHtml(v: MaintView): string {
   // A tab mixes projects, so it dims whole while any of its answers is an earlier one being re-read.
   if (v.sub !== "overview") return `<div class="mt-body${v.cards.some((c) => c.stale) ? " stale" : ""}">${bar}${tabHtml(v, v.sub)}</div>`;
   const quiet = v.cards.filter((c) => c.band === "quiet");
-  const shown = v.chip === "all" ? v.cards.filter((c) => c.band !== "quiet")
-    : v.chip === "quiet" ? quiet : v.cards.filter((c) => c.band === v.chip);
   const allClear = !v.scanning && v.checked > 0 && !v.tally.needs && !v.tally.drifting && !v.tally.unread;
-  let html = shown.map((c) => cardHtml(c, c.band === "quiet")).join("");
+  let html = cardsShown(v.cards, v.chip).map((c) => cardHtml(c, c.band === "quiet", v.session)).join("");
   if (v.chip === "all" && quiet.length) {
     const names = quiet.slice(0, 5).map((c) => c.name).join(", ") + (quiet.length > 5 ? " …" : "");
     html += v.quietOpen
@@ -785,7 +796,17 @@ export function maintBodyHtml(v: MaintView): string {
   return `<div class="mt-body">${bar}${clear ? "" : weekHtml(v)}<div class="mt-top">${chipsHtml(v)}</div>`
     + (clear ? clearHtml(v) : "")
     + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div>`
-    + (v.chip === "all" ? hostsHtml(v.hosts) : "") + `</div>`;
+    + (v.chip === "all" ? hostsHtml(v.hosts) : "") + sessionBarHtml(v.session) + `</div>`;
+}
+
+// Last in the body, so it stays stuck to the bottom however far the cards scroll. There is no All:
+// the cards are not a table, and a fleet-wide All would always pass the cap.
+function sessionBarHtml(s: MaintSession | undefined): string {
+  if (!s?.n) return "";
+  const said = `${s.n} selected${s.text ? ` · ${s.text}` : ""}`;
+  return `<div class="bvbar on mt-sbar"><span class="sel">${esc(said)}</span>${s.why ? `<span class="hint">${esc(s.why)}</span>` : ""}<span class="sp"></span>`
+    + `<button class="act" data-mtpicknone="1">None</button>`
+    + `<button class="act primary" data-mtsession="start" data-tip="${escAttr(s.tip)}"${s.why || !s.start ? " disabled" : ""}>${icon("layoutGrid")}Brief ${esc(plural(s.start, "agent"))}</button></div>`;
 }
 
 // ---------- the project dashboard's tab ----------

@@ -406,15 +406,17 @@ export function incomingByProject(list: readonly HandoffRec[], pathsOfId: (id: s
 
 /** Claude files a conversation under its folder's path, one character each; past this it is refused. */
 export const SLUG_MAX = 200;
+const cpLen = (s: string) => Array.from(s).length;
+/** create_worktree's <parent>/.cc-worktrees/<name>/<branch>, the longest folder it may land in. */
+export const worktreeDirLen = (checkout: string, branch: string) =>
+  cpLen(checkout.replace(/[\\/]+$/, "")) + cpLen("/.cc-worktrees/") + 1 + cpLen(branch);
+
 /** Why a received session cannot be placed in `checkout`, or null. Judged on the worktree it may get. */
 export function placeGate(checkout: string | null, meta: HandoffMeta, id: string): string | null {
   if (!isClaudeProvider(meta.provider)) return "Only a Claude session can be resumed from a handoff";
   if (!checkout) return meta.projectId ? `${meta.project || "This project"} isn't cloned here: clone it, or choose its folder` : "Choose the folder to resume it in";
-  const len = (s: string) => Array.from(s).length;
-  const top = checkout.replace(/[\\/]+$/, "");
-  const branch = Math.max(len(meta.git?.branch ?? ""), len(`handoff/${id.slice(0, 8)}`));
-  // create_worktree's <parent>/.cc-worktrees/<name>/<branch>, the longest folder it may land in
-  const worst = meta.git ? len(top) + len("/.cc-worktrees/") + 1 + branch : len(top);
+  const a = meta.git?.branch ?? "", b = `handoff/${id.slice(0, 8)}`;
+  const worst = meta.git ? worktreeDirLen(checkout, cpLen(a) > cpLen(b) ? a : b) : cpLen(checkout.replace(/[\\/]+$/, ""));
   if (worst > SLUG_MAX) return "This folder's path is too long for Claude to file the conversation under";
   return null;
 }

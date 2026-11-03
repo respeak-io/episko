@@ -9,12 +9,16 @@ import {
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
+  cardsShown, fixBranch, parseSessionKey, SESSION_EXTERNAL, SESSION_MAX, SESSION_OVER, sessionDone, sessionGate, sessionKey, sessionLeft, sessionLines, sessionPickable, sessionPlan, sessionText, sessionTip, sweepGate, sweepLine, trunkOf, VERB_KIND,
+  type Band, type SessionCtx, type SessionLine, type SessionPlan, type Verb,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
 import { BRANCH_FILTERS } from "../src/branches";
+import { whereProblem } from "../src/claim";
+import type { WtHead } from "../src/types";
 import { fmtDay } from "../src/format";
 import { briefFor } from "../src/maintbrief";
 import { FACETS, type Facet } from "../src/maintsources";
@@ -2648,7 +2652,7 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen",
+    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintEarlier", "maintPicked", "maintSev", "quietOpen",
       "MaintHost", "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
   const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
@@ -2794,5 +2798,351 @@ describe("the advisory sweep", () => {
     expect(narrowSweepFacts("nope")).toEqual([]);
     expect(narrowSweepCheck({ verdict: "not-affected", evidence: ["x"] })).toEqual({ verdict: "not-affected", evidence: ["x"] });
     expect(narrowSweepCheck({ verdict: "probably", evidence: [] })).toBeNull();
+  });
+});
+
+describe("a maintenance session", () => {
+  const line = (key: string, verb: Verb = "fix", o: Partial<Finding> = {}): Finding =>
+    ({ root: "/r", facet: "ci", key, level: "warn", text: `the ${key} line`, detail: "", verb, source: "s", ref: null, ...o });
+  const repo = (o: { trunk?: string | null; fetchedAt?: number } = {}) =>
+    input(ok("g", hyg({ trunk: o.trunk === undefined ? "origin/main" : o.trunk, fetchedAt: o.fetchedAt ?? S - H })));
+  const ctx = (o: Partial<SessionCtx> = {}): SessionCtx => ({ heads: () => [], plain: () => false, earlier: () => false, busy: () => false, name: () => "acme", now: NOW, ...o });
+  const at = (f: Finding, inp: MaintInput = repo()): SessionLine => ({ f, inp });
+  const head = (branch: string, o: Partial<WtHead> = {}): WtHead => ({ path: `/wt/${branch.replace("/", "-")}`, branch, is_main: false, exists: true, ...o });
+
+  it("classifies every verb, in the order a person reads them", () => {
+    expect(Object.entries(VERB_KIND).filter(([, k]) => k === "here").map(([v]) => v).sort()).toEqual(["deploy", "push", "release", "tidy"]);
+    expect(Object.entries(VERB_KIND).filter(([, k]) => k === null).map(([v]) => v).sort()).toEqual(["fetch", "review", "run"]);
+    expect(Object.entries(VERB_KIND).filter(([, k]) => k === "branch").map(([v]) => v).sort()).toEqual(["fix", "patch", "rotate", "setup", "upgrade"]);
+  });
+
+  it("holds the cap to the WebGL pool, one context per visible tile", () => {
+    const src = readFileSync(new URL("../src/terminal.ts", import.meta.url), "utf8");
+    expect(SESSION_MAX).toBe(Number(/GL_POOL_MAX = (\d+)/.exec(src)?.[1]));
+  });
+
+  it("never presses Enter: every pane is prefilled through the one path that writes no line ending", () => {
+    const lf = (f: string) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+    const actions = lf("actions.ts");
+    const from = actions.indexOf("export async function launchTogether");
+    const body = actions.slice(from, actions.indexOf("\n}\n", from));
+    expect(from).toBeGreaterThan(0);
+    expect(body).toContain("prefillFresh(sid, row.text)");
+    expect(body).not.toContain("\\r");
+    expect(body).not.toContain("write_pty");
+    const panes = lf("panes.ts");
+    const at = panes.indexOf("export function prefillFresh");
+    const fresh = panes.slice(at, panes.indexOf("\n}\n", at));
+    expect(fresh).toContain("freshReady(sid)");
+    expect(fresh).toContain("typeInto(sid, text)");
+    expect(fresh).not.toContain("\\r");
+  });
+
+  it("moves both older prefill paths off the fixed delay that raced a remount", () => {
+    for (const file of ["main.ts", "dashboard.ts"]) {
+      const src = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
+      expect(src, file).toContain("prefillFresh(sid, text);");
+      expect(src, file).not.toMatch(/typeInto\(sid, text\)/);
+    }
+  });
+
+  describe("fixBranch", () => {
+    it("slugs every Overview key shape", () => {
+      const said: Record<string, string> = {
+        ci: "maint/ci", "security:dependency": "maint/security-dependency", "security:runtime": "maint/security-runtime",
+        release: "maint/release", "git:tidy": "maint/git-tidy", "prod:api": "maint/prod-api", "prod:cert:api": "maint/prod-cert-api",
+        "ci:flaky": "maint/ci-flaky", "release:deploy-failed": "maint/release-deploy-failed",
+        "prod:API Gateway.v2": "maint/prod-api-gateway-v2", "CVE-2021-23337": "maint/cve-2021-23337",
+      };
+      for (const [key, b] of Object.entries(said)) {
+        expect(fixBranch({ key }), key).toBe(b);
+        expect(whereProblem({ kind: "new", branch: b, base: "" }, []), key).toBeNull();
+      }
+    });
+
+    it("caps a long name at 40 and leaves no dash hanging off the cut", () => {
+      const b = fixBranch({ key: `prod:${"a".repeat(34)}:more` });
+      expect(b).toBe(`maint/prod-${"a".repeat(34)}`.slice(0, 46).replace(/-+$/, ""));
+      expect(b.length - "maint/".length).toBeLessThanOrEqual(40);
+      expect(fixBranch({ key: "x".repeat(39) + ":y" })).toBe(`maint/${"x".repeat(39)}`);
+    });
+
+    it("still answers for a name with nothing git can spell", () => {
+      expect(fixBranch({ key: "日本語" })).toBe("maint/line");
+      expect(whereProblem({ kind: "new", branch: fixBranch({ key: "日本語" }), base: "" }, [])).toBeNull();
+    });
+  });
+
+  it("round-trips a key whose root may hold anything but a NUL", () => {
+    const f = { root: "C:\\Work\\my repo", key: "prod:cert:api" };
+    expect(parseSessionKey(sessionKey(f))).toEqual(f);
+    expect(sessionKey({ root: "/a", key: "ci" })).not.toBe(sessionKey({ root: "/b", key: "ci" }));
+  });
+
+  describe("trunkOf", () => {
+    it("reads hygiene's, then release's, then the file's, then says it does not know", () => {
+      expect(trunkOf(input(ok("g", hyg({ trunk: "origin/dev" })), ok("t", rel({ trunk: "origin/main" }))))).toBe("origin/dev");
+      expect(trunkOf(input(ok("g", hyg({ trunk: null })), ok("t", rel({ trunk: "origin/main" }))))).toBe("origin/main");
+      const filed = input();
+      filed.det!.config.trunk = "develop";
+      expect(trunkOf(filed)).toBe("develop");
+      expect(trunkOf(input())).toBeNull();
+      expect(trunkOf({ det: null, reports: {} })).toBeNull();
+    });
+
+    it("takes a deployments read's trunk as the release facet's, and passes over one with no environment to measure", () => {
+      expect(trunkOf(input(ok("gd", { kind: "deployments", trunk: "origin/main", envs: [], fetchedAt: null })))).toBe("origin/main");
+      expect(trunkOf(input(ok("gd", { kind: "deployments", trunk: null, envs: [], fetchedAt: null })))).toBeNull();
+    });
+
+    it("does not read a source this machine skips", () => {
+      expect(trunkOf({ ...input(ok("g", hyg({ trunk: "origin/dev" }))), skip: ["g"] })).toBeNull();
+    });
+  });
+
+  describe("sessionPlan", () => {
+    it("skips a verb no agent answers, naming the project", () => {
+      const p = sessionPlan([at(line("deps:b", "review")), at(line("git:fetch", "fetch")), at(line("run:x", "run"))], ctx());
+      expect(p.rows).toEqual([]);
+      expect(p.skipped.map((s) => s.key)).toEqual(["deps:b", "git:fetch", "run:x"]);
+      expect(p.skipped[0].why).toBe("acme: no agent answers this line");
+      expect(p.skipped[0].open).toBe(false);
+    });
+
+    it("runs Push, Tidy, Draft release and Plan deploy in the project's folder, with no branch", () => {
+      const p = sessionPlan([at(line("git:unpushed", "push")), at(line("git:tidy", "tidy")), at(line("release", "release")), at(line("release:deploy", "deploy"))], ctx());
+      expect(p.rows.map((r) => r.where)).toEqual([{ kind: "here" }, { kind: "here" }, { kind: "here" }, { kind: "here" }]);
+      expect(p.rows.every((r) => r.branch === null)).toBe(true);
+    });
+
+    it("ticks a flaky job and both deployment lines: each diagnosis on its own branch, the plan in the folder", () => {
+      const inp = input(ok("g", hyg()),
+        ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 1, jobs: [{ workflow: "ci", job: "e2e", reruns: 2, passed: 2, steps: [], seen: [] }] }),
+        ok("github-deployments", { kind: "deployments", trunk: "origin/main", fetchedAt: S - H, envs: [{ env: "prod", tier: "production", sha: "a".repeat(40), tag: null, branch: null, at: S - D, url: null,
+          behind: 23, behindAt: S - 9 * D, ahead: 0, last: { state: "fail", raw: "FAILURE", sha: "b".repeat(40), at: S - H, url: null } }] }));
+      const fs = findings("/r", inp, MAINT_DEFAULTS, NOW), want = ["ci:flaky", "release:deploy-failed", "release:deploy"];
+      const picked = want.map((k) => fs.find((f) => f.key === k)!);
+      const { pickable } = sessionLines([{ band: "needs", findings: picked }]);
+      expect([...pickable].map((k) => parseSessionKey(k).key)).toEqual(want);
+      const { rows, skipped } = sessionPlan(picked.map((f) => at(f, inp)), ctx());
+      expect(skipped).toEqual([]);
+      expect(rows.map((r) => r.where)).toEqual([
+        { kind: "new", branch: "maint/ci-flaky", base: "origin/main" },
+        { kind: "new", branch: "maint/release-deploy-failed", base: "origin/main" },
+        { kind: "here" },
+      ]);
+    });
+
+    it("cuts a line that changes code off the trunk, whichever read named it", () => {
+      const p = (inp: MaintInput) => sessionPlan([at(line("security:dependency", "patch"), inp)], ctx()).rows[0];
+      expect(p(repo()).where).toEqual({ kind: "new", branch: "maint/security-dependency", base: "origin/main" });
+      expect(p(repo()).from).toBe("origin/main");
+      expect(p(input(ok("t", rel({ trunk: "origin/next" })))).where).toMatchObject({ base: "origin/next" });
+      const filed = input();
+      filed.det!.config.trunk = "develop";
+      expect(p(filed).where).toMatchObject({ base: "develop" });
+    });
+
+    it("says what an empty base means, rather than leaving it blank", () => {
+      const r = sessionPlan([at(line("ci"), input())], ctx()).rows[0];
+      expect(r.where).toEqual({ kind: "new", branch: "maint/ci", base: "" });
+      expect(r.from).toBe("what acme has checked out");
+    });
+
+    it("says how old the base is past the stale window, since Maintenance never fetches", () => {
+      expect(sessionPlan([at(line("ci"), repo({ fetchedAt: S - 9 * D }))], ctx()).rows[0].from).toBe("origin/main, as of the last fetch 9d ago");
+      expect(sessionPlan([at(line("ci"), repo({ fetchedAt: S - 2 * D }))], ctx()).rows[0].from).toBe("origin/main");
+    });
+
+    it("does not draw a fetch nobody has on record as a fresh one", () => {
+      const never = input(ok("g", hyg({ trunk: "origin/main", fetchedAt: null })));
+      expect(sessionPlan([at(line("ci"), never)], ctx()).rows[0].from).toBe("origin/main, last fetch unknown");
+      const filed = input();
+      filed.det!.config.trunk = "develop";
+      expect(sessionPlan([at(line("ci"), filed)], ctx()).rows[0].from).toBe("develop, last fetch unknown");
+    });
+
+    it("reuses a checkout already on the branch, so a later session lands beside the earlier work", () => {
+      const wt = sessionPlan([at(line("ci"))], ctx({ heads: () => [head("main", { is_main: true, path: "/r" }), head("maint/ci")] })).rows[0];
+      expect(wt.where).toEqual({ kind: "wt", path: "/wt/maint-ci" });
+      expect(wt.branch).toBe("maint/ci");
+      const main = sessionPlan([at(line("ci"))], ctx({ heads: () => [head("maint/ci", { is_main: true, path: "/r" })] })).rows[0];
+      expect(main.where).toEqual({ kind: "here" });
+      expect(main.branch).toBe("maint/ci");
+    });
+
+    it("plans a branch an earlier session left as what it is, never as one cut fresh from the trunk", () => {
+      const left = (root: string, b: string) => root === "/r" && b === "maint/ci";
+      const r = sessionPlan([at(line("ci"))], ctx({ earlier: left })).rows[0];
+      expect(r.where).toEqual({ kind: "old", branch: "maint/ci", base: "origin/main" });
+      expect(r.branch).toBe("maint/ci");
+      expect(r.from).toBe("");
+      expect(sessionPlan([at(line("security:code"))], ctx({ earlier: left })).rows[0].where.kind).toBe("new");
+    });
+
+    it("lets a checkout on that branch win, since an earlier branch is only asked about with none", () => {
+      const r = sessionPlan([at(line("ci"))], ctx({ earlier: () => true, heads: () => [head("maint/ci")] })).rows[0];
+      expect(r.where).toEqual({ kind: "wt", path: "/wt/maint-ci" });
+    });
+
+    it("skips a branch whose folder was deleted by hand, which git refuses until it is pruned", () => {
+      const p = sessionPlan([at(line("ci"))], ctx({ heads: () => [head("maint/ci", { exists: false })], earlier: () => true }));
+      expect(p.rows).toEqual([]);
+      expect(p.skipped[0]).toMatchObject({ key: "ci", open: false });
+      expect(p.skipped[0].why).toBe("acme: maint/ci's folder is gone and git still lists it: run `git worktree prune`");
+    });
+
+    it("runs a code line in a plain folder where it stands, since there is no branch to cut", () => {
+      const plain = (root: string) => root === "/r";
+      const r = sessionPlan([at(line("security:runtime", "upgrade"), input())], ctx({ plain })).rows[0];
+      expect(r.where).toEqual({ kind: "here" });
+      expect(r.branch).toBeNull();
+      expect(sessionPlan([at(line("ci", "fix", { root: "/repo" }))], ctx({ plain })).rows[0].where.kind).toBe("new");
+    });
+
+    it("skips a checkout an agent already works in, and asks about that checkout", () => {
+      const asked: string[][] = [];
+      const p = sessionPlan([at(line("ci")), at(line("security:code"))], ctx({
+        heads: () => [head("maint/ci")], busy: (path, root) => { asked.push([path, root]); return true; },
+      }));
+      expect(asked).toEqual([["/wt/maint-ci", "/r"]]);
+      expect(p.skipped).toEqual([{ root: "/r", key: "ci", why: "acme: an agent already works on maint/ci", open: true }]);
+      expect(p.rows.map((r) => r.key)).toEqual(["security:code"]);
+    });
+
+    it("never lands two ticked lines of one project on one branch", () => {
+      const p = sessionPlan([at(line("prod:a.b")), at(line("prod:a-b"))], ctx());
+      expect(p.rows.map((r) => r.key)).toEqual(["prod:a.b"]);
+      expect(p.skipped[0].why).toBe("acme: another ticked line lands on maint/prod-a-b");
+      const two = sessionPlan([at(line("ci", "fix", { root: "/a" })), at(line("ci", "fix", { root: "/b" }))], ctx());
+      expect(two.rows).toHaveLength(2);
+    });
+
+    it("skips a folder too long for Claude to file the conversation under", () => {
+      const deep = `/${"d".repeat(190)}`;
+      const p = sessionPlan([at(line("ci", "fix", { root: deep }))], ctx());
+      expect(p.rows).toEqual([]);
+      expect(p.skipped[0].why).toMatch(/too long/);
+    });
+
+    it("keeps the ticked order and counts what is past the cap", () => {
+      const lines = Array.from({ length: SESSION_MAX + 2 }, (_, i) => at(line("ci", "fix", { root: `/p${i}` })));
+      const p = sessionPlan([...lines].reverse(), ctx());
+      expect(p.rows.map((r) => r.root)).toEqual(lines.slice(2).map((l) => l.f.root).reverse());
+      expect(p.over).toBe(2);
+    });
+  });
+
+  describe("sessionGate", () => {
+    const empty: SessionPlan = { rows: [], skipped: [], over: 0 };
+    it("answers null when Start may run", () => {
+      expect(sessionGate(empty, true)).toBeNull();
+    });
+    it("says why, the engine first", () => {
+      expect(sessionGate({ ...empty, over: 3 }, false)).toBe(SESSION_EXTERNAL);
+      expect(SESSION_EXTERNAL).toBe("Agents open outside Episko (Settings › Launching), so there are no panes to tile");
+      expect(sessionGate({ ...empty, over: 1 }, true)).toBe("8 at most at once: one tile each");
+      expect(SESSION_OVER).toBe("8 at most at once: one tile each");
+      expect(sessionGate({ ...empty, skipped: [{ root: "/r", key: "ci", why: "acme: busy", open: true }, { root: "/r", key: "b", why: "later", open: false }] }, true)).toBe("acme: busy");
+    });
+  });
+
+  describe("sweepGate and sessionLeft", () => {
+    const empty: SessionPlan = { rows: [], skipped: [], over: 0 };
+    const rows = sessionPlan([at(line("ci"))], ctx()).rows;
+    const busy = { root: "/r", key: "b", why: "acme: busy", open: true };
+    it("starts what it can and names the rest, since a sweep has no tick to untick", () => {
+      expect(sessionGate({ ...empty, rows, skipped: [busy] }, true), "ticks must be unticked").toBe("acme: busy");
+      expect(sweepGate({ ...empty, rows, skipped: [busy] }, true)).toBeNull();
+      expect(sessionLeft({ ...empty, rows, skipped: [busy] })).toEqual(["acme: busy"]);
+      expect(sessionLeft({ ...empty, rows, skipped: [busy, busy, busy] })).toEqual(["acme: busy and 2 more"]);
+      expect(sessionLeft({ ...empty, rows })).toEqual([]);
+    });
+    it("refuses only with nothing left, past the cap, or with no panes to tile", () => {
+      expect(sweepGate({ ...empty, skipped: [busy] }, true)).toBe("acme: busy");
+      expect(sweepGate({ ...empty, rows, over: 1 }, true)).toBe(SESSION_OVER);
+      expect(sweepGate({ ...empty, rows }, false)).toBe(SESSION_EXTERNAL);
+    });
+  });
+
+  describe("what the bar says", () => {
+    const heads = () => [head("maint/ci")];
+    const plan = sessionPlan(
+      [at(line("security:code")), at(line("security:dependency", "patch")), at(line("git:tidy", "tidy")), at(line("ci"))],
+      ctx({ heads, busy: () => true }),
+    );
+    it("names what the ticks become", () => {
+      expect(sessionText(plan)).toBe("2 on new fix branches · 1 in its project's folder · 1 already open");
+      const one = sessionPlan([at(line("ci"))], ctx());
+      expect(sessionText(one)).toBe("1 on a new fix branch");
+      const again = sessionPlan([at(line("ci"))], ctx({ heads }));
+      expect(sessionText(again)).toBe("1 on its earlier fix branch");
+      const folders = sessionPlan([at(line("git:tidy", "tidy", { root: "/a" })), at(line("git:tidy", "tidy", { root: "/b" }))], ctx());
+      expect(sessionText(folders)).toBe("2 in their projects' folders");
+      expect(sessionText(sessionPlan([at(line("r", "review"))], ctx()))).toBe("1 can't start");
+      expect(sessionText(sessionPlan([at(line("ci"))], ctx({ earlier: () => true })))).toBe("1 on its earlier fix branch");
+    });
+    it("counts the ticks a chip is not showing, or the bar disagrees with what is on screen", () => {
+      expect(sessionText(sessionPlan([at(line("ci"))], ctx()), 2)).toBe("2 behind this filter · 1 on a new fix branch");
+    });
+    it("lists each row's destination in its tip", () => {
+      const tip = sessionTip(plan, () => "acme").split("\n");
+      expect(tip).toContain("acme · the security:code line → maint/security-code from origin/main");
+      expect(tip).toContain("acme · the git:tidy line → in its folder");
+      expect(tip).toContain("acme: an agent already works on maint/ci");
+      expect(sessionTip(sessionPlan([at(line("ci"))], ctx({ heads })), () => "acme")).toBe("acme · the ci line → maint/ci, its earlier checkout");
+      expect(sessionTip(sessionPlan([at(line("ci"))], ctx({ earlier: () => true })), () => "acme")).toBe("acme · the ci line → maint/ci, its earlier branch");
+    });
+    it("ends on what started and the first thing that did not", () => {
+      expect(sessionDone(5, 5, [])).toBe("Started 5 agents, each prefilled. Read each, then press Enter");
+      expect(sessionDone(1, 1, [])).toBe("Started 1 agent, prefilled. Read it, then press Enter");
+      expect(sessionDone(4, 5, ["wirksam: worktree: locked"])).toBe("Started 4 of 5 · wirksam: worktree: locked");
+    });
+    it("carries what was noted before the launch into the toast that would overwrite it", () => {
+      expect(sessionDone(2, 2, [], ["1 line changed since the last check"])).toBe("Started 2 agents, each prefilled. Read each, then press Enter · 1 line changed since the last check");
+      expect(sessionDone(1, 2, ["x: worktree: locked"], ["acme: busy"])).toBe("Started 1 of 2 · x: worktree: locked · acme: busy");
+    });
+  });
+
+  describe("cardsShown and sessionLines", () => {
+    const card = (path: string, band: Band, findings: Finding[]) => ({ path, band, findings });
+    const needs = card("/n", "needs", [line("ci", "fix", { root: "/n" }), line("deps:b", "review", { root: "/n" })]);
+    const drift = card("/d", "drifting", [line("git:unpushed", "push", { root: "/d" }), line("run:x", "fix", { root: "/d", busy: true })]);
+    const quiet = card("/q", "quiet", [line("git:tidy", "tidy", { root: "/q" })]);
+    const unread = card("/u", "unread", []);
+    const cards = rankMaint([quiet, drift, unread, needs]);
+
+    it("shows what each chip shows, in rank order", () => {
+      expect(cardsShown(cards, "all").map((c) => c.path)).toEqual(["/n", "/d", "/u"]);
+      expect(cardsShown(cards, "needs").map((c) => c.path)).toEqual(["/n"]);
+      expect(cardsShown(cards, "drifting").map((c) => c.path)).toEqual(["/d"]);
+      expect(cardsShown(cards, "quiet").map((c) => c.path)).toEqual(["/q"]);
+    });
+
+    it("orders every line drawn and offers only what an agent can take", () => {
+      const { order, pickable } = sessionLines(cardsShown(cards, "all"));
+      expect(order).toEqual(["/n\u0000ci", "/n\u0000deps:b", "/d\u0000git:unpushed", "/d\u0000run:x"]);
+      expect([...pickable]).toEqual(["/n\u0000ci", "/d\u0000git:unpushed"]);
+      expect(sessionPickable({ verb: "fix", busy: true })).toBe(false);
+      expect(sessionPickable({ verb: "review" })).toBe(false);
+    });
+
+    it("offers nothing on a quiet card, which is drawn compact", () => {
+      expect(sessionLines(cardsShown(cards, "quiet"))).toEqual({ order: [], pickable: new Set() });
+    });
+
+    it("offers nothing on a snapshot's card: its lines are words, not findings", () => {
+      const past = { path: "/p", band: "unread" as Band, findings: [] as Finding[], past: { findings: [{ facet: "ci", key: "ci", text: "CI failing" }] } };
+      expect(sessionLines([past])).toEqual({ order: [], pickable: new Set() });
+    });
+  });
+
+  it("names a sweep's fix branch after the advisory, or the package when it has no id", () => {
+    const a = { id: "CVE-2021-23337", aliases: [], summary: "x", severity: "high", rawSeverity: "", url: null, packages: [], asked: [], gaps: [] } as SweepAdvisory;
+    expect(fixBranch(sweepLine(a, "/r"))).toBe("maint/cve-2021-23337");
+    const typed = { ...a, id: null, packages: [{ name: "@scope/left-pad", ecosystem: "npm" } as SweepPkg] };
+    expect(fixBranch(sweepLine(typed, "/r"))).toBe("maint/scope-left-pad");
+    expect(sweepLine(a, "/r").verb).toBe("patch");
+    expect(sessionPlan([{ f: sweepLine(a, "/r"), inp: repo() }], ctx()).rows[0].where).toEqual({ kind: "new", branch: "maint/cve-2021-23337", base: "origin/main" });
   });
 });

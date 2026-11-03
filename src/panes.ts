@@ -37,7 +37,7 @@ import { renderAttn, renderFoot } from "./footer";
 import { updateTray } from "./tray";
 import { closeExternalView, flushRoster, queueRosterSave, refreshDirtyStates, rosterEntry } from "./mirror";
 import { openWt, refreshWtDialog } from "./worktree";
-import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
+import { adoptIdentity, groupFocus, groupKey, inStageGroup, memberTakesStage, nextAfterClose, nextInGroup, orphanAdoptions, paneCapName, splitAnchorFor, splitShells, stageMembers } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
 import { execCmd, exitWaiters, replacedRuns, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
@@ -156,6 +156,20 @@ export async function freshReady(sid: string): Promise<void> {
   for (let t = PREFILL_MIN_MS; t < PREFILL_CAP_MS && sessions.get(sid) === s && s.durMs == null; t += 100) await wait(100);
   await wait(PREFILL_SETTLE_MS);
 }
+// Typed once the REPL can take it, never sent. A failure is logged: a prefill that silently vanished is this bug's history.
+export function prefillFresh(sid: string, text: string): void {
+  void freshReady(sid).then(() => typeInto(sid, text))
+    .catch((e) => dlog("warn", `prefill ${sid.slice(0, 8)} failed: ${e}`));
+}
+
+// A group's pane puts its GROUP on stage, not itself: activating each member as it spawned left
+// the stage on the last to start and untiled it on the way. An unfocused pane stays 24×80 until tiled.
+function stageNew(s: Sess) {
+  const gid = groupKey(s);
+  if (!gid) { setActive(s.id); return; }
+  const first = ![...sessions.values()].some((x) => x.id !== s.id && groupKey(x) === gid);
+  if (memberTakesStage(first, gid, stageGroup, activeId)) openRunGroup(gid);
+}
 
 /** The setup-token account a new embedded Claude session takes, or null for the login (docs/accounts.md). */
 export function launchAccount(skip?: string): string | null {
@@ -164,7 +178,7 @@ export function launchAccount(skip?: string): string | null {
 }
 
 // `account`: a label to launch on whatever the pick says (a resume on the next account), null for the login.
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string; account?: string | null } = {}): Promise<string | null> {
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string; account?: string | null; group?: Sess["group"] } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
@@ -182,7 +196,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     return null;
   }
   if (agent.id !== CLAUDE_CLI.id) {
-    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch, resume: opts.resume });
+    return launchAgent(agent, project, workdir, { colorKey, worktree: opts.worktree, branch: opts.branch, resume: opts.resume, group: opts.group });
   }
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
@@ -207,11 +221,11 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
-    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane, ...(account ? { account } : {}),
+    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane, ...(account ? { account } : {}), ...(opts.group ? { group: opts.group } : {}),
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => applyOscTitle(s, t));
-  setActive(id);
+  stageNew(s);
   queueRosterSave();
   // "default" is Claude's own ask-me mode, i.e. no flag, so it goes over the wire as null.
   // Read here rather than passed as an opt: it is a preference, like termEngine.
@@ -408,7 +422,7 @@ export async function launchShell(project: string, workdir: string, opts: { colo
 }
 
 // Any non-Claude agent; the AgentCli capability set serves integrated and terminal-only providers alike.
-export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string } = {}): Promise<string | null> {
+export async function launchAgent(agent: AgentCli, project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; group?: Sess["group"] } = {}): Promise<string | null> {
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
   const pane = newPane(id);
@@ -421,10 +435,10 @@ export async function launchAgent(agent: AgentCli, project: string, workdir: str
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
-    kind: "agent", provider: agent.id, capabilities: [...agent.capabilities], external: false, term, fit, pane,
+    kind: "agent", provider: agent.id, capabilities: [...agent.capabilities], external: false, term, fit, pane, ...(opts.group ? { group: opts.group } : {}),
   };
   sessions.set(id, s);
-  setActive(id);
+  stageNew(s);
   const permission = launchPermission(agent, colorKey);
   dlog("info", `${opts.resume ? "resume" : "agent"} ${agent.id} · ${project} · ${id.slice(0, 8)}${permission.mode ? ` · ${permission.def?.label}` : ""}`);
   let spawned = true;
@@ -481,19 +495,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
-  // A chain member puts its GROUP on stage, not itself: activating each member as it
-  // spawned left the stage on the last step to start and untiled the group on the way.
-  // An unfocused pane starts at xterm's 24×80 and gets a real size when activated.
-  if (opts.focus !== false) {
-    const gid = opts.groupId;
-    if (!gid) {
-      setActive(id);
-    } else {
-      // Re-tile for later steps only while the stage is still on this group; never yank you back.
-      const first = ![...sessions.values()].some((x) => x.id !== id && x.run?.groupId === gid);
-      if (first || stageGroup === gid) openRunGroup(gid);
-    }
-  }
+  if (opts.focus !== false) stageNew(s);
   // After the focus moved, so an old pane is spared only when this run left it on stage.
   for (const old of replacedRuns(sessions.values(), r.id, root, activeId)) closeSession(old);
   dlog("info", `task ${r.id} · ${project} · ${cmd}`);
@@ -525,9 +527,9 @@ export function closeSession(id: string) {
   // Resolve the successor while the closing session is still in the map.
   const next = wasActive ? nextAfterClose(s) : null;
   // Closing one tile stays in the mosaic; `nextAfterClose` alone would hand the stage to a sidebar neighbour.
-  const gid = s.run?.groupId;
+  const gid = groupKey(s);
   const groupNext = wasActive && gid && stageGroup === gid
-    ? nextInGroup(groupMembers(gid), id)
+    ? nextInGroup(stageMembers(gid), id)
     : null;
   onPaneClose(id);
   invoke("kill_session", { sessionId: id }).catch(() => {});
@@ -590,7 +592,7 @@ export function shelveSession(id: string): boolean {
 // stack is not undoable); a finished chain closes at once. Snapshot the ids first:
 // closeSession mutates the map and can re-enter setActive.
 export async function closeRunGroup(gid: string) {
-  const members = groupMembers(gid);
+  const members = stageMembers(gid);
   if (!members.length) return;
   const live = members.filter((m) => m.run?.exitCode == null);
   if (live.length) {
@@ -609,7 +611,7 @@ export async function closeRunGroup(gid: string) {
 // half-failed run gets a clean one — a step's own ⟳ skips the setup it depended on. Stops
 // first, so nothing outlives the run it belonged to.
 export async function rerunRunGroup(gid: string) {
-  const members = groupMembers(gid);
+  const members = stageMembers(gid);
   const head = members[0]?.run;
   if (!head) return;
   const root = head.groupRoot ? runnableIn(head.root, head.groupRoot) : undefined;
@@ -637,13 +639,6 @@ export function toggleRunGroup(gid: string) {
 }
 
 
-// Launch order is mosaic order, so "the next tile" means the next one on screen.
-function groupMembers(gid: string): Sess[] {
-  return [...sessions.values()]
-    .filter((x) => x.run?.groupId === gid)
-    .sort((a, b) => (a.run?.startedAt ?? 0) - (b.run?.startedAt ?? 0));
-}
-
 // Called from renderAll: panes sit outside the render-everything sweep, and a caption shows live state.
 export function refreshPaneCaps() {
   if (!stageGroup) return;
@@ -656,7 +651,7 @@ function paintPaneCap(s: Sess) {
   if (!cap) return;
   const name = cap.querySelector<HTMLElement>(".pc-name");
   const state = cap.querySelector<HTMLElement>(".pc-state");
-  if (name) name.textContent = s.run?.label ?? (s.title || (s.kind === "shell" ? "shell" : s.provider ?? "pane"));
+  if (name) name.textContent = paneCapName(s);
   // A finished run's ✕ stays on screen (dismissing it is what comes next); a running one's is hover-only.
   cap.classList.toggle("done", s.run?.exitCode != null);
   if (state) {
@@ -665,14 +660,11 @@ function paintPaneCap(s: Sess) {
   }
 }
 
-// Tile a run group, focused on the failure if there is one, else the last step to start.
-// Called from the header click and from launchTask per member, so it re-derives the
-// member list every time and is safe with the group half-populated.
+// Tile a run or agent group on `groupFocus`'s pane. Called from a click and per member as each
+// starts, so it re-derives the member list every time and is safe with the group half-populated.
 export function openRunGroup(gid: string) {
-  const members = groupMembers(gid);
-  if (!members.length) return;
-  const focus = members.find((m) => m.phase === "error")
-    ?? members.reduce((a, b) => (b.run!.startedAt > a.run!.startedAt ? b : a));
+  const focus = groupFocus(stageMembers(gid), activeId);
+  if (!focus) return;
   setStageGroup(gid);
   // keepGroup is required: setActive clears stageGroup by default, and the stage would never tile.
   setActive(focus.id, true);
@@ -711,6 +703,8 @@ function paintStage(id: string, gid: string | null) {
     x.pane.classList.toggle("active", on);
     x.pane.classList.toggle("focused", !!gid && x.id === id);
     x.pane.classList.toggle("anchor", split && x.id === gid);
+    // A session's worktrees finish in any order: its tiles stand as ticked, whatever the DOM says.
+    x.pane.style.order = x.group?.id === gid ? String(x.group!.n) : "";
     // Attach after the class flip (the addon needs a measurable pane). A live pane leaving
     // the stage keeps its context (the LRU pool bounds them; docs/architecture.md); an
     // exited one frees it now, and an ended claude pane gives up its scrollback too.
@@ -737,8 +731,8 @@ export function setActive(id: string, keepGroup = false) {
   // The seenAt stamp takes a finished session out of the badge (./attn); focusInGroup stamps it too.
   // Stamped for every kind of pane so the field never needs a kind test.
   s.seenAt = Date.now();
-  // A sidebar row shows one pane, unless shells are split beside it; a run group tiles from its
-  // header alone (keepGroup), and a tile click is focusInGroup.
+  // A sidebar row shows one pane, unless shells are split beside it; a group tiles through
+  // openRunGroup alone (keepGroup), and a tile click is focusInGroup.
   setStageGroup(keepGroup ? stageGroup : splitShells(id).length ? id : null);
   takeStage("session");
   paintStage(id, stageGroup);
