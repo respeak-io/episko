@@ -12,6 +12,12 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.39.0 — 2026-11-03
+Several Claude subscriptions can share the work: a new session starts on the first one that isn't
+full, and one that hits its limit offers to move to the next. Every icon now comes from one set, a
+shelved session shows what it left behind and the questions it answered, and a review opens even a
+very large pull request in full.
 + A shelved session's panel says what it left behind: Claude's own recap of where things stood,
   when it started, what it cost, its model and how full its context was, the pull requests it
   opened with whether they are open or merged, the files it wrote, and anything left uncommitted
