@@ -138,6 +138,11 @@
       "facet": "prod", "label": "URL checks", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.urls"],
       "sees": ["prod.status", "prod.cert"],
       "blind": ["prod.host"]
+    },
+    "ssh-host": {
+      "facet": "prod", "label": "SSH host", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.host"],
+      "sees": ["prod.host"],
+      "blind": ["prod.status", "prod.cert"]
     }
   },
   "markers": [

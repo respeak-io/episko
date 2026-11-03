@@ -452,6 +452,82 @@
     },
     {
       "at": 1790000000,
+      "cost": "remote",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "prod",
+      "facts": {
+        "items": [
+          {
+            "alias": "prod-1",
+            "compose": [
+              "api",
+              "worker"
+            ],
+            "containers": [
+              {
+                "exit": 0,
+                "health": "unhealthy",
+                "image": "ghcr.io/acme/api:1.4.2",
+                "name": "acme-api-1",
+                "project": "acme",
+                "restarts": 0,
+                "service": "api",
+                "startedAt": 1789900000,
+                "state": "running"
+              },
+              {
+                "exit": 0,
+                "health": null,
+                "image": "ghcr.io/acme/api:1.4.2",
+                "name": "old-cron",
+                "project": null,
+                "restarts": 3,
+                "service": null,
+                "startedAt": 1789900000,
+                "state": "exited"
+              }
+            ],
+            "cpus": 4,
+            "disks": [
+              {
+                "availKb": 2480376,
+                "mount": "/",
+                "sizeKb": 50620216,
+                "usedKb": 48123456
+              }
+            ],
+            "listsAt": 1789000000,
+            "load": [
+              0.42,
+              0.61,
+              0.5
+            ],
+            "now": 1790000000,
+            "os": "Linux 6.8.0-45-generic",
+            "packages": [
+              "openssl",
+              "libc6"
+            ],
+            "pm": "apt",
+            "reboot": true,
+            "rebootWhy": [
+              "linux-image-6.8.0-49-generic"
+            ],
+            "security": 6,
+            "updates": 14,
+            "uptime": 3542400
+          }
+        ],
+        "kind": "hosts"
+      },
+      "gaps": [],
+      "source": "ssh-host",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
       "cost": "public",
       "coverage": {
         "state": "ok"
@@ -566,6 +642,20 @@
       "facts": null,
       "gaps": [],
       "source": "gitlab-ci",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": "ssh prod-1",
+        "reason": "prod-1 refused every key ssh offered from this machine",
+        "state": "noAccess"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "ssh-host",
       "truncated": false
     },
     {

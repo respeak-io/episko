@@ -32,6 +32,8 @@ export function narrowDeploy(raw: unknown): DeployCfg | null {
 
 // deploy.rs's `keep`, word for word: an alias or service becomes one argv element, so never a flag.
 const isWord = (v: string) => v !== "" && !v.startsWith("-") && !/\s/.test(v);
+// deploy.rs's `ssh_alias`: the host reaches `ssh <alias>` in a shell prefill, where `;` or `$(` is a command.
+const isAlias = (v: string) => v.length <= 253 && /^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(v);
 const isHttp = (u: string) => /^https?:\/\/\S+$/i.test(u);
 const PART = "[A-Za-z0-9][A-Za-z0-9._-]*";
 const isOrgProject = (s: string) => new RegExp(`^${PART}/${PART}$`).test(s);
@@ -46,7 +48,7 @@ export function checkDeploy(p: DeployProposal): { deploy: DeployCfg; dropped: st
   const host = t(d.host), sentry = t(d.sentry), versionUrl = t(d.versionUrl);
   return {
     deploy: {
-      host: host && keep(isWord(host), `host = "${host}" is not an ssh alias or host name`) ? host : null,
+      host: host && keep(isAlias(host), `host = "${host}" is not an ssh alias or host name`) ? host : null,
       compose: d.compose.map((c) => c.trim()).filter((c) => keep(isWord(c), `compose service "${c}" is not a name`)),
       // A name is its finding's key after `prod:`; `prod:<kind>:…` belongs to the other prod sources.
       urls: Object.fromEntries(Object.entries(d.urls).map(([n, u]) => [n.trim(), u.trim()] as const)

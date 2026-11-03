@@ -3326,6 +3326,7 @@ select.in-ctl { cursor: pointer; }
 .mt-probe .u { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-probe .mt-v { flex: none; max-width: 30%; }
 .mt-probe .mt-v:empty { display: none; }
+.mt-hostl .aslink { flex: none; font-size: 11px; }
 .mt-said { margin: -3px 7px 5px 105px; font-size: 10.5px; color: var(--muted-2); }
 .mt-fix { display: block; margin: 0 7px 5px 105px; font: 10.5px var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1080px) { .mt-dgrid { grid-template-columns: minmax(0, 1fr); } .mt-dhead { flex-wrap: wrap; } }

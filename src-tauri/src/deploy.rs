@@ -35,6 +35,16 @@ impl DeployConfig {
         &self.envs
     }
 
+    /// The ssh alias `ssh-host` reads, held to `ssh_alias` by `keep`.
+    pub(crate) fn host(&self) -> Option<&str> {
+        self.host.as_deref()
+    }
+
+    /// The services expected on that host, matched on the Compose service label.
+    pub(crate) fn compose(&self) -> &[String] {
+        &self.compose
+    }
+
     /// Every address `http-probe` asks, name → URL: `urls`, then `version_url` as `version`
     /// unless one of them already is it.
     pub(crate) fn targets(&self) -> Vec<(String, String)> {
@@ -70,6 +80,12 @@ fn org_project(s: &str) -> bool {
 
 fn safe_word(v: &str) -> bool {
     crate::maint::data_arg(v).is_ok()
+}
+
+/// An ssh alias or `user@host`: it reaches a shell prefill and a brief, where `;`, `$` or a backtick is a command.
+pub(crate) fn ssh_alias(v: &str) -> bool {
+    v.len() <= 253 && v.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || "._@-".contains(c))
 }
 
 // A bare list of addresses still reads: each is named by what follows its scheme, a port's ':' a
@@ -113,7 +129,7 @@ fn keep(d: DeployConfig) -> (DeployConfig, Vec<String>) {
         }
         ok
     };
-    let host = d.host.filter(|h| said(safe_word(h), format!("host = \"{h}\" is not an ssh alias or host name")));
+    let host = d.host.filter(|h| said(ssh_alias(h), format!("host = \"{h}\" is not an ssh alias or host name")));
     let compose = d.compose.into_iter().filter(|c| said(safe_word(c), format!("compose service \"{c}\" is not a name"))).collect();
     // A name is its finding's key after `prod:`; `prod:<kind>:…` belongs to the other prod sources.
     let urls = d.urls.into_iter()
@@ -525,6 +541,18 @@ mod tests {
             assert_eq!(out, want, "{field} = {v:?}");
             assert_eq!(kept.is_empty(), !want.is_empty(), "{field} = {v:?}");
         }
+    }
+
+    /// The host reaches `ssh <alias>` in a shell prefill, so a write names the value it refuses.
+    #[test]
+    fn a_host_that_is_no_alias_is_refused_by_name() {
+        let dir = scratch_dir();
+        std::fs::create_dir_all(dir.join(".episko")).unwrap();
+        std::fs::write(path_of(&s(&dir)), "[deploy]\nhost = \"prod-1\"\n").unwrap();
+        let e = write_deploy(s(&dir), cfg("prod;x", &[]), false).unwrap_err();
+        assert_eq!(e, "host = \"prod;x\" is not an ssh alias or host name");
+        assert_eq!(read(&s(&dir)).and_then(|d| d.host().map(String::from)).as_deref(), Some("prod-1"), "refused, so nothing moved");
+        assert!(ssh_alias("deploy@prod-1") && ssh_alias(&"a".repeat(253)) && !ssh_alias(&"a".repeat(254)) && !ssh_alias("_x") && !ssh_alias(""));
     }
 
     #[test]

@@ -60,9 +60,10 @@ export interface SourceDef {
 export interface MarkerDef { facet: Facet; label: string; forge: string[]; detect: string[] }
 export interface BotDef { id: string; logins: string[]; branch: string; dashboard: string | null; config: string[] }
 
-/** Which public sources this machine may call, and which it skips. Per machine: it changes what runs. */
-export interface MaintPrefs { public: string[]; off: string[] }
-export const MAINT_PREFS_DEFAULT: MaintPrefs = { public: [], off: [] };
+/** Which public sources this machine may call, which it skips, and which `[deploy]` hosts it may ssh
+ *  to (none until ticked here: a teammate's commit never chooses where this machine connects). */
+export interface MaintPrefs { public: string[]; off: string[]; hosts: string[] }
+export const MAINT_PREFS_DEFAULT: MaintPrefs = { public: [], off: [], hosts: [] };
 
 const among = <T extends string>(all: readonly T[], v: string, what: string): T => {
   if (!(all as readonly string[]).includes(v)) throw new Error(`maintmanifest.json: unknown ${what} ${JSON.stringify(v)}`);
@@ -124,7 +125,7 @@ export function permitted(cost: Cost, mode: Mode, publicOk: boolean): boolean {
 }
 
 /** The detected sources a mode may run on this machine, in detection order. */
-export function runnable(det: { sources: readonly string[] }, prefs: MaintPrefs, mode: Mode): string[] {
+export function runnable(det: { sources: readonly string[] }, prefs: Pick<MaintPrefs, "public" | "off">, mode: Mode): string[] {
   return det.sources.filter((id) => {
     const d = BY_ID.get(id);
     return !!d && !prefs.off.includes(id) && permitted(d.cost, mode, prefs.public.includes(id));

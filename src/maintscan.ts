@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, snapFor, takeSnap,
+  clampKept, clampSnaps, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, snapFor, takeSnap,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
@@ -45,13 +45,21 @@ export function setMaintRender(f: () => void) { paint = f; }
 // Which public sources this machine may call and which it skips. Never synced: it changes what runs.
 const strs = (v: unknown) => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 const stored = readObj<unknown>("cc-maint-prefs");
-export let maintPrefs: MaintPrefs = { ...MAINT_PREFS_DEFAULT, public: strs(stored.public), off: strs(stored.off) };
+export let maintPrefs: MaintPrefs = { ...MAINT_PREFS_DEFAULT, public: strs(stored.public), off: strs(stored.off), hosts: strs(stored.hosts) };
 
 /** Settings' switch for one public source. The next scan reads it; nothing is asked now. */
 export function setMaintPublic(id: string, on: boolean): void {
   const rest = maintPrefs.public.filter((x) => x !== id);
   maintPrefs = { ...maintPrefs, public: on ? [...rest, id] : rest };
   localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
+}
+
+/** Allow or Disallow one `[deploy] host` on this machine. Nothing connects: Check prod still asks. */
+export function setMaintHost(alias: string, on: boolean): void {
+  const rest = maintPrefs.hosts.filter((x) => x !== alias);
+  maintPrefs = { ...maintPrefs, hosts: on ? [...rest, alias] : rest };
+  localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
+  paint();
 }
 
 // The last finished scan per root in words, for a root whose whole scan did not fit `cc-maint-scan`
@@ -82,10 +90,13 @@ for (const [root, k] of Object.entries(kept)) {
   cache.set(root, { root, det: k.det, reports: k.reports, detecting: false, out: 0, at: k.at, err: null, kept: true });
 }
 
-/** What ./maint's rules take for one project, or null before anything was asked. */
+/** What ./maint's rules take for one project, or null before anything was asked. A host this machine
+ *  has not allowed is skipped like an `off` source, so no click can reach it. */
 export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
-  return e ? { det: e.det, reports: e.reports, skip: maintPrefs.off, asking: askingIds(root) } : null;
+  if (!e) return null;
+  const skip = [...maintPrefs.off, ...hostSkips(e.det, maintPrefs.hosts)];
+  return { det: e.det, reports: currentHosts(e.det, e.reports), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
 }
 
 let running = 0;
@@ -113,6 +124,7 @@ function readOne(root: string, id: string, mode: Mode, force: boolean): Promise<
 
 // Every detected source is asked, skipped ones aside: Rust's cost gate answers `notRun`, or the
 // result a click left, for what a scan may not run, so no facet waits on a read nobody makes.
+// A host not allowed here is asked too (the gate connects nowhere), so Allow offers it at once.
 // `save` false: a fleet sweep writes the snapshot once, when the last of its projects is in.
 async function scanOne(root: string, force: boolean, save = true): Promise<void> {
   const prev = cache.get(root);

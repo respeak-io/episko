@@ -1,0 +1,30 @@
+# recorded 2026-11-03 by piping the script into sh in a real container of fedora:41 (dnf 5), after dnf makecache: a real package manager, no host's /boot or docker
+@@episko-host 1
+@@now
+1793746346
+@@uname
+Linux 6.18.54.1-microsoft-standard-WSL2
+@@uptime
+95455.46 2249209.37
+@@load
+2.86 3.31 2.86 2/1614 24
+@@cpus
+24
+@@df
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+overlay         1055762868 349300072 652759324      35% /
+tmpfs                65536         0     65536       0% /dev
+shm                  65536         0     65536       0% /dev/shm
+/dev/sde        1055762868 349300072 652759324      35% /etc/hosts
+tmpfs                    4         0         4       0% /proc/acpi
+@@updates dnf
+xz.x86_64      1:5.8.1-4.fc41 updates
+xz-libs.x86_64 1:5.8.1-4.fc41 updates
+exit 100
+@@security
+exit 0
+@@reboot
+@@kernel
+6.18.54.1-microsoft-standard-WSL2
+@@docker absent
+@@end

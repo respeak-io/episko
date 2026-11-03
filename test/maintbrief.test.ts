@@ -179,12 +179,13 @@ describe("briefFor", () => {
 
   it("finds Fix's brief by the finding's key, one exact row per kind", () => {
     const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
-    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
+    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config", "prod:host:disk", "prod:host:load"]) expect(claims(key), key).toBe(1);
     // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
-    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "release:deploy", "security:dependency"]) {
+    for (const key of ["prod:host:other", "prod:domain:acme.example", "prod:errors:new", "release:deploy", "security:dependency"]) {
       expect(claims(key), key).toBe(0);
     }
-    expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:domain:acme.example" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "a probe's facts are no host's").toBeNull();
   });
 
   it("sets up CI or an update bot from the facet alone, naming what is already in the tree", () => {
@@ -352,6 +353,56 @@ describe("briefFor", () => {
 
 // A sweep's affected project is briefed as any Patch is, and the read-only agent is asked from the
 // same facts; neither names who published the advisory.
+describe("a host's brief", () => {
+  const facts: Facts = { kind: "hosts", items: [{
+    alias: "prod-1", os: "Linux", now: S, uptime: 41 * D, load: [1, 1, 12.4], cpus: 4,
+    disks: [{ mount: "/", sizeKb: 50 * 1024 * 1024, usedKb: 48 * 1024 * 1024, availKb: 2 * 1024 * 1024 }],
+    updates: 14, security: 6, packages: ["openssl", "libc6"], pm: "apt", listsAt: S - 12 * D, reboot: true, rebootWhy: ["linux-image-6.8.0-49-generic"],
+    containers: [{ name: "acme-api-1", image: "x", state: "running", health: "unhealthy", restarts: 12, exit: 137, startedAt: S - D, project: "acme", service: "api" }],
+    compose: ["worker"],
+  }] };
+  const hostInp = input({ ...ok("ssh-host", facts), at: S - 3 * 3600 });
+  const line = (kind: string): Finding => findings("/r", hostInp, MAINT_DEFAULTS, NOW).find((f) => f.key === `prod:host:${kind}`)!;
+  const brief = (kind: string) => briefFor(line(kind), hostInp, ctx)!;
+
+  it("names the alias, the project and how old the reading is", () => {
+    expect(brief("disk").split("\n")[0]).toBe("prod-1 ([deploy] host of acme) needs attention, as Episko read it 3h ago:");
+  });
+
+  it("lists every problem with its numbers, the clicked one first", () => {
+    const b = brief("disk");
+    expect(b).toContain("- / is 96% full: 2.0 GB free of 50.0 GB");
+    expect(b).toContain("- 14 updates pending, 6 of them security: openssl, libc6");
+    expect(b).toContain("- its package lists are 12d old");
+    expect(b).toContain("- it needs a reboot: linux-image-6.8.0-49-generic");
+    expect(b).toContain("- acme-api-1 (service api): running, unhealthy, restarted 12 times, last exit 137");
+    expect(b).toContain("- service worker has no running container, and none exists");
+    expect(b).toContain("- its 15-minute load is 12.4 on 4 CPUs, 3.1 per CPU");
+    const bullets = (k: string) => brief(k).split("\n").filter((l) => l.startsWith("- "));
+    expect(bullets("disk")[0]).toContain("/ is 96%");
+    expect(bullets("load")[0]).toContain("15-minute load");
+    expect(bullets("reboot")[0]).toContain("needs a reboot");
+  });
+
+  it("sends the agent read-only over the person's ssh, and stops it before any write", () => {
+    const b = brief("containers");
+    expect(b).toContain("Connect with `ssh prod-1` and investigate read-only");
+    expect(b).toContain("Say each read-only command before you run it on the");
+    expect(b).toContain("stop for a person before anything that writes");
+    expect(b).toContain("Change nothing on the host yourself");
+    expect(b).toContain("before deleting, upgrading, restarting or rebooting anything");
+    expect(b.endsWith("\n"), "never ends in a newline: nothing could press Enter").toBe(false);
+  });
+
+  it("answers null once the facts are gone or the host is fine", () => {
+    const f = line("disk");
+    expect(briefFor(f, input(), ctx)).toBeNull();
+    const fine: Facts = { kind: "hosts", items: [{ ...(facts as Extract<Facts, { kind: "hosts" }>).items[0], disks: [{ mount: "/", sizeKb: 100, usedKb: 10, availKb: 90 }], updates: 0, security: 0, packages: [], listsAt: S, reboot: false, rebootWhy: [], load: [0, 0, 0], containers: [], compose: [] }] };
+    expect(briefFor(f, input(ok("ssh-host", fine)), ctx)).toBeNull();
+    expect(briefFor({ ...f, ref: "other" }, hostInp, ctx), "another host's line").toBeNull();
+  });
+});
+
 describe("the advisory sweep's briefs", () => {
   const adv: SweepAdvisory = {
     id: "GHSA-35jh-r3h4-6jhm", aliases: ["CVE-2021-23337"], summary: "Command Injection in lodash", severity: "high", rawSeverity: "HIGH",

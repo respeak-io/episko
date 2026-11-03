@@ -5,8 +5,8 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HygCount,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, prodTip, rtName, span, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -33,10 +33,12 @@ export interface MaintCard {
 }
 export interface MaintTally { needs: number; drifting: number; quiet: number; unread: number; cantCheck: number }
 export interface MaintSoon { name: string; what: string; at: number } // at: unix secs
-/** A host row: `[deploy] host` joined to every project that names it. */
-export interface MaintHostRow { host: string; projects: { root: string; name: string }[]; level: Level; text: string }
-/** What *Check prod* would ask: projects with an address in `[deploy]`, and whether a check is out. */
-export interface MaintProd { projects: number; checking: boolean }
+/** A host row: `[deploy] host` joined to every project that names it; `read` once the host itself answered. */
+export interface MaintHostRow { host: string; projects: { root: string; name: string }[]; level: Level; text: string; read: boolean }
+/** What *Check prod* would ask: projects it has something to ask of, the sources (`prodChecks`) and the
+ *  hosts allowed here it reaches, per project (`each`) too, and whether a check is out. */
+export interface ProdAsks { sources: string[]; hosts: string[] }
+export interface MaintProd extends ProdAsks { projects: number; checking: boolean; each?: Record<string, ProdAsks> }
 /** A tab as the fleet and a project's dashboard both draw it: ./maint's TabModel and its host's chrome. */
 export interface MaintTabView extends TabModel {
   sub: MaintSub;
@@ -116,14 +118,19 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "prod.host": "the host itself: disk, updates, containers",
 };
 
-// Remote, so never part of a scan: the button names what leaves this machine (docs/maintenance.md).
-const PROD_TIP = "Request each [deploy] address once, from this machine, and read its certificate. Nothing else connects";
+// Remote, so never part of a scan: the button names every source it asks and what each reaches.
 function prodHtml(p: MaintProd, root?: string): string {
   if (!p.projects) return "";
   if (p.checking) return `<span class="fl-when mono">checking prod…</span>`;
-  const n = root === undefined ? ` of ${plural(p.projects, "project")}` : "";
-  return `<button class="aslink" data-mtprod="${escAttr(root ?? "")}" data-tip="${escAttr(PROD_TIP.replace("address", `address${n}`))}">Check prod</button>`;
+  // The tip is the disclosure, so one project's door names what that project's click reaches.
+  const n = root === undefined ? ` (${plural(p.projects, "project")})` : "", a = (root !== undefined && p.each?.[root]) || p;
+  return `<button class="aslink" data-mtprod="${escAttr(root ?? "")}" data-tip="${escAttr(prodTip(a.sources, a.hosts) + n)}">Check prod</button>`;
 }
+
+// Allow and Disallow tick a `[deploy] host` on this machine and connect nowhere; Check prod does that.
+const ALLOW_TIP = "Let Check prod run one read-only command on this host over your own ssh, from this machine only. Nothing connects now";
+const allowHtml = (alias: string, on = true) => `<button class="aslink" data-mthost="${on ? "allow" : "deny"}" data-mtkey="${escAttr(alias)}"`
+  + ` data-tip="${escAttr(on ? ALLOW_TIP : "Check prod stops reaching this host from this machine")}">${on ? "Allow" : "Disallow"}</button>`;
 
 // ---------- the head ----------
 
@@ -192,6 +199,7 @@ function runText(f: Finding): [string, string, string] {
   const d = findSource(f.source), said = d && disclosure(d);
   if (said) return [`Check with ${d.label}`, `${said} Asked once, now`, said];
   if (d?.cost === "tool") return [`Run ${d.label}`, `Run ${d.label} in this project once, on this machine`, f.detail];
+  if (d?.cost === "remote") return [VERB.run[0], prodTip([d.id], f.ref ? [f.ref] : []), f.detail]; // it reaches past this machine, so it says where
   return [...VERB.run, f.detail];
 }
 
@@ -260,6 +268,7 @@ function coverHtml(v: MaintTabView): string {
     const setup = one && g.source ? v.setups.find((x) => x.source === g.source) : undefined;
     const act = (a?.kind === "fix" ? copyHtml(a.fix)
       : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
+      : a?.kind === "allow" ? allowHtml(a.host)
       : offer && one ? verbHtml(offer) : "")
       + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
     const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(v, g)}</span>`;
@@ -295,13 +304,13 @@ function cardHtml(c: MaintCard, compact: boolean, s?: MaintSession): string {
 
 // ---------- hosts ----------
 
-// No host fact is read yet (that is ssh, later), so a row is its projects' Prod cells, the worst one.
+// A row is its projects' Prod cells, the worst one; the host's own vitals are in them once it was read.
 function hostsHtml(hosts: readonly MaintHostRow[]): string {
   if (!hosts.length) return "";
   const rows = hosts.map((h) => {
     const v = h.level === "ok" && !h.text ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(h.text);
     const runs = h.projects.map((p) => projHtml(p.root, p.name)).join(", ");
-    const tip = `${h.host}: the worst Prod cell of the projects it runs. Disk, updates and containers are not read yet`;
+    const tip = `${h.host}: the worst Prod cell of the projects it runs.${h.read ? "" : " Disk, updates and containers are not read yet"}`;
     return `<div class="mt-host"><span class="hn mono" data-tip="${escAttr(tip)}">${esc(h.host)}</span>`
       + `<span class="hl">runs ${runs}</span><span class="mt-v ${LEVEL_CLS[h.level]}">${v}</span></div>`;
   }).join("");
@@ -387,7 +396,7 @@ const tabTip = (v: MaintTabView, s: MaintSub) => !v.dash ? TAB_TEXT[s][1]
   : s === "overview" ? "What needs you here, where it runs, and what could be read" : `${TAB_TEXT[s][1].replace(/, across every project$/, "")}, in this project`;
 const SECTION: Record<Facet, string> = {
   ci: "CI on the default branch", release: "Unreleased work", security: "Advisories and findings",
-  deps: "Update pull requests", git: "Branches and pushes", prod: "Endpoints", work: "Open work",
+  deps: "Update pull requests", git: "Branches and pushes", prod: "Endpoints and hosts", work: "Open work",
 };
 
 // Only red and amber light a count; everything else stays muted, as on the cards.
@@ -654,7 +663,7 @@ function workHtml(v: MaintTabView, b: Boards): string {
 
 function serversHtml(v: MaintTabView, b: Boards): string {
   if (!b.probes.length) {
-    return b.unchecked ? board("addresses", "Addresses", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
+    return b.unchecked ? board("addresses", "Prod", "from [deploy]", empty("Not checked yet: nothing connects until you ask.")
       + `<p class="fl-none">${prodHtml(v.prod, v.filter?.root)}</p>`) : "";
   }
   const rows = b.probes.map((r) => `<tr data-tip="${escAttr([r.url, r.err].filter(Boolean).join("\n"))}">${projTd(v, b, r.root)}`
@@ -821,6 +830,7 @@ export interface MaintDash {
   cover: CoverRow[]; forge: string; unreadable: boolean;
   deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
   probes: { at: number | null; rows: ProbeRow[] } | null; // null until Check prod answered
+  host: HostSummary | null; // `[deploy] host` as this machine may reach it, and its last read
 }
 
 const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
@@ -867,7 +877,7 @@ function runsCard(v: MaintDash): string {
   // DeployConfig::targets asks a version_url that is also a named url once, under that name.
   const versionName = named.some(([, u]) => u === d.versionUrl) ? null : named.some(([n]) => n === "version") ? "version_url" : "version";
   const rows = [
-    d.host ? kv("Host", `${d.host} · ssh alias`) : "",
+    v.host ? hostLineHtml(v.host) : d.host ? kv("Host", `${d.host} · ssh alias`) : "",
     d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
     ...named.map(([n, u]) => addr(n, u)),
     ...Object.entries(d.envs).map(([n, p]) => kv(`Env ${n}`, `tagged ${p}`)),
@@ -875,10 +885,20 @@ function runsCard(v: MaintDash): string {
     d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
   ].join("");
   const prod = v.tab.prod;
-  const checked = !prod.projects ? "" : prod.checking ? "" : v.probes?.at ? ` · checked ${relTime(v.probes.at * 1000)}` : " · never checked";
+  const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0);
+  const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
   const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
   return dcard("runs", "Runs on", "from [deploy]", across("servers", name),
     rows + `<p class="ac-empty">Nothing connects until you ask${esc(checked)}. ${doors}</p>`);
+}
+
+// The host in one line once read, else why not; Allow or Disallow beside it, Check riding Check prod.
+function hostLineHtml(h: HostSummary): string {
+  const s = h.state, said = !h.allowed ? "not allowed on this machine" : s ? s.summary : h.why ?? "not checked";
+  const tip = [...(s?.tip ?? []), ...(s ? h.gaps : []), h.allowed ? "" : "Check prod reaches it only once it is allowed here"].filter(Boolean).join("\n");
+  return `<div class="mt-probe mt-hostl"${tip ? ` data-tip="${escAttr(tip)}"` : ""}><span class="k">Host</span>`
+    + `<span class="u mono">${esc(`${h.alias} · ${said}`)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[s && s.level !== "ok" ? s.level : "muted"]}">${esc(s?.text ?? "")}</span>${allowHtml(h.alias, !h.allowed)}</div>`;
 }
 
 function probeHtml(label: string, p: ProbeRow): string {
@@ -899,7 +919,7 @@ function coverCard(v: MaintDash): string {
     const up = r.state === "off" ? v.setups.find((x) => x.source === r.source) : undefined;
     const d = o && findSource(o.source), said = d && disclosure(d);
     return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
-      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.text)}</span>${o ? verbHtml(o) : ""}${up ? verbHtml(up) : ""}`
+      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.text)}</span>${o ? verbHtml(o) : ""}${up ? verbHtml(up) : ""}${r.host ? allowHtml(r.host.alias, !r.host.allowed) : ""}`
       + `${r.url ? settingsHtml(r.url) : ""}</div>`
       + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "")
       + (r.cfg ? `<div class="mt-fixrow">${setupHtml(v.card.path)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");

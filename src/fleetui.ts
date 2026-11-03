@@ -17,7 +17,7 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  cardsShown, clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  cardsShown, clampMaint, comingUp, facetCells, findings, hostRead, hostRows, hostSummary, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
   sessionGate, sessionKey, sessionLines, sessionPlan, sessionText, sessionTip,
   tabExtras, tabFindings, tabModel, weekDigest,
   type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type SessionLaunch, type TabProject, type WeekPairIn,
@@ -28,7 +28,7 @@ import {
 } from "./maintscan";
 import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import {
-  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView,
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView, type ProdAsks,
 } from "./maintview";
 import {
   allProjects, attnPending, checkoutBusy, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
@@ -447,8 +447,9 @@ function buildMaint(now: number): MaintView {
   const byRoot = maintProjects();
   const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
   const seen: TabProject[] = [];
-  const hosted: { path: string; hosts: string[]; prod?: Cell }[] = [];
+  const hosted: { path: string; hosts: string[]; prod?: Cell; read: boolean; allowed: boolean }[] = [];
   let prodProjects = 0, prodChecking = false;
+  const prodEach: Record<string, ProdAsks> = {};
   const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
   // Once anything was checked, a root nobody read (added since, or forgotten on an account
   // switch) is an unread card: leaving it out would let the all-clear speak for it.
@@ -464,12 +465,14 @@ function buildMaint(now: number): MaintView {
       const d = findSource(r.source);
       if (!d || !inp.det?.sources.includes(r.source)) continue;
       for (const c of d.blind) blind.add(c);
-      if (r.coverage.state === "ok") for (const c of d.sees) sees.add(c);
+      if (r.coverage.state === "ok" && !inp.skip?.includes(r.source)) for (const c of d.sees) sees.add(c);
     }
     read.push({ root, inp });
-    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod") });
+    const ticked = hostSummary(inp, th, now);
+    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: !!ticked?.allowed });
     const prod = prodChecks(inp);
     if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
+    if (prod.length) prodEach[root] = { sources: prod, hosts: ticked?.allowed ? [ticked.alias] : [] };
     const fs = findings(root, inp, th, now);
     const stale = !!e && (e.detecting || e.out > 0) && e.at > 0; // an earlier answer, drawn while its re-read is out
     seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
@@ -511,7 +514,10 @@ function buildMaint(now: number): MaintView {
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
     })),
-    prod: { projects: prodProjects, checking: prodChecking },
+    prod: {
+      projects: prodProjects, checking: prodChecking, each: prodEach,
+      sources: [...new Set(Object.values(prodEach).flatMap((x) => x.sources))], hosts: [...new Set(Object.values(prodEach).flatMap((x) => x.hosts))].sort(),
+    },
     sweep: maintSub === "security" ? sweepView(byRoot.size) : undefined,
     week: pairs.length ? { ...weekDigest(pairs, unmarked, unread, maintPrefs.public), stale: fleetScanning } : null,
     session: maintSub === "overview" ? sessionView(ranked, nameOf, now) : undefined,

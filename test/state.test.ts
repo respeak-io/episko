@@ -4,6 +4,8 @@ import { store } from "./localstorage"; // must precede the subject import
 // state.ts reads every preference at module scope, so a JSON.parse that throws there is a
 // blank window before any UI exists. Each case seeds a key and evaluates the module again.
 const boot = async () => { vi.resetModules(); return import("../src/state"); };
+// That re-evaluation walks state.ts's whole import graph, which outruns 5s on a machine a build has saturated.
+vi.setConfig({ testTimeout: 30_000 });
 
 describe("state.ts boots whatever localStorage holds", () => {
   beforeEach(() => { store.clear(); });

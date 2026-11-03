@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostRows, offers, outdatedText, probeRows, prodChecks, projectBand,
+  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostRead, hostRows, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -1291,8 +1291,8 @@ function maintNow(now: number): MaintDash {
   const cells = facetCells(inp, th, now), rows = tabFindings(r, inp, th, now), prod = prodChecks(inp);
   const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
   const quiet = depSilent(tally, depTools) && !depLoading;
-  const at = inp.det?.deploy?.host;
-  const hosts = at ? hostRows([{ path: r, hosts: [at], prod: cells.find((c) => c.facet === "prod") }]) : [];
+  const at = inp.det?.deploy?.host, host = hostSummary(inp, th, now);
+  const hosts = at ? hostRows([{ path: r, hosts: [at], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: !!host?.allowed }]) : [];
   return {
     card: {
       path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
@@ -1304,7 +1304,7 @@ function maintNow(now: number): MaintDash {
       ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
       sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
       hosts: hosts.map((h) => ({ ...h, projects: [{ root: r, name: nm }] })),
-      prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod) },
+      prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod), sources: prod, hosts: host?.allowed ? [host.alias] : [] },
       dash: {
         outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
         deps: !quiet,
@@ -1312,7 +1312,7 @@ function maintNow(now: number): MaintDash {
       },
     },
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
-    deploy: inp.det?.deploy ?? null, detected: !!inp.det, probes: probeRows(inp, th, now),
+    deploy: inp.det?.deploy ?? null, detected: !!inp.det, probes: probeRows(inp, th, now), host,
   };
 }
 

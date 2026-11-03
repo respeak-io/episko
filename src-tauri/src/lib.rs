@@ -19,6 +19,7 @@ mod maint;
 mod maint_ci;
 mod maint_eol;
 mod maint_git;
+mod maint_host;
 mod maint_repo;
 mod maint_sec;
 mod maint_sweep;

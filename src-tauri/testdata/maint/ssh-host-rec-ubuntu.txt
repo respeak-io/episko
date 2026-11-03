@@ -1,0 +1,29 @@
+# recorded 2026-11-03 by piping the script into sh in a real container of ubuntu:24.04, after apt-get update: a real package manager, no host's /boot or docker
+@@episko-host 1
+@@now
+1793746284
+@@uname
+Linux 6.18.54.1-microsoft-standard-WSL2
+@@uptime
+95393.60 2247872.16
+@@load
+2.52 3.39 2.86 6/1560 138
+@@cpus
+24
+@@df
+Filesystem     1024-blocks      Used Available Capacity Mounted on
+overlay         1055762868 348878192 653181204      35% /
+tmpfs                65536         0     65536       0% /dev
+shm                  65536         0     65536       0% /dev/shm
+/dev/sde        1055762868 348878192 653181204      35% /etc/hosts
+tmpfs                    4         0         4       0% /proc/acpi
+@@updates apt
+Inst libpcre2-8-0 [10.42-4ubuntu2.1] (10.42-4ubuntu2.2 Ubuntu:24.04/noble-security [amd64])
+exit 0
+@@lists
+1793746283
+@@reboot
+@@kernel
+6.18.54.1-microsoft-standard-WSL2
+@@docker absent
+@@end

@@ -13,6 +13,7 @@ import {
   type Band, type SessionCtx, type SessionLine, type SessionPlan, type Verb,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
+  currentHosts, diskPct, HOST_KINDS, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, type HostFacts,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -1447,14 +1448,24 @@ describe("prod, coming up and hosts", () => {
     expect(hostRows([
       { path: "/b", hosts: ["prod-1"], prod: fine }, { path: "/a", hosts: ["prod-1", "pi"], prod: down },
       { path: "/c", hosts: [] }, { path: "/d", hosts: ["nas"], prod: never }, { path: "/e", hosts: ["edge"], prod: near },
-      { path: "/f", hosts: ["quiet"], prod: fine },
+      { path: "/f", hosts: ["quiet"], prod: fine, read: true },
     ])).toEqual([
-      { host: "pi", projects: ["/a"], level: "bad", text: "api 502" },
-      { host: "prod-1", projects: ["/a", "/b"], level: "bad", text: "api 502" },
-      { host: "edge", projects: ["/e"], level: "warn", text: "cert 4d" },
-      { host: "nas", projects: ["/d"], level: "muted", text: "not checked" },
-      { host: "quiet", projects: ["/f"], level: "ok", text: "" },
+      { host: "pi", projects: ["/a"], level: "bad", text: "api 502", read: false },
+      { host: "prod-1", projects: ["/a", "/b"], level: "bad", text: "api 502", read: false },
+      { host: "edge", projects: ["/e"], level: "warn", text: "cert 4d", read: false },
+      { host: "nas", projects: ["/d"], level: "muted", text: "not checked", read: false },
+      { host: "quiet", projects: ["/f"], level: "ok", text: "", read: true },
     ]);
+  });
+
+  it("never draws the healthy dot from the addresses alone, on a host nobody read", () => {
+    const fine = cell("prod", input(ok("h", probes(p("app", 90)))));
+    const row = (o: { read?: boolean; allowed?: boolean }) => hostRows([{ path: "/a", hosts: ["h"], prod: fine, ...o }])[0];
+    expect(row({ allowed: false })).toMatchObject({ level: "muted", text: "not allowed here", read: false });
+    expect(row({ allowed: true })).toMatchObject({ level: "muted", text: "host not read", read: false });
+    expect(row({ allowed: true, read: true })).toMatchObject({ level: "ok", text: "", read: true });
+    const down = cell("prod", input(ok("h", probes(p("api", 90, { code: 502 })))));
+    expect(hostRows([{ path: "/a", hosts: ["h"], prod: down }])[0], "a known problem still speaks").toMatchObject({ level: "bad", text: "api 502" });
   });
 
   it("never draws the healthy dot over a host half of whose projects nobody knows", () => {
@@ -1469,6 +1480,329 @@ describe("prod, coming up and hosts", () => {
       ["all", "muted", "1 of 2 checked"], ["half", "muted", "2 of 3 checked"], ["mixed", "muted", blind.text],
     ]);
     expect(blind.level).toBe("muted");
+  });
+});
+
+describe("a host's vitals", () => {
+  const GB = 1024 * 1024;
+  const disk = (mount: string, pct: number) => ({ mount, sizeKb: 100 * GB, usedKb: pct * GB, availKb: (100 - pct) * GB });
+  const box = (o: Partial<NonNullable<HostFacts["containers"]>[number]> = {}) => ({
+    name: "acme-api-1", image: "x", state: "running", health: null, restarts: 0, exit: 0, startedAt: S - D, project: "acme", service: "api", ...o,
+  });
+  const host = (o: Partial<HostFacts> = {}): HostFacts => ({
+    alias: "prod-1", os: "Linux 6.8", now: S, uptime: 41 * D, load: [0.4, 0.5, 0.6], cpus: 4, disks: [disk("/", 62)], updates: 0, security: 0,
+    packages: [], pm: "apt", listsAt: S - D, reboot: false, rebootWhy: [], containers: [box()], compose: [], ...o,
+  });
+  const judge = (o: Partial<HostFacts> = {}, th = MAINT_DEFAULTS) => { const h = host(o); return hostState(h, h.compose, th, NOW); };
+  const line = (o: Partial<HostFacts>, kind: string, th = MAINT_DEFAULTS) => judge(o, th).lines.find((l) => l.kind === kind);
+  const hosts = (o: Partial<HostFacts> = {}): Facts => ({ kind: "hosts", items: [host(o)] });
+
+  it("narrows the wire's hosts and refuses a load that is not three numbers", () => {
+    const rep = wire.reports.find((r) => (r.facts as { kind?: string } | null)?.kind === "hosts")!;
+    expect(narrowMaint(rep, "ssh-host")).toEqual(rep);
+    const items = (rep.facts as { items: Record<string, unknown>[] }).items;
+    const bad = (o: Record<string, unknown>) => narrowMaint({ ...rep, facts: { kind: "hosts", items: [{ ...items[0], ...o }] } }, "ssh-host").coverage.state;
+    expect(bad({ load: [1, 2] })).toBe("error");
+    expect(bad({ load: [1, 2, "x"] })).toBe("error");
+    expect(bad({ load: null, containers: null, updates: null })).toBe("ok");
+    expect(bad({ containers: [{ name: "x" }] })).toBe("error");
+  });
+
+  it("is the grey dot only with its disks and updates read off fresh lists", () => {
+    expect(judge()).toMatchObject({ level: "ok", text: "", lines: [], summary: "/ 62% · up to date · 1/1 up · up 41d" });
+    expect(cell("prod", input(ok("h", hosts())))).toMatchObject({ level: "ok", text: "" });
+    expect(diskPct({ mount: "/", sizeKb: 50_620_216, usedKb: 48_123_456, availKb: 2_480_376 }), "df's own math, rounded up").toBe(96);
+  });
+
+  it("says what it could not read, muted and never the dot", () => {
+    expect(judge({ disks: [] })).toMatchObject({ level: "muted", text: "disk unknown" });
+    expect(judge({ updates: null, security: null })).toMatchObject({ level: "muted", text: "updates unknown" });
+    expect(judge({ containers: null, compose: ["api"] })).toMatchObject({ level: "muted", text: "containers unknown" });
+    // Nothing named and nothing known about containers, or no word on a reboot: the rest may still pass, and the tip says so.
+    expect(judge({ containers: null })).toMatchObject({ level: "ok", text: "" });
+    const noWord = judge({ reboot: null });
+    expect(noWord).toMatchObject({ level: "ok", text: "" });
+    expect(noWord.tip.join("\n")).toContain("nothing on prod-1 says whether it needs a reboot");
+    expect(judge({ load: null, cpus: null }).level, "load unknown stays a part, no blocker").toBe("ok");
+  });
+
+  it("judges each disk at its thresholds, which a file can move", () => {
+    expect(judge({ disks: [disk("/", 84)] }).level).toBe("ok");
+    expect(judge({ disks: [disk("/", 85)] })).toMatchObject({ level: "warn", text: "/ 85%" });
+    expect(judge({ disks: [disk("/", 95)] })).toMatchObject({ level: "bad", text: "/ 95%" });
+    expect(judge({ disks: [disk("/", 90)] }, clampMaint({ disk_warn_pct: 91, disk_bad_pct: 99 })).level).toBe("ok");
+    expect(judge({ disks: [disk("/", 90)] }, clampMaint({ disk_bad_pct: 90 })).level).toBe("bad");
+    expect(line({ disks: [disk("/", 96)] }, "disk")).toMatchObject({ level: "bad", text: "/ 96% full on prod-1", detail: "/ 96% · 4.0 GB free" });
+    const two = line({ disks: [disk("/", 86), disk("/srv", 97), disk("/boot", 10)] }, "disk")!;
+    expect(two).toMatchObject({ level: "bad", text: "2 disks filling on prod-1" });
+    expect(two.points).toEqual(["/srv is 97% full: 3.0 GB free of 100 GB", "/ is 86% full: 14.0 GB free of 100 GB"]);
+  });
+
+  it("files security updates and stale lists as amber, and plain updates as a note", () => {
+    expect(line({ updates: 14, security: 6, packages: ["openssl", "libc6"] }, "updates")).toMatchObject({
+      level: "warn", text: "6 security updates on prod-1", detail: "14 pending, 6 security · openssl, libc6",
+      points: ["14 updates pending, 6 of them security: openssl, libc6"],
+    });
+    expect(line({ updates: 14, security: 0 }, "updates")).toMatchObject({ level: "info", text: "14 updates on prod-1" });
+    expect(judge({ updates: 14, security: 0 })).toMatchObject({ level: "info", text: "14 updates" });
+    expect(line({ updates: 3, security: null, pm: "apk" }, "updates"), "no split: never counted as security").toMatchObject({ level: "info", detail: "3 pending" });
+    expect(line({ listsAt: S - 12 * D }, "updates")).toMatchObject({ level: "warn", text: "package lists 12d old on prod-1" });
+    expect(judge({ listsAt: S - 12 * D, now: S + 5 * D }).lines[0].text, "ages are the host's own clock's").toBe("package lists 17d old on prod-1");
+    expect(judge({ listsAt: S - 6 * D }).level).toBe("ok");
+    expect(judge({ listsAt: null, pm: "dnf" }).level, "dnf and apk give no age, so their 0 is trusted as read").toBe("ok");
+    expect(judge({ listsAt: S - 6 * D }, clampMaint({ fetch_stale_days: 5 })).level, "fetch_stale_days decides").toBe("warn");
+  });
+
+  it("wants a reboot in amber, saying why", () => {
+    expect(line({ reboot: true, rebootWhy: ["linux-image-6.8.0-49-generic"] }, "reboot")).toMatchObject({
+      level: "warn", text: "prod-1 needs a reboot", detail: "linux-image-6.8.0-49-generic", points: ["it needs a reboot: linux-image-6.8.0-49-generic"],
+    });
+    expect(judge({ reboot: true })).toMatchObject({ level: "warn", text: "reboot needed" });
+    expect(judge({ reboot: false }).lines).toEqual([]);
+  });
+
+  it("reds a container that fails and a named service with none running, across replicas", () => {
+    for (const o of [{ state: "restarting" }, { state: "dead" }, { health: "unhealthy" }]) {
+      expect(judge({ containers: [box(o)] }).level, JSON.stringify(o)).toBe("bad");
+    }
+    expect(line({ containers: [box({ health: "unhealthy" })] }, "containers")).toMatchObject({ level: "bad", text: "api unhealthy on prod-1", detail: "api unhealthy" });
+    expect(judge({ containers: [box({ state: "exited", health: "unhealthy", exit: 1 })] }).level, "an exited one's health is stale").toBe("ok");
+    expect(line({ containers: [box({ service: "db" })], compose: ["api"] }, "containers")).toMatchObject({
+      level: "bad", text: "api not running on prod-1", points: ["service api has no running container, and none exists"],
+    });
+    expect(line({ containers: [box({ state: "exited" })], compose: ["api"] }, "containers")?.points, "it exists, stopped").toEqual(["service api has no running container"]);
+    const replicas = [box({ name: "api-1", state: "exited", exit: 1 }), box({ name: "api-2" })];
+    expect(judge({ containers: replicas, compose: ["api"] }).level, "one replica up is the service up").toBe("ok");
+    const three = line({ containers: [box({ name: "a", service: "a", state: "dead" }), box({ name: "b", service: "b", state: "dead" })], compose: ["c"] }, "containers");
+    expect(three).toMatchObject({ level: "bad", text: "3 containers failing on prod-1" });
+    expect(judge({ containers: [], compose: [] })).toMatchObject({ level: "ok", summary: "/ 62% · up to date · 0/0 up · up 41d" });
+  });
+
+  it("ambers a running container that keeps restarting, at the threshold", () => {
+    expect(line({ containers: [box({ name: "w", service: "worker", restarts: 12 })] }, "containers")).toMatchObject({ level: "warn", text: "worker restarted 12 times on prod-1" });
+    expect(judge({ containers: [box({ restarts: 4 })] }).level).toBe("ok");
+    expect(judge({ containers: [box({ restarts: 4 })] }, clampMaint({ container_restarts: 3 })).level).toBe("warn");
+    expect(judge({ containers: [box({ state: "exited", restarts: 40 })] }).level, "only a running one").toBe("ok");
+  });
+
+  it("keeps an exit nobody named to the tip, since it cannot tell a leftover from a failure", () => {
+    const s = judge({ containers: [box(), box({ name: "old-cron", service: null, project: null, state: "exited", exit: 1 })] });
+    expect(s.level).toBe("ok");
+    expect(s.tip).toContain("old-cron exited 1");
+    const shared = judge({ containers: [box({ project: "acme" }), box({ name: "b", project: "beta" })], compose: ["api"] });
+    expect(shared.tip.join("\n"), "one service label in two projects is said").toContain("api is a service of 2 projects on prod-1: acme, beta");
+  });
+
+  it("past the cap, prints a floor and calls a service off the list unknown, never stopped", () => {
+    const capped = (o: Partial<HostFacts>) => { const h = host(o); return hostState(h, h.compose, MAINT_DEFAULTS, NOW, true); };
+    expect(capped({}).summary).toContain("1/1+ up");
+    expect(capped({})).toMatchObject({ level: "ok", text: "" });
+    const off = capped({ compose: ["worker"] });
+    expect(off).toMatchObject({ level: "muted", text: "containers unknown", lines: [] });
+    expect(off.tip.join("\n")).toContain("worker not among the first 1 containers on prod-1");
+    expect(capped({ compose: ["api"] }).level, "one that is on the list and up is up").toBe("ok");
+    expect(capped({ containers: [box({ state: "dead" })], compose: ["api", "worker"] }), "what is on the list still speaks").toMatchObject({ level: "bad", text: "api dead" });
+    const inp = input({ ...ok("h", hosts({ compose: ["worker"] })), truncated: true });
+    expect(cell("prod", inp)).toMatchObject({ level: "muted", text: "containers unknown" });
+    expect(findings("/r", inp, MAINT_DEFAULTS, NOW)).toEqual([]);
+  });
+
+  it("ambers load per CPU on the 15-minute figure", () => {
+    expect(line({ load: [9, 9, 12.4], cpus: 4 }, "load")).toMatchObject({ level: "warn", text: "prod-1 load 3.1 per CPU", detail: "15-minute load 12.4 on 4 CPUs" });
+    expect(judge({ load: [99, 99, 1], cpus: 4 }).level, "a spike is not the 15-minute figure").toBe("ok");
+    expect(judge({ load: [1, 1, 1], cpus: 2 }, clampMaint({ load_per_cpu: 0.4 })).level).toBe("warn");
+  });
+
+  it("files every threshold under its raw key", () => {
+    expect(clampMaint({ disk_warn_pct: 70, disk_bad_pct: 80, container_restarts: 2, load_per_cpu: 1.5 }))
+      .toMatchObject({ diskWarnPct: 70, diskBadPct: 80, containerRestarts: 2, loadPerCpu: 1.5 });
+    expect(clampMaint({ disk_warn_pct: 0, disk_bad_pct: -1 })).toMatchObject({ diskWarnPct: 85, diskBadPct: 95 });
+  });
+
+  describe("prod's composition", () => {
+    const fine = { name: "app", url: "https://app", code: 200, ms: 9, certNotAfter: S + 90 * D, err: null };
+    const probes = (o = {}): Facts => ({ kind: "probes", items: [{ ...fine, ...o }] });
+    const both = (a: Facts, b: Facts) => input(ok("a", a), ok("b", b));
+
+    it("lets the worse of probes and hosts speak, keeps both tips, and draws the dot only over two fine answers", () => {
+      expect(cell("prod", both(probes(), hosts()))).toMatchObject({ level: "ok", text: "" });
+      expect(cell("prod", both(probes({ code: 502 }), hosts({ updates: 3 })))).toMatchObject({ level: "bad", text: "app 502" });
+      const worse = cell("prod", both(probes(), hosts({ disks: [disk("/", 96)] })));
+      expect(worse).toMatchObject({ level: "bad", text: "/ 96%" });
+      expect(worse.tip.join("\n")).toMatch(/app: 200[\s\S]*prod-1: \/ 96%/);
+      expect(cell("prod", both(probes({ certNotAfter: null }), hosts())), "an unknown beside a pass stays unknown").toMatchObject({ level: "muted", text: "cert unknown" });
+      expect(cell("prod", both(probes(), hosts({ updates: null, security: null })))).toMatchObject({ level: "muted", text: "updates unknown" });
+    });
+
+    it("lets no kind's failed read erase the other's last known red, and lists it in Coverage", () => {
+      const HP = "http-probe", SH = "ssh-host";
+      const down = not(SH, "prod", { state: "error", reason: "no answer after 45s" });
+      const prodOf = (s: ReturnType<typeof takeSnap>) => ({ cell: s.cells.find((c) => c.facet === "prod"), lines: s.findings.filter((f) => f.facet === "prod").map((f) => f.key) });
+      const red = takeSnap("/r", input(ok(HP, probes()), ok(SH, hosts({ disks: [disk("/", 96)] }))), NOW - 1000);
+      const next = prodOf(takeSnap("/r", input(ok(HP, probes()), down), NOW, red));
+      expect(next.cell, "a host that stopped answering").toMatchObject({ level: "bad", at: NOW - 1000 });
+      expect(next.lines).toEqual(["prod:host:disk"]);
+      const redUrl = takeSnap("/r", input(ok(HP, probes({ code: 502 })), ok(SH, hosts())), NOW - 1000);
+      const blank = not(HP, "prod", { state: "noTool", tool: "curl", fix: null });
+      expect(prodOf(takeSnap("/r", input(blank, ok(SH, hosts())), NOW, redUrl)).lines, "the other way round").toEqual(["prod:app"]);
+      // A fresh answer from both clears it, and one nobody asked or this machine skips is no failed read.
+      expect(prodOf(takeSnap("/r", input(ok(HP, probes()), ok(SH, hosts())), NOW, red)).lines).toEqual([]);
+      expect(prodOf(takeSnap("/r", input(ok(HP, probes()), not(SH, "prod", { state: "notRun" })), NOW, red)).lines).toEqual([]);
+      expect(prodOf(takeSnap("/r", { ...input(ok(HP, probes()), down), skip: [SH] }, NOW, red)).lines).toEqual([]);
+      // Only a fresh red replaces it.
+      expect(prodOf(takeSnap("/r", input(ok(HP, probes({ code: 502 })), down), NOW, red)).lines).toEqual(["prod:app"]);
+      const row = (inp: MaintInput) => coverGroups("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).map((g) => [g.source, g.why]);
+      expect(row(input(ok(HP, probes()), down)), "beside the addresses' dot").toEqual([[SH, "read failed"]]);
+      expect(row(input(blank, ok(SH, hosts()))), "beside the host's").toEqual([[HP, "tool missing"]]);
+      expect(row(input(ok(HP, probes()), ok(SH, hosts())))).toEqual([]);
+    });
+
+    it("reads a project with a host and no address as read, not as no deploy", () => {
+      expect(cell("prod", input(ok("h", hosts({ updates: 2 }))))).toMatchObject({ state: "read", level: "info", text: "2 updates" });
+      expect(cell("prod", input(ok("h", { kind: "hosts", items: [] })))).toMatchObject({ level: "muted", text: "no deploy" });
+    });
+
+    it("gives one line per kind, each with its verb and the alias as ref, and a key no probe can spell", () => {
+      const inp = input(ok("h", hosts({ disks: [disk("/", 96), disk("/srv", 90)], updates: 2, security: 1, reboot: true, load: [1, 1, 12], cpus: 4, containers: [box({ health: "unhealthy" })] })));
+      const fs = findings("/r", inp, MAINT_DEFAULTS, NOW);
+      expect(fs.map((f) => [f.key, f.level, f.verb, f.ref])).toEqual([
+        ["prod:host:containers", "bad", "fix", "prod-1"], ["prod:host:disk", "bad", "fix", "prod-1"],
+        ["prod:host:load", "warn", "fix", "prod-1"], ["prod:host:reboot", "warn", "fix", "prod-1"], ["prod:host:updates", "warn", "fix", "prod-1"],
+      ]);
+      expect(fs.every((f) => f.source === "h" && f.facet === "prod")).toBe(true);
+      expect(HOST_KINDS.map((k) => `prod:host:${k}`).sort()).toEqual(fs.map((f) => f.key).sort());
+      // Lines open the Servers tab's top until a board carries them, and stay listed with their verb.
+      expect(findingTarget({ facet: "prod", key: "prod:host:disk" })).toEqual({ tab: "servers", board: null });
+      expect(findingTarget({ facet: "prod", key: "prod:app" })).toEqual({ tab: "servers", board: "addresses" });
+      const model = tabModel("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: fs }], null, null, NOW);
+      expect(model.rows.map((r) => r.key)).toContain("prod:host:disk");
+    });
+  });
+
+  describe("a host this machine has not allowed", () => {
+    const d = (sources: string[], h = "prod-1") => det(sources, { deploy: { host: h, compose: [], urls: { app: "https://app" }, sentry: null, versionUrl: null, envs: {} } });
+    const notRun = (id: string) => ({ ...not(id, "prod", { state: "notRun" }), cost: "remote" as const });
+    const fresh = (hosts: string[] = [], sources = ["http-probe", "ssh-host"]): MaintInput => {
+      const de = d(sources);
+      return { det: de, reports: Object.fromEntries(sources.map((id) => [id, notRun(id)])), skip: hostSkips(de, hosts), hosts };
+    };
+
+    it("is skipped by what the source sees, never by its id", () => {
+      expect(hostSkips(d(["http-probe", "ssh-host", "git-local"]), [])).toEqual(["ssh-host"]);
+      expect(hostSkips(d(["http-probe", "ssh-host"]), ["prod-1"])).toEqual([]);
+      expect(hostSkips(d(["ssh-host"]), ["other"])).toEqual(["ssh-host"]);
+      expect(hostSkips(det(["ssh-host"]), []), "no [deploy] host").toEqual([]);
+      expect(hostSkips(null, [])).toEqual([]);
+      expect(hostSkips(d(["http-probe"]), []), "no host source").toEqual([]);
+    });
+
+    it("keeps Check prod off it, and the addresses still ask", () => {
+      expect(prodChecks(fresh())).toEqual(["http-probe"]);
+      expect(prodChecks(fresh(["prod-1"]))).toEqual(["http-probe", "ssh-host"]);
+      expect(offers("/r", fresh()).map((o) => o.source), "an offer it is not").toEqual(["http-probe"]);
+    });
+
+    it("reads not checked while something else can still be clicked, and not allowed only alone", () => {
+      expect(cell("prod", fresh())).toMatchObject({ state: "cantCheck", level: "muted", text: "not checked" });
+      expect(cell("prod", fresh()).tip.join("\n")).toContain("SSH host: off: prod-1 is not allowed on this machine");
+      expect(cell("prod", fresh(["prod-1"]))).toMatchObject({ text: "not checked" });
+      expect(cell("prod", fresh([], ["ssh-host"]))).toMatchObject({ state: "cantCheck", level: "muted", text: "not allowed here" });
+      const off = fresh([], ["ssh-host"]);
+      expect(cell("prod", { ...off, skip: ["ssh-host"], hosts: ["prod-1"] }), "off here for another reason").toMatchObject({ text: "skipped here" });
+      const failed = fresh();
+      expect(cell("prod", { ...failed, reports: { ...failed.reports, "http-probe": not("http-probe", "prod", { state: "error", reason: "boom" }) } })).toMatchObject({ text: "read failed" });
+    });
+
+    it("is judged from a click's facts only while it is allowed", () => {
+      const reports = { "ssh-host": ok("ssh-host", hosts({ disks: [disk("/", 96)] })) };
+      const on: MaintInput = { det: d(["ssh-host"]), reports, skip: [], hosts: ["prod-1"] };
+      const off: MaintInput = { ...on, skip: ["ssh-host"], hosts: [] };
+      expect(cell("prod", on).text).toBe("/ 96%");
+      expect(findings("/r", on, MAINT_DEFAULTS, NOW)[0].key).toBe("prod:host:disk");
+      expect(cell("prod", off)).toMatchObject({ state: "cantCheck", text: "not allowed here" });
+      expect(findings("/r", off, MAINT_DEFAULTS, NOW)).toEqual([]);
+      expect([hostRead(on), hostRead(off)]).toEqual([true, false]);
+      expect(hostSummary(on, MAINT_DEFAULTS, NOW)).toMatchObject({ alias: "prod-1", allowed: true, at: S, state: { level: "bad", text: "/ 96%" } });
+      expect(hostSummary(off, MAINT_DEFAULTS, NOW)).toMatchObject({ alias: "prod-1", allowed: false, state: null });
+      expect(hostSummary({ ...on, reports: {} }, MAINT_DEFAULTS, NOW)).toMatchObject({ allowed: true, at: null, state: null });
+      expect(hostSummary({ det: det(["ssh-host"]), reports: {} })).toBeNull();
+      expect(hostSummary({ det: d(["http-probe"]), reports: {} }), "nothing reads it, so there is nothing to allow").toBeNull();
+    });
+
+    it("says a read failed on the Runs on card, never that nobody checked", () => {
+      const inp = (coverage: Coverage): MaintInput => ({ det: d(["ssh-host"]), hosts: ["prod-1"], skip: [], reports: { "ssh-host": { ...not("ssh-host", "prod", coverage), at: S } } });
+      expect(hostSummary(inp({ state: "noAccess", reason: "prod-1 refused every key", fix: "ssh prod-1" }), MAINT_DEFAULTS, NOW)).toMatchObject({ why: "no access", at: S, state: null });
+      expect(hostSummary(inp({ state: "error", reason: "no answer after 45s" }), MAINT_DEFAULTS, NOW)).toMatchObject({ why: "read failed", at: S, state: null });
+      expect(hostSummary(inp({ state: "notRun" }), MAINT_DEFAULTS, NOW)).toMatchObject({ why: null, at: null, state: null });
+      const gaps: MaintInput = { det: d(["ssh-host"]), hosts: ["prod-1"], skip: [], reports: { "ssh-host": { ...ok("ssh-host", hosts()), gaps: ["load on prod-1 not read"] } } };
+      expect(hostSummary(gaps, MAINT_DEFAULTS, NOW)).toMatchObject({ why: null, gaps: ["load on prod-1 not read"] });
+      expect(cell("prod", gaps).tip.join("\n"), "the cell's tip states it too").toContain("load on prod-1 not read");
+    });
+
+    it("treats a click's answer about another host as a host nobody asked yet", () => {
+      const reports = { "ssh-host": ok("ssh-host", hosts({ disks: [disk("/", 96)] })) };
+      const moved = currentHosts(d(["ssh-host"], "prod-2"), reports);
+      expect(moved["ssh-host"]).toMatchObject({ coverage: { state: "notRun" }, facts: null, at: null });
+      const inp: MaintInput = { det: d(["ssh-host"], "prod-2"), hosts: ["prod-2"], skip: [], reports: moved };
+      expect(cell("prod", inp)).toMatchObject({ state: "cantCheck", text: "not checked" });
+      expect(findings("/r", inp, MAINT_DEFAULTS, NOW)).toEqual([]);
+      expect(hostRead(inp)).toBe(false);
+      expect(offers("/r", inp).map((o) => o.source), "Check prod and its door ask it again").toEqual(["ssh-host"]);
+      expect(currentHosts(d(["ssh-host"]), reports)["ssh-host"].facts, "the same host's stands").toEqual(reports["ssh-host"].facts);
+      expect(currentHosts(det(["ssh-host"]), reports), "no [deploy] host, so nothing to compare").toBe(reports);
+      const named = det(["ssh-host"], { deploy: { host: "prod-1", compose: ["worker"], urls: {}, sentry: null, versionUrl: null, envs: {} } });
+      const now = currentHosts(named, { "ssh-host": ok("ssh-host", hosts()) });
+      expect(cell("prod", { det: named, reports: now, skip: [], hosts: ["prod-1"] }), "judged against the services named now").toMatchObject({ level: "bad", text: "worker not running" });
+    });
+
+    it("names the host on its Run door, and only there", () => {
+      const out = offers("/r", fresh(["prod-1"]));
+      expect(out.map((o) => [o.source, o.ref])).toEqual([["http-probe", null], ["ssh-host", "prod-1"]]);
+    });
+
+    it("carries its Allow on the Coverage row and across projects, whatever the cell read", () => {
+      const inp = fresh(), row = coverRows(inp).find((r) => r.source === "ssh-host");
+      expect(row).toMatchObject({ state: "skipped", text: "prod-1 is not allowed on this machine", host: { alias: "prod-1", allowed: false } });
+      expect(coverRows(fresh(["prod-1"])).find((r) => r.source === "ssh-host"), "Disallow's row").toMatchObject({ state: "notRun", host: { alias: "prod-1", allowed: true } });
+      expect(coverRows({ ...inp, skip: ["http-probe", "ssh-host"], hosts: ["prod-1"] }).find((r) => r.source === "http-probe")).toMatchObject({ state: "skipped", host: null });
+      const group = (i: MaintInput, path = "/a") => ({ path, inp: i, cells: facetCells(i, MAINT_DEFAULTS, NOW) });
+      const answered: MaintInput = { ...inp, reports: { ...inp.reports, "http-probe": ok("http-probe", probes1()) } };
+      const gs = coverGroups("servers", [group(inp), group(answered, "/b")], null, NOW).filter((g) => g.source === "ssh-host");
+      expect(gs).toHaveLength(1);
+      expect(gs[0]).toMatchObject({ why: "not allowed here", roots: ["/a", "/b"], action: { kind: "allow", host: "prod-1" }, detail: "prod-1 is not allowed on this machine" });
+      const allowed = coverGroups("servers", [group(fresh(["prod-1"]))], null, NOW);
+      expect(allowed.some((g) => g.why === "not allowed here")).toBe(false);
+      expect(allowed.map((g) => g.action?.kind)).toContain("run");
+    });
+
+    const probes1 = (): Facts => ({ kind: "probes", items: [{ name: "app", url: "https://app", code: 200, ms: 9, certNotAfter: S + 90 * D, err: null }] });
+  });
+
+  describe("Check prod's words", () => {
+    it("names every source it asks by its label, and each host it reaches", () => {
+      expect(prodTip(["http-probe"], [])).toBe("Asks from this machine, once: URL checks: each [deploy] address once, and its certificate. Nothing else connects");
+      expect(prodTip(["http-probe", "ssh-host"], ["prod-1", "edge"])).toBe(
+        "Asks from this machine, once: URL checks: each [deploy] address once, and its certificate; SSH host: one read-only command on prod-1, edge, over your own ssh. Nothing else connects");
+    });
+
+    it("says what no project had to ask, from the same labels' needs", () => {
+      expect(prodNone()).toBe("No project here has an address in [deploy] or a [deploy] host allowed on this machine");
+    });
+  });
+
+  it("reads ssh's own failure in a few words, its fix a command for a terminal", () => {
+    const rep = wire.reports.find((r) => r.source === "ssh-host" && (r.coverage as { state: string }).state === "noAccess")!;
+    const c = narrowMaint(rep, "ssh-host").coverage;
+    expect(c).toMatchObject({ state: "noAccess", fix: "ssh prod-1" });
+    expect(whyWord(c, "prod")).toBe("no access");
+    expect(whyWord({ state: "noAccess", reason: "telescope-1 refused every key ssh offered from this machine", fix: "ssh telescope-1" }, "prod"), "an alias is a name a person chose").toBe("no access");
+    expect(whyWord({ state: "noAccess", reason: "glab: insufficient_scope (HTTP 403)", fix: "glab auth login" }, "ci"), "the forge's own word still reads").toBe("token scope");
+    expect(whyWord({ state: "noAccess", reason: "your token has not been granted the required scopes", fix: "pick the account" }, "release"), "nor does its prose go dark").toBe("token scope");
+  });
+
+  it("stops saying a host was never read once one project's read answered", () => {
+    expect(hostRows([{ path: "/a", hosts: ["p"], read: true }, { path: "/b", hosts: ["p"], read: false }, { path: "/c", hosts: ["q"] }]).map((r) => [r.host, r.read]))
+      .toEqual([["p", true], ["q", false]]);
   });
 });
 

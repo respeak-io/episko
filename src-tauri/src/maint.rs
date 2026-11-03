@@ -179,6 +179,52 @@ pub(crate) struct Probe {
     pub(crate) err: Option<String>,
 }
 
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Disk {
+    pub(crate) mount: String,
+    pub(crate) size_kb: u64,
+    pub(crate) used_kb: u64,
+    pub(crate) avail_kb: u64,
+}
+
+/// One container as the host's runtime reports it; `state` is the runtime's own word.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HostContainer {
+    pub(crate) name: String,
+    pub(crate) image: String,
+    pub(crate) state: String,
+    pub(crate) health: Option<String>,
+    pub(crate) restarts: u32,
+    pub(crate) exit: Option<i32>,
+    pub(crate) started_at: Option<u64>,
+    pub(crate) project: Option<String>, // the Compose labels, read by name (stack.rs's convention)
+    pub(crate) service: Option<String>,
+}
+
+/// One host's vitals as its fixed script read them. A `None` is a section nothing answered, never 0.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HostFacts {
+    pub(crate) alias: String,
+    pub(crate) os: Option<String>,
+    pub(crate) now: Option<u64>, // the host's clock, so every age is the host's
+    pub(crate) uptime: Option<u64>,
+    pub(crate) load: Option<[f64; 3]>,
+    pub(crate) cpus: Option<u32>,
+    pub(crate) disks: Vec<Disk>, // `/` first
+    pub(crate) updates: Option<u32>,
+    pub(crate) security: Option<u32>, // None: this package manager does not tell them apart
+    pub(crate) packages: Vec<String>, // what would update, security first
+    pub(crate) pm: Option<String>,
+    pub(crate) lists_at: Option<u64>, // when the host last refreshed its package lists
+    pub(crate) reboot: Option<bool>,
+    pub(crate) reboot_why: Vec<String>,
+    pub(crate) containers: Option<Vec<HostContainer>>, // None: no runtime, or not readable (a gap says which)
+    pub(crate) compose: Vec<String>, // the services `[deploy] compose` names, as asked
+}
+
 /// A release cycle's end: a date (unix secs), or the bare yes or no a list gives where it names none.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 #[serde(untagged)]
@@ -291,6 +337,7 @@ pub(crate) enum Facts {
     Hygiene(Hygiene),
     Work { issues: u32, prs: u32, review_requested: Option<u32> },
     Probes { items: Vec<Probe> },
+    Hosts { items: Vec<HostFacts> },
     Runtimes { items: Vec<Runtime> },
 }
 
@@ -304,7 +351,7 @@ impl Facts {
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } | Facts::Deployments { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
             Facts::Work { .. } => Facet::Work,
-            Facts::Probes { .. } => Facet::Prod,
+            Facts::Probes { .. } | Facts::Hosts { .. } => Facet::Prod,
         }
     }
 }
@@ -435,16 +482,18 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
 ];
 
 /// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and
-/// `[deploy]`'s: `deploy.urls` an address, `deploy.envs` a tag convention.
+/// `[deploy]`'s: `deploy.urls` an address, `deploy.host` a host, `deploy.envs` a tag convention.
 const NEEDS: &[&str] = &[
     "sarif",
     "deploy.urls",
+    "deploy.host",
     "deploy.envs",
 ];
 
 fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
     match key {
         "deploy.urls" => deploy.is_some_and(|d| !d.targets().is_empty()),
+        "deploy.host" => deploy.is_some_and(|d| d.host().is_some()),
         "deploy.envs" => deploy.is_some_and(|d| !d.envs().is_empty()),
         k => cfg.has(k),
     }
@@ -998,7 +1047,7 @@ pub(crate) fn forget_detection(root: &str) {
 pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "ssh and a token's http are called by the adapters of later slices")]
+    #![allow(dead_code, reason = "a token's http is called by a later slice's adapter")]
 
     use std::time::Duration;
 
@@ -1168,6 +1217,46 @@ pub(crate) mod exec {
         Ok(cmd)
     }
 
+    /// They outrank the user's config (ssh keeps the first value it gets): no known_hosts entry is
+    /// added or replaced, no control socket made or reused, nothing forwarded, no local or config command run.
+    pub(crate) const SSH_OPTS: &[&str] = &[
+        "-T", "-a", "-x",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UpdateHostKeys=no",
+        "-o", "CheckHostIP=no",
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=none",
+        "-o", "PermitLocalCommand=no",
+        "-o", "ClearAllForwardings=yes",
+        "-o", "RemoteCommand=none",
+        "-o", "ServerAliveInterval=5",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "LogLevel=ERROR",
+    ];
+
+    /// The OS client first on Windows, whose agent a GUI app can reach; else the absolute file on PATH.
+    pub(crate) fn ssh_bin(path: &str) -> Option<std::path::PathBuf> {
+        #[cfg(windows)]
+        if let Some(os) = std::env::var_os("SystemRoot").map(|r| std::path::Path::new(&r).join(r"System32\OpenSSH\ssh.exe")).filter(|p| p.is_file()) {
+            return Some(os);
+        }
+        resolve_bin("ssh", path)
+    }
+
+    /// `ssh <SSH_OPTS> <alias> sh -s`, the script to come on stdin; an alias that is not one is refused.
+    pub(crate) fn ssh_cmd(alias: &str, path: &str) -> Result<std::process::Command, String> {
+        let alias = data_arg(alias)?;
+        if !crate::deploy::ssh_alias(alias) {
+            return Err(format!("{alias:?} is not an ssh alias"));
+        }
+        let file = ssh_bin(path).ok_or("ssh is not on PATH")?;
+        let mut cmd = sys_command(file);
+        cmd.env("PATH", path).args(SSH_OPTS).args([alias, "sh", "-s"]);
+        Ok(cmd)
+    }
+
     /// curl's `-w` trailer is the status. A failed transfer still prints `000`, so a non-zero
     /// exit is curl's own error (DNS, refused, timeout), never an HTTP answer.
     pub(crate) fn http_answer(out: Output) -> Result<HttpResp, String> {
@@ -1251,10 +1340,7 @@ pub(crate) mod exec {
 
         fn ssh(&self, alias: &str, script: &str, secs: u64) -> Result<Output, String> {
             self.trust("ssh")?;
-            let alias = data_arg(alias)?;
-            let mut cmd = sys_command("ssh");
-            cmd.env("PATH", augmented_path()).args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-T", alias, "sh", "-s"]);
-            run_fed(cmd, Some(script.to_string()), secs)
+            run_fed(ssh_cmd(alias, &augmented_path())?, Some(script.to_string()), secs)
         }
 
         fn on_path(&self, bin: &str) -> bool {
@@ -1315,7 +1401,7 @@ pub(crate) mod exec {
             self
         }
 
-        /// Every `tool` exits with `code` and prints `stderr`, beside whatever answers its stdout.
+        /// Every `tool` and `ssh` exits with `code` and prints `stderr`, beside whatever answers its stdout.
         pub(crate) fn exiting(self, code: i32, stderr: &str) -> Self {
             Self { exit: (code, stderr.to_string()), ..self }
         }
@@ -1378,7 +1464,8 @@ pub(crate) mod exec {
             self.answer(argv).map(|body| HttpResp { code, body })
         }
         fn ssh(&self, alias: &str, _script: &str, _secs: u64) -> Result<Output, String> {
-            self.answer(Self::argv("ssh", &[alias])).map(|stdout| Output { code: Some(0), stdout, stderr: String::new() })
+            let (code, stderr) = self.exit.clone();
+            self.answer(Self::argv("ssh", &[alias])).map(|stdout| Output { code: Some(code), stdout, stderr })
         }
         fn on_path(&self, bin: &str) -> bool {
             !self.missing.iter().any(|m| m == bin)
@@ -1443,6 +1530,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-work", read: crate::maint_repo::github_work },
     SourceDef { id: "gitlab-work", read: crate::maint_repo::gitlab_work },
     SourceDef { id: "http-probe", read: crate::deploy::http_probe },
+    SourceDef { id: "ssh-host", read: crate::maint_host::ssh_host },
 ];
 
 /// The cost classes, enforced here rather than at a call site: a scan never runs a program in
@@ -1696,14 +1784,17 @@ mod tests {
     }
 
     /// A repo every local source can answer: a tag, a changelog, a trunk and a SARIF report named in config.
+    /// Its host is its own: ssh reads are shared per alias, and parallel tests must not join each other's.
     fn fixture_repo() -> PathBuf {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let host = format!("prod-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         let dir = scratch_dir();
         git(&dir, &["init", "-q", "-b", "main"]);
         commit(&dir, "one");
         git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1.0"]);
         commit(&dir, "two");
         write(&dir, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n+ a thing\n\n## 1.0 — 2026-10-01\n+ first\n");
-        write(&dir, ".episko/episko.toml", "[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nurls = { app = \"https://app.example.com\" }\nenvs = { prod = \"v*\" }\n");
+        write(&dir, ".episko/episko.toml", &format!("[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nhost = \"{host}\"\ncompose = [\"api\"]\nurls = {{ app = \"https://app.example.com\" }}\nenvs = {{ prod = \"v*\" }}\n"));
         write(&dir, "reports/scan.sarif", "{\"version\": \"2.1.0\", \"runs\": []}");
         dir
     }
@@ -2218,26 +2309,98 @@ mod tests {
     #[test]
     fn a_deploy_table_nothing_reads_is_found_not_none() {
         let dir = repo_with("https://github.com/a/b.git", &[(".episko/episko.toml", "[deploy]
-host = \"prod-1\"
+sentry = \"acme/api\"
 ")]);
         let d = detect(&s(&dir), true);
         assert!(d.deploy.is_some());
         assert!(labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
         write(&dir, ".episko/episko.toml", "[deploy]
-host = \"prod-1\"
+sentry = \"acme/api\"
 [maintenance]
 off = [\"prod\"]
 ");
         assert!(!labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "an off facet has no markers");
-        write(&dir, ".episko/episko.toml", "[deploy]
-host = \"-oProxyCommand=x\"
-");
+        for bad in ["-oProxyCommand=x", "prod;x"] {
+            write(&dir, ".episko/episko.toml", &format!("[deploy]\nhost = \"{bad}\"\n"));
+            let d = detect(&s(&dir), true);
+            assert!(d.deploy.is_none() && !labels(&d).contains(&"[deploy]".to_string()), "nothing safe is no table: {bad}");
+        }
+        // A host is what ssh-host reads: then it is a source, and the marker steps aside.
+        write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\n");
         let d = detect(&s(&dir), true);
-        assert!(d.deploy.is_none() && !labels(&d).contains(&"[deploy]".to_string()), "nothing safe is no table");
-        // An address is what http-probe reads: then it is a source, and the marker steps aside.
-        write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\nurls = { app = \"https://app.example.com\" }\n");
+        assert!(d.sources.iter().any(|x| x == "ssh-host") && !labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+        assert!(!d.sources.iter().any(|x| x == "http-probe"), "no address, no probe");
+        // So is an address, which http-probe reads.
+        write(&dir, ".episko/episko.toml", "[deploy]\nurls = { app = \"https://app.example.com\" }\n");
         let d = detect(&s(&dir), true);
         assert!(d.sources.iter().any(|x| x == "http-probe") && !labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+        assert!(!d.sources.iter().any(|x| x == "ssh-host"), "no host, no ssh");
+    }
+
+    /// A scan never connects to a host, forced or with the public opt-in; a click does, once.
+    #[test]
+    fn ssh_host_makes_no_ssh_call_in_a_scan() {
+        let dir = repo_with("https://github.com/a/b.git", &[(".episko/episko.toml", "[deploy]\nhost = \"scan-test-1\"\ncompose = [\"api\"]\n")]);
+        let root = s(&dir);
+        let det = detect(&root, true);
+        let (meta, def) = meta_of("ssh-host").unwrap();
+        assert_eq!((meta.cost, meta.facet), (Cost::Remote, Facet::Prod));
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
+        let ex = FakeExec::recorded("ssh-host-ubuntu.txt");
+        for public in [false, true] {
+            assert_eq!(read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Scan, public, true, None).coverage, Coverage::NotRun);
+        }
+        assert!(ex.calls().is_empty(), "{:?}", ex.calls());
+        let rep = read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Explicit, false, true, None);
+        assert_eq!((rep.coverage.clone(), ex.calls()), (Coverage::Ok, vec![vec!["ssh".to_string(), "scan-test-1".into()]]));
+        let later = read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Scan, false, true, None);
+        assert_eq!((later, ex.calls().len()), (rep, 1), "a scan shows the click's answer and asks nothing");
+    }
+
+    #[test]
+    fn the_ssh_command_is_its_options_then_the_alias_then_sh() {
+        let bin = scratch_dir();
+        #[cfg(windows)]
+        let name = "ssh.exe";
+        #[cfg(not(windows))]
+        let name = "ssh";
+        std::fs::write(bin.join(name), "").unwrap();
+        let path = bin.to_string_lossy().to_string();
+        let cmd = exec::ssh_cmd("deploy@prod-1", &path).unwrap();
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(&argv[..exec::SSH_OPTS.len()], exec::SSH_OPTS);
+        assert_eq!(&argv[exec::SSH_OPTS.len()..], ["deploy@prod-1", "sh", "-s"]);
+        #[cfg(not(windows))]
+        assert_eq!(cmd.get_program(), bin.join(name).as_os_str(), "the absolute file, never a name to look up");
+        for bad in ["-oProxyCommand=x", "prod;x", "a b", "$(id)"] {
+            assert!(exec::ssh_cmd(bad, &path).is_err(), "{bad}");
+        }
+        #[cfg(not(windows))]
+        assert_eq!(exec::ssh_cmd("prod-1", "/nowhere").unwrap_err(), "ssh is not on PATH");
+    }
+
+    /// Executed against the real client, offline (`-G` prints the options and connects nowhere): an
+    /// option an old ssh does not know makes it refuse to start, and each must outrank a hostile config.
+    #[test]
+    fn the_ssh_options_are_ones_this_ssh_knows() {
+        let Some(ssh) = exec::ssh_bin(&crate::platform::augmented_path()) else {
+            eprintln!("no ssh here; skipped");
+            return;
+        };
+        let dir = scratch_dir();
+        let cfg = dir.join("config");
+        std::fs::write(&cfg, "Host *\n  ControlMaster auto\n  ControlPath ~/.ssh/cm-%C\n  StrictHostKeyChecking accept-new\n  UpdateHostKeys yes\n  CheckHostIP yes\n\
+            PermitLocalCommand yes\n  ForwardAgent yes\n  RemoteCommand uptime\n  BatchMode no\n  LocalForward 9999 localhost:22\n").unwrap();
+        let out = crate::platform::sys_command(&ssh).arg("-F").arg(&cfg).arg("-G").args(exec::SSH_OPTS).arg("episko-probe").output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        for want in ["batchmode yes", "stricthostkeychecking true", "updatehostkeys false", "checkhostip no", "controlmaster false", "permitlocalcommand no",
+            "forwardagent no", "clearallforwardings yes"] {
+            assert!(said.lines().any(|l| l == want), "{want}:\n{said}");
+        }
+        for gone in ["controlpath ", "remotecommand ", "localforward "] {
+            assert!(!said.lines().any(|l| l.starts_with(gone)), "{gone}:\n{said}");
+        }
     }
 
     /// A tag convention is what `deploy-tags` reads: it says nothing about where production answers.
@@ -2251,7 +2414,7 @@ host = \"-oProxyCommand=x\"
         write(&dir, ".episko/episko.toml", "[deploy]\nhost = \"prod-1\"\n");
         let d = detect(&s(&dir), true);
         assert!(!d.sources.iter().any(|x| x == "deploy-tags"), "no convention, no source: {:?}", d.sources);
-        assert!(labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
+        assert!(!labels(&d).contains(&"[deploy]".to_string()), "ssh-host reads a host: {:?}", labels(&d));
         write(&dir, ".episko/episko.toml", "[deploy]\nsentry = \"acme/api\"\nenvs = { prod = \"prod-*\" }\n");
         assert!(labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "a key only a prod source reads");
         write(&dir, ".episko/episko.toml", "[deploy]\ncompose = [\"api\"]\n");
@@ -2365,6 +2528,19 @@ host = \"-oProxyCommand=x\"
             blank("staging", EnvTier::Staging),
             Deployed { sha: None, at: None, ..blank("automations", EnvTier::Other) },
         ] };
+        let container = |name: &str, state: &str, health: Option<&str>, restarts: u32, service: Option<&str>| HostContainer {
+            name: name.into(), image: "ghcr.io/acme/api:1.4.2".into(), state: state.into(), health: health.map(String::from), restarts,
+            exit: Some(0), started_at: Some(1_789_900_000), project: service.map(|_| "acme".into()), service: service.map(String::from),
+        };
+        let host = HostFacts {
+            alias: "prod-1".into(), os: Some("Linux 6.8.0-45-generic".into()), now: Some(1_790_000_000), uptime: Some(3_542_400),
+            load: Some([0.42, 0.61, 0.5]), cpus: Some(4),
+            disks: vec![Disk { mount: "/".into(), size_kb: 50_620_216, used_kb: 48_123_456, avail_kb: 2_480_376 }],
+            updates: Some(14), security: Some(6), packages: vec!["openssl".into(), "libc6".into()], pm: Some("apt".into()),
+            lists_at: Some(1_789_000_000), reboot: Some(true), reboot_why: vec!["linux-image-6.8.0-49-generic".into()],
+            containers: Some(vec![container("acme-api-1", "running", Some("unhealthy"), 0, Some("api")), container("old-cron", "exited", None, 3, None)]),
+            compose: vec!["api".into(), "worker".into()],
+        };
         let runtimes = vec![Runtime {
             product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
             eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
@@ -2389,6 +2565,7 @@ host = \"-oProxyCommand=x\"
             ok("git-local", Facet::Git, Cost::Local, Facts::Hygiene(hygiene)),
             ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: Some(1) }),
             ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![probe] }),
+            ok("ssh-host", Facet::Prod, Cost::Remote, Facts::Hosts { items: vec![host] }),
             ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: runtimes }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
             // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
@@ -2396,6 +2573,7 @@ host = \"-oProxyCommand=x\"
             not("github-work", gh_coverage("HTTP 401: Bad credentials", None)),
             not("gitlab-work", crate::forge::classify_glab("401 Unauthorized", "gitlab.com")),
             not("gitlab-ci", crate::forge::classify_glab("404 Project Not Found", "gitlab.com")),
+            not("ssh-host", crate::maint_host::ssh_coverage("deploy@prod-1: Permission denied (publickey).", "prod-1")),
             not("cargo-audit", Coverage::NoTool { tool: "cargo-audit".into(), fix: Some("cargo install cargo-audit".into()) }),
             not("gitlab-ci", Coverage::Unsupported { reason: "no default branch known".into() }),
             not("npm-audit", Coverage::NotRun),
@@ -2437,6 +2615,7 @@ envs = { prod = \"prod-*\" }
         "hygiene",
         "work",
         "probes",
+        "hosts",
         "runtimes",
     ];
 
@@ -2465,6 +2644,7 @@ envs = { prod = \"prod-*\" }
             Facts::Hygiene(_) => "hygiene",
             Facts::Work { .. } => "work",
             Facts::Probes { .. } => "probes",
+            Facts::Hosts { .. } => "hosts",
             Facts::Runtimes { .. } => "runtimes",
         }
     }

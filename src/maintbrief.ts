@@ -3,7 +3,7 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf,
   type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
@@ -369,6 +369,27 @@ const prodBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
+// Every problem the host has, the clicked kind first. The agent looks over ssh and changes nothing:
+// a pane may be launched permissive, so the brief asks it to say each command and stop before any write.
+const hostBrief: Brief = (f, inp, ctx) => {
+  const h = factsOf(f, inp, "hosts")?.items.find((x) => x.alias === f.ref);
+  const lines = h ? hostState(h, h.compose, clampMaint(inp.det?.config.thresholds), ctx.now, inp.reports[f.source]?.truncated).lines : [];
+  if (!h || !lines.length) return null;
+  const kind = f.key.slice("prod:host:".length), at = inp.reports[f.source]?.at;
+  return [
+    `${h.alias} ([deploy] host of ${ctx.project}) needs attention, as Episko read it${at ? ` ${ago(at, ctx)} ago` : ""}:`,
+    "",
+    ...[...lines].sort((a, b) => Number(b.kind === kind) - Number(a.kind === kind)).flatMap((l) => l.points.map(bullet)),
+    "",
+    `Connect with \`ssh ${h.alias}\` and investigate read-only: what fills the disk, which services the pending updates`,
+    "touch, why a container fails (its logs and its health check). Say each read-only command before you run it on the",
+    "host, and stop for a person before anything that writes.",
+    "",
+    "Change nothing on the host yourself. Say what is wrong, what you would run and in what order, how to verify it,",
+    "and wait for a person before deleting, upgrading, restarting or rebooting anything.",
+  ];
+};
+
 // A facet with nothing reading it, or code scanning off; the forge is named only as the remote spells it.
 const setupBrief: Brief = (f, inp, ctx) => {
   const host = inp.det?.forge.host;
@@ -416,6 +437,7 @@ export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
   [(f) => f.key === "release:deploy-failed", deployFixBrief],
   [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
   [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
+  [(f) => HOST_KINDS.some((k) => f.key === `prod:host:${k}`), hostBrief],
 ];
 
 const BRIEFS: Record<Verb, Brief> = {

@@ -74,6 +74,12 @@ describe("the manifest as TypeScript", () => {
     expect(findSource("nope")).toBeNull();
   });
 
+  it("reads a host as a click-only prod source that sees only the host, and is found by that", () => {
+    expect(sourceDef("ssh-host")).toMatchObject({ facet: "prod", cost: "remote", label: "SSH host", sees: ["prod.host"], blind: ["prod.status", "prod.cert"], sends: null });
+    expect(permitted(sourceDef("ssh-host").cost, "scan", true)).toBe(false);
+    expect(SOURCES.filter((s) => s.sees.includes("prod.host")).map((s) => s.id)).toEqual(["ssh-host"]);
+  });
+
   it("files every source and marker under one facet", () => {
     for (const f of FACETS) for (const s of facetSources(f)) expect(s.facet).toBe(f);
     expect(FACETS.flatMap(facetSources).length).toBe(SOURCES.length);
@@ -156,6 +162,7 @@ describe("the frontend never names a vendor", () => {
     "runs",
     "deploy",
     "deployments",
+    "ssh", // a protocol, as SARIF is a standard
   ]);
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([

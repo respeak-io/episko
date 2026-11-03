@@ -9,13 +9,13 @@ import { actToast, toast } from "./dom";
 import { dlog } from "./debug";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, SEV_BUCKETS, sweepReport,
+  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, prodNone, SEV_BUCKETS, sweepReport,
   sweepRows, tabFindings,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionLeft, sessionPlan, sweepGate, sweepLine, VERB_KIND,
   type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
-import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, showSweep, shownSweep } from "./maintscan";
+import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
 import { checkoutBusy } from "./grouping";
@@ -111,7 +111,7 @@ function openDoor(at: string, root: string, host: MaintHost): void {
 // Every address of every project asked, each project's checks as one click-only read per source.
 async function checkProd(roots: readonly string[]): Promise<void> {
   const jobs = roots.flatMap((r) => { const inp = maintInput(r); return inp ? prodChecks(inp).map((id) => [r, id] as const) : []; });
-  if (!jobs.length) { toast("No project here names an address in [deploy]"); return; }
+  if (!jobs.length) { toast(prodNone()); return; }
   const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
   const failed = reps.filter((x) => x.coverage.state !== "ok").length;
   if (failed) toast(`Prod: ${failed} of ${reps.length} checks could not run. The Prod cell says why`);
@@ -315,6 +315,9 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
     void writeText(text).then(() => toast("Copied")).catch(() => toast(text));
     return true;
   }
+  // A per-machine tick, nothing more: no connection is made until Check prod is clicked.
+  const allow = t.closest<HTMLElement>("[data-mthost]");
+  if (allow) { setMaintHost(allow.dataset.mtkey ?? "", allow.dataset.mthost === "allow"); host.render(); return true; }
   const door = t.closest<HTMLElement>("[data-mtdoor]");
   if (door) { openDoor(door.dataset.mtdoor ?? "", door.dataset.mtroot!, host); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
