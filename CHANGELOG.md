@@ -12,9 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
-~ A shelved session's *Your questions* now covers the whole conversation, not just its last
-  stretch, and is numbered like a live session's. ⤢ or a click on a question opens the questions
-  sheet with the agent's answer under each one.
+~ A shelved session now opens on its questions, each with the agent's answer under it, from the
+  whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
+  conversation as before, and a question in the side panel scrolls to its answer.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

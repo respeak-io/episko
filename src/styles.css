@@ -2705,6 +2705,11 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
 .tvmsg.assistant .tvtext { color: color-mix(in srgb, var(--terminal-text) 82%, var(--terminal-bg)); }
 .ext-empty { margin: auto; text-align: center; color: var(--muted-2); font-size: 12px; line-height: 1.7; }
+/* a shelved session's questions with their answers (./mirror): the Questions sheet's thread, on the stage */
+.ext-qa { width: 100%; max-width: 980px; margin: 0 auto; font-family: var(--font-ui); line-height: normal; }
+.ext-view-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.ext-view-acts[hidden] { display: none; }
+.ext-view-acts .fx-seg { margin-left: 0; }
 .ext-empty .mono { font-size: 10px; }
 
 /* inspector card for the selected external session */

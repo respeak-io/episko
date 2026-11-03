@@ -355,7 +355,7 @@ export function askedHtml(msgs: readonly ProviderMessage[], show: number): strin
 }
 
 // A shelved conversation's outline (./mirror), read from the whole transcript, so numbered like
-// the live one. There is no pane to jump into: a row opens the Questions sheet on its answer.
+// the live one. The stage beside it holds every answer, so a row scrolls it there.
 export function pastAskedHtml(prompts: readonly Prompt[], show: number): string {
   const asks = outlineItems(prompts).flatMap((it) => (it.kind === "ask" ? [it] : []));
   if (!asks.length) return "";
@@ -363,13 +363,12 @@ export function pastAskedHtml(prompts: readonly Prompt[], show: number): string 
   const rest = asks.length - shown.length;
   const answered = asks.filter(({ p }) => p.answer).length;
   const rows = shown.map(({ p, n }) =>
-    `<div class="ol-row" data-pastq="${escAttr(p.id)}" title="${escAttr(`${promptLabel(p.text)}\n${p.answer ? "Read it with its answer" : "No answer was recorded"}`)}">`
+    `<div class="ol-row" data-pastq="${escAttr(p.id)}" title="${escAttr(`${promptLabel(p.text)}\nGo to it and its answer`)}">`
     + `<span class="ol-n">${n}</span><div class="ol-txt" style="--ol-lines:2">${esc(p.text)}</div>`
     + `<span class="ol-t">${p.at ? promptClock(p.at) : ""}</span></div>`).join("");
   const head = `<div class="fx-head"><span class="label">Your questions</span>`
-    + `<span class="fx-sub">${asks.length} · ${answered} answered</span>`
-    + `<button class="ol-open" type="button" data-pastq="*" title="Every question with its answer">⤢</button></div>`;
-  const more = rest > 0 ? `<button class="fx-more" data-pastq="*">+${rest} earlier</button>` : "";
+    + `<span class="fx-sub">${asks.length} · ${answered} answered</span></div>`;
+  const more = rest > 0 ? `<div class="hist-qmore">+${rest} earlier, on the left</div>` : "";
   return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
 }
 

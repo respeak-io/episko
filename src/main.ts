@@ -27,7 +27,7 @@ import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, 
 import {
   callSheetOpen, closeCallSheet, copySelectedCall, openCallSheet, renderCallSheet, selectCall,
 } from "./callsheet";
-import { closeQuestions, openPastQuestions, openQuestions, questionsOpen, renderQuestions } from "./questions";
+import { closeQuestions, openQuestions, questionsOpen, renderQuestions } from "./questions";
 import { closeMdReader, mdReaderOpen, openFileOrRead } from "./mdreader";
 import { applyFontSize, bumpFont, isCopyChord, markPrompt, refit, setPrLinkOpener, trimScrollback } from "./terminal";
 import {
@@ -63,7 +63,7 @@ import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
 } from "./taskrun";
 import {
-  flushRoster, forgetDormant, jumpExternal, leaveMirror, loadDormants, openDormant, openExternal, pastQuestions,
+  flushRoster, forgetDormant, jumpExternal, jumpPastQuestion, leaveMirror, loadDormants, openDormant, openExternal,
   queueRosterSave, refreshDirtyStates, refreshExternals,
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
@@ -788,7 +788,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.olgrp) toggleOutlineGroup(el.dataset.olgrp);
   else if (el.dataset.olopen) openQuestions(el.dataset.olopen);
-  else if (el.dataset.pastq) { const q = pastQuestions(); if (q) openPastQuestions(q, el.dataset.pastq === "*" ? null : el.dataset.pastq); }
+  else if (el.dataset.pastq) jumpPastQuestion(el.dataset.pastq);
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);

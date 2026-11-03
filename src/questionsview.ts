@@ -3,15 +3,13 @@
 // Data in, string out; ./questions owns #qDlg and hands in the rendered answers.
 
 import { esc, escAttr } from "./format";
+import { joinPath, renderMarkdown } from "./markdown";
 import { outlineItems, promptLabel } from "./outline";
 import type { Prompt } from "./types";
 
 const clock = (at: number) => at ? new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 
 export interface QEntry { p: Prompt; n: number } // n is 0 for a relay, which is not yours to number
-
-/** A shelved conversation, read whole from its transcript: there is no pane to find a question in. */
-export interface PastQuestions { title: string; workdir: string; prompts: Prompt[] }
 
 /** Every row, oldest first: relays stay in line, unfolded, since the sheet has the room. */
 export function qEntries(prompts: readonly Prompt[]): QEntry[] {
@@ -38,6 +36,10 @@ function noAnswer(running: boolean, last: boolean): string {
   if (last && running) return `<div class="q-none run">Working on it…</div>`;
   return `<div class="q-none">No closing answer was recorded for this one.</div>`;
 }
+
+/** An answer as prose: links resolve against the session's folder, and nothing is fetched. */
+export const answerMd = (workdir: string, text: string): string =>
+  renderMarkdown(text, { docPath: joinPath(workdir, "answer.md"), root: workdir, images: false, remote: false }).html;
 
 /** `live`: a pane holds the conversation, so a question can be found in it and ↩ means something. */
 export function qThreadHtml(entries: readonly QEntry[], answerHtml: (p: Prompt) => string, at: { running: boolean; live: boolean }): string {

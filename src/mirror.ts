@@ -3,6 +3,8 @@
 // `mirror` stage pointer in ./state, which is mutually exclusive with `activeId`.
 
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { $, clearStageBadges, setHeadPath, stageGen, takeStage, toast } from "./dom";
 import { handoffBusy } from "./handoff";
 import { confirmReturned, recallable, sendGateFor } from "./handoffui";
@@ -12,12 +14,13 @@ import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
 import { pastAskedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
+import { openFileOrRead } from "./mdreader";
 import { seedPrompts } from "./outline";
-import type { PastQuestions } from "./questionsview";
+import { answerMd, qClipText, qEntries, qThreadHtml } from "./questionsview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
-  providerAdapter, readProviderAsked, readProviderHistory, reconcileProviderRestorables,
+  providerAdapter, readProviderAsked, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
 } from "./providers";
 import { allProjects, dormantBusy } from "./grouping";
 import {
@@ -197,29 +200,84 @@ export function openDormant(id: string) {
   clearInterval(extTranscriptTimer); // a finished transcript doesn't grow — no polling
   document.documentElement.style.setProperty("--accent", accentFor(d.colorKey));
   renderPastHeader(d); renderPastInspector(d); renderSidebar(); renderMini(); renderFoot();
-  $("extBody").innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-  void loadProviderTranscriptInto(d.provider, d.workdir, d.resumeId, () => pastMirrorId() === id);
-  void readProviderAsked(d.provider, d.resumeId, d.workdir, PAST_ASK_READ).then((msgs) => {
-    if (pastMirrorId() !== id) return;
-    const prompts: Prompt[] = [];
-    seedPrompts(prompts, msgs);
-    pastAsked = { key: d.resumeId, prompts };
-    renderPastInspector(d);
-  }).catch((e) => dlog("info", `shelved: no questions to read for ${d.resumeId.slice(0, 8)} (${e})`));
+  pastView = "qa";
+  paintPastBody(d);
+  const key = d.resumeId;
+  const here = () => pastMirrorId() === id;
+  void readProviderHistory(d.provider, key, d.workdir, 80)
+    .then((msgs) => { pastRaw = { key, msgs, err: "" }; }, (e) => { pastRaw = { key, msgs: [], err: String(e) }; })
+    .then(() => { if (here()) paintPastBody(d); });
+  void readProviderAsked(d.provider, key, d.workdir, PAST_ASK_READ)
+    .then((msgs) => { const prompts: Prompt[] = []; seedPrompts(prompts, msgs); pastAsked = { key, prompts }; },
+      (e) => { pastAsked = { key, prompts: [] }; dlog("info", `shelved: no questions to read for ${key.slice(0, 8)} (${e})`); })
+    .then(() => { if (here()) { renderPastInspector(d); paintPastBody(d); } });
 }
 
-// The shelved conversation's questions with their closing answers, from the whole transcript:
-// the mirror's tail read holds none of a long one's. The same read a resume seeds its outline with.
+// The shelved stage leads with its questions and their closing answers, read from the whole
+// transcript as a resume seeds its outline; the tail of the transcript is the other tab.
 let pastAsked: { key: string; prompts: Prompt[] } | null = null;
+let pastRaw: { key: string; msgs: ProviderMessage[]; err: string } | null = null;
+let pastView: "qa" | "raw" = "qa";
 const PAST_ASK_READ = 200; // what a resumed pane's outline would keep (PROMPT_CAP)
 const PAST_ASK_SHOW = 5;
 
-/** What the Questions sheet shows for the shelved card on stage; null until its read lands. */
-export function pastQuestions(): PastQuestions | null {
-  const d = dormants.find((x) => x.id === pastMirrorId());
-  if (!d || pastAsked?.key !== d.resumeId) return null;
-  return { title: d.title || d.branch || d.project, workdir: d.workdir, prompts: pastAsked.prompts };
+const pastOnStage = () => dormants.find((x) => x.id === pastMirrorId());
+const pastEntries = (d: Restorable) => (pastAsked?.key === d.resumeId ? qEntries(pastAsked.prompts) : null);
+
+// Painted when a read lands or the tab changes, never from renderAll: nothing here ticks.
+function paintPastBody(d: Restorable) {
+  const entries = pastEntries(d);
+  const raw = pastRaw?.key === d.resumeId ? pastRaw : null;
+  // A conversation with no questions in it has nothing for the first tab to show.
+  const qa = pastView === "qa" && entries?.length !== 0;
+  const tab = (v: typeof pastView, t: string) => `<button class="${(v === "qa") === qa ? "on" : ""}" data-pastview="${v}">${t}</button>`;
+  const acts = $("extActs");
+  acts.hidden = !entries?.length;
+  acts.innerHTML = (qa ? `<button class="q-act" type="button" data-qcopyall="1" title="Copy every question and answer as markdown">Copy all</button>` : "")
+    + `<span class="fx-seg">${tab("qa", "Questions")}${tab("raw", "Transcript")}</span>`;
+  const body = $("extBody");
+  const label = providerAdapter(d.provider)?.label ?? d.provider;
+  if (qa && entries) {
+    body.innerHTML = `<div class="ext-qa">${qThreadHtml(entries, (p) => answerMd(d.workdir, p.answer ?? ""), { running: false, live: false })}</div>`;
+    stageScrollTo(body.querySelector<HTMLElement>(".q-ent:last-child"), false); // the newest is what you came back for
+  } else if (!qa && raw?.err) {
+    body.innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(raw.err)}</span></div>`;
+  } else if (!qa && raw) renderTranscript(raw.msgs, true, label);
+  else body.innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
 }
+
+/** A question in the shelved card, clicked: the stage beside it holds it with its answer. */
+export function jumpPastQuestion(id: string) {
+  const d = pastOnStage();
+  if (!d) return;
+  if (pastView !== "qa") { pastView = "qa"; paintPastBody(d); }
+  stageScrollTo($("extBody").querySelector<HTMLElement>(`[data-qent="${CSS.escape(id)}"]`), true);
+}
+// The body alone: scrollIntoView also moves any ancestor that can scroll, overflow:hidden included.
+function stageScrollTo(el: HTMLElement | null, smooth: boolean) {
+  const body = $("extBody");
+  if (!el) return;
+  const top = body.scrollTop + el.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
+  body.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+}
+
+// The stage's own listener, like the Questions sheet's: none of these reach main.ts's dispatcher.
+$("extPane").addEventListener("click", (ev) => {
+  const el = (ev.target as HTMLElement).closest<HTMLElement>("[data-pastview],[data-qcopy],[data-qcopyall],[data-mdurl],[data-mdfile]");
+  const d = pastOnStage();
+  if (!el || !d) return;
+  ev.preventDefault();
+  const v = el.dataset;
+  if (v.pastview) { pastView = v.pastview === "raw" ? "raw" : "qa"; paintPastBody(d); }
+  else if (v.qcopy || v.qcopyall) {
+    const all = pastEntries(d) ?? [];
+    const entries = v.qcopy ? all.filter((e) => e.p.id === v.qcopy) : all;
+    writeText(qClipText(entries))
+      .then(() => toast(v.qcopy ? "Question and answer copied" : `${entries.length} questions copied`))
+      .catch(() => toast("copy failed"));
+  } else if (v.mdurl) openUrl(v.mdurl).catch((e) => toast("Couldn't open the link: " + e));
+  else if (v.mdfile) void openFileOrRead(v.mdfile);
+});
 export function renderPastHeader(d: Restorable) {
   clearStageBadges();
   // ✕ steps out of the mirror; it never reaches the session behind it, which is somebody
@@ -337,16 +395,6 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
   }
 }
 
-async function loadProviderTranscriptInto(provider: string, cwd: string, sessionId: string, stillCurrent: () => boolean) {
-  const label = providerAdapter(provider)?.label ?? provider;
-  try {
-    const msgs = await readProviderHistory(provider, sessionId, cwd, 80);
-    if (!stillCurrent()) return;
-    renderTranscript(msgs, true, label);
-  } catch (err) {
-    if (stillCurrent()) $("extBody").innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(String(err))}</span></div>`;
-  }
-}
 function renderTranscript(msgs: { role: string; text: string }[], initial: boolean, agent = "Claude") {
   const body = $("extBody");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
@@ -364,6 +412,7 @@ export function renderExtHeader(e: ExtSession) {
   xb.title = "Close this mirror (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("extViewTxt").textContent = "Read-only mirror · this session runs in another terminal";
+  $("extActs").hidden = true;
   $("hProj").textContent = basename(e.cwd);
   const hb = $("hBranch"); hb.textContent = "external"; hb.hidden = false; hb.classList.add("ext-chip");
   $("hTitle").textContent = e.name || "";
