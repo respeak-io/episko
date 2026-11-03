@@ -1203,7 +1203,9 @@ pub(crate) async fn privacy_asks(app: tauri::AppHandle) -> Result<Vec<PrivacyAsk
 pub(crate) struct SecretSlot<'a> {
     pub(crate) dir: &'a std::path::Path,
     pub(crate) file: &'a str,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // the keychain's names; a file needs none
     pub(crate) service: &'a str,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) account: &'a str,
 }
 
