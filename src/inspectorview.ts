@@ -354,24 +354,6 @@ export function askedHtml(msgs: readonly ProviderMessage[], show: number): strin
     + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
 }
 
-// A shelved conversation's outline (./mirror), read from the whole transcript, so numbered like
-// the live one. The stage beside it holds every answer, so a row scrolls it there.
-export function pastAskedHtml(prompts: readonly Prompt[], show: number): string {
-  const asks = outlineItems(prompts).flatMap((it) => (it.kind === "ask" ? [it] : []));
-  if (!asks.length) return "";
-  const shown = asks.slice(-show).reverse();
-  const rest = asks.length - shown.length;
-  const answered = asks.filter(({ p }) => p.answer).length;
-  const rows = shown.map(({ p, n }) =>
-    `<div class="ol-row" data-pastq="${escAttr(p.id)}" title="${escAttr(`${promptLabel(p.text)}\nGo to it and its answer`)}">`
-    + `<span class="ol-n">${n}</span><div class="ol-txt" style="--ol-lines:2">${esc(p.text)}</div>`
-    + `<span class="ol-t">${p.at ? promptClock(p.at) : ""}</span></div>`).join("");
-  const head = `<div class="fx-head"><span class="label">Your questions</span>`
-    + `<span class="fx-sub">${asks.length} · ${answered} answered</span></div>`;
-  const more = rest > 0 ? `<div class="hist-qmore">+${rest} earlier, on the left</div>` : "";
-  return `<div class="outline">${head}<div class="ol">${rows}</div>${more}</div>`;
-}
-
 // One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody
 // here typed, so it loses the ❯ and the highlight that mean "you".
 export function tvMsgHtml(m: { role: string; text: string }, agent: string, cap = 0): string {

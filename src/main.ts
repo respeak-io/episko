@@ -63,7 +63,7 @@ import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
 } from "./taskrun";
 import {
-  flushRoster, forgetDormant, jumpExternal, jumpPastQuestion, leaveMirror, loadDormants, openDormant, openExternal,
+  flushRoster, forgetDormant, jumpExternal, leaveMirror, loadDormants, openDormant, openExternal,
   queueRosterSave, refreshDirtyStates, refreshExternals,
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
@@ -738,7 +738,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -788,7 +788,6 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.olgrp) toggleOutlineGroup(el.dataset.olgrp);
   else if (el.dataset.olopen) openQuestions(el.dataset.olopen);
-  else if (el.dataset.pastq) jumpPastQuestion(el.dataset.pastq);
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);

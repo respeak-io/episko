@@ -13,7 +13,7 @@ import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
-import { pastAskedHtml, tvMsgHtml, wpeekHtml } from "./inspectorview";
+import { tvMsgHtml, wpeekHtml } from "./inspectorview";
 import { openFileOrRead } from "./mdreader";
 import { seedPrompts } from "./outline";
 import { answerMd, qClipText, qEntries, qThreadHtml } from "./questionsview";
@@ -210,7 +210,7 @@ export function openDormant(id: string) {
   void readProviderAsked(d.provider, key, d.workdir, PAST_ASK_READ)
     .then((msgs) => { const prompts: Prompt[] = []; seedPrompts(prompts, msgs); pastAsked = { key, prompts }; },
       (e) => { pastAsked = { key, prompts: [] }; dlog("info", `shelved: no questions to read for ${key.slice(0, 8)} (${e})`); })
-    .then(() => { if (here()) { renderPastInspector(d); paintPastBody(d); } });
+    .then(() => { if (here()) paintPastBody(d); });
 }
 
 // The shelved stage leads with its questions and their closing answers, read from the whole
@@ -219,7 +219,6 @@ let pastAsked: { key: string; prompts: Prompt[] } | null = null;
 let pastRaw: { key: string; msgs: ProviderMessage[]; err: string } | null = null;
 let pastView: "qa" | "raw" = "qa";
 const PAST_ASK_READ = 200; // what a resumed pane's outline would keep (PROMPT_CAP)
-const PAST_ASK_SHOW = 5;
 
 const pastOnStage = () => dormants.find((x) => x.id === pastMirrorId());
 const pastEntries = (d: Restorable) => (pastAsked?.key === d.resumeId ? qEntries(pastAsked.prompts) : null);
@@ -239,26 +238,14 @@ function paintPastBody(d: Restorable) {
   const label = providerAdapter(d.provider)?.label ?? d.provider;
   if (qa && entries) {
     body.innerHTML = `<div class="ext-qa">${qThreadHtml(entries, (p) => answerMd(d.workdir, p.answer ?? ""), { running: false, live: false })}</div>`;
-    stageScrollTo(body.querySelector<HTMLElement>(".q-ent:last-child"), false); // the newest is what you came back for
+    // The newest is what you came back for. The body alone: scrollIntoView would also move
+    // every ancestor that can scroll, overflow:hidden included.
+    const last = body.querySelector<HTMLElement>(".q-ent:last-child");
+    if (last) body.scrollTop += last.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
   } else if (!qa && raw?.err) {
     body.innerHTML = `<div class="ext-empty">Could not read this ${esc(label)} conversation.<br><span class="mono">${esc(raw.err)}</span></div>`;
   } else if (!qa && raw) renderTranscript(raw.msgs, true, label);
   else body.innerHTML = `<div class="ext-empty">Loading transcript…</div>`;
-}
-
-/** A question in the shelved card, clicked: the stage beside it holds it with its answer. */
-export function jumpPastQuestion(id: string) {
-  const d = pastOnStage();
-  if (!d) return;
-  if (pastView !== "qa") { pastView = "qa"; paintPastBody(d); }
-  stageScrollTo($("extBody").querySelector<HTMLElement>(`[data-qent="${CSS.escape(id)}"]`), true);
-}
-// The body alone: scrollIntoView also moves any ancestor that can scroll, overflow:hidden included.
-function stageScrollTo(el: HTMLElement | null, smooth: boolean) {
-  const body = $("extBody");
-  if (!el) return;
-  const top = body.scrollTop + el.getBoundingClientRect().top - body.getBoundingClientRect().top - 8;
-  body.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
 }
 
 // The stage's own listener, like the Questions sheet's: none of these reach main.ts's dispatcher.
@@ -294,9 +281,6 @@ export function renderPastHeader(d: Restorable) {
 }
 export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
-  // Above the buttons: it is what the decision to resume is made on. Absent until the
-  // transcript lands, and absent for good on a conversation with no prose in it.
-  const asked = pastAsked?.key === d.resumeId ? pastAskedHtml(pastAsked.prompts, PAST_ASK_SHOW) : "";
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const sent = handoffBusy(handoffs, d.resumeId);
@@ -319,7 +303,6 @@ export function renderPastInspector(d: Restorable) {
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
-      ${asked}
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
       <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
