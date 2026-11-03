@@ -81,6 +81,8 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "ci.disabled": "disabled workflows",
   "ci.external": "statuses other CIs report",
   "ci.other-branches": "CI on other branches",
+  "ci.reruns": "jobs that failed and then passed on a re-run",
+  "ci.per-test": "which test inside a job fails",
   "git.unpushed": "unpushed commits",
   "git.local-only": "branches only on this machine",
   "git.merged": "merged branches",
@@ -326,7 +328,7 @@ function clearHtml(v: MaintView): string {
 const TAB_TEXT: Record<MaintSub, [string, string]> = {
   overview: ["Overview", "One card per project, worst first"],
   security: ["Security", "Advisories, scanner findings, runtimes at their end of life and update pull requests, across every project"],
-  delivery: ["Delivery", "CI on the default branch and unreleased work, across every project"],
+  delivery: ["Delivery", "CI on the default branch, flaky jobs and unreleased work, across every project"],
   code: ["Code", "Unpushed work, branches to tidy and stale fetches, across every project"],
   servers: ["Servers", "Where the projects run and whether it answers, across every project"],
   work: ["Work", "Open issues, pull requests and reviews waiting on you, across every project"],
@@ -495,6 +497,17 @@ function flowsHtml(r: CiBoardRow): string {
   }).join("");
 }
 
+// A job, never a test: the step is the finest grain read, and its last log names the test.
+function flakyHtml(v: MaintTabView, b: Boards): string {
+  return table([...projCol(b), ">Flaked", "Job", "Workflow", "Fails at", ">Last", ""], b.flaky.rows.map((r) => `<tr>${projTd(v, b, r.root)}`
+    + td(num(r.passed, r.level, `passed on re-run ${r.passed} of ${r.reruns} times`) + (r.capped ? "+" : "")
+      + `<span class="dim"> of ${r.reruns}</span>`, "r")
+    + td(esc(r.job), "mono") + td(`<span class="dim">${esc(r.workflow)}</span>`)
+    + td(r.steps.length ? `<span class="dim">${esc(r.steps.join(", "))}</span>` : DASH)
+    + td(r.last === null ? DASH : doorHtml(esc(span(r.last)), "mono dim", ["flaky", "last", r.root], r.url, "the newest failed attempt's log"), "r")
+    + verbTd(r.verb) + `</tr>`));
+}
+
 const untagged = (b: Boards, r: RelRow) => {
   const on = `no release tag on ${r.trunk ?? "the trunk"}`;
   return `<span class="dim" data-tip="${escAttr(on)}">${esc(b.one ? on : "never tagged")}</span>`;
@@ -516,7 +529,10 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
       + td(ageOf(r.oldest), "r mono") + td(pub, "mono")
       + td(r.changelog === null ? DASH : num(r.changelog, "info", "entries under Unreleased in CHANGELOG.md"), "r") + verbTd(r.verb) + `</tr>`;
   }));
+  const fl = b.flaky, part = fl.short ? " · a busy project's window is shorter" : fl.cut ? " · part of it was not read" : "";
   return (b.ci.length ? board("ci", "CI on the default branch", `${on}last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
+    + (fl.read ? board("flaky", "Flaky jobs", `${fl.days} days · failed, then passed on a re-run of the same commit · ${fl.reran}${fl.cut ? "+" : ""} of ${fl.runs} runs re-run${part} · ${readNote(fl.read)}`,
+      fl.rows.length ? flakyHtml(v, b) : empty(fl.clear)) : "")
     + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
 }
 

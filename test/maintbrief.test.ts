@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIX, briefFor, sweepBrief, sweepPrompt, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Facts, type MaintInput, type SourceReport, type SweepAdvisory, type SweepFacts,
+  FACT_FACET, MAINT_DEFAULTS, findings, sweepVerdict, type Facts, type MaintInput, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts,
 } from "../src/maint";
 
 // The brief is the product: an agent is only as good as what it was told, and a person reads it
@@ -97,9 +97,9 @@ describe("briefFor", () => {
 
   it("finds Fix's brief by the finding's key, one exact row per kind", () => {
     const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
-    for (const key of ["ci", "prod:api", "prod:cert:app", "prod:cert", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
+    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "security:code", "security:config"]) expect(claims(key), key).toBe(1);
     // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
-    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "ci:flaky", "release:deploy-failed", "security:dependency"]) {
+    for (const key of ["prod:host:disk", "prod:domain:acme.example", "prod:errors:new", "release:deploy-failed", "security:dependency"]) {
       expect(claims(key), key).toBe(0);
     }
     expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
@@ -165,6 +165,39 @@ describe("briefFor", () => {
     }
     expect(b).not.toMatch(/dependabot|osv|github|renovate/i);
     expect(b.endsWith("\n")).toBe(false);
+  });
+
+  it("briefs noisy CI apart from broken CI: each job, its step, each log, and never a retry", () => {
+    const seen = (sha: string, at: number, passed: boolean) => ({ sha, branch: "feature/x", at, passed, url: `https://ci.example/job/${sha}` });
+    const win: RerunJob = { workflow: "ci", job: "build-check (windows-latest)", reruns: 3, passed: 2, steps: ["Cargo test"],
+      seen: [seen("aaaa1111bbbb", S - D, true), seen("cccc2222dddd", S - 3 * D, false), seen("eeee3333ffff", S - 9 * D, true)] };
+    const green = ok("github-actions", { kind: "ciRuns", branch: "main", runs: [
+      { workflow: "ci", status: "pass", raw: "success", sha: "4f2a91c0ffee", at: S - D, url: null }] });
+    const noisy = (...jobs: RerunJob[]) => input(green, ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 140, reran: 3, jobs }));
+    const one = noisy(win);
+    const f = findings("/r", one, MAINT_DEFAULTS, NOW).find((x) => x.key === "ci:flaky")!;
+    const b = briefFor(f, one, ctx)!;
+    expect(b).toMatch(/^CI in acme is noisy: the build-check \(windows-latest\) job failed and then passed when the same commit was run again, 2 of 3 times in the last 30 days\./);
+    expect(b).toContain("- fails at: Cargo test");
+    expect(b).toContain("- aaaa111 on feature/x, 1d ago: https://ci.example/job/aaaa1111bbbb");
+    expect(b).toContain("- cccc222 on feature/x, 3d ago, and failed again: https://ci.example/job/cccc2222dddd");
+    expect(b).toContain("the logs at the links name the test");
+    expect(b).toContain("Do not add a retry");
+    expect(b).toContain("pnpm test");
+    expect(b).not.toMatch(/github|actions|\bgh\b/i);
+    expect(b.endsWith("\n")).toBe(false);
+    // Several jobs each get a heading; a broken branch keeps its own brief; no noise, no brief.
+    const two = noisy(win, { ...win, workflow: "nightly", job: "e2e", reruns: 2 });
+    const g = findings("/r", two, MAINT_DEFAULTS, NOW).find((x) => x.key === "ci:flaky")!;
+    expect(briefFor(g, two, ctx)).toMatch(/2 jobs failed[\s\S]*### build-check \(windows-latest\) \(ci\): passed on re-run 2 of 3[\s\S]*### e2e \(nightly\): passed on re-run 2 of 2/);
+    expect(briefFor(f, input(green), ctx), "null once the facts are gone").toBeNull();
+    expect(briefFor(f, noisy({ ...win, passed: 1 }), ctx), "below the threshold is no Fix").toBeNull();
+    expect(brief("ci")).toMatch(/^CI is failing on main/);
+    const cut = input(green, ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: S - 9 * D, runs: 500, reran: 3, jobs: [win] }));
+    expect(briefFor(f, cut, ctx)).toContain("A busy project's window was shorter");
+    const part = input(green, { ...ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 500, reran: 3, jobs: [win] }), truncated: true });
+    expect(briefFor(f, part, ctx)).toContain("Part of this read failed or hit a cap, so these counts are floors.");
+    expect(briefFor(f, part, ctx), "a failed read is no busy project").not.toContain("busy");
   });
 
   it("names every red workflow behind the one CI line, oldest first", () => {

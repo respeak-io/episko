@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
-  type Advisory, type AdvisoryKind, type CiFailure, type Facts, type Finding, type MaintInput, type MergedAdvisory, type RuntimeState,
+  affectedText, ciFailures, clampMaint, flakyJobs, mergeAdvisories, okFacts, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle,
+  type Advisory, type AdvisoryKind, type CiFailure, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
@@ -66,6 +66,37 @@ const ciBrief: Brief = (_f, inp, ctx) => {
     `Read the failing ${one ? "run's log at the link above" : "runs' logs at the links above"} and find the cause before changing anything:`,
     "say whether the code, the test or the CI environment is wrong, and reproduce it locally if you can.",
     "Fix the cause, never the symptom: do not skip, retry or loosen a test to get it green.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Noisy, not broken: a different agent from ciBrief's. A job is the finest grain read, so the
+// agent is sent to the logs, which name the test.
+const flakyBrief: Brief = (_f, inp, ctx) => {
+  const noisy = flakyJobs(inp, clampMaint(inp.det?.config.thresholds)).filter((j) => j.level === "warn");
+  if (!noisy.length) return null;
+  const one = noisy.length === 1, j = noisy[0];
+  const body = (x: FlakyJob) => [
+    ...(x.steps.length ? [bullet(`fails at: ${x.steps.join(", ")}`)] : []),
+    ...x.seen.map((s) => bullet(`${s.sha.slice(0, 7)} on ${s.branch}${s.at ? `, ${ago(s.at, ctx)} ago` : ""}`
+      + `${s.passed ? "" : ", and failed again"}: ${s.url ?? "no log link"}`)),
+  ];
+  return [
+    one ? `CI in ${ctx.project} is noisy: the ${j.job} job failed and then passed when the same commit was run again, ${j.passed} of ${j.reruns} times in the last ${j.days} days.`
+      : `CI in ${ctx.project} is noisy: ${noisy.length} jobs failed and then passed when the same commit was run again, in the last ${j.days} days.`,
+    ...(noisy.some((x) => x.short) ? ["A busy project's window was shorter, so these counts are floors."]
+      : noisy.some((x) => x.cut) ? ["Part of this read failed or hit a cap, so these counts are floors."] : []),
+    ...(one ? [""] : []),
+    ...each(noisy, (x) => `${x.job} (${x.workflow}): passed on re-run ${x.passed} of ${x.reruns}`, body),
+    "",
+    "A job is the finest unit read here; the logs at the links name the test.",
+    "Find what fails on one try and passes on the next (a race or an order dependence between tests, shared",
+    "state, a timeout too tight for a slow runner, the network, the runner itself) and say which, quoting the",
+    "log. Reproduce it by running it repeatedly if you can.",
+    "Fix the cause so it passes every time. Do not add a retry, skip or quarantine the test, mark it allowed",
+    "to fail, or raise a timeout without a reason: that hides the noise.",
+    "If the cause is outside the code, say what would fix it and change nothing.",
     "",
     ...verifyBlock(ctx.verify),
   ];
@@ -325,6 +356,7 @@ const setupBrief: Brief = (f, inp, ctx) => {
 // other `prod:<kind>:…` is another source's.
 export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
   [(f) => f.key === "ci", ciBrief],
+  [(f) => f.key === "ci:flaky", flakyBrief],
   [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
   [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
 ];

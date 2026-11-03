@@ -202,10 +202,35 @@ pub(crate) struct Runtime {
     pub(crate) url: Option<String>,
 }
 
+/// One run in which a job failed and was run again on the same commit.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Rerun {
+    pub(crate) sha: String,
+    pub(crate) branch: String,
+    pub(crate) at: Option<u64>, // the failed attempt's start
+    pub(crate) passed: bool,    // a later attempt passed
+    pub(crate) url: Option<String>, // the failed attempt's job page: its log
+}
+
+/// A job that passed on a re-run of the commit it failed on, at least once in the window.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RerunJob {
+    pub(crate) workflow: String, // `CI (nightly.yml)` when two workflows share a name
+    pub(crate) job: String,
+    pub(crate) reruns: u32, // runs where it failed and was run again
+    pub(crate) passed: u32, // of those, a later attempt passed
+    pub(crate) steps: Vec<String>, // what it failed at, most often first
+    pub(crate) seen: Vec<Rerun>,   // newest first
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum Facts {
     CiRuns { branch: String, runs: Vec<CiRun> },
+    // Every branch's runs, never the default branch's history: `since` is Some only when the list was cut.
+    CiReruns { days: u32, since: Option<u64>, runs: u32, reran: u32, jobs: Vec<RerunJob> },
     Advisories { items: Vec<Advisory> },
     UpdatePrs { bot: String, configured: bool, prs: Vec<UpdatePr>, dashboard: Option<u64> },
     Release(ReleaseFacts),
@@ -221,7 +246,7 @@ impl Facts {
     /// The one facet each kind may answer; a read that crosses it is an error, never a cell.
     pub(crate) fn facet(&self) -> Facet {
         match self {
-            Facts::CiRuns { .. } => Facet::Ci,
+            Facts::CiRuns { .. } | Facts::CiReruns { .. } => Facet::Ci,
             Facts::Advisories { .. } | Facts::Runtimes { .. } => Facet::Security,
             Facts::UpdatePrs { .. } => Facet::Deps,
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } => Facet::Release,
@@ -329,6 +354,8 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "ci.disabled",
     "ci.external",
     "ci.other-branches",
+    "ci.reruns",
+    "ci.per-test",
     "git.unpushed",
     "git.local-only",
     "git.merged",
@@ -1337,6 +1364,7 @@ pub(crate) struct SourceDef {
 /// One row per manifest source; a marker has no row until it is promoted (docs/maintenance.md).
 pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-actions", read: crate::maint_ci::github_actions },
+    SourceDef { id: "github-actions-reruns", read: crate::maint_ci::github_actions_reruns },
     SourceDef { id: "forge-commit-status", read: crate::maint_ci::forge_commit_status },
     SourceDef { id: "gitlab-ci", read: crate::maint_ci::gitlab_ci },
     SourceDef { id: "dependabot-alerts", read: crate::maint_sec::dependabot_alerts },
@@ -1378,7 +1406,7 @@ fn ttl(cost: Cost) -> Duration {
     })
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
@@ -2220,6 +2248,7 @@ host = \"-oProxyCommand=x\"
         };
         // A kind's facts are bound here and its report is one line below, so a new kind is two insertions.
         let (gh_runs, _) = crate::maint_ci::parse_runs(&FakeExec::testdata("gh-run-list.json")).unwrap();
+        let reruns = crate::maint_ci::parse_reruns(&FakeExec::testdata("gh-reruns-page.json"), &FakeExec::testdata("gh-rerun-jobs.ndjson"));
         let advisory = Advisory {
             id: "GHSA-xxxx-yyyy-zzzz".into(), aliases: vec!["CVE-2026-0001".into()], kind: AdvisoryKind::Dependency,
             pkg: Some("lodash".into()), ecosystem: Some("npm".into()), version: Some("4.17.20".into()),
@@ -2259,6 +2288,7 @@ host = \"-oProxyCommand=x\"
         let reports = vec![
             // The recorded list as parsed, so maint.test.ts dates failing-since over the real join.
             ok("github-actions", Facet::Ci, Cost::Forge, Facts::CiRuns { branch: "main".into(), runs: gh_runs }),
+            ok("github-actions-reruns", Facet::Ci, Cost::Forge, reruns),
             ok("osv", Facet::Security, Cost::Public, Facts::Advisories { items: vec![advisory] }),
             ok("renovate-prs", Facet::Deps, Cost::Forge, Facts::UpdatePrs { bot: "renovate".into(), configured: true, prs: vec![update_pr], dashboard: Some(7) }),
             ok("git-tags", Facet::Release, Cost::Local, Facts::Release(release)),
@@ -2304,6 +2334,7 @@ version_url = \"https://app.example.com/version\"
     const ALL_STATES: [&str; 7] = ["ok", "off", "noAccess", "noTool", "unsupported", "notRun", "error"];
     const ALL_KINDS: &[&str] = &[
         "ciRuns",
+        "ciReruns",
         "advisories",
         "updatePrs",
         "release",
@@ -2330,6 +2361,7 @@ version_url = \"https://app.example.com/version\"
     fn kind_of(f: &Facts) -> &'static str {
         match f {
             Facts::CiRuns { .. } => "ciRuns",
+            Facts::CiReruns { .. } => "ciReruns",
             Facts::Advisories { .. } => "advisories",
             Facts::UpdatePrs { .. } => "updatePrs",
             Facts::Release(_) => "release",

@@ -7,7 +7,7 @@ import {
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
-  worseOf, type Judged,
+  worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -373,6 +373,142 @@ describe("worseOf: a facet's second kind of facts", () => {
     expect(worseOf(blindOk, blindUnknown), "nothing answered the facet").toMatchObject({ level: "muted", text: "not checked", blind: true });
     expect(worseOf(j("bad", "domain expired", { blind: true }), blindOk), "what a blind kind found needs no vouching")
       .toMatchObject({ level: "bad", text: "domain expired", blind: false });
+  });
+});
+
+describe("flaky jobs: noise beside a red default branch, never in place of it", () => {
+  const RR = "github-actions-reruns";
+  const seen = (at: number, passed: boolean) => ({ sha: "abcdef1234", branch: "feature", at, passed, url: `https://ci.example/job/${at}` });
+  // `passed` of `reruns` occurrences passed, the newest first, a day apart.
+  const rjob = (job: string, passed: number, reruns = passed): RerunJob => ({ workflow: "ci", job, reruns, passed, steps: ["Cargo test"],
+    seen: Array.from({ length: Math.min(reruns, 3) }, (_, i) => seen(S - (i + 1) * D, i < passed)) });
+  const reruns = (...jobs: RerunJob[]): Facts => ({ kind: "ciReruns", days: 30, since: null, runs: 140, reran: jobs.length, jobs });
+  const green = () => ok(GHA, ci(run("build", "pass", S - H)));
+  const failedRuns = () => not(GHA, "ci", { state: "error", reason: "HTTP 502" });
+
+  it("narrows the recorded re-runs unchanged, and a job of the wrong shape fails that source alone", () => {
+    const rr = wire.reports.find((r) => r.source === RR)!;
+    const f = narrowMaint(rr, RR).facts as Extract<Facts, { kind: "ciReruns" }>;
+    expect(f.jobs.map((x) => [x.workflow, x.job, x.reruns, x.passed, x.steps])).toEqual([["ci", "build-check (windows-latest)", 1, 1, ["Cargo test"]]]);
+    expect(narrowMaint({ ...rr, facts: { ...f, jobs: [{ ...f.jobs[0], passed: "1" }] } }, RR).coverage.state).toBe("error");
+    expect(narrowMaint({ ...rr, facts: { ...f, since: "never" } }, RR).coverage.state).toBe("error");
+  });
+
+  it("never lets re-runs vouch for the cell: beside a failed runs read it says that read's word, never 'never ran'", () => {
+    const c = cell("ci", input(failedRuns(), ok(RR, reruns(rjob("t", 1)))));
+    expect(c).toMatchObject({ state: "cantCheck", level: "muted", text: "read failed" });
+    expect(cell("ci", input(ok(RR, reruns()))), "read alone, it is no dot").toMatchObject({ level: "muted", text: "runs not read" });
+  });
+
+  it("turns amber at the threshold, leaves a dot with a tip line below it, and lets red stay red", () => {
+    expect(cell("ci", input(green(), ok(RR, reruns(rjob("build-check (windows-latest)", 2, 3)))))).toMatchObject({ level: "warn", text: "1 flaky job" });
+    const once = cell("ci", input(green(), ok(RR, reruns(rjob("slow", 1)))));
+    expect(once).toMatchObject({ level: "ok", text: "" });
+    expect(once.tip).toContain("slow (ci): passed on re-run 1 of 1 in 30d");
+    const red = cell("ci", input(ok(GHA, ci(run("build", "fail", S - D))), ok(RR, reruns(rjob("t", 3)))));
+    expect(red).toMatchObject({ level: "bad", text: "failing 1d" });
+    expect(red.tip).toContain("t (ci): passed on re-run 3 of 3 in 30d");
+    expect(cell("ci", input(ok(GHA, ci()), ok(RR, reruns(rjob("t", 2))))), "a muted base keeps its words").toMatchObject({ level: "warn", text: "never ran · 1 flaky job" });
+    expect(cell("ci", input(failedRuns(), ok(RR, reruns(rjob("t", 2)))))).toMatchObject({ state: "read", level: "warn", text: "runs not read · 1 flaky job" });
+    expect(findings("/r", input(green(), ok(RR, reruns(rjob("t", 2)), { truncated: true })), MAINT_DEFAULTS, NOW)[0].detail, "a failed read is no busy project")
+      .toBe("ci · 2 of 2 re-runs passed in 30 days · fails at Cargo test · read in part");
+    expect(findings("/r", input(green(), ok(RR, { ...reruns(rjob("t", 2)), since: S - D } as Facts, { truncated: true })), MAINT_DEFAULTS, NOW)[0].detail)
+      .toBe("ci · 2 of 2 re-runs passed in 30 days · fails at Cargo test · a busy window, read in part");
+    expect(cell("ci", input(green(), ok(RR, reruns(rjob("a", 2), rjob("b", 4)), { truncated: true })))).toMatchObject({ text: "2+ flaky jobs" });
+    // Amber always has its line, and the band reads the cell.
+    expect(projectBand(facetCells(input(green(), ok(RR, reruns(rjob("t", 2)))), MAINT_DEFAULTS, NOW))).toBe("drifting");
+  });
+
+  it("reads the threshold from the file and refuses a zero", () => {
+    const inp = input(green(), ok(RR, reruns(rjob("t", 1))));
+    expect(facetCell("ci", inp, clampMaint({ flaky_reruns: 1 }), NOW)).toMatchObject({ level: "warn", text: "1 flaky job" });
+    expect(clampMaint({ flaky_reruns: 0 }).flakyReruns).toBe(2);
+    expect(flakyJobs(inp, clampMaint({ flaky_reruns: 1 })).map((j) => [j.job, j.level])).toEqual([["t", "warn"]]);
+    expect(flakyJobs(inp).map((j) => [j.job, j.level, j.last, j.url])).toEqual([["t", "info", S - D, `https://ci.example/job/${S - D}`]]);
+  });
+
+  it("is one ci:flaky line with Fix, worded for one job or several, beside the red line and never below the threshold", () => {
+    const one = findings("/r", input(green(), ok(RR, reruns(rjob("build-check (windows-latest)", 2, 3)))), MAINT_DEFAULTS, NOW);
+    expect(one.map((f) => [f.key, f.level, f.verb, f.ref, f.text, f.detail])).toEqual([["ci:flaky", "warn", "fix", "flaky",
+      "build-check (windows-latest) passed on re-run 2×", "ci · 2 of 3 re-runs passed in 30 days · fails at Cargo test"]]);
+    const several = findings("/r", input(green(), ok(RR, reruns(rjob("a", 2), rjob("b", 5), rjob("c", 3), rjob("d", 2), rjob("e", 1)))), MAINT_DEFAULTS, NOW);
+    expect(several.map((f) => [f.key, f.text, f.detail])).toEqual([["ci:flaky", "4 flaky jobs", "b 5×, c 3×, a 2× …"]]);
+    expect(findings("/r", input(green(), ok(RR, reruns(rjob("a", 1)))), MAINT_DEFAULTS, NOW)).toEqual([]);
+    const both = findings("/r", input(ok(GHA, ci(run("build", "fail", S - D))), ok(RR, reruns(rjob("a", 2)))), MAINT_DEFAULTS, NOW);
+    expect(both.map((f) => [f.key, f.level]), "broken and noisy are two problems").toEqual([["ci", "bad"], ["ci:flaky", "warn"]]);
+  });
+
+  it("opens on its own board, and never becomes Today's red default branch", () => {
+    expect(findingTarget({ facet: "ci", key: "ci:flaky" })).toEqual({ tab: "delivery", board: "flaky" });
+    expect(findingTarget({ facet: "ci", key: "ci" })).toEqual({ tab: "delivery", board: "ci" });
+    const inp = input(green(), ok(RR, reruns(rjob("a", 2))));
+    expect(ciRows(inp, undefined, NOW)).toEqual([]);
+    const snap = takeSnap("/r", inp, NOW);
+    expect(snap.findings.map((f) => f.key)).toEqual(["ci:flaky"]);
+    expect(ciRows(null, snap, NOW), "a snapshot's noise is no red row").toEqual([]);
+  });
+
+  it("keeps the last known red when only the re-runs were read", () => {
+    const red = takeSnap("/r", input(ok(GHA, ci(run("build", "fail", S - 2 * D)))), NOW - D * 1000);
+    const failed = input(failedRuns(), ok(RR, reruns(rjob("a", 2))));
+    expect(cell("ci", failed).state).toBe("read");
+    expect(ciRows(failed, red, NOW).map((r) => [r.text, r.asOf])).toEqual([["CI failing 1d", red.at]]);
+    const next = takeSnap("/r", failed, NOW, red);
+    expect(next.cells.find((c) => c.facet === "ci")).toMatchObject({ level: "bad", at: red.at });
+    expect(next.findings.map((f) => f.key)).toEqual(["ci"]);
+  });
+
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+
+  it("lists a failed runs read in Coverage even when the re-runs found noise", () => {
+    const failed = { ...failedRuns(), coverage: { state: "noAccess", reason: "token scope", fix: "gh auth refresh" } as Coverage };
+    const row = (reps: SourceReport[]) => coverGroups("delivery", [tp("/r", ...reps)], null, NOW).map((g) => [g.source, g.why, g.action]);
+    const said = [[GHA, "token scope", { kind: "fix", fix: "gh auth refresh" }]];
+    expect(row([failed, ok(RR, reruns(rjob("t", 2)))]), "amber for the noise, and still no word on the branch").toEqual(said);
+    expect(row([failed, ok(RR, reruns(rjob("t", 1)))]), "the same row as with no noise").toEqual(said);
+    expect(row([green(), ok(RR, reruns(rjob("t", 2)))]), "a read default branch leaves nothing to explain").toEqual([]);
+  });
+
+  it("keeps the CI board the default branch's: green stays green beside noise, red stays red", () => {
+    const b = tabBoards("delivery", [tp("/a", green(), ok(RR, reruns(rjob("t", 2)))), tp("/b", green())], null, null, NOW);
+    expect(b.ci.map((r) => [r.root, r.level, r.text])).toEqual([["/a", "ok", ""], ["/b", "ok", ""]]);
+    const red = tabBoards("delivery", [tp("/a", ok(GHA, ci(run("build", "fail", S - D))), ok(RR, reruns(rjob("t", 2))))], null, null, NOW);
+    expect(red.ci.map((r) => [r.level, r.text])).toEqual([["bad", "failing 1d"]]);
+  });
+
+  it("never claims a whole window it did not read, and says why it did not", () => {
+    const board = (...reps: SourceReport[]) => tabBoards("delivery", [tp("/a", ...reps)], null, null, NOW).flaky;
+    expect(board(green(), ok(RR, reruns()))).toMatchObject({ cut: false, short: false, clear: "No job needed a re-run to pass in 30 days." });
+    const failed = ok(RR, { ...reruns(), reran: 3 } as Facts, { truncated: true, gaps: ["CI on abc: jobs not read: HTTP 502"] });
+    expect(board(green(), failed)).toMatchObject({ rows: [], cut: true, short: false, clear: "No flaky job in what could be read." });
+    const busy = ok(RR, { ...reruns(), since: S - 9 * D } as Facts, { truncated: true });
+    expect(board(green(), busy)).toMatchObject({ rows: [], cut: true, short: true, clear: "No flaky job in what could be read." });
+  });
+
+  it("draws the Flaky jobs board: the noisiest first, a Fix on its warn rows only, a cut window a floor", () => {
+    const ps = [
+      tp("/a", green(), ok(RR, reruns(rjob("slow", 1), rjob("race", 3, 4)))),
+      tp("/b", green(), ok(RR, reruns(rjob("net", 2)), { truncated: true })),
+      tp("/c", ok(RR, reruns())),
+    ];
+    const b = tabBoards("delivery", ps, null, null, NOW);
+    expect(b.flaky.rows.map((r) => [r.root, r.job, r.passed, r.reruns, r.level, r.capped, r.verb?.key ?? null])).toEqual([
+      ["/a", "race", 3, 4, "warn", false, "ci:flaky"], ["/b", "net", 2, 2, "warn", true, "ci:flaky"], ["/a", "slow", 1, 1, "info", false, null],
+    ]);
+    expect(b.flaky.rows[0]).toMatchObject({ last: D, url: `https://ci.example/job/${S - D}`, steps: ["Cargo test"], workflow: "ci" });
+    expect(b.flaky).toMatchObject({ read: 3, days: 30, runs: 420, reran: 3, cut: true });
+    expect(b.drawn).toEqual(expect.arrayContaining(["/a|ci:flaky", "/b|ci:flaky"]));
+    expect(b.ci.map((r) => r.root), "re-runs alone give no CI row").toEqual(["/a", "/b"]);
+    expect(b.read.ci, "the CI board counts the runs read, not the re-runs").toBe(2);
+    expect(flakyBoard(ps, "/c", NOW)).toEqual([]);
+    expect(tabBoards("delivery", ps, "/c", null, NOW).flaky).toMatchObject({ read: 1, cut: false });
+    expect(tabBoards("security", ps, null, null, NOW).flaky.read, "only Delivery reads it").toBe(0);
+    expect(boardDoor("flaky", "last", b.flaky.rows[0].url)).toEqual({ to: "url", url: `https://ci.example/job/${S - D}` });
+    expect(boardDoor("flaky", "last", "file:///etc/passwd")).toBeNull();
+    expect(boardDoor("flaky", "passed", 3), "a count with no door, as the changelog's").toBeNull();
   });
 });
 
@@ -1267,6 +1403,7 @@ describe("a board's numbers are doors", () => {
     advisories: {}, packages: {}, runtimes: { ends: "url" },
     "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
     ci: { run: "url" },
+    flaky: { passed: null, last: "url" },
     releases: { since: { to: "landed" }, changelog: null },
     hygiene: {
       unpushed: branches("unpushed"), localOnly: branches("localonly"), merged: branches("merged"), gone: branches("gone"),
@@ -1338,6 +1475,8 @@ describe("a card line opens what it summarises", () => {
   it("opens every kind of line on its facet's tab, at the board that carries its verb", () => {
     const p = tp("/r",
       ok(GHA, ci(run("build", "fail", S - H))),
+      ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 2, jobs: [
+        { workflow: "ci", job: "e2e", reruns: 2, passed: 2, steps: [], seen: [] }] }),
       ok("dependabot-alerts", { kind: "advisories", items: [adv()] }),
       scan([adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" }), adv({ id: "S-1", kind: "secret", pkg: null, location: "k" })]),
       ok("dependabot-prs", prs(2)),
@@ -1348,7 +1487,7 @@ describe("a card line opens what it summarises", () => {
     );
     const at = Object.fromEntries(p.rows.map((f) => { const t = findingTarget(f); return [f.key, `${t.tab}/${t.board}`]; }));
     expect(at).toEqual({
-      ci: "delivery/ci", release: "delivery/releases",
+      ci: "delivery/ci", "ci:flaky": "delivery/flaky", release: "delivery/releases",
       "security:dependency": "security/advisories", "security:code": "security/advisories", "security:secret": "security/advisories",
       "deps:b": "security/update-prs",
       "git:unpushed": "code/hygiene", "git:tidy": "code/hygiene", "git:fetch": "code/hygiene",
@@ -1425,6 +1564,8 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
   const tool = (id: string): SourceReport => ({ ...not(id, "security", { state: "notRun" }), cost: "tool" });
   const many = (path: string, red: boolean) => tp(path,
     ok(GHA, ci(run("build", red ? "fail" : "pass", S - H), run("lint", "pass", S - 2 * H))),
+    ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 40, reran: 2, jobs: [
+      { workflow: "ci", job: "e2e", reruns: 3, passed: red ? 2 : 1, steps: ["Run"], seen: [] }] }),
     ok("dependabot-alerts", { kind: "advisories", items: [adv(), adv({ id: "B-2", pkg: "minimist", severity: "medium" })] }),
     ok("github-code-scanning", { kind: "advisories", items: [adv({ id: "C-1", kind: "code", pkg: null, location: "src/a.ts:3" })] }),
     not("github-secret-scanning", "security", { state: "off", reason: "secret scanning is off" }),

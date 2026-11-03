@@ -146,6 +146,8 @@ describe("the frontend never names a vendor", () => {
     "url",
     "checks",
     "date", // endoflife.date's TLD; "endoflife" is the vendor
+    "re",
+    "runs",
   ]);
   const labels = [...manifest.markers, ...Object.values(manifest.sources)].map((m) => m.label);
   const vendors = new Set([

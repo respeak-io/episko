@@ -14,17 +14,22 @@
       "sees": ["ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled"],
       "blind": ["ci.other-branches", "ci.external"]
     },
+    "github-actions-reruns": {
+      "facet": "ci", "label": "GitHub Actions re-runs", "cost": "forge", "forge": ["github"], "detect": [".github/workflows/"],
+      "sees": ["ci.reruns"],
+      "blind": ["ci.per-test"]
+    },
     "forge-commit-status": {
       "facet": "ci", "label": "commit statuses", "cost": "forge", "forge": ["github"],
       "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/", ".circleci/config.yml", "azure-pipelines.yml", "azure-pipelines.yaml",
                  "Jenkinsfile", ".drone.yml", ".drone.yaml", ".buildkite/", ".travis.yml", "appveyor.yml"],
       "sees": ["ci.default-branch", "ci.external"],
-      "blind": ["ci.failing-since", "ci.other-branches"]
+      "blind": ["ci.failing-since", "ci.other-branches", "ci.reruns"]
     },
     "gitlab-ci": {
       "facet": "ci", "label": "GitLab CI", "cost": "forge", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"],
       "sees": ["ci.default-branch", "ci.failing-since"],
-      "blind": ["ci.per-workflow", "ci.other-branches"]
+      "blind": ["ci.per-workflow", "ci.other-branches", "ci.reruns"]
     },
     "dependabot-alerts": {
       "facet": "security", "label": "Dependabot alerts", "cost": "forge", "forge": ["github"], "detect": [],

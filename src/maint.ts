@@ -44,10 +44,15 @@ export interface Runtime {
 }
 export interface BranchAge { name: string; at: number }
 export interface WtAge { path: string; branch: string; at: number | null }
+/** One run where a job failed and ran again on the same commit; `at` and `url` are the failed attempt's. */
+export interface Rerun { sha: string; branch: string; at: number | null; passed: boolean; url: string | null }
+/** A job that passed on a re-run of its commit at least once in the window; `seen` newest first. */
+export interface RerunJob { workflow: string; job: string; reruns: number; passed: number; steps: string[]; seen: Rerun[] }
 
 // Every time is unix seconds, as the wire carries it.
 export type Facts =
   | { kind: "ciRuns"; branch: string; runs: CiRun[] }
+  | { kind: "ciReruns"; days: number; since: number | null; runs: number; reran: number; jobs: RerunJob[] } // every branch; since: a cut window
   | { kind: "advisories"; items: Advisory[] }
   | { kind: "updatePrs"; bot: string; configured: boolean; prs: UpdatePr[]; dashboard: number | null }
   | { kind: "release"; trunk: string | null; tag: string | null; tagAt: number | null; since: number;
@@ -65,6 +70,7 @@ type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
 /** The one facet each kind may answer (`Facts::facet`); a record, so a new kind fails to compile here. */
 export const FACT_FACET: Record<FactKind, Facet> = {
   ciRuns: "ci",
+  ciReruns: "ci",
   advisories: "security",
   updatePrs: "deps",
   release: "release",
@@ -120,6 +126,8 @@ const isRuntime = shape({
 
 const FACT_SHAPES: Record<FactKind, Is> = {
   ciRuns: shape({ branch: str, runs: list(isCiRun) }),
+  ciReruns: shape({ days: num, since: opt(num), runs: num, reran: num, jobs: list(shape({ workflow: str, job: str, reruns: num, passed: num,
+    steps: list(str), seen: list(shape({ sha: str, branch: str, at: opt(num), passed: bool, url: opt(str) })) })) }),
   advisories: shape({ items: list(isAdvisory) }),
   updatePrs: shape({ bot: str, configured: bool, prs: list(isPr), dashboard: opt(num) }),
   release: shape({ trunk: opt(str), tag: opt(str), tagAt: opt(num), since: num, oldestUnreleasedAt: opt(num), tagsSeen: num, fetchedAt: opt(num) }),
@@ -204,6 +212,7 @@ export interface MaintThresholds {
   botPrBacklog: number; // open update PRs that count as a pile
   fetchStaleDays: number; // release and git counts are as old as the last fetch
   eolWarnDays: number; // a runtime whose cycle ends sooner is drifting
+  flakyReruns: number; // a job that passed on a re-run of its own commit this often in the window is flaky
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
   unreleasedCommits: 30,
@@ -214,6 +223,7 @@ export const MAINT_DEFAULTS: MaintThresholds = {
   botPrBacklog: 5,
   fetchStaleDays: 7,
   eolWarnDays: 90,
+  flakyReruns: 2,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   unreleasedCommits: "unreleased_commits",
@@ -224,6 +234,7 @@ const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   botPrBacklog: "bot_pr_backlog",
   fetchStaleDays: "fetch_stale_days",
   eolWarnDays: "eol_warn_days",
+  flakyReruns: "flaky_reruns",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -299,7 +310,7 @@ export function whyWord(c: Coverage, facet: Facet): string {
 
 /** A facet's verdict from one kind of facts. `blind`: what it read cannot answer the facet alone. */
 export interface Judged { level: Level; text: string; tip: string[]; asOf?: number | null; blind?: boolean }
-interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: SourceReport[] }
+interface Ctx { th: MaintThresholds; now: number; trunc: boolean; reps: CiReport[] }
 type Rule = (facts: Facts[], c: Ctx) => Judged;
 
 const kinds = <K extends FactKind>(facts: Facts[], k: K): FactsOf<K>[] =>
@@ -334,9 +345,11 @@ export function ciFailures(reps: CiReport[]): CiFailure[] {
 export const redFor = (x: CiFailure, sec: number): string | null =>
   x.since === null ? null : `${span(sec - x.since)}${x.floor ? "+" : ""}`;
 
-// Positive evidence only: zero runs is "never ran", and skips alone are not a pass.
-const ciRule: Rule = (facts, c) => {
+// Positive evidence only: zero runs is "never ran", and skips alone are not a pass. Re-runs read
+// without the runs vouch for nothing, so the runs read's own reason names the cell.
+const ciRunsRule: Rule = (facts, c) => {
   const all = kinds(facts, "ciRuns");
+  if (!all.length) return { level: "muted", text: "runs not read", tip: [], blind: true };
   const runs = all.flatMap((f) => f.runs);
   const branch = [...new Set(all.map((f) => f.branch))].join(", ");
   if (!runs.length) return { level: "muted", text: "never ran", tip: [`no run on ${branch} yet, so no pass either`] };
@@ -357,6 +370,35 @@ const ciRule: Rule = (facts, c) => {
   const odd = st.filter((s) => s !== "pass" && s !== "skip");
   if (!odd.length) return { level: "ok", text: "", tip: [`${plural(latest.size, "workflow")} on ${branch}`, ...tip] };
   return { level: "muted", text: `${odd.length} ${new Set(odd).size === 1 ? odd[0] : "not passing"}`, tip };
+};
+
+/** A job that failed and then passed when its commit ran again, as a CI source counted it: `warn`
+ *  once it did so `flakyReruns` times in the window. `cut`: its counts are floors, for any reason;
+ *  `short`: because a busy window was read short, the one reason that is the project's doing. */
+export type FlakyJob = RerunJob & { source: string; days: number; cut: boolean; short: boolean; last: number | null; url: string | null; level: "warn" | "info" };
+function flakyOf(reps: readonly CiReport[], th: MaintThresholds): FlakyJob[] {
+  return reps.flatMap(({ source, truncated, facts: f }) => f?.kind !== "ciReruns" ? [] : f.jobs.map((j): FlakyJob => ({
+    ...j, source, days: f.days, cut: truncated || f.since !== null, short: f.since !== null, last: j.seen[0]?.at ?? null, url: j.seen[0]?.url ?? null,
+    level: j.passed >= th.flakyReruns ? "warn" : "info",
+  }))).sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || b.passed - a.passed || (b.last ?? 0) - (a.last ?? 0)
+    || a.workflow.localeCompare(b.workflow) || a.job.localeCompare(b.job));
+}
+/** A project's flaky jobs, the noisiest first. */
+export const flakyJobs = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS): FlakyJob[] => flakyOf(okFacts(inp, "ci"), th);
+
+// Noise beside a red default branch, never in place of it: amber, and alone it vouches for nothing.
+const rerunsRule = (facts: Facts[], c: Ctx): Judged | null => {
+  if (!kinds(facts, "ciReruns").length) return null;
+  const all = flakyOf(c.reps, c.th), noisy = all.filter((j) => j.level === "warn");
+  const tip = all.map((j) => `${j.job} (${j.workflow}): passed on re-run ${j.passed} of ${j.reruns} in ${j.days}d`);
+  if (!noisy.length) return { level: "ok", text: "", tip, blind: true };
+  const n = `${noisy.length}${noisy.some((j) => j.cut) ? "+" : ""}`;
+  return { level: "warn", text: `${n} flaky job${noisy.length === 1 ? "" : "s"}`, tip, blind: true };
+};
+const ciRule: Rule = (facts, c) => {
+  const base = ciRunsRule(facts, c), j = worseOf(base, rerunsRule(facts, c));
+  // A muted base keeps its words in front, so amber never hides "never ran".
+  return j.level === "warn" && base.level === "muted" ? { ...j, text: `${base.text} · ${j.text}` } : j;
 };
 
 const SEV_LEVEL: Record<Severity, Level> = { critical: "bad", high: "bad", medium: "warn", low: "info", unknown: "info" };
@@ -718,6 +760,17 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
       detail: red.length === 1 ? `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}`
         : `${names.slice(0, 3).join(", ")}${red.length > 3 ? " …" : ""} on ${on}` });
   }
+  // Noisy is not broken: its own line and its own Fix, which hunts the nondeterminism.
+  const noisy = flakyJobs(inp, th).filter((j) => j.level === "warn");
+  if (noisy.length) {
+    const j = noisy[0], cut = noisy.some((x) => x.cut);
+    add("ci", { key: "ci:flaky", level: "warn", verb: "fix", source: j.source, ref: "flaky",
+      text: noisy.length === 1 ? `${j.job} passed on re-run ${j.passed}×` : `${noisy.length}${cut ? "+" : ""} flaky jobs`,
+      detail: noisy.length === 1
+        ? [j.workflow, `${j.passed} of ${j.reruns} re-runs passed in ${j.days} days`, j.steps.length ? `fails at ${j.steps.join(", ")}` : "",
+          j.short ? "a busy window, read in part" : cut ? "read in part" : ""].filter(Boolean).join(" · ")
+        : noisy.slice(0, 3).map((x) => `${x.job} ${x.passed}×`).join(", ") + (noisy.length > 3 ? " …" : "") });
+  }
   // One line per kind: four advisories are one Patch, as 65 branches are one Tidy (docs/maintenance.md).
   const advs = okFacts(inp, "security");
   const merged = mergeAdvisories(advs.map((r) => r.facts.kind === "advisories" ? r.facts.items : []));
@@ -939,6 +992,7 @@ export const BOARD_IDS = [
   "update-prs",
   "packages",
   "ci",
+  "flaky",
   "releases",
   "hygiene",
   "work",
@@ -948,7 +1002,7 @@ export type BoardId = (typeof BOARD_IDS)[number];
 // Each facet's boards and the keys each carries a verb for, the first match winning; a pre-fold
 // snapshot's `ci:<workflow>` is CI's too.
 const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
-  ci: [["ci", /^ci$|^ci:(?!setup$)/]],
+  ci: [["flaky", /^ci:flaky$/], ["ci", /^ci$|^ci:(?!setup$)/]],
   release: [["releases", /^release$/]],
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["update-prs", /^deps:(?!setup$)/]],
@@ -977,6 +1031,8 @@ export function projectPicks(tab: MaintTab, rows: readonly Finding[], projects: 
 // Muted is unknown ("never ran", "reviews unknown"), except a read that found the facet's none.
 const isNone = (x: Cell) => x.state === "none" || x.state === "off" || (x.state === "read" && x.level === "muted" && x.text === facetDef(x.facet).none);
 const isVerdict = (x: Cell) => x.state === "read" && x.level !== "muted" && x.level !== "unread";
+// CI's verdict is the default branch's: re-runs read beside a failed runs read speak for themselves and not for it.
+const vouched = (x: Cell, inp: MaintInput) => x.facet !== "ci" || x.state !== "read" || okFacts(inp, "ci").some((r) => r.facts.kind === "ciRuns");
 
 /** What an empty tab may claim: projects it reached a verdict on and projects with none of it set
  *  up. What the rest do not know is `coverGroups`'. */
@@ -1043,7 +1099,8 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     const det = inp.det, th = clampMaint(det?.config.thresholds);
     for (const c of cells) {
       const facet = c.facet, label = facetDef(facet).label;
-      if (FACET_TAB[facet] !== tab || isVerdict(c) || isNone(c)) continue;
+      const noRuns = isVerdict(c) && !vouched(c, inp);
+      if (FACET_TAB[facet] !== tab || (isVerdict(c) && !noRuns) || isNone(c)) continue;
       if (c.state === "past" || c.state === "unread" || !det) {
         const why = c.state === "past" ? "not checked this session" : "not read yet";
         add(path, { key: `${facet}|${c.state}`, facet, what: label, why, detail: "" });
@@ -1051,7 +1108,7 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
         for (const m of det.markers.filter((x) => x.facet === facet)) {
           add(path, { key: `marker:${m.label}`, facet, what: m.label, why: "nothing reads it yet", detail: `found ${m.found.join(", ") || "on this forge"}` });
         }
-      } else if (c.state === "cantCheck") {
+      } else if (c.state === "cantCheck" || noRuns) {
         for (const id of det.sources) {
           const r = inp.reports[id];
           if ((findSource(id)?.facet ?? r?.facet) !== facet) continue;
@@ -1100,8 +1157,10 @@ const within = (ps: readonly TabProject[], root: string | null) => ps.filter((p)
 const verbOf = (p: TabProject, key: string): Finding | null => p.rows.find((f) => f.key === key) ?? null;
 const thOf = (p: TabProject) => clampMaint(p.inp.det?.config.thresholds);
 const rowRank = (l: Level) => HOST_RANK.indexOf(l);
-/** Projects whose facet some source answered: what a board's empty line may claim. */
-const readOf = (ps: readonly TabProject[], facet: Facet) => ps.filter((p) => okFacts(p.inp, facet).length).length;
+/** Projects whose facet some source answered, of the one kind its board counts where a facet has two. */
+const readOf = (ps: readonly TabProject[], facet: Facet, kind?: FactKind) =>
+  ps.filter((p) => okFacts(p.inp, facet).some((r) => !kind || r.facts.kind === kind)).length;
+const READ_KIND: Partial<Record<Facet, FactKind>> = { ci: "ciRuns" };
 
 /** The Security strip's buckets, a secret worse than any severity, as the cell has it. */
 export const SEV_BUCKETS = ["secret", ...SEVERITIES] as const;
@@ -1200,16 +1259,50 @@ export interface CiBoardRow {
 export function ciBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): CiBoardRow[] {
   const sec = now / 1000;
   return within(ps, root).flatMap((p) => {
-    const reps = okFacts(p.inp, "ci");
+    const reps = okFacts(p.inp, "ci").filter((r) => r.facts.kind === "ciRuns"); // the default branch's, never the re-runs
     const runs = reps.flatMap((r) => r.facts.kind === "ciRuns" ? r.facts.runs : []);
     if (!reps.length) return [];
-    const c = p.cells.find((x) => x.facet === "ci")!, red = ciFailures(reps), last = [...runs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    // The default branch's verdict alone, not the cell's: noise has a board of its own.
+    const c = ciRunsRule(reps.map((r) => r.facts), { th: thOf(p), now, trunc: reps.some((r) => r.truncated), reps });
+    const red = ciFailures(reps), last = [...runs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
     const { branch, rows: flows } = ciFlows(p.inp, now);
     const why = red.length ? red.map((x) => x.workflow).join(", ")
       : last[0] ? `${last[0].workflow}${last[0].at ? ` · ${span(sec - last[0].at)} ago` : ""}` : "no run yet";
     return [{ row: { root: p.path, level: c.level, text: c.text, since: red[0] ? redFor(red[0], sec) : null, why,
       runs: last.slice(0, CI_STRIP).map(dotOf).reverse(), branch, flows, verb: verbOf(p, "ci") }, at: red[0]?.since ?? Infinity }];
   }).sort((a, b) => rowRank(a.row.level) - rowRank(b.row.level) || a.at - b.at || a.row.root.localeCompare(b.row.root)).map((x) => x.row);
+}
+
+export interface FlakyRow {
+  root: string; workflow: string; job: string; passed: number; reruns: number; steps: string[];
+  last: number | null; // the newest failed attempt's age (secs)
+  url: string | null; // that attempt's log
+  level: Level; capped: boolean; verb: Finding | null;
+}
+/** Every job that passed on a re-run of its commit, across projects: the noisiest first, a warn row
+ *  carrying its project's one Fix as an end-of-life row carries Upgrade. */
+export function flakyBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): FlakyRow[] {
+  const sec = now / 1000;
+  return within(ps, root).flatMap((p) => flakyJobs(p.inp, thOf(p)).map((j): FlakyRow => ({
+    root: p.path, workflow: j.workflow, job: j.job, passed: j.passed, reruns: j.reruns, steps: j.steps,
+    last: j.last === null ? null : sec - j.last, url: j.url, level: j.level, capped: j.cut,
+    verb: j.level === "warn" ? verbOf(p, "ci:flaky") : null,
+  }))).sort((a, b) => rowRank(a.level) - rowRank(b.level) || b.passed - a.passed || (a.last ?? Infinity) - (b.last ?? Infinity)
+    || a.root.localeCompare(b.root) || a.job.localeCompare(b.job));
+}
+
+/** The Flaky jobs board and its note: the window, how many runs were read and re-run, whether any of
+ *  that was read short, and what an empty board may claim: never a whole window it did not read. */
+function flakyIn(ps: readonly TabProject[], root: string | null, now: number): Boards["flaky"] {
+  const mine = within(ps, root);
+  const reps = mine.flatMap((p) => okFacts(p.inp, "ci").flatMap((r) => r.facts.kind === "ciReruns" ? [{ ...r, facts: r.facts }] : []));
+  const days = Math.max(0, ...reps.map((r) => r.facts.days)), cut = reps.some((r) => r.truncated || r.facts.since !== null);
+  return {
+    rows: flakyBoard(ps, root, now), read: readOf(mine, "ci", "ciReruns"), days,
+    runs: reps.reduce((n, r) => n + r.facts.runs, 0), reran: reps.reduce((n, r) => n + r.facts.reran, 0),
+    cut, short: reps.some((r) => r.facts.since !== null),
+    clear: cut ? "No flaky job in what could be read." : `No job needed a re-run to pass in ${days} days.`,
+  };
 }
 
 export interface RelRow {
@@ -1317,6 +1410,7 @@ export interface Boards {
   advRead: number; // projects an advisory source answered: what the advisories board may claim
   eol: EolRow[];
   ci: CiBoardRow[];
+  flaky: { rows: FlakyRow[]; read: number; days: number; runs: number; reran: number; cut: boolean; short: boolean; clear: string }; // read: projects re-runs were read for
   releases: RelRow[];
   hygiene: HygRow[];
   work: WorkRow[];
@@ -1337,6 +1431,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     advRead: 0,
     eol: [],
     ci: [],
+    flaky: { rows: [], read: 0, days: 0, runs: 0, reran: 0, cut: false, short: false, clear: "" },
     releases: [],
     hygiene: [],
     work: [],
@@ -1347,13 +1442,14 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     one: root !== null,
   };
   const mine = within(ps, root);
-  for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f);
+  for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f, READ_KIND[f]);
   const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false, read: 0 };
   if (tab === "security") {
     Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, advRead: all.read,
       eol: eolBoard(ps, root, now), prs: updatePrRows(ps, root, now) });
   }
   if (tab === "delivery") Object.assign(b, { ci: ciBoard(ps, root, now), releases: releaseBoard(ps, root, now) });
+  if (tab === "delivery") b.flaky = flakyIn(ps, root, now);
   if (tab === "code") b.hygiene = hygieneBoard(ps, root, now);
   if (tab === "work") b.work = workBoard(ps, root);
   if (tab === "servers") {
@@ -1370,6 +1466,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.eol.map((r) => r.verb),
     ...b.prs.map((r) => r.verb),
     ...b.ci.map((r) => r.verb),
+    ...b.flaky.rows.map((r) => r.verb),
     ...b.releases.map((r) => r.verb),
     ...b.hygiene.flatMap((r) => r.verbs),
     ...b.work.flatMap((r) => r.verbs),
@@ -1425,6 +1522,7 @@ const DOORS = {
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
   ci: { run: "url" },
+  flaky: { passed: null, last: "url" }, // the newest failed attempt's log
   releases: { since: { to: "landed" }, changelog: null },
   hygiene: {
     unpushed: br("unpushed"), localOnly: br("localonly"), merged: br("merged"), gone: br("gone"), stale: br("untouched"),
@@ -1648,6 +1746,8 @@ export const snapFor = (snaps: MaintSnaps, root: string, account: string | null)
 
 const VERDICT: readonly CellState[] = ["read", "none", "off"];
 const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
+// Re-runs read beside a failed runs read reach no verdict on CI, so the last known red stands.
+const reached = (c: Cell, inp: MaintInput) => VERDICT.includes(c.state) && vouched(c, inp);
 
 /** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
  *  A facet this scan reached no verdict on keeps `prev`'s cell and lines, dated as then: a failed read
@@ -1655,7 +1755,7 @@ const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
 export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
-  const kept = new Set(prev ? live.filter((c) => !VERDICT.includes(c.state)).map((c) => c.facet) : []);
+  const kept = new Set(prev ? live.filter((c) => !reached(c, inp)).map((c) => c.facet) : []);
   const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
   const cells = live.map((c): SnapCell => {
     const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;
@@ -1706,8 +1806,7 @@ export interface CiRow { key: string; text: string; detail: string; since: numbe
  *  A read that failed is no verdict: it must not stand in for the last known red. */
 export function ciRows(inp: MaintInput | null, snap: MaintSnap | null | undefined, now = Date.now()): CiRow[] {
   const th = clampMaint(inp?.det?.config.thresholds);
-  const state = inp ? facetCell("ci", inp, th, now).state : "unread";
-  if (inp && (state === "read" || state === "none" || state === "off")) {
+  if (inp && reached(facetCell("ci", inp, th, now), inp)) {
     const sec = now / 1000;
     return ciFailures(okFacts(inp, "ci")).map((x) => {
       const age = redFor(x, sec);
@@ -1715,8 +1814,9 @@ export function ciRows(inp: MaintInput | null, snap: MaintSnap | null | undefine
         detail: `${x.workflow} on ${x.branch}${x.sha ? ` · first red at ${x.sha.slice(0, 7)}` : ""}` };
     });
   }
-  // A snapshot keeps words only; a line from before slice 14 named its one workflow in its key.
-  return (snap?.findings ?? []).filter((f) => f.facet === "ci")
+  // A snapshot keeps words only; a line from before slice 14 named its one workflow in its key. Red
+  // only: a flaky job is noise, never a red default branch.
+  return (snap?.findings ?? []).filter((f) => f.facet === "ci" && f.level === "bad")
     .map((f) => ({ key: f.key, text: f.text, detail: f.key.replace(/^ci:?/, ""), since: null, asOf: f.at ?? snap!.at }));
 }
 

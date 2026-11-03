@@ -18,6 +18,8 @@ export const MAINT_CAPS = [
   "ci.disabled",
   "ci.external",
   "ci.other-branches",
+  "ci.reruns",
+  "ci.per-test",
   "git.unpushed",
   "git.local-only",
   "git.merged",

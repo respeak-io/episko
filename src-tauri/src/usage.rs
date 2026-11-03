@@ -132,8 +132,8 @@ impl TranscriptMeta {
     }
 }
 
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's `days_from_civil`); the only
-/// calendar arithmetic here, not worth a `chrono` dependency.
+/// Days since 1970-01-01 for a civil date and back (Howard Hinnant's `days_from_civil` and its
+/// inverse); the only calendar arithmetic here, not worth a `chrono` dependency.
 pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = y - i64::from(m <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -141,6 +141,18 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
 }
 
 /// `2026-08-17T08:08:18.686Z` -> epoch seconds, `None` for any other shape: the caller's
@@ -2897,6 +2909,20 @@ mod tests {
         let base = scratch_dir();
         assert!(list_past_sessions_in(&base, "/never/seen").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn civil_from_days_inverts_days_from_civil() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2000, 3, 1), (2026, 10, 4), (2026, 12, 31), (2027, 1, 1), (1969, 12, 31)] {
+            let z = days_from_civil(y, i64::from(m), i64::from(d));
+            assert_eq!(civil_from_days(z), (y, m, d), "{y}-{m}-{d}");
+        }
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(1_790_000_000 / 86_400), (2026, 9, 21));
+        for z in -800..800 {
+            let (y, m, d) = civil_from_days(z * 37);
+            assert_eq!(days_from_civil(y, i64::from(m), i64::from(d)), z * 37);
+        }
     }
 
     /// Dates whose answers are fixed: the epoch, a leap day, a non-leap century, and the

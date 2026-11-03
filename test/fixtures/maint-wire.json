@@ -135,6 +135,44 @@
     },
     {
       "at": 1790000000,
+      "cost": "forge",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "ci",
+      "facts": {
+        "days": 30,
+        "jobs": [
+          {
+            "job": "build-check (windows-latest)",
+            "passed": 1,
+            "reruns": 1,
+            "seen": [
+              {
+                "at": 1792675297,
+                "branch": "site/new-landing",
+                "passed": true,
+                "sha": "e7c59256c86050ffd2ed3733ac051551e47bca6d",
+                "url": "https://github.com/respeak-io/episko/actions/runs/39786125793/job/119849689572"
+              }
+            ],
+            "steps": [
+              "Cargo test"
+            ],
+            "workflow": "ci"
+          }
+        ],
+        "kind": "ciReruns",
+        "reran": 1,
+        "runs": 93,
+        "since": null
+      },
+      "gaps": [],
+      "source": "github-actions-reruns",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
       "cost": "public",
       "coverage": {
         "state": "ok"
