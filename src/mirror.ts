@@ -13,14 +13,18 @@ import { dlog } from "./debug";
 import { basename, esc, nfcPath, relTime, tilde } from "./format";
 import { probeIcon } from "./icons";
 import { renderFoot } from "./footer";
-import { tvMsgHtml, wpeekHtml } from "./inspectorview";
+import {
+  pastFactRows, pastFilesHtml, pastPrsHtml, recapHtml, tvMsgHtml, wpeekHtml, type PrState,
+} from "./inspectorview";
+import type { GhIssueRead } from "./issue";
 import { openFileOrRead } from "./mdreader";
 import { seedPrompts } from "./outline";
 import { answerMd, qClipText, qEntries, qThreadHtml } from "./questionsview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
-  providerAdapter, readProviderAsked, readProviderHistory, reconcileProviderRestorables, type ProviderMessage,
+  providerAdapter, readProviderAsked, readProviderFacts, readProviderHistory, reconcileProviderRestorables,
+  type ConversationFacts, type ProviderMessage,
 } from "./providers";
 import { allProjects, dormantBusy } from "./grouping";
 import {
@@ -28,7 +32,7 @@ import {
   type DiffStat, type ExtSession, type LiveSess, type Prompt, type Restorable, type Sess,
 } from "./types";
 import {
-  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, handoffs,
+  accentFor, dashMirror, dirtyByFolder, dirtyStale, dormants, externals, extMirrorId, extMirrorPid, fleetMirror, ghAccountFor, handoffs,
   isDirty, mirror, pastMirrorId, sessions, setActiveId, setBackendLive, setDormants,
   setExternals, setMirror, worktreesByRepo,
 } from "./state";
@@ -121,6 +125,8 @@ export async function refreshDirtyStates(force = false) {
   // An agent pane counts, a shell does not: each folder here costs a git_diffstat per sweep.
   for (const s of sessions.values()) if (isAgent(s) && s.workdir) folders.add(s.workdir);
   for (const e of externals) if (e.cwd) folders.add(e.cwd);
+  const past = pastOnStage();
+  if (past) folders.add(past.workdir);
   // The dashboard's Checkouts card asks about folders nothing is running in, and an
   // unmeasured one must never read as clean. Scoped to the project on the stage, so the
   // prune below drops them again as soon as it closes.
@@ -155,6 +161,8 @@ export async function refreshDirtyStates(force = false) {
   renderSidebar();
   if (fleetMirror()) renderAll(); // the fleet's figures are only repainted from renderAll's pass
   if (extMirrorId()) { const e = externals.find((x) => x.session_id === extMirrorId()); if (e) renderExtInspector(e); }
+  const cur = pastOnStage();
+  if (cur && cur.id === past?.id) renderPastInspector(cur);
 }
 export function openExternal(sid: string) {
   const e = externals.find((x) => x.session_id === sid);
@@ -211,6 +219,27 @@ export function openDormant(id: string) {
     .then((msgs) => { const prompts: Prompt[] = []; seedPrompts(prompts, msgs); pastAsked = { key, prompts }; },
       (e) => { pastAsked = { key, prompts: [] }; dlog("info", `shelved: no questions to read for ${key.slice(0, 8)} (${e})`); })
     .then(() => { if (here()) paintPastBody(d); });
+  void readProviderFacts(d.provider, key, d.workdir).catch(() => null).then((facts) => {
+    pastFacts = { key, facts };
+    if (!here()) return;
+    renderPastInspector(d);
+    for (const pr of facts?.prs.slice(0, 6) ?? []) void readPrState(d, pr);
+  });
+  void refreshDirtyStates(true); // forced: this folder is probably cached and would be skipped
+}
+
+let pastFacts: { key: string; facts: ConversationFacts | null } | null = null;
+const prStates = new Map<string, PrState>(); // by URL; gh_issue's own cache decides how fresh
+
+async function readPrState(d: Restorable, pr: { number: number; url: string }) {
+  const r = await invoke<GhIssueRead>("gh_issue", {
+    root: d.colorKey, number: pr.number, kind: "pr", force: false, account: ghAccountFor(d.colorKey),
+  }).catch(() => null);
+  // A PR opened in another repo has a number here too: only an answer for that very URL counts.
+  if (!r?.available || r.url.toLowerCase() !== pr.url.toLowerCase()) return;
+  prStates.set(pr.url, { state: r.state, title: r.title });
+  const cur = pastOnStage();
+  if (cur?.id === d.id) renderPastInspector(cur);
 }
 
 // The shelved stage leads with its questions and their closing answers, read from the whole
@@ -281,6 +310,8 @@ export function renderPastHeader(d: Restorable) {
 }
 export function renderPastInspector(d: Restorable) {
   const busy = dormantBusy(d);
+  const facts = pastFacts?.key === d.resumeId ? pastFacts.facts : null;
+  const g = dirtyByFolder.get(d.workdir);
   const pill = $("iPill"); pill.className = "pill idle";
   $("iPillTxt").textContent = "not running";
   const sent = handoffBusy(handoffs, d.resumeId);
@@ -298,15 +329,18 @@ export function renderPastInspector(d: Restorable) {
   const html = `
     <div class="ext-card">
       <div class="ext-hl">· ${esc(d.provider || "claude")} · shelved</div>
+      ${facts ? recapHtml(facts.recap) : ""}
       <div class="ext-meta"><span class="label">Project</span><span>${esc(d.project)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="mono ell">${esc(tilde(d.workdir))}</span></div>
       ${d.branch ? `<div class="ext-meta"><span class="label">Branch</span><span>${esc(d.branch)}</span></div>` : ""}
       <div class="ext-meta"><span class="label">Last active</span><span>${esc(relTime(d.lastActivity))}</span></div>
       <div class="ext-meta"><span class="label">Session</span><span class="mono">${esc(d.resumeId.slice(0, 8))}</span></div>
+      ${facts ? pastFactRows(facts) : ""}
+      ${facts ? pastPrsHtml(facts.prs, prStates) : ""}
       ${action}
       <button class="ext-forget-btn" data-forget="${esc(d.id)}">Take off the shelf</button>
       <div class="ext-note">This only clears the row. The provider's conversation stays in its own history, and ◷ History can still reopen it.</div>
-    </div>`;
+    </div>${isDirty(g) ? extPeekHtml(d.workdir, g!) : ""}${facts ? pastFilesHtml(facts.files, d.workdir) : ""}`;
   // Guarded like every renderAll surface: a repaint under the pointer drops the click.
   if (html === pastPainted && pastGen === stageGen) return;
   pastPainted = html; pastGen = stageGen;
@@ -402,10 +436,10 @@ export function renderExtHeader(e: ExtSession) {
   setHeadPath(e.cwd);
 }
 // The working-set peek minus the fetch/pull/push row: we do not drive this checkout.
-function extPeekHtml(e: ExtSession, g: DiffStat): string {
+function extPeekHtml(cwd: string, g: DiffStat): string {
   return `<div class="wset ext-wset">
     <div class="lab" style="margin-bottom:2px">Working set · in this folder</div>
-    ${wpeekHtml(e.cwd, basename(e.cwd), g)}</div>`;
+    ${wpeekHtml(cwd, basename(cwd), g)}</div>`;
 }
 export function renderExtInspector(e: ExtSession) {
   const working = extWorking(e);
@@ -413,7 +447,7 @@ export function renderExtInspector(e: ExtSession) {
   $("iPillTxt").textContent = e.status || "external";
   const started = e.started_at ? new Date(e.started_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "–";
   const g = dirtyByFolder.get(e.cwd);
-  const peek = isDirty(g) ? extPeekHtml(e, g!) : "";
+  const peek = isDirty(g) ? extPeekHtml(e.cwd, g!) : "";
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">↗ Running outside Episko</div>

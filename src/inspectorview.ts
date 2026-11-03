@@ -2,7 +2,7 @@
 // Every function takes a Sess (or a plain value) and returns a string; no DOM, no renderer.
 // It owns `gitBusy` because the git buttons are its only reader.
 
-import { basename, elidePath, esc, escAttr, fmtDwell, fmtLatency, sparkline, tilde } from "./format";
+import { basename, elidePath, esc, escAttr, fmtDur, fmtDwell, fmtLatency, sparkline, tilde, uTok, uUsd2 } from "./format";
 import { FILE_MANAGER } from "./dom";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
@@ -11,8 +11,9 @@ import {
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
 import { isEnvelope, OUTLINE_SHOW, outlineItems, parseRelay, promptLabel, type OutlineItem, type OutlinePrefs } from "./outline";
-import type { ProviderMessage } from "./providers";
+import type { ConversationFacts, ProviderMessage } from "./providers";
 import { fetchedByRepo, sessions } from "./state";
+import { modelName } from "./usage";
 
 export let gitBusy: string | null = null; // session with a fetch/pull/push in flight; its buttons grey out
 export let gitOp = "";                    // …and which one, so the card says so rather than only dimming
@@ -352,6 +353,58 @@ export function askedHtml(msgs: readonly ProviderMessage[], show: number): strin
     + `<span class="ol-t">${esc(askClock(m.at))}</span></div>`).join("");
   return `<div class="ol">${rows}</div>`
     + (rest > 0 ? `<div class="hist-qmore">+${rest} earlier in this window</div>` : "");
+}
+
+// ---------- a shelved conversation: what it left behind (./mirror's card) ----------
+// Each piece is absent when the transcript never recorded it, never a zero standing in for one.
+
+export function recapHtml(text: string): string {
+  return text ? `<div class="ext-recap"><span class="label">Where it stood</span><p>${esc(text)}</p></div>` : "";
+}
+
+export function pastFactRows(f: ConversationFacts): string {
+  const row = (label: string, value: string, tip = "") =>
+    `<div class="ext-meta"${tip ? ` title="${escAttr(tip)}"` : ""}><span class="label">${label}</span><span>${esc(value)}</span></div>`;
+  const out: string[] = [];
+  if (f.started) out.push(row("Started", new Date(f.started * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })));
+  if (f.cost_usd != null) out.push(row("Cost", uUsd2(f.cost_usd) + (f.api_ms ? ` · ${fmtDur(f.api_ms)} model time` : ""), "The whole conversation, resumes included"));
+  if (f.model) out.push(row("Model", modelName(f.model)));
+  if (f.context_tokens) {
+    const compacted = f.compactions ? ` · compacted ${f.compactions}×` : "";
+    out.push(row("Context", `${uTok(f.context_tokens)} tokens${compacted}`, "What the context held when it stopped: a resume starts from here"));
+  }
+  if (f.lines_added || f.lines_removed) out.push(row("Lines", `+${f.lines_added} −${f.lines_removed}`));
+  return out.join("");
+}
+
+export interface PrState { state: string; title: string } // gh's answer for that very URL
+
+export function pastPrsHtml(prs: ConversationFacts["prs"], states: ReadonlyMap<string, PrState>): string {
+  if (!prs.length) return "";
+  const rows = prs.map((p) => {
+    const st = states.get(p.url);
+    const state = (st?.state ?? "").toLowerCase();
+    return `<div class="ext-pr" data-extlink="${escAttr(p.url)}" title="${escAttr(`${p.url}\nOpen it on GitHub`)}">`
+      + `<span class="ext-pr-n">#${p.number}</span><span class="ext-pr-t">${esc(st?.title || p.repo)}</span>`
+      + (state ? `<span class="ext-pr-s ${escAttr(state)}">${esc(state)}</span>` : "") + `</div>`;
+  }).join("");
+  return `<div class="ext-sec"><div class="fx-head"><span class="label">Pull requests</span><span class="fx-sub">${prs.length}</span></div>${rows}</div>`;
+}
+
+// The Context card's rows over what the transcript says was written; reads are not recorded here.
+const PAST_FILES_SHOW = 12;
+export function pastFilesHtml(files: ConversationFacts["files"], workdir: string): string {
+  if (!files.length) return "";
+  const groups = (["created", "edited"] as const).map((kind) => {
+    const list: FileTouch[] = files.filter((f) => f.created === (kind === "created")).map((f) => ({ path: f.path, kind, n: f.n, at: 0 }));
+    if (!list.length) return "";
+    const m = KIND_META[kind];
+    const rest = list.length - PAST_FILES_SHOW;
+    return `<div class="fx-grp k-${kind}"><div class="fx-gh"><span class="fx-gg">${m.glyph}</span><span class="fx-gn">${m.label}</span><span class="fx-gc">${list.length}</span></div>`
+      + list.slice(0, PAST_FILES_SHOW).map((f) => fileRow(f, workdir)).join("")
+      + (rest > 0 ? `<div class="hist-qmore">+${rest} more</div>` : "") + `</div>`;
+  }).join("");
+  return `<div class="ext-sec"><div class="fx-head"><span class="label">Files it wrote</span><span class="fx-sub">${files.length}</span></div>${groups}</div>`;
 }
 
 // One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody

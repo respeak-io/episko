@@ -2715,6 +2715,18 @@ select.in-ctl { cursor: pointer; }
 /* inspector card for the selected external session */
 .ext-card { display: flex; flex-direction: column; gap: 9px; }
 .ext-hl { font: 700 12px var(--font-ui); color: var(--accent-ink); padding: 9px 11px; border-radius: var(--radius); background: var(--accent-wash); border: 1px solid var(--accent-line); }
+/* a shelved session's card (./mirror): Claude's own recap, then what the conversation left behind */
+.ext-recap { display: flex; flex-direction: column; gap: 4px; padding: 9px 11px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--hair); }
+.ext-recap p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text); }
+.ext-sec { display: flex; flex-direction: column; }
+.ext-pr { display: flex; align-items: baseline; gap: 7px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; cursor: pointer; min-width: 0; }
+.ext-pr:hover { background: var(--lift); }
+.ext-pr-n { font: 11px var(--font-mono); color: var(--accent-ink); flex: none; }
+.ext-pr-t { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-pr-s { flex: none; font: 600 9px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--muted-2); }
+.ext-pr-s.open { color: var(--st-done); }
+.ext-pr-s.merged { color: var(--tool-task); }
+.ext-pr-s.closed { color: var(--st-error); }
 .ext-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 11.5px; }
 .ext-meta > span:last-child { text-align: right; min-width: 0; }
 .ext-meta .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; display: inline-block; vertical-align: bottom; }
