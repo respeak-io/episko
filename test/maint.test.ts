@@ -9,10 +9,13 @@ import {
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
+  addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
+  type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
 import { BRANCH_FILTERS } from "../src/branches";
+import { fmtDay } from "../src/format";
 import { briefFor } from "../src/maintbrief";
 import { FACETS, type Facet } from "../src/maintsources";
 
@@ -2152,6 +2155,421 @@ describe("the last scan kept whole (cc-maint-scan)", () => {
   });
 });
 
+// The week's marks keep identities only, and a facet a scan reached no verdict on is no verdict a week
+// later either: a cleared advisory is only ever one both marks read in full (docs/maintenance.md).
+const NOON = new Date(2026, 9, 26, 12).getTime(), DMS = D * 1000; // local noon: a day's marks stay that day's in any zone
+const mark = (at: number, o: Partial<WeekMark> = {}): WeekMark =>
+  ({ at, account: "me", ci: { red: [], green: [] }, adv: {}, part: [], prs: {}, rt: null, rel: null, none: [], ...o });
+const ma = (names: string[], severity: MarkAdv["severity"] = "high", kind: MarkAdv["kind"] = "dependency"): MarkAdv => ({ names, severity, kind });
+const rtOf = (o: Partial<Runtime> = {}): Runtime => ({
+  product: "nodejs", name: "node", declared: "18", cycle: "18", eol: NOON / 1000 - 30 * D, latest: null, newest: "26", file: ".nvmrc",
+  url: "https://eol.example/nodejs", ...o,
+});
+
+describe("the week's marks (cc-maint-week)", () => {
+  const t = NOON / 1000;
+  const full = () => input(
+    ok(GHA, ci(run("build", "fail", t - D), run("lint", "pass", t - D), run("build", "pass", t - 2 * D))),
+    ok("dependabot-alerts", { kind: "advisories", items: [adv({ id: "GHSA-aaaa", aliases: ["CVE-2021-1"] }), adv({ id: "GHSA-aaaa", pkg: "lodash-es" })] }),
+    ok("dependabot-prs", prs(2, { bot: "dependabot" })),
+    ok("git-tags", rel({ tagsSeen: 4, tag: "v1.3", fetchedAt: t - H })),
+    ok("runtime-eol", { kind: "runtimes", items: [rtOf(), rtOf({ file: "Dockerfile" })] }, { cost: "public" }),
+  );
+
+  it("keeps identities and counts, never a package, a summary, a title or a URL", () => {
+    const m = takeMark(full(), NOON, "me");
+    expect(m).toEqual({
+      at: NOON, account: "me", ci: { red: ["build"], green: ["lint"] },
+      adv: { "dependabot-alerts": [{ names: ["CVE-2021-1", "GHSA-AAAA"], severity: "high", kind: "dependency" }] },
+      part: [], prs: { dependabot: [1, 2] }, rt: [{ key: "nodejs@18", name: "node 18", eol: NOON / 1000 - 30 * D }],
+      rel: { tags: 4, tag: "v1.3", published: null, fetchedAt: t - H }, none: [],
+    });
+    const json = JSON.stringify(m);
+    for (const s of ["https://", "lodash", "Prototype pollution", "Update p0", ".nvmrc"]) expect(json).not.toContain(s);
+  });
+
+  it("leaves out a truncated or failed source, and a facet with no verdict is null", () => {
+    const capped = takeMark(input(
+      ok("dependabot-alerts", { kind: "advisories", items: [adv()] }, { truncated: true }),
+      ok("dependabot-prs", prs(3, { bot: "dependabot" }), { truncated: true }),
+      not("osv", "security", { state: "notRun" }),
+      ok("github-releases", { kind: "releases", latest: null, count: 100 }, { truncated: true }),
+    ), NOON, null);
+    expect([capped.adv, capped.prs, capped.rt, capped.rel, capped.ci]).toEqual([{}, {}, null, null, null]);
+    expect(capped.part).toEqual(["dependabot-alerts"]);
+    // CI is one list across its sources: one that failed would turn its red into a false fix.
+    const half = takeMark(input(ok(GHA, ci(run("build", "pass", t))), not("forge-commit-status", "ci", { state: "error", reason: "502" })), NOON, null);
+    expect(half.ci).toBeNull();
+    const many = takeMark(input(ok("osv", { kind: "advisories", items: Array.from({ length: WEEK_ROWS + 1 }, (_, i) => adv({ id: `X-${i}` })) })), NOON, null);
+    expect(many.adv, "a cut list would read as cleared").toEqual({});
+    expect(many.part).toEqual(["osv"]);
+    expect(takeMark(input(ok(GHA, ci(run("build", "pass", t)))), NOON, null).none, "nothing to read is said, not a gap")
+      .toEqual(["security", "deps", "release"]);
+    const off: MaintInput = { ...full(), det: det([GHA], { config: { ...det([]).config, off: ["ci"] } }) };
+    expect(takeMark(off, NOON, null)).toMatchObject({ ci: null, none: expect.arrayContaining(["ci"]) });
+    expect(takeMark({ ...full(), skip: ["dependabot-alerts"] }, NOON, null).adv, "a source skipped here").toEqual({});
+  });
+
+  it("stands on the sources that list runs: a re-run read adds nothing to that list, so it can neither cost nor vouch for it", () => {
+    const RR = "github-actions-reruns", list = ok(GHA, ci(run("build", "fail", t), run("lint", "pass", t)));
+    const reruns = ok(RR, { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 0, jobs: [] });
+    const failed = not(RR, "ci", { state: "error", reason: "502" });
+    expect(takeMark(input(list, failed), NOON, null).ci, "a failed re-run read").toEqual({ red: ["build"], green: ["lint"] });
+    expect(takeMark(input(list, reruns), NOON, null).ci).toEqual({ red: ["build"], green: ["lint"] });
+    expect(takeMark(input(not(GHA, "ci", { state: "error", reason: "502" }), reruns), NOON, null).ci, "the list itself failed").toBeNull();
+    expect(takeMark({ ...input(list, reruns), skip: [GHA] }, NOON, null).ci, "the list skipped here: re-runs alone are no verdict").toBeNull();
+    const week = weekDigest([{ root: "/r", base: takeMark(input(list, reruns), NOON, "me"), now: takeMark(input(ok(GHA, ci(run("build", "pass", t + 7 * D), run("lint", "pass", t + 7 * D))), failed), NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
+    expect(week).toMatchObject({ ciFixed: 1, gaps: [] });
+  });
+
+  it("takes every report the wire carries without throwing", () => {
+    const reps = new Map<string, SourceReport>();
+    for (const r of wire.reports) {
+      const n = narrowMaint(r, r.source as string);
+      if (n.coverage.state === "ok" && !reps.has(n.source)) reps.set(n.source, n);
+    }
+    expect([...new Set([...reps.values()].map((r) => r.facts!.kind))].sort()).toEqual([...FACT_KINDS].sort());
+    const m = takeMark({ det: { ...narrowDetection(wire.detection)!, sources: [...reps.keys()] }, reports: Object.fromEntries(reps) }, NOON, null);
+    expect(m.ci, "lint: a run still out, its last finished one passed").toEqual({ red: ["ci"], green: ["lint", "site"] });
+    expect(Object.keys(m.adv)).toEqual(["osv"]);
+    expect(m.prs).toEqual({ renovate: [42] });
+    expect(m.rt?.map((r) => r.key)).toEqual(["nodejs@18", "nodejs@3", "postgresql@?99"]);
+    expect(m.rel).toEqual({ tags: 9, tag: "v1.2.0", published: 9, fetchedAt: 1_790_000_000 });
+    expect(clampWeek(JSON.parse(JSON.stringify({ "/r": [m] })))).toEqual({ "/r": [m] });
+  });
+
+  it("names a code finding by its rule and its file: a line that moved is the same finding", () => {
+    const code = (...lines: number[]) => input(ok("github-code-scanning", { kind: "advisories",
+      items: lines.map((l) => adv({ id: "js/sql-injection", kind: "code", location: `src/db.js:${l}` })) }));
+    const pair = (then: MaintInput, is: MaintInput) => weekDigest([{ root: "/r", base: takeMark(then, NOON, "me"), now: takeMark(is, NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
+    expect(takeMark(code(42, 57), NOON, "me").adv["github-code-scanning"], "two in one file are one row")
+      .toEqual([{ names: ["JS/SQL-INJECTION@src/db.js"], severity: "high", kind: "code" }]);
+    expect(pair(code(42), code(57)), "moved by an edit above it").toMatchObject({ advNew: 0, advCleared: 0, changes: [] });
+    expect(pair(code(42, 57), code(57)), "one of two gone leaves the file's finding").toMatchObject({ advCleared: 0, changes: [] });
+    expect(pair(code(42, 57), code()).changes.map((c) => [c.text, c.detail])).toEqual([["1 code finding cleared", "JS/SQL-INJECTION@src/db.js"]]);
+    const secret = (l: number) => input(ok("sarif-files", { kind: "advisories", items: [adv({ id: "aws-key", kind: "secret", location: `.env:${l}` })] }));
+    expect(pair(secret(3), secret(9))).toMatchObject({ advNew: 0, advCleared: 0 });
+    const dep = takeMark(input(ok("dependabot-alerts", { kind: "advisories", items: [adv({ id: "GHSA-1:2" })] })), NOON, "me");
+    expect(dep.adv["dependabot-alerts"][0].names, "a dependency's name is never read as a place").toEqual(["GHSA-1:2"]);
+  });
+
+  it("counts a read with gaps as not read in full, since what it lost would read as cleared", () => {
+    const sarif = (ids: string[], gaps: string[] = []) => input(ok("sarif-files",
+      { kind: "advisories", items: ids.map((id) => adv({ id, kind: "code", location: "a.js" })) }, { gaps }));
+    const pair = (then: WeekMark, is: WeekMark) => weekDigest([{ root: "/r", base: then, now: is, th: MAINT_DEFAULTS }], []);
+    const whole = takeMark(sarif(["r1", "r2", "r3"]), NOON, "me"), broke = takeMark(sarif(["r1"], ["b.sarif: not JSON"]), NOON + 7 * DMS, "me");
+    expect(broke).toMatchObject({ adv: {}, part: ["sarif-files"] });
+    const once = pair(whole, broke);
+    expect(once).toMatchObject({ advCleared: 0, changes: [] });
+    expect(once.gaps).toContainEqual({ facet: "security", roots: ["/r"], why: "SARIF files read in full only then", click: false });
+    const twice = pair(takeMark(sarif(["r1"], ["b.sarif: not JSON"]), NOON, "me"), broke);
+    expect(twice.gaps, "partial both times is still said").toContainEqual({ facet: "security", roots: ["/r"], why: "SARIF files read only in part", click: false });
+    expect(twice.gaps.map((g) => g.why)).not.toContain("no advisory source read in full both times");
+    const audit = input(ok("npm-audit", { kind: "advisories", items: [adv()] }, { gaps: ["web/package-lock.json: no answer after 180s"] }));
+    expect(pair(takeMark(input(ok("npm-audit", { kind: "advisories", items: [adv(), adv({ id: "Y" })] })), NOON, "me"), takeMark(audit, NOON + 7 * DMS, "me"))).toMatchObject({ advCleared: 0 });
+  });
+
+  it("reads each workflow's newest finished run, so a re-run still out keeps its last verdict", () => {
+    const of = (...runs: ReturnType<typeof run>[]) => takeMark(input(ok(GHA, ci(...runs))), NOON, null).ci;
+    expect(of(run("b", "running", t), run("b", "fail", t - D))).toEqual({ red: ["b"], green: [] });
+    expect(of(run("b", "cancelled", t), run("b", "pass", t - D))).toEqual({ red: [], green: ["b"] });
+    expect(of(run("b", "skip", t), run("b", "neutral", t - H), run("b", "unknown", t - 2 * H), run("b", "fail", t - D))).toEqual({ red: ["b"], green: [] });
+    expect(of(run("b", "running", t)), "no finished run: no verdict either way").toEqual({ red: [], green: [] });
+    const pair = (then: ReturnType<typeof run>[], is: ReturnType<typeof run>[]) => weekDigest([{ root: "/r",
+      base: takeMark(input(ok(GHA, ci(...then))), NOON, "me"), now: takeMark(input(ok(GHA, ci(...is))), NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
+    expect(pair([run("b", "running", t), run("b", "fail", t - D)], [run("b", "fail", t), run("b", "fail", t - D)]), "red before and after a run in flight broke nothing")
+      .toMatchObject({ ciBroke: 0, ciFixed: 0 });
+    expect(pair([run("b", "fail", t)], [run("b", "running", t), run("b", "fail", t - D)])).toMatchObject({ ciFixed: 0 });
+    expect(pair([run("b", "fail", t)], [run("b", "running", t), run("b", "pass", t - D)])).toMatchObject({ ciFixed: 1 });
+  });
+
+  it("leaves no mark where a detection found no source: a checkout that is gone is not a quiet one", () => {
+    expect(leavesMark(input())).toBe(false);
+    expect(leavesMark({ det: null, reports: {} })).toBe(false);
+    expect(leavesMark(full())).toBe(true);
+  });
+
+  it("merges a same-day release figure field by field, each read keeping the other's", () => {
+    const morning = mark(NOON - 3 * H * 1000, { rel: { tags: 10, tag: "v1", published: 4, fetchedAt: 1 } });
+    const noTags = mark(NOON + 3 * H * 1000, { rel: { tags: null, tag: null, published: 5, fetchedAt: null } });
+    expect(addMark([morning], noTags)[0].rel).toEqual({ tags: 10, tag: "v1", published: 5, fetchedAt: 1 });
+    const noPub = mark(NOON + 3 * H * 1000, { rel: { tags: 11, tag: "v2", published: null, fetchedAt: 2 } });
+    expect(addMark([morning], noPub)[0].rel).toEqual({ tags: 11, tag: "v2", published: 4, fetchedAt: 2 });
+    expect(addMark([morning], mark(NOON + 3 * H * 1000, { rel: null }))[0].rel).toEqual(morning.rel);
+    expect(addMark([morning], mark(NOON + 3 * H * 1000, { rel: null, none: ["release"] }))[0].rel, "nothing to read is a verdict").toBeNull();
+  });
+
+  it("replaces a mark of the same local day, keeping what the newer scan had no verdict on", () => {
+    const morning = mark(NOON - 3 * H * 1000, { ci: { red: ["build"], green: [] }, adv: { a: [ma(["X-1"])] }, prs: { b: [1] }, rel: { tags: 2, tag: "v1", published: null, fetchedAt: null } });
+    const afternoon = mark(NOON + 3 * H * 1000, { ci: null, adv: { c: [] }, prs: {}, rt: [{ key: "nodejs@18", name: "node 18", eol: false }] });
+    const [m, ...rest] = addMark([morning], afternoon);
+    expect(rest).toEqual([]);
+    expect(m).toEqual({ ...afternoon, ci: morning.ci, adv: { a: [ma(["X-1"])], c: [] }, prs: { b: [1] }, rel: morning.rel });
+    const nothing = addMark([morning], { ...afternoon, none: ["ci", "deps"] })[0];
+    expect([nothing.ci, nothing.prs], "nothing to read is a verdict").toEqual([null, {}]);
+    expect(addMark([morning], { ...afternoon, account: "other" }), "another identity's mark is its own").toHaveLength(2);
+  });
+
+  it("keeps the window and one baseline before it: eight marks at most", () => {
+    let ms: WeekMark[] = [];
+    for (let k = 0; k <= 11; k++) ms = addMark(ms, mark(NOON + k * DMS + H * 1000));
+    ms = addMark(ms, mark(NOON + 12 * DMS));
+    expect(ms).toHaveLength(WEEK_MARKS);
+    expect(ms.map((m) => m.at)).toEqual([...ms.map((m) => m.at)].sort((a, b) => b - a));
+    expect(ms[ms.length - 1].at, "the newest mark a week before the newest").toBe(NOON + 5 * DMS + H * 1000);
+  });
+
+  it("pairs the newest mark with the newest a week older, else the oldest earlier one, for this account only", () => {
+    const ms = [mark(NOON + 10 * DMS), mark(NOON + 5 * DMS), mark(NOON + 2 * DMS), mark(NOON)];
+    expect(weekPair(ms, "me")).toEqual({ now: ms[0], base: ms[2] });
+    expect(weekPair(ms.slice(1, 3), "me"), "nothing a week old yet: the first check").toEqual({ now: ms[1], base: ms[2] });
+    expect(weekPair([ms[0]], "me")).toEqual({ now: ms[0], base: null });
+    expect(weekPair(ms, "other")).toBeNull();
+    const theirs = [mark(NOON + 11 * DMS, { account: "other" }), ...ms];
+    expect(weekPair(theirs, "me")?.now, "another login's newer mark is not this one's").toBe(ms[0]);
+  });
+
+  it("pairs by local day, so a Monday's check finds last Monday's at whatever hour each ran", () => {
+    const at = (day: number, h: number, m = 0) => mark(new Date(2026, 9, day, h, m).getTime());
+    const [a, b, c] = [at(19, 9, 10), at(26, 9, 30), at(33, 9)]; // 2 Nov, and a clock change between in much of the world
+    expect(weekPair([c, b, a], "me")).toEqual({ now: c, base: b });
+    expect(addMark([b, a], c).map((m) => m.at), "the baseline a pair would pick is the one kept").toEqual([c.at, b.at]);
+    expect(packWeek({ "/r": [c, b, a] }, JSON.stringify({ "/r": [c, b] }).length)).toEqual({ "/r": [c, b] });
+    const d = weekDigest([{ root: "/r", base: b, now: c, th: MAINT_DEFAULTS }], []);
+    expect(d.span).toBe("week");
+    expect(weekPair([at(32, 23, 59), b], "me")?.base, "six days on is not a week, however late").toBe(b);
+    expect(weekDigest([{ root: "/r", base: b, now: at(32, 23, 59), th: MAINT_DEFAULTS }], []).span).toBe("first");
+  });
+
+  it("round-trips through the store and drops a bad mark or root alone", () => {
+    let ms: WeekMark[] = [];
+    for (const k of [0, 3, 8]) ms = addMark(ms, takeMark(full(), NOON + k * DMS, "me"));
+    const all = { "/r": ms };
+    expect(clampWeek(JSON.parse(JSON.stringify(all)))).toEqual(all);
+    const good = mark(NOON), bad = [{ ...good, at: "now" }, { ...good, at: -1 }, { ...good, ci: ["build"] }, { ...good, none: ["nope"] }, { ...good, part: [1] },
+      { ...good, adv: { a: [{ names: [], severity: "high", kind: "dependency" }] } }, { ...good, prs: { b: ["1"] } }, { ...good, rt: [{ key: 1 }] }, "x", null];
+    const back = clampWeek({ "/r": [...bad, good], "/s": "marks", "/t": [], "/u": [null], "": [good] });
+    expect(back).toEqual({ "/r": [good] });
+    for (const v of [null, "[]", [good], 3]) expect(clampWeek(v)).toEqual({});
+  });
+
+  it("cuts names and text, makes a list past its cap no verdict, keeps the newest roots, and NFC-repairs keys", () => {
+    const long = "x".repeat(WEEK_TEXT + 9);
+    const m = clampWeek({ "/r": [mark(NOON, {
+      adv: { a: [ma(["A", "B", "C", "D", "E", long])], big: Array.from({ length: WEEK_ROWS + 1 }, (_, i) => ma([`N-${i}`])) },
+      ci: { red: Array.from({ length: WEEK_ROWS + 1 }, (_, i) => `w${i}`), green: [] }, prs: { [long]: [1] },
+    })] })["/r"][0];
+    expect(m.adv).toEqual({ a: [ma(["A", "B", "C", "D"])] });
+    expect(m.ci, "a cut list would read as fixed").toBeNull();
+    expect(Object.keys(m.prs)).toEqual(["x".repeat(WEEK_TEXT)]);
+    const many = Object.fromEntries(Array.from({ length: WEEK_ROOTS + 5 }, (_, i) => [`/p${i}`, [mark(NOON - i * 1000)]]));
+    const kept = Object.keys(clampWeek(many));
+    expect(kept).toHaveLength(WEEK_ROOTS);
+    expect(kept).not.toContain(`/p${WEEK_ROOTS}`); // the oldest go
+    expect(Object.keys(clampWeek({ "/café": [mark(NOON)] }))).toEqual(["/café"]);
+    const hand = { "/r": [{ ...mark(NOON), adv: { a: [{ ...ma(["X"]), url: "https://y" }] }, url: "https://x" }] };
+    expect(JSON.stringify(clampWeek(hand))).not.toContain("https://");
+  });
+
+  it("packs every root's newest mark and baseline before any root's days between, newest first, within the budget", () => {
+    const ms = (at: number) => [mark(at), mark(at - 3 * DMS), mark(at - 8 * DMS)];
+    const all = { "/old": ms(NOON - DMS), "/new": ms(NOON) };
+    expect(packWeek(all)).toEqual(all);
+    const pairs = { "/new": [all["/new"][0], all["/new"][2]], "/old": [all["/old"][0], all["/old"][2]] };
+    const both = JSON.stringify(pairs).length;
+    expect(packWeek(all, both), "two comparisons before one root's whole week").toEqual(pairs);
+    expect(JSON.stringify(packWeek(all, both))).toBe(JSON.stringify(pairs));
+    expect(packWeek(all, both + JSON.stringify(all["/new"][1]).length + 1), "then the newest root's days").toEqual({ ...pairs, "/new": all["/new"] });
+    expect(Object.keys(packWeek(all, both - 1)), "the oldest root goes first").toEqual(["/new"]);
+    expect(JSON.stringify(packWeek(all, both - 1)).length).toBeLessThanOrEqual(both - 1);
+    expect(packWeek(all, 10)).toEqual({});
+  });
+});
+
+describe("since last week", () => {
+  const WEEK = 7 * DMS;
+  const pairOf = (base: Partial<WeekMark>, now: Partial<WeekMark>, root = "/r", from = NOON, th = MAINT_DEFAULTS): WeekPairIn =>
+    ({ root, base: mark(from, base), now: mark(NOON + WEEK, now), th });
+  const one = (base: Partial<WeekMark>, now: Partial<WeekMark>) => weekDigest([pairOf(base, now)], []);
+
+  it("counts CI that broke and CI that passes again, and a re-run still out fixes nothing", () => {
+    const d = one({ ci: { red: ["a", "c"], green: ["b"] } }, { ci: { red: ["b"], green: ["a"] } });
+    expect(d).toMatchObject({ ciBroke: 1, ciFixed: 1, compared: 1 });
+    expect(d.gaps.filter((g) => g.facet === "ci")).toEqual([]);
+    expect(d.changes.map((c) => [c.level, c.text])).toEqual([["bad", "CI broke: b"], ["ok", "CI fixed: a"]]);
+    expect(one({}, { ci: { red: ["x", "y"], green: [] } }).changes).toEqual([{ root: "/r", facet: "ci", key: "ci", level: "bad", text: "2 workflows broke", detail: "x, y" }]);
+    for (const [base, now, why] of [[null, { red: [], green: [] }, "no verdict then"], [{ red: ["a"], green: [] }, null, "no verdict now"],
+      [null, null, "no verdict either time"]] as const) {
+      const x = one({ ci: base as WeekMark["ci"] }, { ci: now as WeekMark["ci"] });
+      expect(x.ciFixed + x.ciBroke).toBe(0);
+      expect(x.gaps).toContainEqual({ facet: "ci", roots: ["/r"], why, click: false });
+    }
+    expect(one({ ci: null, none: ["ci"] }, { ci: null, none: ["ci"] }).gaps.filter((g) => g.facet === "ci"), "no CI to compare is no gap").toEqual([]);
+  });
+
+  it("folds advisories across sources by alias, so one reporter's id and another's alias are one row", () => {
+    const base = { adv: { "dependabot-alerts": [ma(["CVE-A", "GHSA-A"])], osv: [ma(["CVE-A"])] } };
+    const kept = one(base, { adv: { "dependabot-alerts": [], osv: [ma(["CVE-A"]), ma(["GHSA-B"], "critical")] } });
+    expect(kept).toMatchObject({ advNew: 1, advCleared: 0 });
+    expect(kept.changes).toEqual([{ root: "/r", facet: "security", key: "security:dependency", level: "bad", text: "new critical advisory", detail: "GHSA-B" }]);
+    const gone = one(base, { adv: { "dependabot-alerts": [], osv: [] } });
+    expect(gone).toMatchObject({ advNew: 0, advCleared: 1 });
+    expect(gone.changes.map((c) => [c.level, c.text, c.detail])).toEqual([["ok", "1 advisory cleared", "CVE-A"]]);
+  });
+
+  it("never clears what a source read in only one of the two marks: that is a gap", () => {
+    const d = one({ adv: { "dependabot-alerts": [ma(["X"])], "npm-audit": [ma(["Y"])] } }, { adv: {} });
+    expect(d).toMatchObject({ advCleared: 0, changes: [] });
+    expect(d.gaps.filter((g) => g.facet === "security")).toEqual([
+      { facet: "security", roots: ["/r"], why: "Dependabot alerts read in full only then", click: false },
+      { facet: "security", roots: ["/r"], why: "npm audit read in full only then", click: true },
+    ]);
+    expect(one({ adv: {} }, { adv: {} }).gaps).toContainEqual({ facet: "security", roots: ["/r"], why: "no advisory source read in full both times", click: false });
+  });
+
+  it("calls nothing cleared or new that a source read only once still says", () => {
+    const still = one({ adv: { "dependabot-alerts": [ma(["CVE-1", "GHSA-1"])] } }, { adv: { "dependabot-alerts": [], osv: [ma(["CVE-1"])] } });
+    expect(still).toMatchObject({ advCleared: 0, advNew: 0, changes: [] });
+    const already = one({ adv: { "dependabot-alerts": [], osv: [ma(["CVE-1"])] } }, { adv: { "dependabot-alerts": [ma(["CVE-1", "GHSA-1"])] } });
+    expect(already).toMatchObject({ advCleared: 0, advNew: 0, changes: [] });
+  });
+
+  it("levels a new finding by its severity, and a secret is red whatever it says", () => {
+    const lv = (x: MarkAdv) => one({ adv: { s: [] } }, { adv: { s: [x] } }).changes[0];
+    expect(lv(ma(["A"], "critical"))).toMatchObject({ level: "bad", text: "new critical advisory" });
+    expect(lv(ma(["A"], "medium"))).toMatchObject({ level: "warn", text: "new medium advisory" });
+    expect(lv(ma(["A"], "low"))).toMatchObject({ level: "info" });
+    expect(lv(ma(["A"], "unknown"))).toMatchObject({ level: "info", text: "new advisory" });
+    expect(lv(ma(["A@.env"], "unknown", "secret"))).toMatchObject({ level: "bad", text: "new secret", key: "security:secret" });
+    expect(one({ adv: { s: [] } }, { adv: { s: [ma(["A"], "low"), ma(["B"], "high")] } }).changes[0]).toMatchObject({ level: "bad", text: "2 new advisories", detail: "B, A" });
+  });
+
+  it("dates a runtime's end inside the window from the newer mark, and a pinned toolchain never ends", () => {
+    const at = (days: number) => NOON / 1000 + days * D;
+    const rt = (key: string, eol: MarkRt["eol"], name = "node 18"): MarkRt => ({ key, name, eol });
+    const d = one({ rt: [rt("nodejs@18", at(3))] }, { rt: [rt("nodejs@18", at(3)), rt("rust@1.80", at(2), "rust 1.80"), rt("nodejs@20", at(30), "node 20")] });
+    expect(d.ended).toBe(1);
+    expect(d.changes).toEqual([{ root: "/r", facet: "security", key: "security:runtime", level: "bad", text: "node 18 reached end-of-life", detail: "ended 4d ago" }]);
+    expect(one({ rt: null }, { rt: [rt("nodejs@18", at(3))] }), "the base needs no runtimes for that").toMatchObject({ ended: 1 });
+    expect(one({ rt: [rt("nodejs@3", false)] }, { rt: [rt("nodejs@3", true, "node 3")] }).changes[0]).toMatchObject({ text: "node 3 reached end-of-life", detail: "now listed as ended" });
+    const off = one({ rt: [rt("nodejs@16", at(-100), "node 16"), rt("nodejs@22", at(900), "node 22")] }, { rt: [rt("nodejs@22", at(900), "node 22")] });
+    expect(off.changes.map((c) => [c.level, c.text])).toEqual([["ok", "moved off node 16"]]);
+    expect(off).toMatchObject({ movedOff: 1, quiet: false });
+    expect(weekSummary(off), "a move alone is still something compared").toEqual(["1 runtime moved off"]);
+    expect(weekFigs(off)).toEqual([{ n: 1, text: "runtime moved off", level: null }]);
+    const lost = one({ rt: [rt("python@3.8", at(-100), "python 3.8"), rt("nodejs@22", at(900), "node 22")] }, { rt: [rt("nodejs@22", at(900), "node 22")] });
+    expect(lost, "a product whose list failed, or that left, is no move").toMatchObject({ movedOff: 0, changes: [] });
+    expect(one({ rt: null }, { rt: [] }).gaps).toContainEqual({ facet: "security", roots: ["/r"], why: "runtimes read only now", click: true });
+  });
+
+  it("counts update PRs closed and opened per bot read in full both times", () => {
+    const d = one({ prs: { dependabot: [1, 2, 3], renovate: [9] } }, { prs: { dependabot: [3, 4] } });
+    expect(d).toMatchObject({ prsClosed: 2, prsOpened: 1 });
+    expect(d.changes.map((c) => [c.level, c.key, c.text, c.detail])).toEqual([
+      ["info", "deps:dependabot", "1 update PR opened", "#4"], ["ok", "deps:dependabot", "2 update PRs closed", "#1, #2"]]);
+    expect(d.gaps).toContainEqual({ facet: "deps", roots: ["/r"], why: "Renovate read in full only then", click: false });
+  });
+
+  it("counts releases from the tags, else the published ones, never below zero, and says a stale fetch", () => {
+    const r = (o: Partial<MarkRel>): MarkRel => ({ tags: null, tag: null, published: null, fetchedAt: (NOON + WEEK) / 1000 - H, ...o });
+    expect(one({ rel: r({ tags: 3 }) }, { rel: r({ tags: 5, tag: "v2", published: 9 }) }).changes)
+      .toEqual([{ root: "/r", facet: "release", key: "release", level: "ok", text: "2 releases tagged", detail: "newest v2" }]);
+    expect(one({ rel: r({ published: 4 }) }, { rel: r({ tags: 1, published: 5 }) })).toMatchObject({ released: 1 });
+    expect(one({ rel: r({ tags: 5 }) }, { rel: r({ tags: 4 }) })).toMatchObject({ released: 0, changes: [] });
+    const stale = one({ rel: r({ tags: 1 }) }, { rel: r({ tags: 1, fetchedAt: (NOON + WEEK) / 1000 - 9 * D }) });
+    expect(stale.gaps).toContainEqual({ facet: "release", roots: ["/r"], why: "counted as of the last fetch, 9d ago", click: false });
+    expect(one({ rel: null }, { rel: r({ tags: 1 }) }).gaps).toContainEqual({ facet: "release", roots: ["/r"], why: "no release count then", click: false });
+  });
+
+  it("is quiet only over what it compared, and names the projects checked once", () => {
+    const same = { ci: { red: ["a"], green: [] }, adv: { s: [ma(["X"])] }, prs: { b: [1] } };
+    const q = weekDigest([pairOf(same, same)], ["/z", "/y"]);
+    expect(q).toMatchObject({ quiet: true, compared: 1, unmarked: ["/y", "/z"] });
+    expect(weekSummary(q)).toEqual(["no change in the 1 project compared"]);
+    const blind = weekDigest([pairOf({ ci: null }, { ci: null })], []);
+    expect(blind).toMatchObject({ quiet: false, compared: 0, changes: [] });
+  });
+
+  it("orders changes worst first and stably, and every change opens the board that carries it", () => {
+    const rl = (tags: number): MarkRel => ({ tags, tag: null, published: null, fetchedAt: null });
+    const d = weekDigest([
+      pairOf({ prs: { b: [1] }, rel: rl(1) }, { prs: { b: [2] }, rel: rl(2) }, "/b"),
+      pairOf({ ci: { red: [], green: ["x"] }, adv: { s: [] } }, { ci: { red: ["x"], green: [] }, adv: { s: [ma(["S@k"], "unknown", "secret"), ma(["M"], "medium")] } }, "/a"),
+      pairOf({ rt: [] }, { rt: [{ key: "nodejs@18", name: "node 18", eol: (NOON + DMS) / 1000 }] }, "/c"),
+    ], []);
+    expect(d.changes.map((c) => `${c.level} ${c.root} ${c.key}`)).toEqual([
+      "bad /a ci", "bad /a security:secret", "bad /c security:runtime", "warn /a security:dependency",
+      "info /b deps:b", "ok /b deps:b", "ok /b release",
+    ]);
+    const boards = Object.fromEntries(d.changes.map((c) => [c.key, findingTarget(c).board]));
+    expect(boards).toEqual({ ci: "ci", "security:secret": "advisories", "security:runtime": "runtimes", "security:dependency": "advisories",
+      "deps:b": "update-prs", release: "releases" });
+  });
+
+  it("dates the head from the commonest baseline and says a project measured from another", () => {
+    const d = weekDigest([pairOf({}, {}, "/a"), pairOf({}, {}, "/b"), pairOf({}, {}, "/c", NOON - 13 * DMS)], []);
+    expect(d).toMatchObject({ since: NOON, until: NOON + WEEK, span: "week" });
+    expect(d.gaps.filter((g) => g.facet === null)).toEqual([{ facet: null, roots: ["/c"], why: `compared from ${fmtDay(NOON - 13 * DMS)}`, click: false }]);
+    expect(weekDigest([pairOf({}, {}, "/a", NOON + 3 * DMS)], []).span, "nothing a week old: the first check").toBe("first");
+    expect(weekDigest([pairOf({}, {}, "/a", NOON - 7 * DMS)], []).span).toBe("long");
+  });
+
+  it("keeps a project behind the fleet's newest day out of the week, and says when it was last read", () => {
+    const pair = (root: string, from: number, to: number, o: Partial<WeekMark> = {}): WeekPairIn => ({ root, base: mark(NOON + from * DMS), now: mark(NOON + to * DMS, o), th: MAINT_DEFAULTS });
+    const red = { ci: { red: ["deploy"], green: [] } };
+    const d = weekDigest([pairOf({}, {}, "/a"), pairOf({}, {}, "/b"), pair("/gone", -40, -33, red)], []);
+    expect(d).toMatchObject({ ciBroke: 0, changes: [], compared: 2, behind: ["/gone"], span: "week", since: NOON, until: NOON + WEEK, quiet: true });
+    expect(d.gaps).toContainEqual({ facet: null, roots: ["/gone"], why: `last checked ${fmtDay(NOON - 33 * DMS)}`, click: false });
+    const said = weekNotCompared(d, { "/gone": "api" })!;
+    expect(said.line).toContain("1 project last checked earlier");
+    expect(said.line, "and it is not counted again as compared over another span").not.toContain("another span");
+    expect(said.tip).toContain(`Last checked ${fmtDay(NOON - 33 * DMS)}: api`);
+    expect(weekDigest([pairOf({}, {}, "/a"), pair("/short", 0, 1, red)], []), "a day's reading says little of the week").toMatchObject({ behind: ["/short"], compared: 1, ciBroke: 0 });
+    expect(weekDigest([pairOf({}, {}, "/a"), pair("/slack", 0, 6, red)], []), "a day's slack is the same check").toMatchObject({ behind: [], ciBroke: 1 });
+    const opened = weekDigest([pairOf({}, {}, "/a"), pairOf({}, {}, "/b"), pair("/x", 3, 10)], []);
+    expect(opened, "one project read since moves neither end for the rest").toMatchObject({ behind: [], compared: 3, since: NOON, until: NOON + WEEK });
+    expect(opened.gaps.filter((g) => g.facet === null)).toEqual([{ facet: null, roots: ["/x"], why: `compared from ${fmtDay(NOON + 3 * DMS)}`, click: false }]);
+  });
+
+  it("names a project with no mark at all, which is not one checked once", () => {
+    const d = weekDigest([pairOf({}, {})], ["/once"], ["/never"]);
+    expect(d).toMatchObject({ unmarked: ["/once"], unread: ["/never"] });
+    const said = weekNotCompared(d, { "/never": "api" })!;
+    expect(said.line).toContain("1 project not checked yet");
+    expect(said.tip).toContain("Not checked yet: api");
+  });
+
+  it("says a public source this machine opted into when its read fails, since every scan asks it", () => {
+    const base = { adv: { osv: [ma(["X"])] } }, now = { adv: {} }, why = "OSV.dev read in full only then";
+    expect(weekDigest([pairOf(base, now)], []).gaps).toContainEqual({ facet: "security", roots: ["/r"], why, click: true });
+    const opted = weekDigest([pairOf(base, now)], [], [], ["osv"]);
+    expect(opted.gaps).toContainEqual({ facet: "security", roots: ["/r"], why, click: false });
+    expect(weekNotCompared(opted, {})!.line).toContain("Security in 1 project");
+    expect(weekDigest([pairOf({ rt: null }, { rt: [] })], [], [], ["runtime-eol"]).gaps)
+      .toContainEqual({ facet: "security", roots: ["/r"], why: "runtimes read only now", click: false });
+  });
+
+  it("words the figures, the summary and what was not compared", () => {
+    const d = weekDigest([
+      pairOf({ ci: { red: ["a"], green: [] }, adv: { s: [ma(["X"])], "npm-audit": [] }, prs: { b: [1, 2, 3] } },
+        { ci: { red: [], green: ["a"] }, adv: { s: [ma(["Y"], "medium")] }, prs: { b: [4] }, rel: { tags: 1, tag: null, published: null, fetchedAt: null } }),
+      pairOf({ ci: null }, {}, "/q"),
+    ], ["/n"]);
+    expect(weekFigs(d)).toEqual([
+      { n: 1, text: "workflow fixed", level: null }, { n: 1, text: "new advisory", level: "warn" }, { n: 1, text: "advisory cleared", level: null },
+      { n: 3, text: "update PRs closed", level: null }, { n: 1, text: "update PR opened", level: null },
+    ]);
+    expect(weekSummary(d)).toEqual(["1 workflow fixed", "1 advisory cleared · 1 new", "3 update PRs closed · 1 opened"]);
+    const gaps = weekNotCompared(d, { "/r": "app", "/q": "api", "/n": "web" })!;
+    expect(gaps.line).toBe("Not compared: CI in 1 project · Security in 1 project · Dependencies in 1 project · Release in 2 projects · 1 project checked once so far");
+    expect(gaps.tip).toEqual(expect.arrayContaining(["CI: no verdict then: api", "Security: npm audit read in full only then: app", "Checked once so far: web"]));
+    const quietTip = weekNotCompared(weekDigest([pairOf({ adv: { "npm-audit": [], s: [] }, rel: { tags: 1, tag: null, published: null, fetchedAt: null } },
+      { adv: { s: [] }, rel: { tags: 1, tag: null, published: null, fetchedAt: null } })], []), {});
+    expect(quietTip, "a click-only source is named in the tip alone").toEqual({ line: "Not compared: Dependencies in 1 project", tip: [
+      "Security: npm audit read in full only then: /r", "Dependencies: no update bot read in full both times: /r"] });
+  });
+});
+
 describe("Today's red default branch", () => {
   const failing = () => input(ok(GHA, ci(run("build", "fail", S - 3 * D), run("build", "pass", S - 4 * D))));
   const snap = { at: NOW - 5 * H * 1000, account: null, cells: [], findings: [
@@ -2230,8 +2648,8 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen", "MaintHost",
-      "sweeps", "shownSweep", "SweepRun"],
+    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintSev", "quietOpen",
+      "MaintHost", "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
   const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 

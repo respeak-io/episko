@@ -36,6 +36,7 @@ describe("the allowlist contract", () => {
   });
   it("keeps the maintenance snapshot on this machine: another checkout's state is not this one's", () => {
     expect(syncClass("cc-maint")).toBe("local");
+    expect(syncClass("cc-maint-week")).toBe("local");
   });
   it("lets the fleet's view and Maintenance's filter follow you, and nothing that runs", () => {
     expect(syncClass("cc-fleet-view")).toBe("pref");

@@ -6,8 +6,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
   clampKept, clampSnaps, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, snapFor, takeSnap,
+  addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
-  type SweepFacts, type SweepState,
+  type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
 } from "./maint";
 import { findSource, MAINT_PREFS_DEFAULT, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
@@ -61,15 +62,21 @@ function keepSnap(e: ProjectMaint): void {
   const inp = maintInput(e.root), account = ghAccountFor(e.root);
   if (inp) snaps = clampSnaps({ ...snaps, [e.root]: takeSnap(e.root, inp, e.at, maintSnap(e.root), account) });
   if (e.det) kept = { ...kept, [e.root]: { at: e.at, account: ghAccountFor(e.root), det: e.det, reports: { ...e.reports } } };
+  if (inp && leavesMark(inp)) weeks = { ...weeks, [e.root]: addMark(weeks[e.root] ?? [], takeMark(inp, e.at, account)) };
 }
 const saveSnaps = () => {
   try { localStorage.setItem("cc-maint", JSON.stringify(snaps)); } catch (err) { dlog("warn", `maint: snapshot not kept: ${err}`); }
   try { localStorage.setItem("cc-maint-scan", JSON.stringify(packKept(kept))); } catch (err) { dlog("warn", `maint: last scan not kept: ${err}`); }
+  try { localStorage.setItem("cc-maint-week", JSON.stringify(packWeek(weeks))); } catch (err) { dlog("warn", `maint: week's marks not kept: ${err}`); }
 };
 
 // The same scans whole, so a boot paints the boards as they were rather than an empty view.
 // Loading them reads storage only; an answer another account gave is not this one's.
 let kept: KeptScans = clampKept(readObj<unknown>("cc-maint-scan"));
+// Each root's marks for *Since last week*: identities only, one a local day, a week and its baseline.
+let weeks: WeekMarks = clampWeek(readObj<unknown>("cc-maint-week"));
+/** This account's latest mark and one a week older (./maint weekPair). Storage only: it never scans. */
+export const maintWeek = (root: string): { now: WeekMark; base: WeekMark | null } | null => weekPair(weeks[root] ?? [], ghAccountFor(root));
 for (const [root, k] of Object.entries(kept)) {
   if (k.account !== ghAccountFor(root)) continue;
   cache.set(root, { root, det: k.det, reports: k.reports, detecting: false, out: 0, at: k.at, err: null, kept: true });
@@ -190,7 +197,7 @@ const forgotten = new Map<string, number>(); // per root: an answer asked before
 /** An account switch: what the other identity answered must not be drawn as this one's. */
 export function forgetMaint(root: string): void {
   cache.delete(root);
-  if (snaps[root] || kept[root]) { delete snaps[root]; delete kept[root]; saveSnaps(); }
+  if (snaps[root] || kept[root] || weeks[root]) { delete snaps[root]; delete kept[root]; delete weeks[root]; saveSnaps(); }
   forgotten.set(root, (forgotten.get(root) ?? 0) + 1);
   paint();
 }

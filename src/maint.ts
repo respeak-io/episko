@@ -2,10 +2,11 @@
 // means — a facet's cell, the findings under a card, a project's band and the order cards stand
 // in. Facts in, words out: no DOM, no Tauri, and no vendor named, so the next adapter needs none.
 
-import { FACETS, COSTS, facetDef, findSource, permitted, type Cost, type Facet } from "./maintsources";
+import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
 import { parseVer, satisfies, verCmpStr } from "./deps";
+import { fmtDay, nfcKeys } from "./format";
 
 // ---------- the wire (maint.rs; pinned by test/fixtures/maint-wire.json) ----------
 
@@ -2060,6 +2061,377 @@ export function packKept(all: KeptScans, budget = KEPT_CHARS): KeptScans {
     if (used + n <= budget) { out[root] = k; used += n; }
   }
   return out;
+}
+
+// ---------- the week's marks (`cc-maint-week`) ----------
+
+export const WEEK_DAYS = 7, WEEK_ROOTS = 200, WEEK_ROWS = 60, WEEK_NAMES = 4, WEEK_TEXT = 120, WEEK_LINES = 5;
+export const WEEK_MARKS = WEEK_DAYS + 1; // one per local day of the window, and the baseline before it
+export const WEEK_CHARS = 250_000; // beside cc-maint-scan's 1.5M, under one origin's quota
+const WEEK_FACETS: readonly Facet[] = ["ci", "security", "deps", "release"];
+
+/** One vulnerability as a mark keeps it: its names (`keysOf`), never its package, summary or link. */
+export interface MarkAdv { names: string[]; severity: Severity; kind: AdvisoryKind }
+export interface MarkRt { key: string; name: string; eol: Eol } // key: product@cycle
+export interface MarkRel { tags: number | null; tag: string | null; published: number | null; fetchedAt: number | null }
+/** What a finished scan leaves for next week: identities and counts. A null facet, or a source or bot
+ *  left out, had no verdict read in full; `none` names a facet with nothing to read (no source, off),
+ *  `part` a source that answered with only part of its list. */
+export interface WeekMark {
+  at: number; account: string | null; // at: ms
+  ci: { red: string[]; green: string[] } | null; // each workflow whose newest finished default-branch run failed, or passed
+  adv: Record<string, MarkAdv[]>; part: string[]; // per source
+  prs: Record<string, number[]>; // open update PRs per bot
+  rt: MarkRt[] | null; rel: MarkRel | null; none: Facet[];
+}
+export type WeekMarks = Record<string, WeekMark[]>; // newest first
+
+const cut = (s: string) => s.slice(0, WEEK_TEXT);
+const fits = (xs: readonly unknown[]) => xs.length <= WEEK_ROWS;
+const has = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+// A mark is one per local day, so age is counted in those: last Monday's stays a week old at whatever hour
+// either ran, and a clock change moves no day.
+const dayNo = (ms: number) => { const d = new Date(ms); return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / (DAY * 1000); };
+const weekOld = (m: WeekMark, now: WeekMark) => dayNo(now.at) - dayNo(m.at) >= WEEK_DAYS;
+const productOf = (key: string) => key.slice(0, key.indexOf("@"));
+
+// A finding's line moves with every edit above it, so across a week it is its rule and its file.
+const markNames = (a: Advisory) => [...new Set(keysOf(a).map((n) => a.kind === "dependency" ? n : n.replace(/:\d+$/, "")))];
+
+/** Whether a finished scan leaves a mark: a checkout that is gone detects no source, which is no verdict. */
+export const leavesMark = (inp: MaintInput): boolean => !!inp.det?.sources.length;
+
+/** The mark a finished scan leaves, over `okFacts`: a truncated or failed source is left out. */
+export function takeMark(inp: MaintInput, at: number, account: string | null): WeekMark {
+  const th = clampMaint(inp.det?.config.thresholds);
+  const none = WEEK_FACETS.filter((f) => ["none", "off"].includes(facetCell(f, inp, th, at).state));
+  // One list across the sources that read the default branch, so it stands only when every one answered: a
+  // failed one is no fix. A flaky read adds nothing to the list, so it can neither cost it nor vouch for it.
+  const listsRuns = (id: string) => { const d = findSource(id); return d ? d.facet === "ci" && d.sees.includes("ci.default-branch") : inp.reports[id]?.facet === "ci"; };
+  const ciIds = (inp.det?.sources ?? []).filter((id) => listsRuns(id) && !inp.skip?.includes(id));
+  // Each workflow's newest finished run: one still out, or skipped, keeps its last verdict in both lists.
+  const finished = okFacts(inp, "ci").map((r) => r.facts.kind !== "ciRuns" ? r
+    : { ...r, facts: { ...r.facts, runs: r.facts.runs.filter((x) => x.status === "pass" || x.status === "fail") } });
+  const red = [...new Set(ciFailures(finished).map((x) => cut(x.workflow)))].sort();
+  const newest = new Map<string, CiStatus>();
+  for (const { facts: f } of finished) if (f.kind === "ciRuns") for (const r of f.runs) if (!newest.has(r.workflow)) newest.set(r.workflow, r.status);
+  const green = [...new Set([...newest].filter(([, st]) => st === "pass").map(([w]) => cut(w)))].sort();
+  const ciRead = !none.includes("ci") && ciIds.length > 0 && ciIds.every((id) => inp.reports[id]?.coverage.state === "ok");
+  const adv: Record<string, MarkAdv[]> = {}, prs: Record<string, number[]> = {}, part: string[] = [];
+  let rt: MarkRt[] | null = null, rel: MarkRel | null = null;
+  for (const { source, truncated, facts: f } of okFacts(inp, "security")) {
+    if (f.kind === "advisories") {
+      const rows = foldMarks(f.items.map((a): MarkAdv => ({ names: markNames(a), severity: a.severity, kind: a.kind })));
+      // A broken file's rows are simply gone, and a cut list's: either would read as cleared.
+      if (truncated || inp.reports[source]?.gaps.length || !fits(rows)) part.push(cut(source));
+      else adv[cut(source)] = rows.map((r) => ({ ...r, names: r.names.slice(0, WEEK_NAMES).map(cut) }));
+    } else if (f.kind === "runtimes" && !truncated) {
+      const prev: MarkRt[] = rt ?? [], by = new Map(prev.map((r) => [r.key, r]));
+      for (const r of f.items) {
+        const key = cut(`${r.product}@${r.cycle ?? `?${r.declared}`}`); // judgeRuntimes' key
+        by.set(key, { key, name: cut(`${r.name} ${r.cycle ?? r.declared}`), eol: r.eol });
+      }
+      rt = [...by.values()];
+    }
+  }
+  for (const { truncated, facts: f } of okFacts(inp, "deps")) {
+    if (f.kind === "updatePrs" && !truncated && fits(f.prs)) prs[cut(f.bot)] = f.prs.map((p) => p.number).sort((a, b) => a - b);
+  }
+  for (const { truncated, facts: f } of okFacts(inp, "release")) {
+    const was: MarkRel = rel ?? { tags: null, tag: null, published: null, fetchedAt: null };
+    if (f.kind === "release") rel = { ...was, tags: f.tagsSeen, tag: f.tag === null ? null : cut(f.tag), fetchedAt: f.fetchedAt };
+    else if (f.kind === "releases" && !truncated) rel = { ...was, published: f.count };
+  }
+  return { at, account, ci: ciRead && fits(red) && fits(green) ? { red, green } : null, adv, part, prs, rt: rt && fits(rt) ? rt : null, rel, none };
+}
+
+// Newest first: every mark inside the window of the newest, then the newest older one, the baseline.
+function prune(marks: readonly WeekMark[]): WeekMark[] {
+  const s = [...marks].sort((a, b) => b.at - a.at), base = s.find((m) => weekOld(m, s[0]));
+  return [...s.filter((m) => !weekOld(m, s[0])).slice(0, WEEK_MARKS - (base ? 1 : 0)), ...(base ? [base] : [])];
+}
+
+/** One more finished scan. A mark of the same local day is replaced, but a facet, source or bot the newer
+ *  scan reached no verdict on keeps that one's: a failed afternoon read never erases the morning's. */
+export function addMark(marks: readonly WeekMark[], m: WeekMark): WeekMark[] {
+  const old = marks.find((x) => dayNo(x.at) === dayNo(m.at) && x.account === m.account);
+  const off = (f: Facet) => m.none.includes(f);
+  // The tag read and the published count fail apart, so each keeps the morning's alone.
+  const rel = (o: MarkRel | null): MarkRel | null => !o || !m.rel ? m.rel ?? (off("release") ? null : o) : {
+    ...(m.rel.tags === null ? { tags: o.tags, tag: o.tag, fetchedAt: o.fetchedAt } : { tags: m.rel.tags, tag: m.rel.tag, fetchedAt: m.rel.fetchedAt }),
+    published: m.rel.published ?? o.published,
+  };
+  const merged: WeekMark = !old ? m : {
+    ...m, ci: m.ci ?? (off("ci") ? null : old.ci), rt: m.rt ?? (off("security") ? null : old.rt), rel: rel(old.rel),
+    adv: off("security") ? m.adv : { ...old.adv, ...m.adv }, part: off("security") ? m.part : [...new Set([...old.part, ...m.part])],
+    prs: off("deps") ? m.prs : { ...old.prs, ...m.prs },
+  };
+  return prune([merged, ...marks.filter((x) => x !== old)]);
+}
+
+/** This account's newest mark and the newest one seven local days older or more, else its oldest earlier one. */
+export function weekPair(marks: readonly WeekMark[], account: string | null): { now: WeekMark; base: WeekMark | null } | null {
+  const mine = marks.filter((m) => m.account === account).sort((a, b) => b.at - a.at);
+  if (!mine.length) return null;
+  const now = mine[0], base = mine.find((m) => weekOld(m, now)) ?? mine[mine.length - 1];
+  return { now, base: base === now ? null : base };
+}
+
+const isMarkAdv = shape({ names: (v) => list(str)(v) && (v as string[]).length > 0, severity: oneOf(SEVERITIES), kind: oneOf(ADVISORY_KINDS) });
+const isMarkRt = shape({ key: str, name: str, eol: (v) => v === null || num(v) || bool(v) });
+const isMarkRel = shape({ tags: opt(num), tag: opt(str), published: opt(num), fetchedAt: opt(num) });
+const isMark = shape({
+  at: (v) => num(v) && (v as number) > 0, ci: opt(shape({ red: list(str), green: list(str) })), adv: (v) => isObj(v) && Object.values(v).every(list(isMarkAdv)), part: list(str),
+  prs: (v) => isObj(v) && Object.values(v).every(list(num)), rt: opt(list(isMarkRt)), rel: opt(isMarkRel), none: list(oneOf(FACETS)),
+});
+
+// Rebuilt field by field: a list past the cap is no verdict, never a cut one that would read as cleared.
+function clampMark(v: unknown): WeekMark | null {
+  if (!isMark(v)) return null;
+  const m = v as WeekMark;
+  const adv = Object.entries(m.adv).filter(([, xs]) => fits(xs))
+    .map(([s, xs]) => [cut(s), xs.map((a) => ({ names: a.names.slice(0, WEEK_NAMES).map(cut), severity: a.severity, kind: a.kind }))]);
+  const prs = Object.entries(m.prs).filter(([, xs]) => fits(xs)).map(([b, xs]) => [cut(b), [...xs]]);
+  const rel = m.rel && { tags: m.rel.tags, tag: m.rel.tag === null ? null : cut(m.rel.tag), published: m.rel.published, fetchedAt: m.rel.fetchedAt };
+  return {
+    at: m.at, account: strOr((v as Obj).account),
+    ci: m.ci && fits(m.ci.red) && fits(m.ci.green) ? { red: m.ci.red.map(cut), green: m.ci.green.map(cut) } : null,
+    adv: Object.fromEntries(adv), part: [...new Set(m.part)].slice(0, WEEK_ROWS).map(cut), prs: Object.fromEntries(prs),
+    rt: m.rt && fits(m.rt) ? m.rt.map((r) => ({ key: cut(r.key), name: cut(r.name), eol: r.eol })) : null, rel, none: [...new Set(m.none)],
+  };
+}
+
+/** `cc-maint-week` narrowed: a bad mark or root is dropped alone, a root keeps one mark per local day
+ *  and account inside the window plus its baseline, and past two hundred roots the oldest go. */
+export function clampWeek(raw: unknown): WeekMarks {
+  if (!isObj(raw)) return {};
+  const roots = Object.entries(nfcKeys(raw)).flatMap(([root, v]): [string, WeekMark[]][] => {
+    if (!root || !Array.isArray(v)) return [];
+    const seen = new Set<string>();
+    const ms = v.map(clampMark).filter((m): m is WeekMark => !!m).sort((a, b) => b.at - a.at)
+      .filter((m) => { const k = `${dayNo(m.at)}\n${m.account}`; return !seen.has(k) && !!seen.add(k); });
+    return ms.length ? [[root, prune(ms)]] : [];
+  });
+  return Object.fromEntries(roots.sort((a, b) => b[1][0].at - a[1][0].at || a[0].localeCompare(b[0])).slice(0, WEEK_ROOTS));
+}
+
+/** What fits `budget` characters: every root's newest mark and baseline first, newest roots first, so a
+ *  comparison outlives the days between; then, newest first, whole windows where they still fit. */
+export function packWeek(all: WeekMarks, budget = WEEK_CHARS): WeekMarks {
+  const out: WeekMarks = {};
+  let used = 1; // `{}` less the comma after the last entry
+  const roots = Object.entries(all).filter(([, ms]) => ms.length).sort((a, b) => b[1][0].at - a[1][0].at || a[0].localeCompare(b[0]));
+  for (const [root, ms] of roots) {
+    const base = ms.find((m) => weekOld(m, ms[0])) ?? ms[ms.length - 1], v = base === ms[0] ? [ms[0]] : [ms[0], base];
+    const n = JSON.stringify(root).length + JSON.stringify(v).length + 2; // `:` and `,`
+    if (used + n <= budget) { out[root] = v; used += n; }
+  }
+  for (const [root, ms] of roots) {
+    const more = out[root] ? JSON.stringify(ms).length - JSON.stringify(out[root]).length : 0;
+    if (more > 0 && used + more <= budget) { out[root] = ms; used += more; }
+  }
+  return out;
+}
+
+// ---------- since last week: two marks compared ----------
+
+export type WeekSpan = "first" | "week" | "long"; // first: no mark is a week old yet
+/** A change between a project's two marks; `key` is a finding's, so `findingTarget` opens its board. */
+export interface WeekChange { root: string; facet: Facet; key: string; level: Level; text: string; detail: string }
+/** What could not be compared, and why. `facet` null is the whole project; `click`: said in the tip only. */
+export interface WeekGap { facet: Facet | null; roots: string[]; why: string; click: boolean }
+export interface WeekDigest {
+  since: number; until: number; span: WeekSpan; // ms
+  compared: number; unmarked: string[]; unread: string[]; behind: string[]; // checked once so far; never; not lately
+  advNew: number; advCleared: number; ciBroke: number; ciFixed: number;
+  prsOpened: number; prsClosed: number; released: number; ended: number; movedOff: number;
+  changes: WeekChange[]; gaps: WeekGap[];
+  quiet: boolean; // nothing changed in what was compared
+}
+export interface WeekPairIn { root: string; base: WeekMark; now: WeekMark; th: MaintThresholds }
+
+const WEEK_KIND: Record<AdvisoryKind, [string, string]> = {
+  dependency: ["advisory", "advisories"], code: ["code finding", "code findings"],
+  config: ["misconfiguration", "misconfigurations"], secret: ["secret", "secrets"],
+};
+// Asked only on a click, unless this machine opted in, when every scan asks it and its failure is news.
+const clickOnly = (s: string, opted: readonly string[]) => { const d = findSource(s); return !!d && !permitted(d.cost, "scan", opted.includes(s)); };
+const rtClickOnly = (opted: readonly string[]) => facetSources("security").filter((s) => s.sees.includes("sec.runtime")).every((s) => clickOnly(s.id, opted));
+const firsts = (xs: readonly string[], n = 3) => xs.slice(0, n).join(", ") + (xs.length > n ? " …" : "");
+
+// One row per vulnerability across sources: a name shared by two rows makes them one, at the worse severity.
+function foldMarks(rows: readonly MarkAdv[]): MarkAdv[] {
+  const out: MarkAdv[] = [];
+  for (const r of rows) {
+    const hits = out.filter((g) => g.names.some((n) => r.names.includes(n)));
+    const all = [r, ...hits], worst = all.sort((a, b) => sevRank(a.severity) - sevRank(b.severity))[0];
+    for (const h of hits) out.splice(out.indexOf(h), 1);
+    out.push({ names: [...new Set(all.flatMap((x) => x.names))].sort(), severity: worst.severity, kind: worst.kind });
+  }
+  return out.sort((a, b) => sevRank(a.severity) - sevRank(b.severity) || (a.names[0] ?? "").localeCompare(b.names[0] ?? ""));
+}
+
+/** The fleet's week from each project's pair of marks, compared only where both read the same thing in full. */
+export function weekDigest(pairs: readonly WeekPairIn[], unmarked: readonly string[], unread: readonly string[] = [], opted: readonly string[] = []): WeekDigest {
+  const d: WeekDigest = { since: 0, until: 0, span: "week", compared: 0, unmarked: [...unmarked].sort(), unread: [...unread].sort(), behind: [], advNew: 0, advCleared: 0,
+    ciBroke: 0, ciFixed: 0, prsOpened: 0, prsClosed: 0, released: 0, ended: 0, movedOff: 0, changes: [], gaps: [], quiet: false };
+  const gaps = new Map<string, WeekGap>();
+  const gap = (facet: Facet | null, root: string, why: string, click = false) => {
+    const g = gaps.get(`${facet}\n${why}`) ?? { facet, roots: [], why, click };
+    if (!g.roots.includes(root)) g.roots.push(root);
+    gaps.set(`${facet}\n${why}`, g);
+  };
+  const commonest = (ps: readonly WeekPairIn[], at: (p: WeekPairIn) => number, oldest: boolean): [number, WeekPairIn[]] => {
+    const by = new Map<number, WeekPairIn[]>();
+    for (const p of ps) by.set(dayNo(at(p)), [...(by.get(dayNo(at(p))) ?? []), p]);
+    return [...by].sort((a, b) => b[1].length - a[1].length || (oldest ? a[0] - b[0] : b[0] - a[0]))[0] ?? [0, []];
+  };
+  // Both ends are the commonest day, so one project read since, or unread for a month, moves neither.
+  // A project more than a day behind says nothing of this week: its changes are older than the head.
+  const [latest, ends] = commonest(pairs, (p) => p.now.at, false);
+  const isBehind = (m: WeekMark) => latest - dayNo(m.at) > 1;
+  const [, mode] = commonest(pairs.filter((p) => !isBehind(p.now)), (p) => p.base.at, true);
+  d.since = mode.length ? Math.min(...mode.map((p) => p.base.at)) : 0;
+  d.until = ends.length ? Math.max(...ends.map((p) => p.now.at)) : 0;
+  d.span = mode.every((p) => !weekOld(p.base, p.now)) ? "first" : dayNo(d.until) - dayNo(d.since) <= WEEK_DAYS + 1 ? "week" : "long";
+  for (const { root, base, now, th } of pairs) {
+    if (isBehind(now)) { d.behind.push(root); gap(null, root, `last checked ${fmtDay(now.at)}`); continue; }
+    const add = (facet: Facet, key: string, level: Level, text: string, detail = "") => d.changes.push({ root, facet, key, level, text, detail });
+    const said = new Set<Facet>(), was = (f: Facet) => base.none.includes(f) || now.none.includes(f);
+    const miss = (f: Facet, why: string, click = false) => { said.add(f); gap(f, root, why, click); };
+    const unknown = (f: Facet, why: string) => { if (!was(f) && !said.has(f)) gap(f, root, why); };
+    const when = (then: boolean) => then ? "then" : "now";
+    if (Math.abs(dayNo(base.at) - dayNo(d.since)) > 1) gap(null, root, `compared from ${fmtDay(base.at)}`);
+    let compared = false;
+    // Fixed is red then and passing now: a re-run still out, or a workflow gone, has fixed nothing yet.
+    if (base.ci && now.ci) {
+      compared = true;
+      const broke = now.ci.red.filter((w) => !base.ci!.red.includes(w)), fixed = base.ci.red.filter((w) => now.ci!.green.includes(w));
+      d.ciBroke += broke.length; d.ciFixed += fixed.length;
+      if (broke.length) add("ci", "ci", "bad", broke.length === 1 ? `CI broke: ${broke[0]}` : `${broke.length} workflows broke`, broke.length > 1 ? firsts(broke) : "");
+      if (fixed.length) add("ci", "ci", "ok", fixed.length === 1 ? `CI fixed: ${fixed[0]}` : `${fixed.length} workflows fixed`, fixed.length > 1 ? firsts(fixed) : "");
+    } else unknown("ci", base.ci ? "no verdict now" : now.ci ? "no verdict then" : "no verdict either time");
+    // Per source read in full both times, folded by name, so one reporter's id meets another's alias.
+    const srcs = [...new Set([...Object.keys(base.adv), ...Object.keys(now.adv)])].sort();
+    const both = srcs.filter((s) => has(base.adv, s) && has(now.adv, s));
+    for (const s of srcs) if (!both.includes(s)) miss("security", `${labelOf(s)} read in full only ${when(has(base.adv, s))}`, clickOnly(s, opted));
+    for (const s of new Set([...base.part, ...now.part])) if (!srcs.includes(s)) miss("security", `${labelOf(s)} read only in part`, clickOnly(s, opted));
+    if (both.length) {
+      compared = true;
+      const then = foldMarks(both.flatMap((s) => base.adv[s])), is = foldMarks(both.flatMap((s) => now.adv[s]));
+      // Against every source of the other mark: one read only once may still be reporting the row.
+      const namesIn = (m: WeekMark) => new Set(Object.values(m.adv).flat().flatMap((a) => a.names));
+      const thenN = namesIn(base), isN = namesIn(now);
+      const fresh = is.filter((a) => !a.names.some((n) => thenN.has(n))), gone = then.filter((a) => !a.names.some((n) => isN.has(n)));
+      d.advNew += fresh.length; d.advCleared += gone.length;
+      for (const kind of ADVISORY_KINDS) {
+        const nu = fresh.filter((a) => a.kind === kind), cl = gone.filter((a) => a.kind === kind), [one, many] = WEEK_KIND[kind];
+        const sev = (s: Severity) => s === "unknown" || kind === "secret" ? "" : `${s} `;
+        if (nu.length) add("security", `security:${kind}`, kind === "secret" ? "bad" : SEV_LEVEL[nu[0].severity],
+          nu.length === 1 ? `new ${sev(nu[0].severity)}${one}` : `${nu.length} new ${many}`, firsts(nu.map((a) => a.names[0])));
+        if (cl.length) add("security", `security:${kind}`, "ok", `${plural(cl.length, one, many)} cleared`, firsts(cl.map((a) => a.names[0])));
+      }
+    } else if (!srcs.length) unknown("security", "no advisory source read in full both times");
+    // A runtime that reached its end inside the window is dated by the newer mark alone.
+    const from = base.at / 1000, sec = now.at / 1000;
+    for (const r of now.rt ?? []) {
+      if (ROLLING.has(productOf(r.key))) continue;
+      const turned = r.eol === true && !!base.rt?.some((b) => b.key === r.key && b.eol !== true);
+      if (!turned && !(typeof r.eol === "number" && r.eol > from && r.eol <= sec)) continue;
+      d.ended++;
+      add("security", "security:runtime", "bad", `${r.name} reached end-of-life`, typeof r.eol === "number" ? `ended ${longSpan(sec - r.eol)} ago` : "now listed as ended");
+    }
+    const due = (r: MarkRt) => !ROLLING.has(productOf(r.key)) && (r.eol === true || (typeof r.eol === "number" && r.eol - from < th.eolWarnDays * DAY));
+    if (base.rt && now.rt) {
+      compared = true;
+      // Onto another cycle of the product: one whose list failed this time simply has no row.
+      for (const b of base.rt) {
+        if (!due(b) || now.rt.some((r) => r.key === b.key) || !now.rt.some((r) => productOf(r.key) === productOf(b.key))) continue;
+        d.movedOff++;
+        add("security", "security:runtime", "ok", `moved off ${b.name}`);
+      }
+    } else if (base.rt || now.rt) miss("security", `runtimes read only ${when(!!base.rt)}`, rtClickOnly(opted));
+    const bots = [...new Set([...Object.keys(base.prs), ...Object.keys(now.prs)])].sort();
+    for (const b of bots) {
+      if (!has(base.prs, b) || !has(now.prs, b)) { miss("deps", `${findSource(`${b}-prs`)?.label ?? b} read in full only ${when(has(base.prs, b))}`); continue; }
+      compared = true;
+      const opened = now.prs[b].filter((n) => !base.prs[b].includes(n)), closed = base.prs[b].filter((n) => !now.prs[b].includes(n));
+      d.prsOpened += opened.length; d.prsClosed += closed.length;
+      const nums = (xs: number[]) => firsts(xs.map((n) => `#${n}`), 4);
+      if (opened.length) add("deps", `deps:${b}`, "info", `${plural(opened.length, "update PR")} opened`, nums(opened));
+      if (closed.length) add("deps", `deps:${b}`, "ok", `${plural(closed.length, "update PR")} closed`, nums(closed));
+    }
+    if (!bots.length) unknown("deps", "no update bot read in full both times");
+    // Tags counted both times, else published releases; a deleted tag never counts as minus one.
+    const tags = base.rel?.tags != null && now.rel?.tags != null, pub = base.rel?.published != null && now.rel?.published != null;
+    if (tags || pub) {
+      compared = true;
+      const n = Math.max(0, tags ? now.rel!.tags! - base.rel!.tags! : now.rel!.published! - base.rel!.published!);
+      d.released += n;
+      if (n) add("release", "release", "ok", `${plural(n, "release")} tagged`, tags && now.rel!.tag ? `newest ${now.rel!.tag}` : "");
+    } else unknown("release", base.rel ? "no release count now" : now.rel ? "no release count then" : "no release count either time");
+    const fetched = now.rel?.fetchedAt;
+    if (fetched && sec - fetched > th.fetchStaleDays * DAY) gap("release", root, `counted as of the last fetch, ${span(sec - fetched)} ago`);
+    if (compared) d.compared++;
+  }
+  d.behind.sort();
+  d.changes.sort((a, b) => HOST_RANK.indexOf(a.level) - HOST_RANK.indexOf(b.level) || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet)
+    || a.root.localeCompare(b.root) || a.key.localeCompare(b.key) || a.text.localeCompare(b.text));
+  d.gaps = [...gaps.values()].map((g) => ({ ...g, roots: [...g.roots].sort() }))
+    .sort((a, b) => (a.facet ? FACETS.indexOf(a.facet) : FACETS.length) - (b.facet ? FACETS.indexOf(b.facet) : FACETS.length) || a.why.localeCompare(b.why));
+  d.quiet = d.compared > 0 && !d.changes.length;
+  return d;
+}
+
+export interface WeekFig { n: number; text: string; level: Level | null } // level: coloured only for what needs you
+/** The band's figures, every one non-zero; colour only on what broke, what is new and what ended. */
+export function weekFigs(d: WeekDigest): WeekFig[] {
+  const worst = d.changes.find((c) => c.facet === "security" && c.key !== "security:runtime" && c.level !== "ok")?.level;
+  const fig = (n: number, one: string, many: string, level: Level | null = null): WeekFig[] => n ? [{ n, text: n === 1 ? one : many, level }] : [];
+  return [
+    ...fig(d.ciBroke, "workflow broke", "workflows broke", "bad"),
+    ...fig(d.ciFixed, "workflow fixed", "workflows fixed"),
+    ...fig(d.advNew, "new advisory", "new advisories", worst === "bad" || worst === "warn" ? worst : null),
+    ...fig(d.advCleared, "advisory cleared", "advisories cleared"),
+    ...fig(d.ended, "runtime reached end-of-life", "runtimes reached end-of-life", "bad"),
+    ...fig(d.movedOff, "runtime moved off", "runtimes moved off"),
+    ...fig(d.prsClosed, "update PR closed", "update PRs closed"),
+    ...fig(d.prsOpened, "update PR opened", "update PRs opened"),
+    ...fig(d.released, "release tagged", "releases tagged"),
+  ];
+}
+
+/** The week in one line per facet, as the all-clear's row says it: "12 update PRs closed · 3 opened". */
+export function weekSummary(d: WeekDigest): string[] {
+  if (d.quiet) return [`no change in the ${plural(d.compared, "project")} compared`];
+  const two = (a: number, aText: string, b: number, bWord: string, bText: string) =>
+    a ? `${aText}${b ? ` · ${b} ${bWord}` : ""}` : b ? bText : "";
+  return [
+    two(d.ciBroke, `${plural(d.ciBroke, "workflow")} broke`, d.ciFixed, "fixed", `${plural(d.ciFixed, "workflow")} fixed`),
+    two(d.advCleared, `${plural(d.advCleared, "advisory", "advisories")} cleared`, d.advNew, "new", `${d.advNew} new ${d.advNew === 1 ? "advisory" : "advisories"}`),
+    d.ended ? `${plural(d.ended, "runtime")} reached end-of-life` : "",
+    d.movedOff ? `${plural(d.movedOff, "runtime")} moved off` : "",
+    two(d.prsClosed, `${plural(d.prsClosed, "update PR")} closed`, d.prsOpened, "opened", `${plural(d.prsOpened, "update PR")} opened`),
+    d.released ? `${plural(d.released, "release")} tagged` : "",
+  ].filter(Boolean);
+}
+
+/** The band's *Not compared* line and its tip: a source asked only on a click is named in the tip alone. */
+export function weekNotCompared(d: WeekDigest, names: Readonly<Record<string, string>>): { line: string; tip: string[] } | null {
+  const nameOf = (r: string) => names[r] ?? r, said = d.gaps.filter((g) => !g.click);
+  const parts = [...FACETS, null].flatMap((f) => {
+    const n = new Set(said.filter((g) => g.facet === f).flatMap((g) => g.roots).filter((r) => !d.behind.includes(r))).size;
+    return !n ? [] : [f ? `${facetDef(f).label} in ${plural(n, "project")}` : `${plural(n, "project")} compared over another span`];
+  });
+  if (d.behind.length) parts.push(`${plural(d.behind.length, "project")} last checked earlier`);
+  if (d.unmarked.length) parts.push(`${plural(d.unmarked.length, "project")} checked once so far`);
+  if (d.unread.length) parts.push(`${plural(d.unread.length, "project")} not checked yet`);
+  if (!parts.length && d.gaps.length) parts.push("checks that run only on a click");
+  if (!parts.length) return null;
+  const line = (head: string, roots: readonly string[]) => `${head[0].toUpperCase()}${head.slice(1)}: ${roots.map(nameOf).join(", ")}`;
+  const tip = [...d.gaps.map((g) => line(g.facet ? `${facetDef(g.facet).label}: ${g.why}` : g.why, g.roots)),
+    ...(d.unmarked.length ? [line("checked once so far", d.unmarked)] : []), ...(d.unread.length ? [line("not checked yet", d.unread)] : [])];
+  return { line: `Not compared: ${parts.join(" · ")}`, tip };
 }
 
 // ---------- the advisory sweep (maint_sweep.rs; docs/maintenance.md § Advisory sweep) ----------

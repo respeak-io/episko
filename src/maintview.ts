@@ -2,13 +2,14 @@
 // clicks. Every attribute here is data-mt* (dispatch.test.ts holds the two halves), so a card can
 // sit on the fleet and on the dashboard without joining either pane's own contract.
 
-import { esc, escAttr, fmtDay, relTime } from "./format";
+import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { sk } from "./dashview"; // the one shimmer; ./dashview declares it, .db-sk styles it
 import {
   advFix, boardDoor, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, needsCount, peekNames, rtName, span, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HygCount,
   type Level, type MaintSnap, type MaintTab, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
+  WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
 } from "./maint";
 import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
@@ -68,6 +69,7 @@ export interface MaintView extends MaintTabView {
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
   soon: MaintSoon[];
+  week: (WeekDigest & { stale: boolean }) | null; // null: no project has two marks yet
 }
 
 const DASH = `<span class="dim">—</span>`;
@@ -312,17 +314,51 @@ function chipsHtml(v: MaintView): string {
   }).join("") + `</div>`;
 }
 
+const soonHtml = (v: MaintView) => `<div class="mt-soon"><span class="label">Coming up</span>${v.soon.length
+  ? v.soon.map((s) => `<span>${esc(s.what)} · ${esc(s.name)} <em class="mono">${esc(fmtDay(s.at * 1000))}</em></span>`).join("")
+  : `<span>nothing in the next 30 days</span>`}</div>`;
+
 // What was covered says as much as what was found: an all-clear over two facets is not one over seven.
 function clearHtml(v: MaintView): string {
-  const soon = v.soon.length
-    ? v.soon.map((s) => `<span>${esc(s.what)} · ${esc(s.name)} <em class="mono">${esc(fmtDay(s.at * 1000))}</em></span>`).join("")
-    : `<span>nothing in the next 30 days</span>`;
   const list = (caps: MaintCap[]) => caps.map((k) => CAP_TEXT[k]).join(", ");
+  const week = v.week ? weekSummary(v.week) : [];
+  const said = week.length ? week.map((w) => `<span>${esc(w)}</span>`).join("")
+    : `<span>${v.week ? "nothing could be compared" : "nothing to compare yet"}</span>`;
   return `<div class="mt-clear"><div class="mt-clear-h"><span class="mt-ring">${icon("check", "solo")}</span><div>
       <b>Nothing needs you</b><p>${esc(plural(v.cards.length, "project"))} checked ${esc(relTime(v.checked))}.</p></div></div>
+    <div class="mt-soon"><span class="label">${esc(v.week ? weekHead(v.week) : "Since last week")}</span>${said}</div>
     ${v.sees.length ? `<div class="mt-soon"><span class="label">Covered</span><span>${esc(list(v.sees))}</span></div>` : ""}
     ${v.blind.length ? `<div class="mt-soon"><span class="label">Not covered</span><span>${esc(list(v.blind))}</span></div>` : ""}
-    <div class="mt-soon"><span class="label">Coming up</span>${soon}</div></div>`;
+    ${soonHtml(v)}</div>`;
+}
+
+// ---------- since last week ----------
+
+const weekHead = (d: WeekDigest) => d.span === "week" ? "Since last week" : d.span === "long" ? `Since ${fmtDay(d.since)}` : "Since the first check here";
+
+// The dashboard's since-band, over the marks finished scans left: it asks nothing. A line is a card
+// line's door (its name is plain text, since the row's own door is probed first), never a verb.
+function weekHtml(v: MaintView): string {
+  const d = v.week;
+  if (!d) return "";
+  const days = Math.max(1, Math.round((d.until - d.since) / 86_400_000)), end = relTime(d.until);
+  const ago = `${fmtSince(d.since)} → ${end === "just now" ? "now" : end} · ${plural(days, "day")}`;
+  const figs = weekFigs(d).map((f) => `<span class="sb-fig"><span class="v${f.level ? ` ${LEVEL_CLS[f.level]}` : ""}">${f.n}</span>`
+    + `<span class="k">${esc(f.text)}</span></span>`).join("");
+  const rows = d.changes.slice(0, WEEK_LINES).map((c) => `<div class="mt-find l-${c.level} past go"${goAttrs(c.facet, c.key, c.root)}>`
+    + `<i class="mt-sev"></i><span class="mt-rn">${esc(nameOf(v, c.root))}</span><span class="t" tabindex="0" role="button">${esc(c.text)}</span>`
+    + `<span class="d mono">${esc(c.detail)}</span></div>`).join("");
+  const rest = d.changes.slice(WEEK_LINES);
+  const more = rest.length ? `<span class="mt-more dim" data-tip="${escAttr(rest.map((c) => `${nameOf(v, c.root)}: ${c.text}`).join("\n"))}">`
+    + `+${rest.length} more</span>` : "";
+  const said = d.quiet ? `No change in the ${plural(d.compared, "project")} compared.` : d.changes.length ? "" : "Nothing could be compared yet.";
+  const gaps = weekNotCompared(d, v.names);
+  return `<section class="sinceb mt-week${d.stale ? " stale" : ""}" aria-label="Since last week">`
+    + `<div class="sb-h"><span class="t">${esc(weekHead(d))}</span><span class="sb-ago">${esc(ago)}</span></div>`
+    + (figs ? `<div class="sb-figs">${figs}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "")
+    + (rows ? `<div class="mt-finds">${rows}</div>` : "") + more
+    + (gaps ? `<p class="mt-said" data-tip="${escAttr(gaps.tip.join("\n"))}">${esc(gaps.line)}</p>` : "")
+    + soonHtml(v) + `</section>`;
 }
 
 // ---------- the tabs ----------
@@ -744,8 +780,10 @@ export function maintBodyHtml(v: MaintView): string {
         + `<button class="mt-fold" data-mtfold="0">Fold the ${esc(plural(quiet.length, "quiet project"))}</button>`
       : `<button class="mt-fold" data-mtfold="1">+ ${esc(plural(quiet.length, "quiet project"))}, nothing to do · ${esc(names)}</button>`;
   }
-  return `<div class="mt-body">${bar}<div class="mt-top">${chipsHtml(v)}</div>`
-    + (allClear && v.chip === "all" ? clearHtml(v) : "")
+  // The all-clear carries the week as a row of its own; anywhere else it opens the view.
+  const clear = allClear && v.chip === "all";
+  return `<div class="mt-body">${bar}${clear ? "" : weekHtml(v)}<div class="mt-top">${chipsHtml(v)}</div>`
+    + (clear ? clearHtml(v) : "")
     + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div>`
     + (v.chip === "all" ? hostsHtml(v.hosts) : "") + `</div>`;
 }

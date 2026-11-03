@@ -18,12 +18,12 @@ import {
 } from "./fleetview";
 import {
   clampMaint, comingUp, facetCells, findings, hostRows, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
-  tabExtras, tabFindings, tabModel,
-  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type TabProject,
+  tabExtras, tabFindings, tabModel, weekDigest,
+  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type TabProject, type WeekPairIn,
 } from "./maint";
 import { findSource, type MaintCap } from "./maintsources";
 import {
-  askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintSnap, scanFleet, shownSweep, sweeps, type SweepRun,
+  askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
 import { maintClick, maintChip, maintKey, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import {
@@ -455,6 +455,14 @@ function buildMaint(now: number): MaintView {
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });
   }
+  // Since last week: each project's latest finished scan against one a week older, from marks alone.
+  const pairs: WeekPairIn[] = [], unmarked: string[] = [], unread: string[] = [];
+  for (const root of byRoot.keys()) {
+    const w = maintWeek(root);
+    if (w?.base) pairs.push({ root, base: w.base, now: w.now, th: clampMaint(maintInput(root)?.det?.config.thresholds) });
+    else if (w) unmarked.push(root);
+    else if (maintInput(root)?.det?.sources.length !== 0) unread.push(root); // a folder with nothing to read leaves no mark
+  }
   const ranked = rankMaint(cards);
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
   const only = liveFilter();
@@ -477,6 +485,7 @@ function buildMaint(now: number): MaintView {
     })),
     prod: { projects: prodProjects, checking: prodChecking },
     sweep: maintSub === "security" ? sweepView(byRoot.size) : undefined,
+    week: pairs.length ? { ...weekDigest(pairs, unmarked, unread, maintPrefs.public), stale: fleetScanning } : null,
   };
 }
 
