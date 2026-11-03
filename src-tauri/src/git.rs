@@ -1989,34 +1989,43 @@ pub(crate) struct GitDiff {
     truncated: bool, // stopped at the size/file cap; the viewer shows a note
 }
 
-/// Every patch the app reads is cut here (~0.8 MB, ample for a review), on a char boundary.
+/// The working set's and a stash's patch is cut here (~0.8 MB), on a char boundary; a pull
+/// request's review has its own cap, [`cap_patch_whole`].
 pub(crate) const PATCH_CAP: usize = 800_000;
 
 /// One file's share: a bigger section (a minified JSON fixture) keeps its headers and a
 /// `Large diff not shown: +A -R` line, or it alone would cut every file after it.
 const FILE_PATCH_CAP: usize = 256_000;
 
-fn stub_large_files(patch: &str) -> String {
+/// Each file's section of a patch, in git's order. Every boundary is a char boundary.
+fn file_sections(patch: &str) -> Vec<&str> {
     let mut starts: Vec<usize> = std::iter::once(0).chain(patch.match_indices("\ndiff --git ").map(|(i, _)| i + 1)).collect();
     starts.push(patch.len());
+    starts.windows(2).map(|w| &patch[w[0]..w[1]]).collect()
+}
+
+/// A section's headers (all before its first hunk) and `{note}: +A -R`, counted from its hunks.
+fn stub_section(sec: &str, note: &str) -> String {
+    let body = sec.find("\n@@").map_or(sec.len(), |i| i + 1);
+    let (mut add, mut del) = (0usize, 0usize);
+    for l in sec[body..].lines() {
+        match l.as_bytes().first() {
+            Some(b'+') => add += 1,
+            Some(b'-') => del += 1,
+            _ => {}
+        }
+    }
+    format!("{}{note}: +{add} -{del}\n", &sec[..body])
+}
+
+fn stub_large_files(patch: &str) -> String {
     let mut out = String::with_capacity(patch.len().min(PATCH_CAP));
-    for w in starts.windows(2) {
-        let sec = &patch[w[0]..w[1]];
+    for sec in file_sections(patch) {
         if sec.len() <= FILE_PATCH_CAP {
             out.push_str(sec);
-            continue;
+        } else {
+            out.push_str(&stub_section(sec, "Large diff not shown"));
         }
-        let body = sec.find("\n@@").map_or(sec.len(), |i| i + 1);
-        let (mut add, mut del) = (0usize, 0usize);
-        for l in sec[body..].lines() {
-            match l.as_bytes().first() {
-                Some(b'+') => add += 1,
-                Some(b'-') => del += 1,
-                _ => {}
-            }
-        }
-        out.push_str(&sec[..body]);
-        out.push_str(&format!("Large diff not shown: +{add} -{del}\n"));
     }
     out
 }
@@ -2033,6 +2042,61 @@ pub(crate) fn cap_patch(patch: &mut String) -> bool {
     let cut = patch.char_indices().map(|(i, _)| i).take_while(|i| *i <= PATCH_CAP).last().unwrap_or(0);
     patch.truncate(cut);
     true
+}
+
+/// Stub oversized files, then fit `patch` into `cap`, never cutting inside a file: each keeps its
+/// headers and either its whole diff or `Diff not loaded: +A -R`, the whole ones a prefix in git's
+/// order, and only when the headers alone overflow are the later files dropped. Answers whether it
+/// stubbed or dropped any, and how many sections it dropped (docs/review.md).
+pub(crate) fn cap_patch_whole(patch: &mut String, cap: usize) -> (bool, usize) {
+    if patch.len() > FILE_PATCH_CAP {
+        *patch = stub_large_files(patch);
+    }
+    if patch.len() <= cap {
+        return (false, 0);
+    }
+    use std::borrow::Cow;
+    let secs = file_sections(patch);
+    // A section with no hunk (binary, a rename) is all header, and a tiny one is no bigger whole.
+    let stubs: Vec<Cow<str>> = secs
+        .iter()
+        .map(|s| match s.contains("\n@@").then(|| stub_section(s, "Diff not loaded")) {
+            Some(st) if st.len() < s.len() => Cow::Owned(st),
+            _ => Cow::Borrowed(*s),
+        })
+        .collect();
+    let mut out = String::with_capacity(cap);
+    let mut cut = false;
+    let mut dropped = 0;
+    let stubbed: usize = stubs.iter().map(|s| s.len()).sum();
+    if stubbed > cap {
+        // Even the headers overflow: keep the ones that fit, in order, and drop the rest.
+        for (i, stub) in stubs.iter().enumerate() {
+            if out.len() + stub.len() > cap {
+                cut = true;
+                dropped = stubs.len() - i;
+                break;
+            }
+            cut |= matches!(stub, Cow::Owned(_));
+            out.push_str(stub);
+        }
+    } else {
+        // Every stub is paid for first; a whole section costs only what it adds to its stub.
+        let mut spare = cap - stubbed;
+        let mut loading = true;
+        for (sec, stub) in secs.iter().zip(&stubs) {
+            loading = loading && sec.len() <= spare + stub.len();
+            if loading {
+                spare = spare + stub.len() - sec.len();
+                out.push_str(sec);
+            } else {
+                cut |= matches!(stub, Cow::Owned(_));
+                out.push_str(stub);
+            }
+        }
+    }
+    *patch = out;
+    (cut, dropped)
 }
 
 /// The full uncommitted diff behind the working-set card. Tracked changes from `diff HEAD`;
@@ -3332,6 +3396,72 @@ mod tests {
         assert!(!cap_patch(&mut patch), "nothing is cut once the big file is a stub");
         assert!(patch.contains("+++ b/big.json\nLarge diff not shown: +2 -2\ndiff --git a/z.py"), "{}", &patch[..300.min(patch.len())]);
         assert!(patch.ends_with("+ok\n") && patch.contains("+2\n"), "the files around it are whole");
+    }
+
+    fn section(name: &str, body: &str) -> String {
+        format!("diff --git a/{name} b/{name}\nindex 1..2 100644\n--- a/{name}\n+++ b/{name}\n@@ -1,2 +1,2 @@\n{body}")
+    }
+
+    #[test]
+    fn a_review_that_fits_its_cap_is_left_alone() {
+        let mut p = section("a.txt", "-1\n+2\n") + &section("z.py", "+ok\n");
+        let before = p.clone();
+        assert_eq!(cap_patch_whole(&mut p, before.len()), (false, 0));
+        assert_eq!(p, before);
+
+        let huge = format!("-{}\n+{}\n-x\n+y\n", "a".repeat(300_000), "b".repeat(300_000));
+        let mut p = section("a.txt", "-1\n+2\n") + &section("big.json", &huge) + &section("z.py", "+ok\n");
+        assert_eq!(cap_patch_whole(&mut p, 16_000_000), (false, 0), "one file's own stub is not a cut");
+        assert!(p.contains("+++ b/big.json\nLarge diff not shown: +2 -2\ndiff --git a/z.py") && p.ends_with("+ok\n"));
+    }
+
+    #[test]
+    fn past_the_review_cap_every_file_is_whole_or_counted() {
+        let body = |n: usize| "+ü😀 added\n".repeat(n) + "-€ gone\n";
+        let stub = |name: &str, add: usize| {
+            format!("diff --git a/{name} b/{name}\nindex 1..2 100644\n--- a/{name}\n+++ b/{name}\nDiff not loaded: +{add} -1\n")
+        };
+        let bin = "diff --git a/img.png b/img.png\nindex 1..2 100644\nBinary files a/img.png and b/img.png differ\n".to_string();
+        let ren = "diff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n".to_string();
+        let wholes = [section("a.txt", &body(3)), bin.clone(), section("b.txt", &body(40)), ren.clone(), section("c.txt", &body(2))];
+        let stubs = [stub("a.txt", 3), bin.clone(), stub("b.txt", 40), ren.clone(), stub("c.txt", 2)];
+        let patch = wholes.concat();
+
+        // b.txt does not fit; c.txt would, but what loads is a prefix in git's order.
+        let want = [wholes[0].as_str(), &bin, &stubs[2], &ren, &stubs[4]].concat();
+        let c_extra = wholes[4].len() - stubs[4].len();
+        let mut p = patch.clone();
+        assert_eq!(cap_patch_whole(&mut p, want.len() + c_extra), (true, 0));
+        assert_eq!(p, want);
+
+        // Even the headers overflow: the ones that fit stay, in order, and the rest are gone.
+        let mut p = patch.clone();
+        assert_eq!(cap_patch_whole(&mut p, stubs[0].len() + bin.len() + 1), (true, 3), "three files dropped, and counted");
+        assert_eq!(p, [stubs[0].as_str(), &bin].concat());
+
+        // Every cap, every byte of a multibyte line: never past the cap, never mid-file.
+        let all_stubs: usize = stubs.iter().map(String::len).sum();
+        for cap in 0..=patch.len() + 1 {
+            let mut p = patch.clone();
+            let (cut, dropped) = cap_patch_whole(&mut p, cap);
+            if cap >= patch.len() {
+                assert!(!cut && dropped == 0 && p == patch);
+                continue;
+            }
+            assert!(cut && p.len() <= cap, "cap {cap}");
+            let got: Vec<&str> = file_sections(&p).into_iter().filter(|s| !s.is_empty()).collect();
+            assert_eq!(got.len() == 5, cap >= all_stubs, "cap {cap}: every header stays once the stubs fit");
+            assert_eq!(dropped, 5 - got.len(), "cap {cap}: every file left out is counted");
+            let mut stubbed = false;
+            for (i, g) in got.iter().enumerate() {
+                if wholes[i] != stubs[i] && *g == wholes[i] {
+                    assert!(!stubbed && cap >= all_stubs, "cap {cap}: whole files are a prefix");
+                } else {
+                    assert_eq!(*g, stubs[i], "cap {cap}");
+                    stubbed |= wholes[i] != stubs[i];
+                }
+            }
+        }
     }
 
     #[test]

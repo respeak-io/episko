@@ -12,6 +12,16 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A large pull request opens as a list of folded files, and each file's diff is drawn when you open
+  it and put away when you fold it, so a review of tens of thousands of lines stays quick. Smaller
+  pull requests open as before.
+! **A review shows all of a big pull request, and says so at the top when it cannot.** It read
+  only the first 800 KB of the diff and the newest 100 commits, so a large pull request showed a
+  fraction of its files with short counts and the wrong commit total, and the only warning sat
+  below the last file. Every file is now listed with its counts, the ones too large to load at
+  once are marked, the bar says how many, and the header gives GitHub's commit count. *Since your
+  review* no longer calls the branch rewritten when your review is older than the newest 100.
+! Showing more lines around a change in a review no longer clears that file's *Viewed* tick.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

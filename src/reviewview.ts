@@ -6,8 +6,8 @@
 import { esc, escAttr } from "./format";
 import { ago, mdHtml } from "./issue";
 import {
-  checkTally, decisionWord, openThreads, sortChecks, timeline,
-  type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type Side,
+  checkTally, commitTotal, decisionWord, LARGE_ROWS, openThreads, sortChecks, timeline,
+  type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type SinceCount, type Side,
 } from "./review";
 import type { DiffMode } from "./diff";
 import { icon } from "./svgicons";
@@ -48,7 +48,7 @@ export function reviewHeadHtml(pr: PrReview, now: number, busy: string | null): 
         ${live ? btn("merge", `${icon("merge")}Merge ▾`, "Merge it on GitHub", "act primary") : ""}
       </div></div>
     <div class="rv-h2">
-      <span class="rv-who">${esc(pr.author || "someone")}</span> wants to merge ${plural(pr.commits.length, "commit")} into
+      <span class="rv-who">${esc(pr.author || "someone")}</span> wants to merge ${plural(commitTotal(pr), "commit")} into
       <span class="chip mono">${esc(pr.base_ref)}</span> from <span class="chip mono">${esc(pr.head_ref)}</span>
       ${pr.same_repo ? "" : `<span class="rv-chip" title="The branch lives in a fork">fork</span>`}
       <span class="dim">· opened ${esc(ago(pr.created_at, now))}</span>
@@ -61,29 +61,49 @@ export function reviewHeadHtml(pr: PrReview, now: number, busy: string | null): 
 
 export interface BarModel {
   tab: RvTab; pr: PrReview;
-  rangeLabel: string; since: { oid: string; n: number | null } | null; showingSince: boolean;
-  ws: boolean; mode: DiffMode; allOpen: boolean;
-  files: number; add: number; del: number; viewed: number; truncated: boolean;
+  rangeLabel: string; since: { oid: string; n: SinceCount } | null; showingSince: boolean;
+  ws: boolean; mode: DiffMode; allOpen: boolean; anyOpen: boolean; large: boolean;
+  files: number; filesOf: number | null; add: number; del: number; viewed: number; truncated: boolean; notLoaded: number;
+}
+
+function sinceWord(n: SinceCount): string {
+  if (n === null) return "The branch was rewritten since your review";
+  return typeof n === "number" ? `${plural(n, "new commit")} since your review` : `${n.atLeast}+ new commits since your review`;
 }
 
 /** The tabs, and on Files the controls over which diff and how it is drawn. */
 export function reviewBarHtml(m: BarModel): string {
   const tab = (t: RvTab, label: string, n: number | string) =>
     `<button class="gseg-b${m.tab === t ? " on" : ""}" data-rvtab="${t}">${icon(t === "files" ? "files" : t === "conversation" ? "comment" : "checks")}${label}${n !== "" ? ` <span class="n">${n}</span>` : ""}</button>`;
-  const tabs = `<div class="gseg rv-tabs">${tab("files", "Files", m.files)}${tab("conversation", "Conversation", m.pr.comments.length + m.pr.reviews.filter((r) => r.body.trim()).length)}${tab("checks", "Checks", m.pr.checks.length || "")}</div>`;
+  const files = m.filesOf !== null ? `${m.files} of ${m.filesOf}` : m.files;
+  const tabs = `<div class="gseg rv-tabs">${tab("files", "Files", files)}${tab("conversation", "Conversation", m.pr.comments.length + m.pr.reviews.filter((r) => r.body.trim()).length)}${tab("checks", "Checks", m.pr.checks.length || "")}</div>`;
   if (m.tab !== "files") return tabs;
   const since = m.since && !m.showingSince
-    ? `<button class="rv-since" data-rvsince title="Only what changed after the head your last review saw (${short(m.since.oid)})">${icon("since")}${m.since.n === null
-      ? "The branch was rewritten since your review" : `${plural(m.since.n, "new commit")} since your review`} · show</button>`
+    ? `<button class="rv-since" data-rvsince title="Only what changed after the head your last review saw (${short(m.since.oid)})">${icon("since")}${sinceWord(m.since.n)} · show</button>`
     : "";
+  const large = m.large
+    ? `<span class="rv-chip" title="Over ${LARGE_ROWS.toLocaleString("en-US")} lines of diff, so each file is drawn when you open it and put away when you fold it">large</span>`
+    : "";
+  const cut = m.truncated
+    ? `<span class="rv-chip wait" title="This pull request's diff is too large to read at once, so some files show their counts but not their lines. GitHub has every file in full.">${m.notLoaded ? `${m.notLoaded} not loaded` : "not all loaded"}</span>`
+    : "";
+  // A large view only ever folds: expanding all would draw every file it holds back.
+  const fold = !m.large ? `<button class="diff-fold" data-rvfold>${m.allOpen ? `${icon("fold")}collapse all` : `${icon("unfold")}expand all`}</button>`
+    : m.anyOpen ? `<button class="diff-fold" data-rvfold>${icon("fold")}collapse all</button>` : "";
   return `${tabs}
     <button class="diff-fold rv-range" data-rvrange title="Which changes to show: the whole pull request, one commit, or what is new since your review">${icon(m.showingSince ? "since" : m.rangeLabel.startsWith("Commit") ? "commit" : "files")}${esc(m.rangeLabel)} ▾</button>
     ${since}
-    <span class="rv-sum"><span class="add">+${m.add}</span> <span class="del">−${m.del}</span> · ${m.viewed}/${m.files} viewed</span>
+    <span class="rv-sum"><span class="add">+${m.add}</span> <span class="del">−${m.del}</span> · ${m.viewed}/${m.files} viewed</span>${large}${cut}
     <span class="rv-sp"></span>
     <button class="diff-fold${m.ws ? " on" : ""}" data-rvws title="Hide changes that only move whitespace">${icon("pilcrow")}${m.ws ? "whitespace hidden" : "hide whitespace"}</button>
     <button class="diff-fold" data-rvmode>${m.mode === "split" ? `${icon("unified")}unified` : `${icon("split")}side by side`}</button>
-    <button class="diff-fold" data-rvfold>${m.allOpen ? `${icon("fold")}collapse all` : `${icon("unfold")}expand all`}</button>`;
+    ${fold}`;
+}
+
+/** Above the first file, so a cut is known before the list is read rather than at its end. */
+export function truncNoteHtml(notLoaded: number): string {
+  const what = notLoaded ? `${plural(notLoaded, "file")} ${notLoaded === 1 ? "is" : "are"} not loaded here` : "some files are not loaded here";
+  return `<div class="diff-trunc">This pull request's diff is too large to read at once: ${what}. GitHub has every file in full.</div>`;
 }
 
 // ---------- the line-level pieces ----------
