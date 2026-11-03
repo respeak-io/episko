@@ -22,7 +22,7 @@ export const ATTN_HIGHLIGHT_STEP = 400;
 
 export const ATTN_ORDERS: { id: AttnOrder; label: string; sub: string; glyph: string }[] = [
   { id: "recent",  label: "Newest first",    glyph: "◷", sub: "The one that just finished is at the top" },
-  { id: "waiting", label: "Longest waiting", glyph: "◵", sub: "The one that has been waiting on you longest" },
+  { id: "waiting", label: "Longest waiting", glyph: "◔", sub: "The one that has been waiting on you longest" },
 ];
 
 const clamp = (n: number, lo: number, hi: number, dflt: number) =>

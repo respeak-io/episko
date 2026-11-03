@@ -21,7 +21,7 @@ import {
 } from "./grouping";
 import { iconFor } from "./icons";
 import type { HistEntry } from "./history";
-import { forecast5h, forecast7d } from "./rl";
+import { forecast5h, forecast7d, hasH5Window } from "./rl";
 import { extWorking, GCLASS, GLYPH } from "./sidebarview";
 import {
   accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, projGroups, sessions,
@@ -306,7 +306,7 @@ function buildView(now: number): FleetView {
     ],
     resume,
     usage: fleetUsage(cards, win, days),
-    limits: { h5: forecast5h(), d7: forecast7d() },
+    limits: { h5: hasH5Window() ? forecast5h() : null, d7: forecast7d() },
     team: teamNow(),
   };
 }

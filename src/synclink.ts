@@ -233,7 +233,7 @@ export function flush() {
     }
   }
   const rlWire = { ...rl, acct: account?.id ?? null }, rlNow = JSON.stringify(rlWire);
-  if (rl.h5 !== null || rl.d7 !== null) {
+  if ((rl.h5 !== null || rl.d7 !== null) && !account?.label) { // a token account's label means nothing elsewhere
     if (rlNow !== sent.rl) { events.push({ stream: "limits", key: "rl", at: now, payload: rlWire }); f.rl = rlNow; }
   }
   if (rlScoped.at > sent.scopedAt && rlScoped.avail) {

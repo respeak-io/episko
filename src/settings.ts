@@ -3,6 +3,7 @@
 // changes: every setter arrives through the SettingsHost object main.ts hands over.
 
 import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import {
   basename, cleanTitle, esc, escAttr, tccLabel, tilde, TITLE_DEFAULTS, titleExtra, TITLE_EXTRA_MAX,
   type TitlePrefs,
@@ -18,10 +19,13 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, wtGroup, shelvedInTree,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, closeAskIdle, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
+  claudeAccts, acctChecks, foundTokens,
 } from "./state";
+import { acctFull, acctReady, addAcct, moveAcct, pickAcct, toggleAcct, validLabel, type ClaudeAcct } from "./accounts";
+import { accountsPanelHtml } from "./accountsview";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
@@ -43,7 +47,7 @@ import {
 import { OUTLINE_DEFAULTS, OUTLINE_LINES, type OutlinePrefs } from "./outline";
 import { MD_DEFAULTS, MD_SIZES, MD_WIDTHS, type MdPrefs, type MdSize, type MdWidth } from "./markdown";
 import {
-  bindKey, bindableCombo, comboKeys, comboOf, comboText, defaultKeyBinds, defaultKeyPrefs,
+  bindKey, bindableCombo, comboKeys, comboOf, comboText, parseCombo, defaultKeyBinds, defaultKeyPrefs,
   isDefaultBind, isDefaultKeyPrefs, keyActionDef, KEY_GROUPS, resetKey, unbindKey,
   type KeyAction, type KeyPrefs,
 } from "./keys";
@@ -64,7 +68,7 @@ import {
 import { isDone, parseTourState, pickerChapters, TOUR_KEY } from "./tour";
 import { costPopHtml, ioPopHtml, usageRow } from "./usageview";
 import { enginePopHtml, popGoHtml, shortPopHtml } from "./footerview";
-import type { Forecast } from "./rl";
+import { acctReading, accountName, loginAcct, TOKEN_ID, type Forecast } from "./rl";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ask } from "./confirm";
 import {
@@ -87,6 +91,7 @@ export interface SettingsHost {
   setPrLinks: (on: boolean) => void;
   setShelvedTree: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
+  setCloseAskIdle: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -132,6 +137,13 @@ export interface SettingsHost {
   syncForget: () => Promise<void>;
   syncReconnect: () => void;
   openProjectSettings: (colorKey: string) => void;
+  // Claude accounts (docs/accounts.md): ./actions stores, checks and reads tokens; none reaches here.
+  saveClaudeAccts: (list: ClaudeAcct[]) => void;
+  listClaudeTokens: () => Promise<string[]>;
+  checkClaudeAcct: (label: string) => Promise<void>;
+  addClaudeToken: (label: string, token: string) => Promise<boolean>;
+  setupClaudeToken: (label: string) => Promise<void>;
+  removeClaudeAcct: (label: string) => Promise<void>;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -166,7 +178,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {}, setCloseAskIdle: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -179,6 +191,8 @@ let host: SettingsHost = {
   syncPair: () => Promise.resolve(), syncForget: () => Promise.resolve(), syncReconnect: () => {},
   syncSetHeaders: () => Promise.resolve(), openProjectSettings: () => {},
   syncReview: () => {},
+  saveClaudeAccts: () => {}, listClaudeTokens: () => Promise.resolve([]), checkClaudeAcct: () => Promise.resolve(),
+  addClaudeToken: () => Promise.resolve(false), setupClaudeToken: () => Promise.resolve(), removeClaudeAcct: () => Promise.resolve(),
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -215,6 +229,7 @@ type SetShape =
   | { kind: "note"; hint: string }
   | { kind: "guide" }
   | { kind: "sync" }
+  | { kind: "accounts" }
   | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
@@ -231,6 +246,9 @@ const MD_WIDTH_LABEL: Record<MdWidth, { label: string; glyph: string; sub: strin
   wide: { label: "Wide", glyph: "▭", sub: "More room for tables and code" },
   full: { label: "Full", glyph: "▬", sub: "As wide as the window" },
 };
+// Where this file's tables mean something other than ./svgicons' shared glyph map.
+const SET_IC: Record<string, IconName> = { "▤": "squareTerminal", "⧉": "appWindow", "◎": "circleUser" };
+const setIcon = (g?: string) => (!g ? "" : SET_IC[g] ? icon(SET_IC[g], "solo") : glyphIcon(g));
 const MD_SIZE_LABEL: Record<MdSize, string> = { s: "Small", m: "Medium", l: "Large" };
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
 const WT_GROUP_SEGS: SetSeg[] = [
@@ -244,17 +262,19 @@ const WT_GROUP_SEGS: SetSeg[] = [
 // Each row shows its segment closed and open. The closed half is the footer's real markup
 // (index.html, the `.fpv-bar` selectors in styles.css), so it cannot drift; the open half is
 // a sketch. The figures are sample data on purpose: on a fresh install the live ones are blank.
+const CARET = icon("chevronUp", "solo");
+const comboKeysOf = (c: string) => [comboKeys(parseCombo(c), IS_MAC)];
 const FPV_CLOSED: Record<FootSeg, string> = {
   sessions: `<span class="fseg">3 sessions</span>`,
-  cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">▴</span></span>`,
+  cost: `<span class="fseg fclick">today <b>$4.61</b><span class="fcaret">${CARET}</span></span>`,
   limits: `<span class="fseg fclick"><span class="flabel">limits</span><b class="s-ok">12%</b><span class="fsub">5h</span>`
     + `<span class="freset">↻ 28m</span><span class="fmid">·</span><b class="s-ok">4%</b><span class="fsub">7d</span>`
-    + `<span class="freset">↻ 4d 7h</span><span class="fcaret">▴</span></span>`,
+    + `<span class="freset">↻ 4d 7h</span><span class="fcaret">${CARET}</span></span>`,
   io: `<span class="fseg fclick"><span class="flabel">disk</span><b>1.2 GiB</b><span class="fsub">read</span>`
-    + `<span class="fmid">·</span><b>348 MiB</b><span class="fsub">write</span><span class="fcaret">▴</span></span>`,
-  engine: `<span class="fseg fclick">new in <b>embedded</b> <span class="fcaret">▴</span></span>`,
-  shortcuts: `<span class="fseg fclick"><kbd class="fkbd">⌘</kbd><span class="flabel">Shortcuts</span><span class="fcaret">▴</span></span>`,
-  debug: `<span class="fpv-dbg">🐞</span>`,
+    + `<span class="fmid">·</span><b>348 MiB</b><span class="fsub">write</span><span class="fcaret">${CARET}</span></span>`,
+  engine: `<span class="fseg fclick">new in <b>embedded</b> <span class="fcaret">${CARET}</span></span>`,
+  shortcuts: `<span class="fseg fclick"><kbd class="fkbd">${keyCap("⌘")}</kbd><span class="flabel">Shortcuts</span><span class="fcaret">${CARET}</span></span>`,
+  debug: `<span class="fpv-dbg">${icon("bug", "solo")}</span>`,
 };
 
 const fpvRow = (l: string, r: string) => `<div class="fpv-r">${esc(l)}${r}</div>`;
@@ -311,9 +331,9 @@ const FPV_OPEN: Partial<Record<FootSeg, { cls: string; body: string }>> = {
   shortcuts: {
     cls: "shortpop",
     body: shortPopHtml([
-      { label: "Command palette", chords: [["⌘", "K"]] },
-      { label: "Toggle sidebar", chords: [["⌘", "B"]] },
-      { label: "Run a task…", chords: [["⌘", "⇧", "R"]] },
+      { label: "Command palette", chords: comboKeysOf("mod+k") },
+      { label: "Toggle sidebar", chords: comboKeysOf("mod+b") },
+      { label: "Run a task…", chords: comboKeysOf("mod+shift+r") },
     ], false),
   },
   debug: {
@@ -356,7 +376,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "sidebar", label: "Sidebar", glyph: "▤", group: "look", sub: "Order, worktrees, hover",
+    id: "sidebar", label: "Sidebar", glyph: "◧", group: "look", sub: "Order, worktrees, hover",
     controls: () => [
       { kind: "seg", set: "sort", key: "cc-sort", label: "Sort", hint: "What order projects and sessions are listed in.",
         more: "Manual is drag to arrange. The other two re-sort as things happen.", aliases: ["order", "arrange", "drag", "urgency", "recent"],
@@ -393,7 +413,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "inspector", label: "Inspector", glyph: "▯", group: "look", sub: "Your questions",
+    id: "inspector", label: "Inspector", glyph: "◨", group: "look", sub: "Your questions",
     controls: () => [
       { kind: "toggle", set: "outline:on", key: "cc-outline", label: "List your questions", hint: "Your prompts, newest first; click one to jump back to it.",
         more: "A prompt that has scrolled out of the buffer stays in the list, greyed. On the fullscreen renderer the pane is asked to page there instead.",
@@ -419,7 +439,7 @@ const SET_TABS: SetTab[] = [
       return [
         { kind: "toggle", set: "md:on", key: "cc-markdown", label: "Open markdown files in Episko",
           hint: "A .md link in a pane, the Context card or ⌘P opens in a reader here instead of your default app.",
-          more: "Off, it goes to whatever your OS opens .md files with, like every other file. The reader's ↗ does that for one file either way, and links inside a document open the next one in place, with ← to go back.",
+          more: "Off, it goes to whatever your OS opens .md files with, like every other file. The reader's open-in-app button does that for one file either way, and links inside a document open the next one in place, with ← to go back.",
           aliases: ["markdown", "readme", "md", "preview", "render", "viewer", "docs"], since: "0.33.0",
           on: () => mdPrefs.enabled, isDefault: () => mdPrefs.enabled === MD_DEFAULTS.enabled, reset: put({ enabled: MD_DEFAULTS.enabled }) },
         { kind: "seg", set: "md:width", key: "cc-markdown", label: "Reading width", hint: "How wide a line of text may run.",
@@ -452,7 +472,7 @@ const SET_TABS: SetTab[] = [
     },
   },
   {
-    id: "statusbar", label: "Status bar", glyph: "▁", group: "look", sub: "Which segments show",
+    id: "statusbar", label: "Status bar", glyph: "≡", group: "look", sub: "Which segments show",
     // One switch per ./footprefs segment. What that table omits cannot be switched off, hence the note.
     controls: () => [
       { kind: "note", label: "What the status bar shows",
@@ -466,7 +486,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "launching", label: "Launching", glyph: "▷", group: "work", sub: "What runs, where, how it starts",
+    id: "launching", label: "Launching", glyph: "▷", group: "work", sub: "What runs, where, how it starts and closes",
     controls: () => [
       // Outermost first: what runs, then where its terminal opens, then how it starts.
       { kind: "seg", set: "agent", key: "cc-agent", label: "Agent", hint: "What a new session runs.", more: agentMore(),
@@ -494,13 +514,28 @@ const SET_TABS: SetTab[] = [
         dim: () => termEngine !== "embedded",
         on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
         isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
+      { kind: "toggle", set: "closeask", key: "cc-close-ask", label: "Ask before closing a finished session",
+        hint: "Closing an agent that has finished its turn asks first; off, it closes at once.",
+        more: "A session that is still working always asks, whatever this says, since closing stops the turn it is in. Either way the conversation comes back from History. The question's own tick turns this off.",
+        aliases: ["close", "confirm", "don't ask again", "quit", "end", "✕"], since: "0.39.0",
+        on: () => closeAskIdle, isDefault: () => closeAskIdle, reset: () => host.setCloseAskIdle(true) },
     ],
   },
   {
-    id: "attention", label: "Attention", glyph: "◆", group: "work", sub: "Highlight, badge, sounds",
+    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends",
+    controls: () => [
+      { kind: "accounts", id: "claudeaccts", key: "cc-claude-accounts", label: "Claude accounts",
+        hint: "Subscriptions a new Claude session can start on, in order. When the first is full, the next takes over.",
+        more: "Each account is a long-lived token from claude setup-token, kept in this machine's keychain and handed to one session at a time, so nothing is logged in or out. A running session keeps its account; when one hits its limit, Episko offers to resume it on the next. The usage probe answers nothing for a token, so a model's own weekly window (Fable's) shows only for the account you're logged in to.",
+        aliases: ["subscription", "login", "logout", "max", "pro", "token", "setup-token", "fallback", "limit", "quota", "oauth", "keychain", "second account"], since: "0.39.0",
+        summary: () => acctSummary() },
+    ],
+  },
+  {
+    id: "attention", label: "Attention", glyph: "🔔", group: "work", sub: "Highlight, badge, sounds",
     controls: () => [
       { kind: "attn", id: "attn", key: "cc-attn", label: "When a session wants you", hint: "How a session tells you it needs you.",
-        more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the ⌂ badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
+        more: "A finished turn, a killed one, a permission, a failed run: the row lights for a few seconds and the top bar's badge queues them. Opening a session clears it, except a permission, which stays until you answer.",
         aliases: ["badge", "highlight", "needs you", "notify", "notification", "tray", "your turn"],
         summary: () => `${onOff(attnPrefs.highlight)} · ${attnOrderLabel().toLowerCase()} · ${attnPrefs.clearOnOpen ? "clears on open" : "stays"}`,
         lines: () => [
@@ -572,9 +607,9 @@ const SET_TABS: SetTab[] = [
         lines: () => Object.entries(stopRules).map(([path, r]) => ({ label: `${basename(path)} · ${r.label}`, value: tilde(path) })),
         on: () => Object.keys(stopRules),
         segs: () => Object.entries(stopRules).map(([path, r]) => ({ value: path, label: `${basename(path)} · ${r.label}`, sub: tilde(path) })),
-        empty: "No project has one. Set one with ⟲ in a project's task panel (⌘K → Manage this project's tasks)." },
+        empty: "No project has one. Set one from a project's task panel (⌘K → Manage this project's tasks)." },
       { kind: "seg", set: "dismiss", key: "cc-task-prefs", label: "Dismiss successful runs", hint: "When a passed run's pane closes on its own.",
-        more: "A failed run stays until you close it.", aliases: ["auto close", "finished runs", "task", "green"],
+        more: "A failed run stays until you close it or the same task runs again: a new run replaces the last finished one, so retries keep one row.", aliases: ["auto close", "finished runs", "task", "green"],
         active: () => String(taskPrefs.dismissMs), isDefault: () => taskPrefs.dismissMs === DEFAULT_TASK_PREFS.dismissMs,
         reset: () => applySetting("dismiss", String(DEFAULT_TASK_PREFS.dismissMs)),
         segs: () => [
@@ -622,7 +657,7 @@ const SET_TABS: SetTab[] = [
     id: "keys", label: "Keys", glyph: "⌨", group: "work", sub: "Every chord, rebindable",
     controls: () => [
       { kind: "keys", id: "keys", key: "cc-keys", label: "Keyboard shortcuts", hint: "Click a chord and press the one you want.",
-        more: "⊘ turns one off, ⟲ puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
+        more: "The ban button turns one off, reset puts it back, the switch turns off the lot. Nothing is lost either way: switching back on brings the chords you kept, and a row you cleared stays cleared. Escape and a terminal's own copy and paste sit below this; the switch under it is Ctrl+Shift+C's own.",
         aliases: ["keybinding", "hotkey", "chord", "⌘", "rebind", "shortcut", "cmd", "keyboard"],
         summary: () => {
           if (!keyPrefs.enabled) return "off";
@@ -630,7 +665,7 @@ const SET_TABS: SetTab[] = [
           const touched = all.filter((id) => !isDefaultBind(keyPrefs.binds, id, IS_MAC)).length;
           return `${all.length} bindings${touched ? ` · ${touched} changed` : ""}`;
         },
-        lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboKeys(keyPrefs.binds[id], IS_MAC).join("") || "off" })),
+        lines: () => KEY_GROUPS.flatMap((g) => g.actions).map((id) => ({ label: keyActionDef(id).label, value: comboText(keyPrefs.binds[id], IS_MAC) || "off" })),
         isDefault: () => isDefaultKeyPrefs(keyPrefs, IS_MAC), reset: () => applyKeySetting("resetall") },
       { kind: "toggle", set: "copychord", key: "cc-copy-chord", label: "Ctrl+Shift+C copies the selection",
         hint: "In every pane and anywhere else text is selected, instead of opening the web inspector.",
@@ -641,7 +676,7 @@ const SET_TABS: SetTab[] = [
   },
   {
     // macOS only, and hidden rather than dimmed elsewhere: nothing on it has a meaning on an OS with no TCC (docs/macos-access.md).
-    id: "privacy", label: "Privacy", glyph: "◫", group: "app", sub: "macOS permissions", when: () => IS_MAC, os: "mac",
+    id: "privacy", label: "Privacy", glyph: "🔒", group: "app", sub: "macOS permissions", when: () => IS_MAC, os: "mac",
     controls: () => [
       { kind: "note", label: "macOS permissions",
         hint: "macOS blames whichever app is responsible for a process, and every agent, task and shell here is a child of Episko. So a prompt naming Episko is usually a session reading something outside its project. Episko needs none of these permissions itself and can't grant any; the rows below open the panes macOS keeps them in." },
@@ -668,7 +703,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "diag", label: "Diagnostics", glyph: "◔", group: "app", sub: "Weight, scrollback, reload",
+    id: "diag", label: "Diagnostics", glyph: "🐞", group: "app", sub: "Weight, scrollback, reload",
     // Recording first: it is the only row that has to be switched on before the day it is needed.
     controls: () => [
       { kind: "toggle", set: "perf:vitals", key: "cc-vitals", label: "Record performance vitals", hint: "Logs what the interface is holding, one line every few minutes.",
@@ -707,7 +742,7 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "guide", label: "Guide", glyph: "◇", group: "app", sub: "The tour, chapter by chapter",
+    id: "guide", label: "Guide", glyph: "ⓘ", group: "app", sub: "The tour, chapter by chapter",
     controls: () => [
       { kind: "guide", id: "tour", key: "cc-tour", label: "Guided tour", hint: "Replay any chapter, any time.",
         more: "Nothing here opens by itself after the first run. When a release adds something worth showing, What's new offers the chapter and you can say no.",
@@ -739,6 +774,7 @@ let spyHold = 0;                        // the spy stands down until then: a rai
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() {
   $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings();
+  void host.listClaudeTokens(); // a token added by hand since shows up without a restart
   $("setQ").focus(); // typing filters at once
 }
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
@@ -842,12 +878,12 @@ export function renderSettings() {
     const n = counts.get(t.id) ?? 0;
     const chg = !searching && controls.get(t.id)!.some(isChanged);
     return `<button class="set-tab${t.id === setTab ? " on" : ""}${searching && !n ? " zero" : ""}" data-settab="${t.id}">`
-      + `<span class="set-tglyph">${t.glyph}</span>${esc(t.label)}`
+      + `<span class="set-tglyph">${setIcon(t.glyph)}</span>${esc(t.label)}`
       + (searching ? `<span class="set-tn">${n}</span>` : chg ? `<span class="set-tdot" title="Something here is changed"></span>` : "") + `</button>`;
   };
   $("setTabs").innerHTML = SET_GROUPS.map((g) => `<div class="set-grp">${esc(g.label)}</div>${tabs.filter((t) => t.group === g.id).map(tabHtml).join("")}`).join("")
     + `<div class="set-grp">Elsewhere</div>` + ELSEWHERE.map((d) =>
-      `<button class="set-tab set-door" data-setgo="${d.open}" title="Opens in its own window"><span class="set-tglyph">↗</span>${esc(d.name)}</button>`).join("");
+      `<button class="set-tab set-door" data-setgo="${d.open}" title="Opens in its own window"><span class="set-tglyph">${icon("externalLink", "solo")}</span>${esc(d.name)}</button>`).join("");
   const all = [...controls.values()].flat().filter((c) => c.kind !== "note");
   const n = { "@changed": all.filter(isChanged).length, "@new": all.filter(isNew).length,
     "@mac": tabs.filter((t) => t.os === "mac").flatMap((t) => controls.get(t.id)!.filter((c) => c.kind !== "note")).length };
@@ -866,7 +902,7 @@ function doorHtml(d: (typeof ELSEWHERE)[number], words: string[]): string {
   return `<div class="set-row" data-setrow="${d.open}"><div class="set-inline"><div class="set-itxt">`
     + `<div class="set-glabel">${highlight(d.name, words)}<span class="set-tag">own window</span></div>`
     + `<div class="set-hint">${highlight(d.hint, words)}</div><div class="set-more set-more-on">${highlight(d.more, words)}</div>`
-    + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ↗</button></div></div></div>`;
+    + `</div><div class="set-ctl"><button class="set-abtn" data-setgo="${d.open}">Open ${icon("externalLink", "solo")}</button></div></div></div>`;
 }
 // The rail lights the section under the READING LINE, a third of the way down the pane — not
 // whichever header has crept past the top edge, which lit a long section's neighbour for the
@@ -934,7 +970,7 @@ function wtDemoClusters() {
   return WT_DEMO_ORDER.map((b) => ({ branch: b, hue: WT_DEMO_HUE[b], isMain: b === "dev", sessions: WT_DEMO.filter((s) => s.branch === b) }));
 }
 function wtDemoRow(s: (typeof WT_DEMO)[number], chip = false): string {
-  const chipHtml = chip ? `<span class="p-chip" style="--h:${WT_DEMO_HUE[s.branch]}">⑃ ${esc(s.branch)}</span>` : "";
+  const chipHtml = chip ? `<span class="p-chip" style="--h:${WT_DEMO_HUE[s.branch]}">${icon("gitBranch")}${esc(s.branch)}</span>` : "";
   return `<div class="p-row"><span class="p-dot p-${s.st}"></span><span class="p-lbl">${esc(s.title)}</span>${chipHtml}<span class="p-ctx">${s.ctx}%</span></div>`;
 }
 function wtDemoHead(name: string, count: number, wt?: string): string {
@@ -945,7 +981,7 @@ function wtDemoHead(name: string, count: number, wt?: string): string {
 function wtPreviewBody(mode: WtGroup): string {
   if (mode === "subheader") {
     return wtDemoHead("episko", WT_DEMO.length) + wtDemoClusters().map((c) =>
-      `<div class="p-wthead"><span class="p-fork" style="color:${c.hue}">⑃</span>`
+      `<div class="p-wthead"><span class="p-fork" style="color:${c.hue}">${icon("gitBranch", "solo")}</span>`
       + `<span class="p-wtname" style="color:${c.hue}">${esc(c.branch)}</span>`
       + `<span class="p-wtcount">${c.sessions.length}</span></div>`
       + `<div class="p-wts" style="--h:${c.hue}">${c.sessions.map((s) => wtDemoRow(s)).join("")}</div>`
@@ -966,7 +1002,7 @@ function renderWtPreview(active: string): string {
   const cards = WT_GROUP_SEGS.map((m) => {
     const on = m.value === active;
     return `<button class="wtcard${on ? " on" : ""}" data-set="wtgroup" data-val="${esc(m.value)}" aria-pressed="${on}">`
-      + `<div class="wtcard-h"><span class="wtcard-glyph">${m.glyph || ""}</span><span class="wtcard-name">${esc(m.label)}</span><span class="wtcard-check">✓</span></div>`
+      + `<div class="wtcard-h"><span class="wtcard-glyph">${setIcon(m.glyph)}</span><span class="wtcard-name">${esc(m.label)}</span><span class="wtcard-check">${icon("check", "solo")}</span></div>`
       + `<div class="p-mini">${wtPreviewBody(m.value as WtGroup)}</div>`
       + `<div class="wtcard-desc">${esc(m.sub || "")}</div></button>`;
   }).join("");
@@ -1001,8 +1037,8 @@ function peekDemoHtml(): string {
           `<div class="p-row"><span class="p-dot p-${r.st}"></span><span class="p-lbl">${esc(r.title)}</span>`
           + `<span class="p-ctx">${r.ctx}%</span></div>`).join("")}</div>` : "")
       + `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">${p.idle.map((w) =>
-          `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${w.g}</span>`
-          + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">＋</span></div>`).join("")}</div></div>`
+          `<div class="pkrow"><span class="pkglyph" style="color:${p.hue}">${glyphIcon(w.g)}</span>`
+          + `<span class="pkname">${esc(w.b)}</span><span class="pkgo">${icon("plus", "solo")}</span></div>`).join("")}</div></div>`
       + `</div>`;
   }).join("");
   // `pinned` only sizes the box; a preview that resized as you hovered would distract.
@@ -1063,7 +1099,7 @@ function attnDemoHtml(): string {
   const on = attnPrefs.highlight ? " lit" : "";
   const rows = ATTN_DEMO.map((d) =>
     `<div class="srow${on}" style="--lit-ms:${attnPrefs.highlightMs}ms;--lit-c:${LIT_COLOR[d.k] ?? LIT_COLOR.done}">`
-    + `<span class="sglyph ${d.cls}">${d.glyph}</span>`
+    + `<span class="sglyph ${d.cls}">${glyphIcon(d.glyph)}</span>`
     + `<span class="sbranch">${esc(d.title)}</span>`
     + `<span class="sctx">${esc(d.ctx)}</span></div>`).join("");
   return `<div class="p-mini attndemo" id="attnDemo"><div class="psessions">${rows}</div></div>`;
@@ -1088,7 +1124,7 @@ function renderAttnControl(): string {
       <div class="peekstep-l">Queue order</div>
       <div class="chips">${ATTN_ORDERS.map((o) =>
         `<button class="chip-opt ${p.order === o.id ? "on" : ""}" data-setattn="order:${o.id}" title="${esc(o.sub)}">`
-        + `<span class="seg-glyph">${o.glyph}</span>${esc(o.label)}</button>`).join("")}</div>
+        + `<span class="seg-glyph">${setIcon(o.glyph)}</span>${esc(o.label)}</button>`).join("")}</div>
     </div>
     <div class="peeksub set-inline">
       <div class="set-itxt">
@@ -1146,7 +1182,7 @@ function renderReviveControl(): string {
       <div class="peekstep-l">Failures worth retrying</div>
       <div class="chips">${REVIVE_KINDS.map((k) =>
         `<button class="chip-opt ${p.kinds.includes(k.id) ? "on" : ""}" data-setrevive="kind:${k.id}" title="${escAttr(k.hint)}">`
-        + `<span class="seg-glyph">${k.glyph}</span>${esc(k.label)}</button>`).join("")}</div>
+        + `<span class="seg-glyph">${setIcon(k.glyph)}</span>${esc(k.label)}</button>`).join("")}</div>
     </div>
     <div class="peekhint">${esc(!p.enabled
       ? "Off: a turn the API kills stays killed, and the session waits at its prompt until you send it something. That is what every version of Episko before this one did."
@@ -1220,10 +1256,10 @@ function soundRow(d: SoundEventDef): string {
     : "";
   return `<div class="sndev${cfg.on ? "" : " off"}">
     <div class="sndev-h">
-      <span class="sndev-g">${d.glyph}</span>
+      <span class="sndev-g">${setIcon(d.glyph)}</span>
       <div class="sndev-t"><div class="sndev-l">${esc(d.label)}</div><div class="sndev-s">${esc(d.hint)}</div></div>
-      <button class="sndtone${open ? " on" : ""}" data-setsound="pick:${d.id}" aria-expanded="${open}">${esc(tone.label)}<span class="sndtone-c">▾</span></button>
-      <button class="sndplay" data-setsound="play:${d.id}" title="Play it" aria-label="Play ${esc(d.label)}">▶</button>
+      <button class="sndtone${open ? " on" : ""}" data-setsound="pick:${d.id}" aria-expanded="${open}">${esc(tone.label)}<span class="sndtone-c">${icon("chevronDown", "solo")}</span></button>
+      <button class="sndplay" data-setsound="play:${d.id}" title="Play it" aria-label="Play ${esc(d.label)}">${icon("playSolid", "solo")}</button>
       <button class="sw${cfg.on ? " on" : ""}" data-setsound="ev:${d.id}" role="switch" aria-checked="${cfg.on}"></button>
     </div>${strip}
   </div>`;
@@ -1247,7 +1283,7 @@ function renderSoundControl(): string {
     <div class="sndlist">${SOUND_EVENTS.map(soundRow).join("")}</div>
     <div class="peekhint">${p.enabled
       ? "The last three start switched off: they fire on routine activity, or on something you did yourself. Turning everything on is exactly how a set of alerts becomes background noise you stop hearing, which costs you the permission chime too."
-      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and ▶ still plays, since auditioning is how you decide whether to switch them back on."}</div>
+      : "Sounds are off, so nothing below fires by itself. The rows keep what you picked, and the play button still plays, since auditioning is how you decide whether to switch them back on."}</div>
   </div>`;
 }
 
@@ -1265,7 +1301,7 @@ export function keyRecording() { return keyRec !== null; }
 function keyChordHtml(id: KeyAction): string {
   const keys = comboKeys(keyPrefs.binds[id], IS_MAC);
   if (!keys.length) return `<span class="kb-none">Off</span>`;
-  return keys.map((k) => `<kbd>${esc(k)}</kbd>`).join("");
+  return keys.map((k) => `<kbd>${keyCap(esc(k))}</kbd>`).join("");
 }
 function keyRow(id: KeyAction): string {
   const d = keyActionDef(id);
@@ -1279,10 +1315,10 @@ function keyRow(id: KeyAction): string {
     <div class="kb-t"><div class="kb-l">${esc(label)}</div>${d.hint ? `<div class="kb-s">${esc(d.hint)}</div>` : ""}</div>
     <button class="kb-chord${rec ? " rec" : ""}" data-setkey="rec:${id}" aria-label="Change the shortcut for ${esc(d.label)}">${
       rec ? `<span class="kb-rec">Press a chord<i>esc</i></span>` : keyChordHtml(id)}</button>
-    <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; ⟲ puts it back"
-      aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>⊘</button>
+    <button class="kb-x" data-setkey="clear:${id}" title="Turn this one shortcut off; reset puts it back"
+      aria-label="Turn off ${esc(d.label)}" ${bound ? "" : "disabled"}>${icon("ban", "solo")}</button>
     <button class="kb-x" data-setkey="reset:${id}" title="Back to ${esc(comboText(defaultKeyBinds(IS_MAC)[id], IS_MAC))}"
-      aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>⟲</button>
+      aria-label="Reset ${esc(d.label)}" ${dflt ? "disabled" : ""}>${icon("rotateCcw", "solo")}</button>
   </div>`;
 }
 function renderKeysControl(): string {
@@ -1455,7 +1491,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
   const id = rowId(c);
   const open = openPanels.has(id) || (hit?.lines.length ?? 0) > 0;
   const fold = (label: string) =>
-    `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">▾</span></button>`;
+    `<button class="set-fold${open ? " on" : ""}" data-setfold="${id}" aria-expanded="${open}">${esc(label)}<span class="set-foldc">${icon("chevronDown", "solo")}</span></button>`;
   const sw = (on: boolean, attr: string) => `<button class="sw${on ? " on" : ""}" ${attr} role="switch" aria-checked="${on}"></button>`;
   let ctl = "", panel = "", note = "", always = false;
   switch (c.kind) {
@@ -1466,6 +1502,24 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "sound": ctl = sw(soundPrefs.enabled, `data-setsound="toggle"`) + fold(c.summary!()); panel = renderSoundControl(); break;
     case "keys": ctl = sw(keyPrefs.enabled, `data-setkey="toggle"`) + fold(c.summary!()); panel = renderKeysControl(); break;
     case "guide": ctl = fold(c.summary!()); panel = renderGuideControl(); break;
+    case "accounts": {
+      ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
+      const now = Date.now();
+      const ready = (l: string) => acctReady(l, acctChecks[l], foundTokens);
+      const next = pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), now, undefined, ready);
+      panel = accountsPanelHtml({
+        rows: claudeAccts.map((acct) => {
+          const reading = acctReading(TOKEN_ID + acct.label);
+          const missing = !!foundTokens && !foundTokens.includes(acct.label);
+          return { acct, reading, full: acctFull(reading, now), check: acctChecks[acct.label], next: next?.label === acct.label,
+            blocked: missing ? "no token" : ready(acct.label) ? undefined : "check failed" };
+        }),
+        found: (foundTokens ?? []).filter((f) => !claudeAccts.some((a) => a.label === f)),
+        login: loginAcct ? accountName(loginAcct) : null, draft: acctDraft, external: termEngine !== "embedded", now,
+      });
+      always = true;
+      break;
+    }
     case "sync":
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
       panel = syncPanelHtml({
@@ -1510,7 +1564,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       ctl = fold(c.summary?.() ?? String(on.length));
       panel = `<div class="chips">${segs.map((s) =>
         `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
-        + `${s.glyph ? `<span class="seg-glyph">${s.glyph}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
+        + `${s.glyph ? `<span class="seg-glyph">${setIcon(s.glyph)}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
       break;
     }
     case "seg": {
@@ -1523,7 +1577,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     }
   }
   const chg = isChanged(c);
-  const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">⟲</button>` : "";
+  const reset = chg && c.reset ? `<button class="set-reset" data-setreset="${id}" title="Back to the default" aria-label="Reset ${escAttr(c.label)}">${icon("rotateCcw", "solo")}</button>` : "";
   const why = c.more ? `<button class="set-why" data-setwhy="${id}" aria-expanded="${openWhy.has(id)}">why</button>` : "";
   const pick = rowPicker(c);
   const cur = pick?.segs().find((s) => s.value === pick.active())?.sub;
@@ -1558,7 +1612,7 @@ function segInline(c: { set: string; label: string }, segs: SetSeg[], active: st
 function segCards(set: string, segs: SetSeg[], active: string): string {
   return `<div class="seg">${segs.map((s) =>
     `<button class="seg-opt ${s.value === active ? "on" : ""}" data-set="${set}" data-val="${escAttr(s.value)}">`
-    + `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${s.glyph}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">✓</span></span>`
+    + `<span class="seg-top">${s.logo ? `<span class="seg-glyph agent-logo" aria-hidden="true">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph${[...s.glyph].length === 2 ? " seg-mono" : ""}">${setIcon(s.glyph)}</span>` : ""}<span class="seg-l">${esc(s.label)}</span><span class="seg-check">${icon("check", "solo")}</span></span>`
     + `${s.sub ? `<span class="seg-s">${esc(s.sub)}</span>` : ""}</button>`).join("")}</div>`;
 }
 
@@ -1665,6 +1719,33 @@ function applySyncSetting(verb: string) {
   }
 }
 
+// Settings › Accounts. The token field is write-only: emptied once saved, never filled back in.
+const acctDraft = { name: "", token: "" };
+function acctSummary(): string {
+  const on = claudeAccts.filter((a) => a.on).map((a) => a.label);
+  return on.length ? `${on.join(", then ")}, then your login` : "Your login only";
+}
+function applyAcctSetting(verb: string) {
+  const [v, label = ""] = verb.split("|");
+  if (v === "up" || v === "down") host.saveClaudeAccts(moveAcct(claudeAccts, label, v === "up" ? -1 : 1));
+  else if (v === "toggle") host.saveClaudeAccts(toggleAcct(claudeAccts, label));
+  else if (v === "add") { host.saveClaudeAccts(addAcct(claudeAccts, label)); void host.checkClaudeAcct(label); }
+  else if (v === "check") void host.checkClaudeAcct(label);
+  else if (v === "remove") void host.removeClaudeAcct(label);
+  else if (v === "setup") {
+    const name = acctDraft.name.trim();
+    if (!validLabel(name)) { toast(name ? "A name may use letters, digits, dots, dashes and underscores" : "Name the account first"); return; }
+    acctDraft.name = "";
+    closeSettings(); // the shell it opens is on stage, under this dialog
+    void host.setupClaudeToken(name);
+  }
+  else if (v === "paste") {
+    void host.addClaudeToken(acctDraft.name.trim(), acctDraft.token.replace(/\s+/g, "")).then((ok) => {
+      if (ok) { acctDraft.name = ""; acctDraft.token = ""; renderSettings(); }
+    });
+  }
+}
+
 function syncProjects(): ProjectSyncRow[] {
   const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
   return keys.map((key) => ({ key, name: basename(key), mode: shareModeOf(key) }));
@@ -1700,6 +1781,7 @@ function applySetting(set: string, val: string) {
   else if (set === "prlinks") host.setPrLinks(val === "1");
   else if (set === "shelvedtree") host.setShelvedTree(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
+  else if (set === "closeask") host.setCloseAskIdle(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);
@@ -1940,6 +2022,8 @@ $("setBody").addEventListener("click", (e) => {
   if (pj) { host.openProjectSettings(pj.dataset.setproj!); return; }
   const sy = (e.target as HTMLElement).closest<HTMLElement>("[data-setsync]");
   if (sy) { applySyncSetting(sy.dataset.setsync!); return; }
+  const ac = (e.target as HTMLElement).closest<HTMLElement>("[data-setacct]");
+  if (ac) { applyAcctSetting(ac.dataset.setacct!); return; }
   const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
   if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
@@ -1966,6 +2050,8 @@ $("setBody").addEventListener("input", (e) => {
   if (f) applyTitleExtra(f);
   const sf = (e.target as HTMLElement).closest<HTMLInputElement>("[data-syncfield]");
   if (sf) syncDraft[sf.dataset.syncfield as keyof SyncDraft] = sf.value;
+  const af = (e.target as HTMLElement).closest<HTMLInputElement>("[data-acctfield]");
+  if (af) acctDraft[af.dataset.acctfield as "name" | "token"] = af.value;
 });
 
 // Delegated on the persistent #setBody: renderSettings() replaces the demo DOM on every press.

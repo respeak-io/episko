@@ -2,6 +2,7 @@
 // No DOM, no Tauri, no render imports; ./graphview paints what this returns.
 
 import { esc } from "./format";
+import { icon } from "./svgicons";
 
 /** One commit as `git_graph` hands it over (src-tauri/src/git.rs). */
 export interface GraphCommit {
@@ -318,7 +319,7 @@ export function chipText(chip: RefChip): string {
 // `esc` covers `&` and `<` only, and a ref name may legally contain a double quote.
 const attr = (s: string) => esc(s).replace(/"/g, "&quot;");
 
-// A chip that absorbed a remote carries `⇡` instead of a second chip, outside the truncating
+// A chip that absorbed a remote carries a push arrow instead of a second chip, outside the truncating
 // part so a long branch never loses the marker. The name splits at its LAST `/` and the head is
 // what gives way: `origin/dependabot/npm_and_yarn/01_frontend/eslint-plugin-vue` says nothing
 // until its final segment, which is exactly what a tail-first ellipsis ate.
@@ -327,11 +328,11 @@ export function refChipsHtml(chips: RefChip[]): string {
     const cut = r.label.lastIndexOf("/");
     const head = cut < 0 ? "" : `<span class="gh">${esc(r.label.slice(0, cut))}</span>`;
     const tail = `<span class="gt">${esc(r.label.slice(cut < 0 ? 0 : cut))}</span>`;
+    const where = r.also?.includes("origin") && r.also.length === 1 ? "" : esc(r.also?.join(" ") ?? "");
     const mark = r.also?.length
-      ? `<span class="gr">⇡${r.also.includes("origin") && r.also.length === 1 ? "" : esc(r.also.join(" "))}</span>`
-      : "";
+      ? `<span class="gr">${icon("arrowUpFromLine", where ? "" : "solo")}${where}</span>` : "";
     return `<span class="gchip gc-${r.kind}" data-tip="${attr(chipText(r))}">`
-      + `<span class="gn">${r.kind === "tag" ? `<span class="gk">⚑</span>` : ""}${head}${tail}</span>`
+      + `<span class="gn">${r.kind === "tag" ? `<span class="gk">${icon("tag", "solo")}</span>` : ""}${head}${tail}</span>`
       + `${mark}</span>`;
   }).join("");
 }

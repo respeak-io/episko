@@ -4,6 +4,7 @@
 
 import { esc, escAttr } from "./format";
 import type { Box, Member, Stack, StackPage } from "./stack";
+import { icon } from "./svgicons";
 
 const FROM: Record<StackPage["from"], string> = {
   declared: "from [stack] pages", described: "from the task's description", pane: "announced by its pane", proxy: "a reverse-proxy route",
@@ -32,7 +33,7 @@ function memberHtml(m: Member): string {
     : url ? `<button class="sv-url" data-svopen="${escAttr(url)}" title="Open ${escAttr(url)}">${esc(url.replace(/^https?:\/\//, ""))}</button>`
     : `<span class="sv-meta">${m.background ? "not listening yet" : "running"}</span>`;
   return `<div class="sv-line"><span class="sv-dot${M_DOT[m.state]}"></span><span class="sv-ln" title="${escAttr(m.label)}">${esc(m.label)}</span>${meta}`
-    + `<button class="sv-go" data-svgo="${m.sid}" title="Go to this pane">◨</button></div>`;
+    + `<button class="sv-go" data-svgo="${m.sid}" title="Go to this pane">${icon("panelRight", "solo")}</button></div>`;
 }
 
 function boxHtml(b: Box): string {
@@ -42,7 +43,7 @@ function boxHtml(b: Box): string {
     b.from && `from ${b.from}`,
   ].filter(Boolean);
   return `<div class="sv-line sv-box"><span class="sv-dot${B_DOT[b.state]}"></span>`
-    + `<span class="sv-ln" title="${escAttr(`${b.c.name} · ${b.c.project} · ${b.c.workingDir}`)}"><span class="sv-src sv-obs">▣</span>${esc(b.c.service)}</span>`
+    + `<span class="sv-ln" title="${escAttr(`${b.c.name} · ${b.c.project} · ${b.c.workingDir}`)}"><span class="sv-src sv-obs">${icon("container", "solo")}</span>${esc(b.c.service)}</span>`
     + `<span class="sv-meta${b.state === "failing" ? " sv-bad" : ""}">${esc(bits.join(" · "))}</span><span class="sv-none"></span></div>`;
 }
 
@@ -63,10 +64,10 @@ export function stackHtml(s: Stack, downLabel: string): string {
   const head = `<span class="sv-main"><span class="sv-proj">${esc(s.project)}${s.label ? ` · ${esc(s.label)}` : ""}</span>`
     + `<span class="sv-cmd">${esc(sub)}</span></span>`;
   const down = running
-    ? `<button class="sv-stop" data-svdown="${escAttr(s.key)}" title="${escAttr(downLabel)}">⏹</button>`
+    ? `<button class="sv-stop" data-svdown="${escAttr(s.key)}" title="${escAttr(downLabel)}">${icon("circleStop", "solo")}</button>`
     : `<span class="sv-none"></span>`;
   const stop = s.members.length
-    ? `<button class="sv-stop" data-svstack="${escAttr(s.key)}" title="Close this stack's ${s.members.length} pane${s.members.length === 1 ? "" : "s"} (containers keep running)">✕</button>`
+    ? `<button class="sv-stop" data-svstack="${escAttr(s.key)}" title="Close this stack's ${s.members.length} pane${s.members.length === 1 ? "" : "s"} (containers keep running)">${icon("x", "solo")}</button>`
     : `<span class="sv-none"></span>`;
   return `<div class="sv-stack st-${tone(s)}"><div class="sv-sh"><span class="sv-sdot" title="${escAttr(TONE_TITLE[tone(s)])}"></span>${head}${down}${stop}</div>${pagesHtml(s.pages)}`
     + s.members.map(memberHtml).join("") + s.boxes.map(boxHtml).join("") + `</div>`;

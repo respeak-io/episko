@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use crate::git::{cap_patch, git_cmd, git_run, split_remote};
+use crate::git::{cap_patch_whole, git_cmd, git_run, split_remote};
 use crate::github::{classify, gh, gh_input, gh_invalidate, who_for, GhComment};
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -24,6 +24,7 @@ pub(crate) struct PrCommit {
     pub headline: String,
     pub author: String,
     pub at: String,
+    pub parent: Option<String>, // first parent: the oldest commit of a 100-commit window has none in the list
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -86,7 +87,9 @@ pub(crate) struct PrReview {
     pub merge_methods: Vec<String>,
     pub viewer: Option<String>,
     pub checks: Vec<PrCheck>,
-    pub commits: Vec<PrCommit>,
+    pub commits: Vec<PrCommit>, // the latest 100 at most; `commit_count` is the whole PR's
+    pub commit_count: i64,
+    pub forced_at: Option<String>, // the latest force-push: a reviewed head missing from `commits` may be gone
     pub threads: Vec<PrThread>,
     pub reviews: Vec<PrReviewEntry>,
     pub comments: Vec<GhComment>,
@@ -119,6 +122,8 @@ impl PrReview {
             viewer: None,
             checks: vec![],
             commits: vec![],
+            commit_count: 0,
+            forced_at: None,
             threads: vec![],
             reviews: vec![],
             comments: vec![],
@@ -130,6 +135,7 @@ impl PrReview {
 pub(crate) struct PrDiff {
     pub patch: String,
     pub truncated: bool,
+    pub dropped: usize, // files past even the stubs' cap: in no list, so counted here
 }
 
 #[derive(serde::Deserialize, Clone, Debug, PartialEq)]
@@ -172,7 +178,8 @@ const QUERY: &str = r#"query($owner:String!,$name:String!,$number:Int!){
       number title url state isDraft body createdAt updatedAt author{login}
       baseRefName headRefName baseRefOid headRefOid isCrossRepository
       mergeable mergeStateStatus reviewDecision
-      commits(last:100){nodes{commit{oid messageHeadline committedDate author{name user{login}}}}}
+      commits(last:100){totalCount nodes{commit{oid messageHeadline committedDate author{name user{login}} parents(first:1){nodes{oid}}}}}
+      forcePushes: timelineItems(itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT],last:1){nodes{... on HeadRefForcePushedEvent{createdAt}}}
       rollup: commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
         ... on CheckRun{name conclusion status detailsUrl checkSuite{workflowRun{workflow{name}}}}
         ... on StatusContext{context state targetUrl}
@@ -253,7 +260,7 @@ pub(crate) fn parse_pr_review(json: &str, number: i64) -> Option<PrReview> {
         .and_then(|n| n.get("commit")?.get("statusCheckRollup")?.get("contexts")?.get("nodes")?.as_array())
         .map(|a| a.iter().filter_map(parse_check).collect())
         .unwrap_or_default();
-    let commits = nodes(pr, "commits")
+    let commits: Vec<PrCommit> = nodes(pr, "commits")
         .iter()
         .filter_map(|n| n.get("commit"))
         .map(|c| PrCommit {
@@ -261,8 +268,10 @@ pub(crate) fn parse_pr_review(json: &str, number: i64) -> Option<PrReview> {
             headline: s(c, "messageHeadline"),
             author: c.get("author").map(|a| login(a, "user").unwrap_or_else(|| s(a, "name"))).unwrap_or_default(),
             at: s(c, "committedDate"),
+            parent: nodes(c, "parents").first().map(|p| s(p, "oid")).filter(|o| !o.is_empty()),
         })
         .collect();
+    let commit_count = pr.get("commits").and_then(|c| int(c, "totalCount")).unwrap_or(commits.len() as i64);
     let threads = nodes(pr, "reviewThreads")
         .iter()
         .map(|t| PrThread {
@@ -339,6 +348,8 @@ pub(crate) fn parse_pr_review(json: &str, number: i64) -> Option<PrReview> {
         viewer,
         checks,
         commits,
+        commit_count,
+        forced_at: nodes(pr, "forcePushes").first().map(|n| s(n, "createdAt")).filter(|a| !a.is_empty()),
         threads,
         reviews,
         comments,
@@ -459,6 +470,9 @@ pub(crate) fn diff_args<'a>(revs: &[&'a str], ignore_ws: bool) -> Vec<&'a str> {
     a
 }
 
+/// What a review reads at once; past it a file is its header and its counts, never cut mid-file.
+const REVIEW_PATCH_CAP: usize = 16_000_000;
+
 #[tauri::command]
 pub(crate) async fn pr_diff(
     root: String,
@@ -492,8 +506,8 @@ fn pr_diff_in(root: &str, number: i64, base: &str, head: &str, from: Option<&str
         return Err(err.lines().find(|l| !l.trim().is_empty()).unwrap_or("git diff failed").trim().to_string());
     }
     let mut patch = String::from_utf8_lossy(&out.stdout).into_owned();
-    let truncated = cap_patch(&mut patch);
-    Ok(PrDiff { patch, truncated })
+    let (truncated, dropped) = cap_patch_whole(&mut patch, REVIEW_PATCH_CAP);
+    Ok(PrDiff { patch, truncated, dropped })
 }
 
 /// A path as a tree lookup takes it: relative, inside the tree, and never read as a flag.
@@ -795,7 +809,10 @@ mod tests {
         "body":"b","createdAt":"c","updatedAt":"u","author":{"login":"alice"},
         "baseRefName":"main","headRefName":"feat/x","baseRefOid":"aa","headRefOid":"bb","isCrossRepository":true,
         "mergeable":"CONFLICTING","mergeStateStatus":"DIRTY","reviewDecision":"CHANGES_REQUESTED",
-        "commits":{"nodes":[{"commit":{"oid":"bb","messageHeadline":"h","committedDate":"d","author":{"name":"Bob B","user":null}}}]},
+        "commits":{"totalCount":162,"nodes":[
+          {"commit":{"oid":"b0","messageHeadline":"g","committedDate":"d0","author":{"name":"Bob B","user":null},"parents":{"nodes":[]}}},
+          {"commit":{"oid":"bb","messageHeadline":"h","committedDate":"d","author":{"name":"Bob B","user":null},"parents":{"nodes":[{"oid":"b0"}]}}}]},
+        "forcePushes":{"nodes":[{"createdAt":"2026-10-20T09:00:00Z"}]},
         "rollup":{"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"nodes":[
           {"name":"build","conclusion":null,"status":"IN_PROGRESS","detailsUrl":"https://ci/1","checkSuite":{"workflowRun":{"workflow":{"name":"ci"}}}},
           {"name":"lint","conclusion":"FAILURE","status":"COMPLETED","detailsUrl":null,"checkSuite":{"workflowRun":null}},
@@ -830,6 +847,10 @@ mod tests {
         assert_eq!(r.review_decision.as_deref(), Some("CHANGES_REQUESTED"));
         assert_eq!(r.viewer.as_deref(), Some("me"));
         assert_eq!(r.commits[0].author, "Bob B", "a commit with no GitHub user is named by git");
+        assert_eq!(r.commit_count, 162, "the whole PR's count, not the window's");
+        assert_eq!(r.forced_at.as_deref(), Some("2026-10-20T09:00:00Z"));
+        assert_eq!(r.commits[1].parent.as_deref(), Some("b0"));
+        assert_eq!(r.commits[0].parent, None, "a root commit has no parent");
 
         let c: Vec<(&str, &str, &str, &str)> =
             r.checks.iter().map(|c| (c.name.as_str(), c.state.as_str(), c.url.as_str(), c.workflow.as_str())).collect();
@@ -859,6 +880,12 @@ mod tests {
         assert_eq!(r.number, 9);
         assert!(r.checks.is_empty() && r.threads.is_empty() && r.merge_methods.is_empty());
         assert!(!r.same_repo && r.review_decision.is_none() && r.viewer.is_none());
+        assert_eq!((r.commit_count, r.forced_at), (0, None), "never force-pushed");
+
+        let no_total = r#"{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"oid":"a"}},{"commit":{"oid":"b"}}]}}}}}"#;
+        let r = parse_pr_review(no_total, 9).unwrap();
+        assert_eq!(r.commit_count, 2, "no totalCount counts the commits that came");
+        assert!(r.commits.iter().all(|c| c.parent.is_none()), "no parents asked for is none");
     }
 
     #[test]

@@ -154,7 +154,7 @@ function stopRow(k: string): PsRow {
     id: "stop", label: "Run after a session stops", hint: "A task that runs each time an agent here finishes a turn.",
     cur: r ? `Runs ${r.label}` : undefined, overridden: !!r,
     ctl: r ? btnCtl("unstop", "Remove") : nilCtl("none"),
-    note: r ? undefined : `Set one with ⟲ in this project's task panel (${paletteKey()} → Manage this project's tasks).`,
+    note: r ? undefined : `Set one with a task's run-after-a-turn button in this project's task panel (${paletteKey()} → Manage this project's tasks).`,
   };
 }
 

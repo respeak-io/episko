@@ -11,6 +11,7 @@ import { ask } from "./confirm";
 import { playSound } from "./chime";
 import { dlog } from "./debug";
 import { basename, cleanTitle, esc } from "./format";
+import { icon } from "./svgicons";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
   isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
@@ -39,10 +40,10 @@ import { openWt, refreshWtDialog } from "./worktree";
 import { adoptIdentity, inStageGroup, nextAfterClose, nextInGroup, orphanAdoptions, splitAnchorFor, splitShells } from "./grouping";
 import { probeIcon } from "./icons";
 import { addIo, ioCreditBps, ioExcludedMb } from "./usage";
-import { execCmd, exitWaiters, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
+import { execCmd, exitWaiters, replacedRuns, runnableIn, taskPrefs, type TaskLaunchOpts } from "./tasks";
 import { runRunnable } from "./taskui";
 import {
-  accentFor, activeId, agentDef, agentToolsFor, agentDiscoveryReady, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror,
+  accentFor, acctChecks, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror, foundTokens,
   fetchedByRepo,
   effectiveAgent, engineDef,
   externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
@@ -50,6 +51,8 @@ import {
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
 import { providerPermissionMode } from "./providers";
+import { acctReady, pickAcct } from "./accounts";
+import { acctReading, TOKEN_ID } from "./rl";
 
 // The app-wide repaint belongs to main.ts, which wires this at startup.
 let renderAll: () => void = () => {};
@@ -72,7 +75,7 @@ function newPane(id: string): HTMLElement {
   const cap = document.createElement("div");
   cap.className = "pane-cap";
   cap.innerHTML = `<span class="pc-name"></span><span class="pc-state"></span>`
-    + `<span class="pc-x" data-close="${id}" title="Close this pane">✕</span>`;
+    + `<span class="pc-x" data-close="${id}" title="Close this pane">${icon("x", "solo")}</span>`;
   const host = document.createElement("div");
   host.className = "term-host";
   pane.append(cap, host);
@@ -154,7 +157,14 @@ export async function freshReady(sid: string): Promise<void> {
   await wait(PREFILL_SETTLE_MS);
 }
 
-export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string } = {}): Promise<string | null> {
+/** The setup-token account a new embedded Claude session takes, or null for the login (docs/accounts.md). */
+export function launchAccount(skip?: string): string | null {
+  if (termEngine !== "embedded") return null; // an external terminal gets no token: it would land in its scrollback
+  return pickAcct(claudeAccts, (l) => acctReading(TOKEN_ID + l), Date.now(), skip, (l) => acctReady(l, acctChecks[l], foundTokens))?.label ?? null;
+}
+
+// `account`: a label to launch on whatever the pick says (a resume on the next account), null for the login.
+export async function launch(project: string, workdir: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; resume?: string; resumeProvider?: string; agent?: string; account?: string | null } = {}): Promise<string | null> {
   await agentDiscoveryReady;
   const id = crypto.randomUUID();
   const colorKey = opts.colorKey ?? workdir;
@@ -177,6 +187,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   const accent = accentFor(colorKey);
   probeIcon(colorKey);
   const external = termEngine !== "embedded";
+  const account = external ? null : opts.account !== undefined ? opts.account : launchAccount();
   const eng = engineDef(termEngine);
   const pane = newPane(id);
 
@@ -196,7 +207,7 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
     curTool: "", curArg: "", todos: [], ctxHist: [], costHist: [], tokenUsage: null, rateLimits: [], rateLimitScope: null, git: null,
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [], kind: "agent", provider: "claude",
-    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane,
+    capabilities: [...CLAUDE_CLI.capabilities], external, term, fit, pane, ...(account ? { account } : {}),
   };
   sessions.set(id, s);
   term?.onTitleChange((t) => applyOscTitle(s, t));
@@ -206,13 +217,13 @@ export async function launch(project: string, workdir: string, opts: { colorKey?
   // Read here rather than passed as an opt: it is a preference, like termEngine.
   const permission = launchPermission(agent, colorKey);
   const mode = permission.mode;
-  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}`);
+  dlog("info", `${opts.resume ? "resume" : "launch"} ${project} · ${id.slice(0, 8)} · ${termEngine}${mode ? ` · ${permission.def?.label}` : ""}${opts.worktree ? " · worktree" : ""}${opts.resume ? ` · from ${opts.resume.slice(0, 8)}` : ""}${account ? ` · on ${account}` : ""}`);
 
   let spawned = true;
   try {
     if (termEngine === "ghostty") await invoke("spawn_ghostty", { sessionId: id, workdir, accent, title: project, resume: opts.resume ?? null, mode });
     else if (external) await invoke("spawn_external_terminal", { sessionId: id, workdir, engine: termEngine, title: project, resume: opts.resume ?? null, mode });
-    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey) });
+    else await invoke("spawn_claude", { sessionId: id, workdir, rows: term!.rows || 24, cols: term!.cols || 80, resume: opts.resume ?? null, mode, tools: agentToolsFor(colorKey), account });
   } catch (e) {
     spawned = false;
     dlog("error", `launch failed (${project} · ${id.slice(0, 8)}): ${e}`);
@@ -456,6 +467,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
   term.attachCustomKeyEventHandler(clipboardKeys(term));
 
   const cmd = execCmd(r);
+  const root = opts.discoveredIn ?? colorKey;
   const s: Sess = {
     id, project, accent: accentFor(colorKey), workdir: cwd, colorKey,
     branch: opts.branch ?? "", worktree: opts.worktree ?? null, title: r.label,
@@ -466,7 +478,7 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
     lastEvent: "", activity: [], prompts: [],
     files: [], tally: {}, servers: [],
     resumeId: id, kind: "task", provider: null, capabilities: [], external: false, term, fit, pane,
-    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root: opts.discoveredIn ?? colorKey, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
+    run: { id: r.id, label: r.label, source: r.source, sourceFile: r.sourceFile, cmd, background: r.background, startedAt: Date.now(), exitCode: null, tail: [], root, forSession: opts.forSession, tag: opts.tag, kind: r.kind, ready: r.ready, describedPages: r.describedPages, stops: r.stops, groupId: opts.groupId, groupLabel: opts.groupLabel, groupRoot: opts.groupRoot },
   };
   sessions.set(id, s);
   // A chain member puts its GROUP on stage, not itself: activating each member as it
@@ -482,6 +494,8 @@ export async function launchTask(r: Runnable, project: string, opts: TaskLaunchO
       if (first || stageGroup === gid) openRunGroup(gid);
     }
   }
+  // After the focus moved, so an old pane is spared only when this run left it on stage.
+  for (const old of replacedRuns(sessions.values(), r.id, root, activeId)) closeSession(old);
   dlog("info", `task ${r.id} · ${project} · ${cmd}`);
   term.writeln(`\x1b[90m$ ${cmd}\x1b[0m\r\n`);
   try {
@@ -887,6 +901,9 @@ export function scheduleDismiss(s: Sess) {
   }, taskPrefs.dismissMs);
 }
 
+// "from → ⑃ to": where a drifted or tracked pane started, and where its work is.
+const branchPair = (from: string, to: string) => `${esc(from)} ${icon("arrowRight")}${icon("gitBranch")}${esc(to)}`;
+
 export function renderHeader(s: Sess | null) {
   clearStageBadges();
   // ✕ is on every stage now, and it does something different on each: every taker sets the
@@ -906,18 +923,18 @@ export function renderHeader(s: Sess | null) {
   }
   // A drifted session shows BOTH branches: the new one alone would lie about where --resume goes.
   else if (s.drift) {
-    hb.textContent = `${s.branch || basename(s.workdir)} ⤳ ⑃ ${s.drift.branch}`;
+    hb.innerHTML = branchPair(s.branch || basename(s.workdir), s.drift.branch);
     hb.title = `Launched in ${s.workdir}\nWriting to ${s.drift.dir}`;
     hb.hidden = false; hb.classList.add("drifted");
   }
   // Tracked: the same pair, because the agent and a resume still live where it started.
   else if (s.home) {
-    hb.textContent = `${s.home.branch || basename(s.home.workdir)} ⤳ ⑃ ${s.branch || basename(s.workdir)}`;
+    hb.innerHTML = branchPair(s.home.branch || basename(s.home.workdir), s.branch || basename(s.workdir));
     hb.title = `Started in ${s.home.workdir}
 Showing ${s.workdir}`;
     hb.hidden = false; hb.classList.add("tracked");
   }
-  else if (s.branch) { hb.textContent = s.worktree ? "⑃ " + s.branch : s.branch; hb.hidden = false; } else hb.hidden = true;
+  else if (s.branch) { hb.innerHTML = (s.worktree ? icon("gitBranch") : "") + esc(s.branch); hb.hidden = false; } else hb.hidden = true;
   $("hTitle").textContent = hasSessionState(s) ? (s.title || "") : (s.kind === "task" ? s.run?.label ?? "" : "");
   setHeadPath(s.drift?.dir ?? s.workdir);
 }
@@ -976,12 +993,18 @@ export function openShellFor(id: string) {
 
 // Prefill a command into a shell pane, or open the external terminal with it on the clipboard.
 // `from` is the session the command was refused for; the shell opens beside it when ⌘T would.
+/** A new embedded shell with `cmd` typed in and not entered; its session id. */
+export async function prefillShell(project: string, workdir: string, cmd: string, opts: Parameters<typeof launchShell>[2] = {}): Promise<string> {
+  const id = await launchShell(project, workdir, opts);
+  // The login shell needs a moment before its prompt will accept input.
+  setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
+  return id;
+}
+
 export async function handToTerminal(project: string, workdir: string, cmd: string, opts: { colorKey?: string; worktree?: string | null; branch?: string; from?: string } = {}) {
   if (termEngine === "embedded") {
     const { from, ...rest } = opts;
-    const id = await launchShell(project, workdir, { ...rest, beside: splitBeside(from ? sessions.get(from) : null) });
-    // The login shell needs a moment before its prompt will accept input.
-    setTimeout(() => { void invoke("write_pty", { sessionId: id, data: cmd }).catch(() => {}); }, 600);
+    await prefillShell(project, workdir, cmd, { ...rest, beside: splitBeside(from ? sessions.get(from) : null) });
     toast("Prefilled in a shell. Press Enter to run");
     return;
   }
@@ -1006,7 +1029,7 @@ export function syncStageButtons() {
   set("btnTerm", "Open a plain (non-Claude) terminal at the project root");
   // ◷ History's disabled reason differs: the whole-machine view is one click away up top.
   set("btnHist", "Reopen a past session in this project, including ones you closed (⌘⇧H)",
-      "No project selected. The ◷ button up top opens history for every project");
+      "No project selected. The History button up top opens history for every project");
   // The project pane offers Terminal / Run / History as tiles in its own first column, so the
   // header's copies are hidden there rather than sitting a hand's width from the originals.
   // The fleet has no one project for them to act on at all.

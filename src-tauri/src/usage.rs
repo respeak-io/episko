@@ -781,6 +781,124 @@ fn read_asked_in(
     Ok(msgs)
 }
 
+/// What a finished conversation left behind, for a shelved session's card. Every field is the
+/// transcript's own record; absent means it never wrote one, never zero.
+#[derive(serde::Serialize, Default, Debug, PartialEq)]
+pub(crate) struct TranscriptFacts {
+    /// Claude's own recap of where things stood (`away_summary`), the newest one.
+    recap: String,
+    started: u64, // epoch secs of the first timestamped record
+    /// The last `cost-state`, which a resume restores rather than restarts.
+    cost_usd: Option<f64>,
+    api_ms: Option<u64>,
+    lines_added: u64,
+    lines_removed: u64,
+    model: String,
+    /// The last main-thread response's input side: what the context held when it stopped.
+    context_tokens: u64,
+    compactions: u32,
+    prs: Vec<TranscriptPr>,
+    files: Vec<TranscriptFile>,
+}
+
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct TranscriptPr {
+    number: u64,
+    url: String,
+    repo: String,
+}
+
+/// A file a tool wrote and the write succeeded: a failed one reports a plain string instead.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub(crate) struct TranscriptFile {
+    path: String,
+    created: bool,
+    n: u32,
+}
+
+#[tauri::command(async)]
+pub(crate) fn transcript_facts(cwd: String, session_id: String) -> Result<TranscriptFacts, String> {
+    let base = claude_dir().ok_or_else(|| "no home directory".to_string())?;
+    facts_in(&base, &cwd, &session_id)
+}
+
+const FACTS_FILE_CAP: usize = 300;
+
+/// One pass over the whole file. A line is parsed only when a substring says it can hold one
+/// of these, since the bulk of a transcript is tool traffic none of them reads.
+fn facts_in(base: &Path, cwd: &str, session_id: &str) -> Result<TranscriptFacts, String> {
+    use std::io::BufRead;
+    let reader = transcript_reader(base, cwd, session_id, false)?;
+    let mut f = TranscriptFacts::default();
+    let mut files: Vec<TranscriptFile> = Vec::new();
+    for line in reader.lines() {
+        let Ok(line) = line else { continue };
+        if f.started == 0 {
+            f.started = line_timestamp(&line);
+        }
+        let candidate = ["away_summary", "compact_boundary", "cost-state", "pr-link", "structuredPatch"]
+            .iter()
+            .any(|k| line.contains(k))
+            || (line.contains("\"usage\"") && line.contains("\"assistant\""));
+        if !candidate {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("");
+        let n = |o: &serde_json::Value, k: &str| o.get(k).and_then(|x| x.as_u64());
+        match (s("type"), s("subtype")) {
+            ("system", "away_summary") => f.recap = strip_recap_hint(s("content")),
+            ("system", "compact_boundary") => f.compactions += 1,
+            ("cost-state", _) => {
+                f.cost_usd = v.get("totalCostUSD").and_then(|x| x.as_f64());
+                f.api_ms = n(&v, "totalAPIDuration");
+                f.lines_added = n(&v, "totalLinesAdded").unwrap_or(0);
+                f.lines_removed = n(&v, "totalLinesRemoved").unwrap_or(0);
+            }
+            ("pr-link", _) => {
+                let url = s("prUrl").to_string();
+                if !url.is_empty() && !f.prs.iter().any(|p| p.url == url) {
+                    let number = n(&v, "prNumber").unwrap_or(0);
+                    f.prs.push(TranscriptPr { number, url, repo: s("prRepository").to_string() });
+                }
+            }
+            ("assistant", _) if v.get("isSidechain").and_then(|x| x.as_bool()) != Some(true) => {
+                let msg = v.get("message");
+                let model = msg.and_then(|m| m.get("model")).and_then(|x| x.as_str()).unwrap_or("");
+                let Some(u) = msg.and_then(|m| m.get("usage")) else { continue };
+                if model.is_empty() || model.starts_with('<') {
+                    continue; // `<synthetic>`: an interruption notice, not a model that answered
+                }
+                f.model = model.to_string();
+                f.context_tokens = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+                    .iter()
+                    .map(|k| n(u, k).unwrap_or(0))
+                    .sum();
+            }
+            ("user", _) => {
+                let Some(r) = v.get("toolUseResult").filter(|r| r.get("structuredPatch").is_some()) else { continue };
+                let Some(path) = r.get("filePath").and_then(|x| x.as_str()).filter(|p| !p.is_empty()) else { continue };
+                let created = r.get("type").and_then(|x| x.as_str()) == Some("create");
+                if let Some(hit) = files.iter_mut().find(|x| x.path == path) {
+                    hit.n += 1;
+                    hit.created |= created;
+                } else if files.len() < FACTS_FILE_CAP {
+                    files.push(TranscriptFile { path: path.to_string(), created, n: 1 });
+                }
+            }
+            _ => {}
+        }
+    }
+    f.files = files;
+    Ok(f)
+}
+
+/// Claude appends a settings hint to every recap; it is addressed to the CLI's reader, not ours.
+fn strip_recap_hint(text: &str) -> String {
+    let t = text.trim();
+    t.rfind(" (disable recaps").map_or(t, |i| t[..i].trim_end()).to_string()
+}
+
 /// Re-home a session's transcript so `claude --resume <id>` finds it in `to_workdir`: the
 /// one write Episko makes inside `~/.claude`, since `--resume` takes no path. Rename, never
 /// copy (History would list the id twice); the tool-results sidecar travels too; never clobber.
@@ -2918,6 +3036,61 @@ mod tests {
         let two: Vec<String> = read_asked_in(&base, cwd, "sid", 2).unwrap().into_iter().map(|m| m.text).collect();
         assert_eq!(two, vec!["q2", "a2", "q3"]);
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn facts_read_what_a_conversation_left_behind_from_its_own_records() {
+        let cwd = "/Users/tim/dev/facts";
+        let (base, proj) = fixture(cwd);
+        let asst = |model: &str, input: u64, sidechain: bool| serde_json::json!({
+            "type": "assistant", "isSidechain": sidechain,
+            "message": { "model": model, "usage": { "input_tokens": input, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 10, "output_tokens": 99 } },
+        }).to_string();
+        let wrote = |path: &str, kind: Option<&str>| {
+            let mut r = serde_json::json!({ "filePath": path, "structuredPatch": [] });
+            if let Some(k) = kind { r["type"] = k.into(); }
+            serde_json::json!({ "type": "user", "toolUseResult": r }).to_string()
+        };
+        let lines = [
+            r#"{"type":"user","message":{"content":"go"},"timestamp":"2026-10-29T14:02:00.000Z"}"#.to_string(),
+            asst("claude-opus-5-5", 5, false),
+            wrote("/r/new.ts", Some("create")),
+            wrote("/r/old.ts", None),
+            wrote("/r/new.ts", None),
+            r#"{"type":"user","toolUseResult":"Error: String to replace not found in file."}"#.to_string(),
+            r#"{"type":"user","toolUseResult":{"type":"text","file":{"filePath":"/r/read.ts"}}}"#.to_string(),
+            r#"{"type":"pr-link","prNumber":231,"prUrl":"https://github.com/o/r/pull/231","prRepository":"o/r"}"#.to_string(),
+            r#"{"type":"pr-link","prNumber":231,"prUrl":"https://github.com/o/r/pull/231","prRepository":"o/r"}"#.to_string(),
+            r#"{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}"#.to_string(),
+            r#"{"type":"system","subtype":"away_summary","content":"old recap (disable recaps in /config)"}"#.to_string(),
+            r#"{"type":"system","subtype":"away_summary","content":"PR is open; next, merge it. (disable recaps in /config)"}"#.to_string(),
+            r#"{"type":"cost-state","totalCostUSD":1.5,"totalAPIDuration":1000,"totalLinesAdded":3,"totalLinesRemoved":1}"#.to_string(),
+            r#"{"type":"cost-state","totalCostUSD":2.25,"totalAPIDuration":4000,"totalLinesAdded":30,"totalLinesRemoved":4}"#.to_string(),
+            asst("claude-opus-5-5", 7, false),
+            asst("claude-haiku-5-5", 999, true),  // a subagent's: not this conversation's context
+            asst("<synthetic>", 0, false),         // an interruption notice
+            "{torn".to_string(),
+        ];
+        std::fs::write(proj.join("sid.jsonl"), lines.join("\n")).unwrap();
+
+        let f = facts_in(&base, cwd, "sid").unwrap();
+        assert_eq!(f.recap, "PR is open; next, merge it.");
+        assert_eq!(f.started, iso_epoch_secs("2026-10-29T14:02:00.000Z").unwrap());
+        assert_eq!((f.cost_usd, f.api_ms, f.lines_added, f.lines_removed), (Some(2.25), Some(4000), 30, 4));
+        assert_eq!((f.model.as_str(), f.context_tokens), ("claude-opus-5-5", 1017));
+        assert_eq!(f.compactions, 1);
+        assert_eq!(f.prs, vec![TranscriptPr { number: 231, url: "https://github.com/o/r/pull/231".into(), repo: "o/r".into() }]);
+        assert_eq!(f.files, vec![
+            TranscriptFile { path: "/r/new.ts".into(), created: true, n: 2 },
+            TranscriptFile { path: "/r/old.ts".into(), created: false, n: 1 },
+        ]);
+
+        // A conversation that recorded none of it says so with absences, not zeroes.
+        std::fs::write(proj.join("bare.jsonl"), r#"{"type":"user","message":{"content":"hi"}}"#).unwrap();
+        let bare = facts_in(&base, cwd, "bare").unwrap();
+        assert_eq!(bare, TranscriptFacts::default());
+        assert!(facts_in(&base, cwd, "missing").is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 

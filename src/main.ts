@@ -40,9 +40,11 @@ import {
   setRevivePrefs, setTitlePrefs,
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
+  onLimitHit, syncShownAccount,
+  saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
@@ -63,7 +65,7 @@ import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
 } from "./taskrun";
 import {
-  flushRoster, forgetDormant, jumpExternal, jumpPastMessage, leaveMirror, loadDormants, openDormant, openExternal,
+  flushRoster, forgetDormant, jumpExternal, leaveMirror, loadDormants, openDormant, openExternal,
   queueRosterSave, refreshDirtyStates, refreshExternals,
   renderExtHeader, renderExtInspector, renderPastHeader, renderPastInspector,
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
@@ -86,6 +88,7 @@ import {
   toggleDbg, currentDrift, tickVitals,
 } from "./debug";
 import { basename, setHome } from "./format";
+import { keyCap } from "./svgicons";
 import { account, rl, setRlLogger } from "./rl";
 import { closeCafPop, initCaf, reconcileCaf, setCafHost } from "./caffeinate";
 import { closeSignoffPop, setSignoffHost } from "./signoff";
@@ -120,7 +123,7 @@ import {
 } from "./phase";
 import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
-  copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
+  claudeAccts, copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
   vitalsPrefs, removingWt, type BgLogHealthEvent,
 } from "./state";
@@ -173,8 +176,8 @@ if (IS_TAURI) document.documentElement.classList.add(IS_MAC ? "mac" : IS_WIN ? "
 applyFx(); // before first paint, or every infinite animation starts and is then cancelled
 
 // index.html hard-codes the mac glyphs; everything rendered from TS goes through MOD/chord.
+document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.innerHTML = IS_MAC ? keyCap("⌘") : "Ctrl"; });
 if (!IS_MAC) {
-  document.querySelectorAll("kbd").forEach((k) => { if (k.textContent === "⌘") k.textContent = "Ctrl"; });
   document.querySelectorAll<HTMLElement>("[title]").forEach((el) => { if (el.title.includes("⌘")) el.title = el.title.replace(/⌘/g, "Ctrl+"); });
   const fk = document.querySelector(".fseg.fk");
   if (fk) fk.textContent = `${chord("K")} · ${chord("1")}–9 switch · ${chord("B")} sidebar · ${chord("I")} inspector · ${chord("±")} font`;
@@ -253,7 +256,7 @@ setSettingsHost({
   setRevivePrefs,
   startTour: startChapter,
   setFootSeg, setFx,
-  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord,
+  setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   openDevtools, reloadUi,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -267,6 +270,7 @@ setSettingsHost({
   syncReview: openReview,
   // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
   openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
+  saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -340,6 +344,8 @@ setStageHome(() => openFleet());
 setStageMoved(renderAll); // the pass after a handover is where ./nav records it
 setGhReload(reloadDashGh);
 void refreshGhAccounts(); // once at startup; no answer means no account picker
+syncShownAccount(); // the meters open on the account a new session would take (docs/accounts.md)
+if (claudeAccts.length) void listClaudeTokens(); // a token deleted by hand is skipped rather than failing a launch
 setCafHost({ closeFootMenus, renderFoot, renderAll });
 setDiffCloseFootMenus(closeFootMenus);
 // The overlay writes (commit, stash, discard): re-poll the folder at once rather than on the
@@ -653,7 +659,12 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   // is no second copy of the done/error decision here to drift.
   const before = soundSnap(s);
   const rlBefore = { h5: rl.h5, d7: rl.d7, acct: account?.id };
-  if (kind === "statusline") applyStatusline(s, data); else { dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`); applyHook(s, data); }
+  if (kind === "statusline") { applyStatusline(s, data); syncShownAccount(); }
+  else {
+    dlog("info", `hook ${data.hook_event_name ?? "?"} · ${sid!.slice(0, 8)}`);
+    applyHook(s, data);
+    if (data.hook_event_name === "StopFailure" && s.apiErr?.kind === "rate_limit") onLimitHit(s);
+  }
   const ev = hookSound(before, soundSnap(s));
   if (ev) playSound(ev);
   // Account-wide, so outside the per-session branch: one crossing, one chime.
@@ -738,7 +749,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-pastq],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-extlink],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -788,7 +799,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.olmore) toggleOutlineAll();
   else if (el.dataset.olgrp) toggleOutlineGroup(el.dataset.olgrp);
   else if (el.dataset.olopen) openQuestions(el.dataset.olopen);
-  else if (el.dataset.pastq) jumpPastMessage(el.dataset.pastq);
+  else if (el.dataset.extlink) { if (/^https:\/\//.test(el.dataset.extlink)) openUrl(el.dataset.extlink).catch((e) => toast("Couldn't open the link: " + e)); }
   else if (el.dataset.callsel) selectCall(el.dataset.callsel);
   else if (el.dataset.callcopy) copySelectedCall(el.dataset.callcopy);
   else if (el.dataset.toast) toast(el.dataset.toast);

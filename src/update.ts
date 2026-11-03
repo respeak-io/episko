@@ -9,6 +9,8 @@ import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog, setAppVersion } from "./debug";
 import { sessions } from "./state";
+import { esc } from "./format";
+import { icon } from "./svgicons";
 
 getVersion().then((v) => { setAppVersion(v); $("fVer").textContent = "v" + v; }).catch(() => {});
 
@@ -23,7 +25,7 @@ async function checkForUpdates(manual: boolean) {
     pendingUpdate = upd;
     const chip = $("fUpdate");
     if (upd) {
-      chip.textContent = `⇧ update to v${upd.version}`;
+      chip.innerHTML = `${icon("arrowUpFromLine")}update to v${esc(upd.version)}`;
       chip.hidden = false;
       dlog("info", `update available: v${upd.version}`);
       if (manual) toast(`Episko v${upd.version} is available`);

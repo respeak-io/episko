@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
-import type { Runnable } from "./types";
+import type { Runnable, Sess } from "./types";
 import { applyRunInfo, type RunInfo } from "./runinfo";
 import { readList, readObj } from "./store";
 import { FAVORITES } from "./state";
@@ -110,6 +110,17 @@ export function resolveRunInputs(r: Runnable, project: string, withParams = fals
 // only unique inside one: every JS project has an `npm:dev`, and an unscoped lookup ran another's.
 export const runnablesByRoot = new Map<string, Map<string, Runnable>>();
 export const runnableIn = (root: string, id: string): Runnable | undefined => runnablesByRoot.get(root)?.get(id);
+
+// The finished panes a new run of `id` from `root` replaces: one row per task, not per attempt.
+// A live run is a run of its own, a group member is its group's ⟳, the pane on stage is being read.
+export function replacedRuns(panes: Iterable<Sess>, id: string, root: string, onStage: string | null): string[] {
+  const out: string[] = [];
+  for (const x of panes) {
+    const r = x.kind === "task" ? x.run : undefined;
+    if (r && r.id === id && r.root === root && r.exitCode != null && !r.groupId && x.id !== onStage) out.push(x.id);
+  }
+  return out;
+}
 
 // ---------- dependsOn ----------
 

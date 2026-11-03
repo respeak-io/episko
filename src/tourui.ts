@@ -3,6 +3,7 @@
 // on its own z-index tier, never joins SCRIM_DLGS, and never takes Escape (docs/tour.md).
 
 import { $, IS_MAC } from "./dom";
+import { glyphIcon, icon, keyCap } from "./svgicons";
 import { toggleInsp } from "./actions";
 import { dlog } from "./debug";
 import { needsYouSessions } from "./grouping";
@@ -372,6 +373,12 @@ const KEYS: [RegExp, string][] = [
   ...(IS_MAC ? [] : ([[/⌘/g, "Ctrl"], [/⇧/g, "Shift"]] as [RegExp, string][])),
 ];
 const keys = (t: string) => KEYS.reduce((a, [re, to]) => a.replace(re, to), t);
+// The manifest keeps plain glyphs (the legend test compares them to GLYPH); drawn as icons here.
+const glyphs = (t: string) => keys(t)
+  .replace(/<kbd>([^<]*)<\/kbd>/g, (_, k: string) => `<kbd>${keyCap(k)}</kbd>`)
+  .replace(/(<b[^>]*>)([^<]*)<\/b>/g, (_, open: string, inner: string) =>
+    `${open}${inner.replace(/[^\x00-\x7F]/gu, (ch) => glyphIcon(ch))}</b>`);
+const NEXT = icon("chevronRight", "solo");
 // Guarded like every innerHTML surface on renderAll's path: an assignment drops the
 // click under the pointer (docs/architecture.md).
 let cardHtml = "";
@@ -380,7 +387,7 @@ const shell = (cls: string, eyebrow: string, count: string, inner: string) => {
   card.className = `tour-card show ${cls}`;
   const html = `<div class="tc-top"><span class="tc-ch">${eyebrow}</span>`
     + (count ? `<span class="tc-count">${count}</span>` : "")
-    + `<button class="tc-x" data-tour="end" title="End the tour" aria-label="End the tour">✕</button></div>${inner}`;
+    + `<button class="tc-x" data-tour="end" title="End the tour" aria-label="End the tour">${icon("x", "solo")}</button></div>${inner}`;
   if (html === cardHtml) return;
   cardHtml = html;
   card.innerHTML = html;
@@ -405,7 +412,7 @@ function renderPicker() {
     const done = isDone(st, c);
     return `<div class="tp-row${c.required ? " req" : on ? " on" : ""}" data-tourpick="${c.id}"
         role="checkbox" tabindex="0" aria-checked="${on || !!c.required}">
-      <span class="tp-box">${on || c.required ? "✓" : ""}</span>
+      <span class="tp-box">${on || c.required ? icon("check", "solo") : ""}</span>
       <span class="tp-main"><span class="tp-nm">${c.name}${c.required ? `<span class="tp-req">always</span>` : ""}${done ? `<span class="tp-done">done</span>` : ""}</span>
         <span class="tp-sb">${c.blurb}</span></span>
       <span class="tp-mn">${c.mins}</span></div>`;
@@ -415,7 +422,7 @@ function renderPicker() {
     <div class="tp-list">${rows}</div>
     <div class="tc-foot"><span class="tc-sp"></span>
       <button class="tour-btn" data-tour="welcome">Back</button>
-      <button class="tour-btn go" data-tour="begin">Start ▸</button></div>`);
+      <button class="tour-btn go" data-tour="begin">Start ${NEXT}</button></div>`);
   centreCard($("tourCard"));
   centreHole($("tourHole"));
 }
@@ -450,11 +457,11 @@ function renderStep(w: TourWorld = world()) {
   const dots = list.map((_, i) => `<i class="${i === pos ? "on" : i < pos ? "past" : ""}"></i>`).join("");
   const lastStep = neighbour(si, 1, w) < 0;
   const lastCh = ci === plan.length - 1;
-  const nextLabel = !lastStep ? "Next" : lastCh ? "Finish" : "Next chapter ▸";
+  const nextLabel = !lastStep ? "Next" : lastCh ? "Finish" : `Next chapter ${NEXT}`;
 
   shell("", c.name, `${pos + 1} / ${list.length}`, `
-    <div class="tc-t">${s.title}</div>
-    <div class="tc-b">${keys(s.body)}</div>
+    <div class="tc-t">${keys(s.title)}</div>
+    <div class="tc-b">${glyphs(s.body)}</div>
     ${blocked ? `<div class="tc-wait"><span class="tc-dot"></span>${s.wait}</div>` : ""}
     ${s.act && blocked ? `<button class="tour-btn go tc-act" data-tour="act">${s.act.label}</button>` : ""}
     <div class="tc-foot"><span class="tc-dots">${dots}</span>

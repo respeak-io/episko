@@ -8,6 +8,7 @@ import { $, EMOJI_PICKER_KEY, FILE_MANAGER, IS_WIN, toast } from "./dom";
 import { EM_HEAD_H, EM_ROW_H, emojiRows, rowWindow } from "./emoji";
 import type { EmRow } from "./emoji";
 import { basename, esc, relTime, tilde } from "./format";
+import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import { openMenu, type MenuItem } from "./menu";
 import { closeFootMenus } from "./footer";
 import { openGraph } from "./graphview";
@@ -107,10 +108,10 @@ const emFlags = !IS_WIN;
 
 const emojiPopHtml = (key: string) => {
   const cur = emojiFor(key);
-  return `<button class="sw-auto sw-back" data-c="back">‹ Color &amp; logo</button>` +
+  return `<button class="sw-auto sw-back" data-c="back">${icon("arrowLeft")}Color &amp; logo</button>` +
     `<div class="sw-row"><input class="sw-hex sw-emin" type="text" spellcheck="false" placeholder="Search or paste an emoji" value="" /></div>` +
     `<div class="em-scroll"><div class="em-win"></div></div>` +
-    `<div class="sw-note">↵ takes the first${EMOJI_PICKER_KEY ? ` · ${EMOJI_PICKER_KEY} opens the system picker` : ""}</div>` +
+    `<div class="sw-note">${keyCap("↵")} takes the first${EMOJI_PICKER_KEY ? ` · ${EMOJI_PICKER_KEY} opens the system picker` : ""}</div>` +
     (cur ? `<button class="sw-auto" data-c="reseticon">Remove emoji</button>` : "");
 };
 const emRowsHtml = (rows: EmRow[], cur: string | null) => rows.map((r) => r.kind === "head"
@@ -233,14 +234,15 @@ $("colorPop").addEventListener("keydown", (e: KeyboardEvent) => {
 let ctxKey: string | null = null;
 const projName = (key: string) => FAVORITES.find((f) => f.path === key)?.name || basename(key);
 
-type CtxRow = { act: string; ic?: string; logo?: string; label: string; sub?: string; cls?: string; chev?: boolean };
+// `ic` is a glyph from ./svgicons' table; `icn` names an icon no glyph stands for.
+type CtxRow = { act: string; ic?: string; icn?: IconName; logo?: string; label: string; sub?: string; cls?: string; chev?: boolean };
 const ctxRowHtml = (r: CtxRow) =>
   `<button class="mp-item ${r.cls || ""}" data-ctx="${r.act}">`
   + (r.logo
     ? `<span class="mp-ic agent-logo" aria-hidden="true">${r.logo}</span>`
-    : `<span class="mp-ic${[...(r.ic || "")].length === 2 ? " mp-mono" : ""}">${r.ic || ""}</span>`)
+    : `<span class="mp-ic">${r.icn ? icon(r.icn, "solo") : r.ic ? glyphIcon(r.ic) : ""}</span>`)
   + `<span class="mp-main"><span class="mp-l">${esc(r.label)}</span>${r.sub ? `<span class="mp-s">${esc(r.sub)}</span>` : ""}</span>`
-  + (r.chev ? `<span class="mp-chev">›</span>` : "") + `</button>`;
+  + (r.chev ? `<span class="mp-chev">${icon("chevronRight", "solo")}</span>` : "") + `</button>`;
 // A separator divides two things; a `null` that ends up leading, trailing or beside another
 // divides nothing and draws a line across empty menu. Every list here is built with conditional
 // rows, so normalising is the renderer's job rather than each caller's.
@@ -283,19 +285,19 @@ export function openCtxMenu(key: string, x: number, y: number) {
     // Only with more than one GitHub account logged in, the only case where it can change
     // an answer; "GitHub · you" on every menu would be noise.
     ghPickable(ghLogins)
-      ? { act: "ghacct", ic: "◈", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
+      ? { act: "ghacct", icn: "circleUser", label: `GitHub · ${ghWho(ghAccountFor(key), ghLogins).login ?? "—"}`, sub: ghSub(key), chev: true }
       : null,
     { act: "sharing", ic: "⇄", label: `Sharing · ${SHARE_LABEL[shareModeOf(key)]}`, sub: SHARE_SUB[shareModeOf(key)], chev: true },
     { act: "projset", ic: "⚙", label: "Project settings…", sub: projSetSub(key) },
     null,
     // Dropped below unless the probe says this folder is a repo.
     { act: "graph", ic: "⑂", label: "Commit graph…", sub: "recent history, branches and merges" },
-    { act: "folder", ic: "⌂", label: "Open project folder", sub: FILE_MANAGER },
+    { act: "folder", icn: "folderOpen", label: "Open project folder", sub: FILE_MANAGER },
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
     grouped
-      ? { act: "movegroup", ic: "▤", label: `Group · ${grouped.name}`, sub: "move to another, or take it out", chev: true }
-      : { act: "movegroup", ic: "▤", label: "Add to group…", sub: "collect projects under one collapsible heading", chev: true },
+      ? { act: "movegroup", icn: "layoutList", label: `Group · ${grouped.name}`, sub: "move to another, or take it out", chev: true }
+      : { act: "movegroup", icn: "layoutList", label: "Add to group…", sub: "collect projects under one collapsible heading", chev: true },
     { act: "appearance", ic: "◐", label: "Appearance", sub: "color, logo", chev: true },
     null,
     // A project can be listed without being pinned (it has a live session), so the row is
@@ -376,7 +378,7 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
     { act: "wtlaunch", ic: "＋", label: "New session here", sub: live ? `${live} already running in this checkout` : `start ${effectiveAgent(t.root).label} on this branch` },
     { act: "wtterm", ic: "❯", label: "Open terminal here", sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label },
     null,
-    { act: "wtfolder", ic: "⌂", label: "Open checkout folder", sub: FILE_MANAGER },
+    { act: "wtfolder", icn: "folderOpen", label: "Open checkout folder", sub: FILE_MANAGER },
     { act: "wtcopy", ic: "⧉", label: "Copy path" },
     null,
     { act: "wtdialog", ic: "⑃", label: "All worktrees…", sub: "create, switch, prune" },
@@ -392,7 +394,7 @@ function openWtMenu(t: WtTarget, x: number, y: number) {
   menu.classList.remove("agent-all");
   menu.innerHTML =
     `<div class="mp-head"><span class="mp-hsw" style="background:${accentFor(t.branch || t.dir)}"></span>`
-    + `<span class="mp-hmain"><span class="mp-hname">⑃ ${esc(t.branch)}</span><span class="mp-hpath">${esc(tilde(t.dir))}</span></span></div>`
+    + `<span class="mp-hmain"><span class="mp-hname">${icon("gitBranch")}${esc(t.branch)}</span><span class="mp-hpath">${esc(tilde(t.dir))}</span></span></div>`
     + ctxRowsHtml(rows);
   placePop(menu, x, y);
 }
@@ -440,7 +442,7 @@ const termRow = (): CtxRow => ({
   act: "sterm", ic: "❯", label: "Open terminal here",
   sub: termEngine === "embedded" ? "shell pane inside Episko" : engineDef(termEngine).label,
 });
-const folderRow: CtxRow = { act: "sfolder", ic: "⌂", label: "Open folder", sub: FILE_MANAGER };
+const folderRow: CtxRow = { act: "sfolder", icn: "folderOpen", label: "Open folder", sub: FILE_MANAGER };
 const copyRow: CtxRow = { act: "scopy", ic: "⧉", label: "Copy path" };
 
 // The app-wide map rather than `Sess.git`, which is only fresh while the pane is on stage.
@@ -483,7 +485,7 @@ function taskRows(s: Sess): (CtxRow | null)[] {
 // Beside *Open folder*, because both answer "where does this come from"; the pin is the ▶ Run
 // picker's, and belongs to the task rather than to this pane.
 const taskWhereRows = (s: Sess): CtxRow[] => [
-  { act: "sreveal", ic: "↗", label: "Reveal source", sub: s.run!.sourceFile || basename(s.run!.root) },
+  { act: "sreveal", icn: "folderOpen", label: "Reveal source", sub: s.run!.sourceFile || basename(s.run!.root) },
   pinnedIds(s.colorKey).includes(s.run!.id)
     ? { act: "spin", ic: "★", label: "Unpin from ▶ Run", sub: "back into the list with the rest" }
     : { act: "spin", ic: "☆", label: "Pin to ▶ Run", sub: "keeps it at the top of the picker" },
@@ -547,7 +549,7 @@ function pastRows(d: Restorable): (CtxRow | null)[] {
 // Nothing here stops it: Episko did not start it, and `kill_session` cannot reach it.
 function extRows(e: ExtSession): (CtxRow | null)[] {
   return [
-    { act: "sjump", ic: "↗", label: "Jump to its terminal", sub: `Claude v${e.version} · pid ${e.pid}` },
+    { act: "sjump", icn: "appWindow", label: "Jump to its terminal", sub: `Claude v${e.version} · pid ${e.pid}` },
     termRow(),
     null,
     wsetRow(e.cwd),
@@ -577,7 +579,7 @@ function openSessionMenu(kind: SessTarget["kind"], id: string, row: HTMLElement,
   const menu = $("ctxMenu");
   menu.classList.remove("agent-all");
   menu.innerHTML =
-    `<div class="mp-head"><span class="mp-hgl ${g.cls}">${g.glyph}</span>`
+    `<div class="mp-head"><span class="mp-hgl ${g.cls}">${glyphIcon(g.glyph)}</span>`
     + `<span class="mp-hmain"><span class="mp-hname">${esc(name)}</span>`
     + `<span class="mp-hpath">${esc(tilde(sessDir(s, d, e)))}</span></span></div>`
     + ctxRowsHtml(s ? liveRows(s) : d ? pastRows(d) : extRows(e!));
@@ -838,10 +840,10 @@ function openGroupPicker(key: string, x: number, y: number) {
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
-    { act: "gback", ic: "‹", label: "Back", sub: projName(key) },
+    { act: "gback", icn: "arrowLeft", label: "Back", sub: projName(key) },
     null,
     ...projGroups.groups.map((g) => ({
-      act: `gpick:${g.id}`, ic: g.id === cur ? "✓" : "▪", label: g.name,
+      act: `gpick:${g.id}`, ic: g.id === cur ? "✓" : "", label: g.name,
       sub: `${groupCount(g.id)} project${groupCount(g.id) === 1 ? "" : "s"}`,
     })),
     cur ? { act: "gclear", ic: "⊘", label: "Remove from group", sub: "back to the top level" } : null,

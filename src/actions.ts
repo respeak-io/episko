@@ -3,14 +3,16 @@
 // assign; the persistence and the repaint are this layer's.
 
 import { invoke } from "@tauri-apps/api/core";
+import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
-import { ask } from "./confirm";
+import { $, actToast, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
+import { ask, askOpt } from "./confirm";
 import { basename, nfcPath } from "./format";
+import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchShell, shelveSession, tickAutoFetch } from "./panes";
+import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillShell, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
@@ -38,6 +40,7 @@ import {
   setTermSplit as setTermSplitState, setDriftAuto as setDriftAutoState, setAgentTools as setAgentToolsState, setPrLinksInApp as setPrLinksInAppState,
   setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
+  closeAskIdle, setCloseAskIdle as setCloseAskIdleState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -48,8 +51,11 @@ import {
   shareByProject, setShareMode, shareModeOf, type ShareMode,
   handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
+  claudeAccts, setClaudeAccts, acctChecks, foundTokens, setFoundTokens,
   type SortMode, type WtGroup,
 } from "./state";
+import { addAcct, hitUntil, quotaHit, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
+import { acctReading, applyAccountReadings, limitHits, loginAcct, rlAccts, saveAccts, showAccount, TOKEN_ID, tokenAccount } from "./rl";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
 import type { GhAccount, GhAccounts } from "./ghwork";
 import { ALL_FX_CLASSES, motionPrefsJson, rootFxClasses, toggleFx, type VisualFx } from "./motion";
@@ -153,19 +159,25 @@ export async function shelveSessionAsked(id: string) {
   if (shelveSession(id)) toast("Shelved · resume it from the sidebar");
 }
 // The sidebar's and header's ✕ sit one misclick from a live agent; ending one is only
-// undone through History, so ask. Shells, tasks and an already-ended pane close at once.
+// undone through History, so ask. Mid-turn always asks; a finished one only while `closeAskIdle`.
 export async function closeSessionAsked(id: string) {
   const s = sessions.get(id);
   if (!s) return;
-  if (isAgent(s) && !s.external && s.phase !== "ended") {
+  const busy = midWork(s);
+  if (isAgent(s) && !s.external && s.phase !== "ended" && (busy || closeAskIdle)) {
     const name = s.title || s.project;
-    const lead = midWork(s) ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `${name} is still running.`;
-    const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead (⇩)." : "";
-    const ok = await ask(
+    const lead = busy ? `${name} is still going — ${phaseText(s)}. The turn it is in will not finish.` : `The agent behind ${name} is still open (${phaseText(s)}).`;
+    const alt = canShelve(s) ? "\n\nTo stop it but keep its row, shelve it instead." : "";
+    const a = await askOpt(
       `${lead}\n\nClosing ends the agent; the conversation comes back only from History.${alt}`,
-      { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it" },
+      { title: "Close this session?", kind: "warning", okLabel: "Close it", cancelLabel: "Keep it",
+        optOut: busy ? undefined : "Don't ask again for a session that isn't working" },
     );
-    if (!ok) return;
+    if (!a.ok) return;
+    if (a.optOut) {
+      setCloseAskIdle(false);
+      toast("A finished session now closes without asking · Settings › Launching brings the question back");
+    }
   }
   closeSession(id);
 }
@@ -290,6 +302,13 @@ export function setAgentTools(on: boolean) {
 export function setTermSplit(on: boolean) {
   setTermSplitState(on);
   localStorage.setItem("cc-term-split", on ? "1" : "0");
+  renderSettings();
+}
+
+// Read at the next ✕; a session mid-turn asks whatever this says.
+export function setCloseAskIdle(on: boolean) {
+  setCloseAskIdleState(on);
+  localStorage.setItem("cc-close-ask", on ? "1" : "0");
   renderSettings();
 }
 
@@ -584,7 +603,7 @@ export function setSort(m: SortMode, announce = true) {
   setSortMode(m);
   localStorage.setItem("cc-sort", m);
   const b = $("railSort");
-  b.textContent = SORT_META[m].glyph;
+  b.innerHTML = glyphIcon(SORT_META[m].glyph);
   b.title = `Sort: ${SORT_META[m].label} · click to change`;
   b.classList.toggle("on", m !== "manual");
   if (announce) toast(SORT_META[m].label);
@@ -804,5 +823,150 @@ export async function proposeStack(root: string): Promise<void> {
     toast(`No dev stack proposal: ${e}`);
   } finally {
     proposing.delete(root);
+  }
+}
+
+// ---------- Claude accounts (./accounts decides, docs/accounts.md) ----------
+
+
+export function saveClaudeAccts(list: ClaudeAcct[]) {
+  setClaudeAccts(list);
+  localStorage.setItem("cc-claude-accounts", JSON.stringify(claudeAccts));
+  syncShownAccount();
+  renderSettings();
+  renderAll();
+}
+
+/** The meters show the account a new session would start on. */
+export function syncShownAccount() {
+  const pick = launchAccount(); // null on an external engine, which launches on the login
+  const target = pick ? tokenAccount(pick) : loginAcct;
+  if (target) showAccount(target);
+}
+
+export async function listClaudeTokens(): Promise<string[]> {
+  // A failed listing leaves the last one: an empty list would bench every account.
+  const found = await invoke<string[]>("claude_tokens").catch(() => null);
+  if (found) setFoundTokens(found);
+  syncShownAccount();
+  renderSettings();
+  return found ?? foundTokens ?? [];
+}
+
+/** One cheap turn on the token: proves it, and its answer is the account's first reading. */
+export async function checkClaudeAcct(label: string) {
+  acctChecks[label] = { ok: acctChecks[label]?.ok ?? false, error: null, at: acctChecks[label]?.at ?? 0, busy: true };
+  renderSettings();
+  try {
+    const c = await invoke<{ ok: boolean; error: string | null; h5: number | null; h5Reset: number | null; d7: number | null; d7Reset: number | null }>("claude_token_check", { label });
+    acctChecks[label] = { ok: c.ok, error: c.error, at: Date.now() };
+    if (c.ok) {
+      delete limitHits[TOKEN_ID + label];
+      applyAccountReadings(tokenAccount(label), {
+        five_hour: c.h5 == null ? undefined : { used_percentage: c.h5, resets_at: c.h5Reset },
+        seven_day: c.d7 == null ? undefined : { used_percentage: c.d7, resets_at: c.d7Reset },
+      });
+    }
+  } catch (e) {
+    acctChecks[label] = { ok: false, error: String(e), at: Date.now() };
+  }
+  syncShownAccount(); // a failed check takes it out of the pick
+  renderSettings();
+  renderAll();
+}
+
+/** A pasted token: stored first, then listed and checked. */
+export async function addClaudeToken(label: string, token: string): Promise<boolean> {
+  try {
+    await invoke("claude_token_save", { label, token });
+  } catch (e) {
+    toast(String(e));
+    return false;
+  }
+  saveClaudeAccts(addAcct(claudeAccts, label));
+  void listClaudeTokens();
+  void checkClaudeAcct(label);
+  return true;
+}
+
+export async function removeClaudeAcct(label: string) {
+  const ok = await ask(`Remove ${label}?\n\nIts token is deleted from this machine's keychain too. Sessions running on it keep running.`,
+    { title: "Remove account", kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" });
+  if (!ok) return;
+  await invoke("claude_token_forget", { label }).catch((e) => toast(String(e)));
+  delete acctChecks[label];
+  saveClaudeAccts(claudeAccts.filter((a) => a.label !== label)); // first: the meters move off it
+  delete rlAccts[TOKEN_ID + label]; // or its last figures linger under the limits' other accounts
+  saveAccts();
+  void listClaudeTokens();
+}
+
+// A pane's text with xterm's soft wraps joined back; a hard wrap is ./accounts' to undo.
+function paneLines(s: Sess): string[] {
+  const b = s.term?.buffer.active;
+  const out: string[] = [];
+  if (!b) return out;
+  // The token is printed at the bottom of a fresh shell; this runs every second for 15 minutes.
+  for (let i = Math.max(0, b.length - 200); i < b.length; i++) {
+    const line = b.getLine(i);
+    if (!line) continue;
+    const t = line.translateToString(true);
+    if (line.isWrapped && out.length) out[out.length - 1] += t; else out.push(t);
+  }
+  return out;
+}
+
+const SETUP_WATCH_MS = 15 * 60_000;
+/**
+ * `claude setup-token` prefilled in a shell; the token it prints is read off the pane, stored,
+ * and the shell closed so it is not left on screen. Nobody copies a wrapped line by hand.
+ */
+export async function setupClaudeToken(label: string) {
+  if (!validLabel(label)) { toast("A name may use letters, digits, dots, dashes and underscores"); return; }
+  const home = await homeDir().catch(() => "");
+  if (!home) { toast("No home folder to open the shell in"); return; }
+  const id = await prefillShell("claude setup-token", home, "claude setup-token");
+  toast(`Press Enter, then sign in as ${label} in the browser`);
+  const until = Date.now() + SETUP_WATCH_MS;
+  const t = window.setInterval(() => {
+    const s = sessions.get(id);
+    if (!s || Date.now() > until) { clearInterval(t); return; }
+    const token = tokenFromLines(paneLines(s));
+    if (!token) return;
+    clearInterval(t);
+    void addClaudeToken(label, token).then((ok) => {
+      if (!ok) return;
+      closeSession(id);
+      toast(`Saved ${label}. The shell is closed so the token isn't left on screen`);
+    });
+  }, 1000);
+}
+
+/** A turn refused for its quota: that account sits out, and the session is offered the next one. */
+export function onLimitHit(s: Sess) {
+  const id = s.account ? TOKEN_ID + s.account : loginAcct?.id, now = Date.now();
+  const again = !!id && (limitHits[id] ?? 0) > now; // a revive retry refused again: asked once already
+  const r = id ? acctReading(id) : null;
+  if (id) limitHits[id] = hitUntil(r, now, quotaHit(s.apiErr?.detail ?? "", r));
+  syncShownAccount();
+  if (again || s.external || !claudeAccts.length) return;
+  const next = launchAccount(s.account);
+  if (!next) return;
+  actToast(`${s.account ?? "Your account"} is at its limit. Resume this session on ${next}?`,
+    [{ label: `Resume on ${next}`, run: () => void resumeOnAccount(s.id, next) }], 30_000);
+}
+
+export async function resumeOnAccount(id: string, label: string) {
+  const s = sessions.get(id);
+  if (!s) return;
+  const { project, colorKey, resumeId } = s;
+  const { workdir, worktree, branch } = s.home ?? s;
+  await stopForTranscript(id);
+  const release = holdNav();
+  try {
+    closeSession(id);
+    await launch(project, workdir, { colorKey, worktree, branch, resume: resumeId, account: label });
+  } finally {
+    release();
   }
 }

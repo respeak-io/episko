@@ -180,7 +180,7 @@ export function comboKeys(c: Combo | null, isMac: boolean): string[] {
   const out: string[] = [];
   if (c.mod) out.push(isMac ? "⌘" : "Ctrl");
   if (c.alt) out.push(isMac ? "⌥" : "Alt");
-  if (c.shift) out.push("⇧");
+  if (c.shift) out.push(isMac ? "⇧" : "Shift");
   out.push(keyGlyph(c.key));
   return out;
 }

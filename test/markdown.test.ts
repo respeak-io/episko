@@ -100,8 +100,8 @@ describe("rendering", () => {
   it("draws gfm: tables, task lists, strikethrough", () => {
     const d = r("| a | b |\n|---|:-:|\n| 1 | 2 |\n\n- [ ] todo\n- [x] done\n\n~~gone~~");
     expect(d.html).toContain("<table>");
-    expect(d.html).toContain("☐");
-    expect(d.html).toContain("☑");
+    expect(d.html).toContain("mdr-ic-off");
+    expect(d.html).toContain("mdr-ic-on");
     expect(d.html).toContain("<del>gone</del>");
     expect(d.html).not.toContain("<input");
   });

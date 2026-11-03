@@ -6,9 +6,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { jumpToPrompt } from "./inspector";
-import { joinPath, renderMarkdown } from "./markdown";
 import { openFileOrRead } from "./mdreader";
-import { qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml } from "./questionsview";
+import { answerMd, qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml } from "./questionsview";
 import { sessions } from "./state";
 import type { Prompt, Sess } from "./types";
 
@@ -42,7 +41,7 @@ const mdCache = new Map<string, { src: string; html: string }>();
 function answerHtml(s: Sess, p: Prompt): string {
   const hit = mdCache.get(p.id);
   if (hit && hit.src === p.answer) return hit.html;
-  const html = renderMarkdown(p.answer ?? "", { docPath: joinPath(s.workdir, "answer.md"), root: s.workdir, images: false, remote: false }).html;
+  const html = answerMd(s.workdir, p.answer ?? "");
   mdCache.set(p.id, { src: p.answer ?? "", html });
   return html;
 }
@@ -58,14 +57,15 @@ export function renderQuestions(force = false) {
   const s = sessions.get(sid);
   if (!s) { closeQuestions(); return; }
   if (force) { lastSub = ""; lastIndex = ""; lastThread = ""; }
-  const entries = qEntries(s);
+  const entries = qEntries(s.prompts);
   const title = s.title || s.branch || s.project || "Session";
   if ($("qTitle").textContent !== title) $("qTitle").textContent = title;
   const sub = qSubText(entries);
   if (sub !== lastSub) { lastSub = sub; $("qSub").textContent = sub; }
   const index = qIndexHtml(entries, sel);
   if (index !== lastIndex) { lastIndex = index; $("qIndex").innerHTML = index; }
-  const thread = qThreadHtml(s, entries, (p) => answerHtml(s, p));
+  const running = s.phase === "thinking" || s.phase === "working";
+  const thread = qThreadHtml(entries, (p) => answerHtml(s, p), { running, live: true });
   if (thread !== lastThread) { lastThread = thread; $("qThread").innerHTML = thread; }
   if (mdCache.size > 400) { // prompts are capped at 200 a pane; drop what no open sheet can show
     const live = new Set([...sessions.values()].flatMap((x) => x.prompts.map((p) => p.id)));
@@ -82,7 +82,7 @@ function select(id: string) {
 function copy(id: string | null) {
   const s = sid ? sessions.get(sid) : null;
   if (!s) return;
-  const all = qEntries(s);
+  const all = qEntries(s.prompts);
   const entries = id ? all.filter((e) => e.p.id === id) : all;
   writeText(qClipText(entries))
     .then(() => toast(id ? "Question and answer copied" : `${entries.length} questions copied`))

@@ -4,7 +4,7 @@
 
 import { overlayHtml } from "./dashview";
 import { esc, escAttr, nameHue } from "./format";
-import { icon } from "./svgicons";
+import { icon, keyCap } from "./svgicons";
 import type { GhThread, Holder } from "./ghwork";
 import { ago, mdHtml, stateWord, threadLine, type GhIssueRead } from "./issue";
 
@@ -36,8 +36,8 @@ const labels = (names: string[]): string =>
 // same sheet, so a claim is still shown before it is written) and open it on GitHub.
 function verbs(i: GhIssueRead, held: Holder | null): string {
   const go = held
-    ? `▶ Start anyway${held.mine ? "" : ` · ${esc(held.who)} is on it`}`
-    : i.kind === "pr" ? "▶ Agent on it" : "▶ Start an agent";
+    ? `${icon("playSolid")}Start anyway${held.mine ? "" : ` · ${esc(held.who)} is on it`}`
+    : `${icon("playSolid")}${i.kind === "pr" ? "Agent on it" : "Start an agent"}`;
   const tip = held
     ? `${held.who}${held.mine ? " (you)" : ""} already has this. A claim is a hint, so you can start anyway.`
     : "Start an agent on this, through the sheet that shows what would be claimed";
@@ -52,7 +52,7 @@ function verbs(i: GhIssueRead, held: Holder | null): string {
   return `<div class="iss-b">${review}${branch}
     <button class="act${review ? "" : " primary"}" data-dashwork="${i.number}" data-tip="${escAttr(tip)}">${go}</button>
     ${i.url ? `<button class="act" data-dashurl="${escAttr(i.url)}"
-      data-tip="Open it on github.com in your browser">↗ On GitHub</button>` : ""}</div>`;
+      data-tip="Open it on github.com in your browser">${icon("externalLink")}On GitHub</button>` : ""}</div>`;
 }
 
 function comment(who: string, when: string, body: string, mark: string): string {
@@ -70,11 +70,11 @@ const KIND = (t: GhThread): string => (t.kind === "pr" ? "pr" : "iss");
 // issue carries verbs here: deciding a backlog is the one job worth doing without leaving.
 function railRow(r: RailRow, at: number): string {
   const { t, held } = r;
-  const claim = held ? `<span class="clm${held.mine ? " mine" : ""}${held.stale ? " stale" : ""}">◍ ${esc(held.mine ? "you" : held.who)}</span>` : "";
+  const claim = held ? `<span class="clm${held.mine ? " mine" : ""}${held.stale ? " stale" : ""}">${icon("userRoundCheck")}${esc(held.mine ? "you" : held.who)}</span>` : "";
   const sub = r.why ? `<span class="w">${esc(r.why)}</span>` : "";
   const acts = r.triage
-    ? `<span class="rr-b"><button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">✓</button>`
-      + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">✕</button></span>`
+    ? `<span class="rr-b"><button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">${icon("check", "solo")}</button>`
+      + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">${icon("x", "solo")}</button></span>`
     : "";
   return `<div class="rr${t.number === at ? " on" : ""}" data-dashissue="${t.number}">
     <span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>${acts}
@@ -86,16 +86,16 @@ function rail(v: IssueView): string {
   const { from, rows } = v.rail;
   // The full table is still one click away, with the filters it had; the queue has none.
   const table = from === "queue" ? ""
-    : `<button class="aslink" data-dashopen-view="${from}" data-tip="Back to the full table">⤢ Table</button>`;
+    : `<button class="aslink" data-dashopen-view="${from}" data-tip="Back to the full table">Table ${icon("arrowUpRight", "solo")}</button>`;
   return `<aside class="rd-rail" data-keep-scroll="rail">
     <div class="rd-rh"><span class="t">${esc(RAIL_LABEL[from])}</span><span class="n">${rows.length}</span>${table}</div>
     ${rows.length ? rows.map((r) => railRow(r, v.number)).join("")
       : `<div class="ac-empty">Nothing else is listed here.</div>`}
-    <div class="rd-hint">↑ ↓ to move between threads</div></aside>`;
+    <div class="rd-hint"><kbd>${keyCap("↑")}</kbd> <kbd>${keyCap("↓")}</kbd> to move between threads</div></aside>`;
 }
 
 function reader(v: IssueView): string {
-  const toggle = `<button class="act rd-tog" data-dashrail data-tip="Show the list">☰ ${esc(RAIL_LABEL[v.rail.from])}</button>`;
+  const toggle = `<button class="act rd-tog" data-dashrail data-tip="Show the list">${icon("list")}${esc(RAIL_LABEL[v.rail.from])}</button>`;
   if (v.loading) {
     return `<div class="iss">${toggle}<div class="iss-wait"><span class="u-spin"></span>Reading it from GitHub…</div></div>`;
   }
@@ -105,13 +105,13 @@ function reader(v: IssueView): string {
     // way out, never an error dialog over a pane you were reading.
     return `<div class="iss">${toggle}<div class="ac-empty">${esc(i?.reason || "gh could not be reached")}</div>
         ${i?.url ? `<div class="iss-b"><button class="act" data-dashurl="${escAttr(i.url)}"
-          data-tip="Open it on github.com in your browser">↗ Open it on GitHub</button></div>` : ""}</div>`;
+          data-tip="Open it on github.com in your browser">${icon("externalLink")}Open it on GitHub</button></div>` : ""}</div>`;
   }
   const rest = i.comments.length - SHOWN_COMMENTS;
   return `<div class="iss">${toggle}
     <div class="iss-t"><span class="st ${esc(stateWord(i))}">${esc(stateWord(i))}</span>
       <h3>${esc(i.title)}</h3></div>
-    <div class="iss-line">${esc(threadLine(i, v.now))}</div>
+    <div class="iss-line">${esc(threadLine(i, v.now)).replace("◍ ", icon("userRoundCheck"))}</div>
     ${i.head_ref && i.base_ref ? `<div class="iss-ref">into <span class="chip">${esc(i.base_ref)}</span>
       from <span class="chip">${esc(i.head_ref)}</span>${i.same_repo ? "" : `<span class="chip" data-tip="The branch lives in a fork">fork</span>`}</div>` : ""}
     ${i.labels.length ? `<div class="iss-lbl">${labels(i.labels)}</div>` : ""}
@@ -121,7 +121,7 @@ function reader(v: IssueView): string {
     ${rest > 0
       ? `<div class="iss-more">…and ${rest} more comment${rest === 1 ? "" : "s"}
           <button class="aslink" data-dashurl="${escAttr(i.url)}"
-            data-tip="Open the whole thread on github.com">Read the rest on GitHub ↗</button></div>`
+            data-tip="Open the whole thread on github.com">Read the rest on GitHub ${icon("externalLink", "solo")}</button></div>`
       : ""}</div>`;
 }
 
@@ -132,5 +132,5 @@ export function issueOverlay(v: IssueView): string {
   return overlayHtml(`${KIND_WORD(v.kind)} #${v.number}`, v.slug,
     `<div class="rd${v.rail.open ? " rail-open" : ""}">
       <div class="rd-main" data-keep-scroll="main-${v.number}">${reader(v)}</div>${rail(v)}</div>`,
-    `Read here, acted on here — but nothing is written to GitHub from this panel. <b>▶</b> opens the same sheet the queue does, which shows exactly what a claim would post before it posts it.`);
+    `Read here, acted on here — but nothing is written to GitHub from this panel. <b>Start an agent</b> opens the same sheet the queue does, which shows exactly what a claim would post before it posts it.`);
 }

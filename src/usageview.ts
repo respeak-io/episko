@@ -5,7 +5,8 @@
 
 import { esc, fmtClock, fmtMb, fmtRate, fmtSpan, fmtUntil, uDelta, uTok, uUsd, uUsd2 } from "./format";
 import { popGoHtml } from "./footerview";
-import { account, accountName, D7_LEN, forecast5h, forecast7d, H5_LEN, rlScoped, scopedForecasts, type Forecast } from "./rl";
+import { icon } from "./svgicons";
+import { account, accountName, D7_LEN, forecast5h, forecast7d, H5_LEN, hasH5Window, rlScoped, scopedForecasts, type Forecast } from "./rl";
 import { accentFor, ioAll, sessions } from "./state";
 import { hasAgentCapability } from "./types";
 import type { SpendSource } from "./sync";
@@ -299,13 +300,13 @@ function fcWinHtml(name: string, sub: string, f: Forecast, burnPerHr: number | n
   const projTxt = f.proj == null || note ? "—" : `~${Math.round(f.proj)}%`;
   const resetInTxt = f.resetTs != null ? fmtUntil(f.resetTs) : "—";
   let rec: string;
-  if (f.used == null) rec = `<span class="fc-recic">·</span><div>No reading yet. It appears once a running session reports a statusLine.</div>`;
-  else if (f.used >= 100) rec = `<span class="fc-recic">✕</span><div><b>At the cap.</b> New work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
-  else if (note) rec = `<span class="fc-recic">·</span><div>${note}</div>`;
-  else if (!f.hasRate) rec = `<span class="fc-recic">·</span><div>Gathering pace. The forecast sharpens after a few statusLine ticks; for now this is the level only.</div>`;
-  else if (f.status === "bad") rec = `<span class="fc-recic">✕</span><div>On this pace you'll be <b>locked out ~${fmtSpan(f.secLeft! - f.etaSec!)} before reset</b>. Ease off, or move work to the other window.</div>`;
-  else if (f.status === "warn") rec = `<span class="fc-recic">!</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset. You can keep going, but there isn't much slack.</div>`;
-  else rec = `<span class="fc-recic">✓</span><div>Comfortable: projected <b>~${Math.round(f.proj!)}%</b> at reset. Nothing to manage here.</div>`;
+  if (f.used == null) rec = `<span class="fc-recic">${icon("info", "solo")}</span><div>No reading yet. It appears once a running session reports a statusLine.</div>`;
+  else if (f.used >= 100) rec = `<span class="fc-recic">${icon("x", "solo")}</span><div><b>At the cap.</b> New work on this window is blocked until it resets${f.resetTs != null ? " in " + fmtUntil(f.resetTs) : ""}.</div>`;
+  else if (note) rec = `<span class="fc-recic">${icon("info", "solo")}</span><div>${note}</div>`;
+  else if (!f.hasRate) rec = `<span class="fc-recic">${icon("info", "solo")}</span><div>Gathering pace. The forecast sharpens after a few statusLine ticks; for now this is the level only.</div>`;
+  else if (f.status === "bad") rec = `<span class="fc-recic">${icon("x", "solo")}</span><div>On this pace you'll be <b>locked out ~${fmtSpan(f.secLeft! - f.etaSec!)} before reset</b>. Ease off, or move work to the other window.</div>`;
+  else if (f.status === "warn") rec = `<span class="fc-recic">${icon("triangleAlert", "solo")}</span><div>On track for <b>~${Math.round(f.proj!)}%</b> by reset. You can keep going, but there isn't much slack.</div>`;
+  else rec = `<span class="fc-recic">${icon("check", "solo")}</span><div>Comfortable: projected <b>~${Math.round(f.proj!)}%</b> at reset. Nothing to manage here.</div>`;
   return `<div class="fc-win">
     <div class="fc-head"><span class="fc-name">${name}</span><span class="fc-wsub">${sub}</span></div>
     <div class="fc-big"><span class="fc-num ${cls}">${pctTxt}</span><span class="fc-of">used</span>${verdict}</div>
@@ -330,7 +331,7 @@ function forecastBlockHtml(): string {
   return `<div class="fc-block">
     <div class="label">Forecast <span class="fc-hint">· will you hit a limit before it resets?${account ? ` · ${esc(accountName(account))}` : ""}</span></div>
     <div class="fc-grid">
-      ${fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr")}
+      ${hasH5Window() ? fcWinHtml("Session", "5-hour window", f5, f5.rate, H5_LEN, "%/hr") : ""}
       ${fcWinHtml("Weekly", "7-day window", f7, f7.rate == null ? null : f7.rate * 24, D7_LEN, "%/day")}
     </div>
     ${scopedBlockHtml()}

@@ -336,7 +336,7 @@ function noteHeld(id: string, message: string) {
   const r = recOf(id);
   if (!r || r.dir !== "out" || (r.state !== "packing" && r.state !== "uploading") || heldSeen.has(`${id}|${message}`)) return;
   heldSeen.add(`${id}|${message}`);
-  toast(`The server is holding it: ${message} · ↶ on its row cancels it`);
+  toast(`The server is holding it: ${message} · Take it back on its row cancels it`);
 }
 
 function dropShelved(r: HandoffRec) {

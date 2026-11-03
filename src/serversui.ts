@@ -18,6 +18,7 @@ import {
 import { isAgent, isClaude, isExited, type BgServer, type Sess } from "./types";
 import { buildStacks, stackTally, type Checkout, type Container, type PaneIn, type Stack, type StackCfg } from "./stack";
 import { stackHtml } from "./stackview";
+import { icon, type IconName } from "./svgicons";
 import { discoverTasks, launchWithDeps } from "./tasks";
 
 // A row: "bg" is a shell an agent backgrounded (the record is all there is), "task" a
@@ -195,11 +196,12 @@ function paneShown(t: PaneProcs): ProcInfo[] {
   return hasWork(later) ? later : t.procs;
 }
 
+const ic = (n: IconName) => icon(n, "solo");
 function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?: string[]; label: string; x: string; go: string; note?: string } {
   if (r.kind === "pane") {
     return {
       url: "", dead: false, outcome: "",
-      label: `<span class="sv-src sv-obs" title="Running under this pane now">≡</span>${esc(nameList(branchLabels(paneShown(r.t))))}`,
+      label: `<span class="sv-src sv-obs" title="Running under this pane now">${ic("list")}</span>${esc(nameList(branchLabels(paneShown(r.t))))}`,
       x: `<span class="sv-stop sv-none"></span>`,
       go: "Go to this pane",
       note: fmtMb(memOf(r.t.procs) / 1048576),
@@ -214,8 +216,8 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
       : `No pane of this Episko run started it; it runs in ${g.root}`;
     return {
       url: "", dead: false, outcome: "",
-      label: `<span class="sv-src sv-obs" title="${escAttr(why)}">⊘</span>${esc(procLabel(leftLead(g)))}${n > 1 ? ` <span class="sv-orphan">+${n - 1}</span>` : ""}`,
-      x: `<button class="sv-stop sv-kill" data-svleft="${leftKey(g)}" title="Kill pid ${g.pid} and the ${n === 1 ? "process" : `${n} processes`} in its tree">✕</button>`,
+      label: `<span class="sv-src sv-obs" title="${escAttr(why)}">${ic("ban")}</span>${esc(procLabel(leftLead(g)))}${n > 1 ? ` <span class="sv-orphan">+${n - 1}</span>` : ""}`,
+      x: `<button class="sv-stop sv-kill" data-svleft="${leftKey(g)}" title="Kill pid ${g.pid} and the ${n === 1 ? "process" : `${n} processes`} in its tree">${ic("x")}</button>`,
       go: "Go to the pane that started this",
       note: fmtMb(leftMem(g) / 1048576),
     };
@@ -227,7 +229,7 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
       : "Seen listening under this pane — nothing announced it";
     return {
       url: `http://localhost:${r.port}`, dead: false, outcome: "", tail: undefined,
-      label: `<span class="sv-src sv-obs" title="${seen}">◎</span>${esc(r.name || "port " + r.port)}${r.orphan ? ` <span class="sv-orphan">orphaned</span>` : ""}`,
+      label: `<span class="sv-src sv-obs" title="${seen}">${ic("plug")}</span>${esc(r.name || "port " + r.port)}${r.orphan ? ` <span class="sv-orphan">orphaned</span>` : ""}`,
       x: killBtn(r.sid, r.pid, r.port, r.name),
       go: "Go to the pane this is running under",
     };
@@ -236,8 +238,8 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
     const t = r.s.run!;
     return {
       url: t.url ?? "", dead: false, outcome: "", tail: t.tail,
-      label: `<span class="sv-src" title="Started by Episko · ${escAttr(t.cmd)}">▶</span>${esc(t.label)}`,
-      x: `<button class="sv-stop" data-svkill="${r.s.id}" title="Stop this task">✕</button>`,
+      label: `<span class="sv-src" title="Started by Episko · ${escAttr(t.cmd)}">${ic("playSolid")}</span>${esc(t.label)}`,
+      x: `<button class="sv-stop" data-svkill="${r.s.id}" title="Stop this task">${ic("x")}</button>`,
       go: "Go to this task's pane",
     };
   }
@@ -249,15 +251,15 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
     // A dead row is cleared, a live one asked while its agent can hear and killed by its port
     // once it cannot; separate attributes so the three cannot be confused.
     x: dead
-      ? `<button class="sv-stop" data-svforget="${b.taskId}" data-svsid="${r.s.id}" title="Clear this row (stops nothing: it has already ended)">✕</button>`
-      : bgKiller(r.s, b) ?? `<button class="sv-stop" data-svstop="${b.taskId}" data-svsid="${r.s.id}" title="Ask this session's agent to stop it (TaskStop)">✕</button>`,
+      ? `<button class="sv-stop" data-svforget="${b.taskId}" data-svsid="${r.s.id}" title="Clear this row (stops nothing: it has already ended)">${ic("x")}</button>`
+      : bgKiller(r.s, b) ?? `<button class="sv-stop" data-svstop="${b.taskId}" data-svsid="${r.s.id}" title="Ask this session's agent to stop it (TaskStop)">${ic("x")}</button>`,
     go: "Go to the session that started this",
   };
 }
 
 // The kill ✕: pid and port travel as one value, since both must still match at the kernel.
 function killBtn(sid: string, pid: number, port: number, name: string): string {
-  return `<button class="sv-stop sv-kill" data-svport="${pid}:${port}" data-svsid="${sid}" title="Kill ${escAttr(name || "the process")} (pid ${pid}) and free port ${port}">✕</button>`;
+  return `<button class="sv-stop sv-kill" data-svport="${pid}:${port}" data-svsid="${sid}" title="Kill ${escAttr(name || "the process")} (pid ${pid}) and free port ${port}">${ic("x")}</button>`;
 }
 
 // While its agent can be asked, a server is asked (it holds TaskStop and believes the server
@@ -283,7 +285,7 @@ function procTable(parts: { title: string; procs: ProcInfo[] }[]): string {
       const tip = `${p.cmd.join(" ") || p.name}${p.cwd ? `\nin ${p.cwd}` : ""}`;
       return `<tr title="${escAttr(tip)}"><td class="pn${isPlumbing(p) ? " pw" : ""}" style="--d:${depth}">${esc(procLabel(p, 70))}</td>`
         + `<td>${p.pid}</td><td>${fmtMb(p.mem / 1048576)}</td>`
-        + `<td class="x"><button class="sv-stop sv-kill" data-svproc="${p.pid}:${p.started}" title="Kill pid ${p.pid} and everything it started">✕</button></td></tr>`;
+        + `<td class="x"><button class="sv-stop sv-kill" data-svproc="${p.pid}:${p.started}" title="Kill pid ${p.pid} and everything it started">${ic("x")}</button></td></tr>`;
     }).join("");
   }
   const toggle = showAll || hidden
@@ -320,8 +322,8 @@ function rowHtml(r: Row, open: boolean): string {
   // itself a <button>, and a button nested in a button is invalid markup.
   const p = r.kind === "bg" ? bgLogPath(r.b) : "";
   const logs = p
-    ? `<button class="sv-path" data-svreveal="${escAttr(p)}" title="Reveal in ${FILE_MANAGER}">⌂</button>`
-      + `<button class="sv-path" data-svcopy="${escAttr(p)}" title="Copy the log path">⧉</button>`
+    ? `<button class="sv-path" data-svreveal="${escAttr(p)}" title="Reveal in ${FILE_MANAGER}">${ic("folderOpen")}</button>`
+      + `<button class="sv-path" data-svcopy="${escAttr(p)}" title="Copy the log path">${ic("copy")}</button>`
     // Empty cells rather than missing ones: the row is a grid.
     : `<span class="sv-path sv-none"></span><span class="sv-path sv-none"></span>`;
   // A dead row shows its outcome as plain text: a chip that opens a dead tab is worse than none.
@@ -342,7 +344,7 @@ function rowHtml(r: Row, open: boolean): string {
     </button>
     ${mid}
     ${logs}
-    ${sid && sessions.has(sid) ? `<button class="sv-go" data-svgo="${sid}" title="${go}">◨</button>` : `<span class="sv-go sv-none"></span>`}
+    ${sid && sessions.has(sid) ? `<button class="sv-go" data-svgo="${sid}" title="${go}">${ic("panelRight")}</button>` : `<span class="sv-go sv-none"></span>`}
     ${x}
     ${peek}
   </div>`;
@@ -383,7 +385,7 @@ function renderServersPop() {
         ? `<div class="sv-h sv-h2">Running in your panes<span class="sv-hn">${panes.length}</span></div>`
           + panes.map((r) => rowHtml(r, rowKey(r) === openRow)).join("") + quietBtn
         : "")
-      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ⏹ stops the containers. ▶ is a task Episko ran and can stop. ◎ is a port the kernel says a pane's process is listening on, and ✕ kills that process. The rest were backgrounded by an agent: ✕ asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout. ⊘ is left behind: still running after its pane closed or the process that started it died, as a watcher does on Windows; ✕ kills it and everything it started. ≡ is what a pane is running now; the MCP servers an agent starts with itself are folded.</div>`
+      + `<div class="sv-foot">A stack is a dev task's panes plus the Compose containers of its repo; ${ic("circleStop")} stops the containers. ${ic("playSolid")} is a task Episko ran and can stop. ${ic("plug")} is a port the kernel says a pane's process is listening on, and ${ic("x")} kills that process. The rest were backgrounded by an agent: ${ic("x")} asks that session to run <code>TaskStop</code>, or kills the process once the session can no longer be asked. A background job is one that has announced no address — a build, a test run, or anything Claude backgrounded itself after it ran past its own 120-second timeout. ${ic("ban")} is left behind: still running after its pane closed or the process that started it died, as a watcher does on Windows; ${ic("x")} kills it and everything it started. ${ic("list")} is what a pane is running now; the MCP servers an agent starts with itself are folded.</div>`
     : "");
   // innerHTML guard: an assignment between mousedown and mouseup drops the click (docs/architecture.md).
   if (html === lastPop) return;

@@ -29,6 +29,16 @@ A chain launches one pane per step (an exit code is a phase; one PTY cannot yiel
 - **`setActive` leaves the tiled view** (keeping it read as the click doing nothing), so `openRunGroup` passes `setActive(id, keepGroup = true)`; clicking a *tile* is `focusInGroup`, which moves `activeId` and keeps the layout.
 - **A finished run's duration freezes at `run.endedAt`, and `runElapsed` (types.ts, pure, `now`-injectable, tested) is the only place that computes one.** It was three places, which is how the bug survived being "fixed" once.
 
+## One row per task, not one per attempt
+
+A run is a pane, so whatever runs a task again and again grows the sidebar a row per try: an agent iterating on a red suite through `run_task` (docs/mcp.md), run-on-stop after every turn. A green run closes itself (`scheduleDismiss`); a red one stays until dismissed, which is right for the *last* failure and noise for the five before it. So **`launchTask` closes every finished pane of the same task as it opens the new one** (`replacedRuns` in `tasks.ts`, tested), on every path: ▶ Run, ⌘⇧B, run-on-stop, the agent.
+
+- **The task is `run.id` + `run.root`, never its name.** `e2e` and `e2e-rerun` are two tasks and keep two rows; the root keeps another checkout's result standing (an id is only unique inside one root, as `runnableIn` says).
+- **A live run is never replaced**: parallel runs are each their own (docs/mcp.md's fifty `npm:test`).
+- **The pane on stage is spared, judged *after* the new run's focus moves.** An unfocused run (the agent's, run-on-stop) leaves what you are reading alone; ▶ Run moves you to the new pane, and the old one goes, as the step ⟳ always did.
+- **A run group's member is left to the group's ⟳ and ✕**, which already replace and close whole chains. A repeated compound launch still adds a group per run.
+- **The agent loses nothing**: ./mcp keeps a run's output by handle for an hour, so `task_status` on a replaced handle still answers.
+
 ## Compound tasks, and ⌘⇧B
 
 A `tasks.json` entry with **no `command` but a `dependsOn` list** is VS Code's compound task, usually the `"group": {"kind":"build","isDefault":true}` one, so blocking it as "no command" withholds exactly the task whole stacks start from. `Runnable.compound` is explicit; `launchWithDeps` runs the dependencies and stops.

@@ -12,6 +12,47 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A shelved session's panel says what it left behind: Claude's own recap of where things stood,
+  when it started, what it cost, its model and how full its context was, the pull requests it
+  opened with whether they are open or merged, the files it wrote, and anything left uncommitted
+  in its folder.
++ A large pull request opens as a list of folded files, and each file's diff is drawn when you open
+  it and put away when you fold it, so a review of tens of thousands of lines stays quick. Smaller
+  pull requests open as before.
++ *Settings › Accounts* lists Claude subscriptions in order. A new session starts on the first one
+  that isn't full and keeps it, so a second subscription needs no `/login`. *Sign in* runs
+  `claude setup-token` and keeps the token in your keychain.
++ A session that hits its limit offers to resume on the next account.
+~ Every icon is now drawn from one set (Lucide) instead of Unicode symbols, which came from
+  whichever fallback font had them and so differed in size, weight and baseline. Icons are never
+  smaller than 13px, however small the text beside them.
+~ Keyboard shortcuts draw ⌘, ⌥, ⇧ and ⏎ as icons in their key caps; off macOS, Shift is
+  spelled out.
+~ Links that open the full view of a card (*History*, *Commit graph*, *Review*, …) are drawn as
+  small buttons with a ↗ after the label.
+~ ✕ on a session that has finished its turn can close without asking: the question has a
+  *Don't ask again* tick, and *Settings › Launching › Ask before closing a finished session*
+  brings it back. A session still working always asks. The question also stops calling a
+  finished session "still running".
+~ An account without a 5-hour limit (verified Ultra plans, since 2026-10-30) shows only its weekly
+  one: the status bar, the limits popover, *Usage & spend* and the all-projects dashboard drop the
+  5-hour meter instead of leaving it at –. It comes back if the account reports a 5-hour window again.
+~ Plans go by their new names: Max 5x shows as *Max*, Max 20x as *Ultra*.
+~ A shelved session now opens on its questions, each with the agent's answer under it, from the
+  whole conversation rather than its last stretch. *Transcript* in the bar shows the end of the
+  conversation as before.
+~ Running a task again replaces its last finished run instead of adding a row, so an agent
+  retrying a failing suite keeps one row per task rather than one per attempt. A run still going,
+  a run group's steps and the pane you are reading are left alone.
+! Icon buttons in the sidebar and the top bar sit centred, and a shelved session's branch chip
+  is a small square again instead of a wide box with its icon to the left.
+! **A review shows all of a big pull request, and says so at the top when it cannot.** It read
+  only the first 800 KB of the diff and the newest 100 commits, so a large pull request showed a
+  fraction of its files with short counts and the wrong commit total, and the only warning sat
+  below the last file. Every file is now listed with its counts, the ones too large to load at
+  once are marked, the bar says how many, and the header gives GitHub's commit count. *Since your
+  review* no longer calls the branch rewritten when your review is older than the newest 100.
+! Showing more lines around a change in a review no longer clears that file's *Viewed* tick.
 
 ## 0.38.0 — 2026-10-29
 The servers menu shows what each pane runs and what it left behind, an agent can be asked to tidy

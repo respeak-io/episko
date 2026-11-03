@@ -4,8 +4,8 @@ import {
   burnRate, forecast5h, forecast7d, mergeRl, pushRlSample, rl, rlPct, rlReset,
   rlSamples, forecastWin, fcLog, maybeMidSnap, midSnap, onRlUpdate, setRlLogger,
   lastClosed, H5_LEN, applyPlanLimits, rlScoped, scopedForecasts,
-  account, accountName, applyRlReadings, loadAccts, mergePeerRl, noteAccount, otherAccounts, planName,
-  resetAccount, rlAccts,
+  account, accountName, applyRlReadings, hasH5Window, loadAccts, mergePeerRl, noteAccount, otherAccounts, planName,
+  resetAccount, rlAccts, acctReading, applyAccountReadings, limitHits, loginAcct, showAccount, tokenAccount,
 } from "../src/rl";
 
 // A fixed epoch so "one hour before the reset" is a number. 2027-01-15T08:00:00Z.
@@ -584,11 +584,118 @@ describe("accounts — a /login swaps the meters, never reads as a reset", () =>
     applyRlReadings(reading(1, NOW_S + 5 * HOUR, 0, NOW_S + 2 * DAY));
     expect(fcLog.map((e) => [e.w, e.acct])).toEqual([["h5", "acct-b"]]);
   });
-  it("names the plan from the server's tier", () => {
-    expect(planName(B)).toBe("Max 5x");
+  it("names the plan from the server's tier, by the names it has had since 2026-10-30", () => {
+    expect(planName(B)).toBe("Max");
+    expect(planName(A)).toBe("Ultra");
+    expect(planName({ id: "p", tier: "default_claude_max_40x", kind: null, email: null })).toBe("Max 40x");
     expect(planName({ id: "p", tier: null, kind: "claude_pro", email: null })).toBe("Pro");
     expect(planName({ id: "p", tier: null, kind: null, email: null })).toBeNull();
-    expect(accountName(A)).toBe("Max 20x · old@x.io");
+    expect(accountName(A)).toBe("Ultra · old@x.io");
     expect(accountName({ id: "0123456789", tier: null, kind: null, email: null })).toBe("01234567");
+  });
+});
+
+describe("an account without a 5-hour window (verified Ultra plans)", () => {
+  const DAY = 86400;
+  const week = (d7: number) => ({ seven_day: { used_percentage: d7, resets_at: NOW_S + 3 * DAY } });
+  const both = (h5: number, d7: number) => ({ five_hour: { used_percentage: h5, resets_at: NOW_S + HOUR }, ...week(d7) });
+
+  it("drops the window when a pane that just reached the API reports a week and no 5 hours", () => {
+    applyRlReadings(both(6, 30), true);
+    expect(hasH5Window()).toBe(true);
+    applyRlReadings(week(31), true);
+    expect(rl).toMatchObject({ h5: null, h5Reset: null, d7: 31 });
+    expect(hasH5Window()).toBe(false);
+    expect(rlSamples.h5).toEqual([]);
+  });
+  // An idle pane's CLI drops an expired window from its payload too, and that one is still there.
+  it("keeps a window that only lapsed, so its rotation is still logged", () => {
+    applyRlReadings(both(6, 30), true);
+    tick(90);
+    applyRlReadings(week(30));
+    expect(hasH5Window()).toBe(true);
+    expect(forecast5h()).toMatchObject({ used: 0, resetTs: null });
+    applyRlReadings({ ...week(30), five_hour: { used_percentage: 1, resets_at: NOW_S + 6 * HOUR } }, true);
+    expect(fcLog.map((e) => [e.w, e.final])).toEqual([["h5", 6]]);
+  });
+  it("brings the window back with the next reading that has one", () => {
+    applyRlReadings(week(30), true);
+    expect(hasH5Window()).toBe(false);
+    applyRlReadings(both(2, 30), true);
+    expect(hasH5Window()).toBe(true);
+    expect(rl.h5).toBe(2);
+  });
+  it("keeps the meter, at no reading, before anything has been reported", () => {
+    expect(hasH5Window()).toBe(true);
+    expect(forecast5h().used).toBeNull();
+  });
+  it("is not brought back by a peer's older reading", () => {
+    applyRlReadings(week(30), true);
+    mergePeerRl({ h5: 6, h5Reset: NOW_S + HOUR, d7: 31, d7Reset: NOW_S + 3 * DAY });
+    expect(rl).toMatchObject({ h5: null, d7: 31 });
+  });
+  it("leaves the 5-hour row off another account that had none", () => {
+    noteAccount({ id: "acct-u", tier: "default_claude_max_20x", kind: "claude_max", email: null });
+    applyRlReadings(week(30), true);
+    noteAccount({ id: "acct-m", tier: "default_claude_max_5x", kind: "claude_max", email: null });
+    expect(otherAccounts().map((o) => [o.acct.id, o.h5, o.d7.used])).toEqual([["acct-u", null, 30]]);
+  });
+});
+
+describe("setup-token accounts — several at once, one on the meters", () => {
+  const DAY = 86400;
+  const LOGIN = { id: "acct-login", tier: "default_claude_max_5x", kind: "claude_max", email: "me@x.io" };
+  const max20 = tokenAccount("max20"), max5 = tokenAccount("max5");
+  const r = (h5: number, h5Reset: number, d7: number, d7Reset: number) => ({
+    five_hour: { used_percentage: h5, resets_at: h5Reset }, seven_day: { used_percentage: d7, resets_at: d7Reset },
+  });
+
+  it("files a reading under its own account and leaves the meters alone", () => {
+    showAccount(max20);
+    applyAccountReadings(max20, r(18, NOW_S + HOUR, 13, NOW_S + 5 * DAY));
+    applyAccountReadings(max5, r(0, NOW_S + 2 * HOUR, 65, NOW_S + DAY));
+    expect(rl).toMatchObject({ h5: 18, d7: 13 });
+    expect(acctReading(max5.id)).toMatchObject({ h5: 0, d7: 65 });
+    expect(acctReading(max20.id)).toMatchObject({ h5: 18, d7: 13 });
+    expect(fcLog).toEqual([]);
+  });
+  it("swaps the meters when the account on show changes, and back", () => {
+    showAccount(max20);
+    applyAccountReadings(max20, r(40, NOW_S + HOUR, 100, NOW_S + 5 * DAY));
+    applyAccountReadings(max5, r(2, NOW_S + 2 * HOUR, 10, NOW_S + DAY));
+    expect(showAccount(max5)).toBe(true);
+    expect(rl).toMatchObject({ h5: 2, d7: 10 });
+    expect(showAccount(max20)).toBe(true);
+    expect(rl).toMatchObject({ h5: 40, d7: 100 });
+    expect(fcLog).toEqual([]);
+  });
+  it("records a /login without taking the meters from a token account", () => {
+    showAccount(max20);
+    expect(noteAccount(LOGIN)).toBe(false);
+    expect(account?.id).toBe(max20.id);
+    expect(loginAcct?.id).toBe(LOGIN.id);
+  });
+  it("puts a slot's figures up when it is the first account shown", () => {
+    applyAccountReadings(max5, r(5, NOW_S + HOUR, 65, NOW_S + DAY));
+    expect(showAccount(max5)).toBe(false);
+    expect(rl).toMatchObject({ h5: 5, d7: 65 });
+  });
+  it("files the login's per-model answer under the login when a token account is on show", () => {
+    showAccount(max20);
+    applyPlanLimits({ available: true, scoped: [{ display_name: "Fable", utilization: 80, resets_at: null }], account: LOGIN });
+    expect(rlScoped.wins).toEqual([]);
+    expect(rlAccts[LOGIN.id].scoped.wins.map((w) => w.label)).toEqual(["Fable"]);
+  });
+  it("names a token account by its label and keeps it across a restart", () => {
+    applyAccountReadings(max5, r(5, NOW_S + HOUR, 65, NOW_S + DAY));
+    expect(accountName(max5)).toBe("max5");
+    for (const k of Object.keys(rlAccts)) delete rlAccts[k];
+    loadAccts();
+    expect(rlAccts[max5.id].acct.label).toBe("max5");
+  });
+  it("carries a refused turn in the reading the pick sees", () => {
+    limitHits[max5.id] = NOW_MS + 1000;
+    expect(acctReading(max5.id)).toMatchObject({ h5: null, hitUntil: NOW_MS + 1000 });
+    expect(acctReading("tok:never")).toBeNull();
   });
 });

@@ -6,11 +6,11 @@
 import { esc, escAttr } from "./format";
 import { ago, mdHtml } from "./issue";
 import {
-  checkTally, decisionWord, openThreads, sortChecks, timeline,
-  type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type Side,
+  checkTally, commitTotal, decisionWord, LARGE_ROWS, openThreads, sortChecks, timeline,
+  type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type SinceCount, type Side,
 } from "./review";
 import type { DiffMode } from "./diff";
-import { icon } from "./svgicons";
+import { glyphIcon, icon } from "./svgicons";
 
 export type RvTab = "files" | "conversation" | "checks";
 
@@ -26,7 +26,7 @@ export function checksChip(t: CheckTally): string {
   if (!t.total) return "";
   const tone = t.fail ? "bad" : t.pending ? "wait" : "ok";
   const word = t.fail ? `${t.fail} failing` : t.pending ? `${t.pending} running` : "checks pass";
-  return `<button class="rv-chip ${tone}" data-rvtab="checks" title="${t.pass} passed · ${t.fail} failed · ${t.pending} running · ${t.skip} skipped">${tone === "ok" ? "✓" : tone === "bad" ? "✕" : "◌"} ${word}</button>`;
+  return `<button class="rv-chip ${tone}" data-rvtab="checks" title="${t.pass} passed · ${t.fail} failed · ${t.pending} running · ${t.skip} skipped">${icon(tone === "ok" ? "check" : tone === "bad" ? "x" : "circleDashed")}${word}</button>`;
 }
 
 /** The title block and the verbs that act on the whole pull request. */
@@ -45,10 +45,10 @@ export function reviewHeadHtml(pr: PrReview, now: number, busy: string | null): 
         ${btn("session", `${icon("terminal")}Session`, `Start a session on ${pr.head_ref}, in its own worktree`)}
         ${live ? btn(pr.draft ? "ready" : "draft", pr.draft ? `${icon("ready")}Ready for review` : `${icon("draft")}To draft`,
           pr.draft ? "Mark it ready for review" : "Convert it back to a draft") : ""}
-        ${live ? btn("merge", `${icon("merge")}Merge ▾`, "Merge it on GitHub", "act primary") : ""}
+        ${live ? btn("merge", `${icon("merge")}Merge${icon("chevronDown", "solo rv-dd")}`, "Merge it on GitHub", "act primary") : ""}
       </div></div>
     <div class="rv-h2">
-      <span class="rv-who">${esc(pr.author || "someone")}</span> wants to merge ${plural(pr.commits.length, "commit")} into
+      <span class="rv-who">${esc(pr.author || "someone")}</span> wants to merge ${plural(commitTotal(pr), "commit")} into
       <span class="chip mono">${esc(pr.base_ref)}</span> from <span class="chip mono">${esc(pr.head_ref)}</span>
       ${pr.same_repo ? "" : `<span class="rv-chip" title="The branch lives in a fork">fork</span>`}
       <span class="dim">· opened ${esc(ago(pr.created_at, now))}</span>
@@ -61,29 +61,49 @@ export function reviewHeadHtml(pr: PrReview, now: number, busy: string | null): 
 
 export interface BarModel {
   tab: RvTab; pr: PrReview;
-  rangeLabel: string; since: { oid: string; n: number | null } | null; showingSince: boolean;
-  ws: boolean; mode: DiffMode; allOpen: boolean;
-  files: number; add: number; del: number; viewed: number; truncated: boolean;
+  rangeLabel: string; since: { oid: string; n: SinceCount } | null; showingSince: boolean;
+  ws: boolean; mode: DiffMode; allOpen: boolean; anyOpen: boolean; large: boolean;
+  files: number; filesOf: number | null; add: number; del: number; viewed: number; truncated: boolean; notLoaded: number;
+}
+
+function sinceWord(n: SinceCount): string {
+  if (n === null) return "The branch was rewritten since your review";
+  return typeof n === "number" ? `${plural(n, "new commit")} since your review` : `${n.atLeast}+ new commits since your review`;
 }
 
 /** The tabs, and on Files the controls over which diff and how it is drawn. */
 export function reviewBarHtml(m: BarModel): string {
   const tab = (t: RvTab, label: string, n: number | string) =>
     `<button class="gseg-b${m.tab === t ? " on" : ""}" data-rvtab="${t}">${icon(t === "files" ? "files" : t === "conversation" ? "comment" : "checks")}${label}${n !== "" ? ` <span class="n">${n}</span>` : ""}</button>`;
-  const tabs = `<div class="gseg rv-tabs">${tab("files", "Files", m.files)}${tab("conversation", "Conversation", m.pr.comments.length + m.pr.reviews.filter((r) => r.body.trim()).length)}${tab("checks", "Checks", m.pr.checks.length || "")}</div>`;
+  const files = m.filesOf !== null ? `${m.files} of ${m.filesOf}` : m.files;
+  const tabs = `<div class="gseg rv-tabs">${tab("files", "Files", files)}${tab("conversation", "Conversation", m.pr.comments.length + m.pr.reviews.filter((r) => r.body.trim()).length)}${tab("checks", "Checks", m.pr.checks.length || "")}</div>`;
   if (m.tab !== "files") return tabs;
   const since = m.since && !m.showingSince
-    ? `<button class="rv-since" data-rvsince title="Only what changed after the head your last review saw (${short(m.since.oid)})">${icon("since")}${m.since.n === null
-      ? "The branch was rewritten since your review" : `${plural(m.since.n, "new commit")} since your review`} · show</button>`
+    ? `<button class="rv-since" data-rvsince title="Only what changed after the head your last review saw (${short(m.since.oid)})">${icon("since")}${sinceWord(m.since.n)} · show</button>`
     : "";
+  const large = m.large
+    ? `<span class="rv-chip" title="Over ${LARGE_ROWS.toLocaleString("en-US")} lines of diff, so each file is drawn when you open it and put away when you fold it">large</span>`
+    : "";
+  const cut = m.truncated
+    ? `<span class="rv-chip wait" title="This pull request's diff is too large to read at once, so some files show their counts but not their lines. GitHub has every file in full.">${m.notLoaded ? `${m.notLoaded} not loaded` : "not all loaded"}</span>`
+    : "";
+  // A large view only ever folds: expanding all would draw every file it holds back.
+  const fold = !m.large ? `<button class="diff-fold" data-rvfold>${m.allOpen ? `${icon("fold")}collapse all` : `${icon("unfold")}expand all`}</button>`
+    : m.anyOpen ? `<button class="diff-fold" data-rvfold>${icon("fold")}collapse all</button>` : "";
   return `${tabs}
-    <button class="diff-fold rv-range" data-rvrange title="Which changes to show: the whole pull request, one commit, or what is new since your review">${icon(m.showingSince ? "since" : m.rangeLabel.startsWith("Commit") ? "commit" : "files")}${esc(m.rangeLabel)} ▾</button>
+    <button class="diff-fold rv-range" data-rvrange title="Which changes to show: the whole pull request, one commit, or what is new since your review">${icon(m.showingSince ? "since" : m.rangeLabel.startsWith("Commit") ? "commit" : "files")}${esc(m.rangeLabel)}${icon("chevronDown", "solo rv-dd")}</button>
     ${since}
-    <span class="rv-sum"><span class="add">+${m.add}</span> <span class="del">−${m.del}</span> · ${m.viewed}/${m.files} viewed</span>
+    <span class="rv-sum"><span class="add">+${m.add}</span> <span class="del">−${m.del}</span> · ${m.viewed}/${m.files} viewed</span>${large}${cut}
     <span class="rv-sp"></span>
     <button class="diff-fold${m.ws ? " on" : ""}" data-rvws title="Hide changes that only move whitespace">${icon("pilcrow")}${m.ws ? "whitespace hidden" : "hide whitespace"}</button>
     <button class="diff-fold" data-rvmode>${m.mode === "split" ? `${icon("unified")}unified` : `${icon("split")}side by side`}</button>
-    <button class="diff-fold" data-rvfold>${m.allOpen ? `${icon("fold")}collapse all` : `${icon("unfold")}expand all`}</button>`;
+    ${fold}`;
+}
+
+/** Above the first file, so a cut is known before the list is read rather than at its end. */
+export function truncNoteHtml(notLoaded: number): string {
+  const what = notLoaded ? `${plural(notLoaded, "file")} ${notLoaded === 1 ? "is" : "are"} not loaded here` : "some files are not loaded here";
+  return `<div class="diff-trunc">This pull request's diff is too large to read at once: ${what}. GitHub has every file in full.</div>`;
 }
 
 // ---------- the line-level pieces ----------
@@ -101,7 +121,7 @@ export const addBtn = (fi: number, side: Side, line: number, pos: RangePos) =>
 function commentHtml(who: string, at: string, body: string, now: number, url = ""): string {
   const md = body.trim() ? mdHtml(body) : `<p class="iss-none">No text.</p>`;
   return `<div class="rv-c"><div class="rv-ch"><span class="who">${esc(who || "someone")}</span>
-    <span class="when">${esc(ago(at, now))}</span>${url ? `<button class="aslink" data-rvurl="${escAttr(url)}" title="Open this comment on github.com">↗</button>` : ""}</div>
+    <span class="when">${esc(ago(at, now))}</span>${url ? `<button class="aslink sq" data-rvurl="${escAttr(url)}" title="Open this comment on github.com">${icon("externalLink", "solo")}</button>` : ""}</div>
     <div class="md">${md}</div></div>`;
 }
 
@@ -122,7 +142,7 @@ export function threadHtml(t: PrThread, o: ThreadOpts): string {
   const tags = (t.resolved ? `<span class="rv-tag ok">resolved</span>` : "")
     + (t.outdated ? `<span class="rv-tag">outdated</span>` : "");
   const loc = `<span class="rv-loc">${o.showPath ? `${esc(t.path)} · ` : ""}${esc(where(t))}</span>`;
-  const head = `<div class="rv-th-h" data-rvthfold="${id}"><span class="dchev">▾</span>${tags}${loc}
+  const head = `<div class="rv-th-h" data-rvthfold="${id}"><span class="dchev">${icon("chevronDown", "solo")}</span>${tags}${loc}
       ${o.open ? "" : `<span class="rv-gist">${esc(first?.author ?? "")}: ${esc((first?.body ?? "").split("\n")[0].slice(0, 120))}</span>`}
       <span class="rv-sp"></span>
       <button class="rv-mini" data-rvthagent="${id}" title="Hand this thread to an agent on the PR's branch">${icon("agent")}agent</button>
@@ -178,7 +198,7 @@ export function fileBtnsHtml(fi: number, viewed: boolean, threads: number, canFi
 }
 
 export const railMark = (viewed: boolean, threads: number) =>
-  (threads ? `<span class="rv-tc">${threads}</span>` : "") + (viewed ? `<span class="rv-vw" title="Viewed">✓</span>` : "");
+  (threads ? `<span class="rv-tc">${threads}</span>` : "") + (viewed ? `<span class="rv-vw" title="Viewed">${icon("check", "solo")}</span>` : "");
 
 export const expandBtn = (fi: number, hi: number, gap: number) =>
   `<button class="dhx rv-exp" data-rvexp="${fi}:${hi}" title="Show ${Math.min(gap, 20)} more unchanged lines">${icon("unfold")}${Math.min(gap, 20)} more</button>`;
@@ -219,11 +239,11 @@ const CHECK_GLYPH: Record<string, string> = { pass: "✓", fail: "✕", pending:
 export function checksHtml(checks: PrCheck[]): string {
   if (!checks.length) return `<div class="diff-empty">No checks ran on the head commit.</div>`;
   return `<div class="rv-checks">${sortChecks(checks).map((c) => `<div class="rv-ck ${esc(c.state)}">
-      <span class="g">${CHECK_GLYPH[c.state] ?? "–"}</span><span class="nm">${esc(c.name)}</span>
+      <span class="g">${glyphIcon(CHECK_GLYPH[c.state] ?? "–")}</span><span class="nm">${esc(c.name)}</span>
       ${c.workflow ? `<span class="dim">${esc(c.workflow)}</span>` : ""}<span class="rv-sp"></span>
-      ${c.url ? `<button class="aslink" data-rvurl="${escAttr(c.url)}" title="Open the run's log">details ↗</button>` : ""}</div>`).join("")}</div>`;
+      ${c.url ? `<button class="aslink" data-rvurl="${escAttr(c.url)}" title="Open the run's log">details ${icon("externalLink", "solo")}</button>` : ""}</div>`).join("")}</div>`;
 }
 
 export function failHtml(reason: string, url: string): string {
-  return `<div class="diff-empty">${esc(reason)}${url ? `<br><button class="aslink" data-rvurl="${escAttr(url)}">Open it on GitHub ↗</button>` : ""}</div>`;
+  return `<div class="diff-empty">${esc(reason)}${url ? `<br><button class="aslink" data-rvurl="${escAttr(url)}">Open it on GitHub ${icon("externalLink", "solo")}</button>` : ""}</div>`;
 }

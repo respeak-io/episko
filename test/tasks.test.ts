@@ -4,7 +4,7 @@ import { store } from "./localstorage"; // must precede the subject import
 import {
   applyInputs, applyRunner, defSpan, execCmd, exitWaiters, findDepCycle, runnableIn,
   runnablesByRoot,
-  launchWithDeps, prefillInputs, rememberedInput, rememberInput, resolveDeps, resolveRunInputs,
+  launchWithDeps, prefillInputs, rememberedInput, rememberInput, replacedRuns, resolveDeps, resolveRunInputs,
   setTaskLauncher, setTaskLogger, setTaskToast, stopRuleBlocked, taskInputs, taskRunner,
   type TaskLaunchOpts,
 } from "../src/tasks";
@@ -627,6 +627,40 @@ describe("taskStateText — a finished run's duration must stop moving", () => {
     it("keeps counting while the run is still going", () => {
       expect(runElapsed(r({}), NOW)).toBe("1m 23s");
     });
+  });
+});
+
+describe("replacedRuns — one row per task, not one per attempt", () => {
+  // An agent iterating on a red suite called run_task for every try, and each one kept its row.
+  const pane = (id: string, run: Partial<NonNullable<Sess["run"]>> = {}): Sess =>
+    ({ id, kind: "task", run: {
+      id: "just:e2e", label: "e2e", source: "just", sourceFile: "justfile", cmd: "just e2e",
+      background: false, startedAt: 0, exitCode: 1, tail: [], root: "/w/app", ...run,
+    } } as Sess);
+  const at = (panes: Sess[], onStage: string | null = null) => replacedRuns(panes, "just:e2e", "/w/app", onStage);
+
+  it("replaces every finished run of the same task, failed or green", () => {
+    expect(at([pane("a"), pane("b", { exitCode: 0 }), pane("c", { exitCode: -1 })])).toEqual(["a", "b", "c"]);
+  });
+  it("leaves a run that is still going: parallel runs are each their own", () => {
+    expect(at([pane("live", { exitCode: null }), pane("old")])).toEqual(["old"]);
+  });
+  it("leaves the pane on stage, since someone is reading it", () => {
+    expect(at([pane("read"), pane("old")], "read")).toEqual(["old"]);
+  });
+  it("leaves a run group's member to that group's ⟳ and ✕", () => {
+    expect(at([pane("tile", { groupId: "g1" }), pane("old")])).toEqual(["old"]);
+  });
+  it("is the same task only from the same root: another checkout's result still stands", () => {
+    expect(at([pane("wt", { root: "/w/app-feat" }), pane("old")])).toEqual(["old"]);
+  });
+  it("never touches another task, however alike the name", () => {
+    expect(at([pane("rerun", { id: "just:e2e-rerun", label: "e2e-rerun" }), pane("old")])).toEqual(["old"]);
+  });
+  it("ignores panes that are not runs", () => {
+    const agent = { id: "s", kind: "agent" } as Sess;
+    const shell = { id: "sh", kind: "shell", run: pane("x").run } as Sess;
+    expect(at([agent, shell])).toEqual([]);
   });
 });
 

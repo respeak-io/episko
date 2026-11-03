@@ -115,7 +115,7 @@ fn run_claude(model: &str, prompt: &str) -> Result<String, String> {
 
 /// Run `claude` with `args` in `cwd`, bounded; returns the trimmed stdout of a clean exit.
 fn run_headless(cwd: &Path, args: &[String], timeout: Duration) -> Result<String, String> {
-    match run_bounded(cwd, args, timeout)? {
+    match run_bounded(cwd, args, timeout, None)? {
         (status, _) if !status.success() => Err(format!("claude exited {status}")),
         (_, text) => Ok(text.trim().to_string()),
     }
@@ -123,8 +123,13 @@ fn run_headless(cwd: &Path, args: &[String], timeout: Duration) -> Result<String
 
 /// The exit status with whatever stdout said, on any exit: print mode reports a failed turn on
 /// stdout. A reader thread drains it, since a `wait()` that only reads afterwards deadlocks.
-fn run_bounded(cwd: &Path, args: &[String], timeout: Duration) -> Result<(ExitStatus, String), String> {
-    let mut child = sys_command(resolve_claude())
+/// `token` runs it on a setup-token account (docs/accounts.md) rather than the login.
+pub(crate) fn run_bounded(cwd: &Path, args: &[String], timeout: Duration, token: Option<&str>) -> Result<(ExitStatus, String), String> {
+    let mut cmd = sys_command(resolve_claude());
+    if let Some(t) = token {
+        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", t).env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN");
+    }
+    let mut child = cmd
         .env("PATH", augmented_path())
         .current_dir(cwd)
         .args(args)
@@ -260,7 +265,7 @@ enum BriefErr {
 }
 
 fn brief_once(cwd: &Path, resume_id: &str, model: &str) -> Result<Brief, BriefErr> {
-    let (status, out) = run_bounded(cwd, &brief_args(resume_id, model, BRIEF_PROMPT), BRIEF_TIMEOUT).map_err(BriefErr::Stop)?;
+    let (status, out) = run_bounded(cwd, &brief_args(resume_id, model, BRIEF_PROMPT), BRIEF_TIMEOUT, None).map_err(BriefErr::Stop)?;
     if let Some(fork) = fork_id(&out) {
         if let Err(e) = crate::usage::discard_fork(&cwd.to_string_lossy(), resume_id, &fork) {
             log::warn!("handoff brief: {e}");

@@ -10,6 +10,7 @@ import { esc, tilde } from "./format";
 import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
+import { icon } from "./svgicons";
 import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
@@ -94,16 +95,16 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const on = dash.has(p.path) ? " active" : ""; // a dashboard owns the stage the way a session does
   let head: string;
   if (p.sessions.length) {
-    head = `<div class="phead${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}<span class="pcount">${total}</span><span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}">${icon("plus", "solo")}</span><span class="parm"></span></div>`;
   } else if (isFav) {
     const tail = p.externals.length ? `<span class="pcount ext">${p.externals.length} ext</span>` : `<span class="plaunch">open →</span>`;
-    head = `<div class="phead empty-p${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">✕</span><span class="parm"></span></div>`;
+    head = `<div class="phead empty-p${on}" ${opens} data-key="${esc(p.path)}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}</span>${dot}${tail}<span class="premove" data-remove="${esc(p.path)}" title="Remove project">${icon("x", "solo")}</span><span class="parm"></span></div>`;
   } else {
     // discovered via an external session or a shelved one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
       : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming` : "handed"}</span>`;
-    head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">＋</span><span class="parm"></span></div>`;
+    head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">${icon("plus", "solo")}</span><span class="parm"></span></div>`;
   }
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
 }
@@ -372,7 +373,7 @@ export function renderMini() {
   // The collapsed rail is the only project surface on screen, so a dashboard marks its button here too.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const html =
-    `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">»</button>` +
+    `<button class="rm-btn" data-rail="1" title="Expand sidebar${hint("sidebar")}">${icon("panelLeft", "solo")}</button>` +
     list.map((p) => {
       const first = p.sessions[0];
       const firstExt = p.externals[0];
@@ -387,7 +388,7 @@ export function renderMini() {
       const extOnly = !first && firstExt ? "ext" : "";
       return `<button class="rm-proj ${onCls} ${extOnly}" style="--rc:${p.accent}" title="${esc(p.name)}${extOnly ? " (external)" : ""}" data-key="${esc(p.path)}" ${sel}>${glyph}${attn ? '<span class="rm-badge"></span>' : ""}</button>`;
     }).join("") +
-    `<button class="rm-btn rm-add" data-pal="1" title="New session${hint("palette")}">＋</button>`;
+    `<button class="rm-btn rm-add" data-pal="1" title="New session${hint("palette")}">${icon("plus", "solo")}</button>`;
   if (html === lastMiniHtml) return;
   lastMiniHtml = html;
   $("railmini").innerHTML = html;

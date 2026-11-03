@@ -65,9 +65,9 @@ export async function maybeRunOnStop(s: Sess) {
   }
 }
 
-// A fresh pane replaces the old one, so the sidebar doesn't grow a row per attempt. It keeps
-// the group and `root` (a pane that forgot where it was discovered answers ▶ Run with an empty
-// picker). Only this step runs — its dependencies are not repeated.
+// A fresh pane replaces this one even when it is running, on stage or grouped (launchTask's own
+// `replacedRuns` spares all three). It keeps the group and `root` (a pane that forgot where it was
+// discovered answers ▶ Run with an empty picker). Only this step runs — its dependencies are not repeated.
 export async function rerunTask(s: Sess, withParams = false) {
   const r = s.run; if (!r) return;
   const spec = runnableIn(r.root, r.id);

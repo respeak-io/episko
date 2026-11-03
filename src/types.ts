@@ -405,6 +405,7 @@ export interface Sess {
   // another checkout of this repo (Drift.via, ./gitwatch); display-only, workdir is unchanged until followed
   drift: Drift | null;
   home?: Home | null;
+  account?: string; // the setup-token account it launched on (./accounts); absent follows the login
   model: string; effort: string | null; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
   apiMs: number | null; apiMsSince: number; // the API's own clock and when it last moved (./phase)
   tokenUsage: AgentTokenUsage | null;

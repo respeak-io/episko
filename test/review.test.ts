@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parsePatch } from "../src/diff";
+import { parsePatch, type DiffFile, type DiffHunk } from "../src/diff";
 import {
-  agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampViewed, commentableIn, commitsSince, draftBrief,
-  expandGap, fileSig, gapAt, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, place, prFromUrl, rangeArgs,
-  reviewComments, setViewed, sortChecks, submitBlock, threadBrief, threadPin, timeline, treeOrder, treeRows,
-  withDraft, type PrReview, type PrThread, type ReviewDraft,
+  agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince,
+  commitTotal, draftBrief, expandGap, fileSig, gapAt, isLargeDiff, isViewed, LARGE_ROWS, lastReviewed, liveSides,
+  mergeBlock, mergeWarn, place, prFromUrl, rangeArgs, rangeLabel, reviewComments, setViewed, sortChecks, submitBlock,
+  threadBrief, threadPin, timeline, treeOrder, treeRows, withDraft, type PrReview, type PrThread, type ReviewDraft,
 } from "../src/review";
 
 const patch = (...lines: string[]) => lines.join("\n");
@@ -38,11 +38,11 @@ const pr = (o: Partial<PrReview> = {}): PrReview => ({
   state: "OPEN", draft: false, author: "ana", body: "", created_at: "2026-10-01T10:00:00Z", updated_at: "",
   base_ref: "main", head_ref: "feat/x", base_oid: "b".repeat(40), head_oid: "c3".padEnd(40, "0"), same_repo: true,
   mergeable: "MERGEABLE", merge_state: "CLEAN", review_decision: null, merge_methods: ["squash", "merge"],
-  viewer: "me", checks: [], threads: [], reviews: [], comments: [],
+  viewer: "me", checks: [], threads: [], reviews: [], comments: [], commit_count: 3, forced_at: null,
   commits: [
-    { oid: "c1".padEnd(40, "0"), headline: "first", author: "ana", at: "2026-10-01T10:00:00Z" },
-    { oid: "c2".padEnd(40, "0"), headline: "second", author: "ana", at: "2026-10-02T10:00:00Z" },
-    { oid: "c3".padEnd(40, "0"), headline: "third", author: "ana", at: "2026-10-03T10:00:00Z" },
+    { oid: "c1".padEnd(40, "0"), headline: "first", author: "ana", at: "2026-10-01T10:00:00Z", parent: null },
+    { oid: "c2".padEnd(40, "0"), headline: "second", author: "ana", at: "2026-10-02T10:00:00Z", parent: null },
+    { oid: "c3".padEnd(40, "0"), headline: "third", author: "ana", at: "2026-10-03T10:00:00Z", parent: null },
   ],
   ...o,
 });
@@ -81,6 +81,59 @@ describe("which diff a view asks for", () => {
     expect(lastReviewed(pr({ reviews: [rev("me", p2.head_oid, "2026-10-03T12:00:00Z")] }))).toBeNull();
     // A pending review of your own has not been seen by anybody, you included.
     expect(lastReviewed(pr({ reviews: [rev("me", "c1".padEnd(40, "0"), "", "PENDING")] }))).toBeNull();
+  });
+
+  it("diffs a commit against its own parent, and the commit before it when GitHub sent none", () => {
+    const withParents = pr({ commits: p.commits.map((c, i) => ({ ...c, parent: `p${i}`.padEnd(40, "0") })) });
+    expect(rangeArgs(withParents, { kind: "commit", oid: p.commits[0].oid }).fromOid).toBe("p0".padEnd(40, "0"));
+    expect(rangeArgs(withParents, { kind: "commit", oid: p.commits[2].oid }).fromOid).toBe("p2".padEnd(40, "0"));
+    expect(rangeArgs(p, { kind: "commit", oid: p.commits[2].oid }).fromOid).toBe(p.commits[1].oid);
+  });
+
+  it("counts past a partial commit list rather than calling the branch rewritten", () => {
+    const windowed = pr({ commit_count: 162 });
+    expect(commitsSince(windowed, "c2".padEnd(40, "0"))).toBe(1);
+    expect(commitsSince(windowed, "old".padEnd(40, "0"))).toEqual({ atLeast: 3 });
+    expect(commitsSince(pr(), "old".padEnd(40, "0"))).toBeNull();
+  });
+
+  it("calls a reviewed head missing from a partial list rewritten when a force-push followed the review", () => {
+    const old = "old".padEnd(40, "0");
+    const reviewed = (forced_at: string | null) => pr({ commit_count: 162, forced_at,
+      reviews: [{ author: "me", commit: old, at: "2026-10-05T12:00:00Z", state: "COMMENTED", body: "" }] });
+    expect(commitsSince(reviewed("2026-10-06T09:00:00Z"), old)).toBeNull();
+    expect(commitsSince(reviewed("2026-10-04T09:00:00Z"), old)).toEqual({ atLeast: 3 });
+    expect(commitsSince(reviewed(null), old)).toEqual({ atLeast: 3 });
+    // A head no review of yours saw cannot be dated against the push, so the push wins.
+    expect(commitsSince(reviewed("2026-10-04T09:00:00Z"), "other".padEnd(40, "0"))).toBeNull();
+  });
+
+  it("numbers a commit in the whole pull request, and says when the list is only the latest", () => {
+    const windowed = pr({ commit_count: 162 });
+    expect(rangeLabel(windowed, { kind: "commit", oid: p.commits[0].oid })).toBe("Commit 160 of 162");
+    expect(rangeLabel(windowed, { kind: "commit", oid: p.commits[2].oid })).toBe("Commit 162 of 162");
+    expect(rangeLabel(p, { kind: "commit", oid: p.commits[1].oid })).toBe("Commit 2 of 3");
+    expect(rangeLabel(p, { kind: "commit", oid: "gone" })).toBe("One commit");
+    expect(rangeLabel(p, { kind: "all" })).toBe("All changes");
+    expect(rangeLabel(p, { kind: "since", from: p.commits[0].oid })).toBe("Since your review");
+    expect(commitsHeading(windowed)).toBe("One commit · latest 3 of 162");
+    expect(commitsHeading(p)).toBe("One commit");
+    // A count GitHub did not send never claims fewer commits than the list holds.
+    expect(commitTotal(pr({ commit_count: 0 }))).toBe(3);
+  });
+});
+
+describe("how much a view draws at once", () => {
+  const file = (rows: number): DiffFile => ({
+    path: `f${rows}.ts`, oldPath: null, status: "modified", binary: false, large: null, added: rows, removed: 0,
+    hunks: [{ at: "@@ -1 +1 @@", header: "", lines: Array.from({ length: rows }, (_, i) => ({ kind: "add" as const, text: "x", oldNo: null, newNo: i + 1 })) }],
+  });
+  it("is large only past LARGE_ROWS rows, counted across every file", () => {
+    expect(isLargeDiff(FULL)).toBe(false);
+    expect(isLargeDiff([file(LARGE_ROWS)])).toBe(false);
+    expect(isLargeDiff([file(LARGE_ROWS + 1)])).toBe(true);
+    expect(isLargeDiff([file(LARGE_ROWS / 2), file(LARGE_ROWS / 2 + 1)])).toBe(true);
+    expect(isLargeDiff([])).toBe(false);
   });
 });
 
@@ -125,6 +178,19 @@ describe("placing threads and drafts", () => {
     const p = place([threadPin(thread({ side: "LEFT", line: 2 }))], FULL, new Set(["RIGHT"] as const));
     expect(p.at.size).toBe(0);
     expect(p.loose.get("src/a.ts")).toHaveLength(1);
+  });
+
+  it("places alike on a second pass, and on a file with context revealed", () => {
+    const pins = [threadPin(thread()), threadPin(thread({ id: "R", path: "README.md", line: 1 }))];
+    const once = place(pins, FULL, all);
+    expect(place(pins, FULL, all)).toEqual(once);
+    expect([...once.at.keys()]).toEqual(["src/a.ts\u0000RIGHT\u00002", "README.md\u0000RIGHT\u00001"]);
+    // Line 16 is only drawn once the gap above the second hunk is opened.
+    const at16 = [threadPin(thread({ line: 16 }))];
+    expect(place(at16, FULL, all).loose.get("src/a.ts")).toHaveLength(1);
+    const head = Array.from({ length: 30 }, (_, i) => `L${i + 1}`).join("\n");
+    const opened = [expandGap(FULL[0], 1, head, 3), FULL[1]];
+    expect([...place(at16, opened, all).at.keys()]).toEqual(["src/a.ts\u0000RIGHT\u000016"]);
   });
 });
 
@@ -184,6 +250,27 @@ describe("viewed", () => {
     s = setViewed(s, "o/r#7", a, false, 2);
     expect(s).toEqual({});
     expect(clampViewed({ k: { at: 1, files: { p: "ab", q: 3 } }, j: { files: [] } })).toEqual({ k: { at: 1, files: { p: "ab" } } });
+  });
+
+  it("never hashes a file nobody ticked, and hashes each file once", () => {
+    const trap = { ...FULL[1], get hunks(): DiffHunk[] { throw new Error("hashed"); } } as DiffFile;
+    expect(isViewed({}, "o/r#7", trap)).toBe(false);
+    expect(isViewed({ "o/r#7": { at: 1, files: { "src/a.ts": "x" } } }, "o/r#7", trap)).toBe(false);
+    expect(() => isViewed({ "o/r#7": { at: 1, files: { "README.md": "x" } } }, "o/r#7", trap)).toThrow("hashed");
+    const [a] = FULL;
+    expect(fileSig(a)).toBe(fileSig(a));
+    expect(fileSig(expandGap(a, 1, Array.from({ length: 30 }, (_, i) => `L${i + 1}`).join("\n"), 3))).not.toBe(fileSig(a));
+  });
+
+  it("signs a file the review's cap left out by its blob ids, and afresh once it loads whole", () => {
+    const stub = (index: string, counts: string) => parsePatch(patch(
+      "diff --git a/b.py b/b.py", index, "--- a/b.py", "+++ b/b.py", `Diff not loaded: ${counts}`))[0];
+    const cut = stub("index 3333333..4444444 100644", "+120 -7");
+    expect(fileSig(stub("index 3333333..4444444 100644", "+120 -7"))).toBe(fileSig(cut));
+    expect(fileSig(stub("index 3333333..5555555 100644", "+121 -7"))).not.toBe(fileSig(cut));
+    const whole = parsePatch(patch(
+      "diff --git a/b.py b/b.py", "index 3333333..4444444 100644", "--- a/b.py", "+++ b/b.py", "@@ -1 +1 @@", "-x", "+y"))[0];
+    expect(fileSig(whole)).not.toBe(fileSig(cut));
   });
 });
 

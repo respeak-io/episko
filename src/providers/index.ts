@@ -9,7 +9,7 @@ import {
   agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
 import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
-import { account, accountName, forecast5h, forecast7d, otherAccounts, scopedForecasts, type Forecast } from "../rl";
+import { account, accountName, forecast5h, forecast7d, hasH5Window, otherAccounts, scopedForecasts, type Forecast } from "../rl";
 
 const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
   { id: "default",           label: "Manual",       sub: "Asks before anything risky · Episko's permission cards", glyph: "◇", asks: true },
@@ -24,12 +24,21 @@ const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
 // wants a clock parses it and shows nothing when it is absent.
 export interface ProviderMessage { role: string; text: string; at?: string | null }
 
+/** What a finished conversation left behind (usage.rs `TranscriptFacts`); absent, never zero. */
+export interface ConversationFacts {
+  recap: string; started: number; cost_usd: number | null; api_ms: number | null;
+  lines_added: number; lines_removed: number; model: string; context_tokens: number; compactions: number;
+  prs: { number: number; url: string; repo: string }[];
+  files: { path: string; created: boolean; n: number }[];
+}
+
 export interface ProviderHistory {
   list(limit: number): Promise<HistEntry[]>;
   read(sessionId: string, cwd: string, limit: number): Promise<ProviderMessage[]>;
   // The questions alone, and from the whole conversation rather than the tail `read` answers
   // with: a day of tool traffic buries them, and an outline seeded from a tail lists none.
   asked?(sessionId: string, cwd: string, limit: number): Promise<ProviderMessage[]>;
+  facts?(sessionId: string, cwd: string): Promise<ConversationFacts>;
   reconcile(entries: Restorable[]): Promise<Restorable[]>;
 }
 
@@ -56,6 +65,9 @@ const claudeHistory: ProviderHistory = {
   },
   asked(sessionId, cwd, limit) {
     return invoke<ProviderMessage[]>("read_transcript_asked", { cwd, sessionId, limit });
+  },
+  facts(sessionId, cwd) {
+    return invoke<ConversationFacts>("transcript_facts", { cwd, sessionId });
   },
   async reconcile(entries) {
     const byDir = new Map<string, Restorable[]>();
@@ -115,7 +127,7 @@ const codexHistory: ProviderHistory = {
 
 export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
   { id: "claude", label: "Claude", history: claudeHistory, permissionModes: CLAUDE_PERMISSION_MODES, rateLimitForecasts: () => [
-    { windowMins: 300, forecast: forecast5h() },
+    ...(hasH5Window() ? [{ windowMins: 300, forecast: forecast5h() }] : []),
     { windowMins: 10080, forecast: forecast7d() },
     // Per-model weekly windows last: they are the same 7 days, named by the model they cover,
     // and they arrive from ./rlprobe rather than from the statusLine.
@@ -127,7 +139,7 @@ export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
     name: accountName(account),
     others: otherAccounts().map((o) => ({
       name: accountName(o.acct),
-      windows: [{ windowMins: 300, forecast: o.h5 }, { windowMins: 10080, forecast: o.d7 }],
+      windows: [...(o.h5 ? [{ windowMins: 300, forecast: o.h5 }] : []), { windowMins: 10080, forecast: o.d7 }],
     })),
   } },
   { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
@@ -168,6 +180,12 @@ export async function readProviderAsked(
   const history = providerAdapter(provider)?.history;
   if (!history) throw new Error(`history is not integrated for ${provider}`);
   return history.asked ? history.asked(sessionId, cwd, limit) : history.read(sessionId, cwd, limit);
+}
+
+/** A provider that records none of this answers null, which is not a conversation with none of it. */
+export async function readProviderFacts(provider: string, sessionId: string, cwd: string): Promise<ConversationFacts | null> {
+  const history = providerAdapter(provider)?.history;
+  return history?.facts ? history.facts(sessionId, cwd) : null;
 }
 
 // A provider whose history call fails keeps its rows (a transient PATH/auth failure must not erase

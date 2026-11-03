@@ -11,6 +11,7 @@ export interface PalItem {
   label: string; labelHtml: string; sub?: string;
   sw?: string; icon?: string; glyph?: string;
   shortcut?: string[];         // right-aligned kbd hint, e.g. ["⌘","1"]
+  on?: boolean;                // the current choice: a check where the hint would go
   session?: Sess;              // present on session rows → enables the ⌘K action panel
   score?: number;
   run: () => void;

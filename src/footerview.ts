@@ -4,6 +4,7 @@
 
 import { esc, escAttr } from "./format";
 import { engineDef } from "./state";
+import { icon, keyCap } from "./svgicons";
 import type { Engine } from "./types";
 
 // A popover's quick open: the panel that answers the question the popover only summarises.
@@ -17,7 +18,7 @@ export interface PopGo { go: string; label: string; sub: string }
 // previews too, which are inert (`.fpv-pop` kills pointer events).
 export function popGoHtml(l: PopGo): string {
   return `<button class="pgo" data-fgo="${esc(l.go)}" title="${escAttr(`${l.label} · ${l.sub}`)}"`
-    + ` aria-label="${escAttr(l.label)}">↗</button>`;
+    + ` aria-label="${escAttr(l.label)}">${icon("externalLink", "solo")}</button>`;
 }
 
 // `available` is what this OS has (the footer's `availEngines`, probed at startup).
@@ -25,9 +26,9 @@ export function enginePopHtml(available: readonly Engine[], current: Engine): st
   const items = available.map((id) => {
     const d = engineDef(id);
     return `<button class="mp-item ${id === current ? "on" : ""}" data-engine="${id}">`
-      + `<span class="mp-ic">${id === "embedded" ? "▤" : "⧉"}</span>`
+      + `<span class="mp-ic">${icon(id === "embedded" ? "squareTerminal" : "appWindow", "solo")}</span>`
       + `<span class="mp-main"><span class="mp-l">${esc(d.label)}</span><span class="mp-s">${esc(d.sub)}</span></span>`
-      + `<span class="mp-check">✓</span></button>`;
+      + `<span class="mp-check">${icon("check", "solo")}</span></button>`;
   }).join("");
   // The one popover in the family that named nothing, which left its quick open no corner
   // to sit in. Where the terminal opens is one of three facts a launch resolves; the other
@@ -43,7 +44,7 @@ export interface ShortcutRow { label: string; chords: string[][] }
 export function shortPopHtml(rows: readonly ShortcutRow[], off: boolean): string {
   const list = rows.map((s) => {
     const keys = s.chords
-      .map((c) => `<span class="sc-chord">${c.map((k) => `<kbd>${esc(k)}</kbd>`).join("")}</span>`)
+      .map((c) => `<span class="sc-chord">${c.map((k) => `<kbd>${keyCap(esc(k))}</kbd>`).join("")}</span>`)
       .join(`<span class="sc-or">/</span>`);
     return `<div class="sc-row"><span class="sc-desc">${esc(s.label)}</span><span class="sc-keys">${keys}</span></div>`;
   }).join("");

@@ -8,6 +8,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ask } from "./confirm";
 import { $, dropScrim, FILE_MANAGER, MOD, toast } from "./dom";
 import { basename, esc, escAttr } from "./format";
+import { icon } from "./svgicons";
 import { hunkBody, parsePatch, type DiffFile, type DiffMode } from "./diff";
 import { canDiscardHunk, commitBlock, discardQuestion, filePaths } from "./gitops";
 import { chipsHtml, fileHtml, railHeadHtml, railHtml, stashBarHtml, stashListHtml, treeRailHtml, type FileActs } from "./patchview";
@@ -172,9 +173,9 @@ export function closeDiff() {
 function rowBtns(f: DiffFile, i: number): string {
   if (!diffDir) return "";
   const abs = escAttr(diffDir.replace(/[\\/]+$/, "") + "/" + f.path);
-  return `<span class="dfx"><button data-ddiscard="${i}" title="Discard changes to this file">↶</button>`
-    + (f.status === "deleted" ? "" : `<button data-fopen="${abs}" title="Open this file">↗</button>`
-      + `<button data-freveal="${abs}" title="Reveal in ${FILE_MANAGER}">⌂</button>`)
+  return `<span class="dfx"><button data-ddiscard="${i}" title="Discard changes to this file">${icon("undo2", "solo")}</button>`
+    + (f.status === "deleted" ? "" : `<button data-fopen="${abs}" title="Open this file">${icon("externalLink", "solo")}</button>`
+      + `<button data-freveal="${abs}" title="Reveal in ${FILE_MANAGER}">${icon("folderOpen", "solo")}</button>`)
     + `</span>`;
 }
 
