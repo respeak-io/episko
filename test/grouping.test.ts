@@ -17,7 +17,7 @@ import {
   foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, projectList,
-  reactorLabel, reactorState, splitByWorktree, syncAttn, urgencyRank,
+  reactorLabel, reactorState, shellElsewhere, splitByWorktree, syncAttn, urgencyRank,
   type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
@@ -129,6 +129,41 @@ describe("clusterByWorktree — one cluster per checkout dir", () => {
     const cl = clusterByWorktree(p);
     expect(cl.map((c) => c.key)).toEqual([wt]);
     expect(ids(cl[0].sessions)).toEqual(["agent", "sh"]);
+  });
+  // Drift re-points the session and cannot move the shell, so filing each by its own folder split
+  // a pair in the rail that the stage still tiled together.
+  describe("a split shell whose anchor drifted to another checkout", () => {
+    const repo = "/w/epi", old = "/w/wt-old", moved = "/w/wt-new";
+    const agent = () => sess({ id: "agent", workdir: moved, colorKey: repo, branch: "deploy" });
+    const shell = (splitOf = "agent") => sess({ id: "sh", kind: "shell", workdir: old, colorKey: repo, branch: "fix", splitOf });
+    beforeEach(() => {
+      worktreesByRepo.set(repo, [
+        { path: repo, branch: "main", is_main: true, exists: true },
+        { path: old, branch: "fix", is_main: false, exists: true },
+        { path: moved, branch: "deploy", is_main: false, exists: true },
+      ]);
+    });
+    it("stays in its anchor's cluster, and so still folds under its row", () => {
+      const cl = clusterByWorktree(grp({ path: repo, sessions: [agent(), shell()] }));
+      expect(cl.map((c) => c.key)).toEqual([moved]);
+      expect(ids(cl[0].sessions)).toEqual(["agent", "sh"]);
+      expect(foldRunGroups(cl[0].sessions).map((i) => i.kind)).toEqual(["split"]);
+    });
+    it("takes the cluster's label from the anchor when a sort lists the shell first", () => {
+      const cl = clusterByWorktree(grp({ path: repo, sessions: [shell(), agent()] }));
+      expect(cl).toHaveLength(1);
+      expect(cl[0]).toMatchObject({ key: moved, branch: "deploy" });
+    });
+    it("leaves the checkout it runs in vacant, for the peek to offer", () => {
+      const cl = clusterByWorktree(grp({ path: repo, sessions: [agent(), shell()] }), true);
+      const left = cl.find((c) => c.key === old)!;
+      expect(left.sessions).toEqual([]);
+      expect(clusterIsLive(left)).toBe(false);
+    });
+    it("files itself by its own folder once no anchor is in the list", () => {
+      const cl = clusterByWorktree(grp({ path: repo, sessions: [agent(), shell("gone")] }));
+      expect(cl.map((c) => c.key)).toEqual([moved, old]);
+    });
   });
   // `isMain` compares the key against the project path, spelled as the user picked it, while the
   // roster has been through `norm_path`; only a path inside a checkout takes the roster's spelling.
@@ -323,7 +358,43 @@ describe("clusterByWorktree — session-less checkouts from the worktree roster"
   });
 });
 
+describe("shellElsewhere — the checkout a split shell was left in", () => {
+  const repo = "/w/epi", old = "/w/wt-old", moved = "/w/wt-new";
+  const agent = sess({ id: "agent", workdir: moved, colorKey: repo, branch: "deploy" });
+  const shell = (workdir: string, branch = "") => sess({ id: "sh", kind: "shell", workdir, colorKey: repo, branch, splitOf: "agent" });
+  beforeEach(() => {
+    worktreesByRepo.set(repo, [
+      { path: repo, branch: "main", is_main: true, exists: true },
+      { path: old, branch: "fix", is_main: false, exists: true },
+      { path: moved, branch: "deploy", is_main: false, exists: true },
+    ]);
+  });
+  it("is null while the shell shares its anchor's checkout, subfolder included", () => {
+    expect(shellElsewhere(shell(moved), agent)).toBeNull();
+    expect(shellElsewhere(shell(moved + "/src/deep"), agent)).toBeNull();
+  });
+  it("names the checkout, the roster's branch beating the one cached at launch", () => {
+    expect(shellElsewhere(shell(old, "stale"), agent)).toMatchObject({ key: old, branch: "fix", isMain: false });
+  });
+  it("marks the repo's own checkout as main, so the chip wears ⌂", () => {
+    expect(shellElsewhere(shell(repo), agent)).toMatchObject({ key: repo, branch: "main", isMain: true });
+  });
+  it("falls back to the cached branch, then the folder, off the roster", () => {
+    expect(shellElsewhere(shell("/tmp/scratch", "wip"), agent)?.branch).toBe("wip");
+    expect(shellElsewhere(shell("/tmp/scratch"), agent)?.branch).toBe("scratch");
+  });
+});
+
 describe("splitByWorktree — toplevel mode explodes a multi-checkout project", () => {
+  it("keeps a drifted session and its split shell in one group", () => {
+    const p = grp({ sessions: [
+      sess({ id: "agent", workdir: "/w/wt", branch: "feature" }),
+      sess({ id: "sh", kind: "shell", workdir: "/w/epi", branch: "main", splitOf: "agent" }),
+    ] });
+    const out = splitByWorktree([p]);
+    expect(names(out)).toEqual(["/w/wt"]);
+    expect(ids(out[0].sessions)).toEqual(["agent", "sh"]);
+  });
   it("passes a single-checkout project through untouched", () => {
     const p = grp({ sessions: [sess({ id: "a", workdir: "/w/epi" })] });
     const out = splitByWorktree([p]);

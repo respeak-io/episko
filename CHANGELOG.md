@@ -12,6 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! A shell opened beside a session stays under that session in the sidebar when the session moves to
+  another checkout, with a chip naming the checkout the shell still runs in. It used to drop under
+  the old checkout while the two stayed side by side on stage.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
