@@ -10,6 +10,7 @@ import {
   type CheckTally, type DraftComment, type PrCheck, type PrReview, type PrThread, type SinceCount, type Side,
 } from "./review";
 import type { DiffMode } from "./diff";
+import type { PickState } from "./pick";
 import { glyphIcon, icon } from "./svgicons";
 
 export type RvTab = "files" | "conversation" | "checks";
@@ -197,8 +198,17 @@ export function fileBtnsHtml(fi: number, viewed: boolean, threads: number, canFi
     + `<button class="rv-viewed${viewed ? " on" : ""}" data-rvviewed="${fi}" title="Fold it away until it changes again">${icon(viewed ? "boxCheck" : "box")}Viewed</button></span>`;
 }
 
-export const railMark = (viewed: boolean, threads: number) =>
-  (threads ? `<span class="rv-tc">${threads}</span>` : "") + (viewed ? `<span class="rv-vw" title="Viewed">${icon("check", "solo")}</span>` : "");
+export const railMark = (threads: number) => (threads ? `<span class="rv-tc">${threads}</span>` : "");
+
+/** A rail row's Viewed: the header's button, where you run your eye down the whole pull request. */
+export const railTick = (fi: number, viewed: boolean) =>
+  `<span class="dtick rv-tick${viewed ? " on" : ""}" data-rvviewed="${fi}" role="checkbox" aria-checked="${viewed}" title="Viewed: fold it away until it changes again"></span>`;
+
+/** A folder's, over everything under it. Part-way is a dash, and a click takes the rest. */
+export const dirTick = (dir: string, st: PickState) =>
+  `<span class="dtick rv-tick${st === "all" ? " on" : st === "some" ? " some" : ""}" data-rvdirviewed="${escAttr(dir)}" role="checkbox"`
+  + ` aria-checked="${st === "all" ? "true" : st === "some" ? "mixed" : "false"}"`
+  + ` title="${st === "all" ? "Clear Viewed on everything in this folder" : "Mark everything in this folder viewed"}"></span>`;
 
 export const expandBtn = (fi: number, hi: number, gap: number) =>
   `<button class="dhx rv-exp" data-rvexp="${fi}:${hi}" title="Show ${Math.min(gap, 20)} more unchanged lines">${icon("unfold")}${Math.min(gap, 20)} more</button>`;

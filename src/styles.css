@@ -4171,7 +4171,14 @@ button.rv-chip { cursor: pointer; }
 .dr-fold .dchev { font-size: 9px; transition: transform .12s; }
 .dr-fold.shut .dchev { transform: rotate(-90deg); }
 .dr-row.tree { padding-left: calc(7px + var(--d, 0) * 12px + 6px); }
-.rv-vw { flex: none; color: var(--st-done); font-size: 10px; }
+/* A review's rail ticks every row, so a tree's depth reads down the tick column: a folder's chevron
+   sits where a file's status does, and the rail is a tick wider to leave the names their room. */
+#rvRail { width: 250px; }
+#rvRail .dr-row.tree { padding-left: calc(7px + var(--d, 0) * 12px); }
+#rvRail .dr-fold { gap: 7px; padding-top: 2px; }
+#rvRail .dr-fold .dchev { width: 16px; justify-content: center; }
+.dtick.rv-tick:is(.on, .some) { border-color: color-mix(in srgb, var(--st-done) 55%, transparent); background: color-mix(in srgb, var(--st-done) 22%, transparent); }
+.dtick.rv-tick:is(.on, .some)::after { color: var(--st-done); }
 .rv-tc { flex: none; min-width: 15px; padding: 0 4px; border-radius: 99px; text-align: center; font: 700 9.5px var(--font-mono); color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 
 /* a file in review: its header's controls, and a viewed file dimmed and folded */
@@ -4274,7 +4281,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1
 :is(.clm, .gr, .gk) .ic { --ic: 10px; }
 .brck.pk .ic { --ic: 9px; }
 :is(.qrow .go, .br .go, .dbr .go, .dck, .prog, .dr-fold .dchev, .rv-th-h .dchev, .g-mk-x, .qqx, .nb, .tb) .ic { --ic: 11px; }
-:is(.qchev, .cr .k, .brpick .c, .lgmore .c, .gd-sha-b, .rv-vw) .ic { --ic: 12px; }
+:is(.qchev, .cr .k, .brpick .c, .lgmore .c, .gd-sha-b) .ic { --ic: 12px; }
 .fc-recic .ic { --ic: 14px; }
 .ic.rv-dd { margin-left: .3em; }
 :is(.qrow .go, .tb, .nb, .qqx, .g-mk-x, .gx, .go-slot .web, .mdr-tool, .lgmore .c, .qchev, .fc-recic, .prog) { display: inline-flex; align-items: center; justify-content: center; }

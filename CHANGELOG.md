@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A review's file list has a tick on every file and folder. A folder's tick marks everything under it
+  as viewed in one click, and shows a dash while only part of it is.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
