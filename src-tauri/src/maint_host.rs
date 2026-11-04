@@ -80,6 +80,10 @@ pub(crate) fn ssh_host(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
 fn read_with(ctx: &Ctx, ex: &dyn Exec, cache: &Shared<String, Answer>) -> Result<Read, Coverage> {
     let d = crate::deploy::read(ctx.root).unwrap_or_default();
     let Some(alias) = d.host() else { return Err(Coverage::Unsupported { reason: "no host in [deploy]".into() }) };
+    // The file as it is now, against the tick: a pull can move `[deploy] host` under whatever the frontend last detected.
+    if !ctx.hosts.iter().any(|h| h == alias) {
+        return Err(Coverage::NotRun);
+    }
     let got = cache.get(alias.to_string(), ctx.force, || ask(ex, alias));
     if got.is_err() {
         cache.forget(|k| k == alias);
@@ -675,7 +679,7 @@ mod tests {
     }
 
     fn read(root: &str, ex: &FakeExec, cache: &Shared<String, Answer>) -> Result<Read, Coverage> {
-        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force: true }, ex, cache)
+        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force: true, hosts: &["prod-1".to_string()] }, ex, cache)
     }
 
     #[test]
@@ -691,6 +695,19 @@ mod tests {
         assert_eq!(first[0].disks, second[0].disks);
         let none = read(&repo("[deploy]\ncompose = [\"api\"]\n"), &ex, &cache);
         assert!(matches!(none, Err(Coverage::Unsupported { .. })), "no host in [deploy]");
+    }
+
+    /// A commit can move `[deploy] host` under a tick the frontend checked against an older detection.
+    #[test]
+    fn a_host_this_machine_never_ticked_is_never_connected_to() {
+        let cache = Shared::new(KEEP, JOIN, STALL);
+        let root = repo("[deploy]\nhost = \"deploy@other-box\"\n");
+        let ex = FakeExec::recorded("ssh-host-ubuntu.txt");
+        assert!(matches!(read(&root, &ex, &cache), Err(Coverage::NotRun)), "prod-1 is ticked, and this is not prod-1");
+        assert!(ex.calls().is_empty(), "{:?}", ex.calls());
+        let ctx = Ctx { root: &root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force: true, hosts: &["deploy@other-box".to_string()] };
+        assert!(read_with(&ctx, &ex, &cache).is_ok());
+        assert_eq!(ex.calls(), [["ssh", "deploy@other-box"]]);
     }
 
     #[test]

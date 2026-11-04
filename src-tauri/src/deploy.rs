@@ -788,7 +788,7 @@ mod tests {
         let root = probe_repo("[deploy]\nurls = { app = \"https://app.example.com\", api = \"https://api.example.com/health\" }\nversion_url = \"https://api.example.com/version\"\n");
         let cfg = crate::maint::read_config(&root);
         let forge = crate::forge::forge_of(None, None);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true, hosts: &[] };
         let refused = FakeExec::testdata("curl-refused.txt");
         let ex = FakeExec::recorded("curl-openssl.txt").on(&["curl", "https://api.example.com/health"], Ok(&refused));
         let r = http_probe(&ctx, &ex).unwrap();

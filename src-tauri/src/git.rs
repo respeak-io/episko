@@ -3134,10 +3134,32 @@ pub(crate) struct Lag {
     pub(crate) ahead: u32,
 }
 
+const LAG_SECS: u64 = 30; // a read holds one of the scan's six slots
+
+/// `GIT_NO_LAZY_FETCH` arrived in 2.44: an older git ignores it, and a partial clone then fetches what it lacks.
+fn git_below_2_44(version: &str) -> bool {
+    let mut parts = version.split_whitespace().nth(2).unwrap_or("").split('.').map(str::parse::<u32>);
+    !matches!((parts.next(), parts.next()), (Some(Ok(major)), Some(Ok(minor))) if (major, minor) >= (2, 44))
+}
+
+/// Whether counting a commit this clone may lack could fetch it: a promisor remote on a git too old to be told not to.
+pub(crate) fn may_lazy_fetch(dir: &str) -> bool {
+    static OLD: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OLD.get_or_init(|| git_out(dir, &["version"]).map_or(true, |v| git_below_2_44(&v))) && has_promisor(dir)
+}
+
+fn has_promisor(dir: &str) -> bool {
+    git_out(dir, &["config", "--get-regexp", r"^remote..*.promisor$"]).is_ok_and(|o| lines_of(&o).any(|l| l.ends_with(" true")))
+}
+
 /// `Ok(None)` is a commit this clone lacks, which a failed count says with no spawn of its own.
 /// `GIT_NO_LAZY_FETCH`: a partial clone must not fetch it, since Maintenance never touches the network here.
 pub(crate) fn deploy_lag(dir: &str, sha: &str, trunk: &str) -> Result<Option<Lag>, String> {
-    let offline = |args: &[&str]| git_cmd(dir, args).env("GIT_NO_LAZY_FETCH", "1").output().map_err(|e| format!("git: {e}"));
+    let offline = |args: &[&str]| {
+        let mut cmd = git_cmd(dir, args);
+        cmd.env("GIT_NO_LAZY_FETCH", "1");
+        git_run(cmd, LAG_SECS)
+    };
     let o = offline(&["rev-list", "--left-right", "--count", &format!("{sha}...{trunk}"), "--"])?;
     if !o.status.success() {
         return Ok(None);
@@ -4103,6 +4125,22 @@ canonicalizehostname false
 
     fn rev(dir: &Path, what: &str) -> String {
         String::from_utf8_lossy(&Command::new("git").current_dir(dir).args(["rev-parse", what]).output().unwrap().stdout).trim().to_string()
+    }
+
+    #[test]
+    fn only_a_promisor_remote_on_an_old_git_could_fetch_to_count() {
+        for (said, old) in [
+            ("git version 2.39.5 (Apple Git-154)", true), ("git version 2.43.0", true), ("git version 2.44.0", false),
+            ("git version 2.47.1.windows.1", false), ("git version 3.0.0", false), ("nonsense", true),
+        ] {
+            assert_eq!(git_below_2_44(said), old, "{said}");
+        }
+        let dir = scratch_dir();
+        let d = dir.to_string_lossy().to_string();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        assert!(!has_promisor(&d), "an ordinary clone");
+        git(&dir, &["config", "remote.origin.promisor", "true"]);
+        assert!(has_promisor(&d), "a partial clone");
     }
 
     #[test]

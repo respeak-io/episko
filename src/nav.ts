@@ -70,7 +70,7 @@ export function step(n: Nav, dir: NavDir, alive: (l: Loc) => boolean): { nav: Na
 
 export function locKind(l: Loc): string {
   switch (l.kind) {
-    case "session": return l.group ? "task group" : "session";
+    case "session": return l.group ? "tiled" : "session";
     case "ext": return "external session";
     case "past": return "shelved session";
     case "dash": return "dashboard";

@@ -2,7 +2,7 @@
 // means — a facet's cell, the findings under a card, a project's band and the order cards stand
 // in. Facts in, words out: no DOM, no Tauri, and no vendor named, so the next adapter needs none.
 
-import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet, type MaintCap } from "./maintsources";
+import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet, type MaintCap, type SourceDef } from "./maintsources";
 import { narrowDeploy, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
 import { cmpVer, parseVer, satisfies, verCmpStr } from "./deps";
@@ -853,8 +853,9 @@ const probeJudge = (facts: Facts[], c: Ctx): Judged | null => {
   return { level: "ok", text: "", tip };
 };
 
-const hostJudge = (facts: Facts[], c: Ctx): Judged | null => {
-  const st = kinds(facts, "hosts").flatMap((f) => f.items).map((h) => hostState(h, h.compose, c.th, c.now, c.trunc)).sort(byRank);
+// Each report's own cap: a cut address list says nothing of a host's containers.
+const hostJudge = (_facts: Facts[], c: Ctx): Judged | null => {
+  const st = c.reps.flatMap((r) => r.facts?.kind === "hosts" ? r.facts.items.map((h) => hostState(h, h.compose, c.th, c.now, r.truncated)) : []).sort(byRank);
   return st.length ? { level: st[0].level, text: st[0].text, tip: st.flatMap((s) => s.tip) } : null;
 };
 
@@ -1269,20 +1270,26 @@ function wantsSetup(facet: "ci" | "deps", inp: MaintInput, th: MaintThresholds, 
 
 const SETUP_DETAIL = { ci: "nothing runs the checks on the default branch", deps: "nothing opens dependency updates" };
 
+/** A source no opt-in lets a scan run: a public one has a switch and a door of its own, and is no part of Check prod. */
+export const onClickOnly = (d: Pick<SourceDef, "cost">) => !permitted(d.cost, "scan", true);
+
 /** What *Check prod* runs here: the prod sources a scan may never run, so only a click asks them. */
 export function prodChecks(inp: MaintInput): string[] {
   if (inp.det?.config.off.includes("prod")) return [];
   return (inp.det?.sources ?? []).filter((id) => {
     const d = findSource(id);
-    return d?.facet === "prod" && !permitted(d.cost, "scan", false) && !inp.skip?.includes(id);
+    return d?.facet === "prod" && onClickOnly(d) && !inp.skip?.includes(id);
   });
 }
+
+/** What Allow consents to and Check prod's tip repeats: maint_host.rs's script, in the words a person weighs. */
+export const HOST_READ = "one fixed read-only script (disk, load, pending updates, reboot, containers)";
 
 // What each click-only prod source does and needs, by what it sees: Check prod's tip and its empty
 // toast name every source by its label, so a new one needs a row here and no new sentence.
 const PROD_ASKS: Partial<Record<MaintCap, { does: (hosts: readonly string[]) => string; needs: string }>> = {
   "prod.status": { does: () => "each [deploy] address once, and its certificate", needs: "an address in [deploy]" },
-  "prod.host": { does: (h) => `one read-only command on ${h.join(", ") || "each allowed host"}, over your own ssh`, needs: "a [deploy] host allowed on this machine" },
+  "prod.host": { does: (h) => `${HOST_READ} on ${h.join(", ") || "each allowed host"}, over your own ssh`, needs: "a [deploy] host allowed on this machine" },
 };
 const asks = (id: string) => findSource(id)?.sees.map((c) => PROD_ASKS[c]).find((x) => x);
 
@@ -1294,7 +1301,7 @@ export function prodTip(ids: readonly string[], hosts: readonly string[]): strin
 
 /** Check prod's toast when no project gives it anything to ask. */
 export function prodNone(): string {
-  const needs = [...new Set(facetSources("prod").filter((d) => !permitted(d.cost, "scan", false)).flatMap((d) => asks(d.id)?.needs ?? []))];
+  const needs = [...new Set(facetSources("prod").filter(onClickOnly).flatMap((d) => asks(d.id)?.needs ?? []))];
   return `No project here has ${needs.join(" or ") || "anything Check prod asks"}`;
 }
 
@@ -1476,6 +1483,8 @@ export type CoverAction =
   | { kind: "fix"; fix: string }
   | { kind: "run"; source: string }
   | { kind: "allow"; host: string }; // a [deploy] host this machine may not reach yet
+// What a facet's verdict cannot speak for: refused everywhere, a token must not look like no deployments or no flaky job.
+const SIDE_CAP: Partial<Record<Facet, MaintCap>> = { ci: "ci.reruns", release: "rel.deployed" };
 export interface CoverGroup {
   key: string; facet: Facet;
   source: string | null; // the source it is about, so a Set up can sit on its row; null for a facet or marker
@@ -1526,13 +1535,13 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     };
     for (const c of cells) {
       const facet = c.facet, label = facetDef(facet).label;
-      const noRuns = isVerdict(c) && !vouched(c, inp);
+      const noRuns = c.state === "read" && !vouched(c, inp);
       if (FACET_TAB[facet] !== tab) continue;
       // One deps cell, two questions: what one kind said vouches for nothing the other could not read.
       const both = facet === "deps" && c.state === "read" && !!det?.sources.some((id) => isRegistry(id, inp));
       if (isNone(c) && !both) continue;
-      // A release verdict speaks for tags alone: a token refused everywhere must not look like no deployments.
-      if (c.state === "read" && facet === "release") explain(facet, (id) => !!findSource(id)?.sees.includes("rel.deployed"));
+      const side = SIDE_CAP[facet];
+      if (c.state === "read" && side) explain(facet, (id) => !!findSource(id)?.sees.includes(side));
       if (isVerdict(c) && !noRuns && !both) continue;
       if (c.state === "past" || c.state === "unread" || !det) {
         const why = c.state === "past" ? "not checked this session" : "not read yet";
@@ -2443,6 +2452,18 @@ export function hostSummary(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULT
 /** Whether this project's host answered a read: a host row's tip stops saying it was never read. */
 export const hostRead = (inp: MaintInput): boolean => okFacts(inp, "prod").some((r) => r.facts.kind === "hosts");
 
+/** One project's part of the all-clear's lists: what answered, and what didn't with what each source
+ *  declares it cannot see. A source that failed or was never asked covers nothing it would have. */
+export function addCoverCaps(inp: MaintInput, sees: Set<MaintCap>, blind: Set<MaintCap>): void {
+  for (const r of Object.values(inp.reports)) {
+    const d = findSource(r.source);
+    if (!d || !inp.det?.sources.includes(r.source)) continue;
+    for (const c of d.blind) blind.add(c);
+    const answered = r.coverage.state === "ok" && !inp.skip?.includes(r.source);
+    for (const c of d.sees) (answered ? sees : blind).add(c);
+  }
+}
+
 // ---------- the cold-boot snapshot (`cc-maint`) ----------
 
 export const SNAP_ROOTS = 200, SNAP_FINDINGS = 12, SNAP_TEXT = 80, SNAP_KEY = 300;
@@ -2461,11 +2482,23 @@ export const snapFor = (snaps: MaintSnaps, root: string, account: string | null)
 const VERDICT: readonly CellState[] = ["read", "none", "off"];
 const FINDING_RANK: readonly Finding["level"][] = ["bad", "warn", "info"];
 // A second kind read beside a failed read of the first reaches no verdict on the facet, so the last
-// known red stands. Only a fresh red replaces it, and re-runs are never red.
+// known red stands. Only a fresh red replaces it, and re-runs are never red. Prod's kinds split instead (prodStands).
 const reached = (c: Cell, inp: MaintInput) => VERDICT.includes(c.state) && (vouched(c, inp) || c.level === "bad");
 // Release's only red is a deploy's, and tags cannot speak for it: a failed environments read leaves its lines standing.
 const deployStands = (c: Cell, inp: MaintInput, prev: MaintSnap) => c.facet === "release" && c.state === "read" && c.level !== "bad"
   && prev.findings.some((f) => f.key.startsWith("release:deploy")) && readFailed(inp, (id) => !!findSource(id)?.sees.includes("rel.deployed"));
+
+// Prod's kinds answer apart (vouched), so each keeps its own lines: an answer from one neither erases
+// nor waits on the other's failed or unasked read, and a kind switched off or skipped here keeps nothing.
+const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.host" : "prod.status";
+const prodSplit = (c: Cell) => c.facet === "prod" && c.state === "read";
+function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
+  const silent = (cap: MaintCap) => {
+    const ids = (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes(cap) && !inp.skip?.includes(id));
+    return ids.length > 0 && !ids.some((id) => inp.reports[id]?.coverage.state === "ok");
+  };
+  return prev.findings.filter((f) => f.facet === "prod" && silent(prodCap(f.key)));
+}
 
 /** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
  *  A facet this scan reached no verdict on keeps `prev`'s cell and lines, dated as then: a failed read
@@ -2473,16 +2506,20 @@ const deployStands = (c: Cell, inp: MaintInput, prev: MaintSnap) => c.facet === 
 export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
-  const kept = new Set(prev ? live.filter((c) => !reached(c, inp) || deployStands(c, inp, prev)).map((c) => c.facet) : []);
+  const kept = new Set(prev ? live.filter((c) => !prodSplit(c) && (!reached(c, inp) || deployStands(c, inp, prev))).map((c) => c.facet) : []);
   const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
+  const stands = prev && live.some(prodSplit) ? prodStands(inp, prev).map(dated) : [];
   const cells = live.map((c): SnapCell => {
     const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;
-    return old ? dated(old) : { facet: c.facet, level: c.level, text: c.text.slice(0, SNAP_TEXT) };
+    if (old) return dated(old);
+    const worst = c.facet === "prod" ? [...stands].sort(byRank)[0] : undefined;
+    if (worst && byRank(worst, c) < 0) return { facet: c.facet, level: worst.level, text: worst.text, at: worst.at };
+    return { facet: c.facet, level: c.level, text: c.text.slice(0, SNAP_TEXT) };
   });
   const fresh = findings(root, inp, th, now).filter((f) => !kept.has(f.facet) && f.key.length <= SNAP_KEY)
     .map((f): SnapFinding => ({ facet: f.facet, key: f.key, level: f.level, text: f.text.slice(0, SNAP_TEXT) }));
   const carried = (prev?.findings ?? []).filter((f) => kept.has(f.facet)).map(dated);
-  const all = [...fresh, ...carried].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
+  const all = [...fresh, ...carried, ...stands].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
   return { at: now, account, cells, findings: all.slice(0, SNAP_FINDINGS) };
 }
@@ -2557,13 +2594,24 @@ export function clampKept(raw: unknown): KeptScans {
   }));
 }
 
-/** The newest scans that fit `budget` characters; a root left out falls back to its `cc-maint` snapshot. */
+// A scan with its packages read as unasked: they are info, the next read of them is cached, and they can be the bulk of a project.
+const withoutPackages = (k: KeptScan): KeptScan => ({ ...k, reports: Object.fromEntries(Object.entries(k.reports).map(([id, r]) =>
+  [id, r.facts?.kind === "packages" ? { ...r, coverage: { state: "notRun" as const }, at: null, truncated: false, gaps: [], facts: null } : r])) });
+
+/** The newest scans that fit `budget` characters; a root left out falls back to its `cc-maint` snapshot.
+ *  Each is sized without its packages first and the newest get them back, so a Packages list never
+ *  costs another project its place, nor a red CI read the card that shows it. */
 export function packKept(all: KeptScans, budget = KEPT_CHARS): KeptScans {
-  const out: KeptScans = {};
+  const out: KeptScans = {}, newest = Object.entries(all).sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0]));
   let used = 2;
-  for (const [root, k] of Object.entries(all).sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0]))) {
-    const n = JSON.stringify(root).length + JSON.stringify(k).length + (used > 2 ? 2 : 1); // `:` and a `,` after the first
-    if (used + n <= budget) { out[root] = k; used += n; }
+  for (const [root, k] of newest) {
+    const slim = withoutPackages(k), n = JSON.stringify(root).length + JSON.stringify(slim).length + (used > 2 ? 2 : 1); // `:` and a `,` after the first
+    if (used + n <= budget) { out[root] = slim; used += n; }
+  }
+  for (const [root, k] of newest) {
+    if (!out[root]) continue;
+    const more = JSON.stringify(k).length - JSON.stringify(out[root]).length;
+    if (more > 0 && used + more <= budget) { out[root] = k; used += more; }
   }
   return out;
 }
@@ -2606,10 +2654,14 @@ const markNames = (a: Advisory) => [...new Set(keysOf(a).map((n) => a.kind === "
 /** Whether a finished scan leaves a mark: a checkout that is gone detects no source, which is no verdict. */
 export const leavesMark = (inp: MaintInput): boolean => !!inp.det?.sources.length;
 
+// A registry read is no update bot, so a project with neither bot nor marker of one has nothing a week could compare.
+const noBotHere = (inp: MaintInput) => !!inp.det && !inp.det.markers.some((m) => m.facet === "deps")
+  && !inp.det.sources.some((id) => (findSource(id)?.facet ?? inp.reports[id]?.facet) === "deps" && !isRegistry(id, inp));
+
 /** The mark a finished scan leaves, over `okFacts`: a truncated or failed source is left out. */
 export function takeMark(inp: MaintInput, at: number, account: string | null): WeekMark {
   const th = clampMaint(inp.det?.config.thresholds);
-  const none = WEEK_FACETS.filter((f) => ["none", "off"].includes(facetCell(f, inp, th, at).state));
+  const none = WEEK_FACETS.filter((f) => ["none", "off"].includes(facetCell(f, inp, th, at).state) || (f === "deps" && noBotHere(inp)));
   // One list across the sources that read the default branch, so it stands only when every one answered: a
   // failed one is no fix. A flaky read adds nothing to the list, so it can neither cost it nor vouch for it.
   const listsRuns = (id: string) => { const d = findSource(id); return d ? d.facet === "ci" && d.sees.includes("ci.default-branch") : inp.reports[id]?.facet === "ci"; };
@@ -2957,6 +3009,11 @@ export const VERB_KIND: Record<Verb, "branch" | "here" | null> = {
   fetch: null,
   run: null,
 };
+// A Fix that only reads production: its brief changes nothing in the repo, so a branch would stay empty.
+const READS_PROD = /^prod:|^release:deploy-failed$/;
+/** Where this line's agent works: its verb's answer, but for a Fix whose brief writes nothing. */
+export const sessionKind = (f: Pick<Finding, "verb" | "key">): "branch" | "here" | null =>
+  f.verb === "fix" && READS_PROD.test(f.key) ? "here" : VERB_KIND[f.verb];
 export const SESSION_MAX = 8; // one WebGL context per visible tile: terminal.ts's GL_POOL_MAX, held by a test
 export const SESSION_EXTERNAL = "Agents open outside Episko (Settings › Launching), so there are no panes to tile";
 export const SESSION_OVER = `${SESSION_MAX} at most at once: one tile each`;
@@ -2985,7 +3042,7 @@ export function trunkOf(inp: MaintInput): string | null {
   for (const { facts } of [...okFacts(inp, "git"), ...okFacts(inp, "release")]) if ("trunk" in facts && facts.trunk) return facts.trunk;
   return inp.det?.config.trunk ?? null;
 }
-/** Stable per line, so a later session lands beside the earlier work: `prod:cert:api` is `maint/prod-cert-api`. */
+/** Stable per line, so a later session lands beside the earlier work: `security:code` is `maint/security-code`. */
 export function fixBranch(f: Pick<Finding, "key">): string {
   const slug = f.key.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").slice(0, FIX_SLUG_MAX).replace(/-+$/, "");
   return `maint/${slug || "line"}`;
@@ -3023,8 +3080,14 @@ export function sessionPlan(picked: readonly SessionLine[], ctx: SessionCtx): Se
   for (const { f, inp } of picked) {
     const { root, key, text } = f, name = ctx.name(root);
     const skip = (why: string, open = false) => skipped.push({ root, key, why: `${name}: ${why}`, open });
-    const kind = VERB_KIND[f.verb];
+    const kind = sessionKind(f);
     if (!kind) { skip("no agent answers this line"); continue; }
+    // One brief names everything the host has, so one agent answers it, whichever line was ticked first.
+    if (f.key.startsWith("prod:host:")) {
+      const host = `${root}\u0000host`;
+      if (taken.has(host)) { skip("another ticked line has this host's brief"); continue; }
+      taken.add(host);
+    }
     if (kind === "here" || ctx.plain(root)) { rows.push({ root, key, text, where: { kind: "here" }, branch: null, from: "" }); continue; }
     const branch = fixBranch(f), heads = ctx.heads(root), one = `${root}\u0000${branch}`;
     if (taken.has(one)) { skip(`another ticked line lands on ${branch}`); continue; }

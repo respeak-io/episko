@@ -2,7 +2,7 @@
 // ./fleetview the markup. It is the home stage, reached from the Episko logo. See docs/dashboard.md.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, clearStageBadges, setHeadPath, takeStage } from "./dom";
+import { $, clearStageBadges, holdMaintPlace, setHeadPath, takeStage } from "./dom";
 import { dlog } from "./debug";
 import { openExternal, refreshDirtyStates, rosterReady } from "./mirror";
 import { basename, fmtDay, fmtDayLong, relTime } from "./format";
@@ -17,7 +17,7 @@ import {
   type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  cardsShown, clampMaint, comingUp, facetCells, findings, hostRead, hostRows, hostSummary, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  addCoverCaps, cardsShown, clampMaint, comingUp, facetCells, findings, hostRead, hostRows, hostSummary, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
   sessionGate, sessionKey, sessionLines, sessionPlan, sessionText, sessionTip,
   tabExtras, tabFindings, tabModel, weekDigest,
   type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type SessionLaunch, type TabProject, type WeekPairIn,
@@ -464,12 +464,7 @@ function buildMaint(now: number): MaintView {
     if (!inp) continue;
     const th = clampMaint(inp.det?.config.thresholds);
     const cells = snap ? pastCells(snap, now) : facetCells(inp, th, now);
-    for (const r of Object.values(inp.reports)) {
-      const d = findSource(r.source);
-      if (!d || !inp.det?.sources.includes(r.source)) continue;
-      for (const c of d.blind) blind.add(c);
-      if (r.coverage.state === "ok" && !inp.skip?.includes(r.source)) for (const c of d.sees) sees.add(c);
-    }
+    addCoverCaps(inp, sees, blind);
     read.push({ root, inp });
     const ticked = hostSummary(inp, th, now);
     hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: (inp.hosts ?? []).includes(inp.det?.deploy?.host ?? "") });
@@ -540,7 +535,7 @@ function paint(id: string, html: string): void {
   const kept = q && { v: q.value, on: document.activeElement === q, a: q.selectionStart, b: q.selectionEnd };
   // The scroller is rebuilt too: a tick or an answer landing keeps your place, and a new tab starts at its top.
   const top = paintedSub === maintSub ? el.querySelector(".mt-body")?.scrollTop : 0;
-  el.innerHTML = html;
+  if (fleetView === "maint") holdMaintPlace(el, html); else el.innerHTML = html;
   if (id === "fleetBody") paintedSub = maintSub;
   const body = top ? el.querySelector(".mt-body") : null;
   if (body && top) body.scrollTop = top;

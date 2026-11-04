@@ -12,7 +12,7 @@ import { verifyCommands } from "./deps";
 import {
   BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
   sweepRows, tabFindings,
-  fixBranch, parseSessionKey, sessionGate, sessionKey, sessionLeft, sessionPlan, sweepGate, sweepLine, VERB_KIND,
+  fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
   type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
@@ -129,7 +129,9 @@ async function checkHost(alias: string, host: MaintHost): Promise<void> {
   if (!jobs.length) { toast(`${alias} is not allowed on this machine`); return; }
   const reps = await Promise.all(jobs.map(([r, id]) => runSource(r, id)));
   const failed = reps.find((x) => x.coverage.state !== "ok");
-  if (failed) toast(`${alias}: ${covText(failed.coverage)}`);
+  // Rust's own check: [deploy] names another host now, and ./maintscan has just re-read it.
+  if (failed?.coverage.state === "notRun") toast(`${alias}: nothing connected, since [deploy] no longer names it. The project's card shows the host it names now`);
+  else if (failed) toast(`${alias}: ${covText(failed.coverage)}`);
 }
 
 // Allow and Disallow are a per-machine tick and connect nowhere; only Check connects, and SSH only types.
@@ -184,7 +186,7 @@ async function launchLines(label: string, lines: readonly SessionLine[], briefOf
       [r, await invoke<WtHead[]>("worktree_heads", { dir: r }).catch(() => null)] as const)));
     const headsOf = (r: string) => heads.get(r) ?? [];
     const earlier = new Set<string>();
-    await Promise.all(lines.filter((l) => VERB_KIND[l.f.verb] === "branch").map(async ({ f }) => {
+    await Promise.all(lines.filter((l) => sessionKind(l.f) === "branch").map(async ({ f }) => {
       const b = fixBranch(f);
       if (await branchExists(f.root, b)) earlier.add(sessionKey({ root: f.root, key: b }));
     }));
@@ -371,13 +373,6 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   return false;
 }
 
-// A tick is rebuilt by the repaint it causes, so the keyboard goes back to its successor.
-function refocusTick(key: string, root: string): void {
-  for (const el of document.querySelectorAll<HTMLElement>("[data-mttick]")) {
-    if (el.dataset.mttick === key && el.dataset.mtroot === root) { el.focus({ preventScroll: true }); return; }
-  }
-}
-
 /** Enter or Space on a card line's text opens it as a click would; its verb is a button of its own.
  *  On a tick they toggle it. Enter in the sweep's box submits it, and nothing else typed there is Maintenance's. */
 export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
@@ -391,9 +386,7 @@ export function maintKey(e: KeyboardEvent, host: MaintHost): boolean {
   if ((e.key !== "Enter" && e.key !== " ") || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false;
   if (t instanceof HTMLElement && t.matches("[data-mttick]")) {
     e.preventDefault();
-    const { mttick, mtroot } = t.dataset;
     maintClick(t, host);
-    refocusTick(mttick ?? "", mtroot ?? "");
     return true;
   }
   if (!(t instanceof HTMLElement) || !t.matches("[data-mtfind] > .t")) return false;

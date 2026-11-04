@@ -844,7 +844,7 @@ mod tests {
 
     fn read_with(root: &str, f: ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
         let cfg = MaintConfig::default();
-        f(&Ctx { root, cfg: &cfg, forge: &github(), account: Some("alice"), force: true }, ex)
+        f(&Ctx { root, cfg: &cfg, forge: &github(), account: Some("alice"), force: true, hosts: &[] }, ex)
     }
 
     fn items(r: &Read) -> &[Advisory] {
@@ -1014,7 +1014,7 @@ mod tests {
 
     fn read_sarif(root: &str, cfg: &MaintConfig) -> Result<Read, Coverage> {
         let ex = FakeExec::answering(Err("no call"));
-        let r = sarif_files(&Ctx { root, cfg, forge: &github(), account: None, force: false }, &ex);
+        let r = sarif_files(&Ctx { root, cfg, forge: &github(), account: None, force: false, hosts: &[] }, &ex);
         assert!(ex.calls().is_empty(), "a local source runs nothing");
         r
     }
@@ -1077,7 +1077,7 @@ mod tests {
     }
 
     fn read_at(root: &str, f: ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
-        f(&Ctx { root, cfg: &MaintConfig::default(), forge: &github(), account: None, force: true }, ex)
+        f(&Ctx { root, cfg: &MaintConfig::default(), forge: &github(), account: None, force: true, hosts: &[] }, ex)
     }
 
     const OSV_NPM: &str = r#"{"lockfileVersion": 3, "packages": {"": {}, "node_modules/minimist": {"version": "1.2.5"}}}"#;

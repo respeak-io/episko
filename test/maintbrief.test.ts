@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
+  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sessionKind, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
 } from "../src/maint";
 import { typable } from "../src/format";
 
@@ -516,13 +516,25 @@ describe("a session's briefs", () => {
     expect(b.trim().endsWith("Do not deploy, tag, push or trigger any workflow: a person ships it.")).toBe(true);
   });
 
-  it("sends a flaky job's and a failed deploy's Fix to their own branches, each on its own brief", () => {
-    for (const [key, branch] of [["ci:flaky", "maint/ci-flaky"], ["release:deploy-failed", "maint/release-deploy-failed"]]) {
-      const f = lineIn(later, key);
-      expect(VERB_KIND[f.verb], key).toBe("branch");
-      const alone = briefFor(f, later, ctx)!, b = sessionBrief(f, later, ctx, { kind: "new", branch, base: "origin/main" })!;
-      expect(b.startsWith(alone), key).toBe(true);
-      expect(b.slice(alone.length), key).toContain(`a new checkout on ${branch}, cut from origin/main`);
+  it("sends a flaky job's Fix to its own branch, on its own brief", () => {
+    const f = lineIn(later, "ci:flaky"), branch = "maint/ci-flaky";
+    expect(sessionKind(f)).toBe("branch");
+    const alone = briefFor(f, later, ctx)!, b = sessionBrief(f, later, ctx, { kind: "new", branch, base: "origin/main" })!;
+    expect(b.startsWith(alone)).toBe(true);
+    expect(b.slice(alone.length)).toContain(`a new checkout on ${branch}, cut from origin/main`);
+  });
+
+  // A brief that forbids any change has nothing to commit, and "Commit your work here" must not follow it.
+  it("runs a Fix in the folder exactly when its brief changes nothing", () => {
+    const hostFacts: Facts = { kind: "hosts", items: [{ alias: "prod-1", os: "Linux", now: S, uptime: D, load: [1, 1, 1], cpus: 4, disks: [{ mount: "/", sizeKb: 100, usedKb: 96, availKb: 4 }],
+      updates: 0, security: 0, packages: [], pm: "apt", listsAt: S, reboot: true, rebootWhy: [], containers: [], compose: [] }] };
+    const hosted = input(ok("ssh-host", hostFacts));
+    const lines = [...[inp, later, hosted].flatMap((i) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "fix").map((f) => [f, i] as const))];
+    expect(lines.map(([f]) => f.key)).toEqual(expect.arrayContaining(["ci", "ci:flaky", "prod:api", "prod:cert:app", "release:deploy-failed", "prod:host:disk", "prod:host:reboot"]));
+    for (const [f, i] of lines) {
+      const brief = briefFor(f, i, ctx)!;
+      expect(sessionKind(f) === "here", f.key).toBe(/Change nothing/.test(brief));
+      if (sessionKind(f) === "here") expect(sessionBrief(f, i, ctx, { kind: "here" }), f.key).toBe(brief);
     }
   });
 

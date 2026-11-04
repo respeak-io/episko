@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, snapFor, takeSnap,
+  clampKept, clampSnaps, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
@@ -102,8 +102,9 @@ export function maintInput(root: string): MaintInput | null {
 let running = 0;
 const waiting: (() => void)[] = [];
 // A release hands its slot straight to the next waiter, so no caller can slip in between.
-async function slot<T>(job: () => Promise<T>): Promise<T> {
-  if (running >= IN_FLIGHT) await new Promise<void>((go) => waiting.push(go));
+// `first`: a person's click goes ahead of a whole scan's queue rather than behind it.
+async function slot<T>(job: () => Promise<T>, first = false): Promise<T> {
+  if (running >= IN_FLIGHT) await new Promise<void>((go) => { if (first) waiting.unshift(go); else waiting.push(go); });
   else running++;
   try { return await job(); } finally {
     const next = waiting.shift();
@@ -118,7 +119,7 @@ const failed = (id: string, reason: string): SourceReport => ({
 
 function readOne(root: string, id: string, mode: Mode, force: boolean): Promise<SourceReport> {
   return invoke<unknown>("maint_read", {
-    root, source: id, mode, public: maintPrefs.public.includes(id), force, account: ghAccountFor(root),
+    root, source: id, mode, public: maintPrefs.public.includes(id), force, account: ghAccountFor(root), hosts: maintPrefs.hosts,
   }).then((raw) => narrowMaint(raw, id), (e) => failed(id, String(e)));
 }
 
@@ -194,9 +195,15 @@ export async function runSource(root: string, id: string): Promise<SourceReport>
   asking.set(k, (asking.get(k) ?? 0) + 1);
   paint();
   try {
-    const r = await slot(() => readOne(root, id, "explicit", true));
+    const r = await slot(() => readOne(root, id, "explicit", true), true);
     const e = cache.get(root);
     if (e && (forgotten.get(root) ?? 0) === g) e.reports[id] = r;
+    // A click reaches Rust only past the tick, so this is [deploy] naming another host than this detection said.
+    if (r.coverage.state === "notRun" && readsHost(id)) {
+      const det = await slot(() => invoke<unknown>("maint_detect", { root, force: true }), true).then(narrowDetection, () => null);
+      const now = cache.get(root);
+      if (now && det && (forgotten.get(root) ?? 0) === g) now.det = det;
+    }
     return r;
   } finally {
     asking.set(k, (asking.get(k) ?? 1) - 1);

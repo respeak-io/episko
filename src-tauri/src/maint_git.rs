@@ -1,7 +1,7 @@
 //! The local sources (docs/maintenance.md § Adapters): `git-local`, `git-tags`, `changelog`, `deploy-tags`.
 //! Thin wrappers over git.rs's readers; they never fetch, so their facts carry `fetched_at`.
 
-use crate::git::{deploy_lag, fetched_at, hygiene, maint_trunk, newest_tag, release_facts, repo_root_of, tag_at, tag_refs};
+use crate::git::{deploy_lag, fetched_at, hygiene, maint_trunk, may_lazy_fetch, newest_tag, release_facts, repo_root_of, tag_at, tag_refs};
 use crate::maint::{read_capped, Coverage, Ctx, Deployed, EnvTier, Exec, Facts, Read};
 
 fn not_a_repo() -> Coverage {
@@ -76,9 +76,14 @@ pub(crate) fn measure(ctx: &Ctx, mut envs: Vec<Deployed>, mut gaps: Vec<String>,
         gaps.push(format!("behind not counted: {why}"));
     }
     let tags = if envs.iter().any(|e| e.sha.is_some() && e.tag.is_none()) { tag_refs(ctx.root).unwrap_or_default() } else { vec![] };
+    // The forge chooses these commits, and an old git in a partial clone would go and fetch one it lacks.
+    let lazy = trunk.is_ok() && may_lazy_fetch(ctx.root);
+    if lazy {
+        gaps.push("behind not counted: in a partial clone, git before 2.44 could fetch to count it".into());
+    }
     for e in &mut envs {
         let Some(sha) = e.sha.clone() else { continue };
-        if let Ok(t) = &trunk {
+        if let (Ok(t), false) = (&trunk, lazy) {
             match deploy_lag(ctx.root, &sha, t) {
                 Ok(Some(l)) => (e.behind, e.behind_at, e.ahead) = (Some(l.behind), l.behind_at, Some(l.ahead)),
                 Ok(None) => gaps.push(format!("{}: {} is not in this clone; a fetch may bring it", e.env, sha.get(..7).unwrap_or(&sha))),
@@ -246,7 +251,7 @@ mod tests {
         commit(&dir, "three");
         commit(&dir, "four");
         let ex = FakeExec::answering(Err("unused"));
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let r = deploy_tags(&ctx, &ex).unwrap();
         let by = |n: &str| deployed(&r).into_iter().find(|e| e.env == n).unwrap();
         let prod = by("prod");
@@ -270,7 +275,7 @@ mod tests {
         annotated(&dir, 2_000, "prod-1");
         git(&dir, &["checkout", "-q", "main"]);
         commit(&dir, "two");
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let e = deployed(&deploy_tags(&ctx, &FakeExec::answering(Err("unused"))).unwrap()).remove(0);
         assert_eq!((e.behind, e.ahead), (Some(1), Some(1)));
     }
@@ -279,7 +284,7 @@ mod tests {
     fn no_trunk_is_a_gap_and_not_a_repo_is_unsupported() {
         let (dir, root, cfg) = tagged_repo("[deploy]\nenvs = { prod = \"prod-*\" }\n");
         annotated(&dir, 2_000, "prod-1");
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let r = deploy_tags(&ctx, &FakeExec::answering(Err("unused"))).unwrap();
         let e = deployed(&r).remove(0);
         assert_eq!((e.tag.as_deref(), e.behind, e.ahead), (Some("prod-1"), None, None), "not counted is not 0");
@@ -288,7 +293,7 @@ mod tests {
         assert_eq!(*trunk, None);
 
         let plain = scratch_dir().to_string_lossy().to_string();
-        let ctx = Ctx { root: &plain, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &plain, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         assert!(matches!(deploy_tags(&ctx, &FakeExec::answering(Err("unused"))), Err(Coverage::Unsupported { reason }) if reason == "not a git repository"));
     }
 
@@ -299,7 +304,7 @@ mod tests {
         annotated(&dir, 3_000, "v1.0");
         commit(&dir, "two");
         let sha = String::from_utf8_lossy(&std::process::Command::new("git").current_dir(&dir).args(["rev-parse", "HEAD~1"]).output().unwrap().stdout).trim().to_string();
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let mut live = env_named("prod");
         live.sha = Some(sha);
         let mut lost = env_named("staging");
@@ -335,7 +340,7 @@ mod tests {
         commit(&dir, "one");
         let root = dir.to_string_lossy().to_string();
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let ex = FakeExec::answering(Err("unused"));
         assert!(matches!(git_tags(&ctx, &ex), Err(Coverage::Unsupported { .. })), "no remote, no pinned trunk");
         let read = git_local(&ctx, &ex).expect("branches stand without a trunk");
@@ -344,14 +349,14 @@ mod tests {
         std::fs::create_dir_all(dir.join(".episko")).unwrap();
         std::fs::write(dir.join(".episko/episko.toml"), "[maintenance]\ntrunk = \"main\"\n").unwrap();
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         assert!(git_tags(&ctx, &ex).is_ok());
         assert_eq!(git_local(&ctx, &ex).expect("read").gaps.len(), 1, "only the missing remote");
         assert!(ex.calls().is_empty(), "local sources never touch the Exec");
 
         std::fs::write(dir.join(".episko/episko.toml"), "[maintenance]\ntrunk = \"dev\"\n").unwrap();
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         match git_tags(&ctx, &ex) {
             Err(Coverage::Unsupported { reason }) => assert!(reason.contains("\"dev\""), "{reason}"),
             _ => panic!("a trunk that names nothing must not fall back to main"),

@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { $, setHeadPath, takeStage, toast } from "./dom";
+import { $, holdMaintPlace, setHeadPath, takeStage, toast } from "./dom";
 import { readList } from "./store";
 import { basename, esc, escAttr, fmtDayLong } from "./format";
 import { iconFor } from "./icons";
@@ -1322,7 +1322,10 @@ function paintMaint(now: number): void {
   const badge = $("dashMaintN");
   badge.textContent = n ? String(n) : "";
   badge.className = `n${bad ? " l-bad" : n ? " l-warn" : ""}`;
-  if (dashTab === "maint") paint("dashMaint", maintDashHtml(maintNow(now)));
+  if (dashTab === "maint") {
+    const box = $("dashMaint"), html = maintDashHtml(maintNow(now));
+    if (wouldPaint("dashMaint", html)) { painted.set("dashMaint", html); holdMaintPlace(box, html); }
+  }
 }
 
 // Prefilled, never sent, as on the fleet. The target is the finding's, not the stage's:

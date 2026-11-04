@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
@@ -130,7 +130,7 @@ function prodHtml(p: MaintProd, root?: string): string {
 }
 
 // Allow and Disallow tick a `[deploy] host` on this machine and connect nowhere; Check prod does that.
-const ALLOW_TIP = "Let Check prod run one read-only command on this host over your own ssh, from this machine only. Nothing connects now";
+const ALLOW_TIP = `Let Check prod run ${HOST_READ} on this host over your own ssh, from this machine only. Nothing connects now`;
 const allowHtml = (alias: string, on = true) => `<button class="aslink" data-mthost="${on ? "allow" : "deny"}" data-mtkey="${escAttr(alias)}"`
   + ` data-tip="${escAttr(on ? ALLOW_TIP : "Check prod stops reaching this host from this machine")}">${on ? "Allow" : "Disallow"}</button>`;
 // A shell with the command typed in and never sent: the same contract as every other prefill.
@@ -623,7 +623,10 @@ function behindHtml(r: DeployRow): string {
     + (r.ahead ? ` <span class="mt-n ${LEVEL_CLS[lag]}" data-tip="commits live that the trunk lacks">+${r.ahead}</span>` : "");
 }
 function deploysHtml(v: MaintTabView, b: Boards): string {
-  return table([...projCol(b), "Env", "Live", ">Behind main", ">When", ""], b.deploys.map((r) => {
+  // The count is against each row's trunk, and a project's trunk need not be main.
+  const trunks = new Set(b.deploys.flatMap((r) => r.trunk ? [r.trunk] : []));
+  const behind = trunks.size === 1 ? `Behind ${[...trunks][0]}` : "Behind trunk";
+  return table([...projCol(b), "Env", "Live", `>${behind}`, ">When", ""], b.deploys.map((r) => {
     const tip = [r.sha, r.branch && `from ${r.branch}`].filter(Boolean).join("\n");
     const live = r.live ? `<span data-tip="${escAttr(tip)}">${esc(r.live)}</span>` : DASH;
     const last = r.last ? ` ${doorHtml(esc(r.last.text), `mt-v ${LEVEL_CLS[r.last.level]}`, ["deployments", "log", r.root], r.last.url)}` : "";

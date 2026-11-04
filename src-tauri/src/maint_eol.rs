@@ -345,7 +345,7 @@ mod tests {
     }
 
     fn read(root: &str, ex: &FakeExec, cache: &Cache, force: bool) -> Result<Read, Coverage> {
-        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force }, ex, cache)
+        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force, hosts: &[] }, ex, cache)
     }
 
     fn items(r: &Read) -> &[Runtime] {

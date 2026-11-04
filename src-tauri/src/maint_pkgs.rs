@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -17,8 +17,10 @@ use crate::maint_sec::{ver, LOCK_BYTES};
 const NAMES_CAP: usize = 300;
 const WORKERS: usize = 4;
 const SECS: u64 = 20;
+const BUDGET: Duration = Duration::from_secs(60); // a read holds one of the scan's six slots; a click may wait behind it
 const GAPS_SHOWN: usize = 8;
 const NO_ANSWER: &str = "the registry did not answer";
+const NOT_ASKED: &str = "not asked: the read ran out of time";
 const KEEP: Duration = Duration::from_secs(6 * 3600);
 const FORCE_KEEP: Duration = Duration::from_secs(600);
 const STALL: Duration = Duration::from_secs(SECS + 30);
@@ -27,6 +29,7 @@ const NPM_HOSTS: &[&str] = &["https://registry.npmjs.org", "http://registry.npmj
 /// What a registry said of one name: its newest release, or why it named none.
 type Answer = Result<String, &'static str>;
 type Cache = Shared<(&'static str, String), Result<Answer, String>>;
+type Over<'a> = &'a (dyn Fn() -> bool + Sync);
 /// Per registry and name, shared by every project and scan: six projects asking for one package wait on one GET.
 static LATEST: Cache = Shared::new(KEEP, FORCE_KEEP, STALL);
 
@@ -113,19 +116,20 @@ const CRATES: Registry = Registry {
 };
 
 /// `lost` counts the asks in a row that reached nobody: at `WORKERS` the rest of the read stops, or a
-/// black-holed host costs `SECS` a name while holding one of the scan's few slots. A status is an answer.
+/// black-holed host costs `SECS` a name while holding one of the scan's few slots. A 429 or a 5xx counts:
+/// a registry refusing or failing is not helped by the other 296 names. Any other status is an answer.
 fn ask(ex: &dyn Exec, reg: &Registry, name: &str, lost: &AtomicUsize) -> Result<Answer, String> {
     if lost.load(Ordering::Relaxed) >= WORKERS {
         return Err(NO_ANSWER.into());
     }
     let r = match ex.http(&HttpReq { url: (reg.latest_url)(name), body: None, token: None, secs: SECS, report: false }) {
-        Ok(r) => {
+        Ok(r) if r.code != 429 && r.code < 500 => {
             lost.store(0, Ordering::Relaxed);
             r
         }
-        Err(e) => {
+        other => {
             lost.fetch_add(1, Ordering::Relaxed);
-            return Err(e);
+            return Err(other.map_or_else(|e| e, |r| format!("{} answered HTTP {}", reg.who, r.code)));
         }
     };
     match r.code {
@@ -150,14 +154,18 @@ fn latest(ex: &dyn Exec, reg: &Registry, name: &str, force: bool, cache: &Cache,
     if mine { got } else { ask(ex, reg, name, lost) }
 }
 
-/// Every name asked, `WORKERS` at a time, each answer at its name's index.
-fn ask_all(ex: &dyn Exec, reg: &Registry, names: &[String], force: bool, cache: &Cache) -> Vec<Result<Answer, String>> {
+/// Every name asked, `WORKERS` at a time, each answer at its name's index, until `over` says the read has
+/// had its time. What it asked is kept per name, so the next read gets further.
+fn ask_all(ex: &dyn Exec, reg: &Registry, names: &[String], force: bool, cache: &Cache, over: Over) -> Vec<Result<Answer, String>> {
     let (next, lost) = (AtomicUsize::new(0), AtomicUsize::new(0));
     let mut got: Vec<Option<Result<Answer, String>>> = vec![None; names.len()];
     std::thread::scope(|s| {
         let workers: Vec<_> = (0..WORKERS.min(names.len())).map(|_| s.spawn(|| {
             let mut out = vec![];
             loop {
+                if over() {
+                    break out;
+                }
                 let i = next.fetch_add(1, Ordering::Relaxed);
                 let Some(n) = names.get(i) else { break out };
                 out.push((i, latest(ex, reg, n, force, cache, &lost)));
@@ -169,7 +177,7 @@ fn ask_all(ex: &dyn Exec, reg: &Registry, names: &[String], force: bool, cache: 
             }
         }
     });
-    got.into_iter().map(|r| r.unwrap_or_else(|| Err(NO_ANSWER.into()))).collect()
+    got.into_iter().map(|r| r.unwrap_or_else(|| Err(NOT_ASKED.into()))).collect()
 }
 
 /// One `.npmrc`'s registry keys and nothing else in it. One that exists and cannot be read sends nothing.
@@ -321,7 +329,7 @@ fn cargo_dev(root: &str, wants: &mut BTreeMap<String, Want>) {
     }
 }
 
-fn read_with(ctx: &Ctx, ex: &dyn Exec, reg: &Registry, cache: &Cache) -> Result<Read, Coverage> {
+fn read_with(ctx: &Ctx, ex: &dyn Exec, reg: &Registry, cache: &Cache, over: Over) -> Result<Read, Coverage> {
     let mut gaps = vec![];
     let mut wants = wanted(ctx.root, reg, &mut gaps)?;
     if reg.eco == CRATES.eco {
@@ -335,15 +343,19 @@ fn read_with(ctx: &Ctx, ex: &dyn Exec, reg: &Registry, cache: &Cache) -> Result<
     let asked: Vec<String> = wants.iter().filter(|(n, w)| why(n, w).is_none()).map(|(n, _)| n.clone()).collect();
     let truncated = asked.len() > NAMES_CAP;
     let names = &asked[..asked.len().min(NAMES_CAP)];
-    let answers: BTreeMap<&str, Result<Answer, String>> = names.iter().map(String::as_str).zip(ask_all(ex, reg, names, ctx.force, cache)).collect();
+    let answers: BTreeMap<&str, Result<Answer, String>> = names.iter().map(String::as_str).zip(ask_all(ex, reg, names, ctx.force, cache, over)).collect();
     let failed: Vec<(&str, &String)> = answers.iter().filter_map(|(n, a)| a.as_ref().err().map(|e| (*n, e))).collect();
     if !names.is_empty() && failed.len() == names.len() {
         let reasons: BTreeSet<&str> = failed.iter().map(|(_, e)| e.as_str()).collect();
         return Err(Coverage::Error { reason: reasons.into_iter().collect::<Vec<_>>().join("; ") });
     }
+    let (late, failed): (Vec<_>, Vec<_>) = failed.into_iter().partition(|(_, e)| e.as_str() == NOT_ASKED);
     gaps.extend(failed.iter().take(GAPS_SHOWN).map(|(n, e)| format!("{n}: {e}")));
     if failed.len() > GAPS_SHOWN {
         gaps.push(format!("{} more names failed", failed.len() - GAPS_SHOWN));
+    }
+    if !late.is_empty() {
+        gaps.push(format!("{} names not asked: a read stops after {}s, and the next one gets further", late.len(), BUDGET.as_secs()));
     }
     let (mut items, mut current) = (vec![], 0u32);
     for (name, w) in &wants {
@@ -353,7 +365,7 @@ fn read_with(ctx: &Ctx, ex: &dyn Exec, reg: &Registry, cache: &Cache) -> Result<
             (None, None) => continue, // past the cap: `truncated` says so
             (None, Some(Ok(Ok(l)))) => (Some(l.clone()), None),
             (None, Some(Ok(Err(e)))) => (None, Some(*e)),
-            (None, Some(Err(_))) => (None, Some(NO_ANSWER)),
+            (None, Some(Err(e))) => (None, Some(if e == NOT_ASKED { NOT_ASKED } else { NO_ANSWER })),
         };
         // At or past its newest everywhere it is installed: counted, never on the wire.
         if latest.as_deref().is_some_and(|l| w.installed.iter().all(|v| v == l || ver(v) > ver(l))) {
@@ -372,12 +384,14 @@ fn read_with(ctx: &Ctx, ex: &dyn Exec, reg: &Registry, cache: &Cache) -> Result<
 /// The direct npm dependencies and the registry's `latest` for each: a `public` read, so a scan makes
 /// it only on a machine that opted in, and a click once.
 pub(crate) fn npm_registry(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
-    read_with(ctx, ex, &NPM, &LATEST)
+    let start = Instant::now();
+    read_with(ctx, ex, &NPM, &LATEST, &|| start.elapsed() >= BUDGET)
 }
 
 /// The direct crates.io dependencies and the index's newest release for each, as `npm_registry`.
 pub(crate) fn crates_registry(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
-    read_with(ctx, ex, &CRATES, &LATEST)
+    let start = Instant::now();
+    read_with(ctx, ex, &CRATES, &LATEST, &|| start.elapsed() >= BUDGET)
 }
 
 #[cfg(test)]
@@ -419,7 +433,7 @@ mod tests {
     }
 
     fn read(root: &str, ex: &FakeExec, reg: &Registry, cache: &Cache, force: bool) -> Result<Read, Coverage> {
-        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force }, ex, reg, cache)
+        read_with(&Ctx { root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force, hosts: &[] }, ex, reg, cache, &|| false)
     }
 
     fn facts(r: &Read) -> (&[PkgLatest], u32) {
@@ -553,9 +567,14 @@ mod tests {
         let Err(Coverage::Error { reason }) = read(&root, &ex, &NPM, &fresh(), true) else { panic!() };
         assert!(reason.contains("Operation timed out"), "{reason}");
         assert!(ex.calls().len() <= 2 * WORKERS, "a black hole costs one timeout a worker, not 25 minutes: {}", ex.calls().len());
-        let status = FakeExec::answering(Ok("")).coded(&["curl"], 503);
-        assert!(matches!(read(&root, &status, &NPM, &fresh(), true), Err(Coverage::Error { .. })));
-        assert_eq!(status.calls().len(), NAMES_CAP, "a status is an answer, however unwelcome");
+        for code in [503, 429] {
+            let status = FakeExec::answering(Ok("")).coded(&["curl"], code);
+            assert!(matches!(read(&root, &status, &NPM, &fresh(), true), Err(Coverage::Error { .. })));
+            assert!(status.calls().len() <= 2 * WORKERS, "{code} is no reason to ask 296 more times: {}", status.calls().len());
+        }
+        let gone = FakeExec::answering(Ok("")).coded(&["curl"], 404);
+        let r = read(&root, &gone, &NPM, &fresh(), true).unwrap();
+        assert_eq!((gone.calls().len(), facts(&r).0.len()), (NAMES_CAP, NAMES_CAP), "a 404 says something about that name alone");
         let some = repo(&[("package-lock.json", &npm_lock(&[("lodash", "4.17.20"), ("x1", "1.0.0"), ("x2", "1.0.0"), ("x3", "1.0.0"), ("minimist", "1.2.5")]))]);
         let few = answers();
         let r = read(&some, &few, &NPM, &fresh(), true).unwrap();
@@ -568,6 +587,26 @@ mod tests {
         let ex = answers().coded(&["curl", &npm_url("lodash")], 200).coded(&["curl"], 503);
         let r = read(&many, &ex, &NPM, &fresh(), true).unwrap();
         assert_eq!((facts(&r).0.len(), r.gaps.len(), r.gaps.last().unwrap().as_str()), (21, GAPS_SHOWN + 1, "12 more names failed"), "every name stays unplaced, and the tip stays short");
+    }
+
+    #[test]
+    fn a_read_out_of_time_stops_asking_says_so_and_the_next_one_gets_further() {
+        let deps: Vec<(String, &str)> = (0..40).map(|i| (format!("p{i:02}"), "1.0.0")).collect();
+        let refs: Vec<(&str, &str)> = deps.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+        let root = repo(&[("package-lock.json", &npm_lock(&refs))]);
+        let ctx = Ctx { root: &root, cfg: &MaintConfig::default(), forge: &NONE, account: None, force: false, hosts: &[] };
+        let (cache, polls) = (fresh(), AtomicUsize::new(0));
+        let first = FakeExec::answering(Ok("{\"latest\": \"2.0.0\"}"));
+        let r = read_with(&ctx, &first, &NPM, &cache, &|| polls.fetch_add(1, Ordering::Relaxed) >= 10).unwrap();
+        assert_eq!(first.calls().len(), 10, "no name is asked once the time is up");
+        assert_eq!(r.gaps, ["30 names not asked: a read stops after 60s, and the next one gets further"]);
+        let unasked = facts(&r).0.iter().filter(|p| p.why.as_deref() == Some(NOT_ASKED)).count();
+        assert_eq!((unasked, facts(&r).0.len()), (30, 40), "unplaced, so never counted as current");
+        let next = FakeExec::answering(Ok("{\"latest\": \"2.0.0\"}"));
+        let r = read_with(&ctx, &next, &NPM, &cache, &|| false).unwrap();
+        assert_eq!((next.calls().len(), r.gaps.len()), (30, 0), "the 10 it has are not asked twice");
+        let none = read_with(&ctx, &next, &NPM, &fresh(), &|| true);
+        assert!(matches!(none, Err(Coverage::Error { ref reason }) if reason == NOT_ASKED), "nothing asked is no read");
     }
 
     #[test]

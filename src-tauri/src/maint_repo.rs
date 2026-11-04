@@ -340,7 +340,7 @@ mod tests {
     fn read_as(root: &str, toml: &str, f: ReadFn, ex: &FakeExec, force: bool) -> Result<Read, Coverage> {
         let cfg = parse_maint(toml);
         let forge = Forge { kind: ForgeKind::Github, host: Some("github.com".into()), path: Some("acme/app".into()), by: ForgeBy::Table, api: None };
-        f(&Ctx { root, cfg: &cfg, forge: &forge, account: None, force }, ex)
+        f(&Ctx { root, cfg: &cfg, forge: &forge, account: None, force, hosts: &[] }, ex)
     }
 
     fn of(r: &Read) -> (bool, Vec<(u64, CiStatus)>) {
@@ -641,7 +641,7 @@ mod tests {
     fn gitlab_read(ex: &FakeExec) -> Result<Read, Coverage> {
         let cfg = parse_maint("");
         let forge = Forge { kind: ForgeKind::Gitlab, host: Some("gitlab.com".into()), path: Some("gitlab-org/cli".into()), by: ForgeBy::Table, api: None };
-        gitlab_work(&Ctx { root: "/maint-test/gl", cfg: &cfg, forge: &forge, account: None, force: true }, ex)
+        gitlab_work(&Ctx { root: "/maint-test/gl", cfg: &cfg, forge: &forge, account: None, force: true, hosts: &[] }, ex)
     }
 
     #[test]

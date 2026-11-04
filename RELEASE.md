@@ -598,7 +598,31 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       for what could not be read. *SSH* opens a shell with `ssh <alias>` typed and **not sent**,
       *Brief* starts an agent with the brief typed and **not sent**, and *Disallow* puts the card
       back. Two projects naming one host draw one card, and a line its Brief does not say stays
-      below the boards with its own *Fix*.
+      below the boards with its own *Fix*. Allow a host, change `[deploy] host` in the file by hand
+      and press *Check* without rescanning: nothing connects to the new name, the toast says so,
+      and the card now names it and offers *Allow*.
+- [ ] **Host and production lines stay in the folder.** Tick one host line and one address line:
+      the bar says *2 in their projects' folders* and no `maint/` worktree appears. Tick a second
+      line of the same host: the bar says another ticked line has that host's brief and Start is
+      disabled until it is unticked.
+- [ ] **Flaky jobs.** On *Delivery* the board states its window, the *Last* link opens that job's
+      log and *Fix* prefills an agent and does not send. Refuse the token the re-run read needs
+      (or point at a repo it cannot see): the board goes and Coverage has a row saying why.
+- [ ] **Deployments.** On *Delivery* the *Behind* column names the project's trunk (on a repo
+      whose trunk is `dev`, not *main*). A number opens Today's Landed, a failed attempt's link
+      opens its log, and an environment idle past 180 days is listed but colours nothing.
+- [ ] **Since last week.** The band appears only once a project has two marks a week apart, a
+      line opens its board, and opening the view triggers no scan of its own. A project with a
+      registry read and no update bot (a GitLab repo with a lockfile) adds nothing to *Not compared*.
+- [ ] **Packages.** The Settings switch and the *Check with* door both name who receives what.
+      *Behind* opens the dependency view's *Out of date* tab, *Upgrade* prefills and does not
+      send, and a floor shows as `?` or `+`. With a registry slow enough to pass 60 s (a
+      throttled network), the read stops, the cell carries a `+`, and a second check gets further.
+      Press *Check prod* during a long scan: it answers ahead of the scan's queue.
+- [ ] **The keyboard survives a repaint.** Tab to a tick and press Space: focus stays on it. Tab
+      to a host's *Check* and press Enter: when it turns to *checking…*, focus lands on what stands
+      there rather than on nothing, and Tab carries on from there. Scroll a wide board sideways and
+      let an answer land: it stays where you left it.
 
 ### Sessions Episko doesn't own
 

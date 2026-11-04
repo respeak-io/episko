@@ -735,7 +735,7 @@ mod tests {
 
     fn read_with(forge: &Forge, account: Option<&str>, read: crate::maint::ReadFn, ex: &FakeExec) -> Result<Read, Coverage> {
         let cfg = MaintConfig::default();
-        read(&Ctx { root: "/maint-test/ci", cfg: &cfg, forge, account, force: true }, ex)
+        read(&Ctx { root: "/maint-test/ci", cfg: &cfg, forge, account, force: true, hosts: &[] }, ex)
     }
 
     fn runs_of(r: &Read) -> (&str, &[CiRun]) {
@@ -1096,7 +1096,7 @@ mod tests {
     fn live_glab_reads_a_public_gitlab_project() {
         let root = crate::testutil::scratch_dir().to_string_lossy().to_string();
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &gitlab(), account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &gitlab(), account: None, force: true, hosts: &[] };
         let ex = crate::maint::SysExec { cost: crate::maint::Cost::Forge };
         let r = gitlab_ci(&ctx, &ex).unwrap_or_else(|c| panic!("{c:?}"));
         let (branch, runs) = runs_of(&r);
@@ -1390,7 +1390,7 @@ mod tests {
         let root = crate::testutil::scratch_dir().to_string_lossy().to_string();
         let cfg = MaintConfig::default();
         let forge = reruns_on("respeak-io/episko");
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true, hosts: &[] };
         let ex = crate::maint::SysExec { cost: crate::maint::Cost::Forge };
         let r = github_actions_reruns(&ctx, &ex).unwrap_or_else(|c| panic!("{c:?}"));
         assert!(matches!(r.facts, Facts::CiReruns { runs, .. } if runs > 0), "{:?}", r.facts);

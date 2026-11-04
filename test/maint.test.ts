@@ -13,7 +13,7 @@ import {
   type Band, type SessionCtx, type SessionLine, type SessionPlan, type Verb,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
-  currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
+  addCoverCaps, onClickOnly, sessionKind, currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
@@ -23,7 +23,7 @@ import { whereProblem } from "../src/claim";
 import type { WtHead } from "../src/types";
 import { fmtDay } from "../src/format";
 import { briefFor } from "../src/maintbrief";
-import { FACETS, type Facet } from "../src/maintsources";
+import { FACETS, SOURCES, type Facet, type MaintCap } from "../src/maintsources";
 
 // Unknown is never green: every rule here that fails, fails by drawing a healthy dot over a fact
 // nobody read. The wire half is pinned by the fixture maint.rs writes (wire_fixture_is_current).
@@ -394,8 +394,29 @@ describe("worseOf: a facet's second kind of facts", () => {
   });
 });
 
+describe("what the all-clear says it covered", () => {
+  it("lists what a source that did not answer would have covered, and what it can never see", () => {
+    const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
+    const inp = input(ok(GHA, ci(run("build", "pass", S - H))), not("github-actions-reruns", "ci", { state: "noAccess", reason: "x", fix: null }), not("npm-registry", "deps", { state: "notRun" }));
+    addCoverCaps(inp, sees, blind);
+    expect(sees.has("ci.default-branch")).toBe(true);
+    for (const c of ["ci.reruns", "deps.latest", "deps.transitive", "ci.external"] as const) expect(blind.has(c), c).toBe(true);
+    expect(sees.has("ci.reruns")).toBe(false);
+    const skipped = new Set<MaintCap>(), left = new Set<MaintCap>();
+    addCoverCaps({ ...inp, skip: [GHA] }, skipped, left);
+    expect([skipped.has("ci.default-branch"), left.has("ci.default-branch")], "a read this machine skips covers nothing").toEqual([false, true]);
+  });
+});
+
 describe("flaky jobs: noise beside a red default branch, never in place of it", () => {
   const RR = "github-actions-reruns";
+  it("says a failed re-run read in Coverage beside a good runs read, where no board can", () => {
+    const refused = not(RR, "ci", { state: "noAccess", reason: "token scope", fix: "gh auth refresh" });
+    const rows = (inp: MaintInput) => coverGroups("delivery", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).map((g) => g.source);
+    expect(rows(input(ok(GHA, ci(run("build", "pass", S - H))), refused))).toEqual([RR]);
+    expect(rows(input(ok(GHA, ci()), refused)), "beside a muted cell").toContain(RR);
+    expect(rows(input(ok(GHA, ci(run("build", "pass", S - H))), ok(RR, { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 0, jobs: [] }))), "it answered").toEqual([]);
+  });
   const seen = (at: number, passed: boolean) => ({ sha: "abcdef1234", branch: "feature", at, passed, url: `https://ci.example/job/${at}` });
   // `passed` of `reruns` occurrences passed, the newest first, a day apart.
   const rjob = (job: string, passed: number, reruns = passed): RerunJob => ({ workflow: "ci", job, reruns, passed, steps: ["Cargo test"],
@@ -1848,6 +1869,14 @@ describe("a host's vitals", () => {
     const probes = (o = {}): Facts => ({ kind: "probes", items: [{ ...fine, ...o }] });
     const both = (a: Facts, b: Facts) => input(ok("a", a), ok("b", b));
 
+    it("judges a host by its own report's cap, so a cut address list cannot hide a named service that is down", () => {
+      const down = hosts({ compose: ["web"], containers: [] });
+      const cut = input(ok("a", probes(), { truncated: true }), ok("b", down));
+      expect(cell("prod", cut)).toMatchObject({ state: "read", level: "bad", text: "web not running" });
+      expect(projectBand(facetCells(cut, MAINT_DEFAULTS, NOW))).toBe("needs");
+      expect(cell("prod", input(ok("a", probes()), ok("b", down, { truncated: true }))), "its own cap is the one that says").toMatchObject({ level: "muted", text: "containers unknown" });
+    });
+
     it("lets the worse of probes and hosts speak, keeps both tips, and draws the dot only over two fine answers", () => {
       expect(cell("prod", both(probes(), hosts()))).toMatchObject({ level: "ok", text: "" });
       expect(cell("prod", both(probes({ code: 502 }), hosts({ updates: 3 })))).toMatchObject({ level: "bad", text: "app 502" });
@@ -1869,15 +1898,32 @@ describe("a host's vitals", () => {
       const redUrl = takeSnap("/r", input(ok(HP, probes({ code: 502 })), ok(SH, hosts())), NOW - 1000);
       const blank = not(HP, "prod", { state: "noTool", tool: "curl", fix: null });
       expect(prodOf(takeSnap("/r", input(blank, ok(SH, hosts())), NOW, redUrl)).lines, "the other way round").toEqual(["prod:app"]);
-      // A fresh answer from both clears it, and one nobody asked or this machine skips is no failed read.
+      // A fresh answer clears a kind's own lines; a host this machine skips or no longer names keeps none.
       expect(prodOf(takeSnap("/r", input(ok(HP, probes()), ok(SH, hosts())), NOW, red)).lines).toEqual([]);
-      expect(prodOf(takeSnap("/r", input(ok(HP, probes()), not(SH, "prod", { state: "notRun" })), NOW, red)).lines).toEqual([]);
       expect(prodOf(takeSnap("/r", { ...input(ok(HP, probes()), down), skip: [SH] }, NOW, red)).lines).toEqual([]);
-      // Only a fresh red replaces it.
-      expect(prodOf(takeSnap("/r", input(ok(HP, probes({ code: 502 })), down), NOW, red)).lines).toEqual(["prod:app"]);
+      expect(prodOf(takeSnap("/r", input(ok(HP, probes())), NOW, red)).lines).toEqual([]);
+      // A kind nobody asked has said nothing either, so the other's dot is not the project's.
+      const unasked = prodOf(takeSnap("/r", input(ok(HP, probes()), not(SH, "prod", { state: "notRun" })), NOW, red));
+      expect(unasked.lines).toEqual(["prod:host:disk"]);
+      expect(unasked.cell).toMatchObject({ level: "bad", at: NOW - 1000 });
+      // A fresh red of one kind sits beside what the other last said, and speaks for itself.
+      const beside = prodOf(takeSnap("/r", input(ok(HP, probes({ code: 502 })), down), NOW, red));
+      expect(beside.lines.sort()).toEqual(["prod:app", "prod:host:disk"]);
+      expect(beside.cell).toMatchObject({ level: "bad", text: "app 502" });
+      expect(beside.cell?.at).toBeUndefined();
+      // The kind that answered is not held to its old red because the other still fails.
+      const cleared = prodOf(takeSnap("/r", input(ok(HP, probes()), down), NOW, redUrl));
+      expect(cleared.lines).toEqual([]);
+      expect(cleared.cell).toMatchObject({ level: "ok", text: "" });
+      // Neither answered: the whole facet stands, as any other's does.
+      const silent = prodOf(takeSnap("/r", input(blank, down), NOW, red));
+      expect(silent.lines).toEqual(["prod:host:disk"]);
+      expect(silent.cell).toMatchObject({ level: "bad", at: NOW - 1000 });
       const row = (inp: MaintInput) => coverGroups("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).map((g) => [g.source, g.why]);
       expect(row(input(ok(HP, probes()), down)), "beside the addresses' dot").toEqual([[SH, "read failed"]]);
       expect(row(input(blank, ok(SH, hosts()))), "beside the host's").toEqual([[HP, "tool missing"]]);
+      expect(row(input(blank, ok(SH, hosts({ disks: [] })))), "beside a muted cell too").toEqual(expect.arrayContaining([[HP, "tool missing"]]));
+      expect(row(input(ok(HP, probes({ certNotAfter: null })), down))).toEqual(expect.arrayContaining([[SH, "read failed"]]));
       expect(row(input(ok(HP, probes()), ok(SH, hosts())))).toEqual([]);
     });
 
@@ -2222,7 +2268,11 @@ describe("a host's vitals", () => {
     it("names every source it asks by its label, and each host it reaches", () => {
       expect(prodTip(["http-probe"], [])).toBe("Asks from this machine, once: URL checks: each [deploy] address once, and its certificate. Nothing else connects");
       expect(prodTip(["http-probe", "ssh-host"], ["prod-1", "edge"])).toBe(
-        "Asks from this machine, once: URL checks: each [deploy] address once, and its certificate; SSH host: one read-only command on prod-1, edge, over your own ssh. Nothing else connects");
+        "Asks from this machine, once: URL checks: each [deploy] address once, and its certificate; SSH host: one fixed read-only script (disk, load, pending updates, reboot, containers) on prod-1, edge, over your own ssh. Nothing else connects");
+    });
+
+    it("asks only what no opt-in could let a scan run: a public source keeps its own door", () => {
+      for (const d of SOURCES) expect(onClickOnly(d), d.id).toBe(d.cost === "remote" || d.cost === "tool");
     });
 
     it("says what no project had to ask, from the same labels' needs", () => {
@@ -2913,6 +2963,24 @@ describe("the last scan kept whole (cc-maint-scan)", () => {
     return { at, account: "me", det: inp.det!, reports: { ...inp.reports } };
   };
 
+  it("spends a Packages list before it spends a project: the red CI beside it stays kept", () => {
+    const items = Array.from({ length: 300 }, (_, i) => ({ name: `p${i}`, ecosystem: "npm", importers: ["."], installed: ["1.0.0"], latest: "2.0.0", dev: false, url: null, why: null }));
+    const big = { ...scan(NOW), reports: { ...scan(NOW).reports, "npm-registry": ok("npm-registry", { kind: "packages", current: 0, items }) } };
+    const all = { "/big": big, "/red": scan(NOW - H) };
+    const room = JSON.stringify({ "/big": scan(NOW), "/red": scan(NOW - H) }).length + 400;
+    expect(JSON.stringify(all).length, "the list alone would have evicted /red").toBeGreaterThan(room);
+    const out = packKept(all, room);
+    expect(Object.keys(out)).toEqual(["/big", "/red"]);
+    expect(out["/red"].reports[GHA].facts?.kind).toBe("ciRuns");
+    expect(out["/big"].reports[GHA].facts?.kind).toBe("ciRuns");
+    expect(out["/big"].reports["npm-registry"]).toMatchObject({ coverage: { state: "notRun" }, at: null, gaps: [], facts: null });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(room);
+    expect(clampKept(JSON.parse(JSON.stringify(out)))["/big"].reports["npm-registry"].coverage, "the store reads it back as unasked").toEqual({ state: "notRun" });
+    expect(packKept(all)["/big"], "with room it stays whole").toEqual(big);
+    const older = { "/new": scan(NOW), "/big": { ...big, at: NOW - D } };
+    expect(packKept(older, JSON.stringify(older).length)["/big"].reports["npm-registry"].facts, "the list that fits is kept").not.toBeNull();
+  });
+
   it("round-trips through the store, so a boot draws exactly what the scan read", () => {
     const k = { "/r": scan(NOW) };
     expect(clampKept(JSON.parse(JSON.stringify(k)))).toEqual(k);
@@ -2973,6 +3041,16 @@ describe("the week's marks (cc-maint-week)", () => {
     });
     const json = JSON.stringify(m);
     for (const s of ["https://", "lodash", "Prototype pollution", "Update p0", ".nvmrc"]) expect(json).not.toContain(s);
+  });
+
+  it("reads a registry with no update bot as nothing to compare, so the band says nothing of it", () => {
+    const read = ok("npm-registry", { kind: "packages", current: 3, items: [] }), unasked = not("npm-registry", "deps", { state: "notRun" });
+    for (const r of [read, unasked]) expect(takeMark(input(r), NOON, null).none, r.coverage.state).toContain("deps");
+    expect(takeMark(input(read, ok("dependabot-prs", prs(1, { bot: "dependabot" }))), NOON, null).none, "a bot to read").not.toContain("deps");
+    const marked: MaintInput = { ...input(read), det: det(["npm-registry"], { markers: [{ facet: "deps", label: "Renovate", found: ["renovate.json"] }] }) };
+    expect(takeMark(marked, NOON, null).none, "a bot nothing can read yet is still not compared").not.toContain("deps");
+    const week = weekDigest([{ root: "/r", base: takeMark(input(read), NOON, "me"), now: takeMark(input(read), NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
+    expect(week.gaps.filter((g) => g.facet === "deps")).toEqual([]);
   });
 
   it("leaves out a truncated or failed source, and a facet with no verdict is null", () => {
@@ -3692,13 +3770,32 @@ describe("a maintenance session", () => {
       expect(p.skipped[0].open).toBe(false);
     });
 
+    it("runs a Fix that only reads production in the project's folder, and any other Fix on its branch", () => {
+      for (const key of ["prod:api", "prod:cert:api", "prod:host:disk", "release:deploy-failed"]) {
+        expect(sessionKind(line(key)), key).toBe("here");
+        expect(sessionPlan([at(line(key))], ctx()).rows[0], key).toMatchObject({ where: { kind: "here" }, branch: null });
+      }
+      for (const key of ["ci", "ci:flaky", "security:code"]) expect(sessionKind(line(key)), key).toBe("branch");
+      expect(sessionKind(line("prod:setup", "setup")), "setting up [deploy] writes a file").toBe("branch");
+      expect(sessionKind(line("deps:b", "review")), "no agent's work, whatever the key").toBeNull();
+    });
+
+    it("starts one agent per host of a project, since one brief names everything it has", () => {
+      const p = sessionPlan([at(line("prod:host:disk")), at(line("prod:host:reboot")), at(line("prod:api"))], ctx());
+      expect(p.rows.map((r) => r.key)).toEqual(["prod:host:disk", "prod:api"]);
+      expect(p.skipped.map((s) => [s.key, s.why, s.open])).toEqual([["prod:host:reboot", "acme: another ticked line has this host's brief", false]]);
+      expect(sessionGate(p, true), "said, not dropped").toBe("acme: another ticked line has this host's brief");
+      const two = sessionPlan([at(line("prod:host:disk", "fix", { root: "/a" })), at(line("prod:host:disk", "fix", { root: "/b" }))], ctx());
+      expect(two.rows.map((r) => r.root), "each project's brief names its own services").toEqual(["/a", "/b"]);
+    });
+
     it("runs Push, Tidy, Draft release and Plan deploy in the project's folder, with no branch", () => {
       const p = sessionPlan([at(line("git:unpushed", "push")), at(line("git:tidy", "tidy")), at(line("release", "release")), at(line("release:deploy", "deploy"))], ctx());
       expect(p.rows.map((r) => r.where)).toEqual([{ kind: "here" }, { kind: "here" }, { kind: "here" }, { kind: "here" }]);
       expect(p.rows.every((r) => r.branch === null)).toBe(true);
     });
 
-    it("ticks a flaky job and both deployment lines: each diagnosis on its own branch, the plan in the folder", () => {
+    it("ticks a flaky job and both deployment lines: the code work on its branch, the two that write nothing in the folder", () => {
       const inp = input(ok("g", hyg()),
         ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 1, jobs: [{ workflow: "ci", job: "e2e", reruns: 2, passed: 2, steps: [], seen: [] }] }),
         ok("github-deployments", { kind: "deployments", trunk: "origin/main", fetchedAt: S - H, envs: [{ env: "prod", tier: "production", sha: "a".repeat(40), tag: null, branch: null, at: S - D, url: null,
@@ -3711,7 +3808,7 @@ describe("a maintenance session", () => {
       expect(skipped).toEqual([]);
       expect(rows.map((r) => r.where)).toEqual([
         { kind: "new", branch: "maint/ci-flaky", base: "origin/main" },
-        { kind: "new", branch: "maint/release-deploy-failed", base: "origin/main" },
+        { kind: "here" },
         { kind: "here" },
       ]);
     });
@@ -3794,9 +3891,9 @@ describe("a maintenance session", () => {
     });
 
     it("never lands two ticked lines of one project on one branch", () => {
-      const p = sessionPlan([at(line("prod:a.b")), at(line("prod:a-b"))], ctx());
-      expect(p.rows.map((r) => r.key)).toEqual(["prod:a.b"]);
-      expect(p.skipped[0].why).toBe("acme: another ticked line lands on maint/prod-a-b");
+      const p = sessionPlan([at(line("ci:a.b")), at(line("ci:a-b"))], ctx());
+      expect(p.rows.map((r) => r.key)).toEqual(["ci:a.b"]);
+      expect(p.skipped[0].why).toBe("acme: another ticked line lands on maint/ci-a-b");
       const two = sessionPlan([at(line("ci", "fix", { root: "/a" })), at(line("ci", "fix", { root: "/b" }))], ctx());
       expect(two.rows).toHaveLength(2);
     });

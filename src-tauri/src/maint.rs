@@ -1493,13 +1493,15 @@ pub(crate) mod exec {
 // ---------- the registry, the gate and the cache ----------
 
 /// What a read gets besides its `Exec`. `account` is the project's GitHub pin, passed to every `gh`;
-/// `force` reaches past a cache the read shares with another surface (`deps.rs`'s).
+/// `force` reaches past a cache the read shares with another surface (`deps.rs`'s); `hosts` is what this
+/// machine has ticked (`cc-maint-prefs`), the one thing `ssh-host` may connect to.
 pub(crate) struct Ctx<'a> {
     pub(crate) root: &'a str,
     pub(crate) cfg: &'a MaintConfig,
     pub(crate) forge: &'a Forge,
     pub(crate) account: Option<&'a str>,
     pub(crate) force: bool,
+    pub(crate) hosts: &'a [String],
 }
 
 pub(crate) struct Read {
@@ -1630,7 +1632,7 @@ fn read_cached(root: &str, id: &str, meta: &SourceMeta, read: ReadFn, ctx: &Ctx,
     rep
 }
 
-fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, account: Option<&str>) -> SourceReport {
+fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, account: Option<&str>, hosts: &[String]) -> SourceReport {
     let Some((meta, def)) = meta_of(id) else {
         return report(id, None, Coverage::Error { reason: format!("{id} is not a maintenance source") });
     };
@@ -1644,7 +1646,7 @@ fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, acco
         };
         return report(id, Some(meta), Coverage::Unsupported { reason: reason.into() });
     }
-    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account, force };
+    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account, force, hosts };
     read_cached(&det.repo_root, id, meta, def.read, &ctx, &SysExec { cost: meta.cost }, mode, public, force, account)
 }
 
@@ -1743,10 +1745,10 @@ pub(crate) fn maint_detect(root: String, force: bool) -> Detection {
 /// One source of one project, so a slow `gh` never holds a card. `mode` is `scan` or
 /// `explicit`; anything else is read as `scan`, the class that refuses more.
 #[tauri::command]
-pub(crate) async fn maint_read(root: String, source: String, mode: String, public: bool, force: bool, account: Option<String>) -> SourceReport {
+pub(crate) async fn maint_read(root: String, source: String, mode: String, public: bool, force: bool, account: Option<String>, hosts: Vec<String>) -> SourceReport {
     let id = source.clone();
     let mode = if mode == "explicit" { Mode::Explicit } else { Mode::Scan };
-    tauri::async_runtime::spawn_blocking(move || read_source(&root, &source, mode, public, force, account.as_deref()))
+    tauri::async_runtime::spawn_blocking(move || read_source(&root, &source, mode, public, force, account.as_deref(), &hosts))
         .await
         .unwrap_or_else(|e| report(&id, meta_of(&id).map(|(m, _)| m), Coverage::Error { reason: format!("the read failed: {e}") }))
 }
@@ -1797,7 +1799,7 @@ mod tests {
             let cfg = MaintConfig::default();
             let forge = Forge { kind: ForgeKind::Unknown, host: None, path: None, by: ForgeBy::Table, api: None };
             let root = dir.to_string_lossy().to_string();
-            let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true };
+            let ctx = Ctx { root: &root, cfg: &cfg, forge: &forge, account: None, force: true, hosts: &[] };
             assert!(matches!(crate::maint_git::changelog(&ctx, &FakeExec::answering(Ok(""))), Err(Coverage::Unsupported { .. })));
         }
     }
@@ -1944,10 +1946,11 @@ mod tests {
         assert!(serde_json::from_str::<Manifest>(&extra).is_err(), "no field the manifest does not define");
     }
 
-    /// The sources a rich repo detects, each with its forge's context.
+    /// The sources a rich repo detects, each with its forge's context and its `[deploy] host` ticked.
     fn detected<'a>(root: &'a str, det: &'a Detection) -> impl Iterator<Item = (&'static SourceDef, Ctx<'a>)> {
+        let hosts: &'a [String] = Vec::leak(det.deploy.as_ref().and_then(|d| d.host()).map(str::to_string).into_iter().collect());
         SOURCES.iter().filter(|d| det.sources.iter().any(|x| x == d.id))
-            .map(move |d| (d, Ctx { root, cfg: &det.config, forge: &det.forge, account: None, force: true }))
+            .map(move |d| (d, Ctx { root, cfg: &det.config, forge: &det.forge, account: None, force: true, hosts }))
     }
 
     #[test]
@@ -1975,7 +1978,7 @@ mod tests {
     fn every_source_answers_facts_of_its_own_facet() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let mut oks = 0;
         for def in SOURCES {
             // The raw read, not `run`: `run` would turn a crossed facet into an error and hide it.
@@ -2005,7 +2008,7 @@ mod tests {
                 for public in [false, true] {
                     let root = format!("/maint-test/gate/{n}/{m}/{public}");
                     let ex = FakeExec::answering(Ok("[]"));
-                    let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+                    let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
                     let rep = read_cached(&root, "t", &meta(Facet::Security, cost), calls_tool, &ctx, &ex, mode, public, true, None);
                     let ran = !ex.calls().is_empty();
                     assert_eq!(ran, permitted(cost, mode, public), "{cost:?} {mode:?} public={public}");
@@ -2023,7 +2026,7 @@ mod tests {
     fn registry_sources_make_no_call_in_a_scan_their_class_forbids() {
         let root = s(&fixture_repo());
         let cfg = read_config(&root);
-        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         for def in SOURCES {
             let m = &MANIFEST.sources[def.id];
             if permitted(m.cost, Mode::Scan, false) {
@@ -2171,7 +2174,7 @@ mod tests {
     fn the_report_cache_is_keyed_by_account() {
         let root = "/maint-test/cache-by-account";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let ex = FakeExec::answering(Ok("{}"));
         let m = meta(Facet::Work, Cost::Forge);
         let go = |acct: Option<&str>, force: bool| read_cached(root, "t", &m, counts_gh, &ctx, &ex, Mode::Scan, false, force, acct);
@@ -2192,7 +2195,7 @@ mod tests {
     fn a_refused_class_shows_its_last_explicit_run() {
         let root = "/maint-test/tool-as-of";
         let cfg = MaintConfig::default();
-        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true };
+        let ctx = Ctx { root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
         let ex = FakeExec::answering(Ok("[]"));
         let m = meta(Facet::Security, Cost::Tool);
         let ran = read_cached(root, "t", &m, calls_tool, &ctx, &ex, Mode::Explicit, false, false, None);
@@ -2312,9 +2315,9 @@ mod tests {
         let d = detect(&s(&dir), true);
         assert!(d.sources.is_empty(), "{:?}", d.sources);
         assert!(d.markers.iter().all(|m| m.facet != Facet::Ci), "an off facet has no markers either");
-        let rep = read_source(&s(&dir), "git-tags", Mode::Explicit, true, true, None);
+        let rep = read_source(&s(&dir), "git-tags", Mode::Explicit, true, true, None, &[]);
         assert_eq!(rep.coverage, Coverage::Unsupported { reason: "switched off in .episko/episko.toml".into() });
-        assert!(read_source(&s(&dir), "nope", Mode::Explicit, true, true, None).facet.is_none());
+        assert!(read_source(&s(&dir), "nope", Mode::Explicit, true, true, None, &[]).facet.is_none());
 
         let plain = scratch_dir();
         let d = detect(&s(&plain), true);
@@ -2364,12 +2367,17 @@ off = [\"prod\"]
         let det = detect(&root, true);
         let (meta, def) = meta_of("ssh-host").unwrap();
         assert_eq!((meta.cost, meta.facet), (Cost::Remote, Facet::Prod));
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true, hosts: &["scan-test-1".to_string()] };
         let ex = FakeExec::recorded("ssh-host-ubuntu.txt");
         for public in [false, true] {
             assert_eq!(read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Scan, public, true, None).coverage, Coverage::NotRun);
         }
         assert!(ex.calls().is_empty(), "{:?}", ex.calls());
+        let unticked = Ctx { hosts: &[], ..ctx };
+        assert_eq!(read_cached(&root, "ssh-host", meta, def.read, &unticked, &ex, Mode::Explicit, false, true, None).coverage, Coverage::NotRun, "a click cannot reach a host nobody ticked");
+        assert!(ex.calls().is_empty(), "{:?}", ex.calls());
+        assert_eq!(read_source(&root, "ssh-host", Mode::Explicit, false, true, None, &[]).coverage, Coverage::NotRun, "the command's own path");
+        let ctx = Ctx { hosts: &["scan-test-1".to_string()], ..unticked };
         let rep = read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Explicit, false, true, None);
         assert_eq!((rep.coverage.clone(), ex.calls()), (Coverage::Ok, vec![vec!["ssh".to_string(), "scan-test-1".into()]]));
         let later = read_cached(&root, "ssh-host", meta, def.read, &ctx, &ex, Mode::Scan, false, true, None);
@@ -2448,7 +2456,7 @@ off = [\"prod\"]
         assert!(det.sources.iter().any(|x| x == "http-probe"), "{:?}", det.sources);
         let (meta, def) = meta_of("http-probe").unwrap();
         assert_eq!(meta.cost, Cost::Remote);
-        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true };
+        let ctx = Ctx { root: &root, cfg: &det.config, forge: &det.forge, account: None, force: true, hosts: &[] };
         let ex = FakeExec::recorded("curl-openssl.txt");
         for public in [false, true] {
             let rep = read_cached(&root, "http-probe", meta, def.read, &ctx, &ex, Mode::Scan, public, true, None);
