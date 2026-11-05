@@ -2,7 +2,7 @@
 // dispatcher. Adding a setting means adding a descriptor, not markup. It owns nothing it
 // changes: every setter arrives through the SettingsHost object main.ts hands over.
 
-import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { $, dropScrim, FILE_MANAGER, IS_MAC, IS_WIN, toast } from "./dom";
 import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import {
   basename, cleanTitle, esc, escAttr, tccLabel, tilde, TITLE_DEFAULTS, titleExtra, TITLE_EXTRA_MAX,
@@ -129,6 +129,7 @@ export interface SettingsHost {
   // Not settings, hence no cc- key: an inspector, a reload and a reading of ./debug's ring.
   openDevtools: () => void;
   reloadUi: () => void;
+  resetCompositor: () => void;
   vitalsDrift: () => VitalsDrift | null;
   // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
   syncPair: (url: string, code: string, label: string, user: string, headers: [string, string][]) => Promise<void>;
@@ -183,7 +184,7 @@ let host: SettingsHost = {
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setAgentTools: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
-  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {}, resetCompositor: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
@@ -736,6 +737,9 @@ const SET_TABS: SetTab[] = [
       { kind: "action", set: "perf:reload", label: "Reload the interface", btn: "Reload", hint: "Rebuilds the window; no session is lost.",
         more: "Episko itself holds the terminals, so every pane comes back with its scrollback. This is the fix once it has gone sluggish.",
         aliases: ["restart", "refresh", "sluggish", "reset ui"] },
+      ...(IS_WIN ? [{ kind: "action" as const, set: "perf:compositor", label: "Reset the compositor", btn: "Reset", hint: "Clears Chromium's frame bookkeeping in place; nothing reloads.",
+        more: "A webview open for a day or more can pile up one record per finished animation, until hover lags by seconds. Episko does this by itself while the window is in the background; this is for when it gets slow before you leave. The window blinks once.",
+        aliases: ["lag", "hover", "slow", "stutter", "sluggish"] }] : []),
       { kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open", hint: "The webview's own developer tools.",
         more: "A heap snapshot compared against one from just after a reload is what turns “something is growing” into a name.",
         aliases: ["devtools", "console", "heap snapshot", "profile", "inspect"] },
@@ -1821,6 +1825,7 @@ function applySetting(set: string, val: string) {
   else if (set === "priv:reset") { resetPrompts(); return; }
   else if (set === "priv:scan") { scanAsks(); return; }
   else if (set === "perf:reload") { void host.reloadUi(); return; }
+  else if (set === "perf:compositor") { host.resetCompositor(); return; }
   else if (set === "perf:devtools") { host.openDevtools(); return; }
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);

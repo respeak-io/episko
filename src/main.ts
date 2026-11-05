@@ -96,6 +96,7 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } fro
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
+import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, openDashboard,
@@ -257,7 +258,7 @@ setSettingsHost({
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
-  openDevtools, reloadUi,
+  openDevtools, reloadUi, resetCompositor: () => { void resetCompositor(); },
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
@@ -1126,6 +1127,7 @@ initProjectDnD();
 initSidebarPeek();
 // The tour goes first: on a first run it takes the screen, and the release notes stay quiet.
 initChangelog(initTour());
+initCompositorReset();
 initFileDrop();
 // caffeinate starts off: the last run's assertion died with its process, and cafArmed is
 // false at boot. initCaf covers a webview reload that left the backend still asserting.
