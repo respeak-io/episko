@@ -86,21 +86,11 @@ Grab the latest build from the [Releases page](https://github.com/respeak-io/epi
 
 ### macOS (Apple silicon)
 
-Episko is self-signed but **not notarized through Apple**, so Gatekeeper quarantines the download and refuses to open it (*"… is damaged and can't be opened"*). Clear the quarantine flag **before** opening the `.dmg`:
-
-```sh
-xattr -dr com.apple.quarantine ~/Downloads/Episko_*.dmg
-```
-
-Then open it, drag **Episko** into Applications, and launch. If it's still blocked on first launch, run the same command on the installed app:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Episko.app
-```
+Open the `.dmg`, drag **Episko** into Applications, and launch it. The app is signed by Respeak GmbH and notarized by Apple, so there is nothing to clear by hand.
 
 ### Windows (10 / 11)
 
-Download the `.msi` (or the `.exe` installer) and run it. SmartScreen may warn on first run; choose *More info ▸ Run anyway*.
+Download the `.msi` (or the `.exe` installer) and run it. Both are signed by Respeak GmbH. If SmartScreen still warns on first run, choose *More info ▸ Run anyway*.
 
 Episko keeps itself current after install: it checks the latest GitHub release on launch and offers an in-app update. It never installs one behind your back, since a restart would kill your running sessions.
 
