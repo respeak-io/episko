@@ -386,4 +386,14 @@ describe("the review stage's own dispatcher", () => {
       expect(REVIEWUI.indexOf(`closest<HTMLElement>("[data-rv${inner}]")`)).toBeLessThan(fold);
     }
   });
+
+  it("probes a rail row's tick BEFORE the row and the folder that contain it", () => {
+    for (const row of ["[data-drdir]", "[data-drow]"]) {
+      const at = REVIEWUI.indexOf(`closest<HTMLElement>("${row}")`);
+      expect(at).toBeGreaterThan(0);
+      for (const tick of ["viewed", "dirviewed"]) {
+        expect(REVIEWUI.indexOf(`closest<HTMLElement>("[data-rv${tick}]")`), `data-rv${tick} before ${row}`).toBeLessThan(at);
+      }
+    }
+  });
 });
