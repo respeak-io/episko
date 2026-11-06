@@ -804,6 +804,18 @@ describe("procRows", () => {
     const mcp = proc(41, "node", ["node", "/u/.npm/_npx/9/node_modules/.bin/playwright-mcp"], 9e6, 40);
     expect(procRows([npm, mcp]).map((r) => [r.p.pid, r.depth])).toEqual([[41, 0]]);
     expect(branchLabels([npm, mcp])).toEqual(["playwright-mcp"]);
+    expect(procRows([npm, mcp], true)[0].p.pid).toBe(40);
+    expect(procLabel(npm)).toBe("npm exec @playwright/mcp@latest");
+  });
+  it("keeps an npm verb that does the work itself", () => {
+    const ci = proc(42, "node", ["npm ci"], 200e6);
+    expect(procRows([ci]).map((r) => r.p.pid)).toEqual([42]);
+    expect(procLabel(proc(43, "node", ["npm install @scope/pkg"]))).toBe("npm install @scope/pkg");
+  });
+  it("folds a task runner over the server it started", () => {
+    const just = proc(50, "just", ["just", "dev"], 5e6, 1), srv = proc(51, "Python", ["python", "-m", "uvicorn", "a:app"], 2e9, 50);
+    expect(procRows([just, srv]).map((r) => r.p.pid)).toEqual([51]);
+    expect(leftLead(tree([just, srv], 50)).pid).toBe(51);
   });
   it("survives a ppid cycle, which Windows produces after pid reuse", () => {
     const a = proc(1, "node.exe", ["node", "a.js"], 1, 2), b = proc(2, "node.exe", ["node", "b.js"], 1, 1);

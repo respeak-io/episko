@@ -13,8 +13,8 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
-! A dev server started through `uv run` or `just` and left behind by a closed pane is listed again.
-! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` folds as a wrapper.
+! A stray dev server running under `uv run`, `just` or `make` in a known checkout now shows under *Left behind*.
+! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` and `npm run` fold as wrappers.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

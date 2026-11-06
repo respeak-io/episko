@@ -321,23 +321,54 @@ pub(crate) fn process_poll(state: State<AppState>, roots: Vec<String>) -> ProcPo
     ProcPoll { ports, panes, left }
 }
 
-/// What each pane runs, and what panes have left running. A left-behind tree comes from two
-/// sources: one a poll saw under a pane, and a runtime whose parent is gone and whose command or
-/// cwd lies in one of `roots`, which catches a stray from before this run or another terminal.
-/// A retitled process (node's `process.title`, so every `npm exec`) blanks its argv, and macOS's
-/// argc then counts on into its environment, tokens included. No `KEY=value` leaves the backend.
-fn argv_without_env(mut cmd: Vec<String>) -> Vec<String> {
-    let is_env = |a: &String| {
-        a.split_once('=').is_some_and(|(k, _)| {
-            !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
-    };
-    if let Some(at) = cmd.iter().skip(1).position(is_env) {
-        cmd.truncate(at + 1);
+/// `KERN_PROCARGS2`'s argv: argc, the exec path and its padding, then exactly argc strings.
+/// Blanks count, because that is where a retitled process's argv went (docs/stack.md).
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs(raw: &[u8]) -> Vec<String> {
+    let Some(argc) = raw.get(..4).and_then(|h| h.try_into().ok()).map(i32::from_ne_bytes) else { return Vec::new() };
+    let rest = &raw[4..];
+    let Some(path_end) = rest.iter().position(|&b| b == 0) else { return Vec::new() };
+    let Some(pad) = rest[path_end..].iter().position(|&b| b != 0) else { return Vec::new() };
+    let mut argv: Vec<String> = rest[path_end + pad..]
+        .split(|&b| b == 0)
+        .take(argc.max(0) as usize)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    // A wholly blank argv vanishes into the padding, which puts the environment here.
+    if argv.first().is_some_and(|a| a.contains('=')) {
+        return Vec::new();
     }
-    cmd
+    // A title too long for its argv area leaves no blanks; only a renamed process can do that.
+    let name = |p: &[u8]| p.rsplit(|&b| b == b'/').next().map(<[u8]>::to_vec);
+    if argv.first().is_some_and(|a| name(a.as_bytes()) != name(&rest[..path_end])) {
+        if let Some(at) = argv.iter().skip(1).position(|a| a.contains('=') && !a.starts_with('-')) {
+            argv.truncate(at + 1);
+        }
+    }
+    argv
 }
 
+/// Not sysinfo's `cmd()`: it skips the blanks and reads on into the environment, tokens included.
+#[cfg(target_os = "macos")]
+fn macos_argv(pid: u32) -> Vec<String> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let (null_out, null_new) = (std::ptr::null_mut(), std::ptr::null_mut());
+    let mut size = 0usize;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, null_out, &mut size, null_new, 0) } != 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u8; size];
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, null_new, 0) } != 0 {
+        return Vec::new();
+    }
+    buf.truncate(size);
+    parse_procargs(&buf)
+}
+
+/// What each pane runs, and what panes have left running. A left-behind tree comes from two
+/// sources: one a poll saw under a pane, and a `RUNTIMES` process whose parent is gone and whose command
+/// or cwd lies in one of `roots`, which catches a stray from before this run or another terminal.
 fn pane_procs(
     state: &AppState,
     roster: &[(String, u32)],
@@ -376,20 +407,22 @@ fn pane_procs(
         return (Vec::new(), Vec::new());
     }
     let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&wanted),
-        true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_cwd(UpdateKind::Always).with_memory(),
-    );
+    let kind = ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always).with_memory();
+    #[cfg(not(target_os = "macos"))]
+    let kind = kind.with_cmd(UpdateKind::Always);
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&wanted), true, kind);
     let detail = |pid: u32| -> Option<ProcInfo> {
         let p = sys.process(Pid::from_u32(pid))?;
+        #[cfg(target_os = "macos")]
+        let cmd = macos_argv(pid);
+        #[cfg(not(target_os = "macos"))]
         let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect();
         Some(ProcInfo {
             pid,
             ppid: table.procs.get(&pid).and_then(|x| x.0),
             started: started(pid),
             name: p.name().to_string_lossy().to_string(),
-            cmd: if cfg!(target_os = "macos") { argv_without_env(cmd) } else { cmd },
+            cmd,
             cwd: p.cwd().map(|c| norm_path(&c.to_string_lossy())).unwrap_or_default(),
             mem: p.memory(),
         })
@@ -801,7 +834,7 @@ mod tests {
 
     #[test]
     fn only_runtimes_are_matched_by_folder() {
-        for n in ["node.exe", "node", "python3", "bun.exe", "uv", "just"] {
+        for n in ["node.exe", "node", "python3", "bun.exe", "uv", "uvx", "just", "make"] {
             assert!(is_runtime(n), "{n}");
         }
         for n in ["code.exe", "explorer.exe", "nodemon-helper", "pwsh.exe", "codex"] {
@@ -809,12 +842,41 @@ mod tests {
         }
     }
 
+    fn procargs(argc: i32, tail: &[u8]) -> Vec<u8> {
+        [&argc.to_ne_bytes()[..], b"/usr/bin/make\0\0\0\0", tail].concat()
+    }
+
     #[test]
     fn a_retitled_process_keeps_its_title_and_none_of_its_environment() {
-        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(argv_without_env(v(&["chrome-devtools-mcp", "SOME_TOKEN=abc"])), v(&["chrome-devtools-mcp"]));
-        assert_eq!(argv_without_env(v(&["npm exec x", "HOME=/u", "LOGNAME=t"])), v(&["npm exec x"]));
-        assert_eq!(argv_without_env(v(&["uvicorn", "a:app", "--host=0.0.0.0"])), v(&["uvicorn", "a:app", "--host=0.0.0.0"]));
+        let raw = procargs(3, b"chrome-devtools-mcp\0\0\0\0\0SOME_TOKEN=abc\0HOME=/u\0");
+        assert_eq!(parse_procargs(&raw), ["chrome-devtools-mcp"]);
+    }
+
+    #[test]
+    fn a_title_too_long_for_its_argv_area_keeps_none_of_the_environment() {
+        let raw = procargs(3, b"a-title-f\0SOME_TOKEN=abc\0my.secret=abc\0");
+        assert_eq!(parse_procargs(&raw), ["a-title-f"]);
+        let flag = procargs(3, b"uvicorn\0--host=0.0.0.0\0HOME=/u\0");
+        assert_eq!(parse_procargs(&flag), ["uvicorn", "--host=0.0.0.0"]);
+    }
+
+    #[test]
+    fn a_wholly_blank_argv_gives_nothing_rather_than_the_environment() {
+        assert!(parse_procargs(&procargs(2, b"\0\0\0SOME_TOKEN=abc\0HOME=/u\0")).is_empty());
+        assert!(parse_procargs(&procargs(2, b"\0\0\0my.secret=abc\0")).is_empty());
+    }
+
+    #[test]
+    fn a_real_argv_is_kept_whole_even_where_it_looks_like_an_environment() {
+        let raw = procargs(4, b"make\0FOO=1\0-C\0/proj\0HOME=/u\0");
+        assert_eq!(parse_procargs(&raw), ["make", "FOO=1", "-C", "/proj"]);
+    }
+
+    #[test]
+    fn a_truncated_procargs_block_is_empty_not_a_panic() {
+        assert!(parse_procargs(b"").is_empty());
+        assert!(parse_procargs(&1i32.to_ne_bytes()).is_empty());
+        assert!(parse_procargs(&procargs(1, b"")).is_empty());
     }
 
     /// The real leak on real processes: `cmd` starts a background child and exits, and the
