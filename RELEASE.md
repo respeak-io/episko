@@ -716,8 +716,9 @@ Check it before tagging: `node scripts/changelog.mjs section 0.14.0 | head -3`.
 GitHub Release: macOS `aarch64` produces the `.dmg` + the updater artifact, Windows
 x64 the NSIS `.exe` and `.msi`. The minisign key signs the updater artifacts on both;
 **OS code-signing is separate** — macOS is signed with a Developer ID and notarized, and
-Windows is signed through Azure Trusted Signing. Both are gated on their CI secrets and
-fall back to an unsigned build without them (see `src-tauri/SIGNING.md`).
+Windows is signed through Azure Trusted Signing. Both are gated on their CI secrets;
+without them, macOS builds are ad-hoc signed and Windows builds unsigned (see
+`src-tauri/SIGNING.md`).
 
 Install instructions are embedded in the release body by the workflow, because GitHub
 cannot pin a release and "always in the newest one" is the equivalent.

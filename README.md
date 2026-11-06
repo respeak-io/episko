@@ -90,7 +90,7 @@ Open the `.dmg`, drag **Episko** into Applications, and launch it. The app is si
 
 ### Windows (10 / 11)
 
-Download the `.msi` (or the `.exe` installer) and run it. Both are signed by Respeak GmbH. If SmartScreen still warns on first run, choose *More info ▸ Run anyway*.
+Download the `.msi` (or the `.exe` installer) and run it. Both are signed by Respeak GmbH. If SmartScreen warns on first run, choose *More info ▸ Run anyway*.
 
 Episko keeps itself current after install: it checks the latest GitHub release on launch and offers an in-app update. It never installs one behind your back, since a restart would kill your running sessions.
 
