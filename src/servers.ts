@@ -403,6 +403,8 @@ const INTERPRETERS = /^(node|bun|deno|python[\d.]*|pythonw|ruby|php)(\.exe)?$/i;
 // A package manager's own script only waits on the child that does the work.
 const LAUNCHER = /[\\/](npm|pnpm|yarn|npx|corepack)(-cli)?(\.c?js|\.mjs)?$/i;
 const LAUNCHER_EXE = /^(uvx?|npx|pnpx)(\.exe)?$/i;
+// npm retitles itself, so on macOS its whole argv is one string: `npm exec @playwright/mcp@latest`.
+const NPM_TITLE = /^npm\s/;
 
 // Outlives its parent by design and retires on its own idle timer; listing it teaches you to
 // ignore the section (the ./health rule about ordinary code).
@@ -425,7 +427,7 @@ export function procLabel(p: ProcInfo, max = 52): string {
 
 /** A wrapper that only waits on the process doing the work: a shell, a console host, `npx`. */
 export const isPlumbing = (p: ProcInfo) =>
-  SHELLS.test(p.name) || LAUNCHER_EXE.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "");
+  SHELLS.test(p.name) || LAUNCHER_EXE.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "") || NPM_TITLE.test(p.cmd[0] ?? "");
 
 /** The process a set is named after: the biggest one doing real work, else `top`. */
 export function leadOf(procs: ProcInfo[], top?: number): ProcInfo {

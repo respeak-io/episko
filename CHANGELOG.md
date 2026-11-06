@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! A dev server started through `uv run` or `just` and left behind by a closed pane is listed again.
+! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` folds as a wrapper.
+
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
 full, and one that hits its limit offers to move to the next. Every icon now comes from one set, a

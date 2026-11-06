@@ -247,10 +247,12 @@ pub(crate) struct ProcInfo {
     mem: u64, // bytes resident
 }
 
-/// Runtimes a stray dev process is made of. Only these are matched by folder, since an
-/// editor's own processes carry the project path too and must never be accused.
+/// What a stray dev tree has at its top: a runtime, or the task runner that stays its parent
+/// (`uv run uvicorn`, `just dev`). Only these are matched by folder, since an editor's own
+/// processes carry the project path too and must never be accused.
 const RUNTIMES: &[&str] = &[
     "node", "bun", "deno", "python", "python3", "pythonw", "ruby", "java", "dotnet", "cargo", "go", "php", "esbuild",
+    "uv", "uvx", "just", "make",
 ];
 
 fn is_runtime(name: &str) -> bool {
@@ -322,6 +324,20 @@ pub(crate) fn process_poll(state: State<AppState>, roots: Vec<String>) -> ProcPo
 /// What each pane runs, and what panes have left running. A left-behind tree comes from two
 /// sources: one a poll saw under a pane, and a runtime whose parent is gone and whose command or
 /// cwd lies in one of `roots`, which catches a stray from before this run or another terminal.
+/// A retitled process (node's `process.title`, so every `npm exec`) blanks its argv, and macOS's
+/// argc then counts on into its environment, tokens included. No `KEY=value` leaves the backend.
+fn argv_without_env(mut cmd: Vec<String>) -> Vec<String> {
+    let is_env = |a: &String| {
+        a.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    if let Some(at) = cmd.iter().skip(1).position(is_env) {
+        cmd.truncate(at + 1);
+    }
+    cmd
+}
+
 fn pane_procs(
     state: &AppState,
     roster: &[(String, u32)],
@@ -367,12 +383,13 @@ fn pane_procs(
     );
     let detail = |pid: u32| -> Option<ProcInfo> {
         let p = sys.process(Pid::from_u32(pid))?;
+        let cmd: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect();
         Some(ProcInfo {
             pid,
             ppid: table.procs.get(&pid).and_then(|x| x.0),
             started: started(pid),
             name: p.name().to_string_lossy().to_string(),
-            cmd: p.cmd().iter().map(|a| a.to_string_lossy().to_string()).collect(),
+            cmd: if cfg!(target_os = "macos") { argv_without_env(cmd) } else { cmd },
             cwd: p.cwd().map(|c| norm_path(&c.to_string_lossy())).unwrap_or_default(),
             mem: p.memory(),
         })
@@ -784,12 +801,20 @@ mod tests {
 
     #[test]
     fn only_runtimes_are_matched_by_folder() {
-        for n in ["node.exe", "node", "python3", "bun.exe"] {
+        for n in ["node.exe", "node", "python3", "bun.exe", "uv", "just"] {
             assert!(is_runtime(n), "{n}");
         }
-        for n in ["code.exe", "explorer.exe", "nodemon-helper", "pwsh.exe"] {
+        for n in ["code.exe", "explorer.exe", "nodemon-helper", "pwsh.exe", "codex"] {
             assert!(!is_runtime(n), "{n}");
         }
+    }
+
+    #[test]
+    fn a_retitled_process_keeps_its_title_and_none_of_its_environment() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(argv_without_env(v(&["chrome-devtools-mcp", "SOME_TOKEN=abc"])), v(&["chrome-devtools-mcp"]));
+        assert_eq!(argv_without_env(v(&["npm exec x", "HOME=/u", "LOGNAME=t"])), v(&["npm exec x"]));
+        assert_eq!(argv_without_env(v(&["uvicorn", "a:app", "--host=0.0.0.0"])), v(&["uvicorn", "a:app", "--host=0.0.0.0"]));
     }
 
     /// The real leak on real processes: `cmd` starts a background child and exits, and the

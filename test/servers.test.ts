@@ -799,6 +799,12 @@ describe("procRows", () => {
     expect(procRows(MCP).map((r) => [r.p.pid, r.depth])).toEqual([[13, 0]]);
     expect(procRows(MCP, true).map((r) => [r.p.pid, r.depth])).toEqual([[10, 0], [11, 1], [12, 1], [13, 2]]);
   });
+  it("folds npm's own retitled process the way it folds the Windows shape", () => {
+    const npm = proc(40, "node", ["npm exec @playwright/mcp@latest  "], 14e6, 1);
+    const mcp = proc(41, "node", ["node", "/u/.npm/_npx/9/node_modules/.bin/playwright-mcp"], 9e6, 40);
+    expect(procRows([npm, mcp]).map((r) => [r.p.pid, r.depth])).toEqual([[41, 0]]);
+    expect(branchLabels([npm, mcp])).toEqual(["playwright-mcp"]);
+  });
   it("survives a ppid cycle, which Windows produces after pid reuse", () => {
     const a = proc(1, "node.exe", ["node", "a.js"], 1, 2), b = proc(2, "node.exe", ["node", "b.js"], 1, 1);
     expect(procRows([a, b]).length).toBeLessThanOrEqual(2);
