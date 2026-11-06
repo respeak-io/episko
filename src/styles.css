@@ -3348,7 +3348,7 @@ select.in-ctl { cursor: pointer; }
 /* The ＋ rides the top of a grown field rather than floating in the middle of it. */
 .nt-form:focus-within .nt-row { align-items: flex-start; }
 /* The ＋ only: the hint's own link is a button in this form too, and a 25px box ate it. */
-.nt-form .nt-row button { width: 25px; height: 25px; flex: none; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); cursor: pointer; font-size: 12px; }
+.nt-form .nt-row button { width: 25px; height: 25px; padding: 0; flex: none; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); cursor: pointer; font-size: 12px; }
 .nt { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; }
 .nt:hover { background: var(--surface-2); }
 .nt .ntx { min-width: 0; }
@@ -4312,7 +4312,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1
 .foot .frepo .fcaret .ic { --ic: 11px; }
 .dbg-ic { display: flex; --ic: 13px; }
 .foot .flabel > .ic { --ic: 12px; margin-right: 3px; }
-:is(.diff-x, .exp-x, .graph-ref, .set-x, .set-sclr, .dbg-x, .nt-row button, .svrpop .sv-go, .svrpop .sv-stop, .svrpop .sv-path) > .ic { --ic: 13px; display: block; margin: 0 auto; }
+:is(.diff-x, .exp-x, .graph-ref, .mdr-back, .set-x, .set-sclr, .dbg-x, .nt-row button, .svrpop .sv-go, .svrpop .sv-stop, .svrpop .sv-path) > .ic { --ic: 13px; display: block; margin: 0 auto; }
+/* There is no button reset, so a <button> keeps the browser's 6px a side: a 20px one has 6px left
+   for a 12px icon, which overflows to the right whatever centres it. A flex parent is exempt. */
+:is(.diff-x, .exp-x, .graph-ref, .kb-x, .mdr-back, .pgo, .set-fbtn, .set-reset, .set-sclr, .set-x, .sndplay, .sv-go, .sv-path, .sv-stop, .tc-x, .xb) { padding: 0; }
+.mgr-b > .ic.solo { display: block; }
 .svrpop .sv-ptbl .sv-stop > .ic { --ic: 12px; }
 .svrpop .sv-foot .ic { --ic: 11px; margin: 0 1px; }
 .db-seg button > .ic { --ic: 13px; margin: 0; }
