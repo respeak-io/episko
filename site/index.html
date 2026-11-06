@@ -3,10 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <script>try{var t=localStorage.getItem('episko-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
-<title>episko — Claude Code session manager for macOS &amp; Windows</title>
+<title>episko: run Claude Code, Codex and 20 more coding agents at once</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>episko — Claude Code session manager for macOS &amp; Windows</title>
-<meta name="description" content="Run dozens of Claude Code sessions at once — each in its own terminal, with live status, context, cost and permission prompts in one app. Free, open source." />
+<meta name="description" content="Run Claude Code, Codex and 20 more coding agents at once. Claude Code and Codex get live status and in-app permission prompts. Free and open source." />
 <link rel="canonical" href="https://episko.dev/" />
 <meta name="author" content="Respeak GmbH" />
 <meta name="theme-color" content="#e5e9e2" media="(prefers-color-scheme: light)" />
@@ -17,15 +16,15 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="episko" />
 <meta property="og:url" content="https://episko.dev/" />
-<meta property="og:title" content="episko — Claude Code session manager for macOS &amp; Windows" />
-<meta property="og:description" content="Run dozens of Claude Code sessions at once. Every agent gets its own terminal, with live status, context, cost and permission prompts in one native app." />
+<meta property="og:title" content="episko: run Claude Code, Codex and 20 more coding agents at once" />
+<meta property="og:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. The others run as plain terminals." />
 <meta property="og:image" content="https://episko.dev/og.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="episko — a pixel-art shepherd minding a flock of little Claude agents, above the episko session cockpit." />
+<meta property="og:image:alt" content="episko: a pixel-art shepherd minding a flock of little coding agents, under the line &quot;Keep the flock in view.&quot;" />
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="episko — Claude Code session manager for macOS &amp; Windows" />
-<meta name="twitter:description" content="Run dozens of Claude Code sessions at once. Every agent gets its own terminal, with live status, context, cost and permission prompts in one native app." />
+<meta name="twitter:title" content="episko: run Claude Code, Codex and 20 more coding agents at once" />
+<meta name="twitter:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. The others run as plain terminals." />
 <meta name="twitter:image" content="https://episko.dev/og.png" />
 
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -41,7 +40,6 @@
       "@type": "SoftwareApplication",
       "@id": "https://episko.dev/#app",
       "name": "episko",
-      "alternateName": "episko for Claude Code",
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "AI coding agent session manager",
       "operatingSystem": "macOS, Windows 10, Windows 11",
@@ -50,18 +48,18 @@
       "softwareHelp": "https://github.com/respeak-io/episko",
       "license": "https://opensource.org/licenses/MIT",
       "isAccessibleForFree": true,
-      "description": "episko is a native desktop app that runs and supervises many Claude Code sessions at once. Each session gets its own PTY terminal — embedded, or in Ghostty, Terminal.app or iTerm2 — and streams live telemetry back: phase, model, context use, cost, the tool it is running, and permission requests you can answer without leaving the app. It also tracks 5-hour and weekly usage limits and forecasts when you will hit them.",
+      "description": "episko is a desktop app for running Claude Code, Codex and 20 other coding agent CLIs at once, each in its own PTY terminal. Claude Code and Codex stream live state back: phase, model, context use, cost, the tool running, and permission requests you can answer without leaving the app. The other CLIs run as plain terminals with no status reporting. On macOS, a Claude Code session can also run in Ghostty, Terminal.app or iTerm2. episko also tracks usage limits and forecasts when you will hit them.",
       "featureList": [
-        "Run many Claude Code sessions in parallel, each in its own terminal",
+        "Run Claude Code, Codex and 20 other coding agent CLIs in parallel, each in its own terminal",
         "Run the project's own tasks in the same panes — VS Code tasks, justfile, package.json scripts, Taskfile, mise, Makefile and Cargo",
-        "Live per-session status: model, context window use, cost and duration",
-        "Answer Claude Code permission prompts in-app (allow, deny, or open a terminal)",
+        "Live per-session status for Claude Code and Codex: phase, current tool, model, context window use and cost",
+        "Answer Claude Code and Codex permission prompts in-app, each with a risk label (allow, deny, or answer in the terminal)",
         "5-hour and weekly usage-limit tracking with pace forecasting",
         "Command palette (⌘K) to jump between sessions and launch projects",
         "Git worktree-aware session launching",
         "Usage analytics: daily spend heatmap, tokens by model, cost per project",
         "Discovers and surfaces Claude Code sessions started outside the app",
-        "Restores sessions after a restart via Claude Code's own transcripts"
+        "Resumes Claude Code and Codex sessions after a restart from the agents' own history"
       ],
       "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
       "author": { "@id": "https://respeak.io/#org" },
