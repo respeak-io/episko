@@ -61,6 +61,13 @@ external app and the switch dims.
   header, inspector, auto-fetch, the outline and the ✕ stay on the session being read, and
   `activeCwd()` (what the next ⌘T anchors on) is the session's, not the shell's. The nested row
   never lights as active for the same reason.
+- **The rail follows the stage, and the row says where the shell really is.** Drift re-points the
+  session (`adoptCheckout`) and nothing may `cd` the shell, so their folders can part.
+  `clusterByWorktree` files a split shell by its anchor, or the two sit under different ⑃ headers
+  while the stage tiles them; `shellElsewhere` then gives the nested row a chip naming the checkout
+  it still runs in, since a command typed there lands in that folder. Only the rail reads it this
+  way: `s.workdir` stays the truth for anything that acts on a checkout, so removing that worktree
+  still counts and closes the shell.
 - **`splitBeside` decides, `launchShell` obeys.** The setting, the `other` flag and the anchor rule
   are read in one function; `handToTerminal` passes `from` (the session a git verb was refused for)
   so a prefilled command lands beside that session too. A second "is split on?" test at a call site

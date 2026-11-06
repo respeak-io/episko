@@ -28,6 +28,18 @@ export function checkoutOf(s: Sess, fallback: string): string {
   return checkoutDir(dir, worktreesByRepo.get(s.colorKey) ?? []);
 }
 
+// The checkout a split shell runs in when it is not its anchor's, for the row to name: the rail
+// files it under the anchor, and a command typed there still lands in this folder.
+export function shellElsewhere(shell: Sess, anchor: Sess): WtCluster | null {
+  const key = checkoutOf(shell, anchor.workdir);
+  if (sameDir(key, checkoutOf(anchor, anchor.workdir))) return null;
+  const head = worktreesByRepo.get(shell.colorKey)?.find((w) => sameDir(w.path, key));
+  const isMain = sameDir(key, shell.colorKey);
+  // The roster read HEAD; it beats a label cached at launch.
+  const branch = head?.branch || shell.branch || (isMain ? "main" : basename(key));
+  return { key, branch, isMain, sessions: [], externals: [] };
+}
+
 // `withEmpty` adds the roster's session-less checkouts, after the session-bearing ones. Sidebar
 // body only: `splitByWorktree` must not promote an empty checkout to a project group.
 export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] {
@@ -39,7 +51,13 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
     else if (!c.branch && branch) c.branch = branch;
     return c;
   };
-  for (const s of p.sessions) bucket(checkoutOf(s, p.path), s.branch || s.worktree || "").sessions.push(s);
+  // A split shell sits with its anchor, as on stage: drift re-points the session (`adoptCheckout`)
+  // and nothing may `cd` the shell, so their folders can part. `shellElsewhere` names the gap.
+  const byId = new Map(p.sessions.map((s) => [s.id, s]));
+  for (const s of p.sessions) {
+    const owner = (s.splitOf && byId.get(s.splitOf)) || s;
+    bucket(checkoutOf(owner, p.path), owner.branch || owner.worktree || "").sessions.push(s);
+  }
   // Through the roster like the sessions above: a terminal opened in a subfolder of a
   // checkout belongs to that checkout, not to a cluster of its own.
   for (const e of p.externals) {
