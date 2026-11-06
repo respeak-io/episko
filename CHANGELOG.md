@@ -15,6 +15,7 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ! A stray dev server running under `uv run`, `just` or `make` in a known checkout now shows under *Left behind*.
 ! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` and `npm run` fold as wrappers.
+! A long `npm ci` or `pnpm install` stays listed as what a pane is running.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

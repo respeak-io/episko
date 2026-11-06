@@ -404,9 +404,11 @@ const INTERPRETERS = /^(node|bun|deno|python[\d.]*|pythonw|ruby|php)(\.exe)?$/i;
 const LAUNCHER = /[\\/](npm|pnpm|yarn|npx|corepack)(-cli)?(\.c?js|\.mjs)?$/i;
 const LAUNCHER_EXE = /^(uvx?|npx|pnpx|just|make)(\.exe)?$/i;
 // npm retitles itself, so on macOS its whole argv is one string: `npm exec @playwright/mcp@latest`.
-// Only these verbs wait on a child; `npm ci` is the work.
 const NPM_TITLE = /^npm\s/;
-const NPM_WRAPPER = /^npm\s+(exec|run|run-script|start|test)\b/;
+// A package manager waits on a child, bar these: `npm ci` is the work. Listed by what is work
+// because pnpm and yarn take a bare script name (`pnpm dev`), so wrappers cannot be listed.
+const PM_SCRIPT = /[\\/](npm|pnpm|yarn)(-cli)?(\.c?js|\.mjs)?$/i;
+const PM_WORK = /^(ci|i|install|add|remove|rm|uninstall|update|up|upgrade|rebuild|dedupe|prune|audit|outdated|publish|pack|fetch)$/;
 
 // Outlives its parent by design and retires on its own idle timer; listing it teaches you to
 // ignore the section (the ./health rule about ordinary code).
@@ -429,8 +431,14 @@ export function procLabel(p: ProcInfo, max = 52): string {
 }
 
 /** A wrapper that only waits on the process doing the work: a shell, a console host, `npx`. */
-export const isPlumbing = (p: ProcInfo) =>
-  SHELLS.test(p.name) || LAUNCHER_EXE.test(p.name) || LAUNCHER.test(p.cmd[1] ?? "") || LAUNCHER.test(p.cmd[0] ?? "") || NPM_WRAPPER.test(p.cmd[0] ?? "");
+export const isPlumbing = (p: ProcInfo) => SHELLS.test(p.name) || LAUNCHER_EXE.test(p.name) || launcherWaits(p.cmd);
+
+function launcherWaits(cmd: string[]): boolean {
+  const first = cmd[0] ?? "";
+  if (NPM_TITLE.test(first)) return !first.trim().split(/\s+/).some((a) => PM_WORK.test(a));
+  const at = LAUNCHER.test(cmd[1] ?? "") ? 1 : LAUNCHER.test(first) ? 0 : -1;
+  return at >= 0 && !(PM_SCRIPT.test(cmd[at]) && cmd.slice(at + 1).some((a) => PM_WORK.test(a)));
+}
 
 /** The process a set is named after: the biggest one doing real work, else `top`. */
 export function leadOf(procs: ProcInfo[], top?: number): ProcInfo {

@@ -812,6 +812,17 @@ describe("procRows", () => {
     expect(procRows([ci]).map((r) => r.p.pid)).toEqual([42]);
     expect(procLabel(proc(43, "node", ["npm install @scope/pkg"]))).toBe("npm install @scope/pkg");
   });
+  it("keeps a package manager's own work on the Windows and script shapes too", () => {
+    const shown = (cmd: string[]) => procRows([proc(60, "node.exe", cmd)]).length === 1;
+    const npm = String.raw`C:\nodejs\node_modules\npm\bin\npm-cli.js`, pnpm = String.raw`C:\pnpm\bin\pnpm.cjs`;
+    expect(shown(["node", npm, "ci"])).toBe(true);
+    expect(shown(["node", pnpm, "--filter", "web", "install"])).toBe(true);
+    expect(shown(["node", "/u/.yarn/bin/yarn.js", "add", "vite"])).toBe(true);
+    expect(procLabel(proc(61, "node.exe", ["node", npm, "ci"]))).toBe("npm ci");
+    expect(shown(["node", npm, "run", "dev"])).toBe(false);
+    expect(shown(["node", pnpm, "dev"])).toBe(false);
+    expect(shown(["node", String.raw`C:\nodejs\node_modules\npm\bin\npx-cli.js`, "install-thing"])).toBe(false);
+  });
   it("folds a task runner over the server it started", () => {
     const just = proc(50, "just", ["just", "dev"], 5e6, 1), srv = proc(51, "Python", ["python", "-m", "uvicorn", "a:app"], 2e9, 50);
     expect(procRows([just, srv]).map((r) => r.p.pid)).toEqual([51]);
