@@ -584,7 +584,8 @@ mod tests {
         let mut refs: Vec<(&str, &str)> = long.iter().map(|(n, v)| (n.as_str(), *v)).collect();
         refs.push(("lodash", "4.17.20"));
         let many = repo(&[("package-lock.json", &npm_lock(&refs))]);
-        let ex = answers().coded(&["curl", &npm_url("lodash")], 200).coded(&["curl"], 503);
+        // A 400 reaches the registry, so the stop rule above cannot race lodash's answer out of this case.
+        let ex = answers().coded(&["curl", &npm_url("lodash")], 200).coded(&["curl"], 400);
         let r = read(&many, &ex, &NPM, &fresh(), true).unwrap();
         assert_eq!((facts(&r).0.len(), r.gaps.len(), r.gaps.last().unwrap().as_str()), (21, GAPS_SHOWN + 1, "12 more names failed"), "every name stays unplaced, and the tip stays short");
     }
