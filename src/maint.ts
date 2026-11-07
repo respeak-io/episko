@@ -2969,6 +2969,15 @@ const WEEK_FACETS: readonly Facet[] = ["ci", "security", "deps", "release"];
 export interface MarkAdv { names: string[]; severity: Severity; kind: AdvisoryKind }
 export interface MarkRt { key: string; name: string; eol: Eol } // key: product@cycle
 export interface MarkRel { tags: number | null; tag: string | null; published: number | null; fetchedAt: number | null }
+/** A production environment: what runs there, and its newest attempt's state when that is not what runs. */
+export interface MarkEnv { env: string; sha: string | null; live: string | null; state: DeployState | null }
+// `src`: the sources one merged list was read from, since another set is another list rather than a week's change.
+export interface MarkDeploys { src: string[]; envs: MarkEnv[] }
+export interface MarkPkgs { src: string[]; behind: number; majors: number }
+/** An unresolved issue: its id and when the tracker first saw it (unix secs), so *new* means new. */
+export interface MarkIssue { id: string; first: number | null }
+/** One tracker's unresolved issues, read at `at` (unix secs); `tracker` its project, so a renamed one is no list of changes. */
+export interface MarkErr { tracker: string; at: number; issues: MarkIssue[] }
 /** What a finished scan leaves for next week: identities and counts. A null facet, or a source or bot
  *  left out, had no verdict read in full; `none` names a facet with nothing to read (no source, off),
  *  `part` a source that answered with only part of its list. */
@@ -2978,6 +2987,8 @@ export interface WeekMark {
   adv: Record<string, MarkAdv[]>; part: string[]; // per source
   prs: Record<string, number[]>; // open update PRs per bot
   rt: MarkRt[] | null; rel: MarkRel | null; none: Facet[];
+  // Absent where nothing here reads the kind, and on a mark older than it: no verdict and no gap.
+  flaky?: string[] | null; deploys?: MarkDeploys | null; packages?: MarkPkgs | null; errors?: MarkErr | null;
 }
 export type WeekMarks = Record<string, WeekMark[]>; // newest first
 
@@ -3041,7 +3052,36 @@ export function takeMark(inp: MaintInput, at: number, account: string | null): W
     if (f.kind === "release") rel = { ...was, tags: f.tagsSeen, tag: f.tag === null ? null : cut(f.tag), fetchedAt: f.fetchedAt };
     else if (f.kind === "releases" && !truncated) rel = { ...was, published: f.count };
   }
-  return { at, account, ci: ciRead && fits(red) && fits(green) ? { red, green } : null, adv, part, prs, rt: rt && fits(rt) ? rt : null, rel, none };
+  // Phase 2's kinds stand only when every source of one answered with nothing lost (`whole`), as CI's list does.
+  const kind = <T>(cap: MaintCap, facet: Facet, whole: (r: SourceReport) => boolean, read: (src: string[]) => T | null): { v?: T | null } => {
+    const ids = inp.det?.config.off.includes(facet) ? [] : (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes(cap) && !inp.skip?.includes(id));
+    if (!ids.length) return {};
+    return { v: ids.every((id) => { const r = inp.reports[id]; return r?.coverage.state === "ok" && !r.truncated && whole(r); }) ? read([...ids].sort()) : null };
+  };
+  const flaky = kind("ci.reruns", "ci", (r) => !r.gaps.length && (r.facts?.kind !== "ciReruns" || r.facts.since === null), () => {
+    const names = [...new Set(flakyJobs(inp, th).filter((j) => j.level === "warn").map((j) => cut(`${j.workflow} / ${j.job}`)))].sort();
+    return fits(names) ? names : null;
+  });
+  // An environment's gaps say what it could not count; a list cut short is `truncated`.
+  const deploys = kind("rel.deployed", "release", () => true, (src): MarkDeploys | null => {
+    const envs = deployStates(inp, th, at).filter((e) => e.tier === "production").sort((a, b) => a.env.localeCompare(b.env))
+      .map((e): MarkEnv => ({ env: cut(e.env), sha: e.sha && cut(e.sha), live: e.live && cut(e.live), state: e.last?.state ?? null }));
+    return fits(envs) ? { src, envs } : null;
+  });
+  const packages = kind("deps.latest", "deps", (r) => !r.gaps.length, (src): MarkPkgs => { const p = pkgStates(inp); return { src, behind: p.behind.length, majors: p.majors }; });
+  // A kept scan's slimmed backlog is not the list; a release that was not read leaves the list whole.
+  const errors = kind("prod.errors", "prod", (r) => !r.gaps.includes(KEPT_CUT), (): MarkErr | null => {
+    const rs = okFacts(inp, "prod").flatMap((r) => r.facts.kind === "errors" ? [{ at: inp.reports[r.source]?.at, f: r.facts }] : []);
+    const by = new Map(rs.flatMap(({ f }) => f.issues).map((i): [string, MarkIssue] => [cut(i.id), { id: cut(i.id), first: i.firstSeen }]));
+    const issues = [...by.values()].sort((a, b) => a.id.localeCompare(b.id)), read = Math.min(...rs.map((r) => r.at ?? 0));
+    const tracker = rs.map(({ f }) => `${f.project}${f.environment ? ` (${f.environment})` : ""}`).sort().join(", ");
+    return rs.length && read > 0 && fits(issues) ? { tracker: cut(tracker), at: read, issues } : null;
+  });
+  return {
+    at, account, ci: ciRead && fits(red) && fits(green) ? { red, green } : null, adv, part, prs, rt: rt && fits(rt) ? rt : null, rel, none,
+    ...("v" in flaky ? { flaky: flaky.v } : {}), ...("v" in deploys ? { deploys: deploys.v } : {}),
+    ...("v" in packages ? { packages: packages.v } : {}), ...("v" in errors ? { errors: errors.v } : {}),
+  };
 }
 
 // Newest first: every mark inside the window of the newest, then the newest older one, the baseline.
@@ -3060,10 +3100,14 @@ export function addMark(marks: readonly WeekMark[], m: WeekMark): WeekMark[] {
     ...(m.rel.tags === null ? { tags: o.tags, tag: o.tag, fetchedAt: o.fetchedAt } : { tags: m.rel.tags, tag: m.rel.tag, fetchedAt: m.rel.fetchedAt }),
     published: m.rel.published ?? o.published,
   };
+  // A kind the newer scan does not read at all is gone; one it read only in part keeps the morning's.
+  const keep = <K extends "flaky" | "deploys" | "packages" | "errors">(k: K, o: WeekMark) =>
+    m[k] === undefined ? {} : { [k]: m[k] ?? o[k] ?? null } as Pick<WeekMark, K>;
   const merged: WeekMark = !old ? m : {
     ...m, ci: m.ci ?? (off("ci") ? null : old.ci), rt: m.rt ?? (off("security") ? null : old.rt), rel: rel(old.rel),
     adv: off("security") ? m.adv : { ...old.adv, ...m.adv }, part: off("security") ? m.part : [...new Set([...old.part, ...m.part])],
     prs: off("deps") ? m.prs : { ...old.prs, ...m.prs },
+    ...keep("flaky", old), ...keep("deploys", old), ...keep("packages", old), ...keep("errors", old),
   };
   return prune([merged, ...marks.filter((x) => x !== old)]);
 }
@@ -3079,6 +3123,10 @@ export function weekPair(marks: readonly WeekMark[], account: string | null): { 
 const isMarkAdv = shape({ names: (v) => list(str)(v) && (v as string[]).length > 0, severity: oneOf(SEVERITIES), kind: oneOf(ADVISORY_KINDS) });
 const isMarkRt = shape({ key: str, name: str, eol: (v) => v === null || num(v) || bool(v) });
 const isMarkRel = shape({ tags: opt(num), tag: opt(str), published: opt(num), fetchedAt: opt(num) });
+const isMarkEnv = shape({ env: str, sha: opt(str), live: opt(str), state: opt(oneOf(DEPLOY_STATES)) });
+const nat: Is = (v) => num(v) && Number.isInteger(v) && (v as number) >= 0;
+const isMarkIssue = shape({ id: str, first: opt(num) });
+const srcOf = (xs: readonly string[]) => [...new Set(xs.map(cut))].sort();
 const isMark = shape({
   at: (v) => num(v) && (v as number) > 0, ci: opt(shape({ red: list(str), green: list(str) })), adv: (v) => isObj(v) && Object.values(v).every(list(isMarkAdv)), part: list(str),
   prs: (v) => isObj(v) && Object.values(v).every(list(num)), rt: opt(list(isMarkRt)), rel: opt(isMarkRel), none: list(oneOf(FACETS)),
@@ -3092,11 +3140,20 @@ function clampMark(v: unknown): WeekMark | null {
     .map(([s, xs]) => [cut(s), xs.map((a) => ({ names: a.names.slice(0, WEEK_NAMES).map(cut), severity: a.severity, kind: a.kind }))]);
   const prs = Object.entries(m.prs).filter(([, xs]) => fits(xs)).map(([b, xs]) => [cut(b), [...xs]]);
   const rel = m.rel && { tags: m.rel.tags, tag: m.rel.tag === null ? null : cut(m.rel.tag), published: m.rel.published, fetchedAt: m.rel.fetchedAt };
+  // A kind a mark never held stays absent; a malformed or overfull one is no verdict, never an empty list.
+  const o = v as Obj, kind = <K extends keyof WeekMark>(k: K, ok: Is, f: () => WeekMark[K]) => !has(o, k) ? {} : { [k]: ok(o[k]) ? f() : null };
+  const some = (f: Is): Is => (x) => list(f)(x) && fits(x as unknown[]);
   return {
     at: m.at, account: strOr((v as Obj).account),
     ci: m.ci && fits(m.ci.red) && fits(m.ci.green) ? { red: m.ci.red.map(cut), green: m.ci.green.map(cut) } : null,
     adv: Object.fromEntries(adv), part: [...new Set(m.part)].slice(0, WEEK_ROWS).map(cut), prs: Object.fromEntries(prs),
     rt: m.rt && fits(m.rt) ? m.rt.map((r) => ({ key: cut(r.key), name: cut(r.name), eol: r.eol })) : null, rel, none: [...new Set(m.none)],
+    ...kind("flaky", some(str), () => [...new Set(m.flaky!.map(cut))]),
+    ...kind("deploys", shape({ src: some(str), envs: some(isMarkEnv) }), () => ({ src: srcOf(m.deploys!.src),
+      envs: m.deploys!.envs.map((e) => ({ env: cut(e.env), sha: e.sha && cut(e.sha), live: e.live && cut(e.live), state: e.state })) })),
+    ...kind("packages", shape({ src: some(str), behind: nat, majors: nat }), () => ({ src: srcOf(m.packages!.src), behind: m.packages!.behind, majors: m.packages!.majors })),
+    ...kind("errors", shape({ tracker: str, at: (x) => nat(x) && (x as number) > 0, issues: some(isMarkIssue) }), () => ({ tracker: cut(m.errors!.tracker), at: m.errors!.at,
+      issues: [...new Map(m.errors!.issues.map((i) => [cut(i.id), { id: cut(i.id), first: i.first }])).values()] })),
   };
 }
 
@@ -3144,6 +3201,8 @@ export interface WeekDigest {
   compared: number; unmarked: string[]; unread: string[]; behind: string[]; // checked once so far; never; not lately
   advNew: number; advCleared: number; ciBroke: number; ciFixed: number;
   prsOpened: number; prsClosed: number; released: number; ended: number; movedOff: number;
+  flakyNew: number; flakyGone: number; majorsDown: number; majorsUp: number; // majors: summed over projects
+  deployed: number; deployFailed: number; deployBack: number; errNew: number; errBack: number; errCleared: number; // deployed: production environments
   changes: WeekChange[]; gaps: WeekGap[];
   quiet: boolean; // nothing changed in what was compared
 }
@@ -3173,7 +3232,8 @@ function foldMarks(rows: readonly MarkAdv[]): MarkAdv[] {
 /** The fleet's week from each project's pair of marks, compared only where both read the same thing in full. */
 export function weekDigest(pairs: readonly WeekPairIn[], unmarked: readonly string[], unread: readonly string[] = [], opted: readonly string[] = []): WeekDigest {
   const d: WeekDigest = { since: 0, until: 0, span: "week", compared: 0, unmarked: [...unmarked].sort(), unread: [...unread].sort(), behind: [], advNew: 0, advCleared: 0,
-    ciBroke: 0, ciFixed: 0, prsOpened: 0, prsClosed: 0, released: 0, ended: 0, movedOff: 0, changes: [], gaps: [], quiet: false };
+    ciBroke: 0, ciFixed: 0, prsOpened: 0, prsClosed: 0, released: 0, ended: 0, movedOff: 0, flakyNew: 0, flakyGone: 0, majorsDown: 0, majorsUp: 0,
+    deployed: 0, deployFailed: 0, deployBack: 0, errNew: 0, errBack: 0, errCleared: 0, changes: [], gaps: [], quiet: false };
   const gaps = new Map<string, WeekGap>();
   const gap = (facet: Facet | null, root: string, why: string, click = false) => {
     const g = gaps.get(`${facet}\n${why}`) ?? { facet, roots: [], why, click };
@@ -3271,6 +3331,57 @@ export function weekDigest(pairs: readonly WeekPairIn[], unmarked: readonly stri
     } else unknown("release", base.rel ? "no release count now" : now.rel ? "no release count then" : "no release count either time");
     const fetched = now.rel?.fetchedAt;
     if (fetched && sec - fetched > th.fetchStaleDays * DAY) gap("release", root, `counted as of the last fetch, ${span(sec - fetched)} ago`);
+    // Phase 2's kinds: an absent one says nothing, and one read in full only once is a gap where every scan asks it.
+    const once = <T>(a: T | null | undefined, b: T | null | undefined) => a !== undefined && b !== undefined && !a !== !b;
+    const many = (xs: readonly string[], one: string, n: string): [string, string] => xs.length === 1 ? [one, xs[0]] : [`${xs.length} ${n}`, firsts(xs)];
+    if (base.flaky && now.flaky) {
+      compared = true;
+      const nu = now.flaky.filter((j) => !base.flaky!.includes(j)), gone = base.flaky.filter((j) => !now.flaky!.includes(j));
+      d.flakyNew += nu.length; d.flakyGone += gone.length;
+      if (nu.length) add("ci", "ci:flaky", "info", ...many(nu, "job turned flaky", "jobs turned flaky"));
+      if (gone.length) add("ci", "ci:flaky", "ok", ...many(gone, "job no longer flaky", "jobs no longer flaky"));
+    } else if (once(base.flaky, now.flaky)) miss("ci", `flaky jobs read in full only ${when(!!base.flaky)}`);
+    // One merged list per kind: read from another set of sources it is another list, and a changed set is silent.
+    const same = (a: { src: string[] }, b: { src: string[] }) => a.src.join() === b.src.join();
+    // Production only, by name: a deleted environment says nothing, and a deploy still out has stopped no failure.
+    if (base.deploys && now.deploys && same(base.deploys, now.deploys) && (base.deploys.envs.length || now.deploys.envs.length)) {
+      compared = true;
+      const then = new Map(base.deploys.envs.map((e) => [e.env.toLowerCase(), e])), went: MarkEnv[] = [], broke: MarkEnv[] = [], back: MarkEnv[] = [];
+      for (const e of now.deploys.envs) {
+        const b = then.get(e.env.toLowerCase());
+        if (e.sha && e.sha !== (b?.sha ?? null)) went.push(e);
+        if (e.state === "fail" && b?.state !== "fail") broke.push(e);
+        else if (b?.state === "fail" && e.state === null) back.push(e);
+      }
+      d.deployed += went.length; d.deployFailed += broke.length; d.deployBack += back.length;
+      const envs = (xs: MarkEnv[]) => firsts(xs.map((e) => e.env)), was = (e: MarkEnv) => then.get(e.env.toLowerCase())?.live;
+      if (went.length) add("release", "release:deploy", "ok", went.length === 1 ? `deployed to ${went[0].env}` : `deployed to ${went.length} production environments`,
+        went.length === 1 ? [was(went[0]), went[0].live].filter(Boolean).join(" → ") : envs(went));
+      if (broke.length) add("release", "release:deploy-failed", "bad", broke.length === 1 ? `${broke[0].env} deploy failed` : `${broke.length} production deploys failed`,
+        broke.length === 1 ? broke[0].live ? `still running ${broke[0].live}` : "nothing live found" : envs(broke));
+      if (back.length) add("release", "release:deploy-failed", "ok", back.length === 1 ? `${back[0].env} deploy no longer failing` : `${back.length} production deploys no longer failing`,
+        back.length === 1 ? back[0].live ? `runs ${back[0].live}` : "" : envs(back));
+    } else if (once(base.deploys, now.deploys) && (base.deploys ?? now.deploys)!.envs.length) miss("release", `production deploys read in full only ${when(!!base.deploys)}`);
+    // Majors summed: a registry's new major moves it as surely as an upgrade, so the words say which way and no more.
+    if (base.packages && now.packages && same(base.packages, now.packages)) {
+      compared = true;
+      const n = now.packages.majors - base.packages.majors, p = now.packages;
+      const said = `${plural(p.majors, "major")} across ${plural(p.behind, "package")}, was ${base.packages.majors}`;
+      if (n < 0) { d.majorsDown -= n; add("deps", "deps:packages", "ok", `${plural(-n, "major")} closer to current`, said); }
+      if (n > 0) { d.majorsUp += n; add("deps", "deps:packages", "info", `${plural(n, "major")} further behind`, said); }
+    } else if (once(base.packages, now.packages) && !(base.packages ?? now.packages)!.src.some((s) => clickOnly(s, opted))) miss("deps", `packages read in full only ${when(!!base.packages)}`);
+    // Asked on a click alone, so a read nobody asked both times is no gap. Gone from a 14-day list is cleared, never resolved;
+    // new is first seen since last week's read, so an old one firing again is seen again, and one with no first sighting neither.
+    if (base.errors && now.errors && base.errors.tracker === now.errors.tracker) {
+      compared = true;
+      const then = new Set(base.errors.issues.map((i) => i.id)), is = new Set(now.errors.issues.map((i) => i.id)), from = base.errors.at;
+      const joined = now.errors.issues.flatMap((i) => !then.has(i.id) && i.first !== null ? [i.first] : []);
+      const nu = joined.filter((f) => f > from).length, again = joined.length - nu, gone = base.errors.issues.filter((i) => !is.has(i.id)).length;
+      d.errNew += nu; d.errBack += again; d.errCleared += gone;
+      if (nu) add("prod", "prod:errors:new", "warn", nu === 1 ? "new error" : `${nu} new errors`, now.errors.tracker);
+      if (again) add("prod", "prod:errors:new", "info", `${plural(again, "error")} seen again`, now.errors.tracker);
+      if (gone) add("prod", "prod:errors:new", "ok", `${plural(gone, "error")} cleared`, now.errors.tracker);
+    }
     if (compared) d.compared++;
   }
   d.behind.sort();
@@ -3290,13 +3401,23 @@ export function weekFigs(d: WeekDigest): WeekFig[] {
   return [
     ...fig(d.ciBroke, "workflow broke", "workflows broke", "bad"),
     ...fig(d.ciFixed, "workflow fixed", "workflows fixed"),
+    ...fig(d.flakyNew, "job turned flaky", "jobs turned flaky"),
+    ...fig(d.flakyGone, "job no longer flaky", "jobs no longer flaky"),
     ...fig(d.advNew, "new advisory", "new advisories", worst === "bad" || worst === "warn" ? worst : null),
     ...fig(d.advCleared, "advisory cleared", "advisories cleared"),
     ...fig(d.ended, "runtime reached end-of-life", "runtimes reached end-of-life", "bad"),
     ...fig(d.movedOff, "runtime moved off", "runtimes moved off"),
     ...fig(d.prsClosed, "update PR closed", "update PRs closed"),
     ...fig(d.prsOpened, "update PR opened", "update PRs opened"),
+    ...fig(d.majorsDown, "major closer to current", "majors closer to current"),
+    ...fig(d.majorsUp, "major further behind", "majors further behind"),
     ...fig(d.released, "release tagged", "releases tagged"),
+    ...fig(d.deployFailed, "production deploy failed", "production deploys failed", "bad"),
+    ...fig(d.deployed, "deployed to production", "deployed to production"),
+    ...fig(d.deployBack, "production deploy no longer failing", "production deploys no longer failing"),
+    ...fig(d.errNew, "new error", "new errors", "warn"),
+    ...fig(d.errBack, "error seen again", "errors seen again"),
+    ...fig(d.errCleared, "error cleared", "errors cleared"),
   ];
 }
 
@@ -3305,13 +3426,21 @@ export function weekSummary(d: WeekDigest): string[] {
   if (d.quiet) return [`no change in the ${plural(d.compared, "project")} compared`];
   const two = (a: number, aText: string, b: number, bWord: string, bText: string) =>
     a ? `${aText}${b ? ` · ${b} ${bWord}` : ""}` : b ? bText : "";
+  // The first figure carries the noun, and the ones after it lean on it.
+  const lead = (...xs: [number, string, string][]) => xs.filter(([n]) => n).map(([n, full, short], i) => i ? `${n} ${short}` : full).join(" · ");
+  const deploys = [d.deployed ? `${d.deployed} deployed to production` : "", d.deployFailed ? `${plural(d.deployFailed, "production deploy")} failed` : ""].filter(Boolean);
   return [
     two(d.ciBroke, `${plural(d.ciBroke, "workflow")} broke`, d.ciFixed, "fixed", `${plural(d.ciFixed, "workflow")} fixed`),
+    two(d.flakyNew, `${plural(d.flakyNew, "job")} turned flaky`, d.flakyGone, "no longer flaky", `${plural(d.flakyGone, "job")} no longer flaky`),
     two(d.advCleared, `${plural(d.advCleared, "advisory", "advisories")} cleared`, d.advNew, "new", `${d.advNew} new ${d.advNew === 1 ? "advisory" : "advisories"}`),
     d.ended ? `${plural(d.ended, "runtime")} reached end-of-life` : "",
     d.movedOff ? `${plural(d.movedOff, "runtime")} moved off` : "",
     two(d.prsClosed, `${plural(d.prsClosed, "update PR")} closed`, d.prsOpened, "opened", `${plural(d.prsOpened, "update PR")} opened`),
+    two(d.majorsDown, `${plural(d.majorsDown, "major")} closer to current`, d.majorsUp, "further behind", `${plural(d.majorsUp, "major")} further behind`),
     d.released ? `${plural(d.released, "release")} tagged` : "",
+    [...deploys, d.deployBack ? deploys.length ? `${d.deployBack} no longer failing` : `${plural(d.deployBack, "production deploy")} no longer failing` : ""].filter(Boolean).join(" · "),
+    lead([d.errCleared, `${plural(d.errCleared, "error")} cleared`, "cleared"], [d.errNew, `${d.errNew} new ${d.errNew === 1 ? "error" : "errors"}`, "new"],
+      [d.errBack, `${plural(d.errBack, "error")} seen again`, "seen again"]),
   ].filter(Boolean);
 }
 

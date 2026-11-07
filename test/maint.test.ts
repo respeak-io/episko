@@ -11,8 +11,8 @@ import {
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
   cardsShown, fixBranch, parseSessionKey, SESSION_EXTERNAL, SESSION_MAX, SESSION_OVER, sessionDone, sessionGate, sessionKey, sessionLeft, sessionLines, sessionPickable, sessionPlan, sessionText, sessionTip, sweepGate, sweepLine, trunkOf, VERB_KIND,
   type Band, type SessionCtx, type SessionLine, type SessionPlan, type Verb,
-  addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT,
-  type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
+  addMark, clampWeek, leavesMark, packWeek, takeMark, weekDigest, weekFigs, weekNotCompared, weekPair, weekSummary, WEEK_MARKS, WEEK_ROOTS, WEEK_ROWS, WEEK_TEXT, WEEK_CHARS,
+  type MarkAdv, type MarkDeploys, type MarkEnv, type MarkErr, type MarkPkgs, type MarkRel, type MarkRt, type WeekDigest, type WeekMark, type WeekPairIn,
   addCoverCaps, onClickOnly, sessionKind, currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   currentDomains, domainStates, type Domain,
@@ -3483,7 +3483,7 @@ describe("the week's marks (cc-maint-week)", () => {
     expect(takeMark(input(not(GHA, "ci", { state: "error", reason: "502" }), reruns), NOON, null).ci, "the list itself failed").toBeNull();
     expect(takeMark({ ...input(list, reruns), skip: [GHA] }, NOON, null).ci, "the list skipped here: re-runs alone are no verdict").toBeNull();
     const week = weekDigest([{ root: "/r", base: takeMark(input(list, reruns), NOON, "me"), now: takeMark(input(ok(GHA, ci(run("build", "pass", t + 7 * D), run("lint", "pass", t + 7 * D))), failed), NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
-    expect(week).toMatchObject({ ciFixed: 1, gaps: [] });
+    expect(week, "the list's fix stands; only the flaky jobs go uncompared").toMatchObject({ ciFixed: 1, gaps: [{ facet: "ci", roots: ["/r"], why: "flaky jobs read in full only then", click: false }] });
   });
 
   it("takes every report the wire carries without throwing", () => {
@@ -3499,6 +3499,9 @@ describe("the week's marks (cc-maint-week)", () => {
     expect(m.prs).toEqual({ renovate: [42] });
     expect(m.rt?.map((r) => r.key)).toEqual(["nodejs@18", "nodejs@3", "postgresql@?99"]);
     expect(m.rel).toEqual({ tags: 9, tag: "v1.2.0", published: 9, fetchedAt: 1_790_000_000 });
+    expect([m.flaky, m.packages], "the recorded flake passed once, under the threshold").toEqual([[], { src: ["npm-registry"], behind: 1, majors: 2 }]);
+    expect(m.deploys).toEqual({ src: ["github-deployments"], envs: [{ env: "production", sha: "a".repeat(40), live: "v1.2.0", state: "fail" }] });
+    expect("errors" in m, "its [maintenance] turns Prod off").toBe(false);
     expect(clampWeek(JSON.parse(JSON.stringify({ "/r": [m] })))).toEqual({ "/r": [m] });
   });
 
@@ -3647,6 +3650,134 @@ describe("the week's marks (cc-maint-week)", () => {
     expect(Object.keys(packWeek(all, both - 1)), "the oldest root goes first").toEqual(["/new"]);
     expect(JSON.stringify(packWeek(all, both - 1)).length).toBeLessThanOrEqual(both - 1);
     expect(packWeek(all, 10)).toEqual({});
+  });
+});
+
+// Phase 2's kinds in a mark: absent where nothing reads one (and on an older mark), null unless read in full.
+describe("the week's marks: flaky jobs, production deploys, packages and errors", () => {
+  const t = NOON / 1000, RR = "github-actions-reruns", GD = "github-deployments", DT = "deploy-tags", SE = "sentry-issues";
+  const job = (name: string, passed: number, workflow = "CI"): RerunJob => ({ workflow, job: name, reruns: passed, passed, steps: [], seen: [] });
+  const reruns = (jobs: RerunJob[], o: Partial<Extract<Facts, { kind: "ciReruns" }>> = {}): Facts => ({ kind: "ciReruns", days: 30, since: null, runs: 40, reran: jobs.length, jobs, ...o });
+  const env = (o: Partial<Deployed> = {}): Deployed => ({ env: "production", tier: "production", sha: "a".repeat(40), tag: "v1.3", branch: null, at: t - D,
+    url: "https://app.example", last: null, behind: 0, behindAt: null, ahead: 0, ...o });
+  const deps = (envs: Deployed[]): Facts => ({ kind: "deployments", trunk: "origin/main", envs, fetchedAt: t - H });
+  const issue = (id: string): ErrIssue => ({ id, shortId: `WEB-${id}`, title: "TypeError: x is undefined", culprit: "app/checkout", level: "error", rawLevel: "error",
+    trend: "ongoing", rawTrend: "ongoing", events: 4, users: 2, firstSeen: t - 9 * D, lastSeen: t - H, unhandled: true, url: `https://errors.example/${id}/` });
+  const errs = (ids: string[], o: Partial<Extract<Facts, { kind: "errors" }>> = {}): Facts =>
+    ({ kind: "errors", project: "web", environment: null, windowDays: 14, release: null, lastEvent: t - H, url: null, issues: ids.map(issue), ...o });
+  const sentry = (f: Facts, o: Partial<SourceReport> = {}): SourceReport => ({ ...ok(SE, f, o), cost: "remote" });
+  const npm = (items: PkgLatest[], o: Partial<SourceReport> = {}): SourceReport => ({ ...ok("npm-registry", { kind: "packages", items, current: 4 }, o), cost: "public" });
+  const pk = (name: string, from: string, to: string): PkgLatest =>
+    ({ name, ecosystem: "npm", importers: ["."], installed: [from], latest: to, dev: false, url: `https://reg.example/${name}`, why: null });
+  const all = () => input(
+    ok(GHA, ci(run("build", "pass", t - H))),
+    ok(RR, reruns([job("e2e", 2), job("unit", 1), job("lint", 3, "Checks")])),
+    ok(GD, deps([env({ last: { state: "fail", raw: "FAILURE", sha: "b".repeat(40), at: t - H, url: "https://ci.example/9" } }),
+      env({ env: "staging", tier: "staging", tag: null }), env({ env: "Preview – ui", tier: "preview" })])),
+    npm([pk("react", "17.0.2", "19.2.0"), pk("vue", "2.7.0", "3.5.0"), pk("zod", "3.23.0", "3.24.0")]),
+    sentry(errs(["7", "11", "7"])),
+  );
+  const keys = (m: WeekMark) => (["flaky", "deploys", "packages", "errors"] as const).filter((k) => k in m);
+
+  it("keeps each kind as identities and counts: job names, what production runs, two counts, issue ids", () => {
+    const m = takeMark(all(), NOON, "me");
+    expect(m.flaky, "at the threshold or over it, by workflow and job").toEqual(["CI / e2e", "Checks / lint"]);
+    expect(m.deploys, "production only, beside the sources it was read from").toEqual({ src: [GD], envs: [{ env: "production", sha: "a".repeat(40), live: "v1.3", state: "fail" }] });
+    expect(m.packages).toEqual({ src: ["npm-registry"], behind: 2, majors: 3 });
+    expect(m.errors, "each issue's first sighting, and when the list was read").toEqual({ tracker: "web", at: S, issues: [{ id: "11", first: t - 9 * D }, { id: "7", first: t - 9 * D }] });
+    const json = JSON.stringify(m);
+    for (const s of ["https://", "TypeError", "checkout", "WEB-", "react", "19.2.0", "staging", "Preview"]) expect(json).not.toContain(s);
+    expect(takeMark(input(sentry(errs(["1"], { environment: "prod" }))), NOON, null).errors?.tracker).toBe("web (prod)");
+  });
+
+  it("leaves a kind out where nothing here reads it: no source, the facet off, or the source skipped on this machine", () => {
+    expect(keys(takeMark(input(ok(GHA, ci(run("build", "pass", t)))), NOON, null))).toEqual([]);
+    const off: MaintInput = { ...all(), det: { ...all().det!, config: { ...det([]).config, off: ["ci", "prod"] } } };
+    expect(keys(takeMark(off, NOON, null))).toEqual(["deploys", "packages"]);
+    expect(keys(takeMark({ ...all(), skip: [RR, GD, "npm-registry", SE] }, NOON, null))).toEqual([]);
+  });
+
+  it("marks a kind null, never a shorter list, unless every source of it answered with nothing lost", () => {
+    const of = (...reps: SourceReport[]) => takeMark(input(...reps), NOON, null);
+    const lost = { gaps: ["CI on 1a2b3c4: jobs not read: HTTP 502"] };
+    expect([of(ok(RR, reruns([job("e2e", 2)]), { truncated: true })), of(ok(RR, reruns([job("e2e", 2)]), lost)),
+      of(ok(RR, reruns([job("e2e", 2)], { since: t - 9 * D }))), of(not(RR, "ci", { state: "error", reason: "502" })), of(not(RR, "ci", { state: "notRun" }))]
+      .map((m) => m.flaky), "cut, part, a busy window read short, failed, not asked").toEqual([null, null, null, null, null]);
+    expect(of(ok(RR, reruns([job("e2e", 1)]))).flaky, "nothing flaky is a verdict").toEqual([]);
+    expect(of(ok(GD, deps([env()]), { truncated: true })).deploys).toBeNull();
+    expect(of(ok(GD, deps([env()])), not(DT, "release", { state: "error", reason: "git failed" })).deploys, "one list across its sources").toBeNull();
+    expect(of(ok(GD, deps([env({ behind: null })]), { gaps: ["production: behind not counted: no trunk"] })).deploys, "a count it lacks loses no environment")
+      .toEqual({ src: [GD], envs: [{ env: "production", sha: "a".repeat(40), live: "v1.3", state: null }] });
+    expect(of(ok(GD, deps([env()])), ok(DT, deps([]))).deploys?.src, "every source its one list was read from").toEqual([DT, GD]);
+    expect(of(npm([pk("react", "17.0.2", "19.2.0")], { gaps: ["2 names not asked: a read stops after 60s"] })).packages).toBeNull();
+    expect(of(npm([], { truncated: true })).packages).toBeNull();
+    expect(of(not("npm-registry", "deps", { state: "notRun" })).packages).toBeNull();
+    expect(of(sentry(errs(["1"]), { truncated: true })).errors).toBeNull();
+    expect(of(sentry(errs(["1"]), { gaps: [KEPT_CUT] })).errors, "a kept scan's slimmed backlog").toBeNull();
+    expect(of(sentry(errs(["1"]), { gaps: ["the newest release was not read (HTTP 500)"] })).errors, "the list itself is whole")
+      .toEqual({ tracker: "web", at: S, issues: [{ id: "1", first: t - 9 * D }] });
+    expect(of(sentry(errs(["1"]), { at: null })).errors, "a list nobody can date cannot say what is new").toBeNull();
+  });
+
+  it("makes a kind past its cap no verdict, not a cut list", () => {
+    const n = WEEK_ROWS + 1, ids = Array.from({ length: n }, (_, i) => `${i}`);
+    expect(takeMark(input(ok(RR, reruns(ids.map((i) => job(`j${i}`, 2))))), NOON, null).flaky).toBeNull();
+    expect(takeMark(input(ok(GD, deps(ids.map((i) => env({ env: `production-${i}` }))))), NOON, null).deploys).toBeNull();
+    expect(takeMark(input(sentry(errs(ids))), NOON, null).errors).toBeNull();
+    expect(takeMark(input(sentry(errs(ids.slice(1)))), NOON, null).errors?.issues).toHaveLength(WEEK_ROWS);
+  });
+
+  it("keeps a kind a mark never held absent through the store, and a malformed one is null, never an empty list", () => {
+    const m = takeMark(all(), NOON, "me");
+    expect(clampWeek(JSON.parse(JSON.stringify({ "/r": [m] })))).toEqual({ "/r": [m] });
+    const older = clampWeek({ "/r": [mark(NOON)] })["/r"][0];
+    expect(keys(older), "a mark from before these kinds").toEqual([]);
+    const bad = clampWeek({ "/r": [{ ...mark(NOON), flaky: "CI / e2e", deploys: { src: [GD], envs: [{ env: 1 }] }, packages: { src: ["npm-registry"], behind: -1, majors: 2 },
+      errors: { tracker: "web", at: S, issues: [{ id: 7, first: null }] } }] })["/r"][0];
+    expect([bad.flaky, bad.deploys, bad.packages, bad.errors]).toEqual([null, null, null, null]);
+    const unsourced = clampWeek({ "/r": [{ ...mark(NOON), deploys: [{ env: "production", sha: null, live: null, state: null }], packages: { behind: 1, majors: 2 },
+      errors: { tracker: "web", issues: [] } }] })["/r"][0];
+    expect([unsourced.deploys, unsourced.packages, unsourced.errors], "a list that cannot say what it was read from, or when").toEqual([null, null, null]);
+    const over = clampWeek({ "/r": [{ ...mark(NOON), flaky: Array.from({ length: WEEK_ROWS + 1 }, (_, i) => `j${i}`), packages: { src: ["npm-registry"], behind: 1.5, majors: 2 } }] })["/r"][0];
+    expect([over.flaky, over.packages]).toEqual([null, null]);
+    const nulls = clampWeek({ "/r": [{ ...mark(NOON), flaky: null, deploys: null, packages: null, errors: null }] })["/r"][0];
+    expect(keys(nulls)).toEqual(["flaky", "deploys", "packages", "errors"]);
+    const long = "x".repeat(WEEK_TEXT + 5);
+    const cut = clampWeek({ "/r": [{ ...mark(NOON), deploys: { src: [GD, long, GD], envs: [{ env: long, sha: long, live: null, state: "live" }] },
+      errors: { tracker: long, at: S, issues: [{ id: long, first: 1 }, { id: long, first: 2 }] } }] })["/r"][0];
+    expect(cut.deploys!.envs[0].env).toHaveLength(WEEK_TEXT);
+    expect(cut.deploys!.src, "one spelling and one order").toEqual([GD, "x".repeat(WEEK_TEXT)]);
+    expect(cut.errors).toEqual({ tracker: "x".repeat(WEEK_TEXT), at: S, issues: [{ id: "x".repeat(WEEK_TEXT), first: 2 }] });
+  });
+
+  it("merges a same-day mark kind by kind: one read in part keeps the morning's, one no longer read is gone", () => {
+    const src = ["npm-registry"];
+    const morning = mark(NOON - 3 * H * 1000, { flaky: ["CI / e2e"], packages: { src, behind: 2, majors: 3 }, errors: { tracker: "web", at: S, issues: [{ id: "7", first: null }] } });
+    const [m] = addMark([morning], mark(NOON + 3 * H * 1000, { flaky: null, packages: { src, behind: 1, majors: 1 } }));
+    expect([m.flaky, m.packages, "errors" in m]).toEqual([["CI / e2e"], { src, behind: 1, majors: 1 }, false]);
+    expect(addMark([mark(NOON - H * 1000)], mark(NOON, { deploys: null }))[0].deploys, "nothing earlier to keep").toBeNull();
+  });
+
+  // A mark's advisory sources and bots are uncapped in number, so "every cap" is one of each.
+  it("keeps a pair with every list at its cap, one advisory source and one bot, and leaves out whole a root that cannot fit", () => {
+    const x = (i: number) => `${i}`.padEnd(WEEK_TEXT, "x"), rows = Array.from({ length: WEEK_ROWS }, (_, i) => i);
+    const advs = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, s) => [x(s), rows.map((i) => ma([0, 1, 2, 3].map((k) => x(i * 4 + k)), "critical"))]));
+    const full = (at: number, sources = 1): WeekMark => mark(at, {
+      ci: { red: rows.map(x), green: rows.map((i) => x(i + 100)) },
+      adv: advs(sources), part: rows.map(x), prs: { [x(1)]: rows },
+      rt: rows.map((i) => ({ key: x(i), name: x(i), eol: 1_790_000_000 })), rel: { tags: 999, tag: x(2), published: 999, fetchedAt: 1_790_000_000 },
+      flaky: rows.map(x), deploys: { src: [x(4), x(5)], envs: rows.map((i) => ({ env: x(i), sha: x(i), live: x(i), state: "unknown" })) },
+      packages: { src: [x(6), x(7)], behind: 9999, majors: 99_999 }, errors: { tracker: x(3), at: 1_790_000_000, issues: rows.map((i) => ({ id: x(i), first: 1_790_000_000 })) },
+    });
+    const capped = [full(NOON + 7 * DMS), full(NOON)];
+    expect(clampWeek({ "/cap": capped })["/cap"], "at every cap, nothing is cut or dropped").toEqual(capped);
+    expect(JSON.stringify(capped[0]).length, "the figure docs/maintenance.md gives").toBeLessThan(120_000);
+    const week = { "/cap": capped, "/old": [mark(NOON + 6 * DMS), mark(NOON - DMS)] };
+    const packed = packWeek(week);
+    expect(packed, "both pairs, the newest root first").toEqual(week);
+    expect(JSON.stringify(packed).length).toBeLessThanOrEqual(WEEK_CHARS);
+    const wide = { "/wide": [full(NOON + 7 * DMS, 2), full(NOON, 2)], "/old": week["/old"] };
+    expect(packWeek(wide), "two advisory sources at their caps: a pair past the budget is left out, never cut").toEqual({ "/old": week["/old"] });
   });
 });
 
@@ -3831,6 +3962,172 @@ describe("since last week", () => {
       { adv: { s: [] }, rel: { tags: 1, tag: null, published: null, fetchedAt: null } })], []), {});
     expect(quietTip, "a click-only source is named in the tip alone").toEqual({ line: "Not compared: Dependencies in 1 project", tip: [
       "Security: npm audit read in full only then: /r", "Dependencies: no update bot read in full both times: /r"] });
+  });
+});
+
+describe("since last week: flaky jobs, production deploys, packages and errors", () => {
+  const GD = "github-deployments", DT = "deploy-tags", NPM = "npm-registry", CR = "crates-registry", T = NOON / 1000;
+  const pairOf = (base: Partial<WeekMark>, now: Partial<WeekMark>, root = "/r"): WeekPairIn =>
+    ({ root, base: mark(NOON, base), now: mark(NOON + 7 * DMS, now), th: MAINT_DEFAULTS });
+  const one = (base: Partial<WeekMark>, now: Partial<WeekMark>, opted: string[] = []) => weekDigest([pairOf(base, now)], [], [], opted);
+  const said = (d: WeekDigest) => d.changes.map((c) => [c.level, c.key, c.text, c.detail]);
+  const prod = (o: Partial<MarkEnv> = {}): MarkEnv => ({ env: "production", sha: "a".repeat(40), live: "v1.3", state: null, ...o });
+  const dep = (envs: MarkEnv[], src = [GD]): MarkDeploys => ({ src, envs });
+  const pkgs = (behind: number, majors: number, src = [NPM]): MarkPkgs => ({ src, behind, majors });
+  // Last week's list was read an hour before its mark: OLD was first seen long before it, NEW since.
+  const OLD = T - 30 * D, NEW = T + 3 * D;
+  const errs = (issues: [string, number | null][], tracker = "web"): MarkErr => ({ tracker, at: T - H, issues: issues.map(([id, first]) => ({ id, first })) });
+  const gapsOf = (d: WeekDigest) => d.gaps.filter((g) => /^(flaky jobs|production deploys|packages|errors) /.test(g.why));
+
+  it("counts jobs that turned flaky and jobs no longer flaky, plainly, and a job in both is no change", () => {
+    const d = one({ flaky: ["CI / a", "CI / b"] }, { flaky: ["CI / b", "CI / c", "CI / d"] });
+    expect(d).toMatchObject({ flakyNew: 2, flakyGone: 1, compared: 1 });
+    expect(said(d)).toEqual([["info", "ci:flaky", "2 jobs turned flaky", "CI / c, CI / d"], ["ok", "ci:flaky", "job no longer flaky", "CI / a"]]);
+    expect(weekFigs(d), "a job turning flaky is plain").toEqual([{ n: 2, text: "jobs turned flaky", level: null }, { n: 1, text: "job no longer flaky", level: null }]);
+    expect(one({ flaky: ["CI / b"] }, { flaky: ["CI / b"] })).toMatchObject({ flakyNew: 0, flakyGone: 0, changes: [], quiet: true });
+  });
+
+  it("compares a kind only when both marks read it in full, and says one read once only where every scan asks it", () => {
+    const empty = { flaky: [], deploys: dep([prod()]), packages: pkgs(0, 0), errors: errs([]) };
+    const nulls = { flaky: null, deploys: null, packages: null, errors: null };
+    expect(gapsOf(one(empty, empty)), "both read").toEqual([]);
+    expect(one(empty, empty)).toMatchObject({ compared: 1, quiet: true });
+    expect(gapsOf(one(nulls, nulls)), "neither: Coverage says why, this week cannot").toEqual([]);
+    expect(gapsOf(one({}, empty)), "a mark from before these kinds").toEqual([]);
+    expect(gapsOf(one(empty, {})), "a kind nothing here reads any more").toEqual([]);
+    expect(gapsOf(one(nulls, empty))).toEqual([
+      { facet: "ci", roots: ["/r"], why: "flaky jobs read in full only now", click: false },
+      { facet: "release", roots: ["/r"], why: "production deploys read in full only now", click: false },
+    ]);
+    expect(gapsOf(one(empty, nulls, [NPM])), "a registry this machine asks on every scan").toContainEqual(
+      { facet: "deps", roots: ["/r"], why: "packages read in full only then", click: false });
+    expect(gapsOf(one({ deploys: dep([]) }, { deploys: null })), "no production environment then: nothing to compare").toEqual([]);
+    expect(one({ ci: null, ...empty }, { ci: null, ...empty }).compared, "one kind compared is a project compared").toBe(1);
+    expect(one({ ci: null, deploys: dep([]) }, { ci: null, deploys: dep([]) }).compared, "no production environment either time").toBe(0);
+  });
+
+  it("names what production runs now, a deploy that started failing in red, and one no longer failing", () => {
+    const fail = { state: "fail" as const };
+    expect(said(one({ deploys: dep([prod()]) }, { deploys: dep([prod({ sha: "b".repeat(40), live: "v1.4" })]) })))
+      .toEqual([["ok", "release:deploy", "deployed to production", "v1.3 → v1.4"]]);
+    const broke = one({ deploys: dep([prod()]) }, { deploys: dep([prod(fail)]) });
+    expect(said(broke)).toEqual([["bad", "release:deploy-failed", "production deploy failed", "still running v1.3"]]);
+    expect(weekFigs(broke)).toEqual([{ n: 1, text: "production deploy failed", level: "bad" }]);
+    const back = one({ deploys: dep([prod(fail)]) }, { deploys: dep([prod({ sha: "c".repeat(40), live: "v1.5" })]) });
+    expect(back).toMatchObject({ deployed: 1, deployBack: 1, deployFailed: 0 });
+    expect(said(back)).toContainEqual(["ok", "release:deploy-failed", "production deploy no longer failing", "runs v1.5"]);
+    expect(one({ deploys: dep([prod(fail)]) }, { deploys: dep([prod({ state: "running" })]) }), "a deploy still out has stopped nothing yet").toMatchObject({ deployBack: 0, changes: [] });
+    expect(one({ deploys: dep([prod(fail)]) }, { deploys: dep([prod(fail)]) }), "still failing is no change").toMatchObject({ deployFailed: 0, changes: [] });
+    const gone = one({ deploys: dep([prod(), prod({ env: "production-eu", ...fail })]) }, { deploys: dep([prod()]) });
+    expect(gone, "a deleted environment says nothing").toMatchObject({ deployed: 0, deployBack: 0, changes: [], compared: 1 });
+    expect(one({ deploys: dep([prod({ env: "Production" })]) }, { deploys: dep([prod()]) }), "named case-blind").toMatchObject({ deployed: 0 });
+    expect(said(one({ deploys: dep([]) }, { deploys: dep([prod({ live: "v1.0" }), prod({ env: "prod-eu", live: "v1.0", ...fail })]) })), "a first deploy is one").toEqual([
+      ["bad", "release:deploy-failed", "prod-eu deploy failed", "still running v1.0"], ["ok", "release:deploy", "deployed to 2 production environments", "production, prod-eu"]]);
+  });
+
+  it("compares deploys and packages only as read from the same sources, and a changed set is no gap", () => {
+    // A `[deploy] envs` committed mid-week brings deploy tags in, and a months-old tag is no deploy this week.
+    const tagged = one({ deploys: dep([]) }, { deploys: dep([prod({ live: "v1.2" })], [DT, GD]) });
+    expect(tagged).toMatchObject({ deployed: 0, deployFailed: 0, changes: [] });
+    expect(gapsOf(tagged)).toEqual([]);
+    expect(one({ deploys: dep([prod()], [DT, GD]) }, { deploys: dep([prod({ sha: "b".repeat(40) })], [GD]) }), "one source fewer").toMatchObject({ deployed: 0, changes: [] });
+    const lockfile = one({ packages: pkgs(1, 1) }, { packages: pkgs(3, 9, [CR, NPM]) });
+    expect(lockfile, "a new lockfile's registry is another sum").toMatchObject({ majorsUp: 0, changes: [] });
+    expect(gapsOf(lockfile)).toEqual([]);
+  });
+
+  it("says which way the majors behind moved, plainly, and never what moved them", () => {
+    const d = one({ packages: pkgs(5, 9) }, { packages: pkgs(3, 6) });
+    expect(said(d)).toEqual([["ok", "deps:packages", "3 majors closer to current", "6 majors across 3 packages, was 9"]]);
+    const up = one({ packages: pkgs(1, 1) }, { packages: pkgs(2, 3) });
+    expect(said(up)).toEqual([["info", "deps:packages", "2 majors further behind", "3 majors across 2 packages, was 1"]]);
+    expect(weekFigs(up)).toEqual([{ n: 2, text: "majors further behind", level: null }]);
+    expect(one({ packages: pkgs(2, 3) }, { packages: pkgs(3, 3) })).toMatchObject({ changes: [], quiet: true });
+  });
+
+  it("raises a packages gap only when every registry the project reads is asked by every scan here", () => {
+    expect(gapsOf(one({ packages: null }, { packages: pkgs(1, 1) })), "a registry asked only on a click").toEqual([]);
+    expect(gapsOf(one({ packages: pkgs(2, 3) }, { packages: null }, [CR])), "another registry opted into is not this project's").toEqual([]);
+    expect(gapsOf(one({ packages: pkgs(2, 3, [CR, NPM]) }, { packages: null }, [CR])), "one of its registries still needs a click").toEqual([]);
+    expect(gapsOf(one({ packages: pkgs(2, 3, [CR]) }, { packages: null }, [CR])))
+      .toEqual([{ facet: "deps", roots: ["/r"], why: "packages read in full only then", click: false }]);
+  });
+
+  it("calls an error new only when first seen since last week's read, and one gone from the list cleared, never resolved", () => {
+    const d = one({ errors: errs([["1", OLD], ["2", OLD], ["3", OLD]]) }, { errors: errs([["2", OLD], ["4", NEW], ["5", OLD], ["6", null]]) });
+    expect(d, "an old one firing again is seen again; one with no first sighting is neither").toMatchObject({ errNew: 1, errBack: 1, errCleared: 2 });
+    expect(said(d)).toEqual([["warn", "prod:errors:new", "new error", "web"], ["info", "prod:errors:new", "1 error seen again", "web"], ["ok", "prod:errors:new", "2 errors cleared", "web"]]);
+    expect(weekFigs(d)).toEqual([{ n: 1, text: "new error", level: "warn" }, { n: 1, text: "error seen again", level: null }, { n: 2, text: "errors cleared", level: null }]);
+    expect(JSON.stringify(d.changes)).not.toMatch(/resolv|fixed|closed/);
+    expect(one({ errors: errs([]) }, { errors: errs([["7", T - H / 2]]) }), "first seen after that list was read, before its mark").toMatchObject({ errNew: 1, errBack: 0 });
+    expect(one({ errors: errs([]) }, { errors: errs([["7", T - 2 * H]]) }), "first seen before it, and not on it").toMatchObject({ errNew: 0, errBack: 1 });
+    const moved = one({ ci: null, errors: errs([["1", OLD]]) }, { ci: null, errors: errs([["2", NEW]], "api") });
+    expect(moved, "another tracker is no list of changes").toMatchObject({ errNew: 0, errCleared: 0, compared: 0 });
+    expect(gapsOf(moved)).toEqual([]);
+    expect(gapsOf(one({ errors: null }, { errors: errs([]) })), "asked on a click alone: not asked is no gap").toEqual([]);
+  });
+
+  it("opens every change weekDigest can make on a board drawn on its facet's tab", () => {
+    const rt = (key: string, eol: MarkRt["eol"]): MarkRt => ({ key, name: key, eol });
+    const relOf = (tags: number): MarkRel => ({ tags, tag: `v${tags}`, published: null, fetchedAt: null });
+    const d = weekDigest([
+      pairOf({ flaky: ["CI / a"], deploys: dep([prod({ state: "fail" })]), packages: pkgs(1, 1), errors: errs([["1", OLD]]) },
+        { flaky: ["CI / b"], deploys: dep([prod({ sha: "b".repeat(40) })]), packages: pkgs(1, 2), errors: errs([["2", NEW], ["3", OLD]]) }),
+      pairOf({ deploys: dep([prod()]), packages: pkgs(2, 2) }, { deploys: dep([prod({ state: "fail" })]), packages: pkgs(1, 1) }, "/s"),
+      pairOf({ ci: { red: ["a"], green: ["b"] }, adv: { osv: ADVISORY_KINDS.map((k) => ma([`was-${k}`], "high", k)) }, prs: { dependabot: [1] },
+        rt: [rt("nodejs@16", true), rt("python@3.8", false)], rel: relOf(1) },
+      { ci: { red: ["b"], green: ["a"] }, adv: { osv: ADVISORY_KINDS.map((k) => ma([`is-${k}`], "high", k)) }, prs: { dependabot: [2] },
+        rt: [rt("nodejs@18", false), rt("python@3.8", true)], rel: relOf(2) }, "/t"),
+    ], []);
+    expect([...new Set(d.changes.map((c) => c.key))].sort(), "every key, so a new one with no board fails here").toEqual([
+      "ci", "ci:flaky", "deps:dependabot", "deps:packages", "prod:errors:new", "release", "release:deploy", "release:deploy-failed",
+      ...ADVISORY_KINDS.map((k) => `security:${k}`), "security:runtime"].sort());
+    for (const c of d.changes) {
+      const x = findingTarget(c);
+      expect(x.board, c.key).not.toBeNull();
+      expect(BOARD_COLS[x.board!], c.key).toBeDefined();
+      expect(x.tab, c.key).toBe(FACET_TAB[c.facet]);
+    }
+    const at = Object.fromEntries(d.changes.filter((c) => c.root !== "/t").map((c) => { const x = findingTarget(c); return [c.key, `${x.tab}/${x.board}`]; }));
+    expect(at).toEqual({ "ci:flaky": "delivery/flaky", "release:deploy": "delivery/deployments", "release:deploy-failed": "delivery/deployments",
+      "deps:packages": "security/packages", "prod:errors:new": "servers/errors" });
+    expect(new Set(d.changes.filter((c) => c.root !== "/t").map((c) => `${c.key} ${c.level}`)).size, "every change each newer kind can make").toBe(10);
+  });
+
+  it("words the figures and the summary for every kind", () => {
+    const d = weekDigest([
+      pairOf({ flaky: ["CI / a"], deploys: dep([prod()]), packages: pkgs(4, 6), errors: errs([["1", OLD], ["2", OLD]]) },
+        { flaky: ["CI / b", "CI / c"], deploys: dep([prod({ sha: "b".repeat(40), state: "fail" })]), packages: pkgs(2, 2), errors: errs([["3", NEW], ["4", OLD]]) }),
+      pairOf({ deploys: dep([prod({ state: "fail" })]) }, { deploys: dep([prod()]) }, "/s"),
+    ], []);
+    expect(weekFigs(d).map((f) => `${f.n} ${f.text}${f.level ? ` (${f.level})` : ""}`)).toEqual([
+      "2 jobs turned flaky", "1 job no longer flaky", "4 majors closer to current", "1 production deploy failed (bad)", "1 deployed to production",
+      "1 production deploy no longer failing", "1 new error (warn)", "1 error seen again", "2 errors cleared",
+    ]);
+    expect(weekSummary(d)).toEqual(["2 jobs turned flaky · 1 no longer flaky", "4 majors closer to current",
+      "1 deployed to production · 1 production deploy failed · 1 no longer failing", "2 errors cleared · 1 new · 1 seen again"]);
+    expect(weekSummary(one({ deploys: dep([prod({ state: "fail" })]) }, { deploys: dep([prod()]) }))).toEqual(["1 production deploy no longer failing"]);
+    expect(weekSummary(one({ errors: errs([]) }, { errors: errs([["3", OLD], ["4", NEW]]) }))).toEqual(["1 new error · 1 seen again"]);
+  });
+
+  // The kinds' presence comes from takeMark over what a scan read, so these run through it.
+  it("adds nothing to Not compared for a GitLab project with no bot, or a project with no [deploy]", () => {
+    const t = NOON / 1000;
+    const lab: MaintInput = { ...input(
+      ok("gitlab-ci", ci(run("pipeline", "pass", t - H))), ok("git-tags", rel({ tagsSeen: 3, fetchedAt: null })),
+      ok("deploy-tags", { kind: "deployments", trunk: "origin/main", envs: [], fetchedAt: t - H }), not("npm-registry", "deps", { state: "notRun" })) };
+    lab.det = { ...lab.det!, forge: { kind: "gitlab", host: "gitlab.com", path: "acme/app", by: "name" } };
+    const failedTags: MaintInput = { ...lab, reports: { ...lab.reports, "deploy-tags": not("deploy-tags", "release", { state: "error", reason: "git failed" }) } };
+    for (const now of [lab, failedTags]) {
+      const d = weekDigest([{ root: "/lab", base: takeMark(lab, NOON, "me"), now: takeMark(now, NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []);
+      expect(weekNotCompared(d, { "/lab": "app" }), now === lab ? "read" : "its deploy tags failed").toBeNull();
+    }
+    const hub = input(ok(GHA, ci(run("build", "pass", t - H))), ok("github-actions-reruns", { kind: "ciReruns", days: 30, since: null, runs: 9, reran: 0, jobs: [] }),
+      ok("dependabot-prs", prs(1, { bot: "dependabot" })), ok("git-tags", rel({ fetchedAt: null })), ok("github-deployments", { kind: "deployments", trunk: "origin/main", envs: [], fetchedAt: t - H }),
+      ok("deploy-tags", { kind: "deployments", trunk: "origin/main", envs: [], fetchedAt: t - H }));
+    const m = takeMark(hub, NOON, "me");
+    expect("errors" in m, "no [deploy] sentry, no tracker to read").toBe(false);
+    expect(weekNotCompared(weekDigest([{ root: "/hub", base: m, now: takeMark(hub, NOON + 7 * DMS, "me"), th: MAINT_DEFAULTS }], []), {})).toBeNull();
   });
 });
 

@@ -624,6 +624,18 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 - [ ] **Since last week.** The band appears only once a project has two marks a week apart, a
       line opens its board, and opening the view triggers no scan of its own. A project with a
       registry read and no update bot (a GitLab repo with a lockfile) adds nothing to *Not compared*.
+- [ ] **Since last week's Phase 2 figures.** These need seven days of use on a build with them:
+      the first week after an update compares nothing new and must add nothing to *Not compared*.
+      After it, on a project with a flaky job, a production deploy, a registry this machine
+      opted into and a `[deploy] sentry` asked with *Check prod* and then ⟳ on both days (a
+      click writes no mark; the scan after it, within a day, carries its answer), the band counts
+      jobs turned flaky (plain), *deployed to production*, majors closer or further (plain),
+      a failed production deploy in red and new errors in amber, each line opening the Flaky
+      jobs, Deployments, Packages or Errors board narrowed to its project. An error gone from
+      the list reads *cleared*, never *resolved* or *fixed*, and an old one firing again reads
+      *seen again*, plainly. A `[deploy] envs` committed during the week reads as no deploy. A GitLab project and a project with
+      no `[deploy]` add nothing to *Not compared*, and neither does a Sentry project not asked
+      this week.
 - [ ] **Packages.** The Settings switch and the *Check with* door both name who receives what.
       *Behind* opens the dependency view's *Out of date* tab, *Upgrade* prefills and does not
       send, and a floor shows as `?` or `+`. With a registry slow enough to pass 60 s (a
