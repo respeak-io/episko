@@ -1199,7 +1199,8 @@ pub(crate) async fn privacy_asks(app: tauri::AppHandle) -> Result<Vec<PrivacyAsk
 // ---------- secrets, sealed per OS ----------
 
 /// Where one secret lives: a login-keychain item on macOS, else `dir/file`, DPAPI-sealed on
-/// Windows and 0600 elsewhere. Sync's token and the Claude account tokens both go through here.
+/// Windows and 0600 elsewhere. Sync's token, the Claude account tokens and Maintenance's service
+/// tokens go through here.
 pub(crate) struct SecretSlot<'a> {
     pub(crate) dir: &'a std::path::Path,
     pub(crate) file: &'a str,

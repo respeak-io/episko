@@ -88,7 +88,8 @@ export function accountsPanelHtml(p: AcctPanel): string {
 
 /** Settings › Accounts' Maintenance tokens of one kind: each saved host with its last check, and the add form. */
 export interface TokRow { host: string; check?: MaintTokenCheck }
-export interface TokPanel { def: TokenDef; rows: TokRow[]; listed: boolean; draft: { host: string; token: string }; now: number }
+// `sends`: every click that sends a saved token (./maint tokenSends), the one sentence the Settings row says too.
+export interface TokPanel { def: TokenDef; rows: TokRow[]; listed: boolean; draft: { host: string; token: string }; now: number; sends: string }
 
 function tokRow(p: TokPanel, r: TokRow): string {
   const at = `${escAttr(p.def.id)}|${escAttr(r.host)}`, c = r.check;
@@ -120,7 +121,7 @@ export function maintTokensHtml(p: TokPanel): string {
     <div class="thint">Make one at <span class="mono">${esc(page)}</span> with the scopes <span class="mono">${esc(p.def.scopes.join(", "))}</span>.</div>
     <div class="trow-end"><button class="set-abtn" data-settok="save|${id}|">Save and check</button></div>`);
   return `<div class="titlebox syncbox">
-    ${sect("Saved here", list, "Each is sent only over https to the host it was saved for, or a subdomain of it, and only when you click Check prod, or Check or Save and check here, which read the host's own API root once.")}
+    ${sect("Saved here", list, esc(p.sends))}
     ${add}
   </div>`;
 }

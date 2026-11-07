@@ -363,6 +363,15 @@ mod tests {
         calls.iter().map(|c| c[1].as_str()).collect()
     }
 
+    #[test]
+    fn the_disclosure_names_every_host_contacted() {
+        let man: Value = serde_json::from_str(include_str!("../../src/maintmanifest.json")).unwrap();
+        let sends = man.pointer("/sources/rdap-domain/sends").and_then(Value::as_str).unwrap();
+        let iana = url::Url::parse(BOOTSTRAP).unwrap();
+        assert!(sends.contains(iana.host_str().unwrap()), "the bootstrap's host is named: {sends}");
+        assert!(sends.contains("own registry"));
+    }
+
     fn domain(r: &Result<Read, Coverage>) -> (Vec<Domain>, Vec<String>) {
         match r {
             Ok(Read { facts: Facts::Domains { items }, gaps, .. }) => (items.clone(), gaps.clone()),

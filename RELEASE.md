@@ -680,8 +680,14 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       fix it, touching nothing in the tracker; it is not sent, and ticked in a session it runs on
       `maint/prod-errors-new`. Set `sentry_url = "http://sentry.example"` in
       `[maintenance.params]`: the row says it is not https and nothing is asked; set it to
-      `https://de.sentry.io`: the `sentry.io` token is used. *Forget* the token (it asks first):
-      the next *Check prod* says *no token* again. On Windows the token sits sealed under
+      `https://de.sentry.io`: the `sentry.io` token is used; set it to `https://docs.sentry.io`: the
+      row says it is not Sentry's API and nothing is asked. Settings › Accounts' *Sentry tokens* text
+      names every click that sends the token (Check prod, a Coverage row's Run, Fix, Brief N agents,
+      Check, Save and check). Click a saved row's *Check*, then type into the *Host* field before it
+      answers: the answer lands and the caret stays where it was. Paste a token without saving,
+      close Settings and reopen it: the field is empty. *Forget* the token (it asks first): the
+      next *Check prod* says *no token* again, and after a reload (Ctrl+R) before any scan the
+      card, the Errors board and Coverage show nothing the old token read. On Windows the token sits sealed under
       `%APPDATA%\io.respeak.episko\maint-tokens\sentry\` (not readable as text); on macOS it is in the
       login keychain under `episko-sentry-token`.
 - [ ] **The Errors board and Fix with stack traces.** With the real token and a checked project,

@@ -81,6 +81,7 @@ import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
 import { disclosure, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
 import { maintPrefs, setMaintPublic } from "./maintscan";
+import { tokenSends } from "./maint";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -542,8 +543,8 @@ const SET_TABS: SetTab[] = [
       // One per kind of service token the manifest names: its label, default host, page and scopes are data.
       ...tokenKinds().map((t): SetControl => ({
         kind: "maintTokens", token: t, id: tokenRow(t.id), label: `${t.label} tokens`,
-        hint: "Tokens Maintenance reads errors in production with when you check prod, kept in this machine's keychain.",
-        more: `A token needs the scopes ${t.scopes.join(", ")}. It is sent only over https, only to the host it was saved for or a subdomain of it, and only when you click Check prod, or Check or Save and check here, which read the host's own API root once; a host the team's .episko/episko.toml names picks among the tokens saved here and never gets one that is not. Nothing shows a token again once it is saved, and it never syncs.`,
+        hint: "Tokens Maintenance reads errors in production with, only on a click, kept in this machine's keychain.",
+        more: `A token needs the scopes ${t.scopes.join(", ")}. ${tokenSends(t.label)} A host the team's .episko/episko.toml names picks among the tokens saved here and never gets one that is not. Nothing shows a token again once it is saved, and it never syncs.`,
         aliases: [t.label.toLowerCase(), "error tracker", "errors", "token", "auth token", "api token", "maintenance", "prod", "keychain"],
         summary: () => tokSummary(t.id) })),
     ],
@@ -800,6 +801,8 @@ let query = "";                         // the search box, mirrored so a repaint
 const openPanels = new Set<string>();  // folded panels opened by hand; a search hit opens one without touching this
 const openWhy = new Set<string>();
 let spyHold = 0;                        // the spy stands down until then: a rail click is scrolling
+let landed: { row: string; at: number } | null = null; // a door's row, lit through the repaints its listings cause
+const LIT_MS = 3200;                    // styles.css's `set-lit`
 
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() {
@@ -816,13 +819,14 @@ export function openSettings() {
 export function openSettingsOn(tab: string, row?: string) {
   setQuery("");
   setTab = tab;
+  landed = null;
   openSettings();
   const body = $("setBody");
   const hit = body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(row ?? tab)}"]`);
   const target = hit ?? body.querySelector<HTMLElement>(`.set-sec[data-sec="${CSS.escape(tab)}"]`);
   if (!target) return;
   scrollBodyTo(target, hit ? 120 : 0);
-  if (hit) { hit.classList.remove("set-lit"); void hit.offsetWidth; hit.classList.add("set-lit"); }
+  if (hit) { hit.classList.remove("set-lit"); void hit.offsetWidth; hit.classList.add("set-lit"); landed = { row: row ?? tab, at: Date.now() }; }
   markTab(tab);
 }
 export function closeSettings() {
@@ -830,6 +834,10 @@ export function closeSettings() {
   stopKeyRec();
   $("setDlg").classList.remove("show");
   dropScrim();
+  landed = null;
+  // A token pasted and never saved is not written back on the next open: the fields are write-only.
+  acctDraft.token = "";
+  for (const d of Object.values(tokDrafts)) d.token = "";
 }
 function setQuery(v: string) {
   query = v;
@@ -901,9 +909,25 @@ export function renderSettings() {
   }
   const body = $("setBody");
   const sc = body.scrollTop; // preserved across the rebuild; a stepper press must not jump the page
+  // An answer landing mid-typing (a token's Check) hands the field back as it was: focus and caret.
+  const typing = document.activeElement instanceof HTMLInputElement && document.activeElement.id && body.contains(document.activeElement)
+    ? { id: document.activeElement.id, from: document.activeElement.selectionStart, to: document.activeElement.selectionEnd } : null;
   body.innerHTML = html || `<div class="set-none">Nothing matches <b>${esc(query.trim())}</b>.<p>Fewer words, or ${
     SEARCH_FILTERS.map((f) => `<button class="set-chip" data-setq="${f}">${f}</button>`).join(" ")}.</p></div>`;
   body.scrollTop = sc;
+  const field = typing && document.getElementById(typing.id);
+  if (typing && field instanceof HTMLInputElement) {
+    field.focus({ preventScroll: true });
+    try { field.setSelectionRange(typing.from, typing.to); } catch { /* a type with no caret */ }
+  }
+  // A door's row stays lit, mid-animation, through the repaints its own listings cause, and its scroll goes on.
+  const since = landed ? Date.now() - landed.at : Infinity;
+  const lit = landed && since < LIT_MS ? body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(landed.row)}"]`) : null;
+  if (lit) {
+    lit.style.animationDelay = `-${since}ms`;
+    lit.classList.add("set-lit");
+    if (since < 700) scrollBodyTo(lit, 120);
+  }
   // The rail: a count per section while searching, a dot where something is changed.
   const tabHtml = (t: SetTab) => {
     const n = counts.get(t.id) ?? 0;
@@ -1554,7 +1578,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "maintTokens": {
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
       const mine = (maintTokens ?? []).filter((x) => x.kind === c.token.id);
-      panel = maintTokensHtml({ def: c.token, listed: maintTokens !== null, draft: tokDraftOf(c.token), now: Date.now(),
+      panel = maintTokensHtml({ def: c.token, listed: maintTokens !== null, draft: tokDraftOf(c.token), now: Date.now(), sends: tokenSends(c.token.label),
         rows: mine.map((x) => ({ host: x.host, check: maintTokenChecks[`${x.kind}@${x.host}`] })) });
       always = true;
       break;

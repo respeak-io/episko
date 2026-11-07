@@ -1277,7 +1277,7 @@ pub(crate) mod exec {
             return Err("a report sends nothing".into());
         }
         let mut cmd = sys_command(CURL);
-        cmd.args(["-sSg", "-o", NULL_DEV, "--max-time"]).arg(req.secs.to_string());
+        cmd.args(["-q", "-sSg", "-o", NULL_DEV, "--max-time"]).arg(req.secs.to_string());
         cmd.args(["-w", r"%{json}\n%{certs}"]).arg(&req.url);
         Ok(cmd)
     }
@@ -1400,27 +1400,36 @@ pub(crate) mod exec {
         Ok(cmd)
     }
 
-    /// Where a sealed token may go: https only, to its slot's host (and port, if the slot names one) or a
-    /// subdomain of it, on a read whose class may carry one. A committed URL picks only among saved slots.
-    pub(crate) fn sealed_ok(url: &str, slot: &str, cost: Cost) -> Result<(), String> {
+    /// Where a sealed token may go: https only, with no user, on a read whose class may carry one, to a host
+    /// (and port) whose own slot by the kind's fold is exactly this one, never a subdomain of it.
+    pub(crate) fn sealed_ok(url: &str, kind: &str, slot: &str, cost: Cost) -> Result<(), String> {
         if !matches!(cost, Cost::Forge | Cost::Remote) {
             return Err(format!("a token is never sent by a {} source", cost.id()));
         }
         let u = url::Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
         let host = u.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
-        let (want, port) = slot.split_once(':').map_or((slot, None), |(h, p)| (h, p.parse::<u16>().ok().filter(|p| *p != 443)));
-        let ours = host == want || host.ends_with(&format!(".{want}"));
-        if u.scheme() != "https" || !ours || u.port() != port || !u.username().is_empty() {
+        let at = format!("{host}{}", u.port().map(|p| format!(":{p}")).unwrap_or_default());
+        let ours = crate::maint_tokens::slot_at(kind, &at).is_ok_and(|s| s == slot);
+        if u.scheme() != "https" || !ours || !u.username().is_empty() || u.password().is_some() {
             return Err(format!("the token saved for {slot} is never sent to {url}"));
         }
         Ok(())
     }
 
+    /// A failure as a card and a brief say it, with the credential its header carried taken out, whatever
+    /// curl was made to print. `-q` already keeps a user's curlrc (a `-v`) out; this is the second wall.
+    pub(crate) fn redact(e: String, header: Option<&str>) -> String {
+        match header.and_then(|h| h.trim_end().rsplit(' ').next()).filter(|t| t.len() >= 8) {
+            Some(t) => e.replace(t, "<token>"),
+            None => e,
+        }
+    }
+
     /// curl and what its stdin carries: a credential's header or a body, never both. `open` reads a
-    /// sealed token, so a test can see where one would go without one existing.
+    /// sealed token, so a test can see where one would go without one existing. `-q` first: no curlrc.
     pub(crate) fn http_cmd(req: &HttpReq, cost: Cost, open: impl Fn(&str, &str) -> Option<String>) -> Result<(std::process::Command, Option<String>), String> {
         let mut cmd = sys_command(CURL);
-        cmd.args(["-sSg", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
+        cmd.args(["-q", "-sSg", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
         let mut input = None;
         match &req.auth {
             None => {}
@@ -1433,7 +1442,7 @@ pub(crate) mod exec {
                 input = Some(format!("{head}{v}\n"));
             }
             Some(Auth::Sealed { kind, slot }) => {
-                sealed_ok(&req.url, slot, cost)?;
+                sealed_ok(&req.url, kind, slot, cost)?;
                 let v = open(kind, slot).ok_or_else(|| format!("no {kind} token is saved for {slot}"))?;
                 cmd.args(["-H", "@-"]);
                 input = Some(format!("Authorization: Bearer {v}\n"));
@@ -1513,7 +1522,8 @@ pub(crate) mod exec {
                 return report(req);
             }
             let (cmd, input) = http_cmd(req, self.cost, crate::maint_tokens::open)?;
-            http_answer(run_fed(cmd, input, req.secs + 5)?)
+            let header = req.auth.as_ref().and(input.clone());
+            http_answer(run_fed(cmd, input, req.secs + 5)?).map_err(|e| redact(e, header.as_deref()))
         }
 
         fn ssh(&self, alias: &str, script: &str, secs: u64) -> Result<Output, String> {
@@ -1650,7 +1660,7 @@ pub(crate) mod exec {
             // A sealed token is named, never valued, and refused where SysExec would refuse it.
             let token = match &req.auth {
                 Some(Auth::Sealed { kind, slot }) => {
-                    sealed_ok(&req.url, slot, Cost::Remote)?;
+                    sealed_ok(&req.url, kind, slot, Cost::Remote)?;
                     vec!["--token".to_string(), format!("{kind}@{slot}")]
                 }
                 _ => vec![],
@@ -2306,7 +2316,7 @@ mod tests {
         assert!(SysExec { cost: Cost::Remote }.http(&HttpReq { report: true, ..req }).unwrap_err().contains("sends nothing"));
         let probe = HttpReq { url: "HTTPS://x.example/[1-3]".into(), body: None, auth: None, secs: 5, report: true };
         let argv: Vec<_> = exec::report_cmd(&probe).unwrap().get_args().map(|a| a.to_string_lossy().to_string()).collect();
-        assert_eq!(argv, ["-sSg", "-o", exec::NULL_DEV, "--max-time", "5", "-w", r"%{json}\n%{certs}", "HTTPS://x.example/[1-3]"], "no glob, no body");
+        assert_eq!(argv, ["-q", "-sSg", "-o", exec::NULL_DEV, "--max-time", "5", "-w", r"%{json}\n%{certs}", "HTTPS://x.example/[1-3]"], "no glob, no body");
         for bad in ["-oProxyCommand=x", "a b", ""] {
             assert!(data_arg(bad).is_err(), "{bad:?}");
         }
@@ -2680,8 +2690,10 @@ off = [\"prod\"]
         let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert!(argv.windows(2).any(|w| w == ["-H", "@-"]), "{argv:?}");
         assert!(!argv.iter().any(|a| a.contains(secret)), "never on argv");
+        assert_eq!(argv[0], "-q", "a user's curlrc never shapes a credentialed request");
         assert_eq!(input.as_deref(), Some(format!("Authorization: Bearer {secret}\n").as_str()));
-        assert!(exec::http_cmd(&req("https://de.sentry.io/api/0/", "sentry.io"), Cost::Remote, open).is_ok(), "a subdomain of its slot");
+        assert!(exec::http_cmd(&req("https://de.sentry.io/api/0/", "sentry.io"), Cost::Remote, open).is_ok(), "a region of its slot");
+        assert!(exec::http_cmd(&req("https://us.sentry.io/api/0/", "sentry.io"), Cost::Remote, open).is_ok());
         for (url, slot) in [
             ("http://sentry.io/api/0/", "sentry.io"),
             ("https://evil.example/api/0/", "sentry.io"),
@@ -2689,16 +2701,21 @@ off = [\"prod\"]
             ("https://evilsentry.io/", "sentry.io"),
             ("https://sentry.io@evil.example/", "sentry.io"),
             ("https://x@sentry.io/", "sentry.io"),
+            ("https://:pw@sentry.io/", "sentry.io"),
+            ("https://docs.sentry.io/api/0/", "sentry.io"),
+            ("https://status.sentry.io/api/0/", "sentry.io"),
+            ("https://acme.sentry.io/api/0/", "sentry.io"),
+            ("https://x.sentry.acme.com/", "sentry.acme.com"),
             ("https://sentry.io:8443/", "sentry.io"),
             ("https://sentry.acme.com/", "sentry.acme.com:8443"),
         ] {
             let e = exec::http_cmd(&req(url, slot), Cost::Remote, open).unwrap_err();
             assert!(e.contains("never sent"), "{url} for {slot}: {e}");
         }
-        assert!(exec::sealed_ok("https://sentry.acme.com:8443/x", "sentry.acme.com:8443", Cost::Remote).is_ok());
-        assert!(exec::sealed_ok("https://sentry.acme.com:443/x", "sentry.acme.com", Cost::Forge).is_ok(), "the default port is no port");
+        assert!(exec::sealed_ok("https://sentry.acme.com:8443/x", "sentry", "sentry.acme.com:8443", Cost::Remote).is_ok());
+        assert!(exec::sealed_ok("https://sentry.acme.com:443/x", "sentry", "sentry.acme.com", Cost::Forge).is_ok(), "the default port is no port");
         for cost in [Cost::Local, Cost::Public, Cost::Tool] {
-            assert!(exec::sealed_ok("https://sentry.io/", "sentry.io", cost).is_err(), "{cost:?}");
+            assert!(exec::sealed_ok("https://sentry.io/", "sentry", "sentry.io", cost).is_err(), "{cost:?}");
         }
         assert!(exec::http_cmd(&req("https://sentry.io/", "sentry.acme.com"), Cost::Remote, open).is_err(), "not its slot");
         assert!(exec::http_cmd(&req("https://sentry.acme.com/", "sentry.acme.com"), Cost::Remote, open).unwrap_err().contains("no sentry token"), "nothing saved, nothing sent");
@@ -2709,6 +2726,11 @@ off = [\"prod\"]
         assert!(SysExec { cost: Cost::Public }.http(&req("https://sentry.io/", "sentry.io")).unwrap_err().contains("never sent by a public"));
         let env = HttpReq { auth: Some(Auth::Env { head: "Authorization: Bearer ", name: "HOME" }), ..req("https://sentry.io/", "sentry.io") };
         assert!(SysExec { cost: Cost::Remote }.http(&env).unwrap_err().contains("not a token"));
+        // A failure's words reach a card and a brief, so the header curl echoed never does.
+        let said = format!("> Authorization: Bearer {secret}\ncurl: (28) Operation timed out");
+        let e = exec::redact(said.clone(), input.as_deref());
+        assert!(!e.contains(secret) && e.contains("Bearer <token>") && e.contains("(28)"), "{e}");
+        assert_eq!(exec::redact(said.clone(), None), said, "no header, nothing to take out");
     }
 
     #[test]

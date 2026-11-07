@@ -28,7 +28,10 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - `openSettingsOn(tab, row?)`: the quick opens, the ⑃ dialog, ⌘K and the tour land on a row
   lit for three seconds (`.set-lit`). `row` is the control's `id`, else its `set` verb, else
   its kind (`rowId`). Keep those stable: they are addresses. With no `row`, a row that shares
-  the section's id is taken (`keys`), so a one-row section lights its row.
+  the section's id is taken (`keys`), so a one-row section lights its row. Opening Settings
+  lists the account and token stores, and each answer repaints the page: `renderSettings`
+  puts the light back mid-animation (`landed`) and resumes the scroll, and hands a text field
+  holding the caret back focused where it was, or a Check landing mid-typing ate the field.
 - A row is the label, `hint` (one sentence, on the page), `more` behind *why* (`openWhy`), the
   control on the right, and under it whatever folds (`openPanels`): the six panels, a toggle's
   preview, the agent's cards, a multi's chips. An action's preview is its answer and never

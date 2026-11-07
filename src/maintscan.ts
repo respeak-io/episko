@@ -5,12 +5,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, currentDomains, currentErrors, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
+  clampKept, clampSnaps, currentReports, hostSkips, snapWithout, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
 } from "./maint";
-import { findSource, MAINT_PREFS_DEFAULT, type MaintPrefs, type Mode } from "./maintsources";
+import { findSource, MAINT_PREFS_DEFAULT, SOURCES, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
 import { readObj } from "./store";
 
@@ -96,7 +96,7 @@ export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
   if (!e) return null;
   const skip = [...maintPrefs.off, ...hostSkips(e.det, maintPrefs.hosts)];
-  return { det: e.det, reports: currentErrors(e.det, currentDomains(e.det, currentHosts(e.det, e.reports))), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
+  return { det: e.det, ...currentReports(e.det, e.reports), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
 }
 
 let running = 0;
@@ -213,14 +213,31 @@ export async function runSource(root: string, id: string): Promise<SourceReport>
 
 const forgotten = new Map<string, number>(); // per root: an answer asked before a forget is the other identity's
 
-/** A token saved or forgotten: what that kind read is unasked again, as maint.rs's forget_token_reads left it. */
+/** A token saved or forgotten: what that kind read is unasked again, as maint.rs's forget_token_reads left it,
+ *  here and in what the next boot paints (the kept scans, and the snapshots' lines). */
 export function forgetTokenReads(kind: string): void {
-  for (const e of cache.values()) {
-    for (const [id, r] of Object.entries(e.reports)) {
+  const unask = (reports: Record<string, SourceReport>): boolean => {
+    let hit = false;
+    for (const [id, r] of Object.entries(reports)) {
       if (findSource(id)?.token?.id !== kind || r.coverage.state === "notRun") continue;
-      e.reports[id] = { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
+      reports[id] = { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
+      hit = true;
     }
+    return hit;
+  };
+  // The kept scans first, and copied: a boot hands the cache their very report maps.
+  let hit = false;
+  for (const [root, k] of Object.entries(kept)) {
+    const reports = { ...k.reports };
+    if (unask(reports)) { kept = { ...kept, [root]: { ...k, reports } }; hit = true; }
   }
+  for (const e of cache.values()) unask(e.reports);
+  const caps = new Set(SOURCES.filter((s) => s.token?.id === kind).flatMap((s) => s.sees));
+  for (const [root, s] of Object.entries(snaps)) {
+    const left = snapWithout(s, caps);
+    if (left !== s) { snaps = { ...snaps, [root]: left }; hit = true; }
+  }
+  if (hit) saveSnaps();
   paint();
 }
 

@@ -12,7 +12,7 @@ use crate::platform::{drop_secret, open_secret, seal_secret, sealed_accounts, Se
 pub(crate) struct Kind {
     pub(crate) id: &'static str,
     service: &'static str,
-    slot: fn(&str) -> String,
+    slot: fn(&str) -> Result<String, String>,
     check: fn(&str, &[String], &dyn Exec) -> TokenCheck,
 }
 
@@ -63,8 +63,14 @@ fn slot_for(k: &Kind, host: &str) -> Result<String, String> {
     let h = h.strip_prefix("https://").or_else(|| h.strip_prefix("http://")).unwrap_or(&h);
     let h = h.split('/').next().unwrap_or_default().trim_end_matches('.');
     let (name, port) = h.split_once(':').map_or((h, None), |(n, p)| (n, Some(p)));
-    let slot = format!("{}{}", (k.slot)(name), port.filter(|p| *p != "443").map(|p| format!(":{p}")).unwrap_or_default());
+    let slot = format!("{}{}", (k.slot)(name)?, port.filter(|p| *p != "443").map(|p| format!(":{p}")).unwrap_or_default());
     if valid_host(&slot) { Ok(slot) } else { Err(format!("{host:?} is not a host name")) }
+}
+
+/// The slot a request to `host` (and port) reads with, by `kind`'s own fold: `exec::sealed_ok` sends a
+/// token only where this is exactly the slot it was saved under.
+pub(crate) fn slot_at(kind: &str, host: &str) -> Result<String, String> {
+    slot_for(kind_of(kind)?, host)
 }
 
 fn file_of(host: &str) -> String {
@@ -135,7 +141,7 @@ pub(crate) fn maint_tokens() -> Vec<StoredToken> {
     base().map(list_in).unwrap_or_default()
 }
 
-/// Seals `token` for `host`, which a read then sends only to that host or a subdomain of it, over https.
+/// Seals `token` for `host`, which a read then sends only to a host whose slot is that one, over https.
 /// Answers the slot it was saved under, which may fold the host typed (`de.sentry.io` is `sentry.io`).
 #[tauri::command(async)]
 pub(crate) fn maint_token_save(kind: String, host: String, token: String) -> Result<String, String> {
@@ -190,7 +196,10 @@ mod tests {
         let s = |h: &str| slot_for(sentry(), h);
         assert_eq!(s("https://sentry.io/").unwrap(), "sentry.io");
         assert_eq!(s("de.sentry.io").unwrap(), "sentry.io", "a region shares the hosted service's slot");
-        assert_eq!(s("acme.sentry.io").unwrap(), "sentry.io");
+        assert_eq!(s("https://us.sentry.io/api/").unwrap(), "sentry.io");
+        assert!(s("docs.sentry.io").unwrap_err().contains("not Sentry's API"), "a page under its domain has no slot");
+        assert!(slot_at("sentry", "status.sentry.io").is_err() && slot_at("jira", "sentry.io").is_err());
+        assert_eq!(slot_at("sentry", "sentry.acme.com:8443").as_deref(), Ok("sentry.acme.com:8443"));
         assert_eq!(s(" Sentry.Acme.com:8443/x ").unwrap(), "sentry.acme.com:8443");
         assert_eq!(s("sentry.acme.com:443").unwrap(), "sentry.acme.com", "the default port is no port");
         assert!(s("a_b.example").is_err() && s("").is_err());

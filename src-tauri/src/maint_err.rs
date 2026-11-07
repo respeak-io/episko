@@ -23,10 +23,19 @@ const EXCEPTIONS: usize = 3;
 const FRAMES: usize = 40;
 const VALUE_MAX: usize = 500;
 
-/// The slot a host's token is saved under: the hosted service's regional and organisation subdomains
-/// share its own, so `de.sentry.io` reads with the token saved for `sentry.io`.
-pub(crate) fn slot_of(host: &str) -> String {
-    if host == SAAS || host.ends_with(".sentry.io") { SAAS.into() } else { host.into() }
+/// The hosted API's own hosts. Any other `*.sentry.io` is a page, and some are served by a third party.
+const HOSTED: &[&str] = &[SAAS, "us.sentry.io", "de.sentry.io"];
+
+/// The slot a host's token is saved under: the hosted regions share the service's own, so `de.sentry.io`
+/// reads with the token saved for `sentry.io`, and no other `*.sentry.io` has a slot at all.
+pub(crate) fn slot_of(host: &str) -> Result<String, String> {
+    if HOSTED.contains(&host) {
+        Ok(SAAS.into())
+    } else if host.ends_with(".sentry.io") {
+        Err(format!("{host} is not Sentry's API: name https://sentry.io, or https://us.sentry.io or https://de.sentry.io for a region"))
+    } else {
+        Ok(host.into())
+    }
 }
 
 fn unsupported(reason: String) -> Coverage {
@@ -41,11 +50,12 @@ fn base_of(cfg: &MaintConfig) -> Result<(String, String), Coverage> {
     if u.scheme() != "https" {
         return Err(unsupported(format!("sentry_url = \"{raw}\" is not https, and a token is never sent over http")));
     }
-    if u.query().is_some() || u.fragment().is_some() || !u.username().is_empty() {
+    if u.query().is_some() || u.fragment().is_some() || !u.username().is_empty() || u.password().is_some() {
         return Err(unsupported(format!("sentry_url = \"{raw}\" is not a bare https address")));
     }
     let host = u.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
-    let slot = format!("{}{}", slot_of(&host), u.port().map(|p| format!(":{p}")).unwrap_or_default());
+    let own = slot_of(&host).map_err(|e| unsupported(format!("sentry_url = \"{raw}\": {e}")))?;
+    let slot = format!("{own}{}", u.port().map(|p| format!(":{p}")).unwrap_or_default());
     if !valid_host(&slot) {
         return Err(unsupported(format!("sentry_url = \"{raw}\" names no plain host")));
     }
@@ -93,9 +103,10 @@ fn clip_to(s: &str, max: usize) -> String {
     s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(max).collect::<String>().trim().to_string()
 }
 
+// A link too long to be the tracker's own is dropped, not cut: a kept scan holds every one of these.
 fn web(u: &&str) -> bool {
     let l = u.to_ascii_lowercase();
-    l.starts_with("https://") || l.starts_with("http://")
+    (l.starts_with("https://") || l.starts_with("http://")) && u.len() <= TEXT_MAX
 }
 
 fn json(body: &str) -> Result<Value, String> {
@@ -478,6 +489,8 @@ mod tests {
         assert_eq!((odd.trend, odd.raw_trend.as_str()), (ErrTrend::Unknown, ""), "no substatus from an older tracker");
         assert_eq!((odd.events, odd.url.as_deref(), odd.culprit.as_deref()), (7, None, None), "a number count, a page that is not http(s) dropped");
         assert_eq!(odd.title, "Custom message with a second line", "one line");
+        let long = format!("[{{\"id\":\"1\",\"permalink\":\"https://sentry.io/{}\"}}]", "x".repeat(TEXT_MAX));
+        assert_eq!(parse_issues(&long).unwrap()[0].url, None, "a link past the cap is dropped, never cut");
         assert!(parse_issues("{\"detail\":\"x\"}").is_err() && parse_issues("<html>").is_err());
     }
 
@@ -575,8 +588,18 @@ mod tests {
         let ex = recorded();
         let _ = read("sentry_url = \"https://sentry.acme.com:8443\"\n", &ex);
         assert!(ex.calls().iter().all(|c| c[3] == "sentry@sentry.acme.com:8443"), "a port is its own slot");
-        assert_eq!(slot_of("acme.sentry.io"), "sentry.io");
-        assert_eq!(slot_of("sentry.io.evil.example"), "sentry.io.evil.example", "a look-alike is its own host");
+        assert_eq!(slot_of("us.sentry.io").as_deref(), Ok("sentry.io"));
+        assert_eq!(slot_of("sentry.io.evil.example").as_deref(), Ok("sentry.io.evil.example"), "a look-alike is its own host");
+        // A page under the hosted domain is not its API, and docs. and status. are served by a third party.
+        for page in ["docs.sentry.io", "status.sentry.io", "acme.sentry.io"] {
+            assert!(slot_of(page).is_err(), "{page}");
+            let ex = recorded();
+            let Err(Coverage::Unsupported { reason }) = read(&format!("sentry_url = \"https://{page}\"\n"), &ex) else { panic!("{page}") };
+            assert!(reason.contains("not Sentry's API"), "{reason}");
+            assert!(ex.calls().is_empty(), "{page}: never asked");
+        }
+        let ex = recorded();
+        assert!(matches!(read("sentry_url = \"https://:pw@sentry.acme.com\"\n", &ex), Err(Coverage::Unsupported { .. })), "a password is a user");
     }
 
     #[test]

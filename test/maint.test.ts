@@ -16,7 +16,7 @@ import {
   addCoverCaps, onClickOnly, sessionKind, currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   currentDomains, domainStates, type Domain,
-  currentErrors, errorStates, errorSummary, ERR_LEVELS, ERR_TRENDS, KEPT_BACKLOG, KEPT_CUT, tokenDoor, type ErrIssue,
+  currentErrors, currentReports, snapWithout, errorStates, errorSummary, ERR_LEVELS, ERR_TRENDS, KEPT_BACKLOG, KEPT_CUT, KEPT_NEEDY, KEPT_NEEDY_CUT, tokenDoor, tokenSends, type ErrIssue,
   errorBoard, errorPicks, ERR_ROWS, narrowTrace, TRACE_PICKS, traceAsk,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
@@ -2417,6 +2417,14 @@ describe("registered domains", () => {
     expect(lines(takeSnap("/r", input(ok(HP, probes()), not(RD, "prod", { state: "notRun" })), NOW, red)), "nobody asked").toEqual(["prod:domain:a.com"]);
     expect(lines(takeSnap("/r", input(ok(HP, probes()), ok(RD, doms(dom("a.com", 400)))), NOW, red)), "renewed").toEqual([]);
     expect(lines(takeSnap("/r", input(ok(HP, probes())), NOW, red)), "no longer in [deploy]").toEqual([]);
+    // [deploy] now names another domain: its old line goes, whether the read was kept, failed or never asked.
+    const at = (app: string) => det([HP, RD], { deploy: { host: null, compose: [], urls: { app }, sentry: null, versionUrl: null, envs: {} } });
+    const kept = { [HP]: ok(HP, probes()), [RD]: ok(RD, doms(dom("a.com", -1))) }, broke = { ...kept, [RD]: not(RD, "prod", { state: "error", reason: "HTTP 503" }) };
+    const was = takeSnap("/r", { det: at("https://app.a.com"), ...currentReports(at("https://app.a.com"), kept) }, NOW - 1000);
+    expect(lines(was)).toEqual(["prod:domain:a.com"]);
+    expect(lines(takeSnap("/r", { det: at("https://app.b.com"), ...currentReports(at("https://app.b.com"), kept) }, NOW, was)), "renamed").toEqual([]);
+    expect(lines(takeSnap("/r", { det: at("https://app.b.com"), reports: broke }, NOW, was)), "renamed, then failed").toEqual([]);
+    expect(lines(takeSnap("/r", { det: at("https://www.a.com"), reports: broke }, NOW, was)), "still under it").toEqual(["prod:domain:a.com"]);
     const row = (inp: MaintInput) => coverGroups("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).map((g) => [g.source, g.why]);
     expect(row(input(ok(HP, probes()), not(RD, "prod", { state: "error", reason: "HTTP 503" }))), "a failed read beside a good one stays a Coverage row").toEqual([[RD, "read failed"]]);
   });
@@ -2627,6 +2635,39 @@ describe("errors in production", () => {
     expect(lines(takeSnap("/r", input(ok(HP, probes())), NOW, red)), "no longer linked").toEqual([]);
   });
 
+  it("drops the line of a tracker [deploy] links no more, beside an answer or carried with the whole facet", () => {
+    const prodOf = (s: ReturnType<typeof takeSnap>) => ({ cell: s.cells.find((c) => c.facet === "prod")!, lines: s.findings.filter((f) => f.facet === "prod").map((f) => f.key) });
+    const to = (sentry: string) => det([HP, SE], { deploy: { host: null, compose: [], urls: { app: "https://app.example.com" }, sentry, versionUrl: null, envs: {} } });
+    const reports = { [HP]: ok(HP, probes()), [SE]: rep([iss({ level: "fatal" })]) };
+    const red = takeSnap("/r", { det: to("acme/api"), ...currentReports(to("acme/api"), reports) }, NOW - 1000);
+    expect(prodOf(red).lines).toEqual(["prod:errors:new"]);
+    expect(currentReports(to("acme/api"), reports).moved, "still linked").toEqual([]);
+    const relinked = { det: to("acme/web"), ...currentReports(to("acme/web"), reports) };
+    expect(relinked.moved).toEqual([SE]);
+    const next = prodOf(takeSnap("/r", relinked, NOW, red));
+    expect(next.lines, "another project's errors are nobody's").toEqual([]);
+    expect(next.cell.level).not.toBe("bad");
+    // Nothing in prod answered, so the facet would be carried whole: a kind gone from here goes with its cell.
+    const unlinked = prodOf(takeSnap("/r", input(not(HP, "prod", { state: "notRun" })), NOW, red));
+    expect(unlinked).toEqual({ cell: { facet: "prod", level: "muted", text: "not checked" }, lines: [] });
+    const down = takeSnap("/r", input(ok(HP, probes({ code: 502 }))), NOW - 1000);
+    expect(prodOf(takeSnap("/r", input(not(HP, "prod", { state: "notRun" })), NOW, down)).lines, "a kind still here keeps its carry").toEqual(["prod:app"]);
+  });
+
+  it("lets a token saved or forgotten take what it read out of a snapshot, and the cell it coloured", () => {
+    const caps = new Set(SOURCES.find((s) => s.id === SE)!.sees);
+    const prodOf = (s: ReturnType<typeof takeSnap>) => ({ cell: s.cells.find((c) => c.facet === "prod")!, lines: s.findings.filter((f) => f.facet === "prod").map((f) => f.key) });
+    const red = takeSnap("/r", input(ok(HP, probes()), rep([iss({ level: "fatal" })]), ok(GHA, ci(run("build", "fail", S - D)))), NOW - 1000);
+    const left = snapWithout(red, caps);
+    expect(prodOf(left)).toEqual({ cell: { facet: "prod", level: "muted", text: "not checked" }, lines: [] });
+    expect(left.findings.map((f) => f.key), "another facet's lines stay").toEqual(["ci"]);
+    expect(left.cells.find((c) => c.facet === "ci"), "and its cell").toEqual(red.cells.find((c) => c.facet === "ci"));
+    const both = takeSnap("/r", input(ok(HP, probes({ code: 502 })), rep([iss({ level: "fatal" })])), NOW - 1000);
+    expect(prodOf(snapWithout(both, caps)).cell, "an address down still colours it").toMatchObject({ level: "bad", text: both.findings.find((f) => f.key === "prod:app")!.text });
+    const plain = takeSnap("/r", input(ok(HP, probes({ code: 502 }))), NOW - 1000);
+    expect(snapWithout(plain, caps), "nothing it read, nothing changed").toBe(plain);
+  });
+
   it("reads maint_trace's own wire: a trace by issue id, or why it was not read", () => {
     const t = narrowTrace(wire.trace);
     const read = t["6000000101"];
@@ -2690,6 +2731,23 @@ describe("errors in production", () => {
     expect(said(input(kept)), "every needy issue kept, so its count is exact").toEqual(["warn", "2 new or back"]);
     expect(said(input(rep(backlog.slice(0, KEPT_BACKLOG), {}, { gaps: [KEPT_CUT] }))), "only the backlog is a floor").toEqual(["info", `${KEPT_BACKLOG}+ unresolved`]);
     expect(packKept({ "/big": big, "/red": red })["/big"], "with room it stays whole").toEqual(big);
+  });
+
+  it("bounds the needy ones too, keeping what decides the level, so a tracker past its release cannot evict a red CI", () => {
+    const x = (n: number) => "x".repeat(n);
+    const needy = Array.from({ length: 100 }, (_, n) => iss({ id: String(100 + n), shortId: `API-${n}`, title: x(300), culprit: x(300), users: n % 7 }));
+    const fatal = iss({ id: "7", level: "fatal", users: 0, unhandled: false }), many = iss({ id: "8", users: 500, unhandled: false });
+    const scan = (at: number, reps: SourceReport[]) => { const inp = input(ok(GHA, ci(run("build", "fail", S - D))), ...reps); return { at, account: "me", det: inp.det!, reports: { ...inp.reports } }; };
+    const big = scan(NOW, [rep([...needy, fatal, many])]), red = scan(NOW - H, []);
+    const room = JSON.stringify({ "/big": scan(NOW, [rep([])]), "/red": red }).length + 9000;
+    const out = packKept({ "/big": big, "/red": red }, room);
+    expect(Object.keys(out), "the red CI keeps its place").toEqual(["/big", "/red"]);
+    const kept = out["/big"].reports[SE], ids = (kept.facts as ErrFacts).issues.map((i) => i.id);
+    expect([kept.gaps, ids.length]).toEqual([[KEPT_NEEDY_CUT], KEPT_NEEDY]);
+    expect(ids, "a fatal one and the most people are kept first").toEqual(expect.arrayContaining(["7", "8"]));
+    expect(said(input(kept)), "every count a floor, the level what the whole list said").toEqual(["bad", `${KEPT_NEEDY}+ new since 1.4.0`]);
+    expect(said(input(rep([...needy, fatal, many])))).toEqual(["bad", "102 new since 1.4.0"]);
+    expect(takeMark(input(kept), NOW, "me").errors, "a slimmed list is no week's list").toBeNull();
   });
 });
 
@@ -4670,6 +4728,13 @@ describe("a maintenance session", () => {
       expect([traceAsk({ verb: "review", source: tracker.id }), traceAsk({ verb: "fix", source: "s" })], "only a Fix that reads traces").toEqual(["", ""]);
       const tip = sessionTip(sessionPlan([at(line("prod:errors:new", "fix", { source: tracker.id })), at(line("ci"))], ctx()), () => "acme").split("\n");
       expect(tip).toEqual(["acme · the prod:errors:new line → maint/prod-errors-new from origin/main", `  ${ask}`, "acme · the ci line → maint/ci from origin/main"]);
+    });
+    it("names, before a token is saved, every click that sends one", () => {
+      const said = tokenSends("Sentry");
+      for (const door of ["Check prod", "Run on the Sentry row of Coverage", "Fix on an errors line", "Brief N agents with one ticked", `${TRACE_PICKS} worst issues`, "Check or Save and check here"]) {
+        expect(said, door).toContain(door);
+      }
+      expect(said).not.toContain("subdomain");
     });
     it("lists each row's destination in its tip", () => {
       const tip = sessionTip(plan, () => "acme").split("\n");

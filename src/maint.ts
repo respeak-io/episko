@@ -407,6 +407,7 @@ export interface MaintInput {
   skip?: readonly string[]; // sources this machine skips (`MaintPrefs.off`)
   asking?: readonly string[]; // click-only sources whose read is still out
   hosts?: readonly string[]; // the [deploy] hosts this machine may ssh to (`MaintPrefs.hosts`)
+  moved?: readonly string[]; // sources whose whole kept answer `[deploy]` no longer names (currentReports)
 }
 
 const DAY = 86_400, HOUR = 3_600;
@@ -661,23 +662,30 @@ export function judgeDomains(items: readonly Domain[], th: MaintThresholds, now:
 export const domainStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): DomainState[] =>
   judgeDomains(okFacts(inp, "prod").flatMap((r) => r.facts.kind === "domains" ? r.facts.items : []), th, now);
 
-/** A click's answer outlives a `[deploy]` edited by hand or a pull: a domain no address is under now reads
- *  as nobody having asked yet, and each one's names are the entries that name it now. */
-export function currentDomains(det: Detection | null, reports: Readonly<Record<string, SourceReport>>): Readonly<Record<string, SourceReport>> {
+/** Each `[deploy]` address's host, by the entry naming it (DeployConfig::targets' names: version_url is
+ *  `version`, or `version_url` beside a url so named). */
+function deployHosts(det: Detection | null): { name: string; host: string }[] {
   const d = det?.deploy;
-  if (!d) return reports;
-  // DeployConfig::targets' names: version_url is `version`, or `version_url` beside a url so named.
+  if (!d) return [];
   const named = Object.entries(d.urls), v = d.versionUrl;
   const targets: [string, string][] = v && !named.some(([, u]) => u === v)
     ? [...named, [named.some(([n]) => n === "version") ? "version_url" : "version", v]] : named;
-  const hosts = targets.flatMap(([name, url]) => {
+  return targets.flatMap(([name, url]) => {
     try { return [{ name, host: new URL(url).hostname.replace(/\.$/, "") }]; } catch { return []; }
   });
+}
+const under = (host: string, domain: string) => host === domain || host.endsWith(`.${domain}`);
+
+/** A click's answer outlives a `[deploy]` edited by hand or a pull: a domain no address is under now reads
+ *  as nobody having asked yet, and each one's names are the entries that name it now. */
+export function currentDomains(det: Detection | null, reports: Readonly<Record<string, SourceReport>>): Readonly<Record<string, SourceReport>> {
+  if (!det?.deploy) return reports;
+  const hosts = deployHosts(det);
   const out = { ...reports };
   for (const [id, r] of Object.entries(reports)) {
     if (r.facts?.kind !== "domains") continue;
     const items = r.facts.items.flatMap((x) => {
-      const names = hosts.filter((h) => h.host === x.domain || h.host.endsWith(`.${x.domain}`)).map((h) => h.name);
+      const names = hosts.filter((h) => under(h.host, x.domain)).map((h) => h.name);
       return names.length ? [{ ...x, names: [...new Set(names)].sort() }] : [];
     });
     out[id] = items.length ? { ...r, facts: { kind: "domains", items } }
@@ -695,7 +703,7 @@ export interface ErrNeedy extends ErrIssue { why: "new" | "regressed" | "escalat
 export interface ErrState {
   source: string; project: string; environment: string | null; windowDays: number; release: ErrRelease | null; url: string | null;
   rule: "release" | "trend"; needy: ErrNeedy[]; unresolved: number; cut: boolean; lastEvent: number | null;
-  floor: boolean; // the unresolved count is a floor: the tracker's page was full, or a kept scan slimmed the backlog
+  floor: boolean; // the unresolved count is a floor: the tracker's page was full, or a kept scan slimmed the list
   level: Level; text: string; tip: string[];
 }
 
@@ -719,9 +727,10 @@ function needyWhy(i: ErrIssue, at: number | null): ErrNeedy["why"] | null {
 }
 
 // A backlog is ordinary, so it is info at its loudest; silence is not health (the bot rule), so it is muted.
-// `cut`: the tracker's page was full, so every count is a floor; a kept scan's slimming floors the backlog alone.
+// `cut`: the tracker's page was full, or a kept scan cut the needy ones, so every count is a floor; a kept scan's
+// slimmed backlog floors the unresolved count alone.
 function judgeErrors(source: string, r: Pick<SourceReport, "truncated" | "gaps">, f: FactsOf<"errors">, th: MaintThresholds, now: number): ErrState {
-  const cut = r.truncated, more = cut || r.gaps.includes(KEPT_CUT) ? "+" : "";
+  const cut = r.truncated || r.gaps.includes(KEPT_NEEDY_CUT), more = cut || r.gaps.includes(KEPT_CUT) ? "+" : "";
   const rel = f.release?.at != null ? f.release : null, at = rel?.at ?? null;
   const needy = f.issues.flatMap((i): ErrNeedy[] => {
     const why = needyWhy(i, at);
@@ -761,6 +770,11 @@ export function traceAsk(f: Pick<Finding, "verb" | "source">): string {
   return d?.sees.includes("prod.error-trace")
     ? `Reads the latest event of the ${TRACE_PICKS} worst issues from ${d.label} first, sending it their ids and the token saved for its host. Nothing is kept` : "";
 }
+/** Every click that sends a saved token, as Settings › Accounts says it before one is saved: one sentence, so a door cannot be left out. */
+export const tokenSends = (label: string): string =>
+  "It is sent only over https, only to the host it was saved for or one of that service's own regions, and only on a click whose tip says so: "
+  + `Check prod, or Run on the ${label} row of Coverage; Fix on an errors line, or Brief N agents with one ticked, each reading the latest event of the ${TRACE_PICKS} worst issues; `
+  + "and Check or Save and check here, which read the host's own API root once.";
 
 /** A click's answer outlives a `[deploy]` or a `[maintenance.params]` edited by hand or a pull: facts
  *  about a project or an environment no longer named read as nobody having asked yet. */
@@ -1180,6 +1194,13 @@ export function currentHosts(det: Detection | null, reports: Readonly<Record<str
       : { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
   }
   return out;
+}
+
+/** Kept answers under the `[deploy]` named now, and the sources whose whole answer was about a host, domain
+ *  or tracker it no longer names: theirs reads as unasked, and their snapshot lines as nobody's (prodStands). */
+export function currentReports(det: Detection | null, reports: Readonly<Record<string, SourceReport>>): Pick<MaintInput, "reports" | "moved"> {
+  const now = currentErrors(det, currentDomains(det, currentHosts(det, reports)));
+  return { reports: now, moved: Object.keys(reports).filter((id) => reports[id].facts && !now[id]?.facts) };
 }
 
 /** The facet's reports in detection order, or null while any is still out. An id this build does not
@@ -2824,12 +2845,19 @@ const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.
   : key.startsWith("prod:errors:") ? "prod.errors" : "prod.status";
 // Once any kind answered, even where the cell cannot vouch (a domain beside an address nobody checked).
 const prodSplit = (c: Cell, inp: MaintInput) => c.facet === "prod" && c.state !== "unread" && (c.state === "read" || okFacts(inp, "prod").length > 0);
+// Who may still answer for a prod line: none when no source here reads its kind, each answered about what
+// `[deploy]` no longer names (`moved`), or no address is under its domain any more. Then it is nobody's.
+function prodOwners(inp: MaintInput, key: string): string[] {
+  const d = key.startsWith("prod:domain:") && inp.det?.deploy ? key.slice("prod:domain:".length) : null;
+  if (d !== null && !deployHosts(inp.det).some((h) => under(h.host, d))) return [];
+  return (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes(prodCap(key)) && !inp.skip?.includes(id) && !inp.moved?.includes(id));
+}
+const prodGone = (inp: MaintInput, prev: MaintSnap) => prev.findings.some((f) => f.facet === "prod" && !prodOwners(inp, f.key).length);
 function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
-  const silent = (cap: MaintCap) => {
-    const ids = (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes(cap) && !inp.skip?.includes(id));
+  return prev.findings.filter((f) => {
+    const ids = f.facet === "prod" ? prodOwners(inp, f.key) : [];
     return ids.length > 0 && !ids.some((id) => inp.reports[id]?.coverage.state === "ok");
-  };
-  return prev.findings.filter((f) => f.facet === "prod" && silent(prodCap(f.key)));
+  });
 }
 
 /** One project's snapshot: its seven cells and its first lines, as the card drew them when the scan finished.
@@ -2838,9 +2866,11 @@ function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
 export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
-  const kept = new Set(prev ? live.filter((c) => !prodSplit(c, inp) && (!reached(c, inp) || deployStands(c, inp, prev))).map((c) => c.facet) : []);
+  // A prod line nobody answers for any more cannot ride a whole-facet carry, nor the cell it coloured.
+  const split = (c: Cell) => prodSplit(c, inp) || (c.facet === "prod" && !!prev && prodGone(inp, prev));
+  const kept = new Set(prev ? live.filter((c) => !split(c) && (!reached(c, inp) || deployStands(c, inp, prev))).map((c) => c.facet) : []);
   const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
-  const stands = prev && live.some((c) => prodSplit(c, inp)) ? prodStands(inp, prev).map(dated) : [];
+  const stands = prev && live.some(split) ? prodStands(inp, prev).map(dated) : [];
   const cells = live.map((c): SnapCell => {
     const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;
     if (old) return dated(old);
@@ -2854,6 +2884,17 @@ export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?:
   const all = [...fresh, ...carried, ...stands].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
   return { at: now, account, cells, findings: all.slice(0, SNAP_FINDINGS) };
+}
+
+/** A snapshot without what a forgotten token read (`caps`, its sources' sees): those prod lines go, and the
+ *  prod cell they may have coloured becomes the worst prod line left, else *not checked*. */
+export function snapWithout(s: MaintSnap, caps: ReadonlySet<MaintCap>): MaintSnap {
+  const gone = (f: SnapFinding) => f.facet === "prod" && caps.has(prodCap(f.key));
+  if (!s.findings.some(gone)) return s;
+  const findings = s.findings.filter((f) => !gone(f)), worst = findings.filter((f) => f.facet === "prod").sort(byRank)[0];
+  const prod = (c: SnapCell): SnapCell => worst ? { facet: "prod", level: worst.level, text: worst.text, ...withAt(worst.at) }
+    : { facet: "prod", level: "muted", text: "not checked", ...withAt(c.at) };
+  return { ...s, cells: s.cells.map((c) => c.facet === "prod" ? prod(c) : c), findings };
 }
 
 const short = (n: number): Is => (v) => typeof v === "string" && v.length <= n;
@@ -2927,14 +2968,21 @@ export function clampKept(raw: unknown): KeptScans {
 }
 
 export const KEPT_BACKLOG = 10; // the unresolved issues a slimmed errors report keeps beside its needy ones
-export const KEPT_CUT = `kept: every issue that needs someone and the ${KEPT_BACKLOG} newest of the rest`;
-// An errors report down to its needy issues and the newest of the rest: its backlog a floor, never a dot, its needy count exact.
+export const KEPT_NEEDY = ERR_ROWS; // and the needy ones: as many as the board lists
+export const KEPT_CUT = `kept: only the ${KEPT_BACKLOG} newest of the backlog`;
+export const KEPT_NEEDY_CUT = `kept: only the ${KEPT_NEEDY} issues that need someone most, a fatal one and the most people first`;
+const slimmed = (r: Pick<SourceReport, "gaps">) => r.gaps.includes(KEPT_CUT) || r.gaps.includes(KEPT_NEEDY_CUT);
+// What decides the cell's level first, a fatal one and then the most people, so a cut never turns red amber.
+const byWeight = (a: ErrIssue, b: ErrIssue) => Number(b.level === "fatal") - Number(a.level === "fatal") || b.users - a.users || byHarm(a, b);
+// An errors report down to its weightiest needy issues and the newest of the rest, bounded either way so one
+// tracker never costs another project its place: a cut backlog floors the unresolved count, cut needy ones every count.
 function slimErrors(r: SourceReport): SourceReport {
   if (r.facts?.kind !== "errors") return r;
-  const at = r.facts.release?.at ?? null;
-  let rest = 0;
-  const issues = r.facts.issues.filter((i) => needyWhy(i, at) !== null || rest++ < KEPT_BACKLOG);
-  return issues.length === r.facts.issues.length ? r : { ...r, gaps: [...r.gaps, KEPT_CUT], facts: { ...r.facts, issues } };
+  const at = r.facts.release?.at ?? null, all = r.facts.issues;
+  const needy = all.filter((i) => needyWhy(i, at) !== null), rest = all.filter((i) => needyWhy(i, at) === null);
+  const keep = new Set([...[...needy].sort(byWeight).slice(0, KEPT_NEEDY), ...rest.slice(0, KEPT_BACKLOG)]);
+  const gaps = [...(rest.length > KEPT_BACKLOG ? [KEPT_CUT] : []), ...(needy.length > KEPT_NEEDY ? [KEPT_NEEDY_CUT] : [])];
+  return gaps.length ? { ...r, gaps: [...r.gaps, ...gaps], facts: { ...r.facts, issues: all.filter((i) => keep.has(i)) } } : r;
 }
 // A scan with its packages read as unasked: they are info, the next read of them is cached, and they can be the bulk of a project.
 const withoutPackages = (k: KeptScan): KeptScan => ({ ...k, reports: Object.fromEntries(Object.entries(k.reports).map(([id, r]) =>
@@ -3069,8 +3117,8 @@ export function takeMark(inp: MaintInput, at: number, account: string | null): W
     return fits(envs) ? { src, envs } : null;
   });
   const packages = kind("deps.latest", "deps", (r) => !r.gaps.length, (src): MarkPkgs => { const p = pkgStates(inp); return { src, behind: p.behind.length, majors: p.majors }; });
-  // A kept scan's slimmed backlog is not the list; a release that was not read leaves the list whole.
-  const errors = kind("prod.errors", "prod", (r) => !r.gaps.includes(KEPT_CUT), (): MarkErr | null => {
+  // A kept scan's slimmed list is not the list; a release that was not read leaves the list whole.
+  const errors = kind("prod.errors", "prod", (r) => !slimmed(r), (): MarkErr | null => {
     const rs = okFacts(inp, "prod").flatMap((r) => r.facts.kind === "errors" ? [{ at: inp.reports[r.source]?.at, f: r.facts }] : []);
     const by = new Map(rs.flatMap(({ f }) => f.issues).map((i): [string, MarkIssue] => [cut(i.id), { id: cut(i.id), first: i.firstSeen }]));
     const issues = [...by.values()].sort((a, b) => a.id.localeCompare(b.id)), read = Math.min(...rs.map((r) => r.at ?? 0));

@@ -153,7 +153,7 @@
     },
     "rdap-domain": {
       "facet": "prod", "label": "RDAP", "cost": "public", "forge": [], "detect": [], "needs": ["deploy.domains"],
-      "sends": "the registered domain behind each [deploy] address (example.com: never a host name or a path), sent only to that domain's own registry",
+      "sends": "the registered domain behind each [deploy] address (example.com: never a host name or a path), sent only to that domain's own registry, found in IANA's list of registries (data.iana.org), which is fetched once a day and sent nothing",
       "sees": ["prod.domain"],
       "blind": ["prod.status", "prod.cert", "prod.host"]
     },
