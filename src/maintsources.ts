@@ -49,6 +49,7 @@ export const MAINT_CAPS = [
   "prod.domain",
   "prod.errors",
   "prod.errors-new",
+  "prod.error-trace",
 ] as const;
 export type MaintCap = (typeof MAINT_CAPS)[number];
 

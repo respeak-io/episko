@@ -571,6 +571,7 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "prod.domain",
     "prod.errors",
     "prod.errors-new",
+    "prod.error-trace",
 ];
 
 /// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and `[deploy]`'s:
@@ -1834,6 +1835,18 @@ fn read_source(root: &str, id: &str, mode: Mode, public: bool, force: bool, acco
     read_cached(&det.repo_root, id, meta, def.read, &ctx, &SysExec { cost: meta.cost }, mode, public, force, account)
 }
 
+/// A click's read beside `maint_read` (a stack trace on *Fix*): only for a source that applies now, through
+/// `SysExec` at that source's cost, and nothing is cached. `f` is handed the project as `maint_read` sees it.
+pub(crate) fn on_click<T>(root: &str, id: &str, f: impl FnOnce(&Ctx, &dyn Exec) -> T) -> Result<T, String> {
+    let (meta, _) = meta_of(id).ok_or_else(|| format!("{id} is not a maintenance source"))?;
+    let det = detect(root, false);
+    if !det.sources.iter().any(|s| s == id) {
+        return Err(if enabled(&det.config, id, meta.facet) { "not detected in this project" } else { "switched off in .episko/episko.toml" }.into());
+    }
+    let ctx = Ctx { root: &det.repo_root, cfg: &det.config, forge: &det.forge, account: None, force: true, hosts: &[] };
+    Ok(f(&ctx, &SysExec { cost: meta.cost }))
+}
+
 fn invalidate(key: &str) {
     if let Ok(mut g) = DETECTIONS.lock() {
         if let Some(m) = g.as_mut() {
@@ -2648,6 +2661,15 @@ off = [\"prod\"]
         assert!(serde_json::from_str::<Manifest>(&extra).is_err(), "bearer only: no scheme until one needs it");
     }
 
+    /// One trace reader per source that says it reads one, each a prod source, so *Fix* finds it by capability.
+    #[test]
+    fn every_trace_reader_is_a_prod_source_that_sees_traces() {
+        let sees: BTreeSet<&str> = MANIFEST.sources.iter().filter(|(_, s)| s.sees.iter().any(|c| c == "prod.error-trace")).map(|(id, _)| id.as_str()).collect();
+        let rows: BTreeSet<&str> = crate::maint_err::ERR_SOURCES.iter().map(|d| d.id).collect();
+        assert_eq!(rows, sees);
+        assert!(rows.iter().all(|id| MANIFEST.sources[*id].facet == Facet::Prod && MANIFEST.sources[*id].sees.iter().any(|c| c == "prod.errors")));
+    }
+
     /// The value never rides on argv, and a committed URL picks only among the slots saved.
     #[test]
     fn sealed_token_is_https_and_host_bound() {
@@ -3058,10 +3080,18 @@ envs = { prod = \"prod-*\" }
         }
     }
 
+    /// `maint_trace`'s own wire, never in a report: a trace read and one refused.
+    fn trace_sample() -> Vec<crate::maint_err::TraceAnswer> {
+        use crate::maint_err::{parse_event, TraceAnswer};
+        let trace = parse_event(&FakeExec::testdata("sentry-event-latest-hand.json")).ok();
+        let refused = Some("sentry.io refused the stored token: Invalid token".to_string());
+        vec![TraceAnswer { id: "6000000101".into(), trace, err: None }, TraceAnswer { id: "6000000102".into(), trace: None, err: refused }]
+    }
+
     #[test]
     fn wire_fixture_is_current() {
         let (det, sample) = wire_sample();
-        let got = serde_json::json!({ "detection": det, "reports": sample });
+        let got = serde_json::json!({ "detection": det, "reports": sample, "trace": trace_sample() });
         let (mut states, mut kinds) = (BTreeSet::new(), BTreeSet::new());
         for (r, wire) in sample.iter().zip(got["reports"].as_array().unwrap()) {
             // The names here are serde's own, so `ALL_*` cannot drift from the wire either.

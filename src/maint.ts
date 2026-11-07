@@ -71,6 +71,13 @@ export interface ErrIssue {
   id: string; shortId: string; title: string; culprit: string | null; level: ErrLevel; rawLevel: string; trend: ErrTrend; rawTrend: string;
   events: number; users: number; firstSeen: number | null; lastSeen: number | null; unhandled: boolean | null; url: string | null;
 }
+/** One frame of a stack trace: where it ran, never its variables or source lines. */
+export interface ErrFrame { file: string | null; line: number | null; function: string | null; inApp: boolean }
+/** One link of an exception chain, its frames innermost last; `framesCut` were not kept (the outermost past 40, or unnamed). */
+export interface ErrException { kind: string; value: string; frames: ErrFrame[]; framesCut: number }
+/** An issue's latest event as *Fix* reads it (`maint_trace`): the chain's root cause first and the one raised last at the
+ *  end, `exceptionsCut` links between them dropped. Held for the brief alone and stored nowhere. */
+export interface ErrTrace { exceptions: ErrException[]; exceptionsCut: number; message: string | null }
 /** A cycle's end: unix secs, or the bare yes or no a list gives where it names no date. */
 export type Eol = number | boolean | null;
 export interface Runtime {
@@ -263,6 +270,21 @@ export function narrowMaint(raw: unknown, source: string): SourceReport {
     gaps: Array.isArray(raw.gaps) ? raw.gaps.filter((g): g is string => typeof g === "string") : [],
     facts: ok ? raw.facts as Facts : null,
   };
+}
+
+const isTrace = shape({
+  exceptions: list(shape({ kind: str, value: str, framesCut: num,
+    frames: list(shape({ file: opt(str), line: opt(num), function: opt(str), inApp: bool })) })),
+  exceptionsCut: num, message: opt(str),
+});
+/** `maint_trace`'s answer by issue id: the trace, or why it was not read. A wrong shape is a reason, never a trace. */
+export function narrowTrace(raw: unknown): Record<string, ErrTrace | string> {
+  const out: Record<string, ErrTrace | string> = {};
+  for (const a of Array.isArray(raw) ? raw : []) {
+    if (!isObj(a) || !str(a.id)) continue;
+    out[a.id as string] = isTrace(a.trace) ? a.trace as ErrTrace : str(a.err) && a.err ? a.err as string : "the answer was not a stack trace";
+  }
+  return out;
 }
 
 const strs = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
@@ -673,6 +695,7 @@ export interface ErrNeedy extends ErrIssue { why: "new" | "regressed" | "escalat
 export interface ErrState {
   source: string; project: string; environment: string | null; windowDays: number; release: ErrRelease | null; url: string | null;
   rule: "release" | "trend"; needy: ErrNeedy[]; unresolved: number; cut: boolean; lastEvent: number | null;
+  floor: boolean; // the unresolved count is a floor: the tracker's page was full, or a kept scan slimmed the backlog
   level: Level; text: string; tip: string[];
 }
 
@@ -718,12 +741,26 @@ function judgeErrors(source: string, r: Pick<SourceReport, "truncated" | "gaps">
     ...needy.slice(0, 3).map((x) => `${x.shortId} ${x.why}${x.bad ? (x.level === "fatal" ? ", fatal" : `, ${x.users} users`) : ""}: ${x.title}`),
   ];
   return { source, project: f.project, environment: f.environment, windowDays: f.windowDays, release: f.release, url: f.url, rule: rel ? "release" : "trend",
-    needy, unresolved: f.issues.length, cut, lastEvent: f.lastEvent, level, text, tip };
+    needy, unresolved: f.issues.length, cut, lastEvent: f.lastEvent, floor: !!more, level, text, tip };
 }
 
 /** A project's error trackers as each last answered, worst first. */
 export const errorStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): ErrState[] =>
   okFacts(inp, "prod").flatMap((r) => r.facts.kind === "errors" ? [judgeErrors(r.source, r, r.facts, th, now)] : []).sort(byRank);
+
+/** How many issues *Fix* reads a stack trace for, worst first: maint_err.rs's `TRACE_CAP`. */
+export const TRACE_PICKS = 5;
+/** The issues *Fix* asks `maint_trace` about: the worst its brief leads with, from the state the line came from. */
+export function errorPicks(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): string[] {
+  const [st] = errorStates(inp, th, now);
+  return (st?.needy ?? []).slice(0, TRACE_PICKS).map((i) => i.id);
+}
+/** What *Fix* on a line asks past this machine before it prefills, named from the manifest; "" for one that reads no trace. */
+export function traceAsk(f: Pick<Finding, "verb" | "source">): string {
+  const d = f.verb === "fix" ? findSource(f.source) : undefined;
+  return d?.sees.includes("prod.error-trace")
+    ? `Reads the latest event of the ${TRACE_PICKS} worst issues from ${d.label} first, sending it their ids and the token saved for its host. Nothing is kept` : "";
+}
 
 /** A click's answer outlives a `[deploy]` or a `[maintenance.params]` edited by hand or a pull: facts
  *  about a project or an environment no longer named read as nobody having asked yet. */
@@ -1629,6 +1666,7 @@ export const BOARD_IDS = [
   "hosts",
   "addresses",
   "domains",
+  "errors",
 ] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
 // Each facet's boards and the keys each carries a verb for, the first match winning; a pre-fold
@@ -1639,7 +1677,7 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["packages", /^deps:packages$/], ["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
-  prod: [["hosts", /^prod:host:/], ["domains", /^prod:domain:/], ["addresses", /^prod:(?!setup$|errors:)/]],
+  prod: [["hosts", /^prod:host:/], ["domains", /^prod:domain:/], ["errors", /^prod:errors:/], ["addresses", /^prod:(?!setup$)/]],
   work: [["work", /^work:(review|open)$/]],
 };
 
@@ -2126,6 +2164,34 @@ export function probeBoard(ps: readonly TabProject[], root: string | null = null
   }))).sort((a, b) => worst(a) - worst(b) || a.root.localeCompare(b.root) || a.name.localeCompare(b.name));
 }
 
+/** One issue on a project's own Errors board: why it needs someone (null for the backlog), and how long ago it was first seen. */
+export type ErrIssueRow = ErrIssue & { why: ErrNeedy["why"] | null; bad: boolean; age: number | null };
+export const ERR_ROWS = 10; // the issues one project's board lists, the needy first
+/** One error tracker's answer across the fleet, as the Errors board draws it. `issues` is filled only
+ *  narrowed to one project; events and users are the window's, first seen the issue's own. */
+export interface ErrRow {
+  root: string; source: string; project: string; environment: string | null; windowDays: number;
+  unresolved: number; floor: boolean; needy: ErrNeedy[]; cut: boolean; word: string; // needyWord's
+  release: ErrRelease | null; releaseAge: number | null; rule: ErrState["rule"]; url: string | null;
+  level: Level; text: string; tip: string[]; verb: Finding | null;
+  issues: ErrIssueRow[]; more: number; // narrowed only: at most ERR_ROWS, and how many more the read holds
+}
+/** Every project's error tracker as last asked, worst first, then by path. */
+export function errorBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): ErrRow[] {
+  return within(ps, root).flatMap((p) => errorStates(p.inp, thOf(p), now).map((st): ErrRow => {
+    const f = p.inp.reports[st.source]?.facts, all = f?.kind === "errors" ? f.issues : [];
+    const age = (at: number | null) => at === null ? null : Math.max(0, now / 1000 - at), needy = new Set(st.needy.map((x) => x.id));
+    const rest = all.filter((i) => !needy.has(i.id)).sort(byHarm).map((i) => ({ ...i, why: null, bad: false }));
+    const issues = root === null ? [] : [...st.needy, ...rest].map((i): ErrIssueRow => ({ ...i, age: age(i.firstSeen) }));
+    return {
+      root: p.path, source: st.source, project: st.project, environment: st.environment, windowDays: st.windowDays,
+      unresolved: st.unresolved, floor: st.floor, needy: st.needy, cut: st.cut, word: needyWord(st.needy),
+      release: st.release, releaseAge: age(st.release?.at ?? null), rule: st.rule, url: st.url, level: st.level, text: st.text, tip: st.tip,
+      verb: verbOf(p, "prod:errors:new"), issues: issues.slice(0, ERR_ROWS), more: Math.max(0, issues.length - ERR_ROWS),
+    };
+  })).sort((a, b) => rowRank(a.level) - rowRank(b.level) || a.root.localeCompare(b.root) || a.project.localeCompare(b.project));
+}
+
 export type DomainRow = DomainState & { root: string; verb: Finding | null };
 /** Every registered domain each project's addresses are under, worst first, then the soonest to run out. */
 export function domainBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): DomainRow[] {
@@ -2201,6 +2267,7 @@ export interface Boards {
   hosts: HostBoardRow[];
   probes: ProbeBoardRow[];
   domains: DomainRow[];
+  errors: ErrRow[];
   pkgs: PkgRow[];
   pkgRead: number; // projects a registry source answered: what the packages board may claim
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
@@ -2230,6 +2297,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     hosts: [],
     probes: [],
     domains: [],
+    errors: [],
     pkgs: [],
     pkgRead: 0,
     read: {},
@@ -2255,6 +2323,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     b.hosts = hostBoard(ps, root, now);
     b.probes = probeBoard(ps, root, now);
     b.domains = domainBoard(ps, root, now);
+    b.errors = errorBoard(ps, root, now);
     // A check that ran and failed is Coverage's to explain, never "not checked yet".
     b.unchecked = mine.filter((p) => {
       const ids = prodChecks(p.inp).filter((id) => !!findSource(id)?.sees.includes("prod.status"));
@@ -2276,6 +2345,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.hosts.flatMap((r) => r.verbs),
     ...b.probes.map((r) => r.verb),
     ...b.domains.map((r) => r.verb),
+    ...b.errors.map((r) => r.verb),
   ];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
   return b;
@@ -2338,6 +2408,7 @@ const DOORS = {
   hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null }, // no view to open: the card's verbs act
   addresses: { address: "url" },
   domains: { registrar: "url" }, // the registrar's own page, where a renewal is paid
+  errors: { unresolved: "url", needy: "url", issue: "url", events: null, users: null }, // the tracker's stream, one issue's page
 } as const satisfies { [B in BoardId]: Readonly<Record<string, Door | "url" | null>> };
 /** A board's own column names, so a view that asks for one the table lacks fails tsc, not a click. */
 export type BoardCol<B extends BoardId> = keyof (typeof DOORS)[B] & string;
@@ -3323,7 +3394,7 @@ export function fixBranch(f: Pick<Finding, "key">): string {
 export interface SessionLine { f: Finding; inp: MaintInput }
 /** `old`: a fix branch an earlier session left with no checkout. create_worktree checks it out as it stands and ignores the base. */
 export type SessionWhere = DispatchWhere | { kind: "old"; branch: string; base: string };
-export interface SessionRow { root: string; key: string; text: string; where: SessionWhere; branch: string | null; from: string }
+export interface SessionRow { root: string; key: string; text: string; asks: string /* traceAsk's */; where: SessionWhere; branch: string | null; from: string }
 /** `open`: an agent is already there, which is the one skip worth its own word. */
 export interface SessionSkip { root: string; key: string; why: string; open: boolean }
 export interface SessionPlan { rows: SessionRow[]; skipped: SessionSkip[]; over: number }
@@ -3350,7 +3421,7 @@ function sessionFrom(inp: MaintInput, base: string, name: string, now: number): 
 export function sessionPlan(picked: readonly SessionLine[], ctx: SessionCtx): SessionPlan {
   const rows: SessionRow[] = [], skipped: SessionSkip[] = [], taken = new Set<string>();
   for (const { f, inp } of picked) {
-    const { root, key, text } = f, name = ctx.name(root);
+    const { root, key, text } = f, name = ctx.name(root), asks = traceAsk(f);
     const skip = (why: string, open = false) => skipped.push({ root, key, why: `${name}: ${why}`, open });
     const kind = sessionKind(f);
     if (!kind) { skip("no agent answers this line"); continue; }
@@ -3360,14 +3431,14 @@ export function sessionPlan(picked: readonly SessionLine[], ctx: SessionCtx): Se
       if (taken.has(host)) { skip("another ticked line has this host's brief"); continue; }
       taken.add(host);
     }
-    if (kind === "here" || ctx.plain(root)) { rows.push({ root, key, text, where: { kind: "here" }, branch: null, from: "" }); continue; }
+    if (kind === "here" || ctx.plain(root)) { rows.push({ root, key, text, asks, where: { kind: "here" }, branch: null, from: "" }); continue; }
     const branch = fixBranch(f), heads = ctx.heads(root), one = `${root}\u0000${branch}`;
     if (taken.has(one)) { skip(`another ticked line lands on ${branch}`); continue; }
     taken.add(one);
     const on = heads.find((h) => h.exists && h.branch === branch);
     if (on) {
       if (ctx.busy(on.path, root)) skip(`an agent already works on ${branch}`, true);
-      else rows.push({ root, key, text, where: on.is_main ? { kind: "here" } : { kind: "wt", path: on.path }, branch, from: "" });
+      else rows.push({ root, key, text, asks, where: on.is_main ? { kind: "here" } : { kind: "wt", path: on.path }, branch, from: "" });
       continue;
     }
     // git refuses a branch whose registered folder was deleted by hand, until that is pruned.
@@ -3376,8 +3447,8 @@ export function sessionPlan(picked: readonly SessionLine[], ctx: SessionCtx): Se
     const problem = whereProblem({ kind: "new", branch, base }, heads)
       ?? (worktreeDirLen(root, branch) > SLUG_MAX ? "this folder's path is too long for Claude to file the conversation under" : null);
     if (problem) skip(problem);
-    else if (ctx.earlier(root, branch)) rows.push({ root, key, text, where: { kind: "old", branch, base }, branch, from: "" });
-    else rows.push({ root, key, text, where: { kind: "new", branch, base }, branch, from: sessionFrom(inp, base, name, ctx.now) });
+    else if (ctx.earlier(root, branch)) rows.push({ root, key, text, asks, where: { kind: "old", branch, base }, branch, from: "" });
+    else rows.push({ root, key, text, asks, where: { kind: "new", branch, base }, branch, from: sessionFrom(inp, base, name, ctx.now) });
   }
   return { rows: rows.slice(0, SESSION_MAX), skipped, over: Math.max(0, rows.length - SESSION_MAX) };
 }
@@ -3411,12 +3482,12 @@ export function sessionText(plan: SessionPlan, hidden = 0): string {
     stuck && `${stuck} can't start`,
   ].filter(Boolean).join(" · ");
 }
-/** One line per row, naming where it lands. */
+/** One line per row, naming where it lands and what its brief asks past this machine before the pane opens. */
 export function sessionTip(plan: SessionPlan, name: (root: string) => string): string {
   const dest = (r: SessionRow) => r.where.kind === "new" ? `${r.where.branch} from ${r.from}`
     : r.where.kind === "wt" ? `${r.branch}, its earlier checkout` : r.where.kind === "old" ? `${r.branch}, its earlier branch`
     : r.branch ? `${r.branch}, in its folder` : "in its folder";
-  return [...plan.rows.map((r) => `${name(r.root)} · ${r.text} → ${dest(r)}`), ...plan.skipped.map((s) => s.why)].join("\n");
+  return [...plan.rows.flatMap((r) => [`${name(r.root)} · ${r.text} → ${dest(r)}`, ...(r.asks ? [`  ${r.asks}`] : [])]), ...plan.skipped.map((s) => s.why)].join("\n");
 }
 /** The toast a session ends on: what started, the first thing that did not, and what was noted before it began. */
 export function sessionDone(started: number, total: number, fails: readonly string[], notes: readonly string[] = []): string {

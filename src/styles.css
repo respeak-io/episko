@@ -3206,6 +3206,8 @@ select.in-ctl { cursor: pointer; }
 .mt-hostcard .hv .k { color: var(--muted-2); }
 .mt-hostcard .hv .v { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
 .mt-hchip { padding: 0 5px; border: 1px solid var(--hair); border-radius: 5px; overflow-wrap: anywhere; }
+/* Why an issue on one project's Errors board needs someone: new, back or rising, at its level. */
+.mt-errchip { padding: 0 5px; border: 1px solid currentColor; border-radius: 5px; font-size: 10px; }
 .mt-hostcard .hfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: auto; padding-top: 5px; }
 .mt-hostcard .hfoot .mt-note { flex: 1 0 auto; }
 .mt-hostcard .hfoot .aslink { flex: none; font-size: 11px; }

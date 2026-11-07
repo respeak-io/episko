@@ -10,8 +10,8 @@ import { dlog } from "./debug";
 import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, FACET_TAB, facetCell, findingTarget, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
-  sweepRows, tabFindings,
+  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
+  sweepRows, tabFindings, traceAsk, type Finding,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
   type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
@@ -77,6 +77,20 @@ async function verifyFor(root: string): Promise<string[]> {
   return verifyCommands(tasks.map((x) => ({ cmd: execCmd(x), group: x.group, blocked: x.blocked })));
 }
 
+// Fix on an error tracker's line reads the worst issues' stack traces on that click; a failure is said in the brief.
+const readsTrace = (f: Finding) => !!traceAsk(f);
+const tracing = new Set<string>(); // root|key of a Fix whose traces are out: a second click would open a second pane
+async function tracesFor(root: string, f: Finding, inp: MaintInput): Promise<MaintBriefCtx["traces"]> {
+  const ids = readsTrace(f) ? errorPicks(inp, clampMaint(inp.det?.config.thresholds)) : [];
+  if (!ids.length) return undefined;
+  try {
+    return narrowTrace(await invoke<unknown>("maint_trace", { root, source: f.source, ids }));
+  } catch (e) {
+    dlog("warn", `maint: traces for ${root}: ${e}`);
+    return Object.fromEntries(ids.map((id) => [id, String(e)]));
+  }
+}
+
 const lineOf = (root: string, key: string, inp: MaintInput) =>
   [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)].find((x) => x.key === key);
 
@@ -97,9 +111,18 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   }
   // Open work lives in Today's queue; the rest of what Review means is the Maintenance tab's.
   if (f.verb === "review") { host.openDashboard(name, root, f.facet === "work" ? "today" : "maint"); return; }
-  const text = briefFor(f, inp, { project: name, verify: await verifyFor(root) });
-  if (!text) { toast("That has changed since the last check. Check again"); return; }
-  host.prefill(name, root, text);
+  const out = `${root}|${key}`;
+  if (readsTrace(f)) {
+    if (tracing.has(out)) { toast("Still reading the stack traces"); return; }
+    tracing.add(out);
+    toast("Reading the stack traces…");
+  }
+  try {
+    const [verify, traces] = await Promise.all([verifyFor(root), tracesFor(root, f, inp)]);
+    const text = briefFor(f, inp, { project: name, verify, traces });
+    if (!text) { toast("That has changed since the last check. Check again"); return; }
+    host.prefill(name, root, text);
+  } finally { tracing.delete(out); }
 }
 
 // A board number: a fetch runs here; anything else is a view of the project's dashboard (a page is data-mturl's).
@@ -198,9 +221,15 @@ async function launchLines(label: string, lines: readonly SessionLine[], briefOf
     const why = (run.gate ?? sessionGate)(plan, termEngine === "embedded");
     if (why) { actToast(why); return; }
     const verify = new Map(await Promise.all(roots.map(async (r) => [r, await verifyFor(r)] as const)));
-    const rows = plan.rows.flatMap((row) => {
-      const l = lines.find((x) => x.f.root === row.root && x.f.key === row.key), project = host.nameOf(row.root);
-      const text = l && briefOf(l, { project, verify: verify.get(row.root) ?? [] }, row.where);
+    const lineAt = (row: { root: string; key: string }) => lines.find((x) => x.f.root === row.root && x.f.key === row.key);
+    // A ticked errors line takes the verb's own trace path, so its pane's brief is the one Fix would prefill.
+    if (plan.rows.some((row) => { const l = lineAt(row); return !!l && readsTrace(l.f); })) toast("Reading the stack traces…");
+    // One project at a time, so a tracker most of them share never has more than TRACE_CAP of these out at once.
+    const traces: MaintBriefCtx["traces"][] = [];
+    for (const row of plan.rows) { const l = lineAt(row); traces.push(l ? await tracesFor(row.root, l.f, l.inp) : undefined); }
+    const rows = plan.rows.flatMap((row, n) => {
+      const l = lineAt(row), project = host.nameOf(row.root);
+      const text = l && briefOf(l, { project, verify: verify.get(row.root) ?? [], traces: traces[n] }, row.where);
       return text ? [{ root: row.root, project, where: row.where, branch: row.branch, text, what: row.text }] : [];
     });
     if (!rows.length) { toast("That has changed since the last check. Check again"); return; }

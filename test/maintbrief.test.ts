@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ERR_BRIEF, FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sessionKind, sweepLine, sweepVerdict, type Deployed, type ErrIssue, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
+  FACT_FACET, MAINT_DEFAULTS, TRACE_PICKS, VERB_KIND, findings, sessionKind, sweepLine, sweepVerdict, type Deployed, type ErrIssue, type ErrTrace, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
 } from "../src/maint";
 import { SOURCES } from "../src/maintsources";
 import { typable } from "../src/format";
@@ -529,14 +529,58 @@ describe("an error's brief", () => {
     expect(b).toMatch(/This list hit a page cap, so more issues may exist/);
   });
 
+  // A neutral trace: the brief reads the same whatever tracker sent it.
+  const trace: ErrTrace = { exceptionsCut: 0, message: "checkout failed for order 1182", exceptions: [
+    { kind: "KeyError", value: "'discount'", framesCut: 0, frames: [{ file: "billing/discounts.py", line: 17, function: "apply_discount", inApp: true }] },
+    { kind: "ZeroDivisionError", value: "division by zero", framesCut: 60, frames: [
+      { file: "threading.py", line: 1073, function: "_bootstrap_inner", inApp: false },
+      { file: "billing/views.py", line: 88, function: "checkout", inApp: true },
+      { file: "billing/invoice.py", line: 42, function: "total", inApp: true },
+    ] },
+  ] };
+  const traced = (traces: Record<string, ErrTrace | string>, i = tracked([issue()])) => briefFor(line(i), i, { ...ctx, traces })!;
+
+  it("carries each issue's stack trace when Fix read one: the project's frames, innermost last", () => {
+    const b = traced({ 101: trace });
+    expect(b).toContain([
+      "- message: checkout failed for order 1182",
+      "- stack trace of the latest event, innermost frame last, a chain in which each exception caused the next:",
+      "    KeyError: 'discount'",
+      "      billing/discounts.py:17 in apply_discount",
+      "    ZeroDivisionError: division by zero",
+      "      billing/views.py:88 in checkout",
+      "      billing/invoice.py:42 in total",
+      "      (1 frame outside this project's code, 60 frames not read, outer or unnamed)",
+    ].join("\n"));
+    expect(b, "a frame outside the project's code is counted, not drawn").not.toContain("threading.py");
+    expect(b).not.toContain("The latest event's stack trace is not copied here");
+    expect(b).toContain("its lines are the deployed code's");
+    const theirs = { ...trace, exceptions: [{ ...trace.exceptions[1], frames: [trace.exceptions[1].frames[0]], framesCut: 0 }] };
+    expect(traced({ 101: theirs }), "with no frame of its own, every frame is shown").toContain("      threading.py:1073 in _bootstrap_inner\n");
+    expect(traced({ 101: { exceptions: [], exceptionsCut: 0, message: null } })).toContain("- the latest event carries no stack trace");
+    expect(traced({ 101: { ...trace, exceptionsCut: 2 } }), "said between the root cause and the rest")
+      .toContain("      billing/discounts.py:17 in apply_discount\n    (2 exceptions between these in the chain not read)\n    ZeroDivisionError");
+  });
+
+  it("says plainly why a trace was not read, and sends the agent to the link", () => {
+    expect(traced({ 101: "errors.example refused the stored token: Invalid token" }))
+      .toContain("- stack trace not read: errors.example refused the stored token: Invalid token; open the link above");
+    const six = Array.from({ length: TRACE_PICKS + 1 }, (_, n) => issue({ id: String(300 + n), shortId: `API-${n}`, users: 99 - n }));
+    const picked = Object.fromEntries(six.slice(0, TRACE_PICKS).map((i) => [i.id, trace]));
+    const b = traced(picked, tracked(six));
+    expect(b.match(/^- stack trace of the latest event/gm)?.length).toBe(TRACE_PICKS);
+    expect(b).toContain(`- stack trace not read: only the ${TRACE_PICKS} worst issues' are read on a click; open the link above`);
+    expect(traced({ 101: "x" }, tracked([issue({ url: null })]))).toContain("- stack trace not read: x\n");
+  });
+
   it("answers null once nothing needs fixing, and names no tracker", () => {
     const f = line(tracked([issue()]));
     expect(briefFor(f, tracked([issue({ firstSeen: S - 90 * D, trend: "ongoing" })]), ctx), "a backlog has no Fix").toBeNull();
     expect(briefFor(f, input(), ctx)).toBeNull();
     const trackers = SOURCES.filter((s) => s.sees.includes("prod.errors")).flatMap((s) => [s.label, s.token?.label ?? ""]).filter(Boolean);
     expect(trackers.length).toBeGreaterThan(0);
-    const b = brief(tracked([issue()])).toLowerCase();
-    expect(trackers.filter((w) => b.includes(w.toLowerCase()))).toEqual([]);
+    const b = brief(tracked([issue()])).toLowerCase(), t = traced({ 101: trace }).toLowerCase();
+    expect(trackers.filter((w) => b.includes(w.toLowerCase()) || t.includes(w.toLowerCase()))).toEqual([]);
   });
 });
 

@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, errorStates, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
-  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type ErrNeedy, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, errorStates, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, TRACE_PICKS, trunkOf, unplacedWhy,
+  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type ErrException, type ErrFrame, type ErrNeedy, type ErrTrace, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
@@ -12,6 +12,7 @@ export interface MaintBriefCtx {
   project: string;
   verify: string[]; // the project's own check commands (`verifyCommands` in ./deps)
   now?: number;
+  traces?: Readonly<Record<string, ErrTrace | string>>; // *Fix*'s stack traces by issue id, or why each was not read
 }
 
 type Brief = (f: Finding, inp: MaintInput, ctx: MaintBriefCtx) => string[] | null;
@@ -416,6 +417,28 @@ const domainBrief: Brief = (f, inp, ctx) => {
 // in the repository, and nothing is marked resolved in the tracker, since a fix that ships resolves it.
 export const ERR_BRIEF = 10;
 const ERR_WHY: Record<ErrNeedy["why"], string> = { new: "new", regressed: "back after it was resolved", escalating: "rising sharply" };
+const frameText = (f: ErrFrame) => `${f.file ?? "?"}${f.line !== null ? `:${f.line}` : ""}${f.function ? ` in ${f.function}` : ""}`;
+// The project's own frames, or every frame when none is; what was left out is counted, never dropped silently.
+function excLines(e: ErrException): string[] {
+  const mine = e.frames.filter((f) => f.inApp), shown = mine.length ? mine : e.frames;
+  const left = [mine.length ? e.frames.length - mine.length : 0, e.framesCut];
+  const said = [left[0] ? `${plural(left[0], "frame")} outside this project's code` : "", left[1] ? `${plural(left[1], "frame")} not read, outer or unnamed` : ""];
+  return [`    ${e.kind}${e.value ? `: ${e.value}` : ""}`, ...shown.map((f) => `      ${frameText(f)}`),
+    ...(left[0] + left[1] ? [`      (${said.filter(Boolean).join(", ")})`] : [])];
+}
+function traceLines(t: ErrTrace | string | undefined, url: string | null): string[] {
+  const open = url ? "; open the link above" : "";
+  if (t === undefined) return [bullet(`stack trace not read: only the ${TRACE_PICKS} worst issues' are read on a click${open}`)];
+  if (typeof t === "string") return [bullet(`stack trace not read: ${t}${open}`)];
+  const chain = t.exceptions.length > 1 ? ", a chain in which each exception caused the next" : "";
+  // A long chain keeps its root cause first and the last two, so the gap is said where it falls.
+  const gap = t.exceptionsCut ? [`    (${plural(t.exceptionsCut, "exception")} between these in the chain not read)`] : [];
+  return [
+    ...(t.message ? [bullet(`message: ${t.message}`)] : []),
+    ...(t.exceptions.length ? [bullet(`stack trace of the latest event, innermost frame last${chain}:`), ...t.exceptions.flatMap((e, n) => [...(n === 1 ? gap : []), ...excLines(e)])]
+      : [bullet("the latest event carries no stack trace")]),
+  ];
+}
 const errorBrief: Brief = (_f, inp, ctx) => {
   const [st] = errorStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now);
   if (!st?.needy.length) return null;
@@ -429,6 +452,7 @@ const errorBrief: Brief = (_f, inp, ctx) => {
     bullet(`level ${i.rawLevel || i.level}${i.unhandled === true ? ", unhandled" : i.unhandled === false ? ", handled" : ""}`),
     bullet(`${plural(i.events, "event")} from ${plural(i.users, "user")} in ${st.windowDays} days; first seen ${when(i.firstSeen)}, last seen ${when(i.lastSeen)}`),
     ...(i.culprit ? [bullet(`where: ${i.culprit}`)] : []),
+    ...(ctx.traces ? traceLines(ctx.traces[i.id], i.url) : []),
   ];
   const more = st.needy.length - shown.length;
   return [
@@ -438,7 +462,8 @@ const errorBrief: Brief = (_f, inp, ctx) => {
     ...(more > 0 ? ["", `${plural(more, "more issue")} like these${st.url ? `: ${st.url}` : ""}.`] : []),
     ...cappedNote(st.cut, "issues"),
     "",
-    "The latest event's stack trace is not copied here: open each link above to read it.",
+    ctx.traces ? "Each trace is the newest event's, so its lines are the deployed code's: match them against what was released."
+      : "The latest event's stack trace is not copied here: open each link above to read it.",
     "For each: find the cause in this repository and say which change introduced it. Reproduce it with a",
     "failing test first, then fix the cause. Never swallow the error, widen a catch or silence the report.",
     "",

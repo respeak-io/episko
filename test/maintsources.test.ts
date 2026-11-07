@@ -91,7 +91,8 @@ describe("the manifest as TypeScript", () => {
   it("reads an error tracker as a click-only prod source with a token, blind to every other prod capability", () => {
     const [d, ...more] = SOURCES.filter((s) => s.sees.includes("prod.errors"));
     expect(more).toEqual([]);
-    expect(d).toMatchObject({ facet: "prod", cost: "remote", sends: null, sees: ["prod.errors", "prod.errors-new"], blind: ["prod.status", "prod.cert", "prod.host", "prod.domain"] });
+    expect(d).toMatchObject({ facet: "prod", cost: "remote", sends: null, sees: ["prod.errors", "prod.errors-new", "prod.error-trace"], blind: ["prod.status", "prod.cert", "prod.host", "prod.domain"] });
+    expect(SOURCES.filter((s) => s.sees.includes("prod.error-trace")), "Fix finds the trace by what a source sees").toEqual([d]);
     expect(permitted(d.cost, "scan", true), "never in a scan, opt-in or not").toBe(false);
     expect(d.token).toEqual({ id: expect.stringMatching(/^[a-z]+$/), label: d.label, host: expect.any(String), page: expect.stringMatching(/^https:\/\/\{host\}\//),
       scopes: ["event:read", "project:read", "org:read"] });

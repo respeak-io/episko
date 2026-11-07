@@ -986,5 +986,60 @@
       "source": "nope",
       "truncated": false
     }
+  ],
+  "trace": [
+    {
+      "err": null,
+      "id": "6000000101",
+      "trace": {
+        "exceptions": [
+          {
+            "frames": [
+              {
+                "file": "billing/discounts.py",
+                "function": "apply_discount",
+                "inApp": true,
+                "line": 17
+              }
+            ],
+            "framesCut": 0,
+            "kind": "KeyError",
+            "value": "'discount'"
+          },
+          {
+            "frames": [
+              {
+                "file": "threading.py",
+                "function": "_bootstrap_inner",
+                "inApp": false,
+                "line": 1073
+              },
+              {
+                "file": "billing/views.py",
+                "function": "checkout",
+                "inApp": true,
+                "line": 88
+              },
+              {
+                "file": "https://app.example.com/static/invoice.js",
+                "function": "total",
+                "inApp": true,
+                "line": 42
+              }
+            ],
+            "framesCut": 1,
+            "kind": "ZeroDivisionError",
+            "value": "division by zero"
+          }
+        ],
+        "exceptionsCut": 0,
+        "message": "checkout failed for order 1182"
+      }
+    },
+    {
+      "err": "sentry.io refused the stored token: Invalid token",
+      "id": "6000000102",
+      "trace": null
+    }
   ]
 }

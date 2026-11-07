@@ -17,6 +17,7 @@ import {
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   currentDomains, domainStates, type Domain,
   currentErrors, errorStates, errorSummary, ERR_LEVELS, ERR_TRENDS, KEPT_BACKLOG, KEPT_CUT, tokenDoor, type ErrIssue,
+  errorBoard, errorPicks, ERR_ROWS, narrowTrace, TRACE_PICKS, traceAsk,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -31,7 +32,7 @@ import { FACETS, SOURCES, type Facet, type MaintCap } from "../src/maintsources"
 // nobody read. The wire half is pinned by the fixture maint.rs writes (wire_fixture_is_current).
 
 const wire = JSON.parse(readFileSync(new URL("./fixtures/maint-wire.json", import.meta.url), "utf8")) as {
-  detection: unknown; reports: Record<string, unknown>[];
+  detection: unknown; reports: Record<string, unknown>[]; trace: unknown;
 };
 
 const NOW = 1_790_000_000_000, S = NOW / 1000, H = 3600, D = 86_400;
@@ -2536,7 +2537,7 @@ describe("errors in production", () => {
     expect(hostRows([{ path: "/a", hosts: ["p"], prod, read: true }]).map((r) => [r.level, r.text]), "a host row reads the Prod cell, errors and all").toEqual([["warn", "1 new since 1.4.0"]]);
   });
 
-  it("gives every new or returning issue one Fix line, on a branch, below Servers' boards until its own exists", () => {
+  it("gives every new or returning issue one Fix line, on a branch, carried by the Errors board", () => {
     const line = (...issues: ErrIssue[]) => (o: Partial<ErrFacts> = {}, r: Partial<SourceReport> = {}) =>
       findings("/r", input(ok(HP, probes()), rep(issues, o, r)), MAINT_DEFAULTS, NOW).find((f) => f.key === "prod:errors:new");
     const one = line(iss({ shortId: "API-12A" }))()!;
@@ -2550,10 +2551,13 @@ describe("errors in production", () => {
     expect(line(iss({ level: "fatal" }), old({ id: "2", trend: "regressed" }))()).toMatchObject({ level: "bad", text: "2 errors new or back" });
     expect(line(old())(), "a backlog has no line").toBeUndefined();
     const f = line(iss())()!;
-    expect(findingTarget(f)).toEqual({ tab: "servers", board: null });
+    expect(findingTarget(f)).toEqual({ tab: "servers", board: "errors" });
     expect(findingTarget({ facet: "prod", key: "prod:errors" }), "a url named errors is still an address").toEqual({ tab: "servers", board: "addresses" });
+    expect(findingTarget({ facet: "prod", key: "prod:cert:app" }).board).toBe("addresses");
     const p = tp("/r", ok(HP, probes()), rep([iss()]));
-    expect(tabModel("servers", [p], "/r", null, NOW).rows.map((r) => r.key)).toContain("prod:errors:new");
+    const m = tabModel("servers", [p], "/r", null, NOW);
+    expect(m.rows.map((r) => r.key), "the board carries its verb, so it is not listed again below").not.toContain("prod:errors:new");
+    expect(m.boards!.drawn).toContain("/r|prod:errors:new");
     expect(sessionKind(f), "its brief asks for a fix in code").toBe("branch");
     expect(briefFor(f, p.inp, { project: "acme", verify: [], now: NOW })).toMatch(/^API-1 in acme's error tracker/);
   });
@@ -2621,6 +2625,55 @@ describe("errors in production", () => {
     expect(lines(takeSnap("/r", input(ok(HP, probes()), not(SE, "prod", { state: "notRun" })), NOW, red)), "nobody asked").toEqual(["prod:errors:new"]);
     expect(lines(takeSnap("/r", input(ok(HP, probes()), rep([old()])), NOW, red)), "fixed").toEqual([]);
     expect(lines(takeSnap("/r", input(ok(HP, probes())), NOW, red)), "no longer linked").toEqual([]);
+  });
+
+  it("reads maint_trace's own wire: a trace by issue id, or why it was not read", () => {
+    const t = narrowTrace(wire.trace);
+    const read = t["6000000101"];
+    expect(typeof read === "object" && read.exceptions.map((e) => e.kind)).toEqual(["KeyError", "ZeroDivisionError"]);
+    expect(typeof read === "object" && read.exceptions[1].frames.at(-1)).toMatchObject({ line: 42, function: "total", inApp: true });
+    expect(t["6000000102"]).toBe("sentry.io refused the stored token: Invalid token");
+    expect(narrowTrace([{ id: "1", trace: { exceptions: "x" }, err: null }, { id: 2 }, "x", { id: "3", trace: null, err: null }]),
+      "a wrong shape is a reason, never a trace").toEqual({ 1: "the answer was not a stack trace", 3: "the answer was not a stack trace" });
+    expect(narrowTrace(null)).toEqual({});
+  });
+
+  it("asks for the traces of the worst issues the brief leads with, five at most", () => {
+    const many = [1, 2, 3, 4, 5, 6, 7].map((n) => iss({ id: String(n), users: n }));
+    expect(errorPicks(input(rep([...many, old({ id: "99", users: 9000 })])), MAINT_DEFAULTS, NOW)).toEqual(["7", "6", "5", "4", "3"]);
+    const cap = /const TRACE_CAP: usize = (\d+);/.exec(readFileSync(new URL("../src-tauri/src/maint_err.rs", import.meta.url), "utf8"));
+    expect(TRACE_PICKS, "maint_err.rs's TRACE_CAP, or ids past it get no answer").toBe(Number(cap?.[1]));
+    expect(errorPicks(input(rep([iss({ id: "1" }), iss({ id: "2", level: "fatal" })])), MAINT_DEFAULTS, NOW), "a crash first").toEqual(["2", "1"]);
+    expect(errorPicks(input(rep([old()])), MAINT_DEFAULTS, NOW), "a backlog asks nothing").toEqual([]);
+    expect(errorPicks(input(), MAINT_DEFAULTS, NOW)).toEqual([]);
+  });
+
+  it("draws one Errors row per linked tracker, worst first, and lists the issues only for one project", () => {
+    const ps = [
+      tp("/a", rep([old(), old({ id: "2" })])),
+      tp("/b", rep([iss({ level: "fatal" }), old({ id: "2", trend: "regressed" }), old({ id: "3", users: 50 })], { environment: "production" })),
+      tp("/c", rep([iss()])),
+      tp("/d", ok(HP, probes())),
+    ];
+    const fleet = errorBoard(ps, null, NOW);
+    expect(fleet.map((r) => [r.root, r.level, r.needy.length, r.unresolved])).toEqual([["/b", "bad", 2, 3], ["/c", "warn", 1, 1], ["/a", "info", 0, 2]]);
+    expect(fleet[0]).toMatchObject({ project: "acme/api", environment: "production", word: "new or back", rule: "release", releaseAge: 5 * D, floor: false, issues: [] });
+    expect(fleet[0].verb?.key).toBe("prod:errors:new");
+    expect(fleet[2].verb, "a backlog has no Fix").toBeNull();
+    const [one] = errorBoard(ps, "/b", NOW);
+    expect(one.issues.map((i) => [i.id, i.why, i.bad, i.age])).toEqual([["1", "new", true, 2 * D], ["2", "regressed", false, 90 * D], ["3", null, false, 90 * D]]);
+    expect(one.more).toBe(0);
+    const big = errorBoard([tp("/x", rep(Array.from({ length: 14 }, (_, n) => old({ id: String(n), users: n }))))], "/x", NOW)[0];
+    expect([big.issues.length, big.more, big.issues[0].id]).toEqual([ERR_ROWS, 4, "13"]);
+    const quiet = (lastEvent: number | null) => errorBoard([tp("/q", rep([], { lastEvent }))], null, NOW)[0];
+    expect([quiet(null).level, quiet(null).text], "silence is not health, so never the dot").toEqual(["muted", "silent"]);
+    expect([quiet(S - H).level, quiet(S - H).text], "an event inside the window is").toEqual(["ok", ""]);
+    const kept = errorBoard([tp("/k", rep([old()], {}, { gaps: [KEPT_CUT] }))], null, NOW)[0];
+    expect([kept.floor, kept.cut], "a slimmed backlog is a floor, its needy count exact").toEqual([true, false]);
+    const tb = tabBoards("servers", ps, null, null, NOW);
+    expect(tb.errors.map((r) => r.root)).toEqual(["/b", "/c", "/a"]);
+    expect(tb.drawn).toEqual(expect.arrayContaining(["/b|prod:errors:new", "/c|prod:errors:new"]));
+    expect(tabBoards("delivery", ps, null, null, NOW).errors).toEqual([]);
   });
 
   it("slims a kept list to what needs someone and the newest of the rest, never costing another project its place", () => {
@@ -2881,6 +2934,7 @@ describe("a board's numbers are doors", () => {
     hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null },
     addresses: { address: "url" },
     domains: { registrar: "url" },
+    errors: { unresolved: "url", needy: "url", issue: "url", events: null, users: null },
   };
 
   it("names every column of every board", () => {
@@ -4311,6 +4365,14 @@ describe("a maintenance session", () => {
     });
     it("counts the ticks a chip is not showing, or the bar disagrees with what is on screen", () => {
       expect(sessionText(sessionPlan([at(line("ci"))], ctx()), 2)).toBe("2 behind this filter · 1 on a new fix branch");
+    });
+    it("says in its tip what a ticked errors line asks past this machine before its pane opens", () => {
+      const tracker = SOURCES.find((s) => s.sees.includes("prod.error-trace"))!;
+      const ask = traceAsk({ verb: "fix", source: tracker.id });
+      expect(ask).toContain(`the ${TRACE_PICKS} worst issues from ${tracker.label} first, sending it their ids and the token`);
+      expect([traceAsk({ verb: "review", source: tracker.id }), traceAsk({ verb: "fix", source: "s" })], "only a Fix that reads traces").toEqual(["", ""]);
+      const tip = sessionTip(sessionPlan([at(line("prod:errors:new", "fix", { source: tracker.id })), at(line("ci"))], ctx()), () => "acme").split("\n");
+      expect(tip).toEqual(["acme · the prod:errors:new line → maint/prod-errors-new from origin/main", `  ${ask}`, "acme · the ci line → maint/ci from origin/main"]);
     });
     it("lists each row's destination in its tip", () => {
       const tip = sessionTip(plan, () => "acme").split("\n");

@@ -5,8 +5,8 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -121,6 +121,7 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "prod.domain": "when its domain's registration expires",
   "prod.errors": "unresolved errors in production",
   "prod.errors-new": "errors new since the last release, or back",
+  "prod.error-trace": "the stack trace behind each, read when you click Fix",
 };
 
 // Remote, so never part of a scan: the button names every source it asks and what each reaches.
@@ -214,7 +215,7 @@ function runText(f: Finding): [string, string, string] {
 const verbText = (f: Finding): [string, string, string] => f.verb === "run" ? runText(f) : [...VERB[f.verb], f.detail];
 // `why` says what the verb covers where a row shows less than its line does; `as` renames it there.
 function verbHtml(f: Finding, why = "", as = ""): string {
-  const [word, tip] = verbText(f), label = as || word, ag = tip === "agent", said = ag ? AGENT_TIP : tip;
+  const [word, tip] = verbText(f), label = as || word, ag = tip === "agent", said = [traceAsk(f), ag ? AGENT_TIP : tip].filter(Boolean).join("\n");
   return f.busy ? `<span class="fl-when mono">running…</span>` : `<button class="mt-verb" data-mtverb="${escAttr(f.key)}"
       data-mtroot="${escAttr(f.root)}" data-tip="${escAttr(why ? `${why}
 ${said}` : said)}">${ag ? icon("agent") : ""}${esc(label)}</button>`;
@@ -797,8 +798,53 @@ function domainBoardHtml(v: MaintTabView, b: Boards): string {
     table([...projCol(b), "Domain", "Behind", ">Expires", "Registrar", ""], rows));
 }
 
+// ---------- the Errors board: each linked tracker as last asked, the new and returning first ----------
+
+const ERR_CHIP: Record<NonNullable<ErrIssueRow["why"]>, string> = { new: "new", regressed: "back", escalating: "rising" };
+// Coloured only while the row needs someone: below `new_errors` a new issue is a fact, not a call.
+const chipHtml = (i: ErrIssueRow, loud: Level) => i.why
+  ? `<span class="mt-n mt-errchip ${LEVEL_CLS[loud === "info" ? "info" : i.bad ? "bad" : "warn"]}" data-tip="${escAttr(i.why === "new" ? "first seen since the newest release" : i.why === "regressed" ? "back after it was resolved" : "rising sharply")}">${ERR_CHIP[i.why]}</span>` : "";
+const issueTip = (i: ErrIssueRow) => [i.title, i.culprit ?? "", `level ${i.rawLevel || i.level}${i.unhandled ? ", unhandled" : ""}`].filter(Boolean).join("\n");
+// An issue's id opens its own page; its counts are the read's window, its first sighting the issue's own.
+function issuesHtml(b: Boards, r: ErrRow, loud: Level): string {
+  const hot = (i: ErrIssueRow) => loud !== "info" && i.bad;
+  const rows = r.issues.map((i) => `<tr>` + td(doorHtml(esc(i.shortId), "mt-n", ["errors", "issue", r.root], i.url, issueTip(i)), "mono")
+    + td(`<span class="dim" data-tip="${escAttr(issueTip(i))}">${esc(i.title)}</span>`, "u")
+    + td(`<span class="mt-n${hot(i) && i.level === "fatal" ? ` ${LEVEL_CLS.bad}` : ""}">${esc(i.rawLevel || i.level)}</span>`, "mono")
+    + td(`<span class="mt-n">${i.events}</span>`, "r") + td(`<span class="mt-n${hot(i) && i.level !== "fatal" ? ` ${LEVEL_CLS.bad}` : ""}">${i.users}</span>`, "r")
+    + td(ageOf(i.age), "r mono") + td(chipHtml(i, loud), "a") + `</tr>`);
+  const w = `${r.windowDays}d`, more = r.more + (r.floor ? "+" : "");
+  const rest = r.more || r.floor ? `<p class="fl-none">${r.cut ? "The tracker's newest first seen were read, so there are more. "
+    : r.floor && !r.cut ? "Kept from an earlier check: every issue that needs someone and the newest of the rest. " : ""}`
+    + (r.more ? doorHtml(esc(`${more} more`), "aslink", ["errors", "unresolved", r.root], r.url, "Every unresolved issue, in the tracker") : "") + `</p>` : "";
+  return r.issues.length ? table([...projCol(b), "Issue", "Title", "Level", `>Events in ${w}`, `>Users in ${w}`, ">First seen", ""], rows) + rest : "";
+}
+const loudOf = (r: ErrRow): Level => r.level === "bad" || r.level === "warn" ? r.level : "info";
+function errorBoardHtml(v: MaintTabView, b: Boards): string {
+  if (!b.errors.length) return "";
+  const rows = b.errors.map((r) => {
+    // A count that is a floor opens the stream, never the one issue the read happened to hold.
+    const loud = loudOf(r), n = r.needy.length, one = n === 1 && !r.cut ? r.needy[0] : null, x = r.needy[0];
+    const tip = r.tip.join("\n"), said = [`${n}${r.cut ? "+" : ""} ${r.word}`, ...r.needy.slice(0, 3).map((y) => `${y.shortId}: ${y.title}`)].join("\n");
+    const linked = `${r.project}${r.environment ? ` · ${r.environment}` : ""}`;
+    // Silence is not health: a tracker no event reached in the window has no zero to draw as the dot.
+    const silent = r.level === "muted" ? `<span class="dim" data-tip="${escAttr(tip)}">${esc(r.text)}</span>` : "";
+    const unresolved = r.unresolved ? doorHtml(`${r.unresolved}${r.floor ? "+" : ""}`, `mt-n ${LEVEL_CLS.info}`, ["errors", "unresolved", r.root], r.url,
+      `unresolved, seen in ${r.windowDays} days`) : silent || DOT;
+    const needy = n ? doorHtml(`${n}${r.cut ? "+" : ""}`, `mt-n ${LEVEL_CLS[loud]}`, ["errors", "needy", r.root], one?.url ?? r.url, said) : silent ? DASH : DOT;
+    const rel = r.release ? `<span data-tip="${escAttr(r.release.version)}">${esc(relName(r.release.version))}</span> <span class="dim">${ageOf(r.releaseAge)}</span>`
+      : `<span class="dim" data-tip="${escAttr("No dated release, so new is the tracker's own word: first seen in the last 7 days")}">none dated</span>`;
+    const worst = x ? doorHtml(esc(x.shortId), `mt-n ${LEVEL_CLS[loud]}`, ["errors", "issue", r.root], x.url, `${x.title}${x.culprit ? `\n${x.culprit}` : ""}`) : DASH;
+    return `<tr data-tip="${escAttr(tip)}">${projTd(v, b, r.root)}` + td(esc(linked), "mono u") + td(unresolved, "r") + td(needy, "r")
+      + td(rel, "mono") + td(worst, "mono") + verbTd(r.verb) + `</tr>`;
+  });
+  const one = b.one ? b.errors.map((r) => issuesHtml(b, r, loudOf(r))).join("") : "";
+  return board("errors", "Errors", `as last checked · nothing connects until you ask · ${readNote(new Set(b.errors.map((r) => r.root)).size)}`,
+    table([...projCol(b), "Linked", ">Unresolved", ">New or back", "Release", "Worst", ""], rows) + one);
+}
+
 function serversHtml(v: MaintTabView, b: Boards): string {
-  return hostBoardHtml(v, b) + addressBoardHtml(v, b) + domainBoardHtml(v, b);
+  return hostBoardHtml(v, b) + errorBoardHtml(v, b) + addressBoardHtml(v, b) + domainBoardHtml(v, b);
 }
 
 // ---------- the advisory sweep: one question asked of every project's lockfiles ----------

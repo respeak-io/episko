@@ -540,6 +540,7 @@ pub fn run() {
             maint::maint_setup,
             maint::propose_maint,
             maint::write_maint,
+            maint_err::maint_trace,
             maint_sweep::sweep_advisory,
             maint_sweep::sweep_match,
             maint_sweep::sweep_check,

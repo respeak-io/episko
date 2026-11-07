@@ -165,7 +165,7 @@
     "sentry-issues": {
       "facet": "prod", "label": "Sentry", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.sentry"],
       "token": { "id": "sentry", "label": "Sentry", "host": "sentry.io", "page": "https://{host}/settings/account/api/auth-tokens/", "scopes": ["event:read", "project:read", "org:read"] },
-      "sees": ["prod.errors", "prod.errors-new"],
+      "sees": ["prod.errors", "prod.errors-new", "prod.error-trace"],
       "blind": ["prod.status", "prod.cert", "prod.host", "prod.domain"]
     }
   },

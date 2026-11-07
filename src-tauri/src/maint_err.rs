@@ -1,5 +1,6 @@
 //! The Prod facet's error trackers (docs/maintenance.md § Adapters): `sentry-issues`, a project's unresolved
-//! issues and newest release, read on a click with the token saved for the tracker's host. Facts only.
+//! issues and newest release, read on a click with the token saved for the tracker's host, and on *Fix* the
+//! latest event's stack trace of the issues it briefs, kept nowhere. Facts only.
 
 use serde_json::Value;
 
@@ -16,6 +17,11 @@ const WINDOW_DAYS: u32 = 14;
 const ISSUE_CAP: usize = 100;
 const SECS: u64 = 15;
 const TEXT_MAX: usize = 300;
+// A trace's read scope: the issues one *Fix* asks about, the chain and frames each keeps, and a message's length.
+const TRACE_CAP: usize = 5;
+const EXCEPTIONS: usize = 3;
+const FRAMES: usize = 40;
+const VALUE_MAX: usize = 500;
 
 /// The slot a host's token is saved under: the hosted service's regional and organisation subdomains
 /// share its own, so `de.sentry.io` reads with the token saved for `sentry.io`.
@@ -80,7 +86,11 @@ fn trend(raw: &str) -> ErrTrend {
 
 // A title reaches a card line and a brief: one line, cut short.
 fn clip(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(TEXT_MAX).collect::<String>().trim().to_string()
+    clip_to(s, TEXT_MAX)
+}
+
+fn clip_to(s: &str, max: usize) -> String {
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).take(max).collect::<String>().trim().to_string()
 }
 
 fn web(u: &&str) -> bool {
@@ -160,6 +170,15 @@ pub(crate) fn refusal(code: u16, body: &str, slot: &str, project: &str) -> Cover
     }
 }
 
+/// A coverage as a brief says it: the reason the read itself would give.
+pub(crate) fn said(c: &Coverage) -> String {
+    match c {
+        Coverage::NoTool { tool, .. } => format!("{tool} not available"),
+        Coverage::NoAccess { reason, .. } | Coverage::Off { reason } | Coverage::Unsupported { reason } | Coverage::Error { reason } => reason.clone(),
+        Coverage::Ok | Coverage::NotRun => "not read".into(),
+    }
+}
+
 fn get(ex: &dyn Exec, url: String, slot: &str) -> Result<HttpResp, String> {
     ex.http(&HttpReq { url, body: None, auth: Some(Auth::Sealed { kind: KIND, slot: slot.into() }), secs: SECS, report: false })
 }
@@ -173,21 +192,42 @@ fn answered(r: Result<HttpResp, String>, slot: &str, project: &str) -> Result<St
     Ok(r.body)
 }
 
-/// The unresolved issues of the project `[deploy] sentry` names, seen in the last fortnight, newest first
-/// seen first, and its newest release. A `remote` read: a click asks it, with the token saved for its host.
-pub(crate) fn sentry_issues(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+/// The project `[deploy] sentry` links, where its tracker answers, and the slot its token is saved under.
+/// Nothing is asked of a host no token is saved for.
+struct Linked {
+    project: String,
+    org: String,
+    slug: String,
+    base: String,
+    slot: String,
+    env: Option<String>,
+}
+
+fn linked(ctx: &Ctx, ex: &dyn Exec) -> Result<Linked, Coverage> {
     let project = crate::deploy::read(ctx.root).and_then(|d| d.sentry().map(str::to_string))
         .ok_or_else(|| unsupported("[deploy] names no error tracker project".into()))?;
-    let (org, slug) = project.split_once('/').ok_or_else(|| unsupported(format!("{project} is not org/project")))?;
+    let (org, slug) = project.split_once('/').map(|(o, s)| (o.to_string(), s.to_string()))
+        .ok_or_else(|| unsupported(format!("{project} is not org/project")))?;
     let (base, slot) = base_of(ctx.cfg)?;
     let env = env_of(ctx.cfg)?;
     if !ex.has_auth(KIND, &slot) {
         return Err(no_token(&slot));
     }
+    Ok(Linked { project, org, slug, base, slot, env })
+}
+
+fn env_q(env: &Option<String>) -> String {
+    env.as_deref().map(|e| format!("&environment={e}")).unwrap_or_default()
+}
+
+/// The unresolved issues of the project `[deploy] sentry` names, seen in the last fortnight, newest first
+/// seen first, and its newest release. A `remote` read: a click asks it, with the token saved for its host.
+pub(crate) fn sentry_issues(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
+    let Linked { project, org, slug, base, slot, env } = linked(ctx, ex)?;
     // The numeric id: a wrong slug is a clean 404 here, and an older self-hosted tracker takes no slug below.
     let body = answered(get(ex, format!("{base}/api/0/projects/{org}/{slug}/"), &slot), &slot, &project)?;
     let id = parse_project(&body).map_err(|e| Coverage::Error { reason: format!("{slot}: {e}") })?;
-    let env_q = env.as_deref().map(|e| format!("&environment={e}")).unwrap_or_default();
+    let env_q = env_q(&env);
     // An empty groupStatsPeriod skips the per-issue series but keeps `lifetime`, which collapsing stats would drop.
     let issues_url = format!("{base}/api/0/organizations/{org}/issues/?project={id}&query=is%3Aunresolved&sort=new\
         &limit={ISSUE_CAP}&statsPeriod={WINDOW_DAYS}d&groupStatsPeriod=&collapse=filtered{env_q}");
@@ -220,6 +260,131 @@ pub(crate) fn sentry_issues(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> 
     let url = Some(format!("{base}/organizations/{org}/issues/?project={id}&query=is%3Aunresolved{env_q}"));
     let facts = Facts::Errors { project, environment: env, window_days: WINDOW_DAYS, release, last_event, url, issues };
     Ok(Read { facts, truncated, gaps })
+}
+
+// ---------- the stack trace behind an issue, read on Fix ----------
+
+/// One issue's latest event, as much as a brief needs: its exceptions and where each was raised. Never its
+/// user, tags, request or contexts, nor a frame's variables or source lines.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrTrace {
+    pub(crate) exceptions: Vec<ErrException>, // the chain as the tracker orders it: its root cause first, the one raised last at the end
+    pub(crate) exceptions_cut: u32,           // links between the root cause and the last two, not kept
+    pub(crate) message: Option<String>,       // what the event says beside, or instead of, an exception
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrException {
+    pub(crate) kind: String,
+    pub(crate) value: String,
+    pub(crate) frames: Vec<ErrFrame>, // innermost last
+    pub(crate) frames_cut: u32,       // frames not kept: the outermost past FRAMES, and any naming no file or function
+}
+
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrFrame {
+    pub(crate) file: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) function: Option<String>,
+    pub(crate) in_app: bool,
+}
+
+/// `maint_trace`'s answer for one issue: its trace, or why it was not read.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceAnswer {
+    pub(crate) id: String,
+    pub(crate) trace: Option<ErrTrace>,
+    pub(crate) err: Option<String>,
+}
+
+fn frame(f: &Value) -> Option<ErrFrame> {
+    let s = |k: &str| f.get(k).and_then(Value::as_str).filter(|t| !t.is_empty());
+    // A page's address may carry a query; the path is all a brief needs.
+    let file = s("filename").or_else(|| s("absPath")).or_else(|| s("module"))
+        .map(|p| clip(p.split(['?', '#']).next().unwrap_or_default())).filter(|p| !p.is_empty());
+    let function = s("function").map(clip);
+    let line = f.get("lineNo").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
+    let in_app = f.get("inApp").and_then(Value::as_bool) == Some(true);
+    (file.is_some() || function.is_some()).then_some(ErrFrame { file, line, function, in_app })
+}
+
+fn exception(x: &Value) -> ErrException {
+    let s = |k: &str| x.get(k).and_then(Value::as_str).map(clip).filter(|t| !t.is_empty());
+    let all = x.pointer("/stacktrace/frames").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let mut frames: Vec<ErrFrame> = all.iter().filter_map(frame).collect();
+    frames.drain(..frames.len().saturating_sub(FRAMES));
+    ErrException {
+        kind: s("type").or_else(|| s("module")).unwrap_or_else(|| "?".into()),
+        value: x.get("value").and_then(Value::as_str).map(|v| clip_to(v, VALUE_MAX)).unwrap_or_default(),
+        frames_cut: (all.len() - frames.len()) as u32,
+        frames,
+    }
+}
+
+/// The latest event's exception chain and message, each looked up by name: nothing else in it is copied out.
+pub(crate) fn parse_event(body: &str) -> Result<ErrTrace, String> {
+    let v = json(body)?;
+    let entries = v.get("entries").and_then(Value::as_array).ok_or("the event carried no entries")?;
+    let data = |kind: &'static str| entries.iter().filter(move |e| e.get("type").and_then(Value::as_str) == Some(kind)).filter_map(|e| e.get("data"));
+    let mut exceptions: Vec<ErrException> = data("exception")
+        .flat_map(|d| d.get("values").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default())
+        .map(exception).collect();
+    // The tracker orders a chain oldest first, so a long one keeps its root cause and loses its middle.
+    let cut = exceptions.len().saturating_sub(EXCEPTIONS);
+    if cut > 0 {
+        exceptions.drain(1..=cut);
+    }
+    let text = |x: Option<&Value>| x.and_then(Value::as_str).map(|m| clip_to(m, VALUE_MAX)).filter(|m| !m.is_empty());
+    let message = data("message").find_map(|d| text(d.get("formatted")).or_else(|| text(d.get("message"))))
+        .or_else(|| if exceptions.is_empty() { text(v.get("message")) } else { None });
+    Ok(ErrTrace { exceptions, exceptions_cut: cut as u32, message })
+}
+
+fn trace_of(ex: &dyn Exec, l: &Linked, id: &str) -> Result<ErrTrace, String> {
+    // An id reaches a URL path, so it has the tracker's own shape: digits.
+    if id.is_empty() || id.len() > 32 || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("{id:?} is not an issue id"));
+    }
+    let url = format!("{}/api/0/organizations/{}/issues/{id}/events/latest/?collapse=adjacentEvents{}", l.base, l.org, env_q(&l.env));
+    let r = get(ex, url, &l.slot)?;
+    match r.code {
+        200 => parse_event(&r.body).map_err(|e| format!("{}: {e}", l.slot)),
+        404 => Err(format!("{} has no latest event for this issue{}: merged or deleted since the check", l.slot,
+            l.env.as_deref().map(|e| format!(" in {e}")).unwrap_or_default())),
+        c => Err(said(&refusal(c, &r.body, &l.slot, &l.project))),
+    }
+}
+
+/// The latest event of each issue *Fix* briefs, side by side and at most `TRACE_CAP`, read with the project,
+/// token and refusals `sentry_issues` uses. One issue's failure is its own answer, never another's.
+pub(crate) fn sentry_trace(ctx: &Ctx, ids: &[String], ex: &dyn Exec) -> Result<Vec<TraceAnswer>, Coverage> {
+    let l = linked(ctx, ex)?;
+    let answer = |id: &String, r: Result<ErrTrace, String>| TraceAnswer { id: id.clone(), err: r.as_ref().err().cloned(), trace: r.ok() };
+    Ok(std::thread::scope(|s| {
+        let jobs: Vec<_> = ids.iter().take(TRACE_CAP).map(|id| (id, s.spawn(|| trace_of(ex, &l, id)))).collect();
+        jobs.into_iter().map(|(id, j)| answer(id, j.join().unwrap_or_else(|_| Err("the read panicked".into())))).collect()
+    }))
+}
+
+pub(crate) type TraceFn = fn(&Ctx, &[String], &dyn Exec) -> Result<Vec<TraceAnswer>, Coverage>;
+
+/// The error trackers *Fix* reads a stack trace from, by source id: exactly the manifest's `prod.error-trace`.
+pub(crate) struct ErrDef {
+    pub(crate) id: &'static str,
+    pub(crate) trace: TraceFn,
+}
+
+pub(crate) static ERR_SOURCES: &[ErrDef] = &[ErrDef { id: SOURCE, trace: sentry_trace }];
+
+/// *Fix*'s stack traces, read on that click and cached nowhere: the brief carries them and nothing keeps them.
+#[tauri::command(async)]
+pub(crate) fn maint_trace(root: String, source: String, ids: Vec<String>) -> Result<Vec<TraceAnswer>, String> {
+    let def = ERR_SOURCES.iter().find(|d| d.id == source).ok_or_else(|| format!("{source} reads no stack trace"))?;
+    crate::maint::on_click(&root, &source, |ctx, ex| (def.trace)(ctx, &ids, ex))?.map_err(|c| said(&c))
 }
 
 /// Settings › Accounts' Check: the API root as the token sees it, and which needed scopes it lacks
@@ -447,5 +612,87 @@ mod tests {
         assert_eq!(ex.calls(), [["curl", "https://sentry.io/api/0/", "--token", "sentry@sentry.io"]]);
         let ex = FakeExec::answering(Ok("<html>")).coded(&["curl"], 404);
         assert!(sentry_check("sentry.acme.com", &need, &ex).error.unwrap().contains("checked by Check prod"), "a path prefix is not a refusal");
+    }
+
+    const EVENT_1: &str = "https://sentry.io/api/0/organizations/acme/issues/6000000101/events/latest/?collapse=adjacentEvents";
+    const EVENT_2: &str = "https://sentry.io/api/0/organizations/acme/issues/6000000102/events/latest/?collapse=adjacentEvents";
+
+    fn traces(params: &str, ids: &[&str], ex: &FakeExec) -> Result<Vec<TraceAnswer>, Coverage> {
+        let (root, cfg) = project(params);
+        let ids: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+        sentry_trace(&Ctx { root: &root, cfg: &cfg, forge: &NONE, account: None, force: true, hosts: &[] }, &ids, ex)
+    }
+
+    // The fixture carries a user, tags, contexts, a request, breadcrumbs, frame variables and source lines on purpose.
+    #[test]
+    fn trace_keeps_frames_and_nothing_else() {
+        let t = parse_event(&data("sentry-event-latest-hand.json")).unwrap();
+        let (cause, raised) = (&t.exceptions[0], &t.exceptions[1]);
+        assert_eq!((cause.kind.as_str(), cause.value.as_str()), ("KeyError", "'discount'"));
+        assert_eq!((raised.kind.as_str(), raised.value.as_str(), t.exceptions_cut), ("ZeroDivisionError", "division by zero", 0), "the one raised last at the end");
+        let at: Vec<_> = raised.frames.iter().map(|f| (f.file.as_deref(), f.line, f.function.as_deref(), f.in_app)).collect();
+        assert_eq!(at, [
+            (Some("threading.py"), Some(1073), Some("_bootstrap_inner"), false),
+            (Some("billing/views.py"), Some(88), Some("checkout"), true),
+            (Some("https://app.example.com/static/invoice.js"), Some(42), Some("total"), true),
+        ], "innermost last; a page's query and a frame with only an address dropped");
+        assert_eq!((raised.frames_cut, cause.frames_cut), (1, 0), "the address-only frame is counted, never lost silently");
+        assert_eq!(t.message.as_deref(), Some("checkout failed for order 1182"));
+        let wire = serde_json::to_string(&t).unwrap();
+        for leak in ["hell@boy.cat", "192.168.1.1", "Hell Boy", "web-7f9c", "4242", "hunter2", "s3cr3t", "t0ps3cr3t", "leaked", "per_seat", "load_rates", "Linux", "CPython"] {
+            assert!(!wire.contains(leak), "{leak} never leaves the event: {wire}");
+        }
+        let frame = |n: usize| format!("{{\"function\":\"f{n}\",\"filename\":\"a.py\",\"lineNo\":{n},\"inApp\":true}}");
+        let exc = |k: usize| format!("{{\"type\":\"E{k}\",\"value\":\"{}\",\"stacktrace\":{{\"frames\":[{}]}}}}", "v".repeat(900), (0..100).map(frame).collect::<Vec<_>>().join(","));
+        let big = format!("{{\"entries\":[{{\"type\":\"exception\",\"data\":{{\"values\":[{}]}}}}]}}", (0..5).map(exc).collect::<Vec<_>>().join(","));
+        let t = parse_event(&big).unwrap();
+        let kinds: Vec<_> = t.exceptions.iter().map(|e| e.kind.as_str()).collect();
+        assert_eq!((kinds, t.exceptions_cut), (vec!["E0", "E3", "E4"], 2), "the root cause and the last two links");
+        let e = &t.exceptions[2];
+        assert_eq!((e.frames.len(), e.frames_cut, e.frames[0].line, e.frames[39].line), (40, 60, Some(60), Some(99)), "the 40 innermost");
+        assert_eq!((e.value.chars().count(), t.message.as_deref()), (500, None));
+        let bare = parse_event("{\"message\":\"disk full\",\"entries\":[]}").unwrap();
+        assert_eq!((bare.exceptions.len(), bare.message.as_deref()), (0, Some("disk full")), "an event with no exception says what it says");
+        assert!(parse_event("<html>").is_err() && parse_event("{\"detail\":\"x\"}").is_err());
+    }
+
+    #[test]
+    fn a_trace_reads_with_the_issues_token_and_refusals() {
+        let ev = data("sentry-event-latest-hand.json");
+        let ex = FakeExec::answering(Ok(&ev)).on(&["curl", EVENT_2], Ok(&data("sentry-401-invalid.json"))).coded(&["curl", EVENT_2], 401);
+        let got = traces("", &["6000000101", "../projects", "6000000102"], &ex).unwrap();
+        assert_eq!(got.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["6000000101", "../projects", "6000000102"], "in the order asked");
+        assert!(got[0].trace.as_ref().is_some_and(|t| t.exceptions.len() == 2) && got[0].err.is_none());
+        assert_eq!((got[1].trace.is_none(), got[1].err.as_deref()), (true, Some("\"../projects\" is not an issue id")));
+        assert_eq!(got[2].err.as_deref(), Some("sentry.io refused the stored token: Invalid token"), "the read's own refusal");
+        let mut calls = ex.calls();
+        calls.sort();
+        assert_eq!(calls, [["curl", EVENT_1, "--token", "sentry@sentry.io"], ["curl", EVENT_2, "--token", "sentry@sentry.io"]], "nothing is asked for what is no id");
+
+        let ex = FakeExec::answering(Ok(&ev));
+        let got = traces("sentry_environment = \"production\"\n", &["1", "2", "3", "4", "5", "6", "7"], &ex).unwrap();
+        assert_eq!((got.len(), ex.calls().len()), (5, 5), "five at most");
+        assert!(ex.calls().iter().all(|c| c[1].ends_with("?collapse=adjacentEvents&environment=production")), "that environment's latest event");
+        let ex = FakeExec::answering(Ok("{\"detail\":\"Event not found\"}")).coded(&["curl"], 404);
+        assert_eq!(traces("", &["1"], &ex).unwrap()[0].err.as_deref(), Some("sentry.io has no latest event for this issue: merged or deleted since the check"));
+        let ex = FakeExec::answering(Err("curl: (28) Operation timed out"));
+        assert_eq!(traces("", &["1"], &ex).unwrap()[0].err.as_deref(), Some("curl: (28) Operation timed out"));
+
+        let ex = FakeExec::answering(Ok(&ev)).without_tokens();
+        assert_eq!(traces("", &["1"], &ex).err(), Some(no_token("sentry.io")));
+        assert!(ex.calls().is_empty(), "no token, no request");
+        let ex = FakeExec::answering(Ok(&ev));
+        assert!(matches!(traces("sentry_url = \"http://sentry.acme.com\"\n", &["1"], &ex), Err(Coverage::Unsupported { .. })));
+        assert!(ex.calls().is_empty(), "never over http");
+    }
+
+    #[test]
+    fn maint_trace_asks_only_a_tracker_the_project_links() {
+        let (root, _) = project("");
+        assert_eq!(maint_trace(root.clone(), "http-probe".into(), vec!["1".into()]).unwrap_err(), "http-probe reads no stack trace");
+        // Linked, with no token saved (a test names no token folder): nothing is sent.
+        assert_eq!(maint_trace(root, SOURCE.into(), vec!["1".into()]).unwrap_err(), "a token for sentry.io not available");
+        let bare = scratch_dir().to_string_lossy().to_string();
+        assert_eq!(maint_trace(bare, SOURCE.into(), vec!["1".into()]).unwrap_err(), "not detected in this project");
     }
 }

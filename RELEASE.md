@@ -663,7 +663,7 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       issue that fires daily but was first seen before it stays backlog, never *new*: compare its
       *First seen* in Sentry's own issue page. Set `sentry_environment = "nope"`: the row names the
       missing environment rather than the project or the token.
-      The *Fix* on the `N new errors` line (listed below the Servers boards for now) prefills a
+      The *Fix* on the `N new errors` line (on the Servers tab's Errors board) prefills a
       brief naming each issue with its link and saying to find the cause, add a failing test and
       fix it, touching nothing in the tracker; it is not sent, and ticked in a session it runs on
       `maint/prod-errors-new`. Set `sentry_url = "http://sentry.example"` in
@@ -672,6 +672,27 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       the next *Check prod* says *no token* again. On Windows the token sits sealed under
       `%APPDATA%\io.respeak.episko\maint-tokens\sentry\` (not readable as text); on macOS it is in the
       login keychain under `episko-sentry-token`.
+- [ ] **The Errors board and Fix with stack traces.** With the real token and a checked project,
+      the fleet's Servers tab draws **Errors** between Hosts and Addresses: one row per linked
+      project, its *Unresolved* and *New or back* numbers opening the tracker's issue stream (one
+      new issue opens that issue's page), the newest release with its age, the worst issue's id
+      opening its page, and *Fix*. A project with only a backlog is a plain number and no *Fix*; a
+      zero is the grey dot, but a tracker no event reached in 14 days reads *silent*. Its card line (*N new errors since …*) now opens the tab scrolled to
+      this board, and the line is no longer listed again below the boards. Narrow to the project
+      (or open its dashboard's Servers sub-tab): the board adds an issue table, needy ones first
+      with a *new*, *back* or *rising* chip, *Events in 14d* and *Users in 14d* beside the issue's
+      own *First seen*, and *N more* past ten. Hover *Fix*: its tip says it reads the
+      latest event of the 5 worst issues from Sentry first, sending their ids and the token. Click it
+      twice quickly: one *Reading the stack traces…* toast, then *Still reading the stack traces*,
+      and one pane, whose prefilled brief gives each of those issues its
+      exception (type and message), the project's own frames as `file:line in function`
+      innermost last, how many other frames were left out, and nothing of the event's user, tags,
+      request or variables; issues past the fifth say *only the 5 worst issues' are read*. It is
+      not sent. Take the machine offline and click *Fix* again: the brief still opens, each issue
+      saying *stack trace not read:* with curl's own reason. Tick the line on the Overview
+      and hover *Brief 1 agent*: its tip says the same under that row. Press it: the pane's brief
+      carries the same traces (or the same reason).
+      No frame or message of a trace appears in `cc-maint`, `cc-maint-scan` or `episko.log`.
 - [ ] **The keyboard survives a repaint.** Tab to a tick and press Space: focus stays on it. Tab
       to a host's *Check* and press Enter: when it turns to *checking…*, focus lands on what stands
       there rather than on nothing, and Tab carries on from there. Scroll a wide board sideways and
