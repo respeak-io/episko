@@ -589,6 +589,47 @@
       "coverage": {
         "state": "ok"
       },
+      "facet": "prod",
+      "facts": {
+        "items": [
+          {
+            "domain": "example.com",
+            "expires": 1803456000,
+            "names": [
+              "app",
+              "version"
+            ],
+            "registrar": "Cloudflare, Inc",
+            "status": [
+              "client transfer prohibited"
+            ],
+            "url": null
+          },
+          {
+            "domain": "example.de",
+            "expires": null,
+            "names": [
+              "api"
+            ],
+            "registrar": null,
+            "status": [
+              "active"
+            ],
+            "url": "https://registrar.example/"
+          }
+        ],
+        "kind": "domains"
+      },
+      "gaps": [],
+      "source": "rdap-domain",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
+      "cost": "public",
+      "coverage": {
+        "state": "ok"
+      },
       "facet": "security",
       "facts": {
         "items": [

@@ -46,6 +46,7 @@ export const MAINT_CAPS = [
   "prod.status",
   "prod.cert",
   "prod.host",
+  "prod.domain",
 ] as const;
 export type MaintCap = (typeof MAINT_CAPS)[number];
 

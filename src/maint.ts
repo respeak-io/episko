@@ -57,6 +57,9 @@ export interface HostFacts {
   cpus: number | null; disks: Disk[]; updates: number | null; security: number | null; packages: string[]; pm: string | null;
   listsAt: number | null; reboot: boolean | null; rebootWhy: string[]; containers: HostContainer[] | null; compose: string[];
 }
+/** A registered domain as its own registry answered; `expires: null` is a registry that publishes none.
+ *  `names` are the [deploy] entries under it, `url` the registrar's own page. */
+export interface Domain { domain: string; names: string[]; expires: number | null; status: string[]; registrar: string | null; url: string | null }
 /** A cycle's end: unix secs, or the bare yes or no a list gives where it names no date. */
 export type Eol = number | boolean | null;
 export interface Runtime {
@@ -98,6 +101,7 @@ export type Facts =
   | { kind: "work"; issues: number; prs: number; reviewRequested: number | null } // null: the search failed
   | { kind: "probes"; items: Probe[] }
   | { kind: "hosts"; items: HostFacts[] }
+  | { kind: "domains"; items: Domain[] }
   | { kind: "runtimes"; items: Runtime[] };
 export type FactKind = Facts["kind"];
 type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
@@ -117,6 +121,7 @@ export const FACT_FACET: Record<FactKind, Facet> = {
   work: "work",
   probes: "prod",
   hosts: "prod",
+  domains: "prod",
   runtimes: "security",
 };
 export const FACT_KINDS = Object.keys(FACT_FACET) as FactKind[];
@@ -166,6 +171,7 @@ const isHost = shape({
   cpus: opt(num), disks: list(isDisk), updates: opt(num), security: opt(num), packages: list(str), pm: opt(str), listsAt: opt(num),
   reboot: opt(bool), rebootWhy: list(str), containers: opt(list(isContainer)), compose: list(str),
 });
+const isDomain = shape({ domain: str, names: list(str), expires: opt(num), status: list(str), registrar: opt(str), url: opt(str) });
 const isRuntime = shape({
   product: str, name: str, declared: str, cycle: opt(str), eol: (v) => v === null || num(v) || bool(v),
   latest: opt(str), newest: opt(str), file: str, url: opt(str),
@@ -198,6 +204,7 @@ const FACT_SHAPES: Record<FactKind, Is> = {
   work: shape({ issues: num, prs: num, reviewRequested: opt(num) }),
   probes: shape({ items: list(isProbe) }),
   hosts: shape({ items: list(isHost) }),
+  domains: shape({ items: list(isDomain) }),
   runtimes: shape({ items: list(isRuntime) }),
 };
 
@@ -279,6 +286,7 @@ export interface MaintThresholds {
   diskBadPct: number; // and this full is broken
   containerRestarts: number; // a running container restarted this often is drifting
   loadPerCpu: number; // the 15-minute load per CPU that is drifting
+  domainWarnDays: number; // a registration ending sooner is drifting: renewing one often needs a person with a card
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
   unreleasedCommits: 30,
@@ -297,6 +305,7 @@ export const MAINT_DEFAULTS: MaintThresholds = {
   diskBadPct: 95,
   containerRestarts: 5,
   loadPerCpu: 2,
+  domainWarnDays: 30,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   unreleasedCommits: "unreleased_commits",
@@ -315,6 +324,7 @@ const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   diskBadPct: "disk_bad_pct",
   containerRestarts: "container_restarts",
   loadPerCpu: "load_per_cpu",
+  domainWarnDays: "domain_warn_days",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -568,6 +578,62 @@ function judgeRuntimes(items: readonly Runtime[], th: MaintThresholds, now: numb
 /** A project's runtimes as its security sources read them, worst first. */
 export const runtimeStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): RuntimeState[] =>
   judgeRuntimes(okFacts(inp, "security").flatMap((r) => r.facts.kind === "runtimes" ? r.facts.items : []), th, now);
+
+// ---------- registered domains and when they run out ----------
+
+/** The registry's own words (RFC 8056) for a name being lost, held, or renewed by the registry and not yet paid for. */
+export const DOMAIN_LAPSED = ["redemption period", "pending delete", "pending restore"];
+export const DOMAIN_HELD = ["client hold", "server hold"];
+export const DOMAIN_GRACE = ["auto renew period"];
+/** One domain judged: `word` is what a cell says when it is the worst, `left` secs to its expiry (null without one). */
+export interface DomainState extends Domain { level: Level; text: string; word: string; left: number | null }
+
+// A registry renews a name the moment it expires and moves the date a year on, so only the status
+// words show it being lost. A record with no date and no words carries no evidence: unknown, never fine.
+export function judgeDomains(items: readonly Domain[], th: MaintThresholds, now: number): DomainState[] {
+  const sec = now / 1000;
+  return items.map((d): DomainState => {
+    const left = d.expires === null ? null : d.expires - sec, said = (all: string[]) => d.status.find((s) => all.includes(s));
+    const lapsed = said(DOMAIN_LAPSED), held = said(DOMAIN_HELD);
+    const [level, text, word]: [Level, string, string] = lapsed ? ["bad", `lapsed (${lapsed})`, "domain lapsed"]
+      : held ? ["bad", `on hold (${held})`, "domain on hold"]
+      : left !== null && left <= 0 ? ["bad", `expired ${longSpan(-left)} ago`, "domain expired"]
+      : said(DOMAIN_GRACE) ? ["warn", "renewed at expiry, not yet paid for", "domain unpaid"]
+      : left !== null && left < th.domainWarnDays * DAY ? ["warn", `expires in ${longSpan(left)}`, `domain ${longSpan(left)}`]
+      : left === null ? (d.status.length ? ["ok", "no expiry published", ""] : ["muted", "expiry unknown", "domain expiry unknown"])
+      : ["ok", `expires in ${longSpan(left)}`, ""];
+    return { ...d, level, text, word, left };
+  }).sort((a, b) => byRank(a, b) || (a.left ?? Infinity) - (b.left ?? Infinity) || a.domain.localeCompare(b.domain));
+}
+
+/** A project's registered domains as its prod sources read them, worst first. */
+export const domainStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): DomainState[] =>
+  judgeDomains(okFacts(inp, "prod").flatMap((r) => r.facts.kind === "domains" ? r.facts.items : []), th, now);
+
+/** A click's answer outlives a `[deploy]` edited by hand or a pull: a domain no address is under now reads
+ *  as nobody having asked yet, and each one's names are the entries that name it now. */
+export function currentDomains(det: Detection | null, reports: Readonly<Record<string, SourceReport>>): Readonly<Record<string, SourceReport>> {
+  const d = det?.deploy;
+  if (!d) return reports;
+  // DeployConfig::targets' names: version_url is `version`, or `version_url` beside a url so named.
+  const named = Object.entries(d.urls), v = d.versionUrl;
+  const targets: [string, string][] = v && !named.some(([, u]) => u === v)
+    ? [...named, [named.some(([n]) => n === "version") ? "version_url" : "version", v]] : named;
+  const hosts = targets.flatMap(([name, url]) => {
+    try { return [{ name, host: new URL(url).hostname.replace(/\.$/, "") }]; } catch { return []; }
+  });
+  const out = { ...reports };
+  for (const [id, r] of Object.entries(reports)) {
+    if (r.facts?.kind !== "domains") continue;
+    const items = r.facts.items.flatMap((x) => {
+      const names = hosts.filter((h) => h.host === x.domain || h.host.endsWith(`.${x.domain}`)).map((h) => h.name);
+      return names.length ? [{ ...x, names: [...new Set(names)].sort() }] : [];
+    });
+    out[id] = items.length ? { ...r, facts: { kind: "domains", items } }
+      : { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
+  }
+  return out;
+}
 
 // ---------- deployments: what each environment runs ----------
 
@@ -859,15 +925,30 @@ const hostJudge = (_facts: Facts[], c: Ctx): Judged | null => {
   return st.length ? { level: st[0].level, text: st[0].text, tip: st.flatMap((s) => s.tip) } : null;
 };
 
+// Each report's own cap: a count over a cut list is a floor.
+const domainJudge = (_facts: Facts[], c: Ctx): Judged | null => {
+  const reps = c.reps.flatMap((r) => r.facts?.kind === "domains" ? [{ cut: r.truncated, items: r.facts.items }] : []);
+  const st = judgeDomains(reps.flatMap((r) => r.items), c.th, c.now);
+  if (!st.length) return null;
+  const tip = st.map((d) => `${d.domain}: ${d.text}${d.registrar ? ` · ${d.registrar}` : ""}`);
+  const worst = st.filter((d) => d.level === st[0].level), n = `${worst.length}${reps.some((r) => r.cut) ? "+" : ""}`;
+  const text = worst.length === 1 || st[0].level === "ok" ? st[0].word : `${n} domains ${st[0].level === "bad" ? "at risk" : st[0].level === "warn" ? "to renew" : "unknown"}`;
+  return { level: st[0].level, text, tip };
+};
+
 // One judge per kind of prod facts, the worse speaking (worseOf). `alone`: whether that kind may
 // draw the grey dot with nothing beside it; one that never can is judged blind.
 const PROD_JUDGES: { judge: (facts: Facts[], c: Ctx) => Judged | null; alone: boolean }[] = [
   { judge: probeJudge, alone: true },
   { judge: hostJudge, alone: true },
+  { judge: domainJudge, alone: false }, // a registered name vouches for no address
 ];
 const prodRule: Rule = (facts, c) => {
   const said = PROD_JUDGES.flatMap(({ judge, alone }) => { const j = judge(facts, c); return j ? [alone ? j : { ...j, blind: true }] : []; });
-  return said.length ? said.slice(1).reduce((a, b) => worseOf(a, b), said[0]) : { level: "muted", text: facetDef("prod").none, tip: [] };
+  if (!said.length) return { level: "muted", text: facetDef("prod").none, tip: [] };
+  const j = said.slice(1).reduce((a, b) => worseOf(a, b), said[0]);
+  // Only a kind that cannot vouch answered, and found nothing: the addresses are what is unknown.
+  return unsure(j) ? { ...j, level: "muted", text: "addresses not checked" } : j;
 };
 
 const workRule: Rule = (facts, c) => {
@@ -969,16 +1050,18 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
   const notes = ranked.filter((r) => r.coverage.state !== "ok").map((r) => `${labelOf(r.source)}: ${covText(r.coverage)}`);
   const fix = ranked.map((r) => fixOf(r.coverage)).find((f) => f) ?? null;
   const ok = reps.filter((r) => r.coverage.state === "ok" && r.facts);
-  // The most actionable coverage names the cell; a source nobody clicked only when every one is, and a
-  // host not allowed here only when nothing else of the facet could be asked instead.
-  const lead = ranked.find((r) => r.coverage.state !== "ok" && !unticked(inp, r.source)) ?? ranked[0];
+  // The most actionable coverage names the cell, so a source nobody clicked does before one that can never
+  // answer here; a host not allowed here only when nothing else of the facet could be asked instead.
+  const askable = (r: SourceReport) => r.coverage.state !== "ok" && !unticked(inp, r.source);
+  const lead = ranked.find((r) => askable(r) && r.coverage.state !== "unsupported") ?? ranked.find(askable) ?? ranked[0];
   const why = unticked(inp, lead.source) ? "not allowed here" : inp.skip?.includes(lead.source) ? "skipped here" : whyWord(lead.coverage, facet);
   if (!ok.length) return cell("cantCheck", "muted", why, [...head, ...notes, ...found], fix);
   const trunc = ok.some((r) => r.truncated);
   const j = RULES[facet](ok.map((r) => r.facts!), { th, now, trunc, reps: ok, tagged: taggedEnvs(inp) });
-  if (unsure(j) && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...found], fix);
+  const gaps = ok.flatMap((r) => r.gaps.map((g) => `${labelOf(r.source)}: ${g}`));
+  if (unsure(j) && ranked[0].coverage.state !== "ok") return cell("cantCheck", "muted", why, [...head, ...j.tip, ...notes, ...gaps, ...found], fix);
   // What a marker names nothing reads, so a blind verdict cannot vouch for it either.
-  if (unsure(j) && markers.length) return cell("markers", "muted", marked, [...head, ...j.tip, ...found]);
+  if (unsure(j) && markers.length) return cell("markers", "muted", marked, [...head, ...j.tip, ...gaps, ...found]);
   const asOf = j.asOf ?? null;
   let { level, text } = j;
   const age = asOf !== null ? now / 1000 - asOf : null;
@@ -987,7 +1070,6 @@ export function facetCell(facet: Facet, inp: MaintInput, th: MaintThresholds = M
     text ||= `fetched ${span(age)} ago`; // amber is never the empty grey dot's text
   }
   const fetched = age !== null ? [`as of last fetch ${span(age)} ago`] : [];
-  const gaps = ok.flatMap((r) => r.gaps.map((g) => `${labelOf(r.source)}: ${g}`));
   // A cut environment list has no figure in the cell to floor; its gap says what was listed.
   const capped = ok.some((r) => r.truncated && r.facts!.kind !== "deployments") ? ["a list hit its page cap, so counts are floors"] : [];
   return cell("read", level, text, [...head, ...fetched, ...j.tip, ...notes, ...gaps, ...capped, ...found], fix, asOf);
@@ -1219,6 +1301,15 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
       }
     }
   }
+  // A line per domain, as a certificate's: each is renewed on its own, often at another registrar.
+  for (const { source, facts } of okFacts(inp, "prod")) {
+    if (facts.kind !== "domains") continue;
+    for (const d of judgeDomains(facts.items, th, now)) {
+      if (d.level !== "bad" && d.level !== "warn") continue;
+      add("prod", { key: `prod:domain:${d.domain}`, level: d.level, text: `${d.domain} ${d.text}`,
+        detail: [`behind ${d.names.join(", ")}`, d.registrar].filter(Boolean).join(" · "), verb: "fix", source, ref: d.domain });
+    }
+  }
   return out.sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
 }
@@ -1397,6 +1488,7 @@ export const BOARD_IDS = [
   "work",
   "hosts",
   "addresses",
+  "domains",
 ] as const;
 export type BoardId = (typeof BOARD_IDS)[number];
 // Each facet's boards and the keys each carries a verb for, the first match winning; a pre-fold
@@ -1407,7 +1499,7 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["packages", /^deps:packages$/], ["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
-  prod: [["hosts", /^prod:host:/], ["addresses", /^prod:(?!setup$)/]],
+  prod: [["hosts", /^prod:host:/], ["domains", /^prod:domain:/], ["addresses", /^prod:(?!setup$)/]],
   work: [["work", /^work:(review|open)$/]],
 };
 
@@ -1885,6 +1977,15 @@ export function probeBoard(ps: readonly TabProject[], root: string | null = null
   }))).sort((a, b) => worst(a) - worst(b) || a.root.localeCompare(b.root) || a.name.localeCompare(b.name));
 }
 
+export type DomainRow = DomainState & { root: string; verb: Finding | null };
+/** Every registered domain each project's addresses are under, worst first, then the soonest to run out. */
+export function domainBoard(ps: readonly TabProject[], root: string | null = null, now = Date.now()): DomainRow[] {
+  return within(ps, root).flatMap((p) => domainStates(p.inp, thOf(p), now).map((d) => ({
+    ...d, root: p.path, verb: verbOf(p, `prod:domain:${d.domain}`),
+  }))).sort((a, b) => rowRank(a.level) - rowRank(b.level) || (a.left ?? Infinity) - (b.left ?? Infinity)
+    || a.root.localeCompare(b.root) || a.domain.localeCompare(b.domain));
+}
+
 /** A host as the Servers board draws it: `facts` and `state` stay null until a read this machine may draw. */
 export interface HostBoardRow {
   host: string;
@@ -1950,6 +2051,7 @@ export interface Boards {
   work: WorkRow[];
   hosts: HostBoardRow[];
   probes: ProbeBoardRow[];
+  domains: DomainRow[];
   pkgs: PkgRow[];
   pkgRead: number; // projects a registry source answered: what the packages board may claim
   read: Partial<Record<Facet, number>>; // projects a source answered, per facet the tab shows
@@ -1978,6 +2080,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     work: [],
     hosts: [],
     probes: [],
+    domains: [],
     pkgs: [],
     pkgRead: 0,
     read: {},
@@ -2002,6 +2105,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   if (tab === "servers") {
     b.hosts = hostBoard(ps, root, now);
     b.probes = probeBoard(ps, root, now);
+    b.domains = domainBoard(ps, root, now);
     // A check that ran and failed is Coverage's to explain, never "not checked yet".
     b.unchecked = mine.filter((p) => {
       const ids = prodChecks(p.inp).filter((id) => !readsHost(id));
@@ -2022,6 +2126,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     ...b.work.flatMap((r) => r.verbs),
     ...b.hosts.flatMap((r) => r.verbs),
     ...b.probes.map((r) => r.verb),
+    ...b.domains.map((r) => r.verb),
   ];
   b.drawn = [...new Set(verbs.flatMap((v) => v ? [`${v.root}|${v.key}`] : []))].sort();
   return b;
@@ -2083,6 +2188,7 @@ const DOORS = {
   work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
   hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null }, // no view to open: the card's verbs act
   addresses: { address: "url" },
+  domains: { registrar: "url" }, // the registrar's own page, where a renewal is paid
 } as const satisfies { [B in BoardId]: Readonly<Record<string, Door | "url" | null>> };
 /** A board's own column names, so a view that asks for one the table lacks fails tsc, not a click. */
 export type BoardCol<B extends BoardId> = keyof (typeof DOORS)[B] & string;
@@ -2215,7 +2321,7 @@ export function coverRows(inp: MaintInput): CoverRow[] {
 
 export interface ComingUp { root: string; what: string; at: number } // at: unix secs
 
-/** Dates inside the window that will need someone: certificates, and runtimes reaching their end. */
+/** Dates inside the window that will need someone: certificates, registrations, and runtimes reaching their end. */
 export function comingUp(projects: readonly { root: string; inp: MaintInput }[], now = Date.now(), days = 30): ComingUp[] {
   const sec = now / 1000, out: ComingUp[] = [];
   for (const { root, inp } of projects) {
@@ -2223,6 +2329,9 @@ export function comingUp(projects: readonly { root: string; inp: MaintInput }[],
       if (r.left !== null && typeof r.eol === "number" && r.eol > sec && r.eol - sec <= days * DAY) out.push({ root, what: `${rtName(r)} end-of-life`, at: r.eol });
     }
     for (const { facts } of okFacts(inp, "prod")) {
+      if (facts.kind === "domains") {
+        for (const d of facts.items) if (d.expires !== null && d.expires > sec && d.expires - sec <= days * DAY) out.push({ root, what: `${d.domain} registration`, at: d.expires });
+      }
       if (facts.kind !== "probes") continue;
       for (const p of facts.items) {
         if (p.certNotAfter !== null && p.certNotAfter > sec && p.certNotAfter - sec <= days * DAY) {
@@ -2490,8 +2599,9 @@ const deployStands = (c: Cell, inp: MaintInput, prev: MaintSnap) => c.facet === 
 
 // Prod's kinds answer apart (vouched), so each keeps its own lines: an answer from one neither erases
 // nor waits on the other's failed or unasked read, and a kind switched off or skipped here keeps nothing.
-const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.host" : "prod.status";
-const prodSplit = (c: Cell) => c.facet === "prod" && c.state === "read";
+const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.host" : key.startsWith("prod:domain:") ? "prod.domain" : "prod.status";
+// Once any kind answered, even where the cell cannot vouch (a domain beside an address nobody checked).
+const prodSplit = (c: Cell, inp: MaintInput) => c.facet === "prod" && c.state !== "unread" && (c.state === "read" || okFacts(inp, "prod").length > 0);
 function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
   const silent = (cap: MaintCap) => {
     const ids = (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes(cap) && !inp.skip?.includes(id));
@@ -2506,9 +2616,9 @@ function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
 export function takeSnap(root: string, inp: MaintInput, now = Date.now(), prev?: MaintSnap, account: string | null = null): MaintSnap {
   const th = clampMaint(inp.det?.config.thresholds);
   const live = facetCells(inp, th, now);
-  const kept = new Set(prev ? live.filter((c) => !prodSplit(c) && (!reached(c, inp) || deployStands(c, inp, prev))).map((c) => c.facet) : []);
+  const kept = new Set(prev ? live.filter((c) => !prodSplit(c, inp) && (!reached(c, inp) || deployStands(c, inp, prev))).map((c) => c.facet) : []);
   const dated = <T extends { at?: number }>(x: T): T => ({ ...x, at: x.at ?? prev!.at });
-  const stands = prev && live.some(prodSplit) ? prodStands(inp, prev).map(dated) : [];
+  const stands = prev && live.some((c) => prodSplit(c, inp)) ? prodStands(inp, prev).map(dated) : [];
   const cells = live.map((c): SnapCell => {
     const old = kept.has(c.facet) ? prev!.cells.find((p) => p.facet === c.facet) : undefined;
     if (old) return dated(old);

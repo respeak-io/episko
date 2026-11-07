@@ -1,0 +1,388 @@
+{
+  "rdapConformance": [
+    "rdap_level_0",
+    "icann_rdap_response_profile_1",
+    "icann_rdap_technical_implementation_guide_1",
+    "redacted"
+  ],
+  "notices": [
+    {
+      "title": "Terms of Service",
+      "description": [
+        "Access to RDAP information is provided to assist persons in determining the contents of a domain name registration record in the registry database. The data in this record is provided by Identity Digital or, if the record pertains to a TLD not operated by Identity Digital, then the corresponding primary Registry Operator for informational purposes only, and neither Identity Digital nor the Registry Operator guarantee its accuracy. This service is intended only for query-based access. You agree that you will use this data only for lawful purposes and that, under no circumstances will you use this data to (a) allow, enable, or otherwise support the transmission by e-mail, telephone, or facsimile of mass unsolicited, commercial advertising or solicitations to entities other than the data recipient's own existing customers; or (b) enable high volume, automated, electronic processes that send queries or data to the systems of Identity Digital, a Registrar, or Registry Operator except as reasonably necessary to register domain names or modify existing registrations. When using the RDAP service, please consider the following: the RDAP service is not a replacement for standard EPP commands to the SRS service. RDAP is not considered authoritative for registered domain objects. The RDAP service may be scheduled for downtime during production or OT&E maintenance periods. Queries to the RDAP services are throttled. If too many queries are received from a single IP address within a specified time, the service will begin to reject further queries for a period of time to prevent disruption of RDAP service access. Abuse of the RDAP system through data mining is mitigated by detecting and limiting bulk query access from single sources. Where applicable, the presence of a [Non-Public Data] tag indicates that such data is not made publicly available due to applicable data privacy laws or requirements. Should you wish to contact the registrant, please refer to the RDAP records available through the registrar URL listed above. Access to non-public data may be provided, upon request, where it can be reasonably confirmed that the requester holds a specific legitimate interest and a proper legal basis for accessing the withheld data. Access to the data provided by Identity Digital can be requested by submitting a request via the form found at https://www.identity.digital/about/policies/whois-layered-access/ Identity Digital Inc. and, if applicable, the primary Registry Operators reserve the right to modify these terms at any time. By submitting this query, you agree to abide by this policy."
+      ],
+      "links": [
+        {
+          "value": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+          "rel": "terms-of-service",
+          "href": "https://www.identity.digital/policies/rdds-access-policy",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "title": "Status Codes",
+      "description": [
+        "For more information on domain status codes, please visit https://icann.org/epp"
+      ],
+      "links": [
+        {
+          "value": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+          "rel": "glossary",
+          "href": "https://icann.org/epp",
+          "type": "application/rdap+json"
+        }
+      ]
+    },
+    {
+      "title": "RDDS Inaccuracy Complaint Form",
+      "description": [
+        "URL of the ICANN RDDS Inaccuracy Complaint Form: https://icann.org/wicf"
+      ],
+      "links": [
+        {
+          "value": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+          "rel": "help",
+          "href": "https://icann.org/wicf",
+          "type": "application/rdap+json"
+        }
+      ]
+    }
+  ],
+  "ldhName": "nic.io",
+  "unicodeName": "nic.io",
+  "nameservers": [
+    {
+      "ldhName": "b0.nic.io",
+      "unicodeName": "b0.nic.io",
+      "ipAddresses": {
+        "v4": [
+          "65.22.161.17"
+        ],
+        "v6": [
+          "2a01:8840:9f::17"
+        ]
+      },
+      "objectClassName": "nameserver",
+      "handle": "09ad8dd6fd094eeeae0efe62a330762d-DONUTS",
+      "status": [
+        "associated"
+      ]
+    },
+    {
+      "ldhName": "a2.nic.io",
+      "unicodeName": "a2.nic.io",
+      "ipAddresses": {
+        "v4": [
+          "65.22.163.17"
+        ],
+        "v6": [
+          "2a01:8840:a1::17"
+        ]
+      },
+      "objectClassName": "nameserver",
+      "handle": "bbefc96b06be474796fbb76c9db05adc-DONUTS",
+      "status": [
+        "associated"
+      ]
+    },
+    {
+      "ldhName": "a0.nic.io",
+      "unicodeName": "a0.nic.io",
+      "ipAddresses": {
+        "v4": [
+          "65.22.160.17"
+        ],
+        "v6": [
+          "2a01:8840:9e::17"
+        ]
+      },
+      "objectClassName": "nameserver",
+      "handle": "9bbb65b581304554bc427509fcd5c651-DONUTS",
+      "status": [
+        "associated"
+      ]
+    },
+    {
+      "ldhName": "c0.nic.io",
+      "unicodeName": "c0.nic.io",
+      "ipAddresses": {
+        "v4": [
+          "65.22.162.17"
+        ],
+        "v6": [
+          "2a01:8840:a0::17"
+        ]
+      },
+      "objectClassName": "nameserver",
+      "handle": "f67a3d7bab2741f099b44b98cab02d5c-DONUTS",
+      "status": [
+        "associated"
+      ]
+    }
+  ],
+  "secureDNS": {
+    "delegationSigned": false,
+    "maxSigLife": 1
+  },
+  "redacted": [
+    {
+      "name": {
+        "type": "Registry Domain ID"
+      },
+      "prePath": "$.handle",
+      "pathLang": "jsonpath",
+      "method": "removal"
+    },
+    {
+      "name": {
+        "type": "Registry Registrant ID"
+      },
+      "prePath": "$.entities[?(@.roles[0]=='registrant')].handle",
+      "pathLang": "jsonpath",
+      "method": "removal"
+    },
+    {
+      "name": {
+        "type": "Registrant Name"
+      },
+      "postPath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[0]=='fn')][3]",
+      "pathLang": "jsonpath",
+      "method": "emptyValue"
+    },
+    {
+      "name": {
+        "type": "Registrant Street"
+      },
+      "postPath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[0]=='adr')][3][:3]",
+      "pathLang": "jsonpath",
+      "method": "emptyValue"
+    },
+    {
+      "name": {
+        "type": "Registrant City"
+      },
+      "postPath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[0]=='adr')][3][3]",
+      "pathLang": "jsonpath",
+      "method": "emptyValue"
+    },
+    {
+      "name": {
+        "type": "Registrant Postal Code"
+      },
+      "postPath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[0]=='adr')][3][5]",
+      "pathLang": "jsonpath",
+      "method": "emptyValue"
+    },
+    {
+      "name": {
+        "type": "Registrant Phone"
+      },
+      "prePath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[1].type=='voice')]",
+      "pathLang": "jsonpath",
+      "method": "removal"
+    },
+    {
+      "name": {
+        "type": "Registrant Fax"
+      },
+      "prePath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[1].type=='fax')]",
+      "pathLang": "jsonpath",
+      "method": "removal"
+    },
+    {
+      "name": {
+        "type": "Registrant Email"
+      },
+      "prePath": "$.entities[?(@.roles[0]=='registrant')].vcardArray[1][?(@[0]=='email')]",
+      "pathLang": "jsonpath",
+      "method": "removal"
+    },
+    {
+      "name": {
+        "description": "Technical Contact"
+      },
+      "method": "removal"
+    },
+    {
+      "name": {
+        "description": "Administrative Contact"
+      },
+      "method": "removal"
+    }
+  ],
+  "objectClassName": "domain",
+  "status": [
+    "server delete prohibited",
+    "server transfer prohibited",
+    "server update prohibited"
+  ],
+  "events": [
+    {
+      "eventAction": "expiration",
+      "eventDate": "2027-05-01T00:00:02Z"
+    },
+    {
+      "eventAction": "registration",
+      "eventDate": "2003-09-15T11:13:53Z"
+    },
+    {
+      "eventAction": "last changed",
+      "eventDate": "2026-08-11T21:49:58.816Z"
+    },
+    {
+      "eventAction": "last update of RDAP database",
+      "eventDate": "2026-11-07T17:34:52.905Z"
+    }
+  ],
+  "entities": [
+    {
+      "vcardArray": [
+        "vcard",
+        [
+          [
+            "version",
+            {},
+            "text",
+            "4.0"
+          ],
+          [
+            "fn",
+            {},
+            "text",
+            ""
+          ],
+          [
+            "org",
+            {
+              "type": "work"
+            },
+            "text",
+            "Internet Computer Bureau Ltd"
+          ],
+          [
+            "adr",
+            {
+              "cc": "GB"
+            },
+            "text",
+            [
+              "",
+              "",
+              [
+                "",
+                "",
+                ""
+              ],
+              "",
+              "Dorset",
+              "",
+              ""
+            ]
+          ]
+        ]
+      ],
+      "roles": [
+        "registrant"
+      ],
+      "objectClassName": "entity"
+    },
+    {
+      "vcardArray": [
+        "vcard",
+        [
+          [
+            "version",
+            {},
+            "text",
+            "4.0"
+          ],
+          [
+            "fn",
+            {},
+            "text",
+            "Registry Operator acts as Registrar (9999)"
+          ]
+        ]
+      ],
+      "roles": [
+        "registrar"
+      ],
+      "publicIds": [
+        {
+          "type": "IANA Registrar ID",
+          "identifier": "9999"
+        }
+      ],
+      "objectClassName": "entity",
+      "handle": "9999",
+      "entities": [
+        {
+          "vcardArray": [
+            "vcard",
+            [
+              [
+                "version",
+                {},
+                "text",
+                "4.0"
+              ],
+              [
+                "fn",
+                {},
+                "text",
+                ""
+              ],
+              [
+                "tel",
+                {
+                  "type": "voice"
+                },
+                "uri",
+                "tel:+1.6664447777"
+              ],
+              [
+                "email",
+                {},
+                "text",
+                "abuse@identity.digital"
+              ]
+            ]
+          ],
+          "roles": [
+            "abuse"
+          ],
+          "objectClassName": "entity"
+        }
+      ],
+      "links": [
+        {
+          "value": "https://rdap.identitydigital.services/rdap/entity/9999",
+          "rel": "self",
+          "href": "https://rdap.identitydigital.services/rdap/entity/9999",
+          "type": "application/rdap+json"
+        },
+        {
+          "value": "https://rdap.identitydigital.services/rdap/",
+          "rel": "about",
+          "href": "https://rdap.identitydigital.services/rdap",
+          "type": "application/rdap+json"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "value": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+      "rel": "related",
+      "href": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+      "type": "application/rdap+json"
+    },
+    {
+      "value": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+      "rel": "self",
+      "href": "https://rdap.identitydigital.services/rdap/domain/nic.io",
+      "type": "application/rdap+json"
+    }
+  ]
+}

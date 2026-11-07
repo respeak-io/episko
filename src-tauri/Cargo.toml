@@ -51,6 +51,8 @@ base64 = "0.22.1"
 sha2 = "0.10"
 # The MCP endpoint's per-launch bearer token (mcp.rs); already in the tree through tauri.
 getrandom = "0.3"
+# A [deploy] address's host as RDAP takes it: lower case, an IDN as its A-label (maint_rdap.rs); already in the tree through tauri.
+url = "2"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

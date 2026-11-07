@@ -6,7 +6,7 @@ import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
   advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -118,6 +118,7 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "prod.status": "whether each [deploy] address answers",
   "prod.cert": "when its certificate expires",
   "prod.host": "the host itself: disk, updates, containers",
+  "prod.domain": "when its domain's registration expires",
 };
 
 // Remote, so never part of a scan: the button names every source it asks and what each reaches.
@@ -774,8 +775,21 @@ function addressBoardHtml(v: MaintTabView, b: Boards): string {
     table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows));
 }
 
+// One row per registered domain, as each registry last said; its registrar opens the page a renewal is paid on.
+function domainBoardHtml(v: MaintTabView, b: Boards): string {
+  if (!b.domains.length) return "";
+  const rows = b.domains.map((r) => {
+    const tip = [r.expires !== null ? `expires ${fmtDay(r.expires * 1000)}` : "the registry publishes no expiry", r.status.join(", ")].filter(Boolean).join("\n");
+    return `<tr>${projTd(v, b, r.root)}` + td(esc(r.domain), "mono") + td(`<span class="dim">${esc(r.names.join(", "))}</span>`, "mono")
+      + td(`<span class="mt-n ${LEVEL_CLS[r.level]}" data-tip="${escAttr(tip)}">${esc(r.text)}</span>`, "r")
+      + td(doorHtml(esc(r.registrar ?? "?"), "dim", ["domains", "registrar", r.root], r.registrar ? r.url : null)) + verbTd(r.verb) + `</tr>`;
+  });
+  return board("domains", "Domains", `as each registry last said · ${readNote(new Set(b.domains.map((r) => r.root)).size)}`,
+    table([...projCol(b), "Domain", "Behind", ">Expires", "Registrar", ""], rows));
+}
+
 function serversHtml(v: MaintTabView, b: Boards): string {
-  return hostBoardHtml(v, b) + addressBoardHtml(v, b);
+  return hostBoardHtml(v, b) + addressBoardHtml(v, b) + domainBoardHtml(v, b);
 }
 
 // ---------- the advisory sweep: one question asked of every project's lockfiles ----------
@@ -933,6 +947,7 @@ export interface MaintDash {
   deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
   probes: { at: number | null; rows: ProbeRow[] } | null; // null until Check prod answered
   host: HostSummary | null; // `[deploy] host` as this machine may reach it, and its last read
+  domains: DomainState[]; // the registered domains its addresses are under, as each registry last said
 }
 
 const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
@@ -985,13 +1000,24 @@ function runsCard(v: MaintDash): string {
     ...Object.entries(d.envs).map(([n, p]) => kv(`Env ${n}`, `tagged ${p}`)),
     d.sentry ? kv("Errors", d.sentry) : "",
     d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
+    ...v.domains.map(domainHtml),
   ].join("");
   const prod = v.tab.prod;
   const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0);
   const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
   const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
   return dcard("runs", "Runs on", "from [deploy]", across("servers", name),
-    rows + `<p class="ac-empty">Nothing connects until you ask${esc(checked)}. ${doors}</p>`);
+    rows + `<p class="ac-empty">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`);
+}
+
+// A registration as its registry last said, at its level; the registrar opens its own page.
+function domainHtml(r: DomainState): string {
+  const tip = [r.expires !== null ? `expires ${fmtDay(r.expires * 1000)}` : "the registry publishes no expiry", r.status.join(", "), `behind ${r.names.join(", ")}`].filter(Boolean).join("\n");
+  const page = r.url && /^https?:\/\//i.test(r.url) ? r.url : null; // a page opens only over http(s), as a board's door does
+  const who = r.registrar && page ? `<button class="aslink" data-mturl="${escAttr(page)}" data-tip="${escAttr(`Click: open ${page}`)}">${esc(r.registrar)}</button>`
+    : `<span class="mt-v l-muted">${esc(r.registrar ?? "")}</span>`;
+  return `<div class="mt-probe mt-dom" data-tip="${escAttr(tip)}"><span class="k">Domain</span><span class="u mono">${esc(r.domain)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[r.level]}">${esc(r.text)}</span>${who}</div>`;
 }
 
 // The host in one line once read, else why not; Allow or Disallow and SSH beside it, Check riding Check prod.

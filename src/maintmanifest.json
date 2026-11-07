@@ -149,7 +149,13 @@
     "http-probe": {
       "facet": "prod", "label": "URL checks", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.urls"],
       "sees": ["prod.status", "prod.cert"],
-      "blind": ["prod.host"]
+      "blind": ["prod.host", "prod.domain"]
+    },
+    "rdap-domain": {
+      "facet": "prod", "label": "RDAP", "cost": "public", "forge": [], "detect": [], "needs": ["deploy.domains"],
+      "sends": "the registered domain behind each [deploy] address (example.com: never a host name or a path), sent only to that domain's own registry",
+      "sees": ["prod.domain"],
+      "blind": ["prod.status", "prod.cert", "prod.host"]
     },
     "ssh-host": {
       "facet": "prod", "label": "SSH host", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.host"],

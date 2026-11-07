@@ -21,6 +21,7 @@ mod maint_eol;
 mod maint_git;
 mod maint_host;
 mod maint_pkgs;
+mod maint_rdap;
 mod maint_repo;
 mod maint_sec;
 mod maint_sweep;

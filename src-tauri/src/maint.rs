@@ -193,6 +193,18 @@ pub(crate) struct Probe {
     pub(crate) err: Option<String>,
 }
 
+/// A registered domain as its own registry answered for it; `expires: None` is a registry that publishes none.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Domain {
+    pub(crate) domain: String,     // as asked: an IDN as its A-label
+    pub(crate) names: Vec<String>, // the [deploy] entries under it
+    pub(crate) expires: Option<u64>,
+    pub(crate) status: Vec<String>, // RFC 8056's words, an EPP spelling respelt
+    pub(crate) registrar: Option<String>,
+    pub(crate) url: Option<String>, // the registrar's own http(s) page, never an RDAP address
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Disk {
@@ -353,6 +365,7 @@ pub(crate) enum Facts {
     Work { issues: u32, prs: u32, review_requested: Option<u32> },
     Probes { items: Vec<Probe> },
     Hosts { items: Vec<HostFacts> },
+    Domains { items: Vec<Domain> },
     Runtimes { items: Vec<Runtime> },
 }
 
@@ -366,7 +379,7 @@ impl Facts {
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } | Facts::Deployments { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
             Facts::Work { .. } => Facet::Work,
-            Facts::Probes { .. } | Facts::Hosts { .. } => Facet::Prod,
+            Facts::Probes { .. } | Facts::Hosts { .. } | Facts::Domains { .. } => Facet::Prod,
         }
     }
 }
@@ -496,15 +509,18 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "prod.status",
     "prod.cert",
     "prod.host",
+    "prod.domain",
 ];
 
-/// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and
-/// `[deploy]`'s: `deploy.urls` an address, `deploy.host` a host, `deploy.envs` a tag convention.
+/// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and `[deploy]`'s:
+/// `deploy.urls` an address, `deploy.host` a host, `deploy.envs` a tag convention, and `deploy.domains` an
+/// address whose host has a registered domain under a public suffix (no IP, local name or platform's subdomain).
 const NEEDS: &[&str] = &[
     "sarif",
     "deploy.urls",
     "deploy.host",
     "deploy.envs",
+    "deploy.domains",
 ];
 
 fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
@@ -512,6 +528,7 @@ fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::Deploy
         "deploy.urls" => deploy.is_some_and(|d| !d.targets().is_empty()),
         "deploy.host" => deploy.is_some_and(|d| d.host().is_some()),
         "deploy.envs" => deploy.is_some_and(|d| !d.envs().is_empty()),
+        "deploy.domains" => deploy.is_some_and(|d| !crate::maint_rdap::domains_of(&d.targets()).0.is_empty()),
         k => cfg.has(k),
     }
 }
@@ -1279,7 +1296,10 @@ pub(crate) mod exec {
     pub(crate) fn http_answer(out: Output) -> Result<HttpResp, String> {
         let (body, code) = out.stdout.rsplit_once('\n').unwrap_or(("", out.stdout.as_str()));
         let code: u16 = code.trim().parse().unwrap_or(0);
-        if code == 0 || out.code != Some(0) {
+        // Schannel calls a server closing without close_notify a receive error (56) once the answer is in. A 2xx
+        // body may be cut short there, so only another status is kept: Verisign's empty 404 is exactly this.
+        let closed = out.code == Some(56) && !(200..300).contains(&code);
+        if code == 0 || (out.code != Some(0) && !closed) {
             let e = out.stderr.trim();
             return Err(if e.is_empty() { "no HTTP answer".into() } else { e.to_string() });
         }
@@ -1551,6 +1571,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "github-work", read: crate::maint_repo::github_work },
     SourceDef { id: "gitlab-work", read: crate::maint_repo::gitlab_work },
     SourceDef { id: "http-probe", read: crate::deploy::http_probe },
+    SourceDef { id: "rdap-domain", read: crate::maint_rdap::rdap_domain },
     SourceDef { id: "ssh-host", read: crate::maint_host::ssh_host },
 ];
 
@@ -2145,6 +2166,38 @@ mod tests {
         assert_eq!((ok.code, ok.body.as_str()), (404, "{\"a\":1}"), "a status is the server's answer, even a 404");
     }
 
+    /// Recorded on Windows' own curl (Schannel): Verisign answers an unknown domain with an empty 404 and
+    /// closes without close_notify, so curl exits 56 after the status is in.
+    #[test]
+    fn http_answer_keeps_a_non_2xx_status_beside_a_receive_error() {
+        const SCHANNEL: &str = "curl: (56) schannel: server closed abruptly (missing close_notify)";
+        let out = |code, stdout: &str| exec::Output { code: Some(code), stdout: stdout.into(), stderr: SCHANNEL.into() };
+        for status in [301, 404, 429, 503] {
+            let r = exec::http_answer(out(56, &format!("\n{status}"))).unwrap();
+            assert_eq!((r.code, r.body.as_str()), (status, ""), "{status}");
+        }
+        assert_eq!(exec::http_answer(out(56, "{\"cut\":\n200")).err().as_deref(), Some(SCHANNEL), "a 2xx body may be cut short");
+        assert!(exec::http_answer(out(6, "\n000")).is_err(), "no answer at all");
+        assert!(exec::http_answer(out(28, "\n404")).is_err(), "only a receive error is forgiven");
+        // What each http caller makes of the kept status: osv and runtime-eol a failure naming it.
+        let dir = repo_with("https://github.com/a/b.git", &[(".nvmrc", "18\n"), ("package-lock.json", &FakeExec::testdata("lock-npm-v3.json"))]);
+        let (root, cfg) = (s(&dir), MaintConfig::default());
+        let ctx = Ctx { root: &root, cfg: &cfg, forge: &NO_FORGE, account: None, force: true, hosts: &[] };
+        let ex = FakeExec::answering(Ok("")).coded(&["curl"], 404);
+        for read in [crate::maint_eol::runtime_eol as ReadFn, crate::maint_sec::osv] {
+            let Err(Coverage::Error { reason }) = read(&ctx, &ex) else { panic!("a 404 is never facts") };
+            assert!(reason.contains("HTTP 404"), "{reason}");
+        }
+        // A registry's 404 is an answer, kept: a name no other test asks, so the shared cache holds none.
+        let ghost = "episko-exit-fifty-six-ghost";
+        let lock = format!("{{\"lockfileVersion\": 3, \"packages\": {{\"\": {{\"dependencies\": {{\"{ghost}\": \"1.0.0\"}}}}, \
+            \"node_modules/{ghost}\": {{\"version\": \"1.0.0\", \"resolved\": \"https://registry.npmjs.org/{ghost}/-/x-1.0.0.tgz\"}}}}}}");
+        let dir = repo_with("https://github.com/a/b.git", &[("package-lock.json", &lock)]);
+        let root = s(&dir);
+        let Facts::Packages { items, .. } = crate::maint_pkgs::npm_registry(&Ctx { root: &root, ..ctx }, &ex).unwrap().facts else { panic!() };
+        assert_eq!(items.iter().map(|p| (p.name.as_str(), p.why.as_deref())).collect::<Vec<_>>(), [(ghost, Some("not on the registry"))]);
+    }
+
     /// The real shim, executed: a project `.npmrc` naming a prefix that holds its own npm-cli.js.
     #[cfg(windows)]
     #[test]
@@ -2357,6 +2410,22 @@ off = [\"prod\"]
         let d = detect(&s(&dir), true);
         assert!(d.sources.iter().any(|x| x == "http-probe") && !labels(&d).contains(&"[deploy]".to_string()), "{:?}", labels(&d));
         assert!(!d.sources.iter().any(|x| x == "ssh-host"), "no host, no ssh");
+    }
+
+    /// Only a name a registry hands out is ever sent, so only one is ever offered.
+    #[test]
+    fn rdap_domain_is_detected_only_for_a_registered_public_domain() {
+        let dir = repo_with("https://github.com/a/b.git", &[]);
+        let has = |urls: &str| {
+            write(&dir, ".episko/episko.toml", &format!("[deploy]\nurls = {{ {urls} }}\n"));
+            let d = detect(&s(&dir), true);
+            assert!(d.sources.iter().any(|x| x == "http-probe"), "{urls}: an address is still probed");
+            d.sources.iter().any(|x| x == "rdap-domain")
+        };
+        assert!(!has("lan = \"http://10.0.0.5:8080\""), "an IP address");
+        assert!(!has("app = \"https://x.vercel.app\", pages = \"https://acme.github.io\""), "a platform's subdomains");
+        assert!(!has("dev = \"http://app.localhost:5173\", nas = \"http://nas.lan\""), "local names");
+        assert!(has("lan = \"http://10.0.0.5\", app = \"https://app.example.com\""), "one registered domain is enough");
     }
 
     /// A scan never connects to a host, forced or with the public opt-in; a click does, once.
@@ -2577,6 +2646,13 @@ off = [\"prod\"]
             containers: Some(vec![container("acme-api-1", "running", Some("unhealthy"), 0, Some("api")), container("old-cron", "exited", None, 3, None)]),
             compose: vec!["api".into(), "worker".into()],
         };
+        let domains = vec![Domain {
+            domain: "example.com".into(), names: vec!["app".into(), "version".into()], expires: Some(1_803_456_000),
+            status: vec!["client transfer prohibited".into()], registrar: Some("Cloudflare, Inc".into()), url: None,
+        }, Domain {
+            domain: "example.de".into(), names: vec!["api".into()], expires: None, status: vec!["active".into()],
+            registrar: None, url: Some("https://registrar.example/".into()),
+        }];
         let runtimes = vec![Runtime {
             product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
             eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
@@ -2603,6 +2679,7 @@ off = [\"prod\"]
             ok("github-work", Facet::Work, Cost::Forge, Facts::Work { issues: 12, prs: 3, review_requested: Some(1) }),
             ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![probe] }),
             ok("ssh-host", Facet::Prod, Cost::Remote, Facts::Hosts { items: vec![host] }),
+            ok("rdap-domain", Facet::Prod, Cost::Public, Facts::Domains { items: domains }),
             ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: runtimes }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
             // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
@@ -2654,6 +2731,7 @@ envs = { prod = \"prod-*\" }
         "work",
         "probes",
         "hosts",
+        "domains",
         "runtimes",
     ];
 
@@ -2684,6 +2762,7 @@ envs = { prod = \"prod-*\" }
             Facts::Work { .. } => "work",
             Facts::Probes { .. } => "probes",
             Facts::Hosts { .. } => "hosts",
+            Facts::Domains { .. } => "domains",
             Facts::Runtimes { .. } => "runtimes",
         }
     }
@@ -2830,15 +2909,16 @@ envs = { prod = \"prod-*\" }
         write(&dir, ".episko/episko.toml", "[deploy]\nurls = { app = \"https://old.example\" }\n");
         let key = root_key(&s(&dir));
         let held = |id: &str| REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&(key.clone(), id.into(), String::new())));
-        for id in ["http-probe", "deploy-tags", "git-tags"] {
+        for id in ["http-probe", "rdap-domain", "deploy-tags", "git-tags"] {
             REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
                 .insert((key.clone(), id.into(), String::new()), (Instant::now(), report(id, None, Coverage::NotRun)));
         }
         let urls = |u: &str| serde_json::from_value(serde_json::json!({ "urls": { "app": u } })).unwrap();
         crate::deploy::write_deploy(s(&dir), urls("https://old.example"), false).unwrap();
-        assert!(held("http-probe") && held("deploy-tags"), "an unchanged file keeps both");
+        assert!(held("http-probe") && held("rdap-domain") && held("deploy-tags"), "an unchanged file keeps all three");
         crate::deploy::write_deploy(s(&dir), urls("https://new.example"), false).unwrap();
         assert!(!held("http-probe"), "the old addresses' answers are not served as the new ones'");
+        assert!(!held("rdap-domain"), "nor the old domains'");
         assert!(!held("deploy-tags"), "a tag convention is [deploy] too");
         assert!(held("git-tags"), "a read that never looks at [deploy] stays");
     }

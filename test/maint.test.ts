@@ -15,6 +15,7 @@ import {
   type MarkAdv, type MarkRel, type MarkRt, type WeekMark, type WeekPairIn,
   addCoverCaps, onClickOnly, sessionKind, currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
+  currentDomains, domainStates, type Domain,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -2296,6 +2297,154 @@ describe("a host's vitals", () => {
   });
 });
 
+describe("registered domains", () => {
+  const RD = "rdap-domain", HP = "http-probe";
+  const dom = (domain: string, days: number | null, o: Partial<Domain> = {}): Domain => ({
+    domain, names: ["api", "app"], expires: days === null ? null : S + days * D, status: ["client transfer prohibited"],
+    registrar: "Cloudflare, Inc", url: "https://registrar.example/", ...o,
+  });
+  const doms = (...items: Domain[]): Facts => ({ kind: "domains", items });
+  const fine = { name: "app", url: "https://app.example.com", code: 200, ms: 9, certNotAfter: S + 90 * D, err: null };
+  const probes = (o = {}): Facts => ({ kind: "probes", items: [{ ...fine, ...o }] });
+  const unasked = not(HP, "prod", { state: "notRun" });
+  const states = (...items: Domain[]) => domainStates(input(ok(RD, doms(...items))), MAINT_DEFAULTS, NOW);
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+
+  // The status variants are hand-written: a recorded record with only its status words changed.
+  it("judges each domain by its registry's words before its date, and an unknown never fine", () => {
+    const said = (d: Domain) => { const [x] = states(d); return [x.level, x.text, x.word]; };
+    expect(said(dom("a.com", 300, { status: ["redemption period"] }))).toEqual(["bad", "lapsed (redemption period)", "domain lapsed"]);
+    expect(said(dom("a.com", 300, { status: ["client hold"] }))).toEqual(["bad", "on hold (client hold)", "domain on hold"]);
+    expect(said(dom("a.com", -3))).toEqual(["bad", "expired 3d ago", "domain expired"]);
+    expect(said(dom("a.com", 365, { status: ["auto renew period"] })), "the registry moved the date a year on").toEqual(["warn", "renewed at expiry, not yet paid for", "domain unpaid"]);
+    expect(said(dom("a.com", 12))).toEqual(["warn", "expires in 12d", "domain 12d"]);
+    expect(said(dom("a.com", 425))).toEqual(["ok", "expires in 14mo", ""]);
+    expect(said(dom("a.de", null, { status: ["active"] })), "a registration that runs until cancelled").toEqual(["ok", "no expiry published", ""]);
+    expect(said(dom("a.de", null, { status: [] })), "no date and no word is no evidence").toEqual(["muted", "expiry unknown", "domain expiry unknown"]);
+    const th = clampMaint({ domain_warn_days: 10 });
+    expect(domainStates(input(ok(RD, doms(dom("a.com", 12)))), th, NOW)[0].level, "the team's threshold").toBe("ok");
+    expect(clampMaint({ domain_warn_days: 0 }).domainWarnDays, "a zero would fire on every domain").toBe(30);
+    expect(states(dom("far.com", 400), dom("soon.com", 12), dom("gone.com", -1), dom("near.com", 20)).map((d) => d.domain))
+      .toEqual(["gone.com", "soon.com", "near.com", "far.com"]);
+  });
+
+  it("never lets a registered name vouch for an address, while one being lost still colours the cell", () => {
+    expect(cell("prod", input(unasked, ok(RD, doms(dom("example.com", 400)))))).toMatchObject({ state: "cantCheck", level: "muted", text: "not checked" });
+    expect(cell("prod", input(ok(RD, doms(dom("example.com", 400))))), "with nothing else to ask").toMatchObject({ state: "read", level: "muted", text: "addresses not checked" });
+    expect(cell("prod", input(unasked, ok(RD, doms(dom("example.com", 400, { status: ["redemption period"] })))))).toMatchObject({ state: "read", level: "bad", text: "domain lapsed" });
+    const both = cell("prod", input(ok(HP, probes()), ok(RD, doms(dom("example.com", 12), dom("example.org", 400)))));
+    expect(both).toMatchObject({ level: "warn", text: "domain 12d" });
+    expect(both.tip).toEqual(expect.arrayContaining(["example.com: expires in 12d · Cloudflare, Inc", "example.org: expires in 13mo · Cloudflare, Inc"]));
+    expect(cell("prod", input(ok(HP, probes({ code: 502 })), ok(RD, doms(dom("example.com", 12))))), "an address down outranks a domain").toMatchObject({ level: "bad", text: "app 502" });
+    expect(cell("prod", input(ok(HP, probes({ code: 404 })), ok(RD, doms(dom("example.com", -1))))), "a lost domain outranks a 4xx").toMatchObject({ level: "bad", text: "domain expired" });
+    expect(cell("prod", input(ok(HP, probes()), ok(RD, doms(dom("example.com", null, { status: [] }))))), "its unknown never speaks over an answer").toMatchObject({ level: "ok", text: "" });
+    const two = doms(dom("a.com", -1), dom("b.com", 1, { status: ["client hold"] }));
+    expect(cell("prod", input(ok(HP, probes()), ok(RD, two)))).toMatchObject({ level: "bad", text: "2 domains at risk" });
+    expect(cell("prod", input(ok(HP, probes()), ok(RD, two, { truncated: true }))), "its own report's cap").toMatchObject({ text: "2+ domains at risk" });
+  });
+
+  it("gives each domain at risk its own line, opening the Domains board", () => {
+    const inp = input(ok(HP, probes()), ok(RD, doms(dom("example.com", 12), dom("example.org", 400), dom("x.io", -2, { names: ["docs"], registrar: null }))));
+    const fs = findings("/r", inp, MAINT_DEFAULTS, NOW).filter((f) => f.key.startsWith("prod:domain:"));
+    expect(fs.map((f) => [f.key, f.level, f.verb, f.ref, f.text, f.detail, f.source])).toEqual([
+      ["prod:domain:x.io", "bad", "fix", "x.io", "x.io expired 2d ago", "behind docs", RD],
+      ["prod:domain:example.com", "warn", "fix", "example.com", "example.com expires in 12d", "behind api, app · Cloudflare, Inc", RD],
+    ]);
+    expect(findingTarget({ facet: "prod", key: "prod:domain:example.com" })).toEqual({ tab: "servers", board: "domains" });
+    expect(findingTarget({ facet: "prod", key: "prod:app" })).toEqual({ tab: "servers", board: "addresses" });
+    expect(sessionKind(fs[0]), "a renewal is paid at the registrar, not written on a branch").toBe("here");
+  });
+
+  it("lists a registration inside the window as coming up, never one past or beyond it", () => {
+    const rows = comingUp([{ root: "/a", inp: input(ok(RD, doms(dom("soon.com", 9), dom("gone.com", -1), dom("far.com", 31), dom("none.de", null)))) }], NOW);
+    expect(rows).toEqual([{ root: "/a", what: "soon.com registration", at: S + 9 * D }]);
+  });
+
+  it("keeps the registries out of Check prod: a third party has its own switch and its own door", () => {
+    const d = det([HP, RD]), inp: MaintInput = { det: d, reports: { [HP]: unasked, [RD]: { ...not(RD, "prod", { state: "notRun" }), cost: "public" } } };
+    expect(prodChecks(inp)).toEqual([HP]);
+    expect(offers("/r", inp).map((f) => [f.key, f.text])).toEqual([["run:http-probe", "URL checks: not checked"], ["run:rdap-domain", "RDAP: not checked"]]);
+    const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
+    addCoverCaps({ ...inp, reports: { ...inp.reports, [HP]: ok(HP, probes()) } }, sees, blind);
+    expect([sees.has("prod.status"), blind.has("prod.domain")], "domain expiry is unseen until a registry answers").toEqual([true, true]);
+  });
+
+  it("draws one row per domain across projects, worst then soonest, its verbs drawn", () => {
+    const ps = [
+      tp("/b", ok(RD, doms(dom("b.com", 20), dom("b.org", 400)))),
+      tp("/a", ok(RD, doms(dom("a.com", 400, { status: ["client hold"] })))),
+      tp("/c", ok(RD, doms(dom("c.com", 12)))),
+    ];
+    const b = tabBoards("servers", ps, null, null, NOW);
+    expect(b.domains.map((r) => [r.root, r.domain, r.level, r.verb?.key ?? null])).toEqual([
+      ["/a", "a.com", "bad", "prod:domain:a.com"], ["/c", "c.com", "warn", "prod:domain:c.com"],
+      ["/b", "b.com", "warn", "prod:domain:b.com"], ["/b", "b.org", "ok", null],
+    ]);
+    expect(b.drawn).toEqual(["/a|prod:domain:a.com", "/b|prod:domain:b.com", "/c|prod:domain:c.com"]);
+    expect(tabBoards("servers", ps, "/c", null, NOW).domains.map((r) => r.domain)).toEqual(["c.com"]);
+    expect(boardDoor("domains", "registrar", "https://registrar.example/")).toEqual({ to: "url", url: "https://registrar.example/" });
+    expect(boardDoor("domains", "registrar", "javascript:alert(1)")).toBeNull();
+  });
+
+  it("refuses a domain of the wrong shape, as any other report", () => {
+    const good = ok(RD, doms(dom("a.com", 9)));
+    expect(narrowMaint(good, RD)).toEqual(good);
+    expect(narrowMaint({ ...good, facts: doms({ ...dom("a.com", 9), domain: 3 as unknown as string }) }, RD).coverage.state).toBe("error");
+    expect(narrowMaint({ ...good, facts: doms({ ...dom("a.com", 9), status: "active" as unknown as string[] }) }, RD).coverage.state).toBe("error");
+  });
+
+  it("reads a domain [deploy] no longer names as nobody having asked, and names each by what names it now", () => {
+    const cfg = (urls: Record<string, string>, versionUrl: string | null = null) =>
+      det([RD], { deploy: { host: null, compose: [], urls, sentry: null, versionUrl, envs: {} } });
+    const reports = { [RD]: ok(RD, doms(dom("example.com", 9, { names: ["old"] }), dom("gone.org", 9))) };
+    const now = currentDomains(cfg({ app: "https://APP.example.com./x", www: "https://example.com" }, "https://api.example.com/v"), reports)[RD];
+    expect(now.facts).toEqual(doms(dom("example.com", 9, { names: ["app", "version", "www"] })));
+    expect(currentDomains(cfg({ app: "https://elsewhere.net" }), reports)[RD]).toMatchObject({ coverage: { state: "notRun" }, facts: null, at: null });
+    expect(currentDomains(det([RD]), reports), "no [deploy], nothing to compare").toBe(reports);
+  });
+
+  it("lets a domain's failed or unasked read keep its last line beside the addresses' answer, and an answer replace it", () => {
+    const lines = (s: ReturnType<typeof takeSnap>) => s.findings.filter((f) => f.facet === "prod").map((f) => f.key);
+    const red = takeSnap("/r", input(ok(HP, probes()), ok(RD, doms(dom("a.com", -1)))), NOW - 1000);
+    const failed = takeSnap("/r", input(ok(HP, probes()), not(RD, "prod", { state: "error", reason: "HTTP 503" })), NOW, red);
+    expect(lines(failed)).toEqual(["prod:domain:a.com"]);
+    expect(failed.cells.find((c) => c.facet === "prod")).toMatchObject({ level: "bad", at: NOW - 1000 });
+    expect(lines(takeSnap("/r", input(ok(HP, probes()), not(RD, "prod", { state: "notRun" })), NOW, red)), "nobody asked").toEqual(["prod:domain:a.com"]);
+    expect(lines(takeSnap("/r", input(ok(HP, probes()), ok(RD, doms(dom("a.com", 400)))), NOW, red)), "renewed").toEqual([]);
+    expect(lines(takeSnap("/r", input(ok(HP, probes())), NOW, red)), "no longer in [deploy]").toEqual([]);
+    const row = (inp: MaintInput) => coverGroups("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).map((g) => [g.source, g.why]);
+    expect(row(input(ok(HP, probes()), not(RD, "prod", { state: "error", reason: "HTTP 503" }))), "a failed read beside a good one stays a Coverage row").toEqual([[RD, "read failed"]]);
+  });
+
+  it("lets a domain that answered replace its lines while the cell cannot vouch, and keeps the addresses' unasked ones", () => {
+    const prodOf = (s: ReturnType<typeof takeSnap>) => ({ cell: s.cells.find((c) => c.facet === "prod"), lines: s.findings.filter((f) => f.facet === "prod").map((f) => f.key) });
+    const red = takeSnap("/r", input(unasked, ok(RD, doms(dom("a.com", 300, { status: ["redemption period"] })))), NOW - 1000);
+    expect(prodOf(red).lines).toEqual(["prod:domain:a.com"]);
+    const renewed = prodOf(takeSnap("/r", input(unasked, ok(RD, doms(dom("a.com", 400)))), NOW, red));
+    expect(renewed).toEqual({ cell: { facet: "prod", level: "muted", text: "not checked" }, lines: [] });
+    const failed = input(not(HP, "prod", { state: "error", reason: "timed out" }), ok(RD, doms(dom("a.com", 400))));
+    expect(prodOf(takeSnap("/r", failed, NOW, red)).lines, "beside a failed address read too").toEqual([]);
+    const down = takeSnap("/r", input(ok(HP, probes({ code: 502 })), ok(RD, doms(dom("a.com", 400)))), NOW - 1000);
+    const held = prodOf(takeSnap("/r", input(unasked, ok(RD, doms(dom("a.com", 400)))), NOW, down));
+    expect(held.lines, "an address nobody asked keeps its last line").toEqual(["prod:app"]);
+    expect(held.cell).toMatchObject({ level: "bad", at: NOW - 1000 });
+  });
+
+  it("says not checked beside a TLD no registry answers for, and gives the reasons an address was never sent", () => {
+    const deOnly = not(RD, "prod", { state: "unsupported", reason: ".de lists no RDAP service" });
+    expect(cell("prod", input(unasked, deOnly)), "unavailable would read as prod being down").toMatchObject({ state: "cantCheck", text: "not checked" });
+    expect(cell("prod", input(deOnly)), "with nothing else to ask").toMatchObject({ state: "cantCheck", text: "unavailable" });
+    expect(cell("prod", input(not(HP, "prod", { state: "error", reason: "x" }), deOnly)).text, "a failure still leads").toBe("read failed");
+    const gap = "lan: not asked, an IP address";
+    const skipped = cell("prod", input(unasked, ok(RD, doms(dom("example.com", 400)), { gaps: [gap] })));
+    expect(skipped).toMatchObject({ state: "cantCheck", text: "not checked" });
+    expect(skipped.tip).toContain(`RDAP: ${gap}`);
+  });
+});
+
 describe("the tabs' boards", () => {
   // A project as buildMaint hands it to the boards: its cells and its tab lines, verbs and all.
   const tp = (path: string, ...reps: SourceReport[]): TabProject => {
@@ -2536,6 +2685,7 @@ describe("a board's numbers are doors", () => {
     work: { review: { to: "queue", filter: "pr" }, issues: { to: "queue", filter: "iss" }, prs: { to: "queue", filter: "pr" } },
     hosts: { disk: null, updates: null, reboot: null, containers: null, load: null, uptime: null },
     addresses: { address: "url" },
+    domains: { registrar: "url" },
   };
 
   it("names every column of every board", () => {
@@ -3771,7 +3921,7 @@ describe("a maintenance session", () => {
     });
 
     it("runs a Fix that only reads production in the project's folder, and any other Fix on its branch", () => {
-      for (const key of ["prod:api", "prod:cert:api", "prod:host:disk", "release:deploy-failed"]) {
+      for (const key of ["prod:api", "prod:cert:api", "prod:host:disk", "prod:domain:example.com", "release:deploy-failed"]) {
         expect(sessionKind(line(key)), key).toBe("here");
         expect(sessionPlan([at(line(key))], ctx()).rows[0], key).toMatchObject({ where: { kind: "here" }, branch: null });
       }

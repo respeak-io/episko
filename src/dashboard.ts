@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciRows, clampMaint, coverRows, coverSetups, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
+  ciRows, clampMaint, coverRows, coverSetups, domainStates, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -1311,6 +1311,7 @@ function maintNow(now: number): MaintDash {
     },
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
     deploy: inp.det?.deploy ?? null, detected: !!inp.det, probes: probeRows(inp, th, now), host,
+    domains: domainStates(inp, th, now),
   };
 }
 

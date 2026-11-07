@@ -604,10 +604,11 @@ const SET_TABS: SetTab[] = [
       ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
         kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
         hint: disclosure(src) ?? "",
-        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same list goes then. This machine only: the switch never syncs, because it changes what leaves it.`,
+        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same is sent then. This machine only: the switch never syncs, because it changes what leaves it.`,
         aliases: ["maintenance", "security", "public", "privacy",
           ...src.sees.includes("sec.runtime") ? ["runtime", "end of life", "eol"]
             : src.sees.includes("deps.latest") ? ["outdated", "major", "behind", "latest", "dependencies", "registry", "upgrade"]
+            : src.sees.includes("prod.domain") ? ["domain", "registration", "expiry", "registrar", "renewal", "prod"]
             : ["vulnerability", "advisory", "lockfile", "cve", "dependencies"]],
         on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
         reset: () => applySetting(`maintpub:${src.id}`, "0"),

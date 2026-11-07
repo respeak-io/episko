@@ -74,6 +74,12 @@ describe("the manifest as TypeScript", () => {
     expect(findSource("nope")).toBeNull();
   });
 
+  it("reads a domain's registry as a public prod source of its own, beside the click-only ones", () => {
+    expect(sourceDef("rdap-domain")).toMatchObject({ facet: "prod", cost: "public", sees: ["prod.domain"], blind: ["prod.status", "prod.cert", "prod.host"] });
+    expect(sourceDef("http-probe").blind, "the addresses say nothing of the registration").toContain("prod.domain");
+    expect(disclosure(sourceDef("rdap-domain"))).toMatch(/ receives the registered domain .*never a host name or a path.* Nothing else leaves this machine\.$/);
+  });
+
   it("reads a host as a click-only prod source that sees only the host, and is found by that", () => {
     expect(sourceDef("ssh-host")).toMatchObject({ facet: "prod", cost: "remote", label: "SSH host", sees: ["prod.host"], blind: ["prod.status", "prod.cert"], sends: null });
     expect(permitted(sourceDef("ssh-host").cost, "scan", true)).toBe(false);
@@ -176,7 +182,7 @@ describe("the frontend never names a vendor", () => {
     ...manifest.bots.map((b) => b.id), ...manifest.markers.flatMap((m) => m.forge), "gh", "glab",
   ].filter((w) => w && !generic.has(w)));
   it("knows the vendors it guards against", () => {
-    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate", "npm", "crates", "io"]));
+    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate", "npm", "crates", "io", "rdap"]));
   });
   for (const f of ["src/maintsources.ts", "src/maint.ts", "src/maintbrief.ts"]) {
     it(f, () => {

@@ -3,7 +3,7 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
   type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
@@ -389,6 +389,29 @@ const prodBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
+// A renewal is paid at the registrar, so the agent finds who pays it and changes nothing.
+const domainBrief: Brief = (f, inp, ctx) => {
+  const raw = factsOf(f, inp, "domains")?.items.find((x) => x.domain === f.ref);
+  const [d] = raw ? judgeDomains([raw], clampMaint(inp.det?.config.thresholds), ctx.now ?? Date.now()) : [];
+  if (!d) return null;
+  const date = d.expires !== null ? new Date(d.expires * 1000).toISOString().slice(0, 10) : "a date the registry does not publish";
+  const word = d.status.find((s) => DOMAIN_LAPSED.includes(s) || DOMAIN_HELD.includes(s));
+  const state = word ? `is ${d.text}, in its registry's own words`
+    : d.status.some((s) => DOMAIN_GRACE.includes(s)) ? `was ${d.text}: the registry moved its date on to ${date}, and the registrar may still let it go`
+    : `${d.text}, on ${date}`;
+  return [
+    `The domain ${d.domain}, behind ${d.names.join(", ")} in ${ctx.project}'s [deploy], ${state}.`,
+    ...(d.status.length ? [bullet(`status: ${d.status.join(", ")}`)] : []),
+    ...(d.registrar ? [`Registered through ${d.registrar}.`] : []),
+    "",
+    "Find what is meant to renew it: where the project records its registrar, DNS or billing (infrastructure code,",
+    "docs, deploy scripts), and whether auto-renew is on. Say who renews it and what a person must do, by when.",
+    "",
+    "Change nothing in production yourself. Say what is wrong, what you would change and how to",
+    "verify it, and wait for a person before renewing, transferring or editing anything at the registrar or in DNS.",
+  ];
+};
+
 // Every problem the host has, the clicked kind first. The agent looks over ssh and changes nothing:
 // a pane may be launched permissive, so the brief asks it to say each command and stop before any write.
 const hostBrief: Brief = (f, inp, ctx) => {
@@ -458,6 +481,7 @@ export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
   [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
   [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
   [(f) => HOST_KINDS.some((k) => f.key === `prod:host:${k}`), hostBrief],
+  [(f) => /^prod:domain:[^:]+$/.test(f.key), domainBrief],
 ];
 
 const BRIEFS: Record<Verb, Brief> = {

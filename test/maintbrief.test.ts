@@ -179,12 +179,13 @@ describe("briefFor", () => {
 
   it("finds Fix's brief by the finding's key, one exact row per kind", () => {
     const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
-    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config", "prod:host:disk", "prod:host:load"]) expect(claims(key), key).toBe(1);
+    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config", "prod:host:disk", "prod:host:load", "prod:domain:acme.example"]) expect(claims(key), key).toBe(1);
     // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
-    for (const key of ["prod:host:other", "prod:domain:acme.example", "prod:errors:new", "release:deploy", "security:dependency"]) {
+    for (const key of ["prod:host:other", "prod:domain:", "prod:errors:new", "release:deploy", "security:dependency"]) {
       expect(claims(key), key).toBe(0);
     }
-    expect(briefFor({ ...by("prod:api"), key: "prod:domain:acme.example" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:errors:new" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:domain:acme.example" }, inp, ctx), "a probe's facts are no domain's").toBeNull();
     expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "a probe's facts are no host's").toBeNull();
   });
 
@@ -435,6 +436,39 @@ describe("a host's brief", () => {
   });
 });
 
+describe("a domain's brief", () => {
+  const dom = (o: Partial<Extract<Facts, { kind: "domains" }>["items"][number]> = {}) => ({
+    domain: "example.com", names: ["api", "app"], expires: S + 12 * D, status: ["client transfer prohibited"], registrar: "Cloudflare, Inc", url: null, ...o,
+  });
+  const at = (...items: ReturnType<typeof dom>[]) => input(ok("rdap-domain", { kind: "domains", items }));
+  const line = (i: MaintInput): Finding => findings("/r", i, MAINT_DEFAULTS, NOW).find((f) => f.key.startsWith("prod:domain:"))!;
+  const brief = (i: MaintInput) => briefFor(line(i), i, ctx)!;
+
+  it("names the domain, what is behind it, its date or its registry's word, and the registrar", () => {
+    const b = brief(at(dom()));
+    expect(b.split("\n")[0]).toBe(`The domain example.com, behind api, app in acme's [deploy], expires in 12d, on ${new Date((S + 12 * D) * 1000).toISOString().slice(0, 10)}.`);
+    expect(b).toContain("- status: client transfer prohibited");
+    expect(b).toContain("Registered through Cloudflare, Inc.");
+    expect(b).toMatch(/Find what is meant to renew it[\s\S]*whether auto-renew is on/);
+    expect(brief(at(dom({ status: ["redemption period"] })))).toContain("is lapsed (redemption period), in its registry's own words");
+    expect(brief(at(dom({ expires: S + 365 * D, status: ["auto renew period"] })))).toMatch(/was renewed at expiry, not yet paid for: the registry moved its date on to/);
+    expect(brief(at(dom({ expires: S - 3 * D, registrar: null })))).not.toContain("Registered through");
+  });
+
+  it("changes nothing and names no service that read it", () => {
+    const b = brief(at(dom()));
+    expect(b).toContain("Change nothing in production yourself");
+    expect(b).not.toMatch(/rdap/i);
+    expect(b.endsWith("\n")).toBe(false);
+  });
+
+  it("answers null once the domain is gone from the facts", () => {
+    const f = line(at(dom()));
+    expect(briefFor(f, at(dom({ domain: "example.org" })), ctx)).toBeNull();
+    expect(briefFor(f, input(), ctx)).toBeNull();
+  });
+});
+
 describe("the advisory sweep's briefs", () => {
   const adv: SweepAdvisory = {
     id: "GHSA-35jh-r3h4-6jhm", aliases: ["CVE-2021-23337"], summary: "Command Injection in lodash", severity: "high", rawSeverity: "HIGH",
@@ -529,8 +563,9 @@ describe("a session's briefs", () => {
     const hostFacts: Facts = { kind: "hosts", items: [{ alias: "prod-1", os: "Linux", now: S, uptime: D, load: [1, 1, 1], cpus: 4, disks: [{ mount: "/", sizeKb: 100, usedKb: 96, availKb: 4 }],
       updates: 0, security: 0, packages: [], pm: "apt", listsAt: S, reboot: true, rebootWhy: [], containers: [], compose: [] }] };
     const hosted = input(ok("ssh-host", hostFacts));
-    const lines = [...[inp, later, hosted].flatMap((i) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "fix").map((f) => [f, i] as const))];
-    expect(lines.map(([f]) => f.key)).toEqual(expect.arrayContaining(["ci", "ci:flaky", "prod:api", "prod:cert:app", "release:deploy-failed", "prod:host:disk", "prod:host:reboot"]));
+    const named = input(ok("rdap-domain", { kind: "domains", items: [{ domain: "example.com", names: ["app"], expires: S - D, status: [], registrar: null, url: null }] }));
+    const lines = [...[inp, later, hosted, named].flatMap((i) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "fix").map((f) => [f, i] as const))];
+    expect(lines.map(([f]) => f.key)).toEqual(expect.arrayContaining(["ci", "ci:flaky", "prod:api", "prod:cert:app", "release:deploy-failed", "prod:host:disk", "prod:host:reboot", "prod:domain:example.com"]));
     for (const [f, i] of lines) {
       const brief = briefFor(f, i, ctx)!;
       expect(sessionKind(f) === "here", f.key).toBe(/Change nothing/.test(brief));

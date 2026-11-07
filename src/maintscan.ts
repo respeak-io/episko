@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
+  clampKept, clampSnaps, currentDomains, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
@@ -96,7 +96,7 @@ export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
   if (!e) return null;
   const skip = [...maintPrefs.off, ...hostSkips(e.det, maintPrefs.hosts)];
-  return { det: e.det, reports: currentHosts(e.det, e.reports), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
+  return { det: e.det, reports: currentDomains(e.det, currentHosts(e.det, e.reports)), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
 }
 
 let running = 0;

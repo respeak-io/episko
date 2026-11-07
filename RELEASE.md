@@ -152,6 +152,16 @@ A tour chapter carrying a `since` (./tour) names the version it belongs to, and 
 new* offers it on that string alone. If the release is cut as anything else, the chapter
 is never offered and nothing says so — check the `since` against the version being bumped.
 
+### 3. Refresh the Public Suffix List
+
+`src-tauri/data/public_suffix_list.dat` is vendored verbatim and goes stale on its own: a
+platform suffix newer than the copy is sent to its TLD's registry by `rdap-domain` and drawn
+as a gap. Download it again from `https://publicsuffix.org/list/public_suffix_list.dat`
+(nowhere else), keep its MPL-2.0 header and `VERSION` line, and run `cargo test maint_rdap`:
+`the_list_is_upstreams_and_parses_whole` fails on a truncated download. If
+`the_supplement_never_shadows_iana` fails after re-recording `rdap-dns.json`, IANA now lists
+that TLD: drop it from `UNLISTED`.
+
 ---
 
 ## The click-through
@@ -619,6 +629,21 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       send, and a floor shows as `?` or `+`. With a registry slow enough to pass 60 s (a
       throttled network), the read stops, the cell carries a `+`, and a second check gets further.
       Press *Check prod* during a long scan: it answers ahead of the scan's queue.
+- [ ] **Domains.** On a project whose `[deploy]` names a public address (`https://app.example.com`),
+      the dashboard's Coverage offers *Check with RDAP* with the sentence naming the registered
+      domain as all that leaves, and *Check prod*'s tip does **not** name RDAP. Click it: the
+      Runs on card gains a *Domain* row with its expiry and registrar (the name opens the
+      registrar's page), *Servers* draws the **Domains** board, and the Prod cell stays *not
+      checked* until *Check prod* answers too. Add `http://10.0.0.5` and `https://x.vercel.app`
+      to `urls` and check with RDAP again: neither is asked, and the Prod cell's tip says why,
+      before *Check prod* and after. Turn on *Ask RDAP when Maintenance checks* in Settings › On
+      its own and rescan: the domain is read with no click. On a project whose only domain is a
+      `.de`, the rescan leaves its Prod cell *not checked*, never *unavailable*. Set
+      `[maintenance.thresholds] domain_warn_days = 3650`: the cell turns amber with a
+      *domain 13mo*-style word, the line opens the Domains board, its *Fix* prefills a brief that
+      says *Change nothing* and does not send, and a ticked session runs it in the project's
+      folder. A registration inside 30 days is amber by default, so it is listed under *Coming
+      up* in the Overview's since-band, never in an all-clear.
 - [ ] **The keyboard survives a repaint.** Tab to a tick and press Space: focus stays on it. Tab
       to a host's *Check* and press Enter: when it turns to *checking…*, focus lands on what stands
       there rather than on nothing, and Tab carries on from there. Scroll a wide board sideways and
