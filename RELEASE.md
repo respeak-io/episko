@@ -892,9 +892,10 @@ Check it before tagging: `node scripts/changelog.mjs section 0.14.0 | head -3`.
 `release.yml` builds both platforms against that tag, and both jobs append to the one
 GitHub Release: macOS `aarch64` produces the `.dmg` + the updater artifact, Windows
 x64 the NSIS `.exe` and `.msi`. The minisign key signs the updater artifacts on both;
-**OS code-signing is separate** — macOS is self-signed and not notarized, and Windows
-Azure Trusted Signing is opt-in and no-ops until the `AZURE_CLIENT_ID` secret exists
-(see `src-tauri/SIGNING.md`).
+**OS code-signing is separate** — macOS is signed with a Developer ID and notarized, and
+Windows is signed through Azure Trusted Signing. Both are gated on their CI secrets;
+without them, macOS builds are ad-hoc signed and Windows builds unsigned (see
+`src-tauri/SIGNING.md`).
 
 Install instructions are embedded in the release body by the workflow, because GitHub
 cannot pin a release and "always in the newest one" is the equivalent.
@@ -908,8 +909,8 @@ cannot pin a release and "always in the newest one" is the equivalent.
 - [ ] **The updater actually updates.** Install the *previous* version, launch it, and
       take the update. This is the one step that cannot be checked before tagging, and
       the one whose failure is silently permanent for everyone already installed.
-- [ ] On Windows, SmartScreen warns but **More info → Run anyway** works. On macOS the
-      quarantine steps in the release body clear it.
+- [ ] The downloaded installers open: on macOS with no quarantine warning, on Windows
+      directly or, if SmartScreen warns, through **More info → Run anyway**.
 - [ ] **episko.dev shows the new version.** `site.yml` deploys it, chained off
       `release.yml` finishing — *not* off the release being published, because
       tauri-action creates that with `GITHUB_TOKEN` and GitHub will not start a
