@@ -403,8 +403,8 @@ describe("Maintenance's own dispatcher", () => {
     // the Security strip's filter; pick the tab's project picker and find a card line.
     // door is a board number's (./maint boardDoor): a branch filter, a queue chip, a fetch.
     // sweep is the advisory sweep's: submit, a row's Patch or agent check, the report and a recent run.
-    // host is a [deploy] host's own doors: Allow and Disallow, a card's Check, and SSH.
-    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev", "door", "sweep", "host"]) {
+    // host is a [deploy] host's own doors: Allow and Disallow, a card's Check, and SSH; token a Coverage row's Settings › Accounts.
+    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev", "door", "sweep", "host", "token"]) {
       expect(emitted, `data-mt${k} is never emitted`).toContain(k);
       expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
     }

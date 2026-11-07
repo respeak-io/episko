@@ -47,6 +47,13 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - `isDefault`/`reset` per control give the accent bar, ⟲ on hover and `@changed`. A control
   without `isDefault` is never marked; a list with no safe reset (trusted folders, stop rules)
   has none. `summary` is the fold button's text and the search's `value`.
+- **Accounts** is two kinds of credential, each a row that is its own panel and has no reset
+  (a credential is not a preference): *Claude accounts* (docs/accounts.md), then one
+  *<label> tokens* row per kind of service token Maintenance's manifest names (`tokenKinds`,
+  row id `tokenRow(kind)`, `tok-sentry`): each saved host with *Check* and *Forget*, and a
+  form with the host prefilled and a write-only token field that empties once saved. A
+  Coverage row's *Add token…* lands lit on that row through `openSettingsOn("accounts", …)`.
+  Opening Settings lists the saved tokens again, as it lists the Claude ones.
 - The rail ends with *Elsewhere*: Usage & spend and What's new keep their own windows
   (0.26.0). The doors call the openers through the host, and two pointer rows answer the
   search for them, because a search in Settings that says there is no such thing is worse

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
   BOTS, COSTS, FACETS, FACET_DEFS, MAINT_CAPS, MAINT_PREFS_DEFAULT, MARKERS, SOURCES, capsOf, disclosure, facetDef,
-  facetSources, findSource, permitted, runnable, sourceDef, type Cost, type Mode,
+  facetSources, findSource, permitted, runnable, sourceDef, tokenKinds, tokenRow, type Cost, type Mode,
 } from "../src/maintsources";
-import { ADVISORY_KINDS, CI_STATUSES, DEPLOY_STATES, ENV_TIERS, FORGE_BY, SEVERITIES } from "../src/maint";
+import { ADVISORY_KINDS, CI_STATUSES, DEPLOY_STATES, ENV_TIERS, ERR_LEVELS, ERR_TRENDS, FORGE_BY, SEVERITIES } from "../src/maint";
 
 // Both sides read one manifest, and each keeps a list the other must agree with. TypeScript cannot
 // see the Rust half, so these joins are read from source (the provider-contract precedent).
@@ -46,6 +46,8 @@ describe("the manifest and maint.rs agree", () => {
     expect(variants("AdvisoryKind")).toEqual([...ADVISORY_KINDS]);
     expect(variants("DeployState")).toEqual([...DEPLOY_STATES]);
     expect(variants("EnvTier")).toEqual([...ENV_TIERS]);
+    expect(variants("ErrLevel")).toEqual([...ERR_LEVELS]);
+    expect(variants("ErrTrend")).toEqual([...ERR_TRENDS]);
     expect(variants("ForgeBy", forgeRs)).toEqual([...FORGE_BY]);
   });
 
@@ -84,6 +86,25 @@ describe("the manifest as TypeScript", () => {
     expect(sourceDef("ssh-host")).toMatchObject({ facet: "prod", cost: "remote", label: "SSH host", sees: ["prod.host"], blind: ["prod.status", "prod.cert"], sends: null });
     expect(permitted(sourceDef("ssh-host").cost, "scan", true)).toBe(false);
     expect(SOURCES.filter((s) => s.sees.includes("prod.host")).map((s) => s.id)).toEqual(["ssh-host"]);
+  });
+
+  it("reads an error tracker as a click-only prod source with a token, blind to every other prod capability", () => {
+    const [d, ...more] = SOURCES.filter((s) => s.sees.includes("prod.errors"));
+    expect(more).toEqual([]);
+    expect(d).toMatchObject({ facet: "prod", cost: "remote", sends: null, sees: ["prod.errors", "prod.errors-new"], blind: ["prod.status", "prod.cert", "prod.host", "prod.domain"] });
+    expect(permitted(d.cost, "scan", true), "never in a scan, opt-in or not").toBe(false);
+    expect(d.token).toEqual({ id: expect.stringMatching(/^[a-z]+$/), label: d.label, host: expect.any(String), page: expect.stringMatching(/^https:\/\/\{host\}\//),
+      scopes: ["event:read", "project:read", "org:read"] });
+    expect(sourceDef("http-probe").blind, "an address says nothing of errors").toContain("prod.errors");
+    expect(SOURCES.filter((s) => s.token).every((s) => s.cost === "remote" || s.cost === "forge"), "a token rides only on a click or the forge").toBe(true);
+  });
+
+  it("offers one Settings control per token kind, whichever sources share it", () => {
+    const kinds = tokenKinds();
+    expect(kinds.map((k) => k.id)).toEqual([...new Set(SOURCES.flatMap((s) => s.token ? [s.token.id] : []))]);
+    expect(kinds.length).toBeGreaterThan(0);
+    expect(tokenRow(kinds[0].id)).toBe(`tok-${kinds[0].id}`);
+    expect(SOURCES.filter((s) => !s.token).every((s) => s.token === null)).toBe(true);
   });
 
   it("files every source and marker under one facet", () => {
@@ -182,7 +203,7 @@ describe("the frontend never names a vendor", () => {
     ...manifest.bots.map((b) => b.id), ...manifest.markers.flatMap((m) => m.forge), "gh", "glab",
   ].filter((w) => w && !generic.has(w)));
   it("knows the vendors it guards against", () => {
-    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate", "npm", "crates", "io", "rdap"]));
+    expect([...vendors]).toEqual(expect.arrayContaining(["github", "gitlab", "bitbucket", "azure", "woodpecker", "snyk", "osv", "renovate", "npm", "crates", "io", "rdap", "sentry"]));
   });
   for (const f of ["src/maintsources.ts", "src/maint.ts", "src/maintbrief.ts"]) {
     it(f, () => {

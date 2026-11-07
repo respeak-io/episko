@@ -122,7 +122,7 @@ fn ask(ex: &dyn Exec, reg: &Registry, name: &str, lost: &AtomicUsize) -> Result<
     if lost.load(Ordering::Relaxed) >= WORKERS {
         return Err(NO_ANSWER.into());
     }
-    let r = match ex.http(&HttpReq { url: (reg.latest_url)(name), body: None, token: None, secs: SECS, report: false }) {
+    let r = match ex.http(&HttpReq { url: (reg.latest_url)(name), body: None, auth: None, secs: SECS, report: false }) {
         Ok(r) if r.code != 429 && r.code < 500 => {
             lost.store(0, Ordering::Relaxed);
             r

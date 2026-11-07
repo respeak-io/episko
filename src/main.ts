@@ -45,6 +45,7 @@ import {
   toggleInsp, toggleProjGroup, toggleRail,
   onLimitHit, syncShownAccount, launchTogether,
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
+  listMaintTokens, addMaintToken, checkMaintToken, removeMaintToken,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
@@ -273,6 +274,7 @@ setSettingsHost({
   // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
   openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
+  listMaintTokens, addMaintToken, checkMaintToken, removeMaintToken,
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -318,6 +320,7 @@ setDashHost({
   proposeDeploy: (root) => { void proposeDeploy(root); },
   proposeMaint: (root) => { void proposeMaint(root); },
   openConfig: (root) => { void openTeamFile(root); },
+  openSettings: openSettingsOn,
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
@@ -350,6 +353,7 @@ setFleetHost({
   },
   session: (label, rows, notes) => launchTogether(label, rows, notes),
   terminal: (project, path, cmd) => { void handToTerminal(project, path, cmd, { colorKey: path }); },
+  openSettings: openSettingsOn,
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts

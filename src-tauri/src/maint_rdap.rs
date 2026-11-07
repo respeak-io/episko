@@ -236,7 +236,7 @@ fn parse_record(domain: &str, body: &str) -> Result<Record, String> {
 }
 
 fn get(ex: &dyn Exec, url: String) -> Result<crate::maint::exec::HttpResp, String> {
-    ex.http(&HttpReq { url, body: None, token: None, secs: SECS, report: false })
+    ex.http(&HttpReq { url, body: None, auth: None, secs: SECS, report: false })
 }
 
 fn ask_servers(ex: &dyn Exec) -> Result<Servers, String> {

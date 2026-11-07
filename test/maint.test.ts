@@ -16,6 +16,7 @@ import {
   addCoverCaps, onClickOnly, sessionKind, currentHosts, diskPct, HOST_KINDS, hostBoard, hostRead, hostSkips, hostState, hostSummary, prodNone, prodTip, readsHost, upSpan, type HostFacts,
   majorsBehind, majorsText, packagesBoard, pkgStates, unplacedWhy, type PkgLatest,
   currentDomains, domainStates, type Domain,
+  currentErrors, errorStates, errorSummary, ERR_LEVELS, ERR_TRENDS, KEPT_BACKLOG, KEPT_CUT, tokenDoor, type ErrIssue,
   type Advisory, type Runtime, type BoardId, type Coverage, type Detection, type Door, type Facts, type Finding, type MaintInput, type SourceReport, type TabProject,
   type SweepAdvisory, type SweepFacts, type SweepPkg,
 } from "../src/maint";
@@ -1883,7 +1884,7 @@ describe("a host's vitals", () => {
       expect(cell("prod", both(probes({ code: 502 }), hosts({ updates: 3 })))).toMatchObject({ level: "bad", text: "app 502" });
       const worse = cell("prod", both(probes(), hosts({ disks: [disk("/", 96)] })));
       expect(worse).toMatchObject({ level: "bad", text: "/ 96%" });
-      expect(worse.tip.join("\n")).toMatch(/app: 200[\s\S]*prod-1: \/ 96%/);
+      expect(worse.tip.join("\n"), "the kind that speaks leads").toMatch(/^prod-1: \/ 96%[\s\S]*app: 200/);
       expect(cell("prod", both(probes({ certNotAfter: null }), hosts())), "an unknown beside a pass stays unknown").toMatchObject({ level: "muted", text: "cert unknown" });
       expect(cell("prod", both(probes(), hosts({ updates: null, security: null })))).toMatchObject({ level: "muted", text: "updates unknown" });
     });
@@ -2277,7 +2278,7 @@ describe("a host's vitals", () => {
     });
 
     it("says what no project had to ask, from the same labels' needs", () => {
-      expect(prodNone()).toBe("No project here has an address in [deploy] or a [deploy] host allowed on this machine");
+      expect(prodNone()).toBe("No project here has an address in [deploy], a [deploy] host allowed on this machine or an error tracker project in [deploy]");
     });
   });
 
@@ -2442,6 +2443,200 @@ describe("registered domains", () => {
     const skipped = cell("prod", input(unasked, ok(RD, doms(dom("example.com", 400)), { gaps: [gap] })));
     expect(skipped).toMatchObject({ state: "cantCheck", text: "not checked" });
     expect(skipped.tip).toContain(`RDAP: ${gap}`);
+  });
+});
+
+// Found by what it sees, never by its id: the frontend names no tracker.
+describe("errors in production", () => {
+  const SE = SOURCES.find((s) => s.sees.includes("prod.errors"))!.id, HP = "http-probe";
+  type ErrFacts = Extract<Facts, { kind: "errors" }>;
+  const iss = (o: Partial<ErrIssue> = {}): ErrIssue => ({
+    id: "1", shortId: "API-1", title: "TypeError: x is undefined", culprit: "app/views in index", level: "error", rawLevel: "error",
+    trend: "new", rawTrend: "new", events: 9, users: 3, firstSeen: S - 2 * D, lastSeen: S - H, unhandled: true, url: "https://errors.example/1/", ...o,
+  });
+  const old = (o: Partial<ErrIssue> = {}) => iss({ trend: "ongoing", rawTrend: "ongoing", firstSeen: S - 90 * D, ...o });
+  const errs = (issues: ErrIssue[], o: Partial<ErrFacts> = {}): ErrFacts => ({
+    kind: "errors", project: "acme/api", environment: null, windowDays: 14, release: { version: "api@1.4.0", at: S - 5 * D, newIssues: 1 },
+    lastEvent: S - H, url: "https://errors.example/acme/", issues, ...o,
+  });
+  const rep = (issues: ErrIssue[], o: Partial<ErrFacts> = {}, r: Partial<SourceReport> = {}): SourceReport => ({ ...ok(SE, errs(issues, o), r), cost: "remote" });
+  const fine = { name: "app", url: "https://app.example.com", code: 200, ms: 9, certNotAfter: S + 90 * D, err: null };
+  const probes = (o = {}): Facts => ({ kind: "probes", items: [{ ...fine, ...o }] });
+  const said = (inp: MaintInput, th = MAINT_DEFAULTS) => { const c = facetCell("prod", inp, th, NOW); return [c.level, c.text]; };
+  const of = (state: string, n = 0) => wire.reports.filter((r) => r.source === SE && (r.coverage as Coverage).state === state)[n].coverage as Coverage;
+  const tp = (path: string, ...reps: SourceReport[]): TabProject => {
+    const inp = input(...reps);
+    return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
+  };
+  const linked = (sentry: string | null, params: Record<string, string> = {}) =>
+    det([SE], { deploy: { host: null, compose: [], urls: {}, sentry, versionUrl: null, envs: {} }, config: { ...det([]).config, params } });
+
+  it("reads the backend's own report: levels and trends in the closed vocabulary", () => {
+    const r = wire.reports.find((x) => x.source === SE && (x.facts as Facts | null)?.kind === "errors")!;
+    const f = narrowMaint(r, SE).facts as ErrFacts;
+    expect(f.issues.length).toBeGreaterThan(1);
+    for (const i of f.issues) { expect(ERR_LEVELS).toContain(i.level); expect(ERR_TRENDS).toContain(i.trend); }
+    // Its window's first events all fall after the release; only the issues' own first sightings may call one new.
+    const [st] = errorStates(input(narrowMaint(r, SE)), MAINT_DEFAULTS, NOW);
+    expect(st.needy.map((x) => [x.shortId, x.why])).not.toContainEqual(["PUMP-STATION-3", "new"]);
+    expect(st.needy.find((x) => x.shortId === "PUMP-STATION-17")?.why, "older than the release, back after a fix").toBe("regressed");
+    const good = rep([iss()]);
+    expect(narrowMaint(good, SE)).toEqual(good);
+    expect(narrowMaint({ ...good, facts: errs([{ ...iss(), level: "critical" as ErrIssue["level"] }]) }, SE).coverage.state, "a level Rust never sends").toBe("error");
+    expect(narrowMaint({ ...good, facts: errs([{ ...iss(), events: "150" as unknown as number }]) }, SE).coverage.state).toBe("error");
+  });
+
+  it("calls an issue new by its first sighting since the release, and by the tracker's own word without one", () => {
+    expect(said(input(rep([iss()])))).toEqual(["warn", "1 new since 1.4.0"]);
+    expect(said(input(rep([iss({ firstSeen: S - 9 * D })]))), "new to the tracker, but older than the release").toEqual(["info", "1 unresolved"]);
+    expect(said(input(rep([iss({ firstSeen: S - 9 * D })], { release: null })))).toEqual(["warn", "1 new this week"]);
+    expect(said(input(rep([iss({ trend: "ongoing" })], { release: { version: "2.0", at: null, newIssues: null } }))), "an undated release is none").toEqual(["info", "1 unresolved"]);
+    const tip = (o: Partial<ErrFacts>) => facetCell("prod", input(rep([iss()], o)), MAINT_DEFAULTS, NOW).tip;
+    expect(tip({})).toContain(`new: first seen since 1.4.0 went out on ${fmtDay((S - 5 * D) * 1000)}`);
+    expect(tip({ release: null })).toContain("new: first seen in the last 7 days, the tracker's own word, since it records no release");
+    expect(tip({ environment: "production" })[0]).toBe("acme/api, environment production: 1 unresolved seen in 14 days");
+    expect(tip({})[0]).toBe("acme/api, every environment: 1 unresolved seen in 14 days");
+  });
+
+  it("is amber for what is new or back, red for a crash or one reaching error_users, and a backlog only informs", () => {
+    expect(said(input(rep([old({ trend: "regressed" })])))).toEqual(["warn", "1 regressed"]);
+    expect(said(input(rep([old({ trend: "escalating" })])))).toEqual(["warn", "1 escalating"]);
+    expect(said(input(rep([old({ trend: "regressed" }), old({ id: "2", trend: "escalating" })])))).toEqual(["warn", "2 back"]);
+    expect(said(input(rep([iss(), old({ id: "2", trend: "regressed" })])))).toEqual(["warn", "2 new or back"]);
+    expect(said(input(rep([iss({ level: "fatal" })])))).toEqual(["bad", "1 new since 1.4.0"]);
+    expect(said(input(rep([old({ trend: "regressed", users: 100 })])))).toEqual(["bad", "1 regressed"]);
+    expect(said(input(rep([old({ trend: "regressed", users: 100 })])), clampMaint({ error_users: 500 }))).toEqual(["warn", "1 regressed"]);
+    expect(said(input(rep([iss(), old({ id: "2" })])), clampMaint({ new_errors: 2 })), "below the team's count, a backlog").toEqual(["info", "2 unresolved"]);
+    expect(said(input(rep([old(), old({ id: "2" }), old({ id: "3", users: 5000 })]))), "an old backlog, however wide, never amber").toEqual(["info", "3 unresolved"]);
+    expect(clampMaint({ new_errors: 0, error_users: -1 })).toMatchObject({ newErrors: 1, errorUsers: 100 });
+    expect(MAINT_DEFAULTS).toMatchObject({ newErrors: 1, errorUsers: 100 });
+  });
+
+  it("draws the dot only on positive evidence: a quiet tracker is silent, and a cut list a floor", () => {
+    expect(said(input(rep([])))).toEqual(["ok", ""]);
+    expect(said(input(rep([], { lastEvent: null })))).toEqual(["muted", "silent"]);
+    expect(said(input(rep([], { lastEvent: S - 20 * D })))).toEqual(["muted", "silent"]);
+    expect(facetCell("prod", input(rep([], { lastEvent: null })), MAINT_DEFAULTS, NOW).tip).toContain("no event reached it in 14 days, so nothing says it still hears this project");
+    const quiet = input(ok(HP, probes()), rep([], { lastEvent: null }));
+    expect(coverGroups("servers", [{ path: "/r", inp: quiet, cells: facetCells(quiet, MAINT_DEFAULTS, NOW) }], null, NOW).find((g) => g.why === "silent")?.detail,
+      "beside a fine address, the row says why the tracker is silent").toBe("no event reached it in 14 days, so nothing says it still hears this project");
+    expect(said(input(rep(Array.from({ length: 100 }, (_, n) => old({ id: String(n) })), {}, { truncated: true })))).toEqual(["info", "100+ unresolved"]);
+    expect(said(input(rep([iss(), iss({ id: "2" })], {}, { truncated: true })))).toEqual(["warn", "2+ new since 1.4.0"]);
+  });
+
+  it("joins the addresses through the worse of the two, and says no deploy only when nothing answered", () => {
+    expect(said(input(ok(HP, probes()), rep([iss()])))).toEqual(["warn", "1 new since 1.4.0"]);
+    expect(said(input(ok(HP, probes({ code: 502 })), rep([iss()])))).toEqual(["bad", "app 502"]);
+    expect(said(input(ok(HP, probes()), rep([old()])))).toEqual(["info", "1 unresolved"]);
+    expect(said(input(rep([]))), "a tracker that heard events vouches alone").toEqual(["ok", ""]);
+    expect(said(input())).toEqual(["muted", "no deploy"]);
+    expect(said(input(ok(HP, probes()), not(SE, "prod", of("noTool"))))[0], "a failed tracker beside a good address reaches the cell").not.toBe("muted");
+    expect(said(input(not(SE, "prod", of("noTool"))))).toEqual(["muted", "no token"]);
+    const prod = facetCell("prod", input(ok(HP, probes()), rep([iss()])), MAINT_DEFAULTS, NOW);
+    expect(hostRows([{ path: "/a", hosts: ["p"], prod, read: true }]).map((r) => [r.level, r.text]), "a host row reads the Prod cell, errors and all").toEqual([["warn", "1 new since 1.4.0"]]);
+  });
+
+  it("gives every new or returning issue one Fix line, on a branch, below Servers' boards until its own exists", () => {
+    const line = (...issues: ErrIssue[]) => (o: Partial<ErrFacts> = {}, r: Partial<SourceReport> = {}) =>
+      findings("/r", input(ok(HP, probes()), rep(issues, o, r)), MAINT_DEFAULTS, NOW).find((f) => f.key === "prod:errors:new");
+    const one = line(iss({ shortId: "API-12A" }))()!;
+    expect([one.level, one.verb, one.source, one.ref, one.text, one.detail]).toEqual(["warn", "fix", SE, "acme/api", "API-12A new since 1.4.0", "TypeError: x is undefined"]);
+    expect(line(iss())({ release: null })!.text).toBe("API-1 new this week");
+    expect(line(old({ trend: "regressed" }))()!.text).toBe("API-1 regressed");
+    expect(line(iss())({}, { truncated: true })!.text, "a cut list never reads as one").toBe("1+ new errors since 1.4.0");
+    const four = [1, 2, 3, 4].map((n) => iss({ id: String(n), title: `E${n}`, users: n }));
+    expect(line(...four)()).toMatchObject({ text: "4 new errors since 1.4.0", detail: "E4 · E3 · E2 …" });
+    expect(line(old({ trend: "regressed" }), old({ id: "2", trend: "escalating" }))()!.text).toBe("2 errors back");
+    expect(line(iss({ level: "fatal" }), old({ id: "2", trend: "regressed" }))()).toMatchObject({ level: "bad", text: "2 errors new or back" });
+    expect(line(old())(), "a backlog has no line").toBeUndefined();
+    const f = line(iss())()!;
+    expect(findingTarget(f)).toEqual({ tab: "servers", board: null });
+    expect(findingTarget({ facet: "prod", key: "prod:errors" }), "a url named errors is still an address").toEqual({ tab: "servers", board: "addresses" });
+    const p = tp("/r", ok(HP, probes()), rep([iss()]));
+    expect(tabModel("servers", [p], "/r", null, NOW).rows.map((r) => r.key)).toContain("prod:errors:new");
+    expect(sessionKind(f), "its brief asks for a fix in code").toBe("branch");
+    expect(briefFor(f, p.inp, { project: "acme", verify: [], now: NOW })).toMatch(/^API-1 in acme's error tracker/);
+  });
+
+  it("says no token, token refused and token scope in Rust's own words, each with Settings › Accounts as its door", () => {
+    expect([whyWord(of("noTool"), "prod"), whyWord(of("noAccess", 0), "prod"), whyWord(of("noAccess", 1), "prod")]).toEqual(["no token", "token refused", "token scope"]);
+    expect([tokenDoor(SE, of("noTool"), "prod"), tokenDoor(SE, of("noAccess", 0), "prod"), tokenDoor(SE, of("noAccess", 1), "prod")]).toEqual(["add", "replace", "replace"]);
+    expect(tokenDoor(SE, { state: "error", reason: "rate limited by sentry.io" }, "prod"), "a rate limit is no token's").toBeNull();
+    expect(tokenDoor(HP, of("noTool"), "prod"), "a source with no token row").toBeNull();
+    expect(tokenDoor(SE, { state: "noTool", tool: "a token for x", fix: "run this" }, "prod"), "a command beats a door").toBeNull();
+    const groups = (c: Coverage) => {
+      const inp = input(ok(HP, probes()), not(SE, "prod", c));
+      return coverGroups("servers", [{ path: "/r", inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW) }], null, NOW).filter((g) => g.source === SE);
+    };
+    expect(groups(of("noTool")).map((g) => [g.why, g.action])).toEqual([["no token", { kind: "token", source: SE, door: "add" }]]);
+    expect(groups(of("noAccess", 0)).map((g) => g.action)).toEqual([{ kind: "token", source: SE, door: "replace" }]);
+    expect(coverRows(input(not(SE, "prod", of("noTool")))).find((r) => r.source === SE)).toMatchObject({ state: "noTool", text: "a token for sentry.io not available", token: "add" });
+    expect(coverRows(input(rep([]))).find((r) => r.source === SE)!.token).toBeNull();
+  });
+
+  it("reads facts about a project or an environment [deploy] no longer names as nobody having asked", () => {
+    const reports = { [SE]: rep([iss()]) };
+    expect(currentErrors(linked("acme/api"), reports)[SE]).toBe(reports[SE]);
+    expect(currentErrors(linked("acme/web"), reports)[SE]).toMatchObject({ coverage: { state: "notRun" }, facts: null, at: null });
+    expect(currentErrors(linked("acme/api", { sentry_environment: "production" }), reports)[SE].facts, "another environment's count").toBeNull();
+    expect(currentErrors(linked(null), reports)[SE].facts).toBeNull();
+    expect(currentErrors(linked("acme/api", { sentry_environment: "" }), reports)[SE], "an empty name is every environment, as Rust reads it").toBe(reports[SE]);
+    expect(currentErrors(null, reports)).toBe(reports);
+  });
+
+  it("gives the Runs on card one line: the project, the cell's words, when it was asked, or why not", () => {
+    const at = (d: Detection, ...reps: SourceReport[]): MaintInput => ({ det: d, reports: Object.fromEntries(reps.map((r) => [r.source, r])) });
+    expect(errorSummary(at(linked("acme/api"), rep([iss()])), MAINT_DEFAULTS, NOW)).toMatchObject({ project: "acme/api", level: "warn", text: "1 new since 1.4.0", at: S, why: null });
+    expect(errorSummary(at(linked("acme/api"), rep([])), MAINT_DEFAULTS, NOW)).toMatchObject({ level: "ok", text: "nothing new" });
+    expect(errorSummary(at(linked("acme/api")), MAINT_DEFAULTS, NOW)).toMatchObject({ level: "muted", text: "not checked", why: "not checked", at: null });
+    expect(errorSummary(at(linked("acme/api"), not(SE, "prod", of("noTool"))), MAINT_DEFAULTS, NOW))
+      .toMatchObject({ text: "no token", tip: ["a token for sentry.io not available"] });
+    expect(errorSummary(at(linked(null)), MAINT_DEFAULTS, NOW)).toBeNull();
+    const off = linked("acme/api");
+    off.config.off = ["prod"];
+    expect(errorSummary(at(off, rep([iss()])), MAINT_DEFAULTS, NOW), "prod not tracked").toBeNull();
+  });
+
+  it("is asked by Check prod, whose tip and empty toast name it from its manifest row", () => {
+    const d = det([HP, SE]), inp: MaintInput = { det: d, reports: { [HP]: not(HP, "prod", { state: "notRun" }), [SE]: { ...not(SE, "prod", { state: "notRun" }), cost: "remote" } } };
+    expect(prodChecks(inp)).toEqual([HP, SE]);
+    const label = SOURCES.find((s) => s.id === SE)!.label;
+    expect(prodTip([HP, SE], [])).toContain(`${label}: the unresolved issues and newest release of the project [deploy] names, sent its name and the token saved for its host`);
+    expect(tabBoards("servers", [tp("/r", rep([]))], null, null, NOW).unchecked, "a tracker alone leaves no address unchecked").toBe(0);
+    const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
+    addCoverCaps(input(ok(HP, probes())), sees, blind);
+    expect(blind.has("prod.errors"), "an address says nothing of errors").toBe(true);
+    const s2 = new Set<MaintCap>(), b2 = new Set<MaintCap>();
+    addCoverCaps(input(rep([])), s2, b2);
+    expect([s2.has("prod.errors"), s2.has("prod.errors-new"), b2.has("prod.status"), b2.has("prod.host")]).toEqual([true, true, true, true]);
+  });
+
+  it("keeps its line through a failed or unasked read beside an address answer, and an answer replaces it", () => {
+    const lines = (s: ReturnType<typeof takeSnap>) => s.findings.filter((f) => f.facet === "prod").map((f) => f.key);
+    const red = takeSnap("/r", input(ok(HP, probes()), rep([iss({ level: "fatal" })])), NOW - 1000);
+    expect(lines(red)).toEqual(["prod:errors:new"]);
+    const failed = takeSnap("/r", input(ok(HP, probes()), not(SE, "prod", { state: "error", reason: "rate limited" })), NOW, red);
+    expect(lines(failed)).toEqual(["prod:errors:new"]);
+    expect(failed.cells.find((c) => c.facet === "prod")).toMatchObject({ level: "bad", at: NOW - 1000 });
+    expect(lines(takeSnap("/r", input(ok(HP, probes()), not(SE, "prod", { state: "notRun" })), NOW, red)), "nobody asked").toEqual(["prod:errors:new"]);
+    expect(lines(takeSnap("/r", input(ok(HP, probes()), rep([old()])), NOW, red)), "fixed").toEqual([]);
+    expect(lines(takeSnap("/r", input(ok(HP, probes())), NOW, red)), "no longer linked").toEqual([]);
+  });
+
+  it("slims a kept list to what needs someone and the newest of the rest, never costing another project its place", () => {
+    const backlog = Array.from({ length: 80 }, (_, n) => old({ id: String(100 + n), title: `old ${"x".repeat(200)} ${n}` }));
+    const scan = (at: number, reps: SourceReport[]) => { const inp = input(ok(GHA, ci(run("build", "fail", S - D))), ...reps); return { at, account: "me", det: inp.det!, reports: { ...inp.reports } }; };
+    const big = scan(NOW, [rep([iss(), old({ id: "9", trend: "regressed" }), ...backlog])]), red = scan(NOW - H, []);
+    const room = JSON.stringify({ "/big": scan(NOW, [rep([])]), "/red": red }).length + 9000;
+    expect(JSON.stringify({ "/big": big, "/red": red }).length).toBeGreaterThan(room);
+    const out = packKept({ "/big": big, "/red": red }, room);
+    expect(Object.keys(out)).toEqual(["/big", "/red"]);
+    const kept = out["/big"].reports[SE];
+    expect([kept.truncated, kept.gaps]).toEqual([false, [KEPT_CUT]]);
+    expect((kept.facts as ErrFacts).issues.map((i) => i.id)).toEqual(["1", "9", ...backlog.slice(0, KEPT_BACKLOG).map((i) => i.id)]);
+    expect(said(input(kept)), "every needy issue kept, so its count is exact").toEqual(["warn", "2 new or back"]);
+    expect(said(input(rep(backlog.slice(0, KEPT_BACKLOG), {}, { gaps: [KEPT_CUT] }))), "only the backlog is a floor").toEqual(["info", `${KEPT_BACKLOG}+ unresolved`]);
+    expect(packKept({ "/big": big, "/red": red })["/big"], "with room it stays whole").toEqual(big);
   });
 });
 
@@ -3926,6 +4121,8 @@ describe("a maintenance session", () => {
         expect(sessionPlan([at(line(key))], ctx()).rows[0], key).toMatchObject({ where: { kind: "here" }, branch: null });
       }
       for (const key of ["ci", "ci:flaky", "security:code"]) expect(sessionKind(line(key)), key).toBe("branch");
+      expect(sessionKind(line("prod:errors:new")), "an error in production is fixed in code").toBe("branch");
+      expect(sessionPlan([at(line("prod:errors:new"))], ctx()).rows[0]).toMatchObject({ where: { kind: "new" }, branch: "maint/prod-errors-new" });
       expect(sessionKind(line("prod:setup", "setup")), "setting up [deploy] writes a file").toBe("branch");
       expect(sessionKind(line("deps:b", "review")), "no agent's work, whatever the key").toBeNull();
     });

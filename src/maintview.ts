@@ -6,15 +6,15 @@ import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
   advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, rtName, span, unplacedWhy, upSpan, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
-  type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type Verb,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
+  type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
   SESSION_MAX, SESSION_OVER, sessionKey, sessionPickable,
 } from "./maint";
 import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
-import type { DeployCfg } from "./deploy";
+import { trackerProject, type DeployCfg } from "./deploy";
 import { icon, type IconName } from "./svgicons";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
@@ -119,6 +119,8 @@ const CAP_TEXT: Record<MaintCap, string> = {
   "prod.cert": "when its certificate expires",
   "prod.host": "the host itself: disk, updates, containers",
   "prod.domain": "when its domain's registration expires",
+  "prod.errors": "unresolved errors in production",
+  "prod.errors-new": "errors new since the last release, or back",
 };
 
 // Remote, so never part of a scan: the button names every source it asks and what each reaches.
@@ -243,6 +245,12 @@ function findingHtml(f: Finding, name?: string, go = false, tick?: "on" | "off")
 // A fix is the command itself, copied rather than retyped; a forge switch is its settings page.
 const copyHtml = (fix: string) => `<code class="mt-fix">${esc(fix)}</code><button class="aslink" data-mtcopy="${escAttr(fix)}"`
   + ` data-tip="Copy the command">Copy</button>`;
+// No command saves a token, so its door is Settings › Accounts, at the kind the manifest names.
+const tokenHtml = (source: string, door: TokenDoor) => {
+  const t = findSource(source)?.token;
+  const tip = `Settings › Accounts: ${door === "add" ? "save" : "replace"} the ${t?.label ?? source} token, kept in this machine's keychain`;
+  return t ? `<button class="aslink" data-mttoken="${escAttr(source)}" data-tip="${escAttr(tip)}">${door === "add" ? "Add token…" : "Replace token…"}</button>` : "";
+};
 const settingsHtml = (url: string, label = "Settings", mark = true) =>
   `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}${mark ? ` ${icon("externalLink", "solo")}` : ""}</button>`;
 
@@ -275,6 +283,7 @@ function coverHtml(v: MaintTabView): string {
     const act = (a?.kind === "fix" ? copyHtml(a.fix)
       : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
       : a?.kind === "allow" ? allowHtml(a.host)
+      : a?.kind === "token" ? tokenHtml(a.source, a.door)
       : offer && one ? verbHtml(offer) : "")
       + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
     const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(v, g)}</span>`;
@@ -948,6 +957,7 @@ export interface MaintDash {
   probes: { at: number | null; rows: ProbeRow[] } | null; // null until Check prod answered
   host: HostSummary | null; // `[deploy] host` as this machine may reach it, and its last read
   domains: DomainState[]; // the registered domains its addresses are under, as each registry last said
+  errors: ErrSummary | null; // the error tracker [deploy] links, as it last answered or why not
 }
 
 const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
@@ -998,16 +1008,23 @@ function runsCard(v: MaintDash): string {
     d.compose.length ? kv("Compose", d.compose.join(", ")) : "",
     ...named.map(([n, u]) => addr(n, u)),
     ...Object.entries(d.envs).map(([n, p]) => kv(`Env ${n}`, `tagged ${p}`)),
-    d.sentry ? kv("Errors", d.sentry) : "",
+    v.errors ? errorLineHtml(v.errors) : trackerProject(d) ? kv("Errors", `${trackerProject(d)} · switched off`) : "",
     d.versionUrl ? addr(versionName, d.versionUrl, "Version from") : "",
     ...v.domains.map(domainHtml),
   ].join("");
   const prod = v.tab.prod;
-  const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0);
+  const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0, v.errors?.at ?? 0);
   const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
   const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
   return dcard("runs", "Runs on", "from [deploy]", across("servers", name),
     rows + `<p class="ac-empty">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`);
+}
+
+// The tracker's project and what it last said, at the cell's level; Check prod asks it, Coverage says why not.
+function errorLineHtml(e: ErrSummary): string {
+  const tip = e.tip.join("\n");
+  return `<div class="mt-probe"${tip ? ` data-tip="${escAttr(tip)}"` : ""}><span class="k">Errors</span><span class="u mono">${esc(e.project)}</span>`
+    + `<span class="mt-v ${LEVEL_CLS[e.level]}">${esc(e.text)}</span></div>`;
 }
 
 // A registration as its registry last said, at its level; the registrar opens its own page.
@@ -1048,6 +1065,7 @@ function coverCard(v: MaintDash): string {
     const d = o && findSource(o.source), said = d && disclosure(d);
     return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
       + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.text)}</span>${o ? verbHtml(o) : ""}${up ? verbHtml(up) : ""}${r.host ? allowHtml(r.host.alias, !r.host.allowed) : ""}`
+      + `${r.token && r.source ? tokenHtml(r.source, r.token) : ""}`
       + `${r.url ? settingsHtml(r.url) : ""}</div>`
       + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "")
       + (r.cfg ? `<div class="mt-fixrow">${setupHtml(v.card.path)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");

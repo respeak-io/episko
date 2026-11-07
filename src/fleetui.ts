@@ -60,6 +60,7 @@ export interface FleetHost {
   session: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>;
   // A shell with `cmd` typed in and never sent, as the dashboard's.
   terminal: (project: string, path: string, cmd: string) => void;
+  openSettings: (section: string, row?: string) => void; // Maintenance's token door, at Settings › Accounts
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -74,6 +75,7 @@ let host: FleetHost = {
   prefill: () => {},
   session: async () => {},
   terminal: () => {},
+  openSettings: () => {},
   openUsage: () => {},
   openHistory: () => {},
   refreshUsage: () => {},
@@ -632,6 +634,7 @@ const maintHost: MaintHost = {
   roots: () => maintRoots(),
   lines: () => sessionLines(cardsShown(lastCards, maintChip)),
   session: (label, rows, notes) => host.session(label, rows, notes),
+  openSettings: (section, row) => host.openSettings(section, row),
 };
 
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.

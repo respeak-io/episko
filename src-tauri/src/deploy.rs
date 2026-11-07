@@ -40,6 +40,11 @@ impl DeployConfig {
         self.host.as_deref()
     }
 
+    /// The error tracker's `org/project` `sentry-issues` reads, held to `org_project` by `keep`.
+    pub(crate) fn sentry(&self) -> Option<&str> {
+        self.sentry.as_deref()
+    }
+
     /// The services expected on that host, matched on the Compose service label.
     pub(crate) fn compose(&self) -> &[String] {
         &self.compose
@@ -262,7 +267,7 @@ pub(crate) fn http_probe(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
     let asked = &targets[..targets.len().min(PROBE_CAP)];
     let answers: Vec<Result<CurlReport, String>> = std::thread::scope(|s| {
         let jobs: Vec<_> = asked.iter().map(|(_, url)| s.spawn(move || {
-            let req = HttpReq { url: url.clone(), body: None, token: None, secs: PROBE_SECS, report: true };
+            let req = HttpReq { url: url.clone(), body: None, auth: None, secs: PROBE_SECS, report: true };
             ex.http(&req).and_then(|r| parse_report(&r.body))
         })).collect();
         jobs.into_iter().map(|j| j.join().unwrap_or_else(|_| Err("the probe panicked".into()))).collect()

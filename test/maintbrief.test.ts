@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
+import { ERR_BRIEF, FIX, branchNote, briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "../src/maintbrief";
 import {
-  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sessionKind, sweepLine, sweepVerdict, type Deployed, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
+  FACT_FACET, MAINT_DEFAULTS, VERB_KIND, findings, sessionKind, sweepLine, sweepVerdict, type Deployed, type ErrIssue, type Facts, type Finding, type MaintInput, type PkgLatest, type RerunJob, type SourceReport, type SweepAdvisory, type SweepFacts, type Verb,
 } from "../src/maint";
+import { SOURCES } from "../src/maintsources";
 import { typable } from "../src/format";
 
 // The brief is the product: an agent is only as good as what it was told, and a person reads it
@@ -179,12 +180,13 @@ describe("briefFor", () => {
 
   it("finds Fix's brief by the finding's key, one exact row per kind", () => {
     const claims = (key: string) => FIX.filter(([test]) => test({ key })).length;
-    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config", "prod:host:disk", "prod:host:load", "prod:domain:acme.example"]) expect(claims(key), key).toBe(1);
+    for (const key of ["ci", "ci:flaky", "prod:api", "prod:cert:app", "prod:cert", "release:deploy-failed", "security:code", "security:config", "prod:host:disk", "prod:host:load", "prod:domain:acme.example", "prod:errors:new"]) expect(claims(key), key).toBe(1);
     // Later prod sources key `prod:<kind>:…`, which no probe's name can spell.
-    for (const key of ["prod:host:other", "prod:domain:", "prod:errors:new", "release:deploy", "security:dependency"]) {
+    for (const key of ["prod:host:other", "prod:domain:", "prod:errors:old", "release:deploy", "security:dependency"]) {
       expect(claims(key), key).toBe(0);
     }
-    expect(briefFor({ ...by("prod:api"), key: "prod:errors:new" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:errors:old" }, inp, ctx), "no row: no brief, never the probe's").toBeNull();
+    expect(briefFor({ ...by("prod:api"), key: "prod:errors:new" }, inp, ctx), "a probe's facts are no tracker's").toBeNull();
     expect(briefFor({ ...by("prod:api"), key: "prod:domain:acme.example" }, inp, ctx), "a probe's facts are no domain's").toBeNull();
     expect(briefFor({ ...by("prod:api"), key: "prod:host:disk" }, inp, ctx), "a probe's facts are no host's").toBeNull();
   });
@@ -469,6 +471,75 @@ describe("a domain's brief", () => {
   });
 });
 
+// Neutral hosts throughout: the brief must read the same whatever tracker answered.
+const issue = (o: Partial<ErrIssue> = {}): ErrIssue => ({
+  id: "101", shortId: "API-1A", title: "ZeroDivisionError: division by zero", culprit: "billing.invoice in total", level: "error", rawLevel: "error",
+  trend: "new", rawTrend: "new", events: 150, users: 12, firstSeen: S - 2 * D, lastSeen: S - 3600, unhandled: true, url: "https://errors.example/issues/101/", ...o,
+});
+const tracked = (issues: ErrIssue[], o: Partial<Extract<Facts, { kind: "errors" }>> = {}, cut = false) => input({
+  ...ok("errs", { kind: "errors", project: "acme/api", environment: null, windowDays: 14, lastEvent: S - 3600,
+    release: { version: "api@1.4.0", at: S - 5 * D, newIssues: 2 }, url: "https://errors.example/acme/issues/", issues, ...o }),
+  cost: "remote", truncated: cut,
+});
+
+describe("an error's brief", () => {
+  const line = (i: MaintInput): Finding => findings("/r", i, MAINT_DEFAULTS, NOW).find((f) => f.key === "prod:errors:new")!;
+  const brief = (i: MaintInput) => briefFor(line(i), i, ctx)!;
+
+  it("reads one issue in place: its link, why it is new, its level, counts, dates and where", () => {
+    const b = brief(tracked([issue()]));
+    const lines = b.split("\n");
+    expect(lines[0]).toBe("API-1A in acme's error tracker (acme/api, every environment) needs fixing: ZeroDivisionError: division by zero");
+    expect(lines[2]).toBe("https://errors.example/issues/101/");
+    expect(b).toContain("- new since api@1.4.0 went out");
+    expect(b).toContain("- level error, unhandled");
+    expect(b).toContain("- 150 events from 12 users in 14 days; first seen 2d ago, last seen 1h ago");
+    expect(b).toContain("- where: billing.invoice in total");
+    expect(b).not.toContain("###");
+  });
+
+  it("gives several issues a heading each, worst first, and says how new was decided", () => {
+    const i = tracked([issue(), issue({ id: "102", shortId: "API-2B", title: "KeyError: 'sku'", level: "fatal", rawLevel: "fatal", firstSeen: S - 90 * D, trend: "regressed", unhandled: null, culprit: null })],
+      { release: null, environment: "production" });
+    const b = brief(i);
+    expect(b.split("\n")[0]).toBe("acme's error tracker (acme/api, environment production) has 2 errors new or back that need fixing:");
+    expect(b.indexOf("### API-2B · KeyError: 'sku'"), "a crash leads").toBeLessThan(b.indexOf("### API-1A"));
+    expect(b).toContain("- back after it was resolved");
+    expect(b).toContain("- new in the last 7 days, by the tracker's own word");
+    expect(b).toContain("- level fatal\n");
+  });
+
+  it("is code work: find the cause, reproduce it, fix it, and touch nothing in the tracker or production", () => {
+    const b = brief(tracked([issue()]));
+    expect(b).toMatch(/find the cause in this repository and say which change introduced it/);
+    expect(b).toMatch(/Reproduce it with a\nfailing test first, then fix the cause\. Never swallow the error/);
+    expect(b).toMatch(/Do not mark anything resolved, ignored or assigned in the error tracker, and touch nothing in production/);
+    expect(b).toContain("The latest event's stack trace is not copied here");
+    expect(b).toMatch(/## Verify\nRun this project's own checks[\s\S]*pnpm test/);
+    expect(b, "a Fix that changes code runs on a branch, so its brief may not forbid change").not.toMatch(/Change nothing/);
+    expect(sessionKind(line(tracked([issue()])))).toBe("branch");
+  });
+
+  it("caps the list, names the rest and says a cut list is a floor", () => {
+    const many = Array.from({ length: 12 }, (_, n) => issue({ id: String(200 + n), shortId: `API-${n}`, users: n }));
+    const b = brief(tracked(many, {}, true));
+    expect(b.split("\n")[0]).toContain("has 12+ errors new or back");
+    expect(b.match(/^### /gm)?.length).toBe(ERR_BRIEF);
+    expect(b).toContain("2 more issues like these: https://errors.example/acme/issues/.");
+    expect(b).toMatch(/This list hit a page cap, so more issues may exist/);
+  });
+
+  it("answers null once nothing needs fixing, and names no tracker", () => {
+    const f = line(tracked([issue()]));
+    expect(briefFor(f, tracked([issue({ firstSeen: S - 90 * D, trend: "ongoing" })]), ctx), "a backlog has no Fix").toBeNull();
+    expect(briefFor(f, input(), ctx)).toBeNull();
+    const trackers = SOURCES.filter((s) => s.sees.includes("prod.errors")).flatMap((s) => [s.label, s.token?.label ?? ""]).filter(Boolean);
+    expect(trackers.length).toBeGreaterThan(0);
+    const b = brief(tracked([issue()])).toLowerCase();
+    expect(trackers.filter((w) => b.includes(w.toLowerCase()))).toEqual([]);
+  });
+});
+
 describe("the advisory sweep's briefs", () => {
   const adv: SweepAdvisory = {
     id: "GHSA-35jh-r3h4-6jhm", aliases: ["CVE-2021-23337"], summary: "Command Injection in lodash", severity: "high", rawSeverity: "HIGH",
@@ -564,8 +635,9 @@ describe("a session's briefs", () => {
       updates: 0, security: 0, packages: [], pm: "apt", listsAt: S, reboot: true, rebootWhy: [], containers: [], compose: [] }] };
     const hosted = input(ok("ssh-host", hostFacts));
     const named = input(ok("rdap-domain", { kind: "domains", items: [{ domain: "example.com", names: ["app"], expires: S - D, status: [], registrar: null, url: null }] }));
-    const lines = [...[inp, later, hosted, named].flatMap((i) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "fix").map((f) => [f, i] as const))];
-    expect(lines.map(([f]) => f.key)).toEqual(expect.arrayContaining(["ci", "ci:flaky", "prod:api", "prod:cert:app", "release:deploy-failed", "prod:host:disk", "prod:host:reboot", "prod:domain:example.com"]));
+    const errs = tracked([issue()]);
+    const lines = [...[inp, later, hosted, named, errs].flatMap((i) => findings("/r", i, MAINT_DEFAULTS, NOW).filter((f) => f.verb === "fix").map((f) => [f, i] as const))];
+    expect(lines.map(([f]) => f.key)).toEqual(expect.arrayContaining(["ci", "ci:flaky", "prod:api", "prod:cert:app", "release:deploy-failed", "prod:host:disk", "prod:host:reboot", "prod:domain:example.com", "prod:errors:new"]));
     for (const [f, i] of lines) {
       const brief = briefFor(f, i, ctx)!;
       expect(sessionKind(f) === "here", f.key).toBe(/Change nothing/.test(brief));

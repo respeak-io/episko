@@ -3,7 +3,7 @@
 // in. Facts in, words out: no DOM, no Tauri, and no vendor named, so the next adapter needs none.
 
 import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet, type MaintCap, type SourceDef } from "./maintsources";
-import { narrowDeploy, type DeployCfg } from "./deploy";
+import { narrowDeploy, trackerEnv, trackerProject, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
 import { cmpVer, parseVer, satisfies, verCmpStr } from "./deps";
 import { fmtDay, nfcKeys } from "./format";
@@ -60,6 +60,17 @@ export interface HostFacts {
 /** A registered domain as its own registry answered; `expires: null` is a registry that publishes none.
  *  `names` are the [deploy] entries under it, `url` the registrar's own page. */
 export interface Domain { domain: string; names: string[]; expires: number | null; status: string[]; registrar: string | null; url: string | null }
+export const ERR_LEVELS = ["fatal", "error", "warning", "info", "debug", "unknown"] as const;
+export type ErrLevel = (typeof ERR_LEVELS)[number];
+export const ERR_TRENDS = ["new", "regressed", "escalating", "ongoing", "unknown"] as const;
+export type ErrTrend = (typeof ERR_TRENDS)[number];
+/** An error tracker's newest release: `at` when it went out, else when it was made. */
+export interface ErrRelease { version: string; at: number | null; newIssues: number | null }
+/** One unresolved issue, its words and counts only: never an event, a stack trace or a user. */
+export interface ErrIssue {
+  id: string; shortId: string; title: string; culprit: string | null; level: ErrLevel; rawLevel: string; trend: ErrTrend; rawTrend: string;
+  events: number; users: number; firstSeen: number | null; lastSeen: number | null; unhandled: boolean | null; url: string | null;
+}
 /** A cycle's end: unix secs, or the bare yes or no a list gives where it names no date. */
 export type Eol = number | boolean | null;
 export interface Runtime {
@@ -102,6 +113,8 @@ export type Facts =
   | { kind: "probes"; items: Probe[] }
   | { kind: "hosts"; items: HostFacts[] }
   | { kind: "domains"; items: Domain[] }
+  | { kind: "errors"; project: string; environment: string | null; windowDays: number; release: ErrRelease | null;
+      lastEvent: number | null; url: string | null; issues: ErrIssue[] } // environment null: every one
   | { kind: "runtimes"; items: Runtime[] };
 export type FactKind = Facts["kind"];
 type FactsOf<K extends FactKind> = Extract<Facts, { kind: K }>;
@@ -122,6 +135,7 @@ export const FACT_FACET: Record<FactKind, Facet> = {
   probes: "prod",
   hosts: "prod",
   domains: "prod",
+  errors: "prod",
   runtimes: "security",
 };
 export const FACT_KINDS = Object.keys(FACT_FACET) as FactKind[];
@@ -172,6 +186,10 @@ const isHost = shape({
   reboot: opt(bool), rebootWhy: list(str), containers: opt(list(isContainer)), compose: list(str),
 });
 const isDomain = shape({ domain: str, names: list(str), expires: opt(num), status: list(str), registrar: opt(str), url: opt(str) });
+const isErrIssue = shape({
+  id: str, shortId: str, title: str, culprit: opt(str), level: oneOf(ERR_LEVELS), rawLevel: str, trend: oneOf(ERR_TRENDS), rawTrend: str,
+  events: num, users: num, firstSeen: opt(num), lastSeen: opt(num), unhandled: opt(bool), url: opt(str),
+});
 const isRuntime = shape({
   product: str, name: str, declared: str, cycle: opt(str), eol: (v) => v === null || num(v) || bool(v),
   latest: opt(str), newest: opt(str), file: str, url: opt(str),
@@ -205,6 +223,10 @@ const FACT_SHAPES: Record<FactKind, Is> = {
   probes: shape({ items: list(isProbe) }),
   hosts: shape({ items: list(isHost) }),
   domains: shape({ items: list(isDomain) }),
+  errors: shape({
+    project: str, environment: opt(str), windowDays: num, release: opt(shape({ version: str, at: opt(num), newIssues: opt(num) })),
+    lastEvent: opt(num), url: opt(str), issues: list(isErrIssue),
+  }),
   runtimes: shape({ items: list(isRuntime) }),
 };
 
@@ -287,6 +309,8 @@ export interface MaintThresholds {
   containerRestarts: number; // a running container restarted this often is drifting
   loadPerCpu: number; // the 15-minute load per CPU that is drifting
   domainWarnDays: number; // a registration ending sooner is drifting: renewing one often needs a person with a card
+  newErrors: number; // unresolved issues new since the last release, regressed or escalating, that make Prod drifting
+  errorUsers: number; // one of them reaching this many users, or any fatal one, is broken
 }
 export const MAINT_DEFAULTS: MaintThresholds = {
   unreleasedCommits: 30,
@@ -306,6 +330,8 @@ export const MAINT_DEFAULTS: MaintThresholds = {
   containerRestarts: 5,
   loadPerCpu: 2,
   domainWarnDays: 30,
+  newErrors: 1,
+  errorUsers: 100,
 };
 const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   unreleasedCommits: "unreleased_commits",
@@ -325,6 +351,8 @@ const RAW_KEYS: Record<keyof MaintThresholds, string> = {
   containerRestarts: "container_restarts",
   loadPerCpu: "load_per_cpu",
   domainWarnDays: "domain_warn_days",
+  newErrors: "new_errors",
+  errorUsers: "error_users",
 };
 
 /** `[maintenance.thresholds]` over the defaults. Non-positive is refused: a 0 would fire on every project. */
@@ -390,8 +418,9 @@ const OFF_WORD: Partial<Record<Facet, string>> = { security: "alerts off" };
 export function whyWord(c: Coverage, facet: Facet): string {
   switch (c.state) {
     case "ok": return "read";
-    case "noAccess": return /insufficient_scope|auth refresh|\b(token|required|following) scopes?\b/i.test(`${c.reason} ${c.fix ?? ""}`) ? "token scope" : "no access"; // never a bare word: an ssh alias reaches this text
-    case "noTool": return /auth login/i.test(c.fix ?? "") ? "signed out" : "tool missing";
+    case "noAccess": return /\brefused the (stored )?token\b/i.test(c.reason) ? "token refused"
+      : /insufficient_scope|auth refresh|\b(token|required|following) scopes?\b/i.test(`${c.reason} ${c.fix ?? ""}`) ? "token scope" : "no access"; // never a bare word: an ssh alias reaches this text
+    case "noTool": return /auth login/i.test(c.fix ?? "") ? "signed out" : /\btoken\b/i.test(c.tool) ? "no token" : "tool missing";
     case "off": return OFF_WORD[facet] ?? "switched off";
     case "unsupported": return "unavailable";
     case "notRun": return "not checked";
@@ -633,6 +662,93 @@ export function currentDomains(det: Detection | null, reports: Readonly<Record<s
       : { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
   }
   return out;
+}
+
+// ---------- unresolved errors in production ----------
+
+/** An issue that needs someone: first seen since the newest release (or new by the tracker's own word
+ *  when it records none), back after a fix, or rising. `bad`: fatal, or reaching `error_users` people. */
+export interface ErrNeedy extends ErrIssue { why: "new" | "regressed" | "escalating"; bad: boolean }
+/** One tracker's answer judged; `rule` is how "new" was decided, so a tip can say which. */
+export interface ErrState {
+  source: string; project: string; environment: string | null; windowDays: number; release: ErrRelease | null; url: string | null;
+  rule: "release" | "trend"; needy: ErrNeedy[]; unresolved: number; cut: boolean; lastEvent: number | null;
+  level: Level; text: string; tip: string[];
+}
+
+/** A release named as a cell has room for: the package before its `@` dropped. */
+export const relName = (v: string) => v.slice(v.lastIndexOf("@") + 1) || v;
+
+// Worst first: a crash, then what nothing caught, then the most people, then the most events.
+const byHarm = (a: ErrIssue, b: ErrIssue) => Number(b.level === "fatal") - Number(a.level === "fatal")
+  || Number(b.unhandled === true) - Number(a.unhandled === true) || b.users - a.users || b.events - a.events || a.shortId.localeCompare(b.shortId);
+
+/** The words for a set of needy issues: `new`, `regressed`, `escalating`, `back` for both, or `new or back`. */
+export function needyWord(needy: readonly ErrNeedy[]): string {
+  const w = new Set(needy.map((x) => x.why));
+  return w.size === 1 ? [...w][0] : w.has("new") ? "new or back" : "back";
+}
+
+// Why an issue needs someone, from the facts alone: no threshold decides it, so a kept scan can slim to it.
+function needyWhy(i: ErrIssue, at: number | null): ErrNeedy["why"] | null {
+  const fresh = at !== null ? i.firstSeen !== null && i.firstSeen >= at : i.trend === "new";
+  return fresh ? "new" : i.trend === "regressed" || i.trend === "escalating" ? i.trend : null;
+}
+
+// A backlog is ordinary, so it is info at its loudest; silence is not health (the bot rule), so it is muted.
+// `cut`: the tracker's page was full, so every count is a floor; a kept scan's slimming floors the backlog alone.
+function judgeErrors(source: string, r: Pick<SourceReport, "truncated" | "gaps">, f: FactsOf<"errors">, th: MaintThresholds, now: number): ErrState {
+  const cut = r.truncated, more = cut || r.gaps.includes(KEPT_CUT) ? "+" : "";
+  const rel = f.release?.at != null ? f.release : null, at = rel?.at ?? null;
+  const needy = f.issues.flatMap((i): ErrNeedy[] => {
+    const why = needyWhy(i, at);
+    return why ? [{ ...i, why, bad: i.level === "fatal" || i.users >= th.errorUsers }] : [];
+  }).sort(byHarm);
+  const plus = cut ? "+" : "", word = needyWord(needy);
+  const since = rel ? `since ${relName(rel.version)}` : "this week";
+  const says = `${needy.length}${plus} ${word}${word === "new" ? ` ${since}` : ""}`;
+  const fresh = f.lastEvent !== null && now / 1000 - f.lastEvent < f.windowDays * DAY;
+  const [level, text]: [Level, string] = needy.length && needy.length >= th.newErrors ? [needy.some((x) => x.bad) ? "bad" : "warn", says]
+    : f.issues.length ? ["info", `${f.issues.length}${more} unresolved`]
+    : fresh ? ["ok", ""] : ["muted", "silent"];
+  const tip = [
+    ...(level === "muted" ? [`no event reached it in ${f.windowDays} days, so nothing says it still hears this project`] : []),
+    `${f.project}, ${f.environment ? `environment ${f.environment}` : "every environment"}: ${f.issues.length}${more} unresolved seen in ${f.windowDays} days`,
+    rel ? `new: first seen since ${relName(rel.version)} went out on ${fmtDay(at! * 1000)}` : "new: first seen in the last 7 days, the tracker's own word, since it records no release",
+    ...needy.slice(0, 3).map((x) => `${x.shortId} ${x.why}${x.bad ? (x.level === "fatal" ? ", fatal" : `, ${x.users} users`) : ""}: ${x.title}`),
+  ];
+  return { source, project: f.project, environment: f.environment, windowDays: f.windowDays, release: f.release, url: f.url, rule: rel ? "release" : "trend",
+    needy, unresolved: f.issues.length, cut, lastEvent: f.lastEvent, level, text, tip };
+}
+
+/** A project's error trackers as each last answered, worst first. */
+export const errorStates = (inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): ErrState[] =>
+  okFacts(inp, "prod").flatMap((r) => r.facts.kind === "errors" ? [judgeErrors(r.source, r, r.facts, th, now)] : []).sort(byRank);
+
+/** A click's answer outlives a `[deploy]` or a `[maintenance.params]` edited by hand or a pull: facts
+ *  about a project or an environment no longer named read as nobody having asked yet. */
+export function currentErrors(det: Detection | null, reports: Readonly<Record<string, SourceReport>>): Readonly<Record<string, SourceReport>> {
+  if (!det) return reports;
+  const project = trackerProject(det.deploy), env = trackerEnv(det.config.params);
+  const out = { ...reports };
+  for (const [id, r] of Object.entries(reports)) {
+    if (r.facts?.kind !== "errors" || (r.facts.project === project && r.facts.environment === env)) continue;
+    out[id] = { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
+  }
+  return out;
+}
+
+/** The Runs on card's line for its error tracker: the project, the cell's words, when it was asked, or why not. */
+export interface ErrSummary { project: string; level: Level; text: string; at: number | null; why: string | null; tip: string[] }
+export function errorSummary(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS, now = Date.now()): ErrSummary | null {
+  const project = trackerProject(inp.det?.deploy), ids = (inp.det?.sources ?? []).filter((id) => findSource(id)?.sees.includes("prod.errors"));
+  if (!project || !ids.length || inp.det?.config.off.includes("prod")) return null;
+  const [st] = errorStates(inp, th, now);
+  const failed = st ? undefined : ids.map((id) => inp.reports[id]).find((r) => r && r.coverage.state !== "ok");
+  const at = (st ? inp.reports[st.source]?.at : failed?.at) ?? null;
+  if (st) return { project, level: st.level, text: st.text || "nothing new", at, why: null, tip: st.tip };
+  const why = failed ? whyWord(failed.coverage, "prod") : "not checked";
+  return { project, level: "muted", text: why, at, why, tip: failed ? [covText(failed.coverage)] : [] };
 }
 
 // ---------- deployments: what each environment runs ----------
@@ -936,17 +1052,27 @@ const domainJudge = (_facts: Facts[], c: Ctx): Judged | null => {
   return { level: st[0].level, text, tip };
 };
 
+// Each report's own cap, never the facet's: a cut issue list says nothing of an address.
+const errorJudge = (_facts: Facts[], c: Ctx): Judged | null => {
+  const st = c.reps.flatMap((r) => r.facts?.kind === "errors" ? [judgeErrors(r.source, r, r.facts, c.th, c.now)] : []).sort(byRank);
+  return st.length ? { level: st[0].level, text: st[0].text, tip: st.flatMap((s) => s.tip) } : null;
+};
+
 // One judge per kind of prod facts, the worse speaking (worseOf). `alone`: whether that kind may
 // draw the grey dot with nothing beside it; one that never can is judged blind.
 const PROD_JUDGES: { judge: (facts: Facts[], c: Ctx) => Judged | null; alone: boolean }[] = [
   { judge: probeJudge, alone: true },
   { judge: hostJudge, alone: true },
   { judge: domainJudge, alone: false }, // a registered name vouches for no address
+  { judge: errorJudge, alone: true },
 ];
 const prodRule: Rule = (facts, c) => {
   const said = PROD_JUDGES.flatMap(({ judge, alone }) => { const j = judge(facts, c); return j ? [alone ? j : { ...j, blind: true }] : []; });
   if (!said.length) return { level: "muted", text: facetDef("prod").none, tip: [] };
-  const j = said.slice(1).reduce((a, b) => worseOf(a, b), said[0]);
+  const w = said.slice(1).reduce((a, b) => worseOf(a, b), said[0]);
+  // The kind that speaks leads the tip, so a Coverage row's detail explains its own word.
+  const lead = said.find((s) => s.level === w.level && s.text === w.text);
+  const j = lead ? { ...w, tip: [...lead.tip, ...said.filter((s) => s !== lead).flatMap((s) => s.tip)] } : w;
   // Only a kind that cannot vouch answered, and found nothing: the addresses are what is unknown.
   return unsure(j) ? { ...j, level: "muted", text: "addresses not checked" } : j;
 };
@@ -1310,6 +1436,15 @@ export function findings(root: string, inp: MaintInput, th: MaintThresholds = MA
         detail: [`behind ${d.names.join(", ")}`, d.registrar].filter(Boolean).join(" · "), verb: "fix", source, ref: d.domain });
     }
   }
+  // Every new or returning issue is one Fix, as four advisories are one Patch: its brief names each.
+  const [err] = errorStates(inp, th, now);
+  if (err && (err.level === "bad" || err.level === "warn")) {
+    const x = err.needy[0], one = err.needy.length === 1 && !err.cut, word = needyWord(err.needy);
+    const since = word !== "new" ? "" : err.rule === "release" && err.release ? ` since ${relName(err.release.version)}` : " this week";
+    add("prod", { key: "prod:errors:new", level: err.level, verb: "fix", source: err.source, ref: err.project,
+      text: one ? `${x.shortId} ${word}${since}` : `${err.needy.length}${err.cut ? "+" : ""} ${word === "new" ? "new errors" : `errors ${word}`}${since}`,
+      detail: err.needy.slice(0, 3).map((y) => y.title).join(" · ") + (err.needy.length > 3 ? " …" : "") });
+  }
   return out.sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level]
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.key.localeCompare(b.key));
 }
@@ -1381,6 +1516,10 @@ export const HOST_READ = "one fixed read-only script (disk, load, pending update
 const PROD_ASKS: Partial<Record<MaintCap, { does: (hosts: readonly string[]) => string; needs: string }>> = {
   "prod.status": { does: () => "each [deploy] address once, and its certificate", needs: "an address in [deploy]" },
   "prod.host": { does: (h) => `${HOST_READ} on ${h.join(", ") || "each allowed host"}, over your own ssh`, needs: "a [deploy] host allowed on this machine" },
+  "prod.errors": {
+    does: () => "the unresolved issues and newest release of the project [deploy] names, sent its name and the token saved for its host",
+    needs: "an error tracker project in [deploy]",
+  },
 };
 const asks = (id: string) => findSource(id)?.sees.map((c) => PROD_ASKS[c]).find((x) => x);
 
@@ -1393,7 +1532,8 @@ export function prodTip(ids: readonly string[], hosts: readonly string[]): strin
 /** Check prod's toast when no project gives it anything to ask. */
 export function prodNone(): string {
   const needs = [...new Set(facetSources("prod").filter(onClickOnly).flatMap((d) => asks(d.id)?.needs ?? []))];
-  return `No project here has ${needs.join(" or ") || "anything Check prod asks"}`;
+  const said = needs.length > 1 ? `${needs.slice(0, -1).join(", ")} or ${needs[needs.length - 1]}` : needs[0];
+  return `No project here has ${said || "anything Check prod asks"}`;
 }
 
 /** What a tab lists beyond a card's lines: open work, and a facet nobody set up. Each has its verb. */
@@ -1499,7 +1639,7 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
   security: [["runtimes", /^security:runtime$/], ["advisories", /^security:(?!setup$)/]],
   deps: [["packages", /^deps:packages$/], ["update-prs", /^deps:(?!setup$)/]],
   git: [["hygiene", /^git:(unpushed|tidy|fetch)$/]],
-  prod: [["hosts", /^prod:host:/], ["domains", /^prod:domain:/], ["addresses", /^prod:(?!setup$)/]],
+  prod: [["hosts", /^prod:host:/], ["domains", /^prod:domain:/], ["addresses", /^prod:(?!setup$|errors:)/]],
   work: [["work", /^work:(review|open)$/]],
 };
 
@@ -1574,7 +1714,16 @@ export type CoverAction =
   | { kind: "settings"; urls: Record<string, string> } // per root; a root without one is listed bare
   | { kind: "fix"; fix: string }
   | { kind: "run"; source: string }
-  | { kind: "allow"; host: string }; // a [deploy] host this machine may not reach yet
+  | { kind: "allow"; host: string } // a [deploy] host this machine may not reach yet
+  | { kind: "token"; source: string; door: TokenDoor }; // Settings › Accounts, from the source's manifest row
+/** What Settings › Accounts does for a coverage: save a token where none is, or replace one refused or short of a scope. */
+export type TokenDoor = "add" | "replace";
+/** The token door a source's coverage needs, or null: no command fixes it, and its manifest row names a token. */
+export function tokenDoor(id: string, c: Coverage, facet: Facet): TokenDoor | null {
+  if (fixOf(c) || !findSource(id)?.token) return null;
+  const why = whyWord(c, facet);
+  return why === "no token" ? "add" : why === "token refused" || why === "token scope" ? "replace" : null;
+}
 // What a facet's verdict cannot speak for: refused everywhere, a token must not look like no deployments or no flaky job.
 const SIDE_CAP: Partial<Record<Facet, MaintCap>> = { ci: "ci.reruns", release: "rel.deployed" };
 export interface CoverGroup {
@@ -1617,12 +1766,12 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
         if ((findSource(id)?.facet ?? r?.facet) !== facet || (only && !only(id)) || unticked(inp, id)) continue; // an unticked host is below, cell or not
         if (inp.skip?.includes(id)) { if (!only) add(path, { key: `${id}|skipped`, facet, source: id, what: labelOf(id), why: "skipped here", detail: "skipped on this machine" }); continue; }
         if (!r || r.coverage.state === "ok" || r.coverage.state === "notRun") continue; // an offer, below
-        const fix = fixOf(r.coverage), url = settingsFor(r, det);
+        const fix = fixOf(r.coverage), url = settingsFor(r, det), why = whyWord(r.coverage, facet), door = tokenDoor(id, r.coverage, facet);
         // Grouped by the fix where there is one: an account name in the reason must not split a row.
         const key = `${id}|${r.coverage.state}|${fix ?? (r.coverage.state === "error" ? "" : covText(r.coverage))}`;
         // Every off row collects links, so a first project with none cannot strip the rest of theirs.
-        add(path, { key, facet, source: id, what: labelOf(id), why: whyWord(r.coverage, facet), detail: covText(r.coverage) },
-          fix ? { kind: "fix", fix } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
+        add(path, { key, facet, source: id, what: labelOf(id), why, detail: covText(r.coverage) },
+          fix ? { kind: "fix", fix } : door ? { kind: "token", source: id, door } : r.coverage.state === "off" ? { kind: "settings", urls: url ? { [path]: url } : {} } : null);
       }
     };
     for (const c of cells) {
@@ -2108,7 +2257,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
     b.domains = domainBoard(ps, root, now);
     // A check that ran and failed is Coverage's to explain, never "not checked yet".
     b.unchecked = mine.filter((p) => {
-      const ids = prodChecks(p.inp).filter((id) => !readsHost(id));
+      const ids = prodChecks(p.inp).filter((id) => !!findSource(id)?.sees.includes("prod.status"));
       return ids.length && ids.every((id) => (p.inp.reports[id]?.coverage.state ?? "notRun") === "notRun");
     }).length;
   }
@@ -2286,6 +2435,7 @@ export interface CoverRow {
   url: string | null; // the forge page that switches an `off` source on
   cfg: boolean; // a [maintenance] key would answer it: the setup doors
   host: { alias: string; allowed: boolean } | null; // the [deploy] host a source reads: its row's Allow or Disallow
+  token: TokenDoor | null; // Settings › Accounts answers it: a token to add, or one to replace
 }
 
 /** Coverage: every source and marker detected here and what became of it, in card order. */
@@ -2293,26 +2443,26 @@ export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
   const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null, cfg: false, host: null }));
+    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null, cfg: false, host: null, token: null }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
     const alias = readsHost(id) ? det.deploy?.host : null;
     const host = alias ? { alias, allowed: (inp.hosts ?? []).includes(alias) } : null;
-    const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null) =>
-      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text), host });
+    const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null, token: TokenDoor | null = null) =>
+      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text), host, token });
     // A read that answered without a key it needed says so: merged branches want a trunk.
     const gap = r?.coverage.state === "ok" ? r.gaps.find((g) => setupKeyOf(g)) : undefined;
     if (unticked(inp, id)) row("skipped", notAllowed(inp));
     else if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
     else if (!r) row("unread", "not read yet");
-    else row(r.coverage.state, gap ? `read; ${gap}` : covText(r.coverage), fixOf(r.coverage), settingsFor(r, det));
+    else row(r.coverage.state, gap ? `read; ${gap}` : covText(r.coverage), fixOf(r.coverage), settingsFor(r, det), tokenDoor(id, r.coverage, facet));
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null, cfg: false, host: null });
+    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null, cfg: false, host: null, token: null });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null, cfg: false, host: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null, cfg: false, host: null, token: null });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }
@@ -2599,7 +2749,8 @@ const deployStands = (c: Cell, inp: MaintInput, prev: MaintSnap) => c.facet === 
 
 // Prod's kinds answer apart (vouched), so each keeps its own lines: an answer from one neither erases
 // nor waits on the other's failed or unasked read, and a kind switched off or skipped here keeps nothing.
-const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.host" : key.startsWith("prod:domain:") ? "prod.domain" : "prod.status";
+const prodCap = (key: string): MaintCap => key.startsWith("prod:host:") ? "prod.host" : key.startsWith("prod:domain:") ? "prod.domain"
+  : key.startsWith("prod:errors:") ? "prod.errors" : "prod.status";
 // Once any kind answered, even where the cell cannot vouch (a domain beside an address nobody checked).
 const prodSplit = (c: Cell, inp: MaintInput) => c.facet === "prod" && c.state !== "unread" && (c.state === "read" || okFacts(inp, "prod").length > 0);
 function prodStands(inp: MaintInput, prev: MaintSnap): SnapFinding[] {
@@ -2704,13 +2855,23 @@ export function clampKept(raw: unknown): KeptScans {
   }));
 }
 
+export const KEPT_BACKLOG = 10; // the unresolved issues a slimmed errors report keeps beside its needy ones
+export const KEPT_CUT = `kept: every issue that needs someone and the ${KEPT_BACKLOG} newest of the rest`;
+// An errors report down to its needy issues and the newest of the rest: its backlog a floor, never a dot, its needy count exact.
+function slimErrors(r: SourceReport): SourceReport {
+  if (r.facts?.kind !== "errors") return r;
+  const at = r.facts.release?.at ?? null;
+  let rest = 0;
+  const issues = r.facts.issues.filter((i) => needyWhy(i, at) !== null || rest++ < KEPT_BACKLOG);
+  return issues.length === r.facts.issues.length ? r : { ...r, gaps: [...r.gaps, KEPT_CUT], facts: { ...r.facts, issues } };
+}
 // A scan with its packages read as unasked: they are info, the next read of them is cached, and they can be the bulk of a project.
 const withoutPackages = (k: KeptScan): KeptScan => ({ ...k, reports: Object.fromEntries(Object.entries(k.reports).map(([id, r]) =>
-  [id, r.facts?.kind === "packages" ? { ...r, coverage: { state: "notRun" as const }, at: null, truncated: false, gaps: [], facts: null } : r])) });
+  [id, r.facts?.kind === "packages" ? { ...r, coverage: { state: "notRun" as const }, at: null, truncated: false, gaps: [], facts: null } : slimErrors(r)])) });
 
 /** The newest scans that fit `budget` characters; a root left out falls back to its `cc-maint` snapshot.
- *  Each is sized without its packages first and the newest get them back, so a Packages list never
- *  costs another project its place, nor a red CI read the card that shows it. */
+ *  Each is sized without its packages and with its errors slimmed first, and the newest get them back,
+ *  so neither list ever costs another project its place, nor a red CI read the card that shows it. */
 export function packKept(all: KeptScans, budget = KEPT_CHARS): KeptScans {
   const out: KeptScans = {}, newest = Object.entries(all).sort((a, b) => b[1].at - a[1].at || a[0].localeCompare(b[0]));
   let used = 2;
@@ -3120,7 +3281,8 @@ export const VERB_KIND: Record<Verb, "branch" | "here" | null> = {
   run: null,
 };
 // A Fix that only reads production: its brief changes nothing in the repo, so a branch would stay empty.
-const READS_PROD = /^prod:|^release:deploy-failed$/;
+// An error in production is the exception: its brief asks for the fix, in code.
+const READS_PROD = /^prod:(?!errors:)|^release:deploy-failed$/;
 /** Where this line's agent works: its verb's answer, but for a Fix whose brief writes nothing. */
 export const sessionKind = (f: Pick<Finding, "verb" | "key">): "branch" | "here" | null =>
   f.verb === "fix" && READS_PROD.test(f.key) ? "here" : VERB_KIND[f.verb];

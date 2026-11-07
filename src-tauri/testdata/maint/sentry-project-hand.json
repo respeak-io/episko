@@ -1,0 +1,14 @@
+{
+  "id": "4505278496",
+  "slug": "pump-station",
+  "name": "Pump Station",
+  "platform": "python",
+  "organization": { "id": "1", "slug": "the-interstellar-jurisdiction", "name": "The Interstellar Jurisdiction" },
+  "dateCreated": "2021-01-14T22:08:52.711809Z",
+  "isBookmarked": false,
+  "isMember": true,
+  "features": ["releases", "minidump"],
+  "firstEvent": "2021-01-14T22:10:01.000000Z",
+  "hasAccess": true,
+  "status": "active"
+}

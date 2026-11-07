@@ -644,6 +644,34 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       says *Change nothing* and does not send, and a ticked session runs it in the project's
       folder. A registration inside 30 days is amber by default, so it is listed under *Coming
       up* in the Overview's since-band, never in an all-clear.
+- [ ] **Errors in production.** On a project whose `[deploy]` says `sentry = "<org>/<project>"`
+      and on a machine with no token saved, the Runs on card has an *Errors* line reading *not
+      checked*, and *Check prod*'s tip names Sentry and says the project's name and the token
+      saved for its host are what it sends. Click *Check prod*: the line and the Prod cell say
+      *no token*, no request was made, and Coverage's row carries *Add token…*, which opens
+      Settings › Accounts lit at *Sentry tokens* and connects nowhere. Paste a user auth token
+      with `event:read`, `project:read` and `org:read` (from the *Make one at* page): the field
+      empties, the row lists `sentry.io` with *works as <you>*, and closing and reopening Settings
+      never shows the token again; a token missing a scope says which. Before the real one, save a
+      made-up token for `sentry.io` and click *Check prod*: the cell says *token refused*, and the
+      Coverage row on the dashboard and on the fleet's Servers tab carries *Replace token…*, which
+      opens the same place; a token without `org:read` reads *token scope* with that door too.
+      Back on the dashboard with the real token, *Check prod* again: an issue first seen since the
+      newest release, or regressed, turns the cell amber (*1 new since 1.4.0*), one fatal or
+      reaching 100 users red, a backlog alone *N unresolved* in plain text, and a quiet project
+      with no event in 14 days *silent*, never the grey dot. With a release older than 14 days, an
+      issue that fires daily but was first seen before it stays backlog, never *new*: compare its
+      *First seen* in Sentry's own issue page. Set `sentry_environment = "nope"`: the row names the
+      missing environment rather than the project or the token.
+      The *Fix* on the `N new errors` line (listed below the Servers boards for now) prefills a
+      brief naming each issue with its link and saying to find the cause, add a failing test and
+      fix it, touching nothing in the tracker; it is not sent, and ticked in a session it runs on
+      `maint/prod-errors-new`. Set `sentry_url = "http://sentry.example"` in
+      `[maintenance.params]`: the row says it is not https and nothing is asked; set it to
+      `https://de.sentry.io`: the `sentry.io` token is used. *Forget* the token (it asks first):
+      the next *Check prod* says *no token* again. On Windows the token sits sealed under
+      `%APPDATA%\io.respeak.episko\maint-tokens\sentry\` (not readable as text); on macOS it is in the
+      login keychain under `episko-sentry-token`.
 - [ ] **The keyboard survives a repaint.** Tab to a tick and press Space: focus stays on it. Tab
       to a host's *Check* and press Enter: when it turns to *checking…*, focus lands on what stands
       there rather than on nothing, and Tab carries on from there. Scroll a wide board sideways and

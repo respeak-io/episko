@@ -35,7 +35,7 @@ import {
 } from "./deps";
 import { depSheet, depsOverlay, type DepTab } from "./depsview";
 import {
-  ciRows, clampMaint, coverRows, coverSetups, domainStates, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
+  ciRows, clampMaint, coverRows, coverSetups, domainStates, errorSummary, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
@@ -130,6 +130,7 @@ export interface DashHost {
   proposeDeploy: (root: string) => void;
   proposeMaint: (root: string) => void; // a Coverage row's: the `[maintenance]` proposal
   openConfig: (root: string) => void;
+  openSettings: (section: string, row?: string) => void; // a Coverage row's token door, at Settings › Accounts
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},
@@ -139,6 +140,7 @@ let host: DashHost = {
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
   setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, proposeMaint: () => {}, openConfig: () => {},
+  openSettings: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
 
@@ -1311,7 +1313,7 @@ function maintNow(now: number): MaintDash {
     },
     cover: coverRows(inp), forge: forgeText(inp), unreadable: !!inp.det && !inp.det.config.readable,
     deploy: inp.det?.deploy ?? null, detected: !!inp.det, probes: probeRows(inp, th, now), host,
-    domains: domainStates(inp, th, now),
+    domains: domainStates(inp, th, now), errors: errorSummary(inp, th, now),
   };
 }
 
@@ -1357,6 +1359,7 @@ const maintHost: MaintHost = {
   deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
   setup: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeMaint(r); },
   roots: () => [root()],
+  openSettings: (section, row) => host.openSettings(section, row),
 };
 
 // ---------- events ----------

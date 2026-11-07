@@ -47,6 +47,8 @@ export const MAINT_CAPS = [
   "prod.cert",
   "prod.host",
   "prod.domain",
+  "prod.errors",
+  "prod.errors-new",
 ] as const;
 export type MaintCap = (typeof MAINT_CAPS)[number];
 
@@ -59,7 +61,11 @@ export interface SourceDef {
   sends: string | null; // what a public source sends; maint.rs refuses a public one without it
   settings: string | null; // the forge page that switches it on, `{path}` the repository's
   queue: boolean; // the dashboard's queue lists its issues and pull requests
+  token: TokenDef | null; // a credential Episko seals for it (Settings › Accounts)
 }
+/** A service token as Settings › Accounts offers it, all data: `host` the default slot, `page` where one is
+ *  made (`{host}` filled), `scopes` what a read needs. maint.rs refuses a row it could not use. */
+export interface TokenDef { id: string; label: string; host: string; page: string; scopes: string[] }
 export interface MarkerDef { facet: Facet; label: string; forge: string[]; detect: string[] }
 export interface BotDef { id: string; logins: string[]; branch: string; dashboard: string | null; config: string[] }
 
@@ -92,6 +98,7 @@ export const SOURCES: readonly SourceDef[] = Object.entries(manifest.sources).ma
   sends: "sends" in s && typeof s.sends === "string" ? s.sends : null,
   settings: "settings" in s && typeof s.settings === "string" ? s.settings : null,
   queue: "queue" in s && s.queue === true,
+  token: "token" in s && s.token ? { ...s.token, scopes: [...s.token.scopes] } : null,
 }));
 
 export const MARKERS: readonly MarkerDef[] = manifest.markers.map((m) => ({
@@ -119,6 +126,12 @@ export const facetDef = (f: Facet): FacetDef => FACET_DEFS[FACETS.indexOf(f)];
 export const disclosure = (s: SourceDef): string | null =>
   s.sends ? `${s.label} receives ${s.sends}. Nothing else leaves this machine.` : null;
 export const facetSources = (f: Facet): SourceDef[] => SOURCES.filter((s) => s.facet === f);
+
+/** Every token kind a source reads with, once each: Settings › Accounts draws a control per kind. */
+export const tokenKinds = (): TokenDef[] =>
+  [...new Map(SOURCES.flatMap((s) => s.token ? [[s.token.id, s.token] as const] : [])).values()];
+/** That control's row id, which a Coverage row's token door opens Settings on. */
+export const tokenRow = (kind: string) => `tok-${kind}`;
 
 // maint.rs's `permitted`, mirrored for the buttons. Rust refuses on its own; this only decides what to offer.
 export function permitted(cost: Cost, mode: Mode, publicOk: boolean): boolean {

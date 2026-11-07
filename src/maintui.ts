@@ -17,7 +17,7 @@ import {
 } from "./maint";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
 import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
-import { FACETS, findSource, type Facet } from "./maintsources";
+import { FACETS, findSource, tokenRow, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
 import { checkoutBusy } from "./grouping";
 import { openMenu } from "./menu";
@@ -47,6 +47,7 @@ export interface MaintHost {
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
   session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
+  openSettings?: (section: string, row?: string) => void; // a Coverage row's token door: Settings › Accounts at that kind
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -335,6 +336,9 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
   const cfg = t.closest<HTMLElement>("[data-mtcfg]");
   if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
+  // A token is pasted in Settings, never here: the door names the kind, and nothing it opens connects.
+  const tok = t.closest<HTMLElement>("[data-mttoken]");
+  if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("accounts", k ? tokenRow(k.id) : undefined); return true; }
   const url = t.closest<HTMLElement>("[data-mturl]");
   if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
   const copy = t.closest<HTMLElement>("[data-mtcopy]");

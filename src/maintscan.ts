@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { dlog } from "./debug";
 import {
-  clampKept, clampSnaps, currentDomains, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
+  clampKept, clampSnaps, currentDomains, currentErrors, currentHosts, hostSkips, narrowDetection, narrowMaint, narrowSweep, narrowSweepCheck, narrowSweepFacts, packKept, readsHost, snapFor, takeSnap,
   addMark, clampWeek, leavesMark, packWeek, takeMark, weekPair,
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
@@ -96,7 +96,7 @@ export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
   if (!e) return null;
   const skip = [...maintPrefs.off, ...hostSkips(e.det, maintPrefs.hosts)];
-  return { det: e.det, reports: currentDomains(e.det, currentHosts(e.det, e.reports)), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
+  return { det: e.det, reports: currentErrors(e.det, currentDomains(e.det, currentHosts(e.det, e.reports))), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
 }
 
 let running = 0;
@@ -212,6 +212,17 @@ export async function runSource(root: string, id: string): Promise<SourceReport>
 }
 
 const forgotten = new Map<string, number>(); // per root: an answer asked before a forget is the other identity's
+
+/** A token saved or forgotten: what that kind read is unasked again, as maint.rs's forget_token_reads left it. */
+export function forgetTokenReads(kind: string): void {
+  for (const e of cache.values()) {
+    for (const [id, r] of Object.entries(e.reports)) {
+      if (findSource(id)?.token?.id !== kind || r.coverage.state === "notRun") continue;
+      e.reports[id] = { ...r, coverage: { state: "notRun" }, at: null, truncated: false, gaps: [], facts: null };
+    }
+  }
+  paint();
+}
 
 /** An account switch: what the other identity answered must not be drawn as this one's. */
 export function forgetMaint(root: string): void {

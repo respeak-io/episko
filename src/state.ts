@@ -111,6 +111,12 @@ export interface AcctCheck { ok: boolean; error: string | null; at: number; busy
 export const acctChecks: Record<string, AcctCheck> = {};
 export let foundTokens: string[] | null = null; // labels with a token in the keychain, as last listed
 export function setFoundTokens(l: string[] | null) { foundTokens = l; }
+// Maintenance's service tokens (docs/accounts.md), in memory: each kind and host saved, and its last check by `kind@host`.
+export interface MaintToken { kind: string; host: string }
+export interface MaintTokenCheck { ok: boolean; who: string | null; missing: string[]; error: string | null; at: number; busy?: boolean }
+export let maintTokens: MaintToken[] | null = null;
+export function setMaintTokens(l: MaintToken[] | null) { maintTokens = l; }
+export const maintTokenChecks: Record<string, MaintTokenCheck> = {};
 // Keyed by repo, not by checkout: one fetch moves every worktree's behind count at once.
 export const fetchedByRepo = new Map<string, FetchState>();
 

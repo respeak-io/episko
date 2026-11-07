@@ -3,8 +3,8 @@
 
 import { compatBlock, verifyBlock } from "./deps";
 import {
-  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
-  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, errorStates, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, trunkOf, unplacedWhy,
+  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type ErrNeedy, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
   type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
 } from "./maint";
 
@@ -412,6 +412,43 @@ const domainBrief: Brief = (f, inp, ctx) => {
   ];
 };
 
+// Each new or returning issue with its facts, worst first. This one is code work: the cause is found and fixed
+// in the repository, and nothing is marked resolved in the tracker, since a fix that ships resolves it.
+export const ERR_BRIEF = 10;
+const ERR_WHY: Record<ErrNeedy["why"], string> = { new: "new", regressed: "back after it was resolved", escalating: "rising sharply" };
+const errorBrief: Brief = (_f, inp, ctx) => {
+  const [st] = errorStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now);
+  if (!st?.needy.length) return null;
+  const when = (s: number | null) => s === null ? "unknown" : `${ago(s, ctx)} ago`;
+  const since = st.rule === "release" && st.release ? `since ${st.release.version} went out` : "in the last 7 days, by the tracker's own word";
+  const where = `${ctx.project}'s error tracker (${st.project}, ${st.environment ? `environment ${st.environment}` : "every environment"})`;
+  const shown = st.needy.slice(0, ERR_BRIEF), x = shown[0], one = st.needy.length === 1 && !st.cut;
+  const body = (i: ErrNeedy) => [
+    ...(i.url ? [i.url] : []),
+    bullet(`${ERR_WHY[i.why]}${i.why === "new" ? ` ${since}` : ""}`),
+    bullet(`level ${i.rawLevel || i.level}${i.unhandled === true ? ", unhandled" : i.unhandled === false ? ", handled" : ""}`),
+    bullet(`${plural(i.events, "event")} from ${plural(i.users, "user")} in ${st.windowDays} days; first seen ${when(i.firstSeen)}, last seen ${when(i.lastSeen)}`),
+    ...(i.culprit ? [bullet(`where: ${i.culprit}`)] : []),
+  ];
+  const more = st.needy.length - shown.length;
+  return [
+    one ? `${x.shortId} in ${where} needs fixing: ${x.title}` : `${where} has ${st.needy.length}${st.cut ? "+" : ""} errors new or back that need fixing:`,
+    ...(one ? [""] : []),
+    ...each(shown, (i) => `${i.shortId} · ${i.title}`, body),
+    ...(more > 0 ? ["", `${plural(more, "more issue")} like these${st.url ? `: ${st.url}` : ""}.`] : []),
+    ...cappedNote(st.cut, "issues"),
+    "",
+    "The latest event's stack trace is not copied here: open each link above to read it.",
+    "For each: find the cause in this repository and say which change introduced it. Reproduce it with a",
+    "failing test first, then fix the cause. Never swallow the error, widen a catch or silence the report.",
+    "",
+    "Do not mark anything resolved, ignored or assigned in the error tracker, and touch nothing in production:",
+    "a fix that ships resolves it.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
 // Every problem the host has, the clicked kind first. The agent looks over ssh and changes nothing:
 // a pane may be launched permissive, so the brief asks it to say each command and stop before any write.
 const hostBrief: Brief = (f, inp, ctx) => {
@@ -482,6 +519,7 @@ export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
   [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
   [(f) => HOST_KINDS.some((k) => f.key === `prod:host:${k}`), hostBrief],
   [(f) => /^prod:domain:[^:]+$/.test(f.key), domainBrief],
+  [(f) => f.key === "prod:errors:new", errorBrief],
 ];
 
 const BRIEFS: Record<Verb, Brief> = {

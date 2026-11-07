@@ -532,7 +532,7 @@ fn installed(root: &str, gaps: &mut Vec<String>) -> Result<Vec<(Pkg, String)>, C
 }
 
 pub(crate) fn osv_call(ex: &dyn Exec, url: String, body: Option<String>) -> Result<Value, String> {
-    let r = ex.http(&HttpReq { url, body, token: None, secs: OSV_SECS, report: false })?;
+    let r = ex.http(&HttpReq { url, body, auth: None, secs: OSV_SECS, report: false })?;
     if r.code != 200 {
         return Err(format!("OSV.dev answered HTTP {}", r.code));
     }

@@ -248,7 +248,7 @@ fn cycles(ex: &dyn Exec, id: &str, force: bool, cache: &Cache) -> Result<Vec<Cyc
             return Ok(c);
         }
     }
-    let r = ex.http(&HttpReq { url: format!("{API}/{id}.json"), body: None, token: None, secs: SECS, report: false })?;
+    let r = ex.http(&HttpReq { url: format!("{API}/{id}.json"), body: None, auth: None, secs: SECS, report: false })?;
     if r.code != 200 {
         return Err(format!("endoflife.date answered HTTP {}", r.code));
     }

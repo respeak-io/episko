@@ -149,7 +149,7 @@
     "http-probe": {
       "facet": "prod", "label": "URL checks", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.urls"],
       "sees": ["prod.status", "prod.cert"],
-      "blind": ["prod.host", "prod.domain"]
+      "blind": ["prod.host", "prod.domain", "prod.errors"]
     },
     "rdap-domain": {
       "facet": "prod", "label": "RDAP", "cost": "public", "forge": [], "detect": [], "needs": ["deploy.domains"],
@@ -161,6 +161,12 @@
       "facet": "prod", "label": "SSH host", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.host"],
       "sees": ["prod.host"],
       "blind": ["prod.status", "prod.cert"]
+    },
+    "sentry-issues": {
+      "facet": "prod", "label": "Sentry", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.sentry"],
+      "token": { "id": "sentry", "label": "Sentry", "host": "sentry.io", "page": "https://{host}/settings/account/api/auth-tokens/", "scopes": ["event:read", "project:read", "org:read"] },
+      "sees": ["prod.errors", "prod.errors-new"],
+      "blind": ["prod.status", "prod.cert", "prod.host", "prod.domain"]
     }
   },
   "markers": [

@@ -626,6 +626,112 @@
     },
     {
       "at": 1790000000,
+      "cost": "remote",
+      "coverage": {
+        "state": "ok"
+      },
+      "facet": "prod",
+      "facts": {
+        "environment": "production",
+        "issues": [
+          {
+            "culprit": "raven.scripts.runner in main",
+            "events": 150,
+            "firstSeen": 1793913595,
+            "id": "6000000101",
+            "lastSeen": 1793999995,
+            "level": "fatal",
+            "rawLevel": "fatal",
+            "rawTrend": "new",
+            "shortId": "PUMP-STATION-1A",
+            "title": "ZeroDivisionError: division by zero",
+            "trend": "new",
+            "unhandled": true,
+            "url": "https://the-interstellar-jurisdiction.sentry.io/issues/6000000101/",
+            "users": 120
+          },
+          {
+            "culprit": "app.views in checkout",
+            "events": 12,
+            "firstSeen": 1788249600,
+            "id": "6000000088",
+            "lastSeen": 1793959200,
+            "level": "error",
+            "rawLevel": "error",
+            "rawTrend": "regressed",
+            "shortId": "PUMP-STATION-17",
+            "title": "KeyError: 'sku'",
+            "trend": "regressed",
+            "unhandled": false,
+            "url": "https://the-interstellar-jurisdiction.sentry.io/issues/6000000088/",
+            "users": 3
+          },
+          {
+            "culprit": "worker.jobs in sync_inventory",
+            "events": 4000,
+            "firstSeen": 1787227200,
+            "id": "6000000042",
+            "lastSeen": 1794002400,
+            "level": "warning",
+            "rawLevel": "warning",
+            "rawTrend": "escalating",
+            "shortId": "PUMP-STATION-Q",
+            "title": "Inventory sync slow",
+            "trend": "escalating",
+            "unhandled": null,
+            "url": "https://the-interstellar-jurisdiction.sentry.io/issues/6000000042/",
+            "users": 0
+          },
+          {
+            "culprit": null,
+            "events": 7,
+            "firstSeen": 1793318400,
+            "id": "6000000077",
+            "lastSeen": 1793491200,
+            "level": "unknown",
+            "rawLevel": "sample",
+            "rawTrend": "",
+            "shortId": "PUMP-STATION-14",
+            "title": "Custom message with a second line",
+            "trend": "unknown",
+            "unhandled": false,
+            "url": null,
+            "users": 1
+          },
+          {
+            "culprit": "app.tasks in nightly",
+            "events": 33,
+            "firstSeen": 1780282800,
+            "id": "6000000003",
+            "lastSeen": 1793761200,
+            "level": "error",
+            "rawLevel": "error",
+            "rawTrend": "ongoing",
+            "shortId": "PUMP-STATION-3",
+            "title": "TimeoutError: read timed out",
+            "trend": "ongoing",
+            "unhandled": true,
+            "url": "https://the-interstellar-jurisdiction.sentry.io/issues/6000000003/",
+            "users": 9
+          }
+        ],
+        "kind": "errors",
+        "lastEvent": 1790000000,
+        "project": "acme/api",
+        "release": {
+          "at": 1789900000,
+          "newIssues": 2,
+          "version": "api@1.4.0"
+        },
+        "url": "https://sentry.io/organizations/acme/issues/?project=1&query=is%3Aunresolved",
+        "windowDays": 14
+      },
+      "gaps": [],
+      "source": "sentry-issues",
+      "truncated": false
+    },
+    {
+      "at": 1790000000,
       "cost": "public",
       "coverage": {
         "state": "ok"
@@ -754,6 +860,48 @@
       "facts": null,
       "gaps": [],
       "source": "ssh-host",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": null,
+        "state": "noTool",
+        "tool": "a token for sentry.io"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "sentry-issues",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": null,
+        "reason": "sentry.io refused the stored token: Invalid token",
+        "state": "noAccess"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "sentry-issues",
+      "truncated": false
+    },
+    {
+      "at": null,
+      "cost": "forge",
+      "coverage": {
+        "fix": null,
+        "reason": "a required scope is missing: this read needs event:read, project:read, org:read",
+        "state": "noAccess"
+      },
+      "facet": "security",
+      "facts": null,
+      "gaps": [],
+      "source": "sentry-issues",
       "truncated": false
     },
     {

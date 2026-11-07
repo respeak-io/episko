@@ -16,6 +16,11 @@ export const NO_FILE = "no .episko/episko.toml here yet";
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const strOr = (v: unknown): string | null => typeof v === "string" && v.trim() ? v : null;
 
+/** The error tracker's `org/project` a table links, read here so ./maint never spells the tracker. */
+export const trackerProject = (d: DeployCfg | null | undefined): string | null => d?.sentry ?? null;
+/** `[maintenance.params]`'s environment for that tracker, or null for every one; empty is absent, as maint_err.rs reads it. */
+export const trackerEnv = (params: Readonly<Record<string, string>>): string | null => params.sentry_environment?.trim() || null;
+
 export const isEmptyDeploy = (d: DeployCfg): boolean =>
   !d.host && !d.compose.length && !Object.keys(d.urls).length && !d.sentry && !d.versionUrl && !Object.keys(d.envs).length;
 

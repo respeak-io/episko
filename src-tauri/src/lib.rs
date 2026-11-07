@@ -18,6 +18,7 @@ mod lockfile;
 mod maint;
 mod maint_ci;
 mod maint_eol;
+mod maint_err;
 mod maint_git;
 mod maint_host;
 mod maint_pkgs;
@@ -25,6 +26,7 @@ mod maint_rdap;
 mod maint_repo;
 mod maint_sec;
 mod maint_sweep;
+mod maint_tokens;
 mod mcp;
 mod notes;
 mod platform;
@@ -306,6 +308,8 @@ pub fn run() {
             log::info!("episko v{} starting", app.package_info().version);
             // One interactive shell startup, off the main thread, before anyone needs PATH.
             platform::warm_shell_path();
+            // Maintenance's sealed tokens: maint_read has no AppHandle, so the folder is named once.
+            maint_tokens::init(app.path().app_config_dir().unwrap_or_default().join("maint-tokens"));
 
             let server =
                 tiny_http::Server::http("127.0.0.1:0").expect("bind telemetry server on 127.0.0.1");
@@ -539,6 +543,10 @@ pub fn run() {
             maint_sweep::sweep_advisory,
             maint_sweep::sweep_match,
             maint_sweep::sweep_check,
+            maint_tokens::maint_tokens,
+            maint_tokens::maint_token_save,
+            maint_tokens::maint_token_forget,
+            maint_tokens::maint_token_check,
             stack::compose_containers,
             stack::compose_stop,
             stack::stack_config,

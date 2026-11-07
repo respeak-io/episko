@@ -205,6 +205,58 @@ pub(crate) struct Domain {
     pub(crate) url: Option<String>, // the registrar's own http(s) page, never an RDAP address
 }
 
+/// An error tracker's level for an issue (`maint_err::level` is the one map into it).
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ErrLevel {
+    Fatal,
+    Error,
+    Warning,
+    Info,
+    Debug,
+    Unknown,
+}
+
+/// Why an unresolved issue is open: first seen lately, back after a fix, rising, or simply still there.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ErrTrend {
+    New,
+    Regressed,
+    Escalating,
+    Ongoing,
+    Unknown,
+}
+
+/// The project's newest release as the tracker dates it: `at` when it went out, else when it was made.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrRelease {
+    pub(crate) version: String,
+    pub(crate) at: Option<u64>,
+    pub(crate) new_issues: Option<u32>,
+}
+
+/// One unresolved issue, its words and counts only: never an event, a stack trace or a user.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ErrIssue {
+    pub(crate) id: String,
+    pub(crate) short_id: String,
+    pub(crate) title: String,
+    pub(crate) culprit: Option<String>,
+    pub(crate) level: ErrLevel,
+    pub(crate) raw_level: String,
+    pub(crate) trend: ErrTrend,
+    pub(crate) raw_trend: String,
+    pub(crate) events: u64, // events and users are the read's window's, never the issue's lifetime
+    pub(crate) users: u64,
+    pub(crate) first_seen: Option<u64>, // the issue's own first sighting, never the window's first event
+    pub(crate) last_seen: Option<u64>,
+    pub(crate) unhandled: Option<bool>,
+    pub(crate) url: Option<String>, // the issue's page, http(s) only
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Disk {
@@ -366,6 +418,8 @@ pub(crate) enum Facts {
     Probes { items: Vec<Probe> },
     Hosts { items: Vec<HostFacts> },
     Domains { items: Vec<Domain> },
+    // Unresolved issues seen in the window, newest first seen first; `project` is `org/project` as linked.
+    Errors { project: String, environment: Option<String>, window_days: u32, release: Option<ErrRelease>, last_event: Option<u64>, url: Option<String>, issues: Vec<ErrIssue> },
     Runtimes { items: Vec<Runtime> },
 }
 
@@ -379,7 +433,7 @@ impl Facts {
             Facts::Release(_) | Facts::Releases { .. } | Facts::Changelog { .. } | Facts::Deployments { .. } => Facet::Release,
             Facts::Hygiene(_) => Facet::Git,
             Facts::Work { .. } => Facet::Work,
-            Facts::Probes { .. } | Facts::Hosts { .. } | Facts::Domains { .. } => Facet::Prod,
+            Facts::Probes { .. } | Facts::Hosts { .. } | Facts::Domains { .. } | Facts::Errors { .. } => Facet::Prod,
         }
     }
 }
@@ -462,6 +516,11 @@ impl MaintConfig {
         &self.sarif
     }
 
+    /// A `[maintenance.params]` value a built-in source reads: a word, or an http(s) URL (`parse_maint`).
+    pub(crate) fn param(&self, key: &str) -> Option<&str> {
+        self.params.get(key).map(String::as_str).filter(|v| !v.is_empty())
+    }
+
     /// A manifest `needs` entry: the `[maintenance]` key a source reads, which must be set.
     fn has(&self, key: &str) -> bool {
         match key {
@@ -510,17 +569,21 @@ pub(crate) const MAINT_CAPS: &[&str] = &[
     "prod.cert",
     "prod.host",
     "prod.domain",
+    "prod.errors",
+    "prod.errors-new",
 ];
 
 /// The keys a manifest `needs` may name: `[maintenance]`'s, which `MaintConfig::has` reads, and `[deploy]`'s:
-/// `deploy.urls` an address, `deploy.host` a host, `deploy.envs` a tag convention, and `deploy.domains` an
-/// address whose host has a registered domain under a public suffix (no IP, local name or platform's subdomain).
+/// `deploy.urls` an address, `deploy.host` a host, `deploy.envs` a tag convention, `deploy.domains` an
+/// address whose host has a registered domain under a public suffix (no IP, local name or platform's subdomain),
+/// and `deploy.sentry` an error tracker's `org/project`.
 const NEEDS: &[&str] = &[
     "sarif",
     "deploy.urls",
     "deploy.host",
     "deploy.envs",
     "deploy.domains",
+    "deploy.sentry",
 ];
 
 fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::DeployConfig>) -> bool {
@@ -529,6 +592,7 @@ fn needs_met(key: &str, cfg: &MaintConfig, deploy: Option<&crate::deploy::Deploy
         "deploy.host" => deploy.is_some_and(|d| d.host().is_some()),
         "deploy.envs" => deploy.is_some_and(|d| !d.envs().is_empty()),
         "deploy.domains" => deploy.is_some_and(|d| !crate::maint_rdap::domains_of(&d.targets()).0.is_empty()),
+        "deploy.sentry" => deploy.is_some_and(|d| d.sentry().is_some()),
         k => cfg.has(k),
     }
 }
@@ -566,8 +630,22 @@ pub(crate) struct SourceMeta {
     settings: Option<String>, // the forge page that switches it on, `{path}` the repository's
     #[serde(default)]
     queue: bool, // the dashboard's queue lists its threads, so a Work count opens it
+    #[serde(default)]
+    token: Option<TokenDef>, // a credential Episko seals for a service with no CLI of its own
     sees: Vec<String>,
     blind: Vec<String>,
+}
+
+/// A service token kind as Settings › Accounts offers it: data, so `maint.ts` names no vendor.
+/// `host` is the default slot, `page` where one is made (`{host}` filled), `scopes` what a read needs.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TokenDef {
+    pub(crate) id: String,
+    label: String,
+    host: String,
+    page: String,
+    pub(crate) scopes: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -641,6 +719,18 @@ impl Manifest {
             if s.queue && s.facet != Facet::Work {
                 return Err(format!("{id}: only a work source's threads are in the queue"));
             }
+            if let Some(t) = &s.token {
+                // A sealed credential rides only on a read a scan never makes unasked (`exec::sealed_ok`).
+                if !matches!(s.cost, Cost::Forge | Cost::Remote) {
+                    return Err(format!("{id}: a token rides only on a forge or remote source"));
+                }
+                if !kebab(&t.id) || !crate::maint_tokens::KINDS.iter().any(|k| k.id == t.id) || t.label.is_empty() {
+                    return Err(format!("{id}: token {:?} is no kind maint_tokens.rs knows", t.id));
+                }
+                if !crate::maint_tokens::valid_host(&t.host) || !t.page.starts_with("https://") || !t.page.contains("{host}") || t.scopes.is_empty() {
+                    return Err(format!("{id}: a token needs a plain host, an https page with {{host}} and its scopes"));
+                }
+            }
             well_formed(id, &s.forge, &s.detect)?;
         }
         for m in &self.markers {
@@ -675,6 +765,16 @@ pub(crate) fn bots() -> &'static [BotDef] {
 
 fn meta_of(id: &str) -> Option<(&'static SourceMeta, &'static SourceDef)> {
     Some((MANIFEST.sources.get(id)?, SOURCES.iter().find(|d| d.id == id)?))
+}
+
+/// The token a source reads with, as the manifest defines it.
+pub(crate) fn token_of(source: &str) -> Option<&'static TokenDef> {
+    MANIFEST.sources.get(source)?.token.as_ref()
+}
+
+/// A token kind's definition, from whichever source declares it.
+pub(crate) fn token_kind(kind: &str) -> Option<&'static TokenDef> {
+    MANIFEST.sources.values().filter_map(|s| s.token.as_ref()).find(|t| t.id == kind)
 }
 
 // ---------- [maintenance] ----------
@@ -1081,8 +1181,6 @@ pub(crate) fn forget_detection(root: &str) {
 pub(crate) use exec::{data_arg, Exec, SysExec};
 
 pub(crate) mod exec {
-    #![allow(dead_code, reason = "a token's http is called by a later slice's adapter")]
-
     use std::time::Duration;
 
     use super::Cost;
@@ -1106,15 +1204,23 @@ pub(crate) mod exec {
         }
     }
 
-    /// GET without a body, POST with one. `token` is `(header prefix, env name)`: the value goes
-    /// to curl on stdin, never on argv, and only a name on `ENV_TOKENS` is ever read. `report`
+    /// GET without a body, POST with one. `auth`'s value goes to curl on stdin, never on argv. `report`
     /// sends nothing and answers curl's own `%{json}` then `%{certs}` as the body, with `code` 0.
     pub(crate) struct HttpReq {
         pub(crate) url: String,
         pub(crate) body: Option<String>,
-        pub(crate) token: Option<(&'static str, &'static str)>,
+        pub(crate) auth: Option<Auth>,
         pub(crate) secs: u64,
         pub(crate) report: bool,
+    }
+
+    /// `Env`: a header prefix and a name on `ENV_TOKENS`. `Sealed`: a bearer token Episko keeps for `slot`
+    /// (maint_tokens.rs), sent only where `sealed_ok` allows.
+    #[derive(Clone, Debug)]
+    pub(crate) enum Auth {
+        #[allow(dead_code, reason = "no adapter reads an env token yet: ENV_TOKENS is empty")]
+        Env { head: &'static str, name: &'static str },
+        Sealed { kind: &'static str, slot: String },
     }
 
     #[derive(Debug)]
@@ -1134,6 +1240,8 @@ pub(crate) mod exec {
         fn http(&self, req: &HttpReq) -> Result<HttpResp, String>;
         fn ssh(&self, alias: &str, script: &str, secs: u64) -> Result<Output, String>;
         fn on_path(&self, bin: &str) -> bool;
+        /// Whether a sealed credential of `kind` is saved for `slot`, so a read with none asks nobody.
+        fn has_auth(&self, kind: &str, slot: &str) -> bool;
     }
 
     /// What each cost class may start. `SysExec` enforces it, so no call site has to remember.
@@ -1164,7 +1272,7 @@ pub(crate) mod exec {
     /// A probe: the body is thrown away, and a failed transfer is still a report, since `%{json}`
     /// carries curl's exit code and message. `-g`: a `[1-9]` in a committed URL is one address.
     pub(crate) fn report_cmd(req: &HttpReq) -> Result<std::process::Command, String> {
-        if req.body.is_some() || req.token.is_some() {
+        if req.body.is_some() || req.auth.is_some() {
             return Err("a report sends nothing".into());
         }
         let mut cmd = sys_command(CURL);
@@ -1291,6 +1399,56 @@ pub(crate) mod exec {
         Ok(cmd)
     }
 
+    /// Where a sealed token may go: https only, to its slot's host (and port, if the slot names one) or a
+    /// subdomain of it, on a read whose class may carry one. A committed URL picks only among saved slots.
+    pub(crate) fn sealed_ok(url: &str, slot: &str, cost: Cost) -> Result<(), String> {
+        if !matches!(cost, Cost::Forge | Cost::Remote) {
+            return Err(format!("a token is never sent by a {} source", cost.id()));
+        }
+        let u = url::Url::parse(url).map_err(|e| format!("{url}: {e}"))?;
+        let host = u.host_str().unwrap_or_default().trim_end_matches('.').to_ascii_lowercase();
+        let (want, port) = slot.split_once(':').map_or((slot, None), |(h, p)| (h, p.parse::<u16>().ok().filter(|p| *p != 443)));
+        let ours = host == want || host.ends_with(&format!(".{want}"));
+        if u.scheme() != "https" || !ours || u.port() != port || !u.username().is_empty() {
+            return Err(format!("the token saved for {slot} is never sent to {url}"));
+        }
+        Ok(())
+    }
+
+    /// curl and what its stdin carries: a credential's header or a body, never both. `open` reads a
+    /// sealed token, so a test can see where one would go without one existing.
+    pub(crate) fn http_cmd(req: &HttpReq, cost: Cost, open: impl Fn(&str, &str) -> Option<String>) -> Result<(std::process::Command, Option<String>), String> {
+        let mut cmd = sys_command(CURL);
+        cmd.args(["-sSg", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
+        let mut input = None;
+        match &req.auth {
+            None => {}
+            Some(Auth::Env { head, name }) => {
+                if !ENV_TOKENS.contains(name) {
+                    return Err(format!("{name} is not a token Episko reads"));
+                }
+                let v = std::env::var(name).map_err(|_| format!("{name}: token not visible to Episko"))?;
+                cmd.args(["-H", "@-"]);
+                input = Some(format!("{head}{v}\n"));
+            }
+            Some(Auth::Sealed { kind, slot }) => {
+                sealed_ok(&req.url, slot, cost)?;
+                let v = open(kind, slot).ok_or_else(|| format!("no {kind} token is saved for {slot}"))?;
+                cmd.args(["-H", "@-"]);
+                input = Some(format!("Authorization: Bearer {v}\n"));
+            }
+        }
+        if let Some(body) = &req.body {
+            if input.is_some() {
+                return Err("a token and a body cannot share curl's stdin".into());
+            }
+            cmd.args(["-H", "Content-Type: application/json", "--data-binary", "@-"]);
+            input = Some(body.clone());
+        }
+        cmd.arg(&req.url);
+        Ok((cmd, input))
+    }
+
     /// curl's `-w` trailer is the status. A failed transfer still prints `000`, so a non-zero
     /// exit is curl's own error (DNS, refused, timeout), never an HTTP answer.
     pub(crate) fn http_answer(out: Output) -> Result<HttpResp, String> {
@@ -1353,25 +1511,7 @@ pub(crate) mod exec {
             if req.report {
                 return report(req);
             }
-            let mut cmd = sys_command(CURL);
-            cmd.args(["-sSg", "-w", "\n%{http_code}", "--max-time"]).arg(req.secs.to_string());
-            let mut input = None;
-            if let Some((head, env)) = req.token {
-                if !ENV_TOKENS.contains(&env) {
-                    return Err(format!("{env} is not a token Episko reads"));
-                }
-                let v = std::env::var(env).map_err(|_| format!("{env}: token not visible to Episko"))?;
-                cmd.args(["-H", "@-"]);
-                input = Some(format!("{head}{v}\n"));
-            }
-            if let Some(body) = &req.body {
-                if input.is_some() {
-                    return Err("a token and a body cannot share curl's stdin".into());
-                }
-                cmd.args(["-H", "Content-Type: application/json", "--data-binary", "@-"]);
-                input = Some(body.clone());
-            }
-            cmd.arg(&req.url);
+            let (cmd, input) = http_cmd(req, self.cost, crate::maint_tokens::open)?;
             http_answer(run_fed(cmd, input, req.secs + 5)?)
         }
 
@@ -1382,6 +1522,10 @@ pub(crate) mod exec {
 
         fn on_path(&self, bin: &str) -> bool {
             resolve_bin(bin, &augmented_path()).is_some()
+        }
+
+        fn has_auth(&self, kind: &str, slot: &str) -> bool {
+            crate::maint_tokens::has(kind, slot)
         }
     }
 
@@ -1398,6 +1542,7 @@ pub(crate) mod exec {
         exit: (i32, String),  // what every `tool` exits with, and its stderr
         missing: Vec<String>, // bins `on_path` cannot find
         fail_in: Option<(String, String)>, // a `tool` run in a folder ending so fails with this
+        tokens: Option<Vec<String>>, // `kind@slot` saved; None: every one
     }
 
     #[cfg(test)]
@@ -1406,8 +1551,13 @@ pub(crate) mod exec {
             let fallback = fallback.map(str::to_string).map_err(str::to_string);
             Self {
                 answers: vec![], codes: vec![], fallback, calls: Default::default(), accounts: Default::default(), gate: None,
-                exit: (0, String::new()), missing: vec![], fail_in: None,
+                exit: (0, String::new()), missing: vec![], fail_in: None, tokens: None,
             }
+        }
+
+        /// No sealed credential is saved for any slot.
+        pub(crate) fn without_tokens(self) -> Self {
+            Self { tokens: Some(vec![]), ..self }
         }
 
         /// Holds every `gh` until the test drops its guard on `gate`, so readers provably overlap.
@@ -1496,7 +1646,16 @@ pub(crate) mod exec {
                 (Some(b), _) => &["--data", b],
                 _ => &[],
             };
-            let argv = Self::argv("curl", &[&[req.url.as_str()][..], mode].concat());
+            // A sealed token is named, never valued, and refused where SysExec would refuse it.
+            let token = match &req.auth {
+                Some(Auth::Sealed { kind, slot }) => {
+                    sealed_ok(&req.url, slot, Cost::Remote)?;
+                    vec!["--token".to_string(), format!("{kind}@{slot}")]
+                }
+                _ => vec![],
+            };
+            let token: Vec<&str> = token.iter().map(String::as_str).collect();
+            let argv = Self::argv("curl", &[&[req.url.as_str()][..], mode, &token].concat());
             let code = self.codes.iter().find(|(p, _)| argv.starts_with(p)).map_or(200, |(_, c)| *c);
             self.answer(argv).map(|body| HttpResp { code, body })
         }
@@ -1506,6 +1665,9 @@ pub(crate) mod exec {
         }
         fn on_path(&self, bin: &str) -> bool {
             !self.missing.iter().any(|m| m == bin)
+        }
+        fn has_auth(&self, kind: &str, slot: &str) -> bool {
+            self.tokens.as_ref().is_none_or(|t| t.iter().any(|x| *x == format!("{kind}@{slot}")))
         }
     }
 }
@@ -1573,6 +1735,7 @@ pub(crate) static SOURCES: &[SourceDef] = &[
     SourceDef { id: "http-probe", read: crate::deploy::http_probe },
     SourceDef { id: "rdap-domain", read: crate::maint_rdap::rdap_domain },
     SourceDef { id: "ssh-host", read: crate::maint_host::ssh_host },
+    SourceDef { id: "sentry-issues", read: crate::maint_err::sentry_issues },
 ];
 
 /// The cost classes, enforced here rather than at a call site: a scan never runs a program in
@@ -1696,6 +1859,16 @@ pub(crate) fn forget_deploy_reads(root: &str) {
     }
 }
 
+/// A token saved or forgotten: every project's answer read with (or refused for want of) that kind goes,
+/// so the next click asks again rather than showing what the old token was told.
+pub(crate) fn forget_token_reads(kind: &str) {
+    if let Ok(mut g) = REPORTS.lock() {
+        if let Some(m) = g.as_mut() {
+            m.retain(|(_, id, _), _| token_of(id).is_none_or(|t| t.id != kind));
+        }
+    }
+}
+
 // ---------- forge errors ----------
 
 /// A `gh` failure as a coverage: a missing or signed-out CLI and an account that cannot see the
@@ -1782,7 +1955,7 @@ pub(crate) fn maint_invalidate(root: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::exec::{data_arg, trusted, FakeExec, HttpReq};
+    use super::exec::{data_arg, trusted, Auth, FakeExec, HttpReq};
     use super::*;
     use crate::forge::ForgeBy;
     use crate::testutil::{git, scratch_dir};
@@ -1836,7 +2009,7 @@ mod tests {
         git(&dir, &["-c", "tag.gpgsign=false", "tag", "v1.0"]);
         commit(&dir, "two");
         write(&dir, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n+ a thing\n\n## 1.0 — 2026-10-01\n+ first\n");
-        write(&dir, ".episko/episko.toml", &format!("[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nhost = \"{host}\"\ncompose = [\"api\"]\nurls = {{ app = \"https://app.example.com\" }}\nenvs = {{ prod = \"v*\" }}\n"));
+        write(&dir, ".episko/episko.toml", &format!("[maintenance]\ntrunk = \"main\"\nsarif = [\"reports/*.sarif\"]\n[deploy]\nhost = \"{host}\"\ncompose = [\"api\"]\nurls = {{ app = \"https://app.example.com\" }}\nsentry = \"acme/app\"\nenvs = {{ prod = \"v*\" }}\n"));
         write(&dir, "reports/scan.sarif", "{\"version\": \"2.1.0\", \"runs\": []}");
         dir
     }
@@ -2012,7 +2185,7 @@ mod tests {
     }
 
     fn meta(facet: Facet, cost: Cost) -> SourceMeta {
-        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, settings: None, queue: false, sees: vec![], blind: vec![] }
+        SourceMeta { facet, label: "test".into(), cost, forge: vec![], detect: vec![], needs: vec![], sends: None, settings: None, queue: false, token: None, sees: vec![], blind: vec![] }
     }
 
     fn calls_tool(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
@@ -2112,12 +2285,13 @@ mod tests {
         assert!(SysExec { cost: Cost::Forge }.tool(root, "npm", &["audit"], 5).unwrap_err().contains("not trusted"));
         assert!(SysExec { cost: Cost::Tool }.tool(root, "rm", &["-rf", "."], 5).unwrap_err().contains("not trusted"));
         assert!(SysExec { cost: Cost::Tool }.ssh("prod", "uptime", 5).unwrap_err().contains("not trusted"));
-        let req = HttpReq { url: "file:///etc/passwd".into(), body: None, token: None, secs: 5, report: false };
+        let req = HttpReq { url: "file:///etc/passwd".into(), body: None, auth: None, secs: 5, report: false };
         assert!(SysExec { cost: Cost::Remote }.http(&req).is_err(), "only http(s)");
-        let req = HttpReq { url: "https://x.example".into(), body: None, token: Some(("Authorization: Bearer ", "HOME")), secs: 5, report: false };
+        let env = Some(Auth::Env { head: "Authorization: Bearer ", name: "HOME" });
+        let req = HttpReq { url: "https://x.example".into(), body: None, auth: env, secs: 5, report: false };
         assert!(SysExec { cost: Cost::Remote }.http(&req).unwrap_err().contains("not a token"), "only allowlisted env names");
         assert!(SysExec { cost: Cost::Remote }.http(&HttpReq { report: true, ..req }).unwrap_err().contains("sends nothing"));
-        let probe = HttpReq { url: "HTTPS://x.example/[1-3]".into(), body: None, token: None, secs: 5, report: true };
+        let probe = HttpReq { url: "HTTPS://x.example/[1-3]".into(), body: None, auth: None, secs: 5, report: true };
         let argv: Vec<_> = exec::report_cmd(&probe).unwrap().get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert_eq!(argv, ["-sSg", "-o", exec::NULL_DEV, "--max-time", "5", "-w", r"%{json}\n%{certs}", "HTTPS://x.example/[1-3]"], "no glob, no body");
         for bad in ["-oProxyCommand=x", "a b", ""] {
@@ -2383,8 +2557,11 @@ mod tests {
 
     #[test]
     fn a_deploy_table_nothing_reads_is_found_not_none() {
+        // Every key a prod source reads now has one, so only a source switched off leaves its key unread.
         let dir = repo_with("https://github.com/a/b.git", &[(".episko/episko.toml", "[deploy]
 sentry = \"acme/api\"
+[maintenance]
+off = [\"sentry-issues\"]
 ")]);
         let d = detect(&s(&dir), true);
         assert!(d.deploy.is_some());
@@ -2426,6 +2603,108 @@ off = [\"prod\"]
         assert!(!has("app = \"https://x.vercel.app\", pages = \"https://acme.github.io\""), "a platform's subdomains");
         assert!(!has("dev = \"http://app.localhost:5173\", nas = \"http://nas.lan\""), "local names");
         assert!(has("lan = \"http://10.0.0.5\", app = \"https://app.example.com\""), "one registered domain is enough");
+    }
+
+    /// An error tracker is read only where `[deploy]` links a project, and then never names a `[deploy]` marker.
+    #[test]
+    fn sentry_need_detects_the_source() {
+        let dir = repo_with("https://github.com/a/b.git", &[]);
+        let det = |deploy: &str| {
+            write(&dir, ".episko/episko.toml", deploy);
+            detect(&s(&dir), true)
+        };
+        let d = det("[deploy]\nsentry = \"acme/api\"\n");
+        assert!(d.sources.iter().any(|x| x == "sentry-issues"), "{:?}", d.sources);
+        assert!(!labels(&d).contains(&"[deploy]".to_string()), "a source reads it, so it is no marker");
+        assert!(!det("[deploy]\nurls = { app = \"https://a.example\" }\n").sources.iter().any(|x| x == "sentry-issues"));
+        assert!(!det("[deploy]\nsentry = \"acme api\"\n").sources.iter().any(|x| x == "sentry-issues"), "an unsafe value is dropped");
+        let off = det("[deploy]\nsentry = \"acme/api\"\n[maintenance]\noff = [\"sentry-issues\"]\n");
+        assert!(!off.sources.iter().any(|x| x == "sentry-issues"));
+        assert!(!det("[deploy]\nsentry = \"acme/api\"\n[maintenance]\noff = [\"prod\"]\n").sources.iter().any(|x| x == "sentry-issues"));
+    }
+
+    #[test]
+    fn a_bad_token_row_is_refused() {
+        let man = include_str!("../../src/maintmanifest.json");
+        let check = |edit: &dyn Fn(&mut TokenDef, &mut Cost)| {
+            let mut m: Manifest = serde_json::from_str(man).unwrap();
+            let src = m.sources.get_mut("sentry-issues").unwrap();
+            edit(src.token.as_mut().unwrap(), &mut src.cost);
+            m.check()
+        };
+        assert!(check(&|_, _| {}).is_ok());
+        assert!(check(&|_, c| *c = Cost::Tool).unwrap_err().contains("forge or remote"), "never a tool read");
+        assert!(check(&|_, c| *c = Cost::Local).unwrap_err().contains("forge or remote"));
+        assert!(check(&|_, c| *c = Cost::Public).is_err(), "nor a public one");
+        assert!(check(&|t, _| t.id = "jira".into()).unwrap_err().contains("no kind"), "a kind maint_tokens.rs does not keep");
+        assert!(check(&|t, _| t.page = "https://sentry.io/settings/".into()).is_err(), "a page names its host");
+        assert!(check(&|t, _| t.page = "http://{host}/x".into()).is_err());
+        assert!(check(&|t, _| t.host = "Sentry.io".into()).is_err());
+        assert!(check(&|t, _| t.scopes.clear()).is_err());
+        for (id, t) in MANIFEST.sources.iter().filter_map(|(id, s)| s.token.as_ref().map(|t| (id, t))) {
+            assert!(crate::maint_tokens::KINDS.iter().any(|k| k.id == t.id), "{id}: {} has a KINDS row", t.id);
+        }
+        let extra = man.replace("\"scopes\":", "\"scheme\": \"basic\", \"scopes\":");
+        assert!(serde_json::from_str::<Manifest>(&extra).is_err(), "bearer only: no scheme until one needs it");
+    }
+
+    /// The value never rides on argv, and a committed URL picks only among the slots saved.
+    #[test]
+    fn sealed_token_is_https_and_host_bound() {
+        let secret = "sntryu_SECRET0123456789";
+        let open = |kind: &str, slot: &str| (kind == "sentry" && slot == "sentry.io").then(|| secret.to_string());
+        let req = |url: &str, slot: &str| HttpReq { url: url.into(), body: None, auth: Some(Auth::Sealed { kind: "sentry", slot: slot.into() }), secs: 5, report: false };
+        let (cmd, input) = exec::http_cmd(&req("https://sentry.io/api/0/", "sentry.io"), Cost::Remote, open).unwrap();
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert!(argv.windows(2).any(|w| w == ["-H", "@-"]), "{argv:?}");
+        assert!(!argv.iter().any(|a| a.contains(secret)), "never on argv");
+        assert_eq!(input.as_deref(), Some(format!("Authorization: Bearer {secret}\n").as_str()));
+        assert!(exec::http_cmd(&req("https://de.sentry.io/api/0/", "sentry.io"), Cost::Remote, open).is_ok(), "a subdomain of its slot");
+        for (url, slot) in [
+            ("http://sentry.io/api/0/", "sentry.io"),
+            ("https://evil.example/api/0/", "sentry.io"),
+            ("https://sentry.io.evil.example/", "sentry.io"),
+            ("https://evilsentry.io/", "sentry.io"),
+            ("https://sentry.io@evil.example/", "sentry.io"),
+            ("https://x@sentry.io/", "sentry.io"),
+            ("https://sentry.io:8443/", "sentry.io"),
+            ("https://sentry.acme.com/", "sentry.acme.com:8443"),
+        ] {
+            let e = exec::http_cmd(&req(url, slot), Cost::Remote, open).unwrap_err();
+            assert!(e.contains("never sent"), "{url} for {slot}: {e}");
+        }
+        assert!(exec::sealed_ok("https://sentry.acme.com:8443/x", "sentry.acme.com:8443", Cost::Remote).is_ok());
+        assert!(exec::sealed_ok("https://sentry.acme.com:443/x", "sentry.acme.com", Cost::Forge).is_ok(), "the default port is no port");
+        for cost in [Cost::Local, Cost::Public, Cost::Tool] {
+            assert!(exec::sealed_ok("https://sentry.io/", "sentry.io", cost).is_err(), "{cost:?}");
+        }
+        assert!(exec::http_cmd(&req("https://sentry.io/", "sentry.acme.com"), Cost::Remote, open).is_err(), "not its slot");
+        assert!(exec::http_cmd(&req("https://sentry.acme.com/", "sentry.acme.com"), Cost::Remote, open).unwrap_err().contains("no sentry token"), "nothing saved, nothing sent");
+        let both = HttpReq { body: Some("{}".into()), ..req("https://sentry.io/", "sentry.io") };
+        assert!(exec::http_cmd(&both, Cost::Remote, open).unwrap_err().contains("cannot share"));
+        assert!(exec::report_cmd(&req("https://sentry.io/", "sentry.io")).is_err(), "a probe carries no credential");
+        // The real seam refuses before anything is opened or spawned, an env token outside ENV_TOKENS included.
+        assert!(SysExec { cost: Cost::Public }.http(&req("https://sentry.io/", "sentry.io")).unwrap_err().contains("never sent by a public"));
+        let env = HttpReq { auth: Some(Auth::Env { head: "Authorization: Bearer ", name: "HOME" }), ..req("https://sentry.io/", "sentry.io") };
+        assert!(SysExec { cost: Cost::Remote }.http(&env).unwrap_err().contains("not a token"));
+    }
+
+    #[test]
+    fn forget_token_reads_drops_only_that_kind() {
+        let held = |root: &str, id: &str| REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&(root.to_string(), id.to_string(), String::new())));
+        for root in ["/maint-test/tok/a", "/maint-test/tok/b"] {
+            for id in ["sentry-issues", "http-probe"] {
+                REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
+                    .insert((root.into(), id.into(), String::new()), (Instant::now(), report(id, None, Coverage::NotRun)));
+            }
+        }
+        forget_token_reads("jira");
+        assert!(held("/maint-test/tok/a", "sentry-issues"), "another kind's save leaves it");
+        forget_token_reads("sentry");
+        for root in ["/maint-test/tok/a", "/maint-test/tok/b"] {
+            assert!(!held(root, "sentry-issues"), "{root}: every project read with that token");
+            assert!(held(root, "http-probe"), "{root}: a read with no token stays");
+        }
     }
 
     /// A scan never connects to a host, forced or with the public opt-in; a click does, once.
@@ -2511,8 +2790,8 @@ off = [\"prod\"]
         let d = detect(&s(&dir), true);
         assert!(!d.sources.iter().any(|x| x == "deploy-tags"), "no convention, no source: {:?}", d.sources);
         assert!(!labels(&d).contains(&"[deploy]".to_string()), "ssh-host reads a host: {:?}", labels(&d));
-        write(&dir, ".episko/episko.toml", "[deploy]\nsentry = \"acme/api\"\nenvs = { prod = \"prod-*\" }\n");
-        assert!(labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "a key only a prod source reads");
+        write(&dir, ".episko/episko.toml", "[deploy]\nsentry = \"acme/api\"\nenvs = { prod = \"prod-*\" }\n[maintenance]\noff = [\"sentry-issues\"]\n");
+        assert!(labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "a key only a prod source reads, that source off");
         write(&dir, ".episko/episko.toml", "[deploy]\ncompose = [\"api\"]\n");
         assert!(!labels(&detect(&s(&dir), true)).contains(&"[deploy]".to_string()), "services alone name nothing to check");
     }
@@ -2653,6 +2932,12 @@ off = [\"prod\"]
             domain: "example.de".into(), names: vec!["api".into()], expires: None, status: vec!["active".into()],
             registrar: None, url: Some("https://registrar.example/".into()),
         }];
+        let errors = Facts::Errors {
+            project: "acme/api".into(), environment: Some("production".into()), window_days: 14,
+            release: Some(ErrRelease { version: "api@1.4.0".into(), at: Some(1_789_900_000), new_issues: Some(2) }),
+            last_event: Some(1_790_000_000), url: Some("https://sentry.io/organizations/acme/issues/?project=1&query=is%3Aunresolved".into()),
+            issues: crate::maint_err::parse_issues(&FakeExec::testdata("sentry-issues-hand.json")).unwrap(),
+        };
         let runtimes = vec![Runtime {
             product: "nodejs".into(), name: "node".into(), declared: "18".into(), cycle: Some("18".into()),
             eol: Some(Eol::At(1_745_971_200)), latest: Some("18.20.8".into()), newest: Some("26".into()),
@@ -2680,6 +2965,7 @@ off = [\"prod\"]
             ok("http-probe", Facet::Prod, Cost::Remote, Facts::Probes { items: vec![probe] }),
             ok("ssh-host", Facet::Prod, Cost::Remote, Facts::Hosts { items: vec![host] }),
             ok("rdap-domain", Facet::Prod, Cost::Public, Facts::Domains { items: domains }),
+            ok("sentry-issues", Facet::Prod, Cost::Remote, errors),
             ok("runtime-eol", Facet::Security, Cost::Public, Facts::Runtimes { items: runtimes }),
             not("github-code-scanning", Coverage::Off { reason: "no analysis found".into() }),
             // The classifiers' own answers, so maint.test.ts reads the fix strings `whyWord` matches.
@@ -2688,6 +2974,9 @@ off = [\"prod\"]
             not("gitlab-work", crate::forge::classify_glab("401 Unauthorized", "gitlab.com")),
             not("gitlab-ci", crate::forge::classify_glab("404 Project Not Found", "gitlab.com")),
             not("ssh-host", crate::maint_host::ssh_coverage("deploy@prod-1: Permission denied (publickey).", "prod-1")),
+            not("sentry-issues", crate::maint_err::no_token("sentry.io")),
+            not("sentry-issues", crate::maint_err::refusal(401, &FakeExec::testdata("sentry-401-invalid.json"), "sentry.io", "acme/api")),
+            not("sentry-issues", crate::maint_err::refusal(403, "{}", "sentry.io", "acme/api")),
             not("cargo-audit", Coverage::NoTool { tool: "cargo-audit".into(), fix: Some("cargo install cargo-audit".into()) }),
             not("gitlab-ci", Coverage::Unsupported { reason: "no default branch known".into() }),
             not("npm-audit", Coverage::NotRun),
@@ -2732,6 +3021,7 @@ envs = { prod = \"prod-*\" }
         "probes",
         "hosts",
         "domains",
+        "errors",
         "runtimes",
     ];
 
@@ -2763,6 +3053,7 @@ envs = { prod = \"prod-*\" }
             Facts::Probes { .. } => "probes",
             Facts::Hosts { .. } => "hosts",
             Facts::Domains { .. } => "domains",
+            Facts::Errors { .. } => "errors",
             Facts::Runtimes { .. } => "runtimes",
         }
     }
@@ -2909,7 +3200,7 @@ envs = { prod = \"prod-*\" }
         write(&dir, ".episko/episko.toml", "[deploy]\nurls = { app = \"https://old.example\" }\n");
         let key = root_key(&s(&dir));
         let held = |id: &str| REPORTS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&(key.clone(), id.into(), String::new())));
-        for id in ["http-probe", "rdap-domain", "deploy-tags", "git-tags"] {
+        for id in ["http-probe", "rdap-domain", "sentry-issues", "deploy-tags", "git-tags"] {
             REPORTS.lock().unwrap().get_or_insert_with(HashMap::new)
                 .insert((key.clone(), id.into(), String::new()), (Instant::now(), report(id, None, Coverage::NotRun)));
         }
@@ -2919,6 +3210,7 @@ envs = { prod = \"prod-*\" }
         crate::deploy::write_deploy(s(&dir), urls("https://new.example"), false).unwrap();
         assert!(!held("http-probe"), "the old addresses' answers are not served as the new ones'");
         assert!(!held("rdap-domain"), "nor the old domains'");
+        assert!(!held("sentry-issues"), "nor the old project's errors");
         assert!(!held("deploy-tags"), "a tag convention is [deploy] too");
         assert!(held("git-tags"), "a read that never looks at [deploy] stays");
     }

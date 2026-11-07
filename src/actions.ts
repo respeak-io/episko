@@ -57,6 +57,7 @@ import {
   handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
   claudeAccts, setClaudeAccts, acctChecks, foundTokens, setFoundTokens,
+  maintTokens, setMaintTokens, maintTokenChecks, type MaintToken,
   type SortMode, type WtGroup,
 } from "./state";
 import { addAcct, hitUntil, quotaHit, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
@@ -88,7 +89,7 @@ import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
 import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
 import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
-import { forgetMaint, maintInput, maintOf, scanProject } from "./maintscan";
+import { forgetMaint, forgetTokenReads, maintInput, maintOf, scanProject } from "./maintscan";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -937,6 +938,55 @@ export async function removeClaudeAcct(label: string) {
   delete rlAccts[TOKEN_ID + label]; // or its last figures linger under the limits' other accounts
   saveAccts();
   void listClaudeTokens();
+}
+
+// ---------- Maintenance's service tokens (docs/accounts.md): sealed in Rust, never read back here ----------
+
+/** Every kind and host a token is saved for. A failed listing keeps the last one. */
+export async function listMaintTokens(): Promise<MaintToken[]> {
+  const found = await invoke<MaintToken[]>("maint_tokens").catch(() => null);
+  if (found) setMaintTokens(found);
+  renderSettings();
+  return found ?? maintTokens ?? [];
+}
+
+/** One cheap read of the host's API root as the token: whether it is known, as whom, and which scopes it lacks. */
+export async function checkMaintToken(kind: string, host: string): Promise<void> {
+  const k = `${kind}@${host}`, was = maintTokenChecks[k];
+  maintTokenChecks[k] = { ok: was?.ok ?? false, who: was?.who ?? null, missing: was?.missing ?? [], error: null, at: was?.at ?? 0, busy: true };
+  renderSettings();
+  try {
+    const c = await invoke<{ ok: boolean; who: string | null; missing: string[]; error: string | null }>("maint_token_check", { kind, host });
+    maintTokenChecks[k] = { ok: c.ok, who: c.who, missing: c.missing, error: c.error, at: Date.now() };
+  } catch (e) {
+    maintTokenChecks[k] = { ok: false, who: null, missing: [], error: String(e), at: Date.now() };
+  }
+  renderSettings();
+}
+
+/** A pasted token: sealed under the slot Rust folds the host into, then listed and checked there. */
+export async function addMaintToken(kind: string, host: string, token: string): Promise<boolean> {
+  let slot: string;
+  try {
+    slot = await invoke<string>("maint_token_save", { kind, host, token });
+  } catch (e) {
+    toast(String(e));
+    return false;
+  }
+  forgetTokenReads(kind);
+  await listMaintTokens();
+  void checkMaintToken(kind, slot);
+  return true;
+}
+
+export async function removeMaintToken(kind: string, host: string): Promise<void> {
+  const ok = await ask(`Forget the token for ${host}?\n\nIt is deleted from this machine's keychain. Maintenance stops reading what it read with it until you save another.`,
+    { title: "Forget token", kind: "warning", okLabel: "Forget", cancelLabel: "Cancel" });
+  if (!ok) return;
+  await invoke("maint_token_forget", { kind, host }).catch((e) => toast(String(e)));
+  forgetTokenReads(kind);
+  delete maintTokenChecks[`${kind}@${host}`];
+  void listMaintTokens();
 }
 
 // A pane's text with xterm's soft wraps joined back; a hard wrap is ./accounts' to undo.

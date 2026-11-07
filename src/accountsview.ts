@@ -1,10 +1,12 @@
 // Settings › Accounts as markup: the setup-token accounts in priority order with their last
-// figures, the keychain items not yet listed, and the two ways to add one. Data in, string out;
-// ./settings owns the element and ./actions every verb (docs/accounts.md).
+// figures, the keychain items not yet listed, and the two ways to add one; then Maintenance's
+// service tokens per kind. Data in, string out; ./settings owns the element, ./actions every verb
+// (docs/accounts.md).
 import { esc, escAttr } from "./format";
 import { icon } from "./svgicons";
 import type { AcctReading, ClaudeAcct } from "./accounts";
-import type { AcctCheck } from "./state";
+import type { AcctCheck, MaintTokenCheck } from "./state";
+import type { TokenDef } from "./maintsources";
 
 /** `blocked`: why a launch skips it (no token in the keychain, or its last Check failed). */
 export interface AcctRow { acct: ClaudeAcct; reading: AcctReading | null; full: boolean; check?: AcctCheck; next: boolean; blocked?: string }
@@ -80,6 +82,45 @@ export function accountsPanelHtml(p: AcctPanel): string {
   return `<div class="titlebox syncbox">
     ${sect("In this order", list + ext, `A new session starts on the first account that is on and not full. When every one is full, it starts on ${login}. A session never changes account while it runs.`)}
     ${found}
+    ${add}
+  </div>`;
+}
+
+/** Settings › Accounts' Maintenance tokens of one kind: each saved host with its last check, and the add form. */
+export interface TokRow { host: string; check?: MaintTokenCheck }
+export interface TokPanel { def: TokenDef; rows: TokRow[]; listed: boolean; draft: { host: string; token: string }; now: number }
+
+function tokRow(p: TokPanel, r: TokRow): string {
+  const at = `${escAttr(p.def.id)}|${escAttr(r.host)}`, c = r.check;
+  const who = c?.who ? ` as ${esc(c.who)}` : "";
+  const state = c?.busy ? `<span class="sync-dim">checking…</span>`
+    : c?.error ? `<span class="acct-bad" title="${escAttr(c.error)}">${icon("x")}${esc(c.error)}</span>`
+    : c && !c.ok ? `<span class="acct-bad">${icon("x")}known${who}, missing ${esc(c.missing.join(", "))}</span>`
+    : c ? `<span class="sync-dim">${icon("check")}works${who} · ${ago(p.now - c.at)}</span>` : "";
+  return `<div class="acct-row">
+    <div class="acct-main"><div class="acct-l"><span class="mono">${esc(r.host)}</span></div>
+      ${state ? `<div class="acct-f">${state}</div>` : ""}</div>
+    <div class="acct-btns">
+      <button class="set-freset" data-settok="check|${at}"${c?.busy ? " disabled" : ""} title="One read of the host's own API root: proves the token and lists its scopes">Check</button>
+      <button class="set-fbtn" data-settok="remove|${at}" title="Forget it, and delete it from this machine">${icon("x", "solo")}</button>
+    </div>
+  </div>`;
+}
+
+export function maintTokensHtml(p: TokPanel): string {
+  const list = p.rows.length ? p.rows.map((r) => tokRow(p, r)).join("")
+    : `<div class="thint">${p.listed ? `None saved, so Maintenance asks no ${esc(p.def.label)} host.` : "Reading this machine's keychain…"}</div>`;
+  const page = p.def.page.replace("{host}", p.draft.host.trim() || p.def.host);
+  const id = escAttr(p.def.id), d = p.draft;
+  const add = sect("Add a token", `
+    <label class="tlabel" for="tok-host-${id}">Host</label>
+    <input id="tok-host-${id}" class="tfield mono" type="text" spellcheck="false" autocomplete="off" data-tokkind="${id}" data-tokfield="host" placeholder="${escAttr(p.def.host)}" value="${escAttr(d.host)}">
+    <label class="tlabel" for="tok-val-${id}">Token</label>
+    <input id="tok-val-${id}" class="tfield mono" type="password" spellcheck="false" autocomplete="off" data-tokkind="${id}" data-tokfield="token" value="${escAttr(d.token)}">
+    <div class="thint">Make one at <span class="mono">${esc(page)}</span> with the scopes <span class="mono">${esc(p.def.scopes.join(", "))}</span>.</div>
+    <div class="trow-end"><button class="set-abtn" data-settok="save|${id}|">Save and check</button></div>`);
+  return `<div class="titlebox syncbox">
+    ${sect("Saved here", list, "Each is sent only over https to the host it was saved for, or a subdomain of it, and only when you click Check prod, or Check or Save and check here, which read the host's own API root once.")}
     ${add}
   </div>`;
 }
