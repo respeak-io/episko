@@ -36,10 +36,82 @@ export function cleanPrompt(raw: unknown): string {
   return t.length > TEXT_CAP ? t.slice(0, TEXT_CAP) + "…" : t;
 }
 
-/** The single line a tooltip or a folded row falls back to. */
+/** The single line a tooltip or a folded row falls back to: your words before any paste. */
 export function promptLabel(text: string): string {
-  const first = text.split("\n").find((l) => l.trim()) ?? "";
+  const prose = promptParts(text).find((x) => x.kind === "text");
+  const first = (prose?.kind === "text" ? prose.text : promptFlat(text)).split("\n").find((l) => l.trim()) ?? "";
   return first.length > 120 ? first.slice(0, 120) + "…" : first;
+}
+
+// ---------- tagged blocks inside a question: a paste, a pasted <system-reminder>, a file ----------
+
+export interface PromptBlock { name: string; attrs: [string, string][]; tag: string; body: string; cut: boolean }
+export type PromptPart = { kind: "text"; text: string } | { kind: "block"; block: PromptBlock };
+
+// A tag counts only alone on its line, so `<div>` mid-sentence stays prose.
+const OPEN_TAG = /^\s*<([A-Za-z][\w.:-]*)((?:\s[^<>]*)?)>\s*$/;
+const CLOSE_TAG = /^\s*<\/([A-Za-z][\w.:-]*)(?:\s[^<>]*)?>\s*$/; // Claude Code repeats the id on the close
+const ATTR = /([\w.:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
+const FENCE = /^\s*(```|~~~)/;
+const trimNl = (s: string) => s.replace(/^\n+|\n+$/g, "");
+
+function openTag(line: string): RegExpExecArray | null {
+  const m = OPEN_TAG.exec(line);
+  return m && !m[2].trimEnd().endsWith("/") ? m : null;
+}
+
+function closeAt(lines: readonly string[], from: number, name: string): number {
+  let depth = 0;
+  for (let j = from; j < lines.length; j++) {
+    if (openTag(lines[j])?.[1] === name) depth++;
+    else if (CLOSE_TAG.exec(lines[j])?.[1] === name && depth-- === 0) return j;
+  }
+  return -1;
+}
+
+/**
+ * A question as prose and tagged blocks. A block needs its close, except the last one in a
+ * text cleanPrompt cut short (its `…` is the mark). Nothing inside a code fence opens one.
+ */
+export function promptParts(text: string): PromptPart[] {
+  if (!text.includes("<")) return text ? [{ kind: "text", text }] : [];
+  const lines = text.split("\n");
+  const out: PromptPart[] = [];
+  let prose: string[] = [];
+  let fenced = false;
+  const flush = () => { const t = trimNl(prose.join("\n")); if (t) out.push({ kind: "text", text: t }); prose = []; };
+  for (let i = 0; i < lines.length; i++) {
+    if (FENCE.test(lines[i])) fenced = !fenced;
+    const m = fenced ? null : openTag(lines[i]);
+    const end = m ? closeAt(lines, i + 1, m[1]) : -1;
+    const cut = !!m && end < 0 && i < lines.length - 1 && text.endsWith("…");
+    if (!m || (end < 0 && !cut)) { prose.push(lines[i]); continue; }
+    flush();
+    const stop = end < 0 ? lines.length : end;
+    const body = lines.slice(i + 1, stop).join("\n");
+    const attrs = [...m[2].matchAll(ATTR)].map((a): [string, string] => [a[1], a[2] ?? a[3] ?? ""]);
+    out.push({ kind: "block", block: { name: m[1], attrs, tag: lines[i].trim(), body: trimNl(cut ? body.replace(/…$/, "") : body), cut } });
+    i = stop;
+  }
+  flush();
+  return out;
+}
+
+/** `pasted_content` → "Pasted content". */
+export function blockLabel(name: string): string {
+  const s = name.replace(/[_-]+/g, " ").trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function linesText(b: PromptBlock): string {
+  const n = b.body ? b.body.split("\n").length : 0;
+  return `${n}${b.cut ? "+" : ""} line${n === 1 ? "" : "s"}`;
+}
+
+/** One line per block, for the surfaces too narrow to fold one open. */
+export function promptFlat(text: string): string {
+  if (!text.includes("</") && !text.endsWith("…")) return text;
+  return promptParts(text).map((x) => (x.kind === "text" ? x.text : `[${blockLabel(x.block.name)} · ${linesText(x.block)}]`)).join("\n");
 }
 
 // Turns Claude submits as `user` that nobody typed: a slash command's echo, a `!` shell line,

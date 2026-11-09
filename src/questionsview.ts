@@ -5,7 +5,7 @@
 import { esc, escAttr } from "./format";
 import { joinPath, renderMarkdown } from "./markdown";
 import { outlineItems, promptLabel } from "./outline";
-import { relayIcon } from "./inspectorview";
+import { promptHtml, relayIcon } from "./inspectorview";
 import { icon } from "./svgicons";
 import type { Prompt } from "./types";
 
@@ -54,7 +54,7 @@ export function qThreadHtml(entries: readonly QEntry[], answerHtml: (p: Prompt) 
     const head = `<div class="q-h">${who}<span class="q-t">${back}${clock(p.at)}</span>${find}`
       + `<button class="q-act" type="button" data-qcopy="${escAttr(p.id)}" title="Copy the question and its answer">Copy</button></div>`;
     const ans = p.answer ? `<div class="q-ans mdr">${answerHtml(p)}</div>` : noAnswer(at.running, i === entries.length - 1);
-    return `<section class="q-ent${r ? " relay" : ""}" data-qent="${escAttr(p.id)}">${head}<div class="q-ask">${esc(p.text)}</div>${ans}</section>`;
+    return `<section class="q-ent${r ? " relay" : ""}" data-qent="${escAttr(p.id)}">${head}<div class="q-ask">${promptHtml(p.text, p.id)}</div>${ans}</section>`;
   }).join("");
 }
 

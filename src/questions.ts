@@ -46,6 +46,16 @@ function answerHtml(s: Sess, p: Prompt): string {
   return html;
 }
 
+// A fold you opened or closed is yours: the next answer landing must not reset it.
+function paintKeepingFolds(el: HTMLElement, html: string) {
+  const was = new Map([...el.querySelectorAll<HTMLDetailsElement>("details[data-qblk]")].map((d) => [d.dataset.qblk, d.open]));
+  el.innerHTML = html;
+  for (const d of el.querySelectorAll<HTMLDetailsElement>("details[data-qblk]")) {
+    const open = was.get(d.dataset.qblk);
+    if (open !== undefined) d.open = open;
+  }
+}
+
 let lastSub = "";
 let lastIndex = "";
 let lastThread = "";
@@ -66,7 +76,7 @@ export function renderQuestions(force = false) {
   if (index !== lastIndex) { lastIndex = index; $("qIndex").innerHTML = index; }
   const running = s.phase === "thinking" || s.phase === "working";
   const thread = qThreadHtml(entries, (p) => answerHtml(s, p), { running, live: true });
-  if (thread !== lastThread) { lastThread = thread; $("qThread").innerHTML = thread; }
+  if (thread !== lastThread) { lastThread = thread; paintKeepingFolds($("qThread"), thread); }
   if (mdCache.size > 400) { // prompts are capped at 200 a pane; drop what no open sheet can show
     const live = new Set([...sessions.values()].flatMap((x) => x.prompts.map((p) => p.id)));
     for (const k of mdCache.keys()) if (!live.has(k)) mdCache.delete(k);

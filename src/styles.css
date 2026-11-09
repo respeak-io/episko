@@ -1134,6 +1134,24 @@ html.win .wctl { display: flex; }
 .q-ans.mdr h1.mdr-h, .q-ans.mdr h2.mdr-h { font-size: 1.2em; padding-bottom: 0; border-bottom: 0; }
 .q-none { margin-top: 9px; padding-left: 14px; font-size: 12px; font-style: italic; color: var(--muted-2); }
 .q-none.run { color: var(--st-working); }
+/* A tagged block inside a question (a paste, a pasted reminder), as ./inspectorview's promptHtml
+   draws it here and in the mirror's transcript: folded once it is long, its first line peeking out. */
+.q-blk { margin: 8px 0; border: 1px solid var(--hair-strong); border-radius: 7px; background: color-mix(in srgb, var(--bg-2) 72%, transparent); white-space: normal; font-weight: 400; }
+.q-blk:first-child { margin-top: 2px; }
+.q-blk:last-child { margin-bottom: 0; }
+.q-blk > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 10px; list-style: none; cursor: pointer; user-select: none; border-radius: 6px; font: 11px/1.5 var(--font-mono); color: var(--muted); }
+.q-blk > summary::-webkit-details-marker { display: none; }
+.q-blk > summary:hover { background: var(--lift); color: var(--text); }
+.q-blk > summary .ic { --ic: 11px; flex: none; transition: transform .12s ease; }
+.q-blk[open] > summary .ic { transform: rotate(90deg); }
+.q-blk[open] > summary { border-radius: 6px 6px 0 0; }
+.q-blk-n { flex: none; font-weight: 650; color: var(--text); }
+.q-blk-a, .q-blk-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); }
+.q-blk-a { flex: 0 1 auto; }
+.q-blk-p { flex: 1 1 0; }
+.q-blk[open] .q-blk-p { visibility: hidden; }
+.q-blk-c { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.q-blk-b { padding: 8px 12px 10px; border-top: 1px solid var(--hair); font: 11.5px/1.6 var(--font-mono); color: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- project commit graph (modal). .grow's height MUST equal ROW_H in graph.ts (lane lines are
    drawn edge-to-edge per row), so nothing may add to a row's box: selection is a background,

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, noteAnswer, notePrompt,
-  OUTLINE_DEFAULTS, outlineItems, parseRelay, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
+  blockLabel, cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, noteAnswer, notePrompt,
+  OUTLINE_DEFAULTS, outlineItems, parseRelay, promptFlat, promptKeys, promptLabel, promptParts, PROMPT_CAP, screenShift, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -335,5 +335,43 @@ describe("a turn another agent submitted is listed as theirs", () => {
     expect(items.map((it) => it.kind)).toEqual(["ask", "relay", "ask", "relays", "ask"]);
     expect(items.flatMap((it) => it.kind === "ask" ? [it.n] : [])).toEqual([1, 2, 3]);
     expect(items[3].kind === "relays" && items[3].ps.length).toBe(3);
+  });
+});
+
+describe("a tagged block inside a question is drawn as a block", () => {
+  const PASTE = 'Sieht das gut aus?\n\n<pasted_content id="975c">\nOperation details\nStatus\nOK\n</pasted_content id="975c">\n\nund das?';
+  it("splits prose from a paste, and reads the close Claude Code writes with its id", () => {
+    const parts = promptParts(PASTE);
+    expect(parts.map((x) => x.kind)).toEqual(["text", "block", "text"]);
+    expect(parts[0]).toEqual({ kind: "text", text: "Sieht das gut aus?" });
+    const b = parts[1].kind === "block" ? parts[1].block : null;
+    expect(b).toMatchObject({ name: "pasted_content", attrs: [["id", "975c"]], body: "Operation details\nStatus\nOK", cut: false });
+    expect(parts[2]).toEqual({ kind: "text", text: "und das?" });
+  });
+  it("leaves a tag that is not alone on its line, or never closes, as prose", () => {
+    expect(promptParts("wrap it in <div>\nlike so")).toEqual([{ kind: "text", text: "wrap it in <div>\nlike so" }]);
+    expect(promptParts("<div>\nno close here").map((x) => x.kind)).toEqual(["text"]);
+    expect(promptParts("<br />\n</br>").map((x) => x.kind)).toEqual(["text"]);
+  });
+  it("opens nothing inside a code fence", () => {
+    expect(promptParts("```xml\n<a>\nx\n</a>\n```").map((x) => x.kind)).toEqual(["text"]);
+  });
+  it("closes on the matching depth when a block nests its own name", () => {
+    const parts = promptParts("<a>\n<a>\nx\n</a>\n</a>");
+    expect(parts).toHaveLength(1);
+    expect(parts[0].kind === "block" && parts[0].block.body).toBe("<a>\nx\n</a>");
+  });
+  it("keeps the last block when cleanPrompt cut its close off", () => {
+    const parts = promptParts(cleanPrompt("look:\n<pasted_content id=\"1\">\n" + "row\n".repeat(2000)));
+    const b = parts[1].kind === "block" ? parts[1].block : null;
+    expect(b?.cut).toBe(true);
+    expect(b?.body.endsWith("…")).toBe(false);
+  });
+  it("flattens a block to one line for the rail and the label", () => {
+    expect(promptFlat(PASTE)).toBe("Sieht das gut aus?\n[Pasted content · 3 lines]\nund das?");
+    expect(promptLabel('<pasted_content id="1">\nx\n</pasted_content>\nwhat is this?')).toBe("what is this?");
+    expect(promptLabel('<pasted_content id="1">\nx\n</pasted_content>')).toBe("[Pasted content · 1 line]");
+    expect(promptFlat("plain")).toBe("plain");
+    expect(blockLabel("system-reminder")).toBe("System reminder");
   });
 });
