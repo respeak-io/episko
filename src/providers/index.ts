@@ -22,7 +22,8 @@ const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
 
 // `at` is the message's own ISO timestamp where the provider records one; a reader that
 // wants a clock parses it and shows nothing when it is absent.
-export interface ProviderMessage { role: string; text: string; at?: string | null }
+// `compact` marks a compaction summary filed as a user turn (usage.rs).
+export interface ProviderMessage { role: string; text: string; at?: string | null; compact?: boolean }
 
 /** What a finished conversation left behind (usage.rs `TranscriptFacts`); absent, never zero. */
 export interface ConversationFacts {

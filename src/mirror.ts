@@ -20,7 +20,7 @@ import {
 import type { GhIssueRead } from "./issue";
 import { openFileOrRead } from "./mdreader";
 import { seedPrompts } from "./outline";
-import { answerMd, qClipText, qEntries, qThreadHtml } from "./questionsview";
+import { answerMd, copiedWhat, qClipText, qEntries, qThreadHtml } from "./questionsview";
 import { renderMini, renderSidebar } from "./sidebar";
 import { extWorking } from "./sidebarview";
 import {
@@ -267,7 +267,7 @@ function paintPastBody(d: Restorable) {
   const body = $("extBody");
   const label = providerAdapter(d.provider)?.label ?? d.provider;
   if (qa && entries) {
-    body.innerHTML = `<div class="ext-qa">${qThreadHtml(entries, (p) => answerMd(d.workdir, p.answer ?? ""), { running: false, live: false })}</div>`;
+    body.innerHTML = `<div class="ext-qa">${qThreadHtml(entries, (_k, text) => answerMd(d.workdir, text), { running: false, live: false })}</div>`;
     // The newest is what you came back for. The body alone: scrollIntoView would also move
     // every ancestor that can scroll, overflow:hidden included.
     const last = body.querySelector<HTMLElement>(".q-ent:last-child");
@@ -290,7 +290,7 @@ $("extPane").addEventListener("click", (ev) => {
     const all = pastEntries(d) ?? [];
     const entries = v.qcopy ? all.filter((e) => e.p.id === v.qcopy) : all;
     writeText(qClipText(entries))
-      .then(() => toast(v.qcopy ? "Question and answer copied" : `${entries.length} questions copied`))
+      .then(() => toast(v.qcopy ? copiedWhat(entries) : `${entries.length} questions copied`))
       .catch(() => toast("copy failed"));
   } else if (v.mdurl) openUrl(v.mdurl).catch((e) => toast("Couldn't open the link: " + e));
   else if (v.mdfile) void openFileOrRead(v.mdfile);
@@ -405,7 +405,7 @@ async function loadTranscript(e: ExtSession, initial: boolean) {
 // stillCurrent is re-checked after the await: a late reply must not paint over another mirror.
 async function loadTranscriptInto(cwd: string, sessionId: string, initial: boolean, stillCurrent: () => boolean) {
   try {
-    const msgs = await invoke<{ role: string; text: string }[]>("read_transcript", { cwd, sessionId, limit: 80 });
+    const msgs = await invoke<ProviderMessage[]>("read_transcript", { cwd, sessionId, limit: 80 });
     if (!stillCurrent()) return;
     renderTranscript(msgs, initial);
   } catch (err) {
@@ -413,7 +413,7 @@ async function loadTranscriptInto(cwd: string, sessionId: string, initial: boole
   }
 }
 
-function renderTranscript(msgs: { role: string; text: string }[], initial: boolean, agent = "Claude") {
+function renderTranscript(msgs: ProviderMessage[], initial: boolean, agent = "Claude") {
   const body = $("extBody");
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
   body.innerHTML = msgs.length

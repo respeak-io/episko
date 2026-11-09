@@ -12,6 +12,11 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! When Claude compacted a conversation, a shelved session listed the summary it carried on from as
+  one of your questions: a wall of text with the instructions meant for the model still in it. It is
+  now a band between the questions saying where the context was compacted, with the summary folded
+  under it and readable as formatted sections. The answer Claude gave after a compaction is filed
+  under the question it was working on.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
