@@ -1,3 +1,5 @@
+// First, before anything reads a `cc-` key: a preview build keeps its settings apart (./channel).
+import "./channelhook";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";

@@ -20,6 +20,7 @@ import {
 } from "./state";
 import { customIcons } from "./icons";
 import { basename } from "./format";
+import { sends } from "./channelhook";
 import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
 import { capableDevices, narrowCaps, type HandoffCaps, type HandoffEv } from "./handoff";
 import {
@@ -155,7 +156,7 @@ function onLocalWrite(key: string) {
   if (applying || !key.startsWith("cc-")) return;
   const cls = syncClass(key);
   if (cls === "pref") {
-    if (!status.configured || excluded.has(key)) return;
+    if (!status.configured || excluded.has(key) || !sends(key)) return;
     // An edit made here is newer than whatever was waiting to replace it.
     if (pending[key]) { delete pending[key]; savePending(); }
     owe("prefs", key, Date.now());
@@ -213,6 +214,7 @@ export function flush() {
   for (const sk of dirty) {
     const i = sk.indexOf(":");
     const stream = sk.slice(0, i) as Stream, key = sk.slice(i + 1);
+    if (stream === "prefs" && !sends(key)) continue; // owed by a stable run, sent by the next one
     const at = stamps[sk]?.at ?? now;
     const payload = stream === "prefs" ? localStorage.getItem(key) : stream === "roster" ? wire[key] ?? null : owedValue(stream, key);
     events.push({ stream, key, at, payload });
@@ -348,7 +350,7 @@ export function setExcluded(key: string, keep: boolean) {
   if (keep) { excluded.add(key); delete pending[key]; savePending(); } else excluded.delete(key);
   quiet(() => raw.set.call(localStorage, "cc-sync-exclude", JSON.stringify([...excluded])));
   // Synced again: this machine's value is offered, and loses to any newer one the server holds.
-  if (!keep && status.configured && localStorage.getItem(key) !== null) { owe("prefs", key, 1); saveBook(); schedule(2_000); }
+  if (!keep && status.configured && sends(key) && localStorage.getItem(key) !== null) { owe("prefs", key, 1); saveBook(); schedule(2_000); }
   render();
 }
 
@@ -460,7 +462,7 @@ export async function pairSync(url: string, code: string, label: string, user: s
   // A newly paired machine owes the server all its spend, and offers its prefs (see `seed`).
   dirty.clear();
   seed.clear();
-  for (const k of Object.keys(localStorage)) if (syncClass(k) === "pref" && !excluded.has(k)) seed.add(k);
+  for (const k of Object.keys(localStorage)) if (syncClass(k) === "pref" && !excluded.has(k) && sends(k)) seed.add(k);
   seed.add(ROSTER_SEED);
   wire = {};
   saveWire();

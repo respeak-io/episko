@@ -11,8 +11,9 @@ import { dlog, setAppVersion } from "./debug";
 import { sessions } from "./state";
 import { esc } from "./format";
 import { icon } from "./svgicons";
+import { markChannel } from "./channelhook";
 
-getVersion().then((v) => { setAppVersion(v); $("fVer").textContent = "v" + v; }).catch(() => {});
+getVersion().then((v) => { setAppVersion(v); markChannel(v); $("fVer").textContent = "v" + v; }).catch(() => {});
 
 // ---------- app self-update (Tauri updater plugin) ----------
 let pendingUpdate: Awaited<ReturnType<typeof check>> | null = null;
