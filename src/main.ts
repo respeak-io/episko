@@ -108,7 +108,9 @@ import {
 import {
   closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
 } from "./fleetui";
-import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
+import {
+  closePrReview, closeReviewRow, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview,
+} from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -128,7 +130,7 @@ import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   claudeAccts, copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
-  vitalsPrefs, removingWt, type BgLogHealthEvent,
+  vitalsPrefs, removingWt, openReviews, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
@@ -453,10 +455,12 @@ function here(): Loc | null {
   }
   return mirror ? { ...mirror } : null;
 }
-// The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
+// The sources ./grouping's allProjects lists a project from, plus the open reviews that keep one on
+// the rail, so every header the sidebar draws is alive.
 const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
   || [...sessions.values()].some((s) => s.colorKey === root) || dormants.some((d) => d.colorKey === root)
-  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
+  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root)
+  || openReviews.some((r) => r.root === root);
 function navAlive(l: Loc): boolean {
   switch (l.kind) {
     case "session": return l.group ? [...sessions.values()].some((s) => s.run?.groupId === l.group) : sessions.has(l.id);
@@ -753,7 +757,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-extlink],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-revclose],[data-review],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-extlink],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -780,6 +784,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.closerun) void closeRunGroup(el.dataset.closerun);
   else if (el.dataset.runagain) void rerunRunGroup(el.dataset.runagain);
   else if (el.dataset.rungroup) { openRunGroup(el.dataset.rungroup); closeAttnPop(); }
+  // The ✕ sits inside the review's row, so it must be tested before data-review.
+  else if (el.dataset.revclose) closeReviewRow(el.dataset.revroot || "", +el.dataset.revclose);
+  else if (el.dataset.review) openPrReview(el.dataset.proj || basename(el.dataset.revroot || ""), el.dataset.revroot || "", +el.dataset.review);
   // Two popovers emit data-sel rows; both close behind the stage change.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);

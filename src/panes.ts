@@ -46,7 +46,7 @@ import {
   accentFor, acctChecks, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror, foundTokens,
   fetchedByRepo,
   effectiveAgent, engineDef,
-  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
+  externals, extMirrorId, FAVORITES, ioAll, openReviews, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
@@ -818,16 +818,18 @@ async function refreshWorktrees(): Promise<boolean> {
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
   // A favourite with nothing running needs a roster too, or the sidebar's peek rows
   // (clusterByWorktree reads worktreesByRepo) become a feature of busy projects only.
+  // So does an open review's project: the roster is what files its row under the PR's checkout.
   const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
   const roots = new Set(live);
-  for (const f of FAVORITES) {
-    if (live.has(f.path)) continue;
+  const idle = [...FAVORITES.map((f) => f.path), ...openReviews.map((r) => r.root)];
+  for (const path of idle) {
+    if (live.has(path)) continue;
     // Never read yet: seed it now rather than up to a sweep later.
-    if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
+    if (sweep || !worktreesByRepo.has(path)) roots.add(path);
   }
   if (sweep) idleWtSweptAt = Date.now();
-  // Keep favourites' rosters too, or the tick that stops reading one would drop it.
-  const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
+  // Keep those rosters too, or the tick that stops reading one would drop it.
+  const keep = new Set([...live, ...idle]);
   for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
   let changed = false;
   await Promise.all([...roots].map(async (root) => {

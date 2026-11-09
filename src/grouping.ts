@@ -11,8 +11,9 @@ import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
   accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty, handoffs,
-  projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
+  openReviews, projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
+import type { OpenReview } from "./review";
 import { taskPrefs } from "./tasks";
 import { handoffBusy } from "./handoff";
 
@@ -94,6 +95,35 @@ export function placeDormants(p: ProjGroup, cl: WtCluster[]): { by: Map<string, 
     const k = checkoutDir(d.workdir || p.path, roster);
     if (keys.has(k)) by.set(k, [...(by.get(k) ?? []), d]);
     else rest.push(d);
+  }
+  return { by, rest };
+}
+// An open review's checkout: the one on its head branch, as `checkoutDir` in ./reviewui finds it.
+// A fork's head names a branch of another repo, so a same-named local one is not it.
+export function reviewCheckout(r: OpenReview): string | null {
+  if (!r.head || !r.sameRepo) return null;
+  return (worktreesByRepo.get(r.root) ?? []).find((w) => w.exists && w.branch === r.head)?.path ?? null;
+}
+// The open reviews whose rows go in `p`. In toplevel mode a worktree's own group takes its
+// branch's review and the repo's root group every other; `list` is the groups on screen.
+export function groupReviews(p: ProjGroup, list: readonly ProjGroup[]): OpenReview[] {
+  const root = p.repoRoot ?? p.path;
+  return openReviews.filter((r) => {
+    if (r.root !== root) return false;
+    const at = reviewCheckout(r);
+    if (p.repoRoot) return at === p.path;
+    return !at || !list.some((g) => g.repoRoot === root && g.path === at);
+  });
+}
+// Like `placeDormants`: each review under its checkout's cluster, the rest below the project.
+export function placeReviews(revs: OpenReview[], cl: WtCluster[]): { by: Map<string, OpenReview[]>; rest: OpenReview[] } {
+  const keys = new Set(cl.map((c) => c.key));
+  const by = new Map<string, OpenReview[]>();
+  const rest: OpenReview[] = [];
+  for (const r of revs) {
+    const k = reviewCheckout(r);
+    if (k && keys.has(k)) by.set(k, [...(by.get(k) ?? []), r]);
+    else rest.push(r);
   }
   return { by, rest };
 }

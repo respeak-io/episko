@@ -10,12 +10,13 @@ import {
 } from "./types";
 import {
   accentFor, activeId, collapsedRuns, extMirrorId, folderDirty, handoffs, pastMirrorId, removingWt,
-  peekPrefs, shelvedInTree, stageGroup, wtGroup,
+  peekPrefs, reviewMirror, shelvedInTree, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants, shellElsewhere,
-  type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
+  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants, placeReviews, reviewCheckout,
+  shellElsewhere, type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
+import { openReviewTag, type OpenReview } from "./review";
 import { peekStaysOpen } from "./peek";
 import { glyphIcon, icon } from "./svgicons";
 import type { GroupDef } from "./projgroups";
@@ -159,15 +160,18 @@ function splitRows(it: Extract<RunItem, { kind: "split" }>, chip?: WtCluster): s
 
 // subheader → ⑃ cluster headers, chip → flat rows with a branch chip, off/toplevel → flat; a
 // single-checkout project is always flat. Only live checkouts appear; idle ones are peekBody's.
-export function groupBody(p: ProjGroup): string {
-  const flat = () => rows(p.sessions) + p.externals.map((e) => extRow(e)).join("");
+// `revs` are the open reviews this group draws (./grouping's `groupReviews`); one holds its checkout open.
+export function groupBody(p: ProjGroup, revs: OpenReview[] = []): string {
+  const revRows = (l: OpenReview[], chipFor?: (r: OpenReview) => WtCluster | undefined) => l.map((r) => reviewRow(r, chipFor?.(r))).join("");
+  const flat = () => rows(p.sessions) + p.externals.map((e) => extRow(e)).join("") + revRows(revs);
   if (wtGroup === "subheader") {
     // `withEmpty`: idle checkouts count toward whether clustering is worth it, then leave the rows.
     const cl = clusterByWorktree(p, true);
     const placed = treeDormants(p)?.by;
-    if (cl.length >= 2) return cl.filter((c) => clusterIsLive(c) || placed?.has(c.key)).map((c) => {
+    const rv = placeReviews(revs, cl);
+    if (cl.length >= 2) return cl.filter((c) => clusterIsLive(c) || placed?.has(c.key) || rv.by.has(c.key)).map((c) => {
       const col = branchHue(c), n = c.sessions.length + c.externals.length;
-      const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("")
+      const body = rows(c.sessions) + c.externals.map((e) => extRow(e)).join("") + revRows(rv.by.get(c.key) ?? [])
         + (placed?.get(c.key) ?? []).map((d) => dormantRow(d, sentTag(d), true)).join("");
       // Mid-removal: the spinner is the only thing on screen saying so, and neither the ＋ nor
       // the menu may stay live, or a second right-click queues a second removal of one folder.
@@ -180,28 +184,46 @@ export function groupBody(p: ProjGroup): string {
         + `<span class="wtname" style="color:${col}" title="${esc(going ? "removing this checkout…" : clusterTip(c))}">${esc(clusterName(c))}</span>`
         + `<span class="wtcount">${going || !n ? "" : n}</span>${going ? "" : add}</div>`
         + `<div class="wtsessions${going ? " going" : ""}" style="--wtc:${col}">${body}</div>`;
-    }).join("");
+    }).join("") + revRows(rv.rest);
   } else if (wtGroup === "chip") {
     const cl = clusterByWorktree(p, true);
     if (cl.length >= 2) {
       const byKey = new Map(cl.map((c) => [c.key, c]));
       // Same key clusterByWorktree used, or a task pane in a subfolder gets no chip.
       return rows(p.sessions, (s) => byKey.get(checkoutOf(s, p.path)))
-        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("");
+        + p.externals.map((e) => extRow(e, byKey.get(e.cwd || p.path))).join("")
+        + revRows(revs, (r) => byKey.get(reviewCheckout(r) ?? ""));
     }
   }
   return flat();
 }
+// A pull request open for review: a row of its own, so a session and its review are one click apart.
+function reviewRow(r: OpenReview, chip?: WtCluster): string {
+  const m = reviewMirror();
+  const on = m?.root === r.root && m.number === r.number;
+  const tag = openReviewTag(r);
+  const tip = `Review of #${r.number}${r.title ? ` · ${r.title}` : ""}${r.head ? ` · from ${r.head}` : ""}`;
+  const attrs = `data-revroot="${esc(r.root)}" data-proj="${esc(r.name)}"`;
+  return `<div class="srow revrow${chip ? " o3" : ""}${tag === "merged" || tag === "closed" ? " gone" : ""}${on ? " active" : ""}"`
+    + ` data-review="${r.number}" ${attrs} title="${esc(tip)}">`
+    + `<span class="sglyph">${icon("pullRequest", "solo")}</span>`
+    + `<span class="sbranch"><span class="revnum">#${r.number}</span>${esc(r.title || "pull request")}</span>`
+    + (chip ? `<span class="stags">${clusterChip(chip)}</span>` : "")
+    + `<span class="past-tag">${esc(tag)}</span>`
+    + `<span class="sclose" data-revclose="${r.number}" ${attrs} title="Close this review">${icon("x", "solo")}</span></div>`;
+}
 // Idle checkouts, revealed while the pointer rests on the group (./peek times it, ./sidebar
 // drives it). Rendered whether or not open: hover must never be a render input, or it busts
 // renderSidebar's byte-identical cache on every move. `peekStaysOpen` owns the already-open cases.
-export function peekBody(p: ProjGroup): string {
+export function peekBody(p: ProjGroup, revs: OpenReview[] = []): string {
   // `toplevel` has nothing nested to reveal and `off` is the flat legacy mode.
   if (wtGroup !== "subheader" && wtGroup !== "chip") return "";
   const cl = clusterByWorktree(p, true);
   if (cl.length < 2) return "";
   const placed = treeDormants(p)?.by;
-  const vacant = cl.filter((c) => !clusterIsLive(c) && !placed?.has(c.key));
+  // In chip mode a review's row names its checkout but does not hold it open.
+  const held = wtGroup === "subheader" ? placeReviews(revs, cl).by : null;
+  const vacant = cl.filter((c) => !clusterIsLive(c) && !placed?.has(c.key) && !held?.has(c.key));
   if (!vacant.length) return "";
   const open = peekStaysOpen(peekPrefs, vacant.length < cl.length);
   return `<div class="pgpeek${open ? " open" : ""}"><div class="pgpeek-in">`

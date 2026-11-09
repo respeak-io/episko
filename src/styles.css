@@ -2825,6 +2825,14 @@ select.in-ctl { cursor: pointer; }
 .handin-strip { margin-bottom: 6px; }
 .handin-strip .phead { cursor: default; }
 
+/* An open pull request (./sidebarview's reviewRow): live, so not dimmed like a shelved row. */
+.srow.revrow .sglyph { color: var(--muted); }
+.srow.revrow.active .sglyph, .srow.revrow.active .past-tag { color: var(--accent-ink); }
+.srow.revrow.gone { opacity: .62; }
+.srow.revrow.gone:hover, .srow.revrow.gone.active { opacity: 1; }
+.srow.revrow:hover .past-tag { opacity: 0; }          /* the ✕ takes this slot on hover */
+.revnum { font: 600 10px var(--font-mono); color: var(--muted-2); margin-right: 5px; }
+
 /* ---------- the handoff sheet (./handoffui): on the shared #scrim, so below ./confirm's own ---------- */
 .cfm.hand { width: min(560px, 94vw); z-index: 44; }
 .hand-body { max-height: 74vh; display: flex; flex-direction: column; gap: 7px; }

@@ -11,7 +11,7 @@ import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
 import { icon } from "./svgicons";
-import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupReviews, groupSummary, projectList, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
@@ -22,7 +22,7 @@ import { incomingByProject, rowText, type HandoffRec } from "./handoff";
 import { incomingRowHtml, incomingStripHtml } from "./handoffview";
 import { deviceLabel, pathsOfId } from "./synclink";
 import {
-  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, peekPrefs,
+  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, openReviews, peekPrefs,
   projGroups,
   saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
   type SortMode,
@@ -47,13 +47,16 @@ function invalidateSidebarCache() { lastHtml = null; }
 
 // Sessions handed to this machine, by the checkout their project lives in (null: not cloned here).
 let incoming = new Map<string | null, HandoffRec[]>();
+let onScreen: ProjGroup[] = []; // this pass's groups: in toplevel mode a review's row goes to its worktree's own
 const incomingRows = (recs: HandoffRec[] | undefined) =>
   (recs ?? []).map((r) => { const t = rowText(r, Date.now(), deviceLabel); return incomingRowHtml(r, t.tag, t.title); }).join("");
 
 export function renderSidebar() {
   if (draggingProjects) return;
   incoming = incomingByProject(handoffs, pathsOfId);
-  const list = projectList([...incoming.keys()].filter((k): k is string => !!k));
+  // An open review keeps its project on the rail, as an offer handed to this machine does.
+  const list = projectList([...[...incoming.keys()].filter((k): k is string => !!k), ...openReviews.map((r) => r.root)]);
+  onScreen = list;
   // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const loose = incoming.get(null) ?? [];
@@ -80,7 +83,8 @@ function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string
 
 function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const inbox = incoming.get(p.path);
-  const rows = groupBody(p) + incomingRows(inbox) + dormantRows(p);
+  const revs = groupReviews(p, onScreen);
+  const rows = groupBody(p, revs) + incomingRows(inbox) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
   // A dirty worktree lights its parent project's dot too.
@@ -103,10 +107,11 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
     // discovered via an external session or a shelved one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
-      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming` : "handed"}</span>`;
+      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming`
+        : revs.length ? `${revs.length} review${revs.length === 1 ? "" : "s"}` : "handed"}</span>`;
     head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">${icon("plus", "solo")}</span><span class="parm"></span></div>`;
   }
-  return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
+  return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p, revs)}</div>`;
 }
 
 // Expand the group a project is filed in: ⌘1–9, `nextAfterClose` and the tray can land on

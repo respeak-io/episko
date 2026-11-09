@@ -7,17 +7,18 @@ import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
   setBackendLive, setDormants, setHandoffs,
-  setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
+  setExternals, setFavorites, setOpenReviews, setProjGroups, setProjOrder, setSortMode, setWtGroup,
   worktreesByRepo,
 } from "../src/state";
+import type { OpenReview } from "../src/review";
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
   adoptIdentity,
   allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
   foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
-  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, projectList,
-  reactorLabel, reactorState, shellElsewhere, splitByWorktree, syncAttn, urgencyRank,
+  nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, placeReviews, projectList,
+  groupReviews, reactorLabel, reactorState, reviewCheckout, shellElsewhere, splitByWorktree, syncAttn, urgencyRank,
   type ProjGroup, type SidebarSlot,
 } from "../src/grouping";
 import { NO_GROUPS } from "../src/projgroups";
@@ -68,7 +69,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW_MS);
   sessions.clear();
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
-  setBackendLive(new Set()); setHandoffs([]);
+  setBackendLive(new Set()); setHandoffs([]); setOpenReviews([]);
   setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
   worktreesByRepo.clear();
   dirtyByFolder.clear();
@@ -291,6 +292,54 @@ describe("placeDormants — shelved rows under their checkout", () => {
     const { by, rest } = placeDormants(p, clusterByWorktree(p, true));
     expect(by.size).toBe(0);
     expect(rest.map((d) => d.id)).toEqual(["gone"]);
+  });
+});
+
+describe("open reviews — a row under the checkout of the PR's branch", () => {
+  const rev = (o: Partial<OpenReview> = {}): OpenReview => ({
+    root: "/w/epi", name: "epi", number: 7, title: "t", head: "feat/x", sameRepo: true, state: "OPEN", draft: false, pending: 0, ...o,
+  });
+  const roster = () => worktreesByRepo.set("/w/epi", [
+    { path: "/w/epi", branch: "main", is_main: true, exists: true },
+    { path: "/w/wt-x", branch: "feat/x", is_main: false, exists: true },
+    { path: "/w/wt-gone", branch: "feat/gone", is_main: false, exists: false },
+  ]);
+  beforeEach(roster);
+
+  it("finds the checkout on the head branch, and none before the page has read it", () => {
+    expect(reviewCheckout(rev())).toBe("/w/wt-x");
+    expect(reviewCheckout(rev({ head: "" }))).toBeNull();
+    expect(reviewCheckout(rev({ head: "feat/elsewhere" }))).toBeNull();
+    expect(reviewCheckout(rev({ head: "feat/gone" }))).toBeNull(); // a deleted folder holds nothing
+  });
+
+  it("never files a fork's PR under a local branch that merely shares its name", () => {
+    expect(reviewCheckout(rev({ head: "main", sameRepo: false }))).toBeNull();
+  });
+
+  it("places each under its cluster and keeps the rest below the project", () => {
+    const p = grp();
+    const { by, rest } = placeReviews([rev(), rev({ number: 8, head: "" })], clusterByWorktree(p, true));
+    expect(by.get("/w/wt-x")!.map((r) => r.number)).toEqual([7]);
+    expect(rest.map((r) => r.number)).toEqual([8]);
+  });
+
+  it("gives a group only its own repo's reviews", () => {
+    setOpenReviews([rev(), rev({ root: "/w/other", number: 9 })]);
+    expect(groupReviews(grp(), [grp()]).map((r) => r.number)).toEqual([7]);
+  });
+
+  it("in toplevel mode, hands a review to its worktree's own group when one is on screen", () => {
+    setOpenReviews([rev(), rev({ number: 8, head: "main" })]);
+    const root = grp(), wt = grp({ path: "/w/wt-x", repoRoot: "/w/epi", wtBranch: "feat/x" });
+    expect(groupReviews(wt, [root, wt]).map((r) => r.number)).toEqual([7]);
+    expect(groupReviews(root, [root, wt]).map((r) => r.number)).toEqual([8]);
+    // No group for that worktree (nothing runs there): the root group draws it instead.
+    expect(groupReviews(root, [root]).map((r) => r.number)).toEqual([7, 8]);
+  });
+
+  it("keeps a project with nothing but a review on the rail", () => {
+    expect(names(projectList(["/w/epi"]))).toEqual(["/w/epi"]);
   });
 });
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parsePatch, type DiffFile, type DiffHunk } from "../src/diff";
 import {
-  agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince,
+  agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampOpenReviews, clampViewed, commentableIn, commitsHeading, commitsSince,
   commitTotal, dirStates, draftBrief, expandGap, filesUnder, fileSig, gapAt, isLargeDiff, isViewed, LARGE_ROWS, lastReviewed, liveSides,
-  mergeBlock, mergeWarn, place, prFromUrl, rangeArgs, rangeLabel, reviewComments, setViewed, sortChecks, submitBlock,
-  threadBrief, threadPin, timeline, treeOrder, treeRows, withDraft, type PrReview, type PrThread, type ReviewDraft,
+  mergeBlock, mergeWarn, noteOpenReview, OPEN_REVIEWS_MAX, openReviewTag, place, prFromUrl, rangeArgs, rangeLabel,
+  reviewComments, setViewed, sortChecks, submitBlock, threadBrief, threadPin, timeline, treeOrder, treeRows, withDraft,
+  withOpenReview, withoutOpenReview, type OpenReview, type PrReview, type PrThread, type ReviewDraft,
 } from "../src/review";
 
 const patch = (...lines: string[]) => lines.join("\n");
@@ -419,5 +420,59 @@ describe("prFromUrl", () => {
     expect(prFromUrl("https://github.com/o/r/pull/0")).toBeNull();
     expect(prFromUrl("https://github.example.com/o/r/pull/7")).toBeNull();
     expect(prFromUrl("https://evil.com/github.com/o/r/pull/7")).toBeNull();
+  });
+});
+
+describe("the reviews open in the sidebar", () => {
+  const open = (n: number, root = "/w/epi") => withOpenReview([], root, "epi", n)[0];
+
+  it("adds one row per review, at the end, and never moves it on a revisit", () => {
+    let l = withOpenReview([], "/w/epi", "epi", 7);
+    l = withOpenReview(l, "/w/epi", "epi", 8);
+    expect(withOpenReview(l, "/w/epi", "epi", 7)).toBe(l);
+    expect(l.map((r) => r.number)).toEqual([7, 8]);
+    // The same number in another repo is another pull request.
+    expect(withOpenReview(l, "/w/other", "other", 7)).toHaveLength(3);
+  });
+
+  it("drops the oldest past the cap", () => {
+    let l: OpenReview[] = [];
+    for (let n = 1; n <= OPEN_REVIEWS_MAX + 2; n++) l = withOpenReview(l, "/w/epi", "epi", n);
+    expect(l).toHaveLength(OPEN_REVIEWS_MAX);
+    expect(l[0].number).toBe(3);
+  });
+
+  it("notes what the page read, and hands back the same list when nothing changed", () => {
+    const l = [open(7)];
+    const next = noteOpenReview(l, "/w/epi", 7, { title: "Fix it", head: "feat/x", state: "OPEN" });
+    expect(next[0]).toMatchObject({ title: "Fix it", head: "feat/x", number: 7 });
+    expect(noteOpenReview(next, "/w/epi", 7, { title: "Fix it", head: "feat/x" })).toBe(next);
+    expect(noteOpenReview(next, "/w/epi", 9, { title: "nobody" })).toBe(next);
+  });
+
+  it("closes one row and leaves the others", () => {
+    const l = [open(7), open(8)];
+    expect(withoutOpenReview(l, "/w/epi", 7).map((r) => r.number)).toEqual([8]);
+  });
+
+  it("tags unsent comments before the PR's state", () => {
+    const r = open(7);
+    expect(openReviewTag(r)).toBe("");
+    expect(openReviewTag({ ...r, draft: true })).toBe("draft");
+    expect(openReviewTag({ ...r, state: "MERGED" })).toBe("merged");
+    expect(openReviewTag({ ...r, state: "MERGED", pending: 2 })).toBe("2 pending");
+  });
+
+  it("repairs a stored list: no root, no number or a repeat is dropped, a missing field defaulted", () => {
+    expect(clampOpenReviews(null)).toEqual([]);
+    expect(clampOpenReviews({ root: "/w/epi" })).toEqual([]);
+    const got = clampOpenReviews([
+      { root: "/w/epi", number: 7, sameRepo: false, pending: 2 },
+      { root: "/w/epi", number: 7, title: "repeat" },
+      { root: "", number: 8 }, { root: "/w/epi", number: -1 }, null, "x",
+    ]);
+    expect(got).toEqual([{
+      root: "/w/epi", name: "", number: 7, title: "", head: "", sameRepo: false, state: "", draft: false, pending: 2,
+    }]);
   });
 });
