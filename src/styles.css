@@ -2440,6 +2440,11 @@ select.in-ctl { cursor: pointer; }
 .bpop .mp-l { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bpop .mp-main { flex: 1; }
 .bpop .bp-none { padding: 10px 9px; color: var(--muted-2); font-size: 11.5px; }
+/* a list still being read holds a full list's height, so the popover neither grows nor flips when it lands */
+.bpop .bp-list.wait { min-height: 264px; }
+/* turns only while a re-read is out, over the rows already on screen */
+.bpop .bp-q .u-spin { display: none; margin: 0 2px 0 0; }
+.bpop.reading .bp-q .u-spin { display: inline-block; }
 /* listed but not choosable (one checkout per branch); dimmed rather than hidden */
 .bpop .mp-item.dis { cursor: not-allowed; opacity: .5; }
 .bpop .mp-item.dis:hover { background: transparent; }

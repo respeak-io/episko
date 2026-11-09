@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  anyDeletable, branchRows, checkoutName, checkoutRows, chosenCheckouts, chosenWorktrees, cleanupBrief,
-  filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows,
+  anyDeletable, branchRows, checkoutName, checkoutRows, chosenCheckouts, chosenWorktrees, clampPickLists, cleanupBrief,
+  filterCounts, filterRows, globMatch, localPicks, lockText, NO_PROTECT, orderRows, pickSel, rememberPicks,
   removableCheckouts, remoteFor, remoteOf, remotePicks, selectable, switchable, switchOptions,
-  trunkOf, trunkOptions, trunkText, whereText, midFlightText, syncText,
-  type BranchInfo, type CheckoutCtx, type CleanCtx, type MergedPr, type ProtectCtx,
+  trunkOf, trunkOptions, trunkText, whereText, withCurrent, midFlightText, syncText,
+  type BranchInfo, type BranchPick, type CheckoutCtx, type CleanCtx, type MergedPr, type PickList, type ProtectCtx,
   type WtInfo,
 } from "../src/branches";
 
@@ -339,6 +339,68 @@ describe("where a checkout can move to", () => {
     expect(midFlightText(2, 1, 3))
       .toBe("2 agents are mid-turn, 1 task is still running, 3 sessions are working outside Episko");
     expect(midFlightText(0, 0, 0)).toBe("");
+  });
+});
+
+describe("what the picker remembers", () => {
+  const kept = switchOptions([
+    B("was", { current: true }), B("now"), B("held"),
+    B("cut", { remote: true, upstream: "origin/cut" }),
+  ], [W("held", { path: "/wt/held" })], "/repo");
+  const by = (opts: BranchPick[], n: string) => opts.find((o) => o.name === n)!;
+
+  it("moves the checked-out mark to what a poll says is here now", () => {
+    const opts = withCurrent(kept, "now");
+    expect(by(opts, "now")).toEqual({ name: "now", note: "already checked out here", disabled: true });
+    expect(by(opts, "was")).toEqual({ name: "was", note: "" });
+    expect(by(opts, "held").disabled).toBe(true);
+  });
+
+  it("takes the remote marks off a branch the switch has since cut locally", () => {
+    expect(by(withCurrent(kept, "cut"), "cut")).toEqual({ name: "cut", note: "already checked out here", disabled: true });
+  });
+
+  it("leaves the list alone when nothing says what is checked out", () => {
+    expect(withCurrent(kept, "")).toBe(kept);
+  });
+
+  it("keeps the cursor on its branch, then current, then the first choosable", () => {
+    const rows: BranchPick[] = [
+      { name: "off", note: "", disabled: true }, { name: "a", note: "" }, { name: "b", note: "" },
+    ];
+    expect(pickSel(rows, "b", "a")).toBe(2);
+    expect(pickSel(rows, "gone", "a")).toBe(1);
+    expect(pickSel(rows, "off", "off")).toBe(1);
+    expect(pickSel(rows, "", "")).toBe(1);
+    expect(pickSel([{ name: "off", note: "", disabled: true }], "", "")).toBe(0);
+    expect(pickSel([], "a", "b")).toBe(0);
+  });
+
+  it("drops what is not a row, and a list left with none", () => {
+    const raw = {
+      "/ok": { at: 5, rows: [{ name: "a", note: "" }, { name: "", note: "" }, { name: "b" }, { name: "c", note: "", base: 5 }, null] },
+      "/undated": { rows: [{ name: "a", note: "" }] },
+      "/empty": { at: 1, rows: [] },
+      "/shape": { at: 1, rows: "main" },
+      "/null": null,
+    } as unknown as Record<string, Partial<PickList> | null>;
+    expect(clampPickLists(raw)).toEqual({
+      "/ok": { at: 5, rows: [{ name: "a", note: "" }] },
+      "/undated": { at: 0, rows: [{ name: "a", note: "" }] },
+    });
+  });
+
+  it("replaces a checkout's list and forgets the longest unopened past the cap", () => {
+    const rows: BranchPick[] = [{ name: "a", note: "" }];
+    let lists = rememberPicks({}, "/r0", rows, 0);
+    for (let i = 1; i < 24; i++) lists = rememberPicks(lists, `/r${i}`, rows, i);
+    expect(Object.keys(lists)).toHaveLength(24);
+    lists = rememberPicks(lists, "/r0", [{ name: "b", note: "" }], 100);
+    expect(lists["/r0"].rows[0].name).toBe("b");
+    lists = rememberPicks(lists, "/new", rows, 101);
+    expect(Object.keys(lists)).toHaveLength(24);
+    expect(lists["/r0"]).toBeDefined();
+    expect(lists["/r1"]).toBeUndefined();
   });
 });
 

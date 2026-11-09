@@ -12,6 +12,9 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! The branch picker opens the moment you click it, with the branches it knew last and a small
+  spinner while it reads them again. It used to wait for GitHub first, which could take seconds, and
+  could then appear in the window's top-left corner.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

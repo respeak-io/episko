@@ -12,7 +12,7 @@ import { glyphIcon, icon } from "./svgicons";
 import { agentCapabilitySummary, CLAUDE_CLI, isAgent, isExited, midFlight, type DiffStat, type GitActionResult, type Phase, type PurgeResult, type Sess, type Stranded, type WorkingSet } from "./types";
 import { extWorking } from "./sidebarview";
 import { checkoutDir } from "./gitwatch";
-import { bPopOpen, closeBranchPop, openBranchPop } from "./bpop";
+import { bPopOpen, closeBranchPop, openBranchPop, openCheckoutPop } from "./bpop";
 import {
   remoteOf as branchRemoteOf, midFlightText, switchable as pickSwitchable, switchOptions,
   trunkOf, trunkOptions, type BranchInfo, type BranchPick, type WtInfo,
@@ -825,17 +825,13 @@ async function wtDoSwitch() {
 
 /** The branch chip on a session's git card. A pane's own checkout switches independently of
  *  the repo root, so the list is read for the checkout it sits in, not for the project. */
-export async function openSessionBranchPop(anchor: HTMLElement, sessionId: string): Promise<void> {
+export function openSessionBranchPop(anchor: HTMLElement, sessionId: string): void {
   const s = sessions.get(sessionId);
   if (!s?.workdir) return;
   const dir = checkoutDir(s.workdir, worktreesByRepo.get(s.colorKey) ?? []);
-  const [branches, worktrees] = await Promise.all([
-    invoke<BranchInfo[]>("git_branch_list", { repoDir: dir, base: cmpBase[s.colorKey] ?? null }).catch(() => [] as BranchInfo[]),
-    invoke<WtInfo[]>("list_worktrees", { repoDir: dir }).catch(() => [] as WtInfo[]),
-  ]);
-  if (!sessions.has(sessionId)) return;   // the pane closed while git was answering
-  openBranchPop(anchor, switchOptions(branches, worktrees, dir), s.branch || "",
-    (n) => { void switchCheckout(s.project, dir, n, branches.find((b) => b.name === n && b.remote)?.upstream ?? null); });
+  openCheckoutPop(anchor, dir, cmpBase[s.colorKey] ?? null, s.branch || "",
+    (row) => { void switchCheckout(s.project, dir, row.name, row.base ?? null); },
+    () => sessions.has(sessionId));
 }
 
 /** Move a checkout to another branch. `switch_branch` holds every guard it can see (a task

@@ -755,7 +755,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.drifttrack) void followSessionDrift(el.dataset.drifttrack, "track");
   else if (el.dataset.driftback) void followSessionDrift(el.dataset.driftback, "back");
-  else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
+  else if (el.dataset.brswitch) openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
   else if (el.dataset.close) void closeSessionAsked(el.dataset.close);
