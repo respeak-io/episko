@@ -87,13 +87,15 @@ export function promptFrom(text: string): { text: string; relay?: Relay } {
 export type OutlineItem =
   | { kind: "ask"; p: Prompt; n: number }
   | { kind: "relay"; p: Prompt }
-  | { kind: "relays"; id: string; ps: Prompt[] };
+  | { kind: "relays"; id: string; ps: Prompt[] }
+  | { kind: "compact"; p: Prompt };
 
 export function outlineItems(list: readonly Prompt[]): OutlineItem[] {
   const out: OutlineItem[] = [];
   let n = 0;
   for (let i = 0; i < list.length;) {
     const p = list[i];
+    if (p.compact) { out.push({ kind: "compact", p }); i++; continue; }
     if (!p.relay) { out.push({ kind: "ask", p, n: ++n }); i++; continue; }
     let j = i;
     while (j < list.length && list[j].relay) j++;
@@ -128,7 +130,9 @@ export function notePrompt(list: Prompt[], raw: unknown, now: number): Prompt | 
 const ANSWER_CAP = 12_000;
 export function noteAnswer(list: Prompt[], raw: unknown, queued: boolean): Prompt | null {
   const t = cleanPrompt(typeof raw === "string" && raw.length > ANSWER_CAP ? raw.slice(0, ANSWER_CAP) : raw);
-  const p = list[list.length - (queued ? 2 : 1)];
+  // A compaction is no turn of its own: what the agent says after one answers the question it was on.
+  const asks = list.filter((x) => !x.compact);
+  const p = asks.length ? asks[asks.length - (queued ? 2 : 1)] : queued ? undefined : list[list.length - 1];
   if (!t || !p) return null;
   p.answer = t;
   return p;
@@ -141,7 +145,40 @@ export const clearsOutline = (source: unknown): boolean => String(source ?? "") 
 // ---------- a resumed pane: the questions are in the transcript, not in its hooks ----------
 
 /** One provider history message, as ./providers hands it over. */
-export interface SeedMsg { role: string; text: string; at?: string | null }
+export interface SeedMsg { role: string; text: string; at?: string | null; compact?: boolean }
+
+// ---------- a compaction: the summary Claude carried on from ----------
+// What wraps it is addressed to the model (the tools it had, "resume directly"), so it comes off,
+// and `1. Primary Request and Intent:` becomes the heading it is. The format is Claude Code's,
+// so a variant this misses is shown whole rather than lost.
+const COMPACT_CAP = 40_000; // usage.rs sends this much
+const CMP_TAGS = [
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  /<tools-used-before-summary>[\s\S]*?<\/tools-used-before-summary>/g,
+  /<artifact-content-authored-by-others\/>/g,
+];
+const CMP_LEAD = ["This session is being continued from a previous conversation", "The summarized conversation included", "Summary:"];
+const CMP_TAIL = [
+  "If you need specific details from before compaction", "Continue the conversation from where it left off",
+  "Please continue the conversation from where", "The messages after this summary are",
+];
+const CMP_SECTION = /^\d{1,2}\. (\S.{0,79}):$/;
+
+export function compactSummary(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  let t = raw.replace(/\r\n?/g, "\n");
+  for (const re of CMP_TAGS) t = t.replace(re, "");
+  const out: string[] = [];
+  for (const line of t.split("\n").map((l) => l.trimEnd())) {
+    const s = line.trim();
+    if (CMP_TAIL.some((m) => s.startsWith(m))) break;
+    if (!out.some(Boolean) && CMP_LEAD.some((m) => s.startsWith(m))) continue;
+    const sec = CMP_SECTION.exec(line);
+    out.push(sec ? `### ${sec[1]}` : line);
+  }
+  const body = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return body.length > COMPACT_CAP ? body.slice(0, COMPACT_CAP) + "…" : body;
+}
 
 /**
  * Everything the transcript holds predates this pane, so restored entries go in front of
@@ -154,11 +191,16 @@ export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] 
   for (const m of msgs) {
     if (m.role === "assistant") { noteAnswer(restored, m.text, false); continue; }
     if (m.role !== "user") continue;
+    const ms = m.at ? Date.parse(m.at) : NaN;
+    const at = Number.isFinite(ms) ? ms : 0;
+    if (m.compact) {
+      restored.push({ id: `p${++seq}`, text: compactSummary(m.text), at, restored: true, compact: true });
+      continue;
+    }
     const clean = cleanPrompt(m.text);
     if (!clean || isEnvelope(clean)) continue;
     const { text, relay } = promptFrom(clean);
-    const at = m.at ? Date.parse(m.at) : NaN;
-    restored.push({ id: `p${++seq}`, text, at: Number.isFinite(at) ? at : 0, restored: true, ...(relay && { relay }) });
+    restored.push({ id: `p${++seq}`, text, at, restored: true, ...(relay && { relay }) });
   }
   list.unshift(...restored);
   if (list.length > PROMPT_CAP) list.splice(0, list.length - PROMPT_CAP);

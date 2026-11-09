@@ -11,7 +11,7 @@ import {
   liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
-import { isEnvelope, OUTLINE_SHOW, outlineItems, parseRelay, promptLabel, type OutlineItem, type OutlinePrefs } from "./outline";
+import { compactSummary, isEnvelope, OUTLINE_SHOW, outlineItems, parseRelay, promptLabel, type OutlineItem, type OutlinePrefs } from "./outline";
 import type { ConversationFacts, ProviderMessage } from "./providers";
 import { fetchedByRepo, sessions } from "./state";
 import { modelName } from "./usage";
@@ -318,7 +318,13 @@ function relaysRow(s: Sess, id: string, ps: Prompt[], open: boolean, anchored: R
   return `<div class="ol-grp${open ? " open" : ""}">${head}${body}</div>`;
 }
 
+// A divider, not a jump: the summary is in no scrollback, and the Questions sheet unfolds it.
+const compactRow = (p: Prompt) =>
+  `<div class="ol-cmp" title="Claude summarised the conversation up to here to free its context">${icon("chevronsDownUp", "solo")}`
+  + `<span>context compacted</span><span class="ol-t">${p.at ? promptClock(p.at) : ""}</span></div>`;
+
 function itemHtml(s: Sess, it: OutlineItem, anchored: ReadonlySet<string>, prefs: OutlinePrefs, groups: ReadonlySet<string>): string {
+  if (it.kind === "compact") return compactRow(it.p);
   if (it.kind === "relays") return relaysRow(s, it.id, it.ps, groups.has(it.id), anchored, prefs);
   return outlineRow(s, it.p, it.kind === "ask" ? it.n : 0, anchored.has(it.p.id), prefs);
 }
@@ -348,7 +354,7 @@ const askClock = (at: string | null | undefined) => {
   return Number.isFinite(ms) ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
 };
 export function askedHtml(msgs: readonly ProviderMessage[], show: number): string {
-  const asked = msgs.filter((m) => m.role === "user" && !isEnvelope(m.text.trim()) && !parseRelay(m.text.trim()));
+  const asked = msgs.filter((m) => m.role === "user" && !m.compact && !isEnvelope(m.text.trim()) && !parseRelay(m.text.trim()));
   if (!asked.length) return "";
   const shown = asked.slice(-show).reverse();
   const rest = asked.length - shown.length;
@@ -413,7 +419,13 @@ export function pastFilesHtml(files: ConversationFacts["files"], workdir: string
 
 // One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody
 // here typed, so it loses the prompt mark and the highlight that mean "you".
-export function tvMsgHtml(m: { role: string; text: string }, agent: string, cap = 0): string {
+export function tvMsgHtml(m: { role: string; text: string; compact?: boolean }, agent: string, cap = 0): string {
+  if (m.compact) {
+    // A preview is one line, so it only says where; the mirror folds the summary itself away.
+    const sum = cap ? "" : compactSummary(m.text);
+    const label = `${icon("chevronsDownUp", "solo")}Context compacted`;
+    return `<div class="tvmsg cmp">${sum ? `<details><summary>${label}</summary><div class="tvtext">${esc(sum)}</div></details>` : `<div class="tvcmp">${label}</div>`}</div>`;
+  }
   const r = m.role === "user" ? parseRelay(m.text.trim()) : null;
   const text = r ? r.body : m.text;
   const one = cap ? text.replace(/\s+/g, " ").trim() : text; // a capped preview is one run of prose

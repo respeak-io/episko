@@ -7,9 +7,9 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { $, dropScrim, toast } from "./dom";
 import { jumpToPrompt } from "./inspector";
 import { openFileOrRead } from "./mdreader";
-import { answerMd, qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml } from "./questionsview";
+import { answerMd, copiedWhat, qClipText, qEntries, qIndexHtml, qSubText, qThreadHtml } from "./questionsview";
 import { sessions } from "./state";
-import type { Prompt, Sess } from "./types";
+import type { Sess } from "./types";
 
 let sid: string | null = null;
 let sel: string | null = null;
@@ -36,13 +36,13 @@ export function closeQuestions() {
 }
 
 // Rendering markdown is the costly half of a paint that rides renderAll, so each answer is
-// rendered once per text. Keyed by prompt id, which is unique app-wide.
+// rendered once per text. Keyed by prompt id (plus `#s` for a summary), unique app-wide.
 const mdCache = new Map<string, { src: string; html: string }>();
-function answerHtml(s: Sess, p: Prompt): string {
-  const hit = mdCache.get(p.id);
-  if (hit && hit.src === p.answer) return hit.html;
-  const html = answerMd(s.workdir, p.answer ?? "");
-  mdCache.set(p.id, { src: p.answer ?? "", html });
+function mdHtml(s: Sess, key: string, text: string): string {
+  const hit = mdCache.get(key);
+  if (hit && hit.src === text) return hit.html;
+  const html = answerMd(s.workdir, text);
+  mdCache.set(key, { src: text, html });
   return html;
 }
 
@@ -65,11 +65,18 @@ export function renderQuestions(force = false) {
   const index = qIndexHtml(entries, sel);
   if (index !== lastIndex) { lastIndex = index; $("qIndex").innerHTML = index; }
   const running = s.phase === "thinking" || s.phase === "working";
-  const thread = qThreadHtml(entries, (p) => answerHtml(s, p), { running, live: true });
-  if (thread !== lastThread) { lastThread = thread; $("qThread").innerHTML = thread; }
+  const thread = qThreadHtml(entries, (key, text) => mdHtml(s, key, text), { running, live: true });
+  if (thread !== lastThread) {
+    lastThread = thread;
+    const t = $("qThread");
+    // A summary someone unfolded stays unfolded through the paint a new answer brings.
+    const open = [...t.querySelectorAll<HTMLElement>("details[open][data-qcmp]")].map((d) => d.dataset.qcmp!);
+    t.innerHTML = thread;
+    for (const id of open) t.querySelector(`details[data-qcmp="${CSS.escape(id)}"]`)?.setAttribute("open", "");
+  }
   if (mdCache.size > 400) { // prompts are capped at 200 a pane; drop what no open sheet can show
     const live = new Set([...sessions.values()].flatMap((x) => x.prompts.map((p) => p.id)));
-    for (const k of mdCache.keys()) if (!live.has(k)) mdCache.delete(k);
+    for (const k of mdCache.keys()) if (!live.has(k.replace(/#s$/, ""))) mdCache.delete(k);
   }
 }
 
@@ -85,7 +92,7 @@ function copy(id: string | null) {
   const all = qEntries(s.prompts);
   const entries = id ? all.filter((e) => e.p.id === id) : all;
   writeText(qClipText(entries))
-    .then(() => toast(id ? "Question and answer copied" : `${entries.length} questions copied`))
+    .then(() => toast(id ? copiedWhat(entries) : `${entries.length} questions copied`))
     .catch(() => toast("copy failed"));
 }
 

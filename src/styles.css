@@ -663,6 +663,10 @@ html.win .wctl { display: flex; }
 .ol-gb { margin-left: 9px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--tool-task) 30%, var(--hair)); display: flex; flex-direction: column; gap: 1px; }
 .ol-row.gone .ol-txt { color: var(--muted); }
 .ol-row.gone:hover { background: none; }
+/* where Claude compacted: a rule across the list, nothing to jump to */
+.ol-cmp { display: flex; align-items: center; gap: 6px; padding: 4px 6px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.ol-cmp::after { content: ""; order: 2; flex: 1; height: 1px; background: var(--hair); }
+.ol-cmp .ol-t { order: 3; padding-top: 0; }
 
 /* --- the background fleet (a Workflow fan-out, or a burst of Task subagents) ---
    Built like .plan, not like a gauge: both answer "how far through is it". The violet separates them. */
@@ -1135,6 +1139,16 @@ html.win .wctl { display: flex; }
 .q-ans.mdr h1.mdr-h, .q-ans.mdr h2.mdr-h { font-size: 1.2em; padding-bottom: 0; border-bottom: 0; }
 .q-none { margin-top: 9px; padding-left: 14px; font-size: 12px; font-style: italic; color: var(--muted-2); }
 .q-none.run { color: var(--st-working); }
+/* a compaction: a band between the questions, Claude's summary folded under it */
+.q-ent.cmp { padding: 10px 0 12px; }
+.q-ent.cmp .q-h { margin-bottom: 4px; }
+.q-cw { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--hair); border-radius: 999px; background: var(--surface); font: 10.5px var(--font-mono); color: var(--muted); }
+.q-row.cmp .q-rt { color: var(--muted); }
+.q-cmp > summary { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; list-style: none; cursor: pointer; user-select: none; font-size: 12px; color: var(--muted-2); }
+.q-cmp > summary:hover { color: var(--text); }
+.q-cmp[open] > summary .ic { transform: rotate(90deg); }
+.q-cmpb.mdr { --mdr-fs: 12.5px; margin: 8px 0 0; padding: 2px 2px 0 14px; max-width: none; border-left: 2px dashed var(--hair-strong); color: var(--muted); }
+.q-cmpb.mdr > :last-child { margin-bottom: 0; }
 
 /* --- project commit graph (modal). .grow's height MUST equal ROW_H in graph.ts (lane lines are
    drawn edge-to-edge per row), so nothing may add to a row's box: selection is a background,
@@ -1290,7 +1304,7 @@ html.win .wctl { display: flex; }
 .fx-gg { color: var(--kc); font-size: 9px; line-height: 1; }
 /* ./inspectorview, ./explorer, ./questionsview: the rail's small icon slots */
 :is(.fx-gg, .exp-t, .exp-ico) .ic { --ic: 11px; }
-:is(.ol-g, .fo-g, .fo-og, .fx-r, .ol-open, .tvgutter, .ol-b, .q-b, .q-rn) .ic { --ic: 12px; }
+:is(.ol-g, .fo-g, .fo-og, .fx-r, .ol-open, .tvgutter, .ol-b, .q-b, .q-rn, .q-cw, .q-cmp, .ol-cmp, .tvmsg.cmp) .ic { --ic: 12px; }
 .bsw .c .ic { --ic: 11px; }
 .fx-gn { font: 700 9px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--kc); }
 .fx-gc { margin-left: auto; font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
@@ -2729,6 +2743,11 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.relay .tvtext { color: var(--muted); }
 .tvmsg.relay .ol-from { display: block; }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
+.tvmsg.cmp { display: block; color: color-mix(in srgb, var(--terminal-text) 55%, var(--terminal-bg)); }
+.tvmsg.cmp summary, .tvcmp { display: flex; align-items: center; gap: 8px; list-style: none; user-select: none; font-size: 11px; }
+.tvmsg.cmp summary { cursor: pointer; }
+.tvmsg.cmp summary::after, .tvcmp::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--terminal-text) 16%, transparent); }
+.tvmsg.cmp .tvtext { margin-top: 8px; padding-left: 12px; border-left: 2px dashed color-mix(in srgb, var(--terminal-text) 16%, transparent); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
 /* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
