@@ -571,6 +571,22 @@ and `EPISKO_BIND` on a spare port, `episko-server invite` for a code).
 - [ ] **Forgetting.** *Forget this machine* asks first (red button), then the pairing form
       is back and the status bar's ⇅ segment reads *Off*. Every setting stays as it was.
 
+### Updates and the preview channel
+
+Every update check runs through `updates.rs` (docs/releases.md § Preview builds), so a
+mistake here leaves everyone on this release unable to take the next one, and nothing after
+the tag can test it. The switch is the one path that installs through it before then: it
+needs a preview on `preview-build` newer than this build (push `preview` if there is none).
+
+- [ ] **Into the preview.** *Settings › Updates › Preview*: a toast, then the footer's chip
+      reads *switch to preview v…*. Take it: the confirm says what a preview is, the app
+      restarts on the preview's version, and every setting reads as before.
+- [ ] **Back to the release.** Change one setting in the preview (the sort order), then
+      *Settings › Updates › Releases*: the chip reads *back to stable v…*, and taking it
+      installs the latest release, whose first run asks *Settings from the preview* about
+      exactly that one setting (a release before 0.40 cannot: install this build over it,
+      and its first run asks instead). Either answer reloads with every session running.
+
 ### Handoff
 
 Two machines paired to one server started with `EPISKO_HANDOFF=1` (docs/handoff.md), a

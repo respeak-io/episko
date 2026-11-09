@@ -34,7 +34,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-forecast-log": "local", "cc-rl-accounts": "local",
   // The tokens behind these labels live in this machine's keychain and nowhere else.
   "cc-claude-accounts": "local", "cc-frecency": "local", "cc-vitals": "local", "cc-notes": "local",
-  "cc-dash-seen": "local", "cc-branch-lists": "local",
+  "cc-dash-seen": "local", "cc-branch-lists": "local", "cc-channel": "local", "cc-update-channel": "local",
   // A handoff is between two named machines; the server, not sync, carries its outcome.
   "cc-handoff": "local",
   // The memory stream's switch is this machine's to throw; what it holds is the stream's own.

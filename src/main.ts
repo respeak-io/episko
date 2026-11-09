@@ -1,3 +1,5 @@
+// First, before anything reads a `cc-` key: a preview build keeps its settings apart (./channel).
+import "./channelhook";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
@@ -71,7 +73,7 @@ import {
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
 import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
-import "./update"; // side-effect import: it owns its footer chip, listeners and launch check
+import { switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
   closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
@@ -259,6 +261,7 @@ setSettingsHost({
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   openDevtools, reloadUi, resetCompositor: () => { void resetCompositor(); },
+  setUpdateChannel: switchChannel,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,

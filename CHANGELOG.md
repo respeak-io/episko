@@ -34,6 +34,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ Text you pasted into a question (and any other `<tag>` block in it) shows as a folded box in
   the Questions sheet and on a shelved session's stage: what it is, its first line and how many
   lines it holds, one click to open. The outline and History name it in one line instead.
++ *Settings › Updates* can put Episko on the preview channel: a build of a feature that has not
+  shipped yet, replaced each time it changes. Settings you change in a preview stay with it, and
+  switching back to the releases asks once whether to bring along the ones that differ. Your
+  sessions, spend, notes and accounts are the same on both.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
