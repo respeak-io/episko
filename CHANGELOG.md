@@ -17,6 +17,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! A shell opened beside a session stays under that session in the sidebar when the session moves to
   another checkout, with a chip naming the checkout the shell still runs in. It used to drop under
   the old checkout while the two stayed side by side on stage.
+! Small icon buttons draw their icon in the middle again: the close buttons on Settings and the
+  dialogs, the quick open in the status bar's popovers, and about a dozen more sat up to 3px to the right.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
