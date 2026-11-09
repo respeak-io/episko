@@ -393,6 +393,7 @@ html.win .wctl { display: flex; }
 .rgroup.split > .srow { border-radius: 8px 8px 0 0; }
 .rgroup.split .rgsteps { border-top: 1px solid var(--hair); margin-left: 0; padding-left: 20px; border-left: 0; }
 .rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
+.rgsteps .srow.o3 { grid-template-columns: 12px minmax(0,1fr) auto auto; }
 .rgsteps .sbranch { font-size: 11px; color: var(--muted); }
 .rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
 .rgsteps .sglyph { font-size: 9.5px; --ic: 10px; }

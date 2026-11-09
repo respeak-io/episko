@@ -14,6 +14,9 @@ Markers: `+` new · `~` changed · `!` fixed
 ## Unreleased
 + A review's file list has a tick on every file and folder. A folder's tick marks everything under it
   as viewed in one click, and shows a dash while only part of it is.
+! A shell opened beside a session stays under that session in the sidebar when the session moves to
+  another checkout, with a chip naming the checkout the shell still runs in. It used to drop under
+  the old checkout while the two stayed side by side on stage.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
