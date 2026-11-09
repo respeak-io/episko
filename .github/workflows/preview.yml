@@ -1,0 +1,189 @@
+name: preview
+
+# A build of the `preview` branch, to try a feature in the running app before it ships
+# (docs/releases.md § Preview builds). It is release.yml with four differences; keep the
+# signing steps in step with that file.
+#
+#   - ONE prerelease, tagged `preview-build`, replaced on every push. A prerelease is never
+#     `releases/latest`, which is what the stable updater and the site read. The job below
+#     fails if that ever stops being a `v*` tag.
+#   - The version is the next patch with `-preview.<run>`, so each build updates the last.
+#   - Windows builds NSIS only: an .msi refuses a pre-release that is not numeric.
+#   - VITE_EPISKO_CHANNEL=preview keeps the build's settings apart (src/channel.ts), and
+#     tauri.preview.conf.json points its updater at this prerelease.
+on:
+  push:
+    branches: [preview]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push replaces the prerelease anyway, so an older build is not worth finishing.
+concurrency:
+  group: preview
+  cancel-in-progress: true
+
+env:
+  TAG: preview-build
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.make.outputs.id }}
+      version: ${{ steps.make.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Replace the preview prerelease
+        id: make
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          base=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          IFS=. read -r major minor patch <<< "${base%%-*}"
+          version="$major.$minor.$((patch + 1))-preview.${{ github.run_number }}"
+          gh release delete "$TAG" --cleanup-tag --yes || true
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+          gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
+            --title "Preview $version" --notes-file - <<EOF
+          A build of the \`preview\` branch at ${GITHUB_SHA::7}, for trying what is not released yet. The next push to the branch replaces it, and the stable updater never offers it.
+
+          **Install** it like a release (the \`.dmg\`, or the \`x64-setup.exe\`). It replaces the installed Episko and keeps its data. Settings you change in it stay with the preview.
+
+          **Go back** by installing the latest release over it. Your settings are as you left them.
+          EOF
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          case "$latest" in
+            v*) ;;
+            *) echo "::error::releases/latest is '$latest', not a v* release"; exit 1 ;;
+          esac
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prerelease
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+          - platform: windows-latest
+            args: --bundles nsis
+
+    runs-on: ${{ matrix.platform }}
+    env:
+      VITE_EPISKO_CHANNEL: preview
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Detect Windows signing secrets
+        id: sign
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.AZURE_CLIENT_ID }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install trusted-signing-cli
+        if: steps.sign.outputs.enabled == 'true'
+        run: cargo install trusted-signing-cli
+
+      - name: Detect macOS signing secrets
+        id: macsign
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_CERTIFICATE }}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Materialise the App Store Connect API key
+        if: steps.macsign.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          KEY="$RUNNER_TEMP/AuthKey.p8"
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" | base64 --decode > "$KEY"
+          chmod 600 "$KEY"
+          echo "APPLE_API_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+
+      # In the overlay rather than tauri.conf.json, so tauri-action reads the same version
+      # into latest.json that the app is built with.
+      - name: Stamp the preview version
+        shell: bash
+        env:
+          VERSION: ${{ needs.prerelease.outputs.version }}
+        run: |
+          node -e "const f='src-tauri/tauri.preview.conf.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f,'utf8'));c.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(c,null,2))"
+
+      - name: Build, sign, and upload the preview
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        with:
+          # The id finds the release; the tag makes latest.json's links point into it.
+          releaseId: ${{ needs.prerelease.outputs.id }}
+          tagName: ${{ env.TAG }}
+          args: >-
+            ${{ format('{0} --config src-tauri/tauri.preview.conf.json{1}', matrix.args,
+            steps.sign.outputs.enabled == 'true' && ' --config src-tauri/tauri.signing.conf.json'
+            || steps.macsign.outputs.enabled == 'true' && ' --config src-tauri/tauri.macos.signing.conf.json'
+            || '') }}
+
+      # Why the disk image needs its own notarization: see the same step in release.yml.
+      - name: Notarize and staple the DMG
+        if: steps.macsign.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          xcrun notarytool submit "$DMG" --wait \
+            --key-id "${{ secrets.APPLE_API_KEY }}" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "${{ secrets.APPLE_API_ISSUER }}"
+          xcrun stapler staple "$DMG"
+          spctl -a -t open --context context:primary-signature -vv "$DMG"
+          gh release upload "$TAG" "$DMG" --clobber

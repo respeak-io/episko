@@ -12,7 +12,7 @@ const read = (f: string) => readFileSync(new URL(f, ROOT), "utf8");
 const SRC = [
   ...readdirSync(new URL("src/", ROOT)).filter((f) => f.endsWith(".ts")).map((f) => "src/" + f),
   ...readdirSync(new URL("src/providers/", ROOT)).filter((f) => f.endsWith(".ts")).map((f) => "src/providers/" + f),
-].filter((f) => f !== "src/sync.ts");
+].filter((f) => f !== "src/sync.ts" && f !== "src/channel.ts"); // both list every key
 const keysIn = (text: string) => new Set([...text.matchAll(/["'`](cc-[a-z0-9-]+)["'`]/g)].map((m) => m[1]));
 const used = new Set(SRC.flatMap((f) => [...keysIn(read(f))]));
 
