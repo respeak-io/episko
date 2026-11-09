@@ -33,6 +33,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ The Dependencies card files pull requests from the bot logins `[maintenance] bots` names in
   `.episko/episko.toml` (a self-hosted Renovate) as update-bot PRs, not as open work, and the
   brief it sends an agent speaks of security advisories rather than naming Dependabot.
++ *Settings › Updates* can put Episko on the preview channel: a build of a feature that has not
+  shipped yet, replaced each time it changes. Settings you change in a preview stay with it, and
+  switching back to the releases asks once whether to bring along the ones that differ. Your
+  sessions, spend, notes and accounts are the same on both.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

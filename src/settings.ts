@@ -82,6 +82,8 @@ import { deviceName, devicesByUser, parseHeaders } from "./sync";
 import { disclosure, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
 import { maintPrefs, setMaintPublic } from "./maintscan";
 import { tokenSends } from "./maint";
+import { CHANNEL, updateChannel } from "./channelhook";
+import type { Channel } from "./channel";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -152,6 +154,8 @@ export interface SettingsHost {
   addMaintToken: (kind: string, host: string, token: string) => Promise<boolean>;
   checkMaintToken: (kind: string, host: string) => Promise<void>;
   removeMaintToken: (kind: string, host: string) => Promise<void>;
+  // Keeps the choice and checks at once (./update), so a switch is offered from here.
+  setUpdateChannel: (c: Channel) => void;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -203,6 +207,7 @@ let host: SettingsHost = {
   addClaudeToken: () => Promise.resolve(false), setupClaudeToken: () => Promise.resolve(), removeClaudeAcct: () => Promise.resolve(),
   listMaintTokens: () => Promise.resolve([]), addMaintToken: () => Promise.resolve(false), checkMaintToken: () => Promise.resolve(),
   removeMaintToken: () => Promise.resolve(),
+  setUpdateChannel: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -770,6 +775,20 @@ const SET_TABS: SetTab[] = [
       { kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open", hint: "The webview's own developer tools.",
         more: "A heap snapshot compared against one from just after a reload is what turns “something is growing” into a name.",
         aliases: ["devtools", "console", "heap snapshot", "profile", "inspect"] },
+    ],
+  },
+  {
+    id: "updates", label: "Updates", glyph: "⇡", group: "app", sub: "Releases, or a preview of what is next",
+    controls: () => [
+      { kind: "seg", set: "channel", key: "cc-update-channel", label: "Update channel",
+        hint: `Which builds Episko offers to update to. This one is ${CHANNEL === "preview" ? "a preview" : "a release"}.`,
+        more: "A preview is one build of a feature that has not shipped, replaced each time it changes. Settings you change in it stay with the preview, and switching back is a downgrade to the latest release, after which Episko asks whether to bring along any settings the preview kept. Your sessions, spend, notes and accounts are shared by both.",
+        aliases: ["preview", "beta", "stable", "release", "channel", "update", "downgrade", "early access"], since: "0.40.0",
+        active: () => updateChannel(), isDefault: () => updateChannel() === "stable", reset: () => host.setUpdateChannel("stable"),
+        segs: () => [
+          { value: "stable", label: "Releases", sub: "Only versions that have shipped", glyph: "✓" },
+          { value: "preview", label: "Preview", sub: "A build of what is coming, before it ships", glyph: "✦" },
+        ] },
     ],
   },
   {
@@ -1868,6 +1887,7 @@ function applySetting(set: string, val: string) {
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "closeask") host.setCloseAskIdle(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
+  else if (set === "channel") host.setUpdateChannel(val as Channel);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);

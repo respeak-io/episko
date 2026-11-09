@@ -50,11 +50,11 @@ jobs:
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
           gh release create "$TAG" --prerelease --latest=false --target "$GITHUB_SHA" \
             --title "Preview $version" --notes-file - <<EOF
-          A build of the \`preview\` branch at ${GITHUB_SHA::7}, for trying what is not released yet. The next push to the branch replaces it, and the stable updater never offers it.
+          A build of the \`preview\` branch at ${GITHUB_SHA::7}, for trying what is not released yet. The next push to the branch replaces it, and the updater offers it only to someone who chose the preview.
 
-          **Install** it like a release (the \`.dmg\`, or the \`x64-setup.exe\`). It replaces the installed Episko and keeps its data. Settings you change in it stay with the preview.
+          **Switch** in *Settings › Updates* (Episko 0.40 or later), or install it like a release (the \`.dmg\`, or the \`x64-setup.exe\`). It replaces the installed Episko and keeps its data. Settings you change in it stay with the preview.
 
-          **Go back** by installing the latest release over it. Your settings are as you left them.
+          **Go back** the same way, or by installing the latest release over it. Your settings are as you left them, and Episko asks whether to bring along the ones the preview changed.
           EOF
           latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
           case "$latest" in

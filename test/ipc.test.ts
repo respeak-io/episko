@@ -20,7 +20,7 @@ const rsFiles = readdirSync(RS).filter((f) => f.endsWith(".rs"));
 // ---------- the Rust half ----------
 
 // Injected by Tauri by type, so they never appear in the JS argument object.
-const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Runtime|Request<|Channel<)/;
+const INJECTED = /\b(AppHandle|State\s*<|Window|WebviewWindow|Webview\b|Runtime|Request<|Channel<)/;
 
 interface Cmd { name: string; required: string[]; optional: string[]; file: string }
 
