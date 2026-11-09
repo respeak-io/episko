@@ -13,15 +13,15 @@ import { openMenu } from "./menu";
 import { icon, type IconName } from "./svgicons";
 import { fileHtml, railHeadHtml, railHtml, treeRailHtml, type LineHooks } from "./patchview";
 import {
-  agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince, draftBrief,
-  expandGap, gapAt, isLargeDiff, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey,
+  agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince, dirStates, draftBrief,
+  expandGap, filesUnder, gapAt, isLargeDiff, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey,
   rangeArgs, rangeLabel, reviewComments, setViewed, submitBlock, suggestion, threadBrief, threadPin, treeOrder, treeRows, withDraft,
   type Anchor, type Commentable, type DraftComment, type DraftStore, type PrDiff, type PrReview, type PrThread,
   type RailLayout, type Range, type ReviewEvent, type Side, type ViewedStore,
 } from "./review";
 import {
-  addBtn, rangePos, checksHtml, composeHtml, conversationHtml, draftHtml, elsewhereHtml, expandBtn, failHtml, fileBtnsHtml,
-  railMark, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, truncNoteHtml, type RvTab,
+  addBtn, rangePos, checksHtml, composeHtml, conversationHtml, dirTick, draftHtml, elsewhereHtml, expandBtn, failHtml, fileBtnsHtml,
+  railMark, railTick, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, truncNoteHtml, type RvTab,
 } from "./reviewview";
 import {
   accentFor, diffMode, FAVORITES, ghAccountFor, railLayout, reviewMirror, sessions, setActiveId, setDiffMode, setMirror,
@@ -387,15 +387,22 @@ function paintBody() {
   refocus();
 }
 
-// One file repainted in place: the rest of the stream, its folds and its scroll are untouched.
-function paintFile(i: number) {
-  const sec = section(i);
-  if (!sec || tab !== "files") return;
-  keepPlace(() => { sec.outerHTML = sectionHtml(i, placements()); });
+// These files repainted in place, in one layout: the rest of the stream, its folds and its scroll are untouched.
+function paintFiles(idx: number[]) {
+  if (tab !== "files") return;
+  const secs = new Map<number, HTMLElement>();
+  for (const el of $("rvBody").querySelectorAll<HTMLElement>(".dfile[data-fi]")) secs.set(+el.dataset.fi!, el);
+  const pl = placements();
+  keepPlace(() => { for (const i of idx) { const sec = secs.get(i); if (sec) sec.outerHTML = sectionHtml(i, pl); } });
   refocus();
 }
 
+function paintFile(i: number) {
+  paintFiles([i]);
+}
+
 // A repaint above the reading position must not move it: hold the active file's header still.
+// Measure before reading scrollTop: Chromium's scroll anchoring may already have moved it in that layout.
 function keepPlace(paint: () => void) {
   const body = $("rvBody");
   const at = activeFile >= 0 ? section(activeFile) : null;
@@ -403,7 +410,9 @@ function keepPlace(paint: () => void) {
   const top = body.scrollTop;
   paint();
   const now = activeFile >= 0 ? section(activeFile) : null;
-  body.scrollTop = now && at ? top + now.getBoundingClientRect().top - before : top;
+  if (!now || !at) { body.scrollTop = top; return; }
+  const moved = now.getBoundingClientRect().top - before;
+  body.scrollTop += moved;
 }
 
 function refocus() {
@@ -426,11 +435,16 @@ function paintRail() {
   if (rail.hidden) return;
   const k = key();
   const opens = (i: number) => (pr?.threads ?? []).filter((t) => t.path === shown[i].path && !t.resolved).length;
-  const mark = (i: number) => railMark(isViewed(viewed, k, sigFile(shown[i])), opens(i));
+  const isV = (i: number) => isViewed(viewed, k, sigFile(shown[i]));
+  const tick = (i: number) => railTick(i, isV(i));
+  const mark = (i: number) => railMark(opens(i));
+  const tree = () => {
+    const paths = shown.map((f) => f.path);
+    const dirs = dirStates(paths, isV);
+    return treeRailHtml(shown, treeRows(paths, railFolded), railFolded, activeFile, [], tick, mark, (d) => dirTick(d, dirs.get(d) ?? "none"));
+  };
   const keep = rail.scrollTop;
-  rail.innerHTML = railHeadHtml(railLayout, shown.length) + (railLayout === "tree"
-    ? treeRailHtml(shown, treeRows(shown.map((f) => f.path), railFolded), railFolded, activeFile, [], () => null, mark)
-    : railHtml(shown, activeFile, [], () => null, mark));
+  rail.innerHTML = railHeadHtml(railLayout, shown.length) + (railLayout === "tree" ? tree() : railHtml(shown, activeFile, [], tick, mark));
   rail.scrollTop = keep;
 }
 
@@ -825,17 +839,31 @@ async function expand(fi: number, hi: number) {
   }
 }
 
-function toggleViewed(fi: number) {
-  const f = shown[fi];
-  if (!f) return;
-  const on = !isViewed(viewed, key(), sigFile(f));
-  viewed = setViewed(viewed, key(), sigFile(f), on, Date.now());
+// Unticking one file reopens it; unticking a folder leaves its folds, or a large view draws every body in it.
+function markViewed(idx: number[], on: boolean) {
+  viewed = setViewed(viewed, key(), idx.map((i) => sigFile(shown[i])), on, Date.now());
   localStorage.setItem("cc-review-viewed", JSON.stringify(viewed));
-  if (on) collapsed.add(f.path); else collapsed.delete(f.path);
-  paintFile(fi);
+  for (const i of idx) {
+    if (on) collapsed.add(shown[i].path);
+    else if (idx.length === 1) collapsed.delete(shown[i].path);
+  }
+  paintFiles(idx);
   paintRail();
   paintBar();
-  if (on) section(fi)?.scrollIntoView({ block: "nearest" });
+  // Only folding the file you are in moves the stream: a rail tick elsewhere leaves your place alone.
+  if (on && idx.includes(activeFile)) section(activeFile)?.scrollIntoView({ block: "nearest" });
+  spy();
+}
+
+function toggleViewed(fi: number) {
+  const f = shown[fi];
+  if (f) markViewed([fi], !isViewed(viewed, key(), sigFile(f)));
+}
+
+// Anything short of the whole folder takes the rest, as the tables' header tick does (./pick).
+function toggleDirViewed(dir: string) {
+  const idx = filesUnder(shown.map((f) => f.path), dir);
+  markViewed(idx, !idx.every((i) => isViewed(viewed, key(), sigFile(shown[i]))));
 }
 
 function setTab(t: RvTab) {
@@ -914,6 +942,8 @@ export function wireReview(): void {
     if (fc) { onFileComment(+fc.dataset.rvfilec!); return; }
     const vw = t.closest<HTMLElement>("[data-rvviewed]");
     if (vw) { toggleViewed(+vw.dataset.rvviewed!); return; }
+    const dv = t.closest<HTMLElement>("[data-rvdirviewed]");
+    if (dv) { toggleDirViewed(dv.dataset.rvdirviewed!); return; }
     const ex = t.closest<HTMLElement>("[data-rvexp]");
     if (ex) { const [fi, hi] = ex.dataset.rvexp!.split(":").map(Number); void expand(fi, hi); return; }
 
