@@ -28,6 +28,8 @@ const SHARED = [
   "cc-restore", "cc-handoff", "cc-notes", "cc-team-notes", "cc-claims", "cc-team-claims", "cc-review-drafts",
   "cc-review-viewed", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-frecency", "cc-tour",
   "cc-legacy-import-done", "cc-channel",
+  // Shared, or a preview that went back to stable would leave stable asking for the preview again.
+  "cc-update-channel",
   "cc-usage-peers", "cc-detail-peers", "cc-sync-stamps", "cc-sync-dirty", "cc-sync-sent", "cc-sync-limits",
   "cc-sync-seed", "cc-sync-roster", "cc-sync-devices", "cc-sync-pending", "cc-sync-exclude", "cc-sync-memory",
 ];
@@ -69,4 +71,43 @@ export function nextMark(prev: unknown, channel: Channel, version: string, now: 
   const p = prev && typeof prev === "object" ? (prev as Partial<ChannelMark>) : {};
   const since = p.channel === channel && typeof p.since === "number" && Number.isFinite(p.since) ? p.since : now;
   return { channel, version, since };
+}
+
+/** The build that ran here last, when it was the other channel: the run to offer settings across. */
+export function switchedFrom(prev: unknown, channel: Channel): Channel | null {
+  const c = prev && typeof prev === "object" ? (prev as Partial<ChannelMark>).channel : undefined;
+  return (c === "stable" || c === "preview") && c !== channel ? c : null;
+}
+
+/** The settings a preview holds a value of its own for, that stable's value differs from. */
+export function differing(base: Store): string[] {
+  return OWN.filter((k) => {
+    const p = base.get(PREVIEW_PREFIX + k);
+    return p !== null && (p === GONE ? null : p) !== base.get(k);
+  });
+}
+/** Stable takes the preview's values, and the preview's copies go, since they would say the same. */
+export function adopt(base: Store, keys: readonly string[]) {
+  for (const k of keys) {
+    const p = base.get(PREVIEW_PREFIX + k);
+    if (p === null) continue;
+    if (p === GONE) base.remove(k); else base.set(k, p);
+    base.remove(PREVIEW_PREFIX + k);
+  }
+}
+/** The preview forgets its own values and reads stable's again. */
+export function drop(base: Store, keys: readonly string[]) {
+  for (const k of keys) base.remove(PREVIEW_PREFIX + k);
+}
+
+/** `cc-update-channel`: what a person chose. A build nobody chose for is on its own channel. */
+export const parseChannel = (raw: string | null, fallback: Channel): Channel =>
+  raw === "stable" || raw === "preview" ? raw : fallback;
+export const isPreviewVersion = (version: string) => version.includes("-preview.");
+/** What an offered update does, as the footer chip says it. */
+export function updateVerb(build: Channel, want: Channel, version: string): string {
+  const pre = isPreviewVersion(version);
+  if (pre && build === "stable") return `switch to preview v${version}`;
+  if (!pre && build === "preview" && want === "stable") return `back to stable v${version}`;
+  return `update to v${version}`;
 }

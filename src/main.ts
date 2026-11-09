@@ -73,7 +73,7 @@ import {
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
 import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
-import "./update"; // side-effect import: it owns its footer chip, listeners and launch check
+import { switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
   closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
@@ -260,6 +260,7 @@ setSettingsHost({
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   openDevtools, reloadUi,
+  setUpdateChannel: switchChannel,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
   openUsage, openWhatsNew: () => openChangelog(), versionUnread,
