@@ -20,6 +20,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ! Small icon buttons draw their icon in the middle again: the close buttons on Settings and the
   dialogs, the quick open in the status bar's popovers, and about a dozen more sat up to 3px to the right.
 
+! A stray dev server running under `uv run`, `just` or `make` in a known checkout now shows under *Left behind*.
+! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` and `npm run` fold as wrappers.
+! A long `npm ci` or `pnpm install` stays listed as what a pane is running.
+
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't
 full, and one that hits its limit offers to move to the next. Every icon now comes from one set, a

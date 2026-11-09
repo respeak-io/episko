@@ -1029,6 +1029,7 @@ dependencies = [
  "episko-proto",
  "getrandom 0.3.4",
  "jsonc-parser",
+ "libc",
  "listeners",
  "log",
  "portable-pty",
