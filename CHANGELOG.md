@@ -31,6 +31,9 @@ Markers: `+` new · `~` changed · `!` fixed
   now a band between the questions saying where the context was compacted, with the summary folded
   under it and readable as formatted sections. The answer Claude gave after a compaction is filed
   under the question it was working on.
+~ Text you pasted into a question (and any other `<tag>` block in it) shows as a folded box in
+  the Questions sheet and on a shelved session's stage: what it is, its first line and how many
+  lines it holds, one click to open. The outline and History name it in one line instead.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

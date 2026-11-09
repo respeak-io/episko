@@ -46,6 +46,19 @@ function mdHtml(s: Sess, key: string, text: string): string {
   return html;
 }
 
+// A fold you opened or closed is yours: the next answer landing must not reset it. That is a
+// pasted block's (`data-qblk`) and a compaction's summary (`data-qcmp`).
+const FOLDS = "details[data-qblk], details[data-qcmp]";
+const foldKey = (d: HTMLElement) => (d.dataset.qblk ? `b:${d.dataset.qblk}` : `c:${d.dataset.qcmp}`);
+function paintKeepingFolds(el: HTMLElement, html: string) {
+  const was = new Map([...el.querySelectorAll<HTMLDetailsElement>(FOLDS)].map((d) => [foldKey(d), d.open]));
+  el.innerHTML = html;
+  for (const d of el.querySelectorAll<HTMLDetailsElement>(FOLDS)) {
+    const open = was.get(foldKey(d));
+    if (open !== undefined) d.open = open;
+  }
+}
+
 let lastSub = "";
 let lastIndex = "";
 let lastThread = "";
@@ -66,14 +79,7 @@ export function renderQuestions(force = false) {
   if (index !== lastIndex) { lastIndex = index; $("qIndex").innerHTML = index; }
   const running = s.phase === "thinking" || s.phase === "working";
   const thread = qThreadHtml(entries, (key, text) => mdHtml(s, key, text), { running, live: true });
-  if (thread !== lastThread) {
-    lastThread = thread;
-    const t = $("qThread");
-    // A summary someone unfolded stays unfolded through the paint a new answer brings.
-    const open = [...t.querySelectorAll<HTMLElement>("details[open][data-qcmp]")].map((d) => d.dataset.qcmp!);
-    t.innerHTML = thread;
-    for (const id of open) t.querySelector(`details[data-qcmp="${CSS.escape(id)}"]`)?.setAttribute("open", "");
-  }
+  if (thread !== lastThread) { lastThread = thread; paintKeepingFolds($("qThread"), thread); }
   if (mdCache.size > 400) { // prompts are capped at 200 a pane; drop what no open sheet can show
     const live = new Set([...sessions.values()].flatMap((x) => x.prompts.map((p) => p.id)));
     for (const k of mdCache.keys()) if (!live.has(k.replace(/#s$/, ""))) mdCache.delete(k);

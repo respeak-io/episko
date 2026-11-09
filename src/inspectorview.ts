@@ -11,7 +11,10 @@ import {
   liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
-import { compactSummary, isEnvelope, OUTLINE_SHOW, outlineItems, parseRelay, promptLabel, type OutlineItem, type OutlinePrefs } from "./outline";
+import {
+  blockLabel, compactSummary, isEnvelope, linesText, OUTLINE_SHOW, outlineItems, parseRelay, promptFlat, promptLabel, promptParts,
+  type OutlineItem, type OutlinePrefs, type PromptBlock,
+} from "./outline";
 import type { ConversationFacts, ProviderMessage } from "./providers";
 import { fetchedByRepo, sessions } from "./state";
 import { modelName } from "./usage";
@@ -297,7 +300,7 @@ function outlineRow(s: Sess, p: Prompt, n: number, anchored: boolean, prefs: Out
   // The tooltip is the fold's fallback, not a second copy: a row that unfolds under the pointer
   // is already showing the words a `title` would then cover up.
   const tip = prefs.hover ? why : `${promptLabel(p.text)}\n${why}`;
-  const txt = `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(p.text)}</div>`;
+  const txt = `<div class="ol-txt" style="--ol-lines:${prefs.lines}">${esc(promptFlat(p.text))}</div>`;
   return `<div class="ol-row${r ? " relay" : ""}${gone ? " gone" : ""}" data-oljump="${escAttr(p.id)}" data-olsid="${escAttr(s.id)}" title="${escAttr(r ? `From ${r.name}${r.from ? ` (${r.from})` : ""}, not you\n${tip}` : tip)}">`
     + (r ? `<span class="ol-n ol-g">${relayIcon(r.kind)}</span><div class="ol-body"><span class="ol-from">${esc(from)}</span>${txt}</div>`
       : `<span class="ol-n">${n}</span>${txt}`)
@@ -417,6 +420,25 @@ export function pastFilesHtml(files: ConversationFacts["files"], workdir: string
   return `<div class="ext-sec"><div class="fx-head"><span class="label">Files it wrote</span><span class="fx-sub">${files.length}</span></div>${groups}</div>`;
 }
 
+const BLOCK_FOLD = 4; // a block longer than this starts folded: the question is what you came for
+
+function blockHtml(b: PromptBlock, key: string): string {
+  const lines = b.body.split("\n");
+  const shown = b.attrs.filter(([k]) => k !== "id").map(([k, v]) => (v ? `${k}=${v}` : k)).join(" "); // an id is a handle, not content
+  const first = lines.find((l) => l.trim())?.trim() ?? "";
+  return `<details class="q-blk"${key ? ` data-qblk="${escAttr(key)}"` : ""}${b.cut || lines.length > BLOCK_FOLD ? "" : " open"}>`
+    + `<summary title="${escAttr(b.tag)}">${icon("chevronRight", "solo")}<span class="q-blk-n">${esc(blockLabel(b.name))}</span>`
+    + (shown ? `<span class="q-blk-a">${esc(shown)}</span>` : "")
+    + `<span class="q-blk-p">${esc(first)}</span>`
+    + `<span class="q-blk-c"${b.cut ? ` title="Only the start of this message was kept"` : ""}>${linesText(b)}</span></summary>`
+    + `<div class="q-blk-b">${esc(b.body)}</div></details>`;
+}
+
+/** A question as typed, its tagged blocks (a paste, a pasted reminder) drawn as folds. `key` keeps a fold open across repaints. */
+export function promptHtml(text: string, key = ""): string {
+  return promptParts(text).map((x, i) => (x.kind === "text" ? esc(x.text) : blockHtml(x.block, key && `${key}:${i}`))).join("");
+}
+
 // One transcript message, as History and the mirror draw it. A relay is a `user` turn nobody
 // here typed, so it loses the prompt mark and the highlight that mean "you".
 export function tvMsgHtml(m: { role: string; text: string; compact?: boolean }, agent: string, cap = 0): string {
@@ -428,8 +450,8 @@ export function tvMsgHtml(m: { role: string; text: string; compact?: boolean }, 
   }
   const r = m.role === "user" ? parseRelay(m.text.trim()) : null;
   const text = r ? r.body : m.text;
-  const one = cap ? text.replace(/\s+/g, " ").trim() : text; // a capped preview is one run of prose
-  const shown = esc(cap && one.length > cap ? one.slice(0, cap - 1) + "…" : one);
+  const one = cap ? promptFlat(text).replace(/\s+/g, " ").trim() : text; // a capped preview is one run of prose
+  const shown = cap ? esc(one.length > cap ? one.slice(0, cap - 1) + "…" : one) : m.role === "user" ? promptHtml(text) : esc(text);
   if (r) {
     return `<div class="tvmsg relay"><span class="tvgutter" title="${escAttr(`From ${r.relay.name}, not you`)}">${relayIcon(r.relay.kind)}</span>`
       + `<div class="tvtext"><span class="ol-from">${esc(r.relay.name)} · ${r.relay.report ? "report" : "message"}</span>${shown}</div></div>`;

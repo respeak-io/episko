@@ -5,7 +5,7 @@
 import { esc, escAttr } from "./format";
 import { joinPath, renderMarkdown } from "./markdown";
 import { outlineItems, promptLabel } from "./outline";
-import { relayIcon } from "./inspectorview";
+import { promptHtml, relayIcon } from "./inspectorview";
 import { icon } from "./svgicons";
 import type { Prompt } from "./types";
 
@@ -75,7 +75,7 @@ export function qThreadHtml(entries: readonly QEntry[], md: QMd, at: { running: 
     const find = at.live ? `<button class="q-act" type="button" data-qjump="${escAttr(p.id)}" title="Close this and find the question in the terminal">Find in terminal</button>` : "";
     const head = `<div class="q-h">${who}<span class="q-t">${back}${clock(p.at)}</span>${find}${copyBtn(p, "the question and its answer")}</div>`;
     const ans = p.answer ? `<div class="q-ans mdr">${md(p.id, p.answer)}</div>` : noAnswer(at.running, i === entries.length - 1);
-    return `<section class="q-ent${r ? " relay" : ""}" data-qent="${escAttr(p.id)}">${head}<div class="q-ask">${esc(p.text)}</div>${ans}</section>`;
+    return `<section class="q-ent${r ? " relay" : ""}" data-qent="${escAttr(p.id)}">${head}<div class="q-ask">${promptHtml(p.text, p.id)}</div>${ans}</section>`;
   }).join("");
 }
 
