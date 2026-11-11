@@ -5,6 +5,7 @@
 
 import type { DiffFile, DiffHunk, DiffLine } from "./diff";
 import type { GhComment } from "./issue";
+import type { PickState } from "./pick";
 
 // ---------- the backend's shapes (review.rs) ----------
 
@@ -317,9 +318,9 @@ export const isViewed = (s: ViewedStore, key: string, f: DiffFile) => {
   return want !== undefined && want === fileSig(f);
 };
 
-export function setViewed(s: ViewedStore, key: string, f: DiffFile, on: boolean, now: number): ViewedStore {
+export function setViewed(s: ViewedStore, key: string, fs: DiffFile[], on: boolean, now: number): ViewedStore {
   const files = { ...(s[key]?.files ?? {}) };
-  if (on) files[f.path] = fileSig(f); else delete files[f.path];
+  for (const f of fs) { if (on) files[f.path] = fileSig(f); else delete files[f.path]; }
   const next = { ...s };
   if (Object.keys(files).length) next[key] = { at: now, files }; else delete next[key];
   return capByAt(next);
@@ -379,6 +380,26 @@ export function treeRows(paths: string[], folded: ReadonlySet<string> = new Set(
 export function treeOrder<T extends { path: string }>(files: T[]): T[] {
   const rows = treeRows(files.map((f) => f.path));
   return rows.flatMap((r) => (r.kind === "file" ? [files[r.index]] : []));
+}
+
+/** Every file under a tree row's folder, those in its shut subfolders too. */
+export const filesUnder = (paths: readonly string[], dir: string): number[] =>
+  paths.flatMap((p, i) => (p.startsWith(`${dir}/`) ? [i] : []));
+
+/** Each folder's tick over its whole subtree, in one walk: the rail repaints on every tick. */
+export function dirStates(paths: readonly string[], on: (i: number) => boolean): Map<string, PickState> {
+  const tally = new Map<string, { n: number; on: number }>();
+  paths.forEach((p, i) => {
+    const hit = on(i) ? 1 : 0;
+    for (let at = p.indexOf("/"); at >= 0; at = p.indexOf("/", at + 1)) {
+      const dir = p.slice(0, at);
+      const t = tally.get(dir);
+      if (t) { t.n++; t.on += hit; } else tally.set(dir, { n: 1, on: hit });
+    }
+  });
+  const out = new Map<string, PickState>();
+  for (const [dir, t] of tally) out.set(dir, t.on === 0 ? "none" : t.on === t.n ? "all" : "some");
+  return out;
 }
 
 // ---------- more context around a hunk, read from the file at the view's head ----------

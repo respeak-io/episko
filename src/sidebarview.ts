@@ -13,7 +13,8 @@ import {
   peekPrefs, shelvedInTree, stageGroup, wtGroup,
 } from "./state";
 import {
-  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants, stageMembers,
+  checkoutOf, clusterByWorktree, clusterIsLive, dormantBusy, foldRunGroups, placeDormants, shellElsewhere,
+  stageMembers,
   type GroupSummary, type ProjGroup, type RunItem, type WtCluster,
 } from "./grouping";
 import { peekStaysOpen } from "./peek";
@@ -158,7 +159,7 @@ function rows(list: Sess[], chipFor?: (s: Sess) => WtCluster | undefined): strin
 // steps. No header and no fold: the row is the header, and a shell's row is a tile to focus.
 function splitRows(it: Extract<RunItem, { kind: "split" }>, chip?: WtCluster): string {
   return `<div class="rgroup split${it.s.id === activeId ? " on" : ""}">${sessionRow(it.s, chip)}`
-    + `<div class="rgsteps">${it.shells.map((m) => sessionRow(m, undefined, true)).join("")}</div></div>`;
+    + `<div class="rgsteps">${it.shells.map((m) => sessionRow(m, shellElsewhere(m, it.s) ?? undefined, true)).join("")}</div></div>`;
 }
 
 // subheader → ⑃ cluster headers, chip → flat rows with a branch chip, off/toplevel → flat; a

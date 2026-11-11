@@ -27,7 +27,7 @@ const SHARED = [
   "cc-favorites", "cc-proj-order", "cc-proj-groups", "cc-custom-icons", "cc-colors", "cc-agent-by-project",
   "cc-gh-account", "cc-episko-share", "cc-proj-ids", "cc-icons", "cc-icons-v",
   "cc-restore", "cc-handoff", "cc-notes", "cc-team-notes", "cc-claims", "cc-team-claims", "cc-review-drafts",
-  "cc-review-viewed", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-frecency", "cc-tour",
+  "cc-review-viewed", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-branch-lists", "cc-frecency", "cc-tour",
   "cc-legacy-import-done", "cc-channel", "cc-maint", "cc-maint-scan", "cc-maint-week",
   // Shared, or a preview that went back to stable would leave stable asking for the preview again.
   "cc-update-channel",

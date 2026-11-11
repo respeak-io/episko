@@ -46,12 +46,12 @@ import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
   type Pick, type PickCtx, type PickKind,
 } from "./pick";
-import { openBranchPop } from "./bpop";
+import { openBranchPop, openCheckoutPop } from "./bpop";
 import {
   branchRows, checkoutRows, chosenCheckouts, chosenWorktrees, filterRows, localPicks, lockText,
   cleanupBrief, NO_PROTECT, orderRows, removableCheckouts, remoteFor, remotePicks, selectable,
   switchable, switchOptions, trunkOf, trunkOptions, type BranchFilter, type BranchInfo,
-  type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
+  type BranchPick, type BranchRow, type CheckoutRow, type MergedPrs, type ProtectCtx, type SweepResult,
   type WtInfo,
 } from "./branches";
 import { openMenu } from "./menu";
@@ -1492,7 +1492,7 @@ export function wireDashboard(): void {
     }
 
     const brswitch = t.closest<HTMLElement>("[data-dashswitch]");
-    if (brswitch) { void openSwitchPop(brswitch); return; }
+    if (brswitch) { openSwitchPop(brswitch); return; }
 
     const brrun = t.closest<HTMLElement>("[data-dashbrrun]");
     if (brrun) { void runClean(brrun.dataset.dashbrrun === "both"); return; }
@@ -1789,6 +1789,10 @@ async function loadBranches(force = false): Promise<void> {
   branchSel = emptyPick();
   coSel = emptyPick();
   renderDash();
+  void loadBranchPrs(r);   // never awaited: `gh` has no timeout, and no caller needs its answer
+}
+
+async function loadBranchPrs(r: string): Promise<void> {
   if (branchPrs || branchPrsLoading) return;
   branchPrsLoading = true;
   const [prs, ghLocks] = await Promise.all([
@@ -1945,26 +1949,28 @@ async function removeOne(repoDir: string, w: WtInfo, deleteBranch = true): Promi
   }
 }
 
-/** The Repository card's branch chip. The list is git's, so it is read before the popover
- *  opens rather than shown stale: this control is reachable without the Branches view. */
-async function openSwitchPop(anchor: HTMLElement): Promise<void> {
+/** The Repository card's branch chip. It reads for itself rather than through `loadBranches`,
+ *  whose arrival unticks the Branches view and asks GitHub twice for a menu of names. */
+function openSwitchPop(anchor: HTMLElement): void {
   const r = root();
-  await loadBranches();
-  if (root() !== r) return;
-  const here = heads.find((h) => h.is_main)?.branch ?? "";
-  openBranchPop(anchor, switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], r),
-    here, (n) => void switchTo(n));
+  openCheckoutPop(anchor, r, cmpBase[r] ?? null, heads.find((h) => h.is_main)?.branch ?? "",
+    (row) => void runSwitch(row), () => root() === r);
 }
 
-// The ⇄ on a row, and the picker on the Repository card: one switch, every guard in the
-// backend, and the refusal handed to a terminal rather than swallowed.
+// The ⇄ on a row, judged against the table it was clicked in.
 async function switchTo(branch: string): Promise<void> {
-  const r = root();
-  if (!r || branchBusy) return;
-  const target = switchable(switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], r))
+  const target = switchable(switchOptions(branchData?.branches ?? [], branchData?.worktrees ?? [], root()))
     .find((o) => o.name === branch);
   if (!target) { toast(`${branch} is checked out elsewhere`); return; }
-  await host.switchBranch(name(), r, branch, target.base ?? null);
+  await runSwitch(target);
+}
+
+// One switch for the row and the picker: every guard in the backend, and the refusal handed to
+// a terminal rather than swallowed.
+async function runSwitch(row: BranchPick): Promise<void> {
+  const r = root();
+  if (!r || branchBusy) return;
+  await host.switchBranch(name(), r, row.name, row.base ?? null);
   branchData = null;
   renderDash();
   void loadBranches(true);

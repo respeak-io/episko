@@ -99,6 +99,7 @@ import { closeDiff, diffOpen, openDiff, setDiffCloseFootMenus, setDiffHost } fro
 import { closeExplorer, explorerOpen, openExplorer, setExplorerCloseFootMenus } from "./explorer";
 import { closeGraph, graphEscape, graphOpen, openGraph as openGraphFor } from "./graphview";
 import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnread } from "./changelogui";
+import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashToday, openDashboard,
@@ -262,7 +263,7 @@ setSettingsHost({
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
-  openDevtools, reloadUi,
+  openDevtools, reloadUi, resetCompositor: () => { void resetCompositor(); },
   setUpdateChannel: switchChannel,
   vitalsDrift: currentDrift,
   // The rail's doors, and whether a release intro has been read (`@new`).
@@ -786,7 +787,7 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
   else if (el.dataset.drifttrack) void followSessionDrift(el.dataset.drifttrack, "track");
   else if (el.dataset.driftback) void followSessionDrift(el.dataset.driftback, "back");
-  else if (el.dataset.brswitch) void openSessionBranchPop(el, el.dataset.brswitch);
+  else if (el.dataset.brswitch) openSessionBranchPop(el, el.dataset.brswitch);
   else if (el.dataset.git) runGit(el.dataset.gitsid || "", el.dataset.git);
   else if (el.dataset.diff) openDiff(el.dataset.diff, el.dataset.difftitle || "", el.dataset.difffocus, el.dataset.difftab);
   else if (el.dataset.close) void closeSessionAsked(el.dataset.close);
@@ -1158,6 +1159,7 @@ initProjectDnD();
 initSidebarPeek();
 // The tour goes first: on a first run it takes the screen, and the release notes stay quiet.
 initChangelog(initTour());
+initCompositorReset();
 initFileDrop();
 // caffeinate starts off: the last run's assertion died with its process, and cafArmed is
 // false at boot. initCaf covers a webview reload that left the backend still asserting.

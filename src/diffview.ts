@@ -11,7 +11,7 @@ import { basename, esc, escAttr } from "./format";
 import { icon } from "./svgicons";
 import { hunkBody, parsePatch, type DiffFile, type DiffMode } from "./diff";
 import { canDiscardHunk, commitBlock, discardQuestion, filePaths } from "./gitops";
-import { chipsHtml, fileHtml, railHeadHtml, railHtml, stashBarHtml, stashListHtml, treeRailHtml, type FileActs } from "./patchview";
+import { chipsHtml, fileHtml, railHeadHtml, railHtml, stashBarHtml, stashListHtml, tickHtml, treeRailHtml, type FileActs } from "./patchview";
 import { clampHealth, fileChips, findingsText, setChips, type Chip } from "./health";
 import { applyPick, emptyPick, pickState, togglePickAll, type Pick, type PickCtx } from "./pick";
 import { treeOrder, treeRows, type RailLayout } from "./review";
@@ -188,7 +188,7 @@ function acts(f: DiffFile, i: number): FileActs {
   return { btns: rowBtns(f, i), tick: pick.picked.has(f.path), hunk };
 }
 
-const tickFor = (i: number) => (view === "work" && files[i] ? pick.picked.has(files[i].path) : null);
+const tickFor = (i: number) => tickHtml(i, view === "work" && files[i] ? pick.picked.has(files[i].path) : null);
 
 function renderDiffBody(parsed: DiffFile[], truncated: boolean) {
   // The tree's order in both layouts, so each folder's files are contiguous: git's own order

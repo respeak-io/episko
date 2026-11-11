@@ -96,11 +96,13 @@ Then the three things CI cannot do:
 #    libtest swallows a passing test's output, so ask for it.
 cargo test --locked -- --show-output read_bg_log_finds_a_log
 
-# 2. the CLI contract tests, not in CI. Four checks against the real `claude`.
-#    Three cost nothing; `claude_cli_still_honours_our_instrumentation` spends tokens — ASK FIRST.
-#    The same pass runs `two_devices_meet_through_a_real_server`, which needs a live
-#    episko-server plus two invites in EPISKO_E2E_URL / EPISKO_E2E_CODES (RELEASE.md says how);
-#    without them it fails on the env var, not on the feature.
+# 2. the CLI contract tests, not in CI. RELEASE.md § 1 lists every one and what it costs;
+#    read it, since this list has gone stale before. THREE SPEND TOKENS — ASK FIRST:
+#    `claude_cli_still_honours_our_instrumentation`, `claude_cli_reaches_our_mcp_tools` and
+#    `brief_fork_leaves_no_transcript`. Without a yes, `--skip` all three.
+#    `two_devices_meet_through_a_real_server` and `two_users_hand_off_through_a_real_server`
+#    need a live episko-server and invites (RELEASE.md says how); without them they fail on
+#    the env var, not on the feature.
 cargo test --locked -- --ignored --nocapture
 
 # 3. no import cycles (CLAUDE.md requires a sweep after any change that adds an import)

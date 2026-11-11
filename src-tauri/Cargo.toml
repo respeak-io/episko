@@ -119,4 +119,5 @@ windows-sys = { version = "0.61", features = [
 # `bundled` compiles SQLite in so CI needn't rely on system headers. Windows'
 # WebView2 uses LevelDB, not SQLite, so this dep is scoped to macOS only.
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
