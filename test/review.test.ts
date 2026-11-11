@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parsePatch, type DiffFile, type DiffHunk } from "../src/diff";
 import {
   agentBrief, anchorOf, canComment, checkTally, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince,
-  commitTotal, draftBrief, expandGap, fileSig, gapAt, isLargeDiff, isViewed, LARGE_ROWS, lastReviewed, liveSides,
+  commitTotal, dirStates, draftBrief, expandGap, filesUnder, fileSig, gapAt, isLargeDiff, isViewed, LARGE_ROWS, lastReviewed, liveSides,
   mergeBlock, mergeWarn, place, prFromUrl, rangeArgs, rangeLabel, reviewComments, setViewed, sortChecks, submitBlock,
   threadBrief, threadPin, timeline, treeOrder, treeRows, withDraft, type PrReview, type PrThread, type ReviewDraft,
 } from "../src/review";
@@ -241,15 +241,25 @@ describe("the pending review", () => {
 describe("viewed", () => {
   it("is undone by a change to the file, and by nothing else", () => {
     const [a, readme] = FULL;
-    let s = setViewed({}, "o/r#7", a, true, 1);
+    let s = setViewed({}, "o/r#7", [a], true, 1);
     expect(isViewed(s, "o/r#7", a)).toBe(true);
     expect(isViewed(s, "o/r#7", readme)).toBe(false);
     const pushed = parsePatch(patch("diff --git a/src/a.ts b/src/a.ts", "--- a/src/a.ts", "+++ b/src/a.ts", "@@ -1 +1 @@", "-one", "+ONE"))[0];
     expect(fileSig(pushed)).not.toBe(fileSig(a));
     expect(isViewed(s, "o/r#7", pushed)).toBe(false);
-    s = setViewed(s, "o/r#7", a, false, 2);
+    s = setViewed(s, "o/r#7", [a], false, 2);
     expect(s).toEqual({});
     expect(clampViewed({ k: { at: 1, files: { p: "ab", q: 3 } }, j: { files: [] } })).toEqual({ k: { at: 1, files: { p: "ab" } } });
+  });
+
+  it("takes a whole folder's files in one tick, and clears them as one", () => {
+    const [a, readme] = FULL;
+    let s = setViewed({}, "o/r#7", [a, readme], true, 1);
+    expect(isViewed(s, "o/r#7", a) && isViewed(s, "o/r#7", readme)).toBe(true);
+    s = setViewed(s, "o/r#7", [a], false, 2);
+    expect(isViewed(s, "o/r#7", a)).toBe(false);
+    expect(isViewed(s, "o/r#7", readme)).toBe(true);
+    expect(setViewed(s, "o/r#7", [readme], false, 3)).toEqual({});
   });
 
   it("never hashes a file nobody ticked, and hashes each file once", () => {
@@ -299,6 +309,25 @@ describe("the file tree", () => {
   it("orders the stream as the tree does, so both lists read top to bottom alike", () => {
     expect(treeOrder(paths.map((path) => ({ path }))).map((f) => f.path))
       .toEqual(["README.md", "docs/review.md", "src/a.ts", "src/b.ts", "src/lib/deep/x.ts", "src/lib/deep/y.ts"]);
+  });
+
+  it("finds a folder's whole subtree, and not a sibling that merely starts the same", () => {
+    const named = (dir: string, of: string[]) => filesUnder(of, dir).map((i) => of[i]);
+    expect(named("src", paths)).toEqual(["src/b.ts", "src/lib/deep/x.ts", "src/a.ts", "src/lib/deep/y.ts"]);
+    expect(named("src/lib/deep", paths)).toEqual(["src/lib/deep/x.ts", "src/lib/deep/y.ts"]);
+    expect(named("src/lib", ["src/lib/a.ts", "src/library/b.ts", "src/lib.ts"])).toEqual(["src/lib/a.ts"]);
+  });
+
+  it("gives every folder row a state over its subtree, shut or not", () => {
+    const on = new Set(["src/lib/deep/x.ts", "src/lib/deep/y.ts", "docs/review.md"]);
+    const st = dirStates(paths, (i) => on.has(paths[i]));
+    expect(st.get("docs")).toBe("all");
+    expect(st.get("src")).toBe("some");
+    expect(st.get("src/lib/deep")).toBe("all");
+    expect(dirStates(paths, () => false).get("src")).toBe("none");
+    // A folded chain's row names the whole chain, and a root file belongs to no folder.
+    for (const r of treeRows(paths, new Set(["src"]))) if (r.kind === "dir") expect(st.has(r.path)).toBe(true);
+    expect(st.has("")).toBe(false);
   });
 });
 

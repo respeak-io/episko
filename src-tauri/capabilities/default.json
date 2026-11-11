@@ -13,6 +13,9 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:webview:allow-webview-hide",
+    "core:webview:allow-webview-show",
+    "core:webview:allow-set-webview-focus",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text"
   ]

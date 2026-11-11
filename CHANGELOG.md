@@ -12,6 +12,35 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A review's file list has a tick on every file and folder. A folder's tick marks everything under it
+  as viewed in one click, and shows a dash while only part of it is.
++ *Settings › Updates* can put Episko on the preview channel: a build of a feature that has not
+  shipped yet, replaced each time it changes. Settings you change in a preview stay with it, and
+  switching back to the releases asks once whether to bring along the ones that differ. Your
+  sessions, spend, notes and accounts are the same on both.
+~ Text you pasted into a question (and any other `<tag>` block in it) shows as a folded box in
+  the Questions sheet and on a shelved session's stage: what it is, its first line and how many
+  lines it holds, one click to open. The outline and History name it in one line instead.
+~ Windows: after a minute in the background, Episko hides and shows its page once, at most every
+  15 minutes. That clears the frame bookkeeping in Chromium that makes hover and navigation lag after
+  a long day. A window left visible on another monitor blinks. *Settings › Diagnostics › Reset the
+  compositor* does the same on demand. Nothing reloads.
+! A shell opened beside a session stays under that session in the sidebar when the session moves to
+  another checkout, with a chip naming the checkout the shell still runs in. It used to drop under
+  the old checkout while the two stayed side by side on stage.
+! Small icon buttons draw their icon in the middle again: the close buttons on Settings and the
+  dialogs, the quick open in the status bar's popovers, and about a dozen more sat up to 3px to the right.
+! A stray dev server running under `uv run`, `just` or `make` in a known checkout now shows under *Left behind*.
+! macOS: a pane's process rows no longer carry environment variables (a session token among them), and `npm exec` and `npm run` fold as wrappers.
+! A long `npm ci` or `pnpm install` stays listed as what a pane is running.
+! The branch picker opens the moment you click it, with the branches it knew last and a small
+  spinner while it reads them again. It used to wait for GitHub first, which could take seconds, and
+  could then appear in the window's top-left corner.
+! When Claude compacted a conversation, a shelved session listed the summary it carried on from as
+  one of your questions: a wall of text with the instructions meant for the model still in it. It is
+  now a band between the questions saying where the context was compacted, with the summary folded
+  under it and readable as formatted sections. The answer Claude gave after a compaction is filed
+  under the question it was working on.
 
 ## 0.39.0 — 2026-11-03
 Several Claude subscriptions can share the work: a new session starts on the first one that isn't

@@ -53,6 +53,8 @@ sha2 = "0.10"
 getrandom = "0.3"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
+# A channel switch compares versions itself (updates.rs); already in the tree through the updater.
+semver = "1"
 tauri-plugin-process = "2"
 # Terminal copy/paste. The WebView's own `navigator.clipboard.readText()` is behind
 # a permission prompt in both WebView2 and WKWebView (see the comment in `run()`),
@@ -115,4 +117,5 @@ windows-sys = { version = "0.61", features = [
 # `bundled` compiles SQLite in so CI needn't rely on system headers. Windows'
 # WebView2 uses LevelDB, not SQLite, so this dep is scoped to macOS only.
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }

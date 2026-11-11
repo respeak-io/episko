@@ -167,20 +167,20 @@ export function railHeadHtml(layout: RailLayout, n: number): string {
     + b("tree", `${icon("tree")}tree`, "Nest the files in their folders") + b("flat", `${icon("list")}list`, "One list, each folder named once") + `</div></div>`;
 }
 
-// One file's row in either layout. `mark` is the host's extra (a review's viewed tick and thread count).
-function railRow(f: DiffFile, i: number, active: number, chips: Chip[], tick: boolean | null, mark: string, depth = -1): string {
+// One file's row in either layout. `tick` and `mark` are the host's: what picks it, and any extra (a review's thread count).
+function railRow(f: DiffFile, i: number, active: number, chips: Chip[], tick: string, mark: string, depth = -1): string {
   const glyph = DSTAT[f.status], cls = fcls(glyph);
   const [, name] = splitPath(f.path);
   const n = f.binary ? `<i class="d-bin">bin</i>`
     : `<i class="add">+${f.added}</i><i class="del">−${f.removed}</i>`;
   const indent = depth >= 0 ? ` style="--d:${depth}"` : "";
   return `<button class="dr-row${depth >= 0 ? " tree" : ""}${i === active ? " on" : ""}" data-drow="${i}" title="${escAttr(f.path)}"${indent}>`
-    + `${tickHtml(i, tick)}<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span>${mark}${pipsHtml(chips)}<span class="dr-n">${n}</span></button>`;
+    + `${tick}<span class="dstat ${cls}">${glyph}</span><span class="dr-name">${esc(name)}</span>${mark}${pipsHtml(chips)}<span class="dr-n">${n}</span></button>`;
 }
 
 // The index rail, grouped under folders (free: files arrive sorted by path).
 export function railHtml(
-  files: DiffFile[], active: number, chips: Chip[][] = [], tick: (i: number) => boolean | null = () => null,
+  files: DiffFile[], active: number, chips: Chip[][] = [], tick: (i: number) => string = () => "",
   mark: (i: number) => string = () => "",
 ): string {
   let dir: string | null = null;
@@ -195,10 +195,10 @@ export function railHtml(
 /** The same rail as a tree: `rows` from ./review's `treeRows` over these files, in their order. */
 export function treeRailHtml(
   files: DiffFile[], rows: TreeRow[], folded: ReadonlySet<string>, active: number, chips: Chip[][] = [],
-  tick: (i: number) => boolean | null = () => null, mark: (i: number) => string = () => "",
+  tick: (i: number) => string = () => "", mark: (i: number) => string = () => "", dirTick: (dir: string) => string = () => "",
 ): string {
   return rows.map((r) => r.kind === "dir"
-    ? `<button class="dr-fold${folded.has(r.path) ? " shut" : ""}" data-drdir="${escAttr(r.path)}" style="--d:${r.depth}" title="${escAttr(r.path)}"><span class="dchev">${icon("chevronDown", "solo")}</span>${esc(r.name)}</button>`
+    ? `<button class="dr-fold${folded.has(r.path) ? " shut" : ""}" data-drdir="${escAttr(r.path)}" style="--d:${r.depth}" title="${escAttr(r.path)}">${dirTick(r.path)}<span class="dchev">${icon("chevronDown", "solo")}</span><span class="dr-name">${esc(r.name)}</span></button>`
     : railRow(files[r.index], r.index, active, chips[r.index] ?? [], tick(r.index), mark(r.index), r.depth)).join("");
 }
 

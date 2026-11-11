@@ -393,6 +393,7 @@ html.win .wctl { display: flex; }
 .rgroup.split > .srow { border-radius: 8px 8px 0 0; }
 .rgroup.split .rgsteps { border-top: 1px solid var(--hair); margin-left: 0; padding-left: 20px; border-left: 0; }
 .rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
+.rgsteps .srow.o3 { grid-template-columns: 12px minmax(0,1fr) auto auto; }
 .rgsteps .sbranch { font-size: 11px; color: var(--muted); }
 .rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
 .rgsteps .sglyph { font-size: 9.5px; --ic: 10px; }
@@ -662,6 +663,10 @@ html.win .wctl { display: flex; }
 .ol-gb { margin-left: 9px; padding-left: 4px; border-left: 1px solid color-mix(in srgb, var(--tool-task) 30%, var(--hair)); display: flex; flex-direction: column; gap: 1px; }
 .ol-row.gone .ol-txt { color: var(--muted); }
 .ol-row.gone:hover { background: none; }
+/* where Claude compacted: a rule across the list, nothing to jump to */
+.ol-cmp { display: flex; align-items: center; gap: 6px; padding: 4px 6px; font: 9.5px var(--font-mono); color: var(--muted-2); }
+.ol-cmp::after { content: ""; order: 2; flex: 1; height: 1px; background: var(--hair); }
+.ol-cmp .ol-t { order: 3; padding-top: 0; }
 
 /* --- the background fleet (a Workflow fan-out, or a burst of Task subagents) ---
    Built like .plan, not like a gauge: both answer "how far through is it". The violet separates them. */
@@ -1134,6 +1139,34 @@ html.win .wctl { display: flex; }
 .q-ans.mdr h1.mdr-h, .q-ans.mdr h2.mdr-h { font-size: 1.2em; padding-bottom: 0; border-bottom: 0; }
 .q-none { margin-top: 9px; padding-left: 14px; font-size: 12px; font-style: italic; color: var(--muted-2); }
 .q-none.run { color: var(--st-working); }
+/* a compaction: a band between the questions, Claude's summary folded under it */
+.q-ent.cmp { padding: 10px 0 12px; }
+.q-ent.cmp .q-h { margin-bottom: 4px; }
+.q-cw { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border: 1px solid var(--hair); border-radius: 999px; background: var(--surface); font: 10.5px var(--font-mono); color: var(--muted); }
+.q-row.cmp .q-rt { color: var(--muted); }
+.q-cmp > summary { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; list-style: none; cursor: pointer; user-select: none; font-size: 12px; color: var(--muted-2); }
+.q-cmp > summary:hover { color: var(--text); }
+.q-cmp[open] > summary .ic { transform: rotate(90deg); }
+.q-cmpb.mdr { --mdr-fs: 12.5px; margin: 8px 0 0; padding: 2px 2px 0 14px; max-width: none; border-left: 2px dashed var(--hair-strong); color: var(--muted); }
+.q-cmpb.mdr > :last-child { margin-bottom: 0; }
+/* A tagged block inside a question (a paste, a pasted reminder), as ./inspectorview's promptHtml
+   draws it here and in the mirror's transcript: folded once it is long, its first line peeking out. */
+.q-blk { margin: 8px 0; border: 1px solid var(--hair-strong); border-radius: 7px; background: color-mix(in srgb, var(--bg-2) 72%, transparent); white-space: normal; font-weight: 400; }
+.q-blk:first-child { margin-top: 2px; }
+.q-blk:last-child { margin-bottom: 0; }
+.q-blk > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 10px; list-style: none; cursor: pointer; user-select: none; border-radius: 6px; font: 11px/1.5 var(--font-mono); color: var(--muted); }
+.q-blk > summary::-webkit-details-marker { display: none; }
+.q-blk > summary:hover { background: var(--lift); color: var(--text); }
+.q-blk > summary .ic { --ic: 11px; flex: none; transition: transform .12s ease; }
+.q-blk[open] > summary .ic { transform: rotate(90deg); }
+.q-blk[open] > summary { border-radius: 6px 6px 0 0; }
+.q-blk-n { flex: none; font-weight: 650; color: var(--text); }
+.q-blk-a, .q-blk-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); }
+.q-blk-a { flex: 0 1 auto; }
+.q-blk-p { flex: 1 1 0; }
+.q-blk[open] .q-blk-p { visibility: hidden; }
+.q-blk-c { flex: none; margin-left: auto; font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.q-blk-b { padding: 8px 12px 10px; border-top: 1px solid var(--hair); font: 11.5px/1.6 var(--font-mono); color: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* --- project commit graph (modal). .grow's height MUST equal ROW_H in graph.ts (lane lines are
    drawn edge-to-edge per row), so nothing may add to a row's box: selection is a background,
@@ -1289,7 +1322,7 @@ html.win .wctl { display: flex; }
 .fx-gg { color: var(--kc); font-size: 9px; line-height: 1; }
 /* ./inspectorview, ./explorer, ./questionsview: the rail's small icon slots */
 :is(.fx-gg, .exp-t, .exp-ico) .ic { --ic: 11px; }
-:is(.ol-g, .fo-g, .fo-og, .fx-r, .ol-open, .tvgutter, .ol-b, .q-b, .q-rn) .ic { --ic: 12px; }
+:is(.ol-g, .fo-g, .fo-og, .fx-r, .ol-open, .tvgutter, .ol-b, .q-b, .q-rn, .q-cw, .q-cmp, .ol-cmp, .tvmsg.cmp) .ic { --ic: 12px; }
 .bsw .c .ic { --ic: 11px; }
 .fx-gn { font: 700 9px var(--font-ui); letter-spacing: .11em; text-transform: uppercase; color: var(--kc); }
 .fx-gc { margin-left: auto; font: 10px var(--font-mono); color: var(--muted-2); font-variant-numeric: tabular-nums; }
@@ -2440,6 +2473,11 @@ select.in-ctl { cursor: pointer; }
 .bpop .mp-l { font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bpop .mp-main { flex: 1; }
 .bpop .bp-none { padding: 10px 9px; color: var(--muted-2); font-size: 11.5px; }
+/* a list still being read holds a full list's height, so the popover neither grows nor flips when it lands */
+.bpop .bp-list.wait { min-height: 264px; }
+/* turns only while a re-read is out, over the rows already on screen */
+.bpop .bp-q .u-spin { display: none; margin: 0 2px 0 0; }
+.bpop.reading .bp-q .u-spin { display: inline-block; }
 /* listed but not choosable (one checkout per branch); dimmed rather than hidden */
 .bpop .mp-item.dis { cursor: not-allowed; opacity: .5; }
 .bpop .mp-item.dis:hover { background: transparent; }
@@ -2723,6 +2761,11 @@ select.in-ctl { cursor: pointer; }
 .tvmsg.relay .tvtext { color: var(--muted); }
 .tvmsg.relay .ol-from { display: block; }
 .tvmsg.assistant .tvgutter { color: var(--st-done, #5cc98f); }
+.tvmsg.cmp { display: block; color: color-mix(in srgb, var(--terminal-text) 55%, var(--terminal-bg)); }
+.tvmsg.cmp summary, .tvcmp { display: flex; align-items: center; gap: 8px; list-style: none; user-select: none; font-size: 11px; }
+.tvmsg.cmp summary { cursor: pointer; }
+.tvmsg.cmp summary::after, .tvcmp::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--terminal-text) 16%, transparent); }
+.tvmsg.cmp .tvtext { margin-top: 8px; padding-left: 12px; border-left: 2px dashed color-mix(in srgb, var(--terminal-text) 16%, transparent); }
 .tvtext { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); line-height: 1.6; }
 /* the mirror is always on --terminal-bg, so text is keyed to --terminal-text */
 .tvmsg.user .tvtext { color: var(--terminal-text); font-weight: 600; }
@@ -3348,7 +3391,7 @@ select.in-ctl { cursor: pointer; }
 /* The ＋ rides the top of a grown field rather than floating in the middle of it. */
 .nt-form:focus-within .nt-row { align-items: flex-start; }
 /* The ＋ only: the hint's own link is a button in this form too, and a 25px box ate it. */
-.nt-form .nt-row button { width: 25px; height: 25px; flex: none; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); cursor: pointer; font-size: 12px; }
+.nt-form .nt-row button { width: 25px; height: 25px; padding: 0; flex: none; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); cursor: pointer; font-size: 12px; }
 .nt { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; }
 .nt:hover { background: var(--surface-2); }
 .nt .ntx { min-width: 0; }
@@ -4171,7 +4214,14 @@ button.rv-chip { cursor: pointer; }
 .dr-fold .dchev { font-size: 9px; transition: transform .12s; }
 .dr-fold.shut .dchev { transform: rotate(-90deg); }
 .dr-row.tree { padding-left: calc(7px + var(--d, 0) * 12px + 6px); }
-.rv-vw { flex: none; color: var(--st-done); font-size: 10px; }
+/* A review's rail ticks every row, so a tree's depth reads down the tick column: a folder's chevron
+   sits where a file's status does, and the rail is a tick wider to leave the names their room. */
+#rvRail { width: 250px; }
+#rvRail .dr-row.tree { padding-left: calc(7px + var(--d, 0) * 12px); }
+#rvRail .dr-fold { gap: 7px; padding-top: 2px; }
+#rvRail .dr-fold .dchev { width: 16px; justify-content: center; }
+.dtick.rv-tick:is(.on, .some) { border-color: color-mix(in srgb, var(--st-done) 55%, transparent); background: color-mix(in srgb, var(--st-done) 22%, transparent); }
+.dtick.rv-tick:is(.on, .some)::after { color: var(--st-done); }
 .rv-tc { flex: none; min-width: 15px; padding: 0 4px; border-radius: 99px; text-align: center; font: 700 9.5px var(--font-mono); color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 
 /* a file in review: its header's controls, and a viewed file dimmed and folded */
@@ -4274,7 +4324,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1
 :is(.clm, .gr, .gk) .ic { --ic: 10px; }
 .brck.pk .ic { --ic: 9px; }
 :is(.qrow .go, .br .go, .dbr .go, .dck, .prog, .dr-fold .dchev, .rv-th-h .dchev, .g-mk-x, .qqx, .nb, .tb) .ic { --ic: 11px; }
-:is(.qchev, .cr .k, .brpick .c, .lgmore .c, .gd-sha-b, .rv-vw) .ic { --ic: 12px; }
+:is(.qchev, .cr .k, .brpick .c, .lgmore .c, .gd-sha-b) .ic { --ic: 12px; }
 .fc-recic .ic { --ic: 14px; }
 .ic.rv-dd { margin-left: .3em; }
 :is(.qrow .go, .tb, .nb, .qqx, .g-mk-x, .gx, .go-slot .web, .mdr-tool, .lgmore .c, .qchev, .fc-recic, .prog) { display: inline-flex; align-items: center; justify-content: center; }
@@ -4312,7 +4362,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1
 .foot .frepo .fcaret .ic { --ic: 11px; }
 .dbg-ic { display: flex; --ic: 13px; }
 .foot .flabel > .ic { --ic: 12px; margin-right: 3px; }
-:is(.diff-x, .exp-x, .graph-ref, .set-x, .set-sclr, .dbg-x, .nt-row button, .svrpop .sv-go, .svrpop .sv-stop, .svrpop .sv-path) > .ic { --ic: 13px; display: block; margin: 0 auto; }
+:is(.diff-x, .exp-x, .graph-ref, .mdr-back, .set-x, .set-sclr, .dbg-x, .nt-row button, .svrpop .sv-go, .svrpop .sv-stop, .svrpop .sv-path) > .ic { --ic: 13px; display: block; margin: 0 auto; }
+/* There is no button reset, so a <button> keeps the browser's 6px a side: a 20px one has 6px left
+   for a 12px icon, which overflows to the right whatever centres it. A flex parent is exempt. */
+:is(.diff-x, .exp-x, .graph-ref, .kb-x, .mdr-back, .pgo, .set-fbtn, .set-reset, .set-sclr, .set-x, .sndplay, .sv-go, .sv-path, .sv-stop, .tc-x, .xb) { padding: 0; }
+.mgr-b > .ic.solo { display: block; }
 .svrpop .sv-ptbl .sv-stop > .ic { --ic: 12px; }
 .svrpop .sv-foot .ic { --ic: 11px; margin: 0 1px; }
 .db-seg button > .ic { --ic: 13px; margin: 0; }

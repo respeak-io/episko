@@ -36,10 +36,82 @@ export function cleanPrompt(raw: unknown): string {
   return t.length > TEXT_CAP ? t.slice(0, TEXT_CAP) + "…" : t;
 }
 
-/** The single line a tooltip or a folded row falls back to. */
+/** The single line a tooltip or a folded row falls back to: your words before any paste. */
 export function promptLabel(text: string): string {
-  const first = text.split("\n").find((l) => l.trim()) ?? "";
+  const prose = promptParts(text).find((x) => x.kind === "text");
+  const first = (prose?.kind === "text" ? prose.text : promptFlat(text)).split("\n").find((l) => l.trim()) ?? "";
   return first.length > 120 ? first.slice(0, 120) + "…" : first;
+}
+
+// ---------- tagged blocks inside a question: a paste, a pasted <system-reminder>, a file ----------
+
+export interface PromptBlock { name: string; attrs: [string, string][]; tag: string; body: string; cut: boolean }
+export type PromptPart = { kind: "text"; text: string } | { kind: "block"; block: PromptBlock };
+
+// A tag counts only alone on its line, so `<div>` mid-sentence stays prose.
+const OPEN_TAG = /^\s*<([A-Za-z][\w.:-]*)((?:\s[^<>]*)?)>\s*$/;
+const CLOSE_TAG = /^\s*<\/([A-Za-z][\w.:-]*)(?:\s[^<>]*)?>\s*$/; // Claude Code repeats the id on the close
+const ATTR = /([\w.:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
+const FENCE = /^\s*(```|~~~)/;
+const trimNl = (s: string) => s.replace(/^\n+|\n+$/g, "");
+
+function openTag(line: string): RegExpExecArray | null {
+  const m = OPEN_TAG.exec(line);
+  return m && !m[2].trimEnd().endsWith("/") ? m : null;
+}
+
+function closeAt(lines: readonly string[], from: number, name: string): number {
+  let depth = 0;
+  for (let j = from; j < lines.length; j++) {
+    if (openTag(lines[j])?.[1] === name) depth++;
+    else if (CLOSE_TAG.exec(lines[j])?.[1] === name && depth-- === 0) return j;
+  }
+  return -1;
+}
+
+/**
+ * A question as prose and tagged blocks. A block needs its close, except the last one in a
+ * text cleanPrompt cut short (its `…` is the mark). Nothing inside a code fence opens one.
+ */
+export function promptParts(text: string): PromptPart[] {
+  if (!text.includes("<")) return text ? [{ kind: "text", text }] : [];
+  const lines = text.split("\n");
+  const out: PromptPart[] = [];
+  let prose: string[] = [];
+  let fenced = false;
+  const flush = () => { const t = trimNl(prose.join("\n")); if (t) out.push({ kind: "text", text: t }); prose = []; };
+  for (let i = 0; i < lines.length; i++) {
+    if (FENCE.test(lines[i])) fenced = !fenced;
+    const m = fenced ? null : openTag(lines[i]);
+    const end = m ? closeAt(lines, i + 1, m[1]) : -1;
+    const cut = !!m && end < 0 && i < lines.length - 1 && text.endsWith("…");
+    if (!m || (end < 0 && !cut)) { prose.push(lines[i]); continue; }
+    flush();
+    const stop = end < 0 ? lines.length : end;
+    const body = lines.slice(i + 1, stop).join("\n");
+    const attrs = [...m[2].matchAll(ATTR)].map((a): [string, string] => [a[1], a[2] ?? a[3] ?? ""]);
+    out.push({ kind: "block", block: { name: m[1], attrs, tag: lines[i].trim(), body: trimNl(cut ? body.replace(/…$/, "") : body), cut } });
+    i = stop;
+  }
+  flush();
+  return out;
+}
+
+/** `pasted_content` → "Pasted content". */
+export function blockLabel(name: string): string {
+  const s = name.replace(/[_-]+/g, " ").trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export function linesText(b: PromptBlock): string {
+  const n = b.body ? b.body.split("\n").length : 0;
+  return `${n}${b.cut ? "+" : ""} line${n === 1 ? "" : "s"}`;
+}
+
+/** One line per block, for the surfaces too narrow to fold one open. */
+export function promptFlat(text: string): string {
+  if (!text.includes("</") && !text.endsWith("…")) return text;
+  return promptParts(text).map((x) => (x.kind === "text" ? x.text : `[${blockLabel(x.block.name)} · ${linesText(x.block)}]`)).join("\n");
 }
 
 // Turns Claude submits as `user` that nobody typed: a slash command's echo, a `!` shell line,
@@ -87,13 +159,15 @@ export function promptFrom(text: string): { text: string; relay?: Relay } {
 export type OutlineItem =
   | { kind: "ask"; p: Prompt; n: number }
   | { kind: "relay"; p: Prompt }
-  | { kind: "relays"; id: string; ps: Prompt[] };
+  | { kind: "relays"; id: string; ps: Prompt[] }
+  | { kind: "compact"; p: Prompt };
 
 export function outlineItems(list: readonly Prompt[]): OutlineItem[] {
   const out: OutlineItem[] = [];
   let n = 0;
   for (let i = 0; i < list.length;) {
     const p = list[i];
+    if (p.compact) { out.push({ kind: "compact", p }); i++; continue; }
     if (!p.relay) { out.push({ kind: "ask", p, n: ++n }); i++; continue; }
     let j = i;
     while (j < list.length && list[j].relay) j++;
@@ -128,7 +202,9 @@ export function notePrompt(list: Prompt[], raw: unknown, now: number): Prompt | 
 const ANSWER_CAP = 12_000;
 export function noteAnswer(list: Prompt[], raw: unknown, queued: boolean): Prompt | null {
   const t = cleanPrompt(typeof raw === "string" && raw.length > ANSWER_CAP ? raw.slice(0, ANSWER_CAP) : raw);
-  const p = list[list.length - (queued ? 2 : 1)];
+  // A compaction is no turn of its own: what the agent says after one answers the question it was on.
+  const asks = list.filter((x) => !x.compact);
+  const p = asks.length ? asks[asks.length - (queued ? 2 : 1)] : queued ? undefined : list[list.length - 1];
   if (!t || !p) return null;
   p.answer = t;
   return p;
@@ -141,7 +217,40 @@ export const clearsOutline = (source: unknown): boolean => String(source ?? "") 
 // ---------- a resumed pane: the questions are in the transcript, not in its hooks ----------
 
 /** One provider history message, as ./providers hands it over. */
-export interface SeedMsg { role: string; text: string; at?: string | null }
+export interface SeedMsg { role: string; text: string; at?: string | null; compact?: boolean }
+
+// ---------- a compaction: the summary Claude carried on from ----------
+// What wraps it is addressed to the model (the tools it had, "resume directly"), so it comes off,
+// and `1. Primary Request and Intent:` becomes the heading it is. The format is Claude Code's,
+// so a variant this misses is shown whole rather than lost.
+const COMPACT_CAP = 40_000; // usage.rs sends this much
+const CMP_TAGS = [
+  /<system-reminder>[\s\S]*?<\/system-reminder>/g,
+  /<tools-used-before-summary>[\s\S]*?<\/tools-used-before-summary>/g,
+  /<artifact-content-authored-by-others\/>/g,
+];
+const CMP_LEAD = ["This session is being continued from a previous conversation", "The summarized conversation included", "Summary:"];
+const CMP_TAIL = [
+  "If you need specific details from before compaction", "Continue the conversation from where it left off",
+  "Please continue the conversation from where", "The messages after this summary are",
+];
+const CMP_SECTION = /^\d{1,2}\. (\S.{0,79}):$/;
+
+export function compactSummary(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  let t = raw.replace(/\r\n?/g, "\n");
+  for (const re of CMP_TAGS) t = t.replace(re, "");
+  const out: string[] = [];
+  for (const line of t.split("\n").map((l) => l.trimEnd())) {
+    const s = line.trim();
+    if (CMP_TAIL.some((m) => s.startsWith(m))) break;
+    if (!out.some(Boolean) && CMP_LEAD.some((m) => s.startsWith(m))) continue;
+    const sec = CMP_SECTION.exec(line);
+    out.push(sec ? `### ${sec[1]}` : line);
+  }
+  const body = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return body.length > COMPACT_CAP ? body.slice(0, COMPACT_CAP) + "…" : body;
+}
 
 /**
  * Everything the transcript holds predates this pane, so restored entries go in front of
@@ -154,11 +263,16 @@ export function seedPrompts(list: Prompt[], msgs: readonly SeedMsg[]): Prompt[] 
   for (const m of msgs) {
     if (m.role === "assistant") { noteAnswer(restored, m.text, false); continue; }
     if (m.role !== "user") continue;
+    const ms = m.at ? Date.parse(m.at) : NaN;
+    const at = Number.isFinite(ms) ? ms : 0;
+    if (m.compact) {
+      restored.push({ id: `p${++seq}`, text: compactSummary(m.text), at, restored: true, compact: true });
+      continue;
+    }
     const clean = cleanPrompt(m.text);
     if (!clean || isEnvelope(clean)) continue;
     const { text, relay } = promptFrom(clean);
-    const at = m.at ? Date.parse(m.at) : NaN;
-    restored.push({ id: `p${++seq}`, text, at: Number.isFinite(at) ? at : 0, restored: true, ...(relay && { relay }) });
+    restored.push({ id: `p${++seq}`, text, at, restored: true, ...(relay && { relay }) });
   }
   list.unshift(...restored);
   if (list.length > PROMPT_CAP) list.splice(0, list.length - PROMPT_CAP);

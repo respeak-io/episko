@@ -29,6 +29,9 @@ pub(crate) struct TranscriptMsg {
     /// The line's own ISO timestamp, passed through rather than parsed: `Date.parse` is
     /// already the reader, and a line without one says so instead of guessing.
     at: Option<String>,
+    /// Claude's summary of a compacted conversation: a `user` line nobody typed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    compact: bool,
 }
 
 /// Claude's `<base>/projects/<enc>/`, where `<enc>` is the physical cwd with every
@@ -704,9 +707,12 @@ fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
     if text.is_empty() {
         return None;
     }
-    if text.len() > 4000 {
+    // A summary is read whole or not at all; the longest measured ran to 28k.
+    let compact = v.get("isCompactSummary").and_then(|x| x.as_bool()).unwrap_or(false);
+    let cap = if compact { 40_000 } else { 4000 };
+    if text.len() > cap {
         // Byte-indexed, so cut on a char boundary: `truncate` panics inside an umlaut or emoji.
-        let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 4000).last().unwrap_or(0);
+        let cut = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= cap).last().unwrap_or(0);
         text.truncate(cut);
         text.push('…');
     }
@@ -714,6 +720,7 @@ fn transcript_msg(line: &str) -> Option<TranscriptMsg> {
         role: t.to_string(),
         text,
         at,
+        compact,
     })
 }
 
@@ -3036,6 +3043,31 @@ mod tests {
         let two: Vec<String> = read_asked_in(&base, cwd, "sid", 2).unwrap().into_iter().map(|m| m.text).collect();
         assert_eq!(two, vec!["q2", "a2", "q3"]);
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_compaction_summary_is_flagged_and_kept_whole() {
+        let cwd = "/Users/tim/dev/compacted";
+        let (base, proj) = fixture(cwd);
+        let summary = format!("This session is being continued…\n\nSummary:\n{}", "ä".repeat(6000));
+        let file = [
+            serde_json::json!({ "type": "user", "message": { "content": "q1" } }).to_string(),
+            r#"{"type":"system","subtype":"compact_boundary"}"#.to_string(),
+            serde_json::json!({ "type": "user", "isCompactSummary": true, "isVisibleInTranscriptOnly": true,
+                "message": { "content": summary } }).to_string(),
+        ]
+        .join("\n");
+        std::fs::write(proj.join("sid.jsonl"), file).unwrap();
+
+        let asked = read_asked_in(&base, cwd, "sid", 10).unwrap();
+        assert_eq!(asked.iter().map(|m| m.compact).collect::<Vec<_>>(), vec![false, true]);
+        // 12KB of umlauts: past the 4000 a question is cut at, and cut on no boundary.
+        assert_eq!(asked[1].text, summary);
+        // The flag only travels when set, so every other message serialises as it did.
+        let wire = serde_json::to_value(&asked).unwrap();
+        assert_eq!(wire[0].get("compact"), None);
+        assert_eq!(wire[1]["compact"], true);
         let _ = std::fs::remove_dir_all(&base);
     }
 

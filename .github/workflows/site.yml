@@ -59,8 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     # `workflow_run` fires on *completed*, which includes a failed or cancelled build.
     # Deploying then would advertise a version whose assets do not exist. Every other
-    # trigger passes straight through.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # trigger passes straight through, bar a prerelease: preview.yml's is never the site's.
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      && !(github.event_name == 'release' && github.event.release.prerelease)
     steps:
       - uses: actions/checkout@v7
         with:

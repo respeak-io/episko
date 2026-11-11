@@ -24,6 +24,7 @@ mod tasks;
 mod telemetry;
 #[cfg(test)]
 mod testutil;
+mod updates;
 mod usage;
 
 use std::collections::{HashMap, HashSet};
@@ -456,6 +457,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pty::spawn_claude,
+            updates::check_update,
             accounts::claude_tokens,
             accounts::claude_token_save,
             accounts::claude_token_forget,
