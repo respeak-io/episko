@@ -34,7 +34,7 @@ export interface MaintHost {
   terminal: (project: string, path: string, cmd: string) => void; // a shell with `cmd` typed in and never sent
   // `door` opens the view a board number counts (./maint Door); on its own dashboard, that view in place.
   openDashboard: (name: string, path: string, tab?: "today" | "maint", door?: Door) => void;
-  // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
+  // `root` undefined keeps the project filter, null clears it; the host owns both, never `mirror`.
   // `board` set scrolls to that board once painted, null to the tab's top.
   openTab: (sub: MaintSub, root?: string | null, board?: BoardId | null) => void;
   picks?: (tab: MaintTab) => PickRow[]; // the fleet's project picker; the dashboard is one project

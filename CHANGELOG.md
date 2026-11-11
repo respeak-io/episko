@@ -24,6 +24,9 @@ Markers: `+` new · `~` changed · `!` fixed
 + Tick lines on Maintenance cards and *Brief N agents* starts one agent per line, tiled, each on a
   fix branch of its own, or in the project folder for a line that changes nothing.
 + *Since last week* on the all-projects screen says what changed since the checks a week ago.
++ Back and forward, the mouse's side buttons included, step through those tabs as a browser's do:
+  *Activity* and *Maintenance*, a Maintenance tab and the project it is narrowed to, and a
+  dashboard's *Today* and *Maintenance*.
 ~ Pull request checks and update-bot checks read GitHub's states through one vocabulary. In the
   review pane a check GitHub marked *stale* now counts as failed (it showed as neutral); on the
   Dependencies card a required status that has not reported yet counts as running (it counted as

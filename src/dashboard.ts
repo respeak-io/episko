@@ -40,7 +40,8 @@ import {
 } from "./maint";
 import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
 import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
-import { maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
+import { MAINT_SUBS, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
+import type { Place } from "./nav";
 import { discoverTasks, execCmd } from "./tasks";
 import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
@@ -1270,12 +1271,24 @@ function setDashTab(tab: DashTab): void {
 /** The tour's "today" need: a step lighting a Today column must not find it hidden. */
 export function dashToday(): void { if (dashMirror() && dashTab !== "today") setDashTab("today"); }
 
+/** Where on this pane the stage is: what main.ts's `here()` records for back/forward (./nav). */
+export const dashPlace = (): Place => dashTab === "maint" ? { tab: "maint", sub: dashSub } : { tab: "today" };
+
+/** Back/forward's way in. Same project: only the tab moves, since `openDashboard` re-reads it all. */
+export function openDashboardAt(project: string, path: string, at?: Place): void {
+  const tab: DashTab | undefined = at && (at.tab === "maint" ? "maint" : "today");
+  if (at?.tab === "maint" && MAINT_SUBS.includes(at.sub as MaintSub)) dashSub = at.sub as MaintSub;
+  if (tab && root() === path) { setDashTab(tab); return; }
+  openDashboard(project, path, tab);
+}
+
 // Painted now so the board is there to scroll to; scoped, since the fleet draws the same ids. A cell
 // that cannot check lands on its tab's Coverage, which says why.
 function openMaintSub(sub: MaintSub, board?: BoardId | null, cover = false): void {
   dashSub = sub;
   if (dashTab !== "maint") setDashTab("maint");
   renderDash();
+  host.renderAll();   // the pass records the sub-tab for back/forward
   if (board === undefined && !cover) return;
   const box = $("dashMaint");
   const at = cover ? box.querySelector<HTMLElement>(".mt-cover") : board ? box.querySelector<HTMLElement>(`#mtb-${board}`) : null;

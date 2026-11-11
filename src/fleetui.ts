@@ -27,8 +27,9 @@ import {
   askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
 import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
+import type { Place } from "./nav";
 import {
-  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView, type ProdAsks,
+  MAINT_SUBS, maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView, type ProdAsks,
 } from "./maintview";
 import {
   allProjects, attnPending, checkoutBusy, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
@@ -130,6 +131,7 @@ export function setFleetView(v: FleetViewKind) {
   localStorage.setItem("cc-fleet-view", fleetView);
   if (fleetView === "maint" && !fleetScanning && Date.now() - fleetCheckedAt > MAINT_FRESH_MS) checkFleet(false);
   renderFleet();
+  host.renderAll();   // the pass is what records the switch for back/forward
 }
 const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
 
@@ -140,8 +142,8 @@ export function maintOnBoot(): void {
   const now = Date.now();
   if (maintRoots().some((r) => { const e = maintOf(r); return !e || now - e.at > MAINT_FRESH_MS; })) checkFleet(false);
 }
-// Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a nav
-// field: `{kind:"fleet"}` stays field-less, so no mirror read site changes (docs/maintenance.md).
+// Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a
+// `mirror` field, so no mirror read site changes; back/forward reads it as `fleetPlace` (docs/maintenance.md).
 let maintSub: MaintSub = "overview";
 let maintFilter: string | null = null;
 // A project removed since its cell was clicked narrows to nothing, so its filter lapses everywhere.
@@ -151,6 +153,7 @@ function setMaintTab(sub: MaintSub, root?: string | null, board?: BoardId | null
   if (root !== undefined) maintFilter = root;
   if (sub === "overview") maintFilter = null; // the cards are every project's or nothing
   renderFleet();
+  host.renderAll();   // records the tab for back/forward; the paint above is what the scroll needs
   if (board === undefined) return;
   // Painted above, so the board is there to scroll to; a board this project has none of lands on the tab's top.
   // Focus follows, since the repaint took the focused line with it. Scoped: the dashboard draws the same ids.
@@ -165,6 +168,26 @@ export function showFleetMaint(sub: MaintSub, root: string | null = null): void 
   maintSub = sub;
   maintFilter = sub === "overview" ? null : root;
   setFleetView("maint");
+}
+
+// ---------- back/forward's place (./nav) ----------
+/** Where on this screen the stage is: what main.ts's `here()` records. */
+export function fleetPlace(): Place {
+  if (fleetView !== "maint") return { tab: "activity" };
+  const only = liveFilter();
+  return only ? { tab: "maint", sub: maintSub, only } : { tab: "maint", sub: maintSub };
+}
+/** A narrowed place is dead once its project is: Back skips it, as it skips a closed session. */
+export const fleetPlaceLive = (at?: Place): boolean => !at?.only || maintRoots().includes(at.only);
+/** Back/forward's way in. A step within this screen only moves the place, so ✕ keeps the
+ *  session it leads back to; `openFleet` would take that from the null `activeId`. */
+export function openFleetAt(at?: Place): void {
+  if (at?.tab === "maint") {
+    maintSub = MAINT_SUBS.includes(at.sub as MaintSub) ? at.sub as MaintSub : "overview";
+    maintFilter = maintSub === "overview" ? null : at.only ?? null;
+  }
+  if (at) setFleetView(at.tab === "maint" ? "maint" : "activity");
+  if (!fleetMirror()) openFleet();
 }
 
 // ---------- what the reads left behind ----------
@@ -607,7 +630,7 @@ export function openFleet(force = false): void {
 
 // Escape steps out of a project filter before it steps off the stage; ✕ always leaves.
 export function fleetEscape(): void {
-  if (fleetView === "maint" && liveFilter() !== null) { maintFilter = null; renderFleet(); return; }
+  if (fleetView === "maint" && liveFilter() !== null) { maintFilter = null; renderFleet(); host.renderAll(); return; }
   closeFleet();
 }
 

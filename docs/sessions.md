@@ -118,10 +118,18 @@ the cursor, `sameLoc`, the labels); main.ts holds the driver beside `renderAllNo
   Such a flow takes `holdNav()` (./dom) before the close and releases it in a `finally`; while
   held, `renderAllNow` records nothing, and the release schedules the pass that records where it
   landed.
+- **A tab is a place, as it is in a browser.** The fleet's Activity/Maintenance, Maintenance's
+  sub-tab and the project a tab is narrowed to, and a dashboard's Today/Maintenance with its
+  sub-tab, ride on the entry as `Loc.at` (./nav's `Place`); `here()` reads them through
+  `fleetPlace`/`dashPlace`, and `mirror` stays field-less. A switch must schedule a `renderAll`,
+  since the pass is the one recording point and a switch that only repaints its own pane is
+  recorded late or never. A step within one screen only moves the tab (`openFleetAt`,
+  `openDashboardAt`): `openFleet` would forget which session ✕ leads back to, and
+  `openDashboard` re-reads the whole project. Sorts, filter chips and enlarge overlays are not places.
 - **A step moves the cursor before it opens anything**, so the pass after it finds the stage
   already where the cursor says and records nothing; forward survives a step back.
 - **Reopen through the verb a click uses** (`openLoc`): `setActive`, `openRunGroup`,
-  `openExternal`, `openDormant`, `openDashboard`, `openFleet`, `openPrReview`. Nothing here touches
+  `openExternal`, `openDormant`, `openDashboardAt`, `openFleetAt`, `openPrReview`. Nothing here touches
   `takeStage` or `hidden`, so a new stage kind is a new `Loc` arm and a new opener, not a new path.
 - **Identity, not labels.** An external mirror is keyed by pid (its session id rotates on
   `/clear`, the same reason `mirror` carries the pid). A tiled run group is **one** location:

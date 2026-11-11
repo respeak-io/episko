@@ -102,13 +102,15 @@ import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnr
 import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashToday, openDashboard,
-  refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashPlace, dashToday, openDashboard,
+  openDashboardAt, refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, fleetEscape, maintOnBoot, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
+  closeFleet, fleetEscape, fleetPlace, fleetPlaceLive, maintOnBoot, openFleet, openFleetAt, renderFleet, renderFleetHeader,
+  setFleetHost, showFleetMaint, wireFleet,
 } from "./fleetui";
+import { MAINT_SUBS, tabName, type MaintSub } from "./maintview";
 import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
@@ -134,7 +136,7 @@ import {
 } from "./state";
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
-import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
+import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir, type Place } from "./nav";
 import { groupKey, orderedSessions, stageMembers, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
@@ -477,7 +479,11 @@ function here(): Loc | null {
     const group = stageGroup && !sessions.has(stageGroup) ? stageGroup : undefined; // a run group, not a split
     return group ? { kind: "session", id: activeId, group } : { kind: "session", id: activeId };
   }
-  return mirror ? { ...mirror } : null;
+  if (!mirror) return null;
+  // The tab a screen is on rides on the entry, never on `mirror` (docs/maintenance.md).
+  if (mirror.kind === "fleet") return { kind: "fleet", at: fleetPlace() };
+  if (mirror.kind === "dash") return { ...mirror, at: dashPlace() };
+  return { ...mirror };
 }
 // The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
 const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
@@ -488,9 +494,16 @@ function navAlive(l: Loc): boolean {
     case "session": return l.group ? [...sessions.values()].some((s) => groupKey(s) === l.group) : sessions.has(l.id);
     case "ext": return externals.some((e) => e.pid === l.pid);
     case "past": return dormants.some((d) => d.id === l.id);
-    case "fleet": return true;
+    case "fleet": return fleetPlaceLive(l.at);
     case "dash": case "review": return knownRoot(l.root);
   }
+}
+// A place as its tab strip spells it; Today and an absent place say nothing.
+function placeName(at?: Place): string {
+  if (at?.tab === "activity") return "Activity";
+  if (at?.tab !== "maint") return "";
+  const sub = at.sub && at.sub !== "overview" && MAINT_SUBS.includes(at.sub as MaintSub) ? ` › ${tabName(at.sub as MaintSub)}` : "";
+  return `Maintenance${sub}${at.only ? ` · ${basename(at.only)}` : ""}`;
 }
 function navName(l: Loc): string {
   const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
@@ -504,8 +517,9 @@ function navName(l: Loc): string {
     }
     case "ext": return cap(externals.find((e) => e.pid === l.pid)?.name ?? "");
     case "past": { const d = dormants.find((x) => x.id === l.id); return d ? cap(d.title ? `${d.project}: ${d.title}` : d.project) : ""; }
-    case "fleet": return "";
-    case "dash": case "review": return l.name;
+    case "fleet": return placeName(l.at);
+    case "dash": { const p = placeName(l.at); return p ? `${l.name} · ${p}` : l.name; }
+    case "review": return l.name;
   }
 }
 // Every location reopens through the verb a click on it would use; none touches the stage itself.
@@ -514,8 +528,8 @@ function openLoc(l: Loc) {
     case "session": if (l.group) openRunGroup(l.group); else setActive(l.id); break;
     case "ext": { const e = externals.find((x) => x.pid === l.pid); if (e) openExternal(e.session_id); break; }
     case "past": openDormant(l.id); break;
-    case "dash": openDashboard(l.name, l.root); break;
-    case "fleet": openFleet(); break;
+    case "dash": openDashboardAt(l.name, l.root, l.at); break;
+    case "fleet": openFleetAt(l.at); break;
     case "review": openPrReview(l.name, l.root, l.number); break;
   }
 }
