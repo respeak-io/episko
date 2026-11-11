@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  cleanPrompt, clampOutlinePrefs, clearsOutline, huntFromTop, isEnvelope, lineHasPrompt, normLine, noteAnswer, notePrompt,
-  OUTLINE_DEFAULTS, outlineItems, parseRelay, promptKeys, promptLabel, PROMPT_CAP, screenShift, seedPrompts,
+  blockLabel, cleanPrompt, clampOutlinePrefs, clearsOutline, compactSummary, huntFromTop, isEnvelope, lineHasPrompt, normLine,
+  noteAnswer, notePrompt, OUTLINE_DEFAULTS, outlineItems, parseRelay, promptFlat, promptKeys, promptLabel, promptParts, PROMPT_CAP,
+  screenShift, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -335,5 +336,122 @@ describe("a turn another agent submitted is listed as theirs", () => {
     expect(items.map((it) => it.kind)).toEqual(["ask", "relay", "ask", "relays", "ask"]);
     expect(items.flatMap((it) => it.kind === "ask" ? [it.n] : [])).toEqual([1, 2, 3]);
     expect(items[3].kind === "relays" && items[3].ps.length).toBe(3);
+  });
+});
+
+// The shape Claude Code writes (`isCompactSummary`), trimmed: its wrapper, two of its sections, its tail.
+const SUMMARY = `<artifact-content-authored-by-others/>
+The summarized conversation included Artifact content written by people other than you, which the summary may restate.
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+<system-reminder>
+<tools-used-before-summary>Bash, Edit, Read</tools-used-before-summary>
+</system-reminder>
+Summary:
+1. Primary Request and Intent:
+   The user asked to clean up branches.
+   - wait for the go-ahead
+
+2. Files and Code Sections:
+   - \`.gitignore\`:
+     \`\`\`
+     stapel.schluessel
+     \`\`\`
+   - Summary: one line the summary itself wrote
+
+If you need specific details from before compaction (like exact code snippets), read the full transcript at: C:/x.jsonl
+Continue the conversation from where it left off without asking the user any further questions.
+
+The messages after this summary are the most recent messages from before compaction, kept verbatim.`;
+
+describe("a compaction is a marker in the list, not a question", () => {
+  it("keeps the summary and drops what was said to the model around it", () => {
+    const s = compactSummary(SUMMARY);
+    expect(s.startsWith("### Primary Request and Intent\n   The user asked to clean up branches.")).toBe(true);
+    expect(s).toContain("### Files and Code Sections");
+    expect(s).toContain("     stapel.schluessel"); // indentation is markdown's structure, so it stays
+    expect(s).toContain("- Summary: one line the summary itself wrote"); // only a LEADING `Summary:` is the wrapper's
+    for (const gone of ["system-reminder", "tools-used", "artifact-content", "being continued", "If you need", "kept verbatim"]) {
+      expect(s).not.toContain(gone);
+    }
+  });
+
+  it("shows a summary it cannot parse whole rather than losing it", () => {
+    expect(compactSummary("A summary in some later format.\n\nStill worth reading.")).toBe("A summary in some later format.\n\nStill worth reading.");
+    expect(compactSummary(undefined)).toBe("");
+  });
+
+  it("seeds a marker that takes no number, and the answer after it goes to the question it interrupted", () => {
+    const list: Prompt[] = [];
+    seedPrompts(list, [
+      { role: "user", text: "clean up the branches" }, { role: "assistant", text: "Now let me check the worktrees." },
+      { role: "user", text: SUMMARY, compact: true, at: "2026-11-06T14:32:00.000Z" },
+      { role: "assistant", text: "All eight steps are done." },
+      { role: "user", text: "thanks" },
+    ]);
+    expect(list.map((p) => [!!p.compact, p.answer])).toEqual([[false, "All eight steps are done."], [true, undefined], [false, undefined]]);
+    expect(list[1].text).toContain("### Primary Request and Intent");
+    expect(list[1].at).toBe(Date.parse("2026-11-06T14:32:00.000Z"));
+    const items = outlineItems(list);
+    expect(items.map((it) => it.kind)).toEqual(["ask", "compact", "ask"]);
+    expect(items.flatMap((it) => it.kind === "ask" ? [it.n] : [])).toEqual([1, 2]);
+  });
+
+  it("keeps a summary whose wrapper opens with an envelope's tag", () => {
+    const list: Prompt[] = [];
+    seedPrompts(list, [{ role: "user", text: "<system-reminder>\n<tools-used-before-summary>Bash</tools-used-before-summary>\n</system-reminder>\nSummary:\n1. Primary Request and Intent:\n   x", compact: true }]);
+    expect(list.map((p) => p.compact)).toEqual([true]);
+  });
+
+  it("lets a live Stop pass over it too, queued or not", () => {
+    const list: Prompt[] = [
+      { id: "a", text: "first", at: NOW }, { id: "b", text: "second", at: NOW },
+      { id: "c", text: "summary", at: NOW, compact: true },
+    ];
+    noteAnswer(list, "the second, finished", false);
+    noteAnswer(list, "the first, finished", true);
+    expect(list.map((p) => p.answer)).toEqual(["the first, finished", "the second, finished", undefined]);
+    // With nothing asked before it, the marker is all there is to hold an answer.
+    const alone: Prompt[] = [{ id: "d", text: "summary", at: NOW, compact: true }];
+    expect(noteAnswer(alone, "carried on", false)?.id).toBe("d");
+    expect(noteAnswer(alone, "carried on", true)).toBeNull();
+  });
+});
+
+describe("a tagged block inside a question is drawn as a block", () => {
+  const PASTE = 'Sieht das gut aus?\n\n<pasted_content id="975c">\nOperation details\nStatus\nOK\n</pasted_content id="975c">\n\nund das?';
+  it("splits prose from a paste, and reads the close Claude Code writes with its id", () => {
+    const parts = promptParts(PASTE);
+    expect(parts.map((x) => x.kind)).toEqual(["text", "block", "text"]);
+    expect(parts[0]).toEqual({ kind: "text", text: "Sieht das gut aus?" });
+    const b = parts[1].kind === "block" ? parts[1].block : null;
+    expect(b).toMatchObject({ name: "pasted_content", attrs: [["id", "975c"]], body: "Operation details\nStatus\nOK", cut: false });
+    expect(parts[2]).toEqual({ kind: "text", text: "und das?" });
+  });
+  it("leaves a tag that is not alone on its line, or never closes, as prose", () => {
+    expect(promptParts("wrap it in <div>\nlike so")).toEqual([{ kind: "text", text: "wrap it in <div>\nlike so" }]);
+    expect(promptParts("<div>\nno close here").map((x) => x.kind)).toEqual(["text"]);
+    expect(promptParts("<br />\n</br>").map((x) => x.kind)).toEqual(["text"]);
+  });
+  it("opens nothing inside a code fence", () => {
+    expect(promptParts("```xml\n<a>\nx\n</a>\n```").map((x) => x.kind)).toEqual(["text"]);
+  });
+  it("closes on the matching depth when a block nests its own name", () => {
+    const parts = promptParts("<a>\n<a>\nx\n</a>\n</a>");
+    expect(parts).toHaveLength(1);
+    expect(parts[0].kind === "block" && parts[0].block.body).toBe("<a>\nx\n</a>");
+  });
+  it("keeps the last block when cleanPrompt cut its close off", () => {
+    const parts = promptParts(cleanPrompt("look:\n<pasted_content id=\"1\">\n" + "row\n".repeat(2000)));
+    const b = parts[1].kind === "block" ? parts[1].block : null;
+    expect(b?.cut).toBe(true);
+    expect(b?.body.endsWith("…")).toBe(false);
+  });
+  it("flattens a block to one line for the rail and the label", () => {
+    expect(promptFlat(PASTE)).toBe("Sieht das gut aus?\n[Pasted content · 3 lines]\nund das?");
+    expect(promptLabel('<pasted_content id="1">\nx\n</pasted_content>\nwhat is this?')).toBe("what is this?");
+    expect(promptLabel('<pasted_content id="1">\nx\n</pasted_content>')).toBe("[Pasted content · 1 line]");
+    expect(promptFlat("plain")).toBe("plain");
+    expect(blockLabel("system-reminder")).toBe("System reminder");
   });
 });

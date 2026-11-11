@@ -505,14 +505,16 @@ export interface BranchPick {
 const samePath = (a: string, b: string) =>
   a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
+const HERE_NOTE = "already checked out here";
+
 /** Where the checkout at `here` can move to, plus the remote-only branches a switch cuts a
  *  local ref from. One checkout per branch, so anything another worktree holds is listed
  *  disabled with the reason: omitting it silently made `dev` look like it had gone missing. */
-export function switchOptions(branches: BranchInfo[], worktrees: WtInfo[], here: string): BranchPick[] {
+export function switchOptions(branches: BranchInfo[], worktrees: Pick<WtInfo, "path" | "branch">[], here: string): BranchPick[] {
   const held = new Map<string, string>();
   for (const w of worktrees) if (!samePath(w.path, here) && w.branch) held.set(w.branch, basename(w.path));
   const local = branches.filter((b) => !b.remote).map((b) => b.current
-    ? { name: b.name, note: "already checked out here", disabled: true }
+    ? { name: b.name, note: HERE_NOTE, disabled: true }
     : held.has(b.name)
       ? { name: b.name, note: `checked out in ${held.get(b.name)}/`, disabled: true }
       : { name: b.name, note: b.rel || "" });
@@ -526,6 +528,52 @@ export function switchOptions(branches: BranchInfo[], worktrees: WtInfo[], here:
 }
 
 export const switchable = (opts: BranchPick[]) => opts.filter((o) => !o.disabled);
+
+/** A remembered list, told what is checked out now. A poll knows that before any re-read does,
+ *  and straight after a switch is exactly when the list is opened next. */
+export function withCurrent(opts: BranchPick[], current: string): BranchPick[] {
+  if (!current) return opts;
+  return opts.map((o) => o.name === current
+    ? { name: o.name, note: HERE_NOTE, disabled: true }
+    : o.note === HERE_NOTE ? { name: o.name, note: "" } : o);
+}
+
+/** The row a list opens or lands on: the one the cursor was on, else `current`, else the first
+ *  choosable. Never a disabled row while another can be chosen. */
+export function pickSel(shown: BranchPick[], under: string, current: string): number {
+  for (const name of [under, current]) {
+    const at = shown.findIndex((o) => o.name === name && !o.disabled);
+    if (at >= 0) return at;
+  }
+  return Math.max(0, shown.findIndex((o) => !o.disabled));
+}
+
+// `cc-branch-lists`, by checkout: what the picker shows until its re-read lands. Disposable, so
+// a row or a list that fails the shape check simply goes.
+export interface PickList { at: number; rows: BranchPick[] }
+export type PickLists = Record<string, PickList>;
+
+const LISTS_KEPT = 24;
+
+const isPick = (r: Partial<BranchPick> | null): r is BranchPick =>
+  !!r && typeof r.name === "string" && r.name !== "" && typeof r.note === "string"
+  && (r.ic === undefined || typeof r.ic === "string") && (r.base === undefined || typeof r.base === "string");
+
+export function clampPickLists(raw: Record<string, Partial<PickList> | null>): PickLists {
+  const out: PickLists = {};
+  for (const [dir, list] of Object.entries(raw)) {
+    const rows = Array.isArray(list?.rows) ? list.rows.filter(isPick) : [];
+    if (rows.length) out[dir] = { at: typeof list?.at === "number" ? list.at : 0, rows };
+  }
+  return out;
+}
+
+/** The lists with this checkout's replaced, and the longest unopened gone past the cap. */
+export function rememberPicks(lists: PickLists, dir: string, rows: BranchPick[], now: number): PickLists {
+  const next = { ...lists, [dir]: { at: now, rows } };
+  for (const old of Object.keys(next).sort((a, b) => next[b].at - next[a].at).slice(LISTS_KEPT)) delete next[old];
+  return next;
+}
 
 /** What a switch would interrupt here, in words, or "" when nothing would be. Having a session
  *  open is not enough: only work in flight blocks, and it says which kind. */

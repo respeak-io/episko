@@ -2,7 +2,7 @@
 // dispatcher. Adding a setting means adding a descriptor, not markup. It owns nothing it
 // changes: every setter arrives through the SettingsHost object main.ts hands over.
 
-import { $, dropScrim, FILE_MANAGER, IS_MAC, toast } from "./dom";
+import { $, dropScrim, FILE_MANAGER, IS_MAC, IS_WIN, toast } from "./dom";
 import { glyphIcon, icon, keyCap, type IconName } from "./svgicons";
 import {
   basename, cleanTitle, esc, escAttr, tccLabel, tilde, TITLE_DEFAULTS, titleExtra, TITLE_EXTRA_MAX,
@@ -82,6 +82,8 @@ import { deviceName, devicesByUser, parseHeaders } from "./sync";
 import { disclosure, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
 import { maintPrefs, setMaintPublic } from "./maintscan";
 import { tokenSends } from "./maint";
+import { CHANNEL, updateChannel } from "./channelhook";
+import type { Channel } from "./channel";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
 export interface SettingsHost {
@@ -132,6 +134,7 @@ export interface SettingsHost {
   // Not settings, hence no cc- key: an inspector, a reload and a reading of ./debug's ring.
   openDevtools: () => void;
   reloadUi: () => void;
+  resetCompositor: () => void;
   vitalsDrift: () => VitalsDrift | null;
   // Sync (docs/sync.md): the connection is ./synclink's, reached through here like the rest.
   syncPair: (url: string, code: string, label: string, user: string, headers: [string, string][]) => Promise<void>;
@@ -152,6 +155,8 @@ export interface SettingsHost {
   addMaintToken: (kind: string, host: string, token: string) => Promise<boolean>;
   checkMaintToken: (kind: string, host: string) => Promise<void>;
   removeMaintToken: (kind: string, host: string) => Promise<void>;
+  // Keeps the choice and checks at once (./update), so a switch is offered from here.
+  setUpdateChannel: (c: Channel) => void;
 }
 // Computed rather than fixed: with one agent installed, the useful half is that others
 // exist and where to look for them.
@@ -191,7 +196,7 @@ let host: SettingsHost = {
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
   setKeyPrefs: () => {}, setAttnPrefs: () => {}, setAutoFetchPrefs: () => {}, setAgentTools: () => {}, setFootSeg: () => {}, setFx: () => {}, setRevivePrefs: () => {},
-  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {},
+  setVitalsPrefs: () => {}, setOutlinePrefs: () => {}, setMdPrefs: () => {}, setScrollback: () => {}, openDevtools: () => {}, reloadUi: () => {}, resetCompositor: () => {},
   fullDiskAccess: () => Promise.resolve(false), openPrivacyPane: () => Promise.resolve(),
   resetAppDataPrompts: () => Promise.resolve(), privacyAsks: () => Promise.resolve([]),
   vitalsDrift: () => null,
@@ -203,6 +208,7 @@ let host: SettingsHost = {
   addClaudeToken: () => Promise.resolve(false), setupClaudeToken: () => Promise.resolve(), removeClaudeAcct: () => Promise.resolve(),
   listMaintTokens: () => Promise.resolve([]), addMaintToken: () => Promise.resolve(false), checkMaintToken: () => Promise.resolve(),
   removeMaintToken: () => Promise.resolve(),
+  setUpdateChannel: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
 
@@ -767,9 +773,26 @@ const SET_TABS: SetTab[] = [
       { kind: "action", set: "perf:reload", label: "Reload the interface", btn: "Reload", hint: "Rebuilds the window; no session is lost.",
         more: "Episko itself holds the terminals, so every pane comes back with its scrollback. This is the fix once it has gone sluggish.",
         aliases: ["restart", "refresh", "sluggish", "reset ui"] },
+      ...(IS_WIN ? [{ kind: "action" as const, set: "perf:compositor", label: "Reset the compositor", btn: "Reset", hint: "Clears Chromium's frame bookkeeping in place; nothing reloads.",
+        more: "A webview open for a day or more can pile up one record per finished animation, until hover lags by seconds. Episko does this by itself while the window is in the background; this is for when it gets slow before you leave. The window blinks once.",
+        aliases: ["lag", "hover", "slow", "stutter", "sluggish"] }] : []),
       { kind: "action", set: "perf:devtools", label: "Web inspector", btn: "Open", hint: "The webview's own developer tools.",
         more: "A heap snapshot compared against one from just after a reload is what turns “something is growing” into a name.",
         aliases: ["devtools", "console", "heap snapshot", "profile", "inspect"] },
+    ],
+  },
+  {
+    id: "updates", label: "Updates", glyph: "⇡", group: "app", sub: "Releases, or a preview of what is next",
+    controls: () => [
+      { kind: "seg", set: "channel", key: "cc-update-channel", label: "Update channel",
+        hint: `Which builds Episko offers to update to. This one is ${CHANNEL === "preview" ? "a preview" : "a release"}.`,
+        more: "A preview is one build of a feature that has not shipped, replaced each time it changes. Settings you change in it stay with the preview, and switching back is a downgrade to the latest release, after which Episko asks whether to bring along any settings the preview kept. Your sessions, spend, notes and accounts are shared by both.",
+        aliases: ["preview", "beta", "stable", "release", "channel", "update", "downgrade", "early access"], since: "0.40.0",
+        active: () => updateChannel(), isDefault: () => updateChannel() === "stable", reset: () => host.setUpdateChannel("stable"),
+        segs: () => [
+          { value: "stable", label: "Releases", sub: "Only versions that have shipped", glyph: "✓" },
+          { value: "preview", label: "Preview", sub: "A build of what is coming, before it ships", glyph: "✦" },
+        ] },
     ],
   },
   {
@@ -1868,6 +1891,7 @@ function applySetting(set: string, val: string) {
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "closeask") host.setCloseAskIdle(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
+  else if (set === "channel") host.setUpdateChannel(val as Channel);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);
   else if (set === "agent") host.setDefaultAgent(val);
   else if (set === "wtgroup") host.setWtGroup(val as WtGroup);
@@ -1907,6 +1931,7 @@ function applySetting(set: string, val: string) {
   else if (set === "priv:reset") { resetPrompts(); return; }
   else if (set === "priv:scan") { scanAsks(); return; }
   else if (set === "perf:reload") { void host.reloadUi(); return; }
+  else if (set === "perf:compositor") { host.resetCompositor(); return; }
   else if (set === "perf:devtools") { host.openDevtools(); return; }
   else if (set === "untrust") untrustProject(val);
   else if (set === "unstop") clearStopRule(val);

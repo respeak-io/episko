@@ -182,8 +182,9 @@ function histDetailHtml(h: HistEntry | undefined): string {
     : `<button class="ext-jump-btn" data-histact="resume">${icon("rotateCcw")}Resume this session</button>
        <div class="ext-note">Reopens the ${esc(h.provider)} conversation in a new pane, in <span class="mono">${esc(tilde(h.cwd))}</span>. A long conversation may compact its context first.</div>`;
   // Envelopes are dropped from both halves: a `Caveat:` preamble is not how a conversation ended.
+  // A compaction stays, as a marker (some summaries open with an envelope's tag).
   const loaded = histPreview?.key === providerSessionKey(h.provider, h.session_id)
-    ? histPreview.msgs.filter((m) => !isEnvelope(m.text.trim())) : null;
+    ? histPreview.msgs.filter((m) => m.compact || !isEnvelope(m.text.trim())) : null;
   const asked = loaded ? askedHtml(loaded, ASK_SHOW) : "";
   const preview = loaded
     ? (loaded.length

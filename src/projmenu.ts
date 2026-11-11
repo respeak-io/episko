@@ -603,7 +603,7 @@ $("ctxMenu").addEventListener("click", (ev) => {
     case "sterm": if (s) host.openShellFor(s.id); else if (dir) openTerminalIn(d ? d.project : basename(e?.repo_root || dir), dir); break;
     case "sfolder": if (dir) host.openProjectFolder(dir); break;
     case "scopy": if (dir) void copyPath(dir); break;
-    case "sswitch": if (s) void openSessionBranchPop(anchor, s.id); break;
+    case "sswitch": if (s) openSessionBranchPop(anchor, s.id); break;
     case "sdrift": if (s) void followSessionDrift(s.id); break;
     case "sdrifttrack": if (s) void followSessionDrift(s.id, "track"); break;
     // ./taskrun owns every one of these; the rerun closes this pane and opens the next itself.
