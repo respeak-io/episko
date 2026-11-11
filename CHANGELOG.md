@@ -12,6 +12,8 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! A Claude turn you interrupt with Ctrl+C or Esc goes back to idle. Claude sends no hook for an
+  interrupt, so the row used to keep pulsing amber until your next prompt.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between

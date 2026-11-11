@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { icon } from "../src/svgicons";
 import {
-  ageBucket, barRow, basename, cleanTitle, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc,
+  ageBucket, barRow, basename, cleanTitle, titleBusy, clampTitlePrefs, dialogBody, elidePath, emojiDataUri, esc,
   fmtClock, fmtDay, fmtDayLong, fmtDur, fmtSince,
   fmtDwell, fmtLatency, fmtMb, fmtRate,
   fmtShort, fmtSpan, fmtUntil, hslToHex, initials, nameHue, nfcKeys, nfcPath, normEmoji, relTime, setHome, sparkline, tccLabel, tilde, titleExtra,
@@ -246,6 +246,16 @@ describe("basename", () => {
   it("falls back to the input when there is no leaf left", () => {
     expect(basename("/")).toBe("/");
     expect(basename("")).toBe("");
+  });
+});
+
+describe("titleBusy — Claude's lead glyph", () => {
+  it("reads a spinner frame as busy and ✳ as waiting", () => {
+    for (const t of ["◐ Fixing", "◑ Fixing", "⠐ Fixing", "✶ Fixing"]) expect(titleBusy(t)).toBe(true);
+    expect(titleBusy("✳ Fixing")).toBe(false);
+  });
+  it("knows nothing about a title with neither", () => {
+    expect([titleBusy("Fixing"), titleBusy(""), titleBusy(undefined)]).toEqual([null, null, null]);
   });
 });
 
