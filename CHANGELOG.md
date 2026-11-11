@@ -12,6 +12,13 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
+## 0.40.0 — 2026-11-11
+*Settings › Updates* can put Episko on the preview channel, so an unreleased feature can be tried
+in the running app and left again. Pasted text and compacted conversations read as folds in the
+Questions sheet, a review's file tree ticks whole folders as viewed, and on Windows Episko works
+against the lag that builds up over a long day.
+
 + A review's file list has a tick on every file and folder. A folder's tick marks everything under it
   as viewed in one click, and shows a dash while only part of it is.
 + *Settings › Updates* can put Episko on the preview channel: a build of a feature that has not
