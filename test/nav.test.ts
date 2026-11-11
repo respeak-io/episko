@@ -150,7 +150,7 @@ describe("peek", () => {
 describe("labels", () => {
   it("names each kind", () => {
     expect(locKind(ses("a"))).toBe("session");
-    expect(locKind({ kind: "session", id: "a", group: "g" })).toBe("task group");
+    expect(locKind({ kind: "session", id: "a", group: "g" }), "a run's steps or a session's agents").toBe("tiled");
     expect(locKind({ kind: "ext", id: "a", pid: 1 })).toBe("external session");
     expect(locKind({ kind: "past", id: "a" })).toBe("shelved session");
     expect(locKind(dash("/r"))).toBe("dashboard");

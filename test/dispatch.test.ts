@@ -98,6 +98,8 @@ const DEPSVIEW = readFileSync(new URL("../src/depsview.ts", import.meta.url), "u
 const LANDEDVIEW = readFileSync(new URL("../src/landedview.ts", import.meta.url), "utf8");
 const ISSUEVIEW = readFileSync(new URL("../src/issueview.ts", import.meta.url), "utf8");
 const DASHBOARD = readFileSync(new URL("../src/dashboard.ts", import.meta.url), "utf8");
+// The pane's static half: the tab row and the composer are written once, never painted.
+const INDEX = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 // The pane's markup outgrew one file; the attribute contract has to follow it rather than
 // quietly stop covering whatever moved out. `EMITTERS` is held against the directory below.
 const EMITTERS = ["dashview.ts", "depsview.ts", "landedview.ts", "issueview.ts"];
@@ -182,7 +184,7 @@ describe("the project dashboard's own dispatcher", () => {
   // Row identity, read by nothing: these key a row for CSS and for reading the DOM, and
   // are deliberately not verbs. Adding one here should be a decision, not an oversight.
   const KEYS = new Set(["note", "sha"]);
-  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW + LANDEDVIEW + ISSUEVIEW).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
+  const emitted = [...new Set([...(DASHVIEW + DEPSVIEW + LANDEDVIEW + ISSUEVIEW + INDEX).matchAll(/data-dash([a-z-]+)/g)].map((m) => m[1]))];
   const probed = [...DASHBOARD.matchAll(/closest(?:<HTMLElement>)?\("\[data-dash([a-z-]+)\]"\)/g)]
     .map((m) => m[1]);
   // The ordering rules below are about ONE if-chain, so they read only the click listener:
@@ -214,6 +216,17 @@ describe("the project dashboard's own dispatcher", () => {
   it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
     const orphan = probed.filter((k) => !emitted.includes(k));
     expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-dash${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("switches Today and Maintenance from the static tab row", () => {
+    expect(INDEX).toMatch(/id="dashTabs"[\s\S]*data-dashtab="today"[\s\S]*data-dashtab="maint"/);
+    expect(clickProbed).toContain("tab");
+  });
+
+  it("asks Maintenance's prober before any data-dash* probe, so a card's click is never the pane's", () => {
+    const ask = CLICK.indexOf("if (maintClick(t, ");
+    expect(ask).toBeGreaterThan(0);
+    expect(ask).toBeLessThan(CLICK.indexOf('closest<HTMLElement>("[data-dash'));
   });
 
   it("probes a branch row's own controls BEFORE the row that contains them", () => {
@@ -323,6 +336,11 @@ describe("the fleet dashboard's own dispatcher", () => {
     expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-fl${k}`).join(", ")}`).toEqual([]);
   });
 
+  it("switches the view from the head's own segment", () => {
+    expect(emitted).toContain("view");
+    expect(probed).toContain("view");
+  });
+
   it("probes a session row's ✕ BEFORE the row that contains it", () => {
     // The ✕ is a child of the row that carries data-flsel, so a row-first probe ships a close
     // button that selects the session instead of closing it.
@@ -337,6 +355,127 @@ describe("the fleet dashboard's own dispatcher", () => {
       probed.indexOf("proj"),
       `[data-flproj] is probed at position ${probed.indexOf("proj")} of ${probed.length}; everything after it (${probed.slice(probed.indexOf("proj") + 1).join(", ")}) is unreachable`,
     ).toBe(probed.length - 1);
+  });
+});
+
+// Maintenance's cards sit on the fleet and the project dashboard, so their clicks are neither
+// pane's: `maintview.ts` writes `data-mt*`, `maintui.ts`'s `maintClick` is the one prober, and
+// each host's listener calls it first. The name block is a card's door, so it goes last.
+
+const MAINTVIEW = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
+const MAINTUI = readFileSync(new URL("../src/maintui.ts", import.meta.url), "utf8");
+
+describe("Maintenance's own dispatcher", () => {
+  // Read off an element that already matched: a verb's project, a card's name and a line's key.
+  const PAYLOAD = new Set(["root", "name", "key"]);
+  const emitted = [...new Set([...MAINTVIEW.matchAll(/data-mt([a-z]+)="/g)].map((m) => m[1]))];
+  const probed = [...MAINTUI.matchAll(/closest<HTMLElement>\("\[data-mt([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves", () => {
+    expect(emitted.length).toBeGreaterThan(4);
+    expect(probed.length).toBeGreaterThan(4);
+  });
+
+  it("keeps the dashboard's and the fleet's prefixes out of its markup", () => {
+    expect(MAINTVIEW).not.toContain("data-dash");
+    expect(MAINTVIEW).not.toContain("data-fl");
+    expect(FLEETVIEW).not.toContain("data-mt");
+  });
+
+  it("emits no attribute it never probes for — that is a button that does nothing", () => {
+    const dead = emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k));
+    expect(dead, `emitted but never probed: ${dead.map((k) => `data-mt${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes for nothing it never emits — a stale probe swallows the click below it", () => {
+    const orphan = probed.filter((k) => !emitted.includes(k));
+    expect(orphan, `probed but never emitted: ${orphan.map((k) => `data-mt${k}`).join(", ")}`).toEqual([]);
+  });
+
+  it("probes a card's verbs BEFORE the card's door, and the door LAST", () => {
+    expect(probed).toContain("verb");
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("proj"));
+    expect(probed.indexOf("proj"), "[data-mtproj] must be probed last").toBe(probed.length - 1);
+  });
+
+  it("wires the facet tabs and the dashboard's cards: each probed, each before the door", () => {
+    // url and copy are Coverage's: a forge's settings page per project, and a fix command; sev is
+    // the Security strip's filter; pick the tab's project picker and find a card line.
+    // door is a board number's (./maint boardDoor): a branch filter, a queue chip, a fetch.
+    // sweep is the advisory sweep's: submit, a row's Patch or agent check, the report and a recent run.
+    // host is a [deploy] host's own doors: Allow and Disallow, a card's Check, and SSH; token a Coverage row's Settings › Accounts.
+    for (const k of ["tab", "cell", "pick", "find", "view", "across", "deploy", "prod", "url", "copy", "sev", "door", "sweep", "host", "token"]) {
+      expect(emitted, `data-mt${k} is never emitted`).toContain(k);
+      expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
+    }
+    // A tab row's name is the project's door, and the verb beside it must win over it.
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("proj"));
+  });
+
+  it("wires a session's ticks and bar, a tick before the line it sits in", () => {
+    for (const k of ["tick", "picknone", "session"]) {
+      expect(emitted, `data-mt${k} is never emitted`).toContain(k);
+      expect(probed.indexOf(k), `data-mt${k} must be probed before data-mtproj`).toBeLessThan(probed.indexOf("proj"));
+    }
+    expect(probed.indexOf("tick"), "a tick sits inside its line").toBeLessThan(probed.indexOf("verb"));
+    expect(probed.indexOf("tick")).toBeLessThan(probed.indexOf("find"));
+    // The dashboard's To do rows stay tickless: the selection is the fleet's alone.
+    expect(MAINTVIEW).toMatch(/v\.rows\.map\(\(f\) => findingHtml\(f, undefined, true\)\)/);
+    expect(FLEETUI).toContain("maintClick(t, maintHost, e.shiftKey)");
+    expect(FLEETUI, "a closing note is optional, so tsc would not catch dropping it").toContain("host.session(label, rows, notes)");
+    expect(DASHBOARD).not.toMatch(/lines: \(\) =>/);
+    expect(MAINTUI).toContain('t.matches("[data-mttick]")');
+  });
+
+  it("acts on every door a host card or the Runs on line draws", () => {
+    for (const act of ["check", "ssh"]) {
+      expect(MAINTVIEW, `data-mthost="${act}" is never drawn`).toContain(`data-mthost="${act}"`);
+      expect(MAINTUI, `maintui ignores ${act}`).toContain(`act === "${act}"`);
+    }
+    expect(MAINTVIEW).toContain(`data-mthost="${"$"}{on ? "allow" : "deny"}"`);
+    for (const act of ["allow", "deny"]) expect(MAINTUI, `maintui ignores ${act}`).toContain(`act === "${act}"`);
+  });
+
+  it("steps out of a project filter on Escape before it leaves the fleet", () => {
+    const arm = MAIN.split("\n").find((l) => /e\.key === "Escape" && fleetMirror\(\)/.test(l)) ?? "";
+    expect(arm).toContain("fleetEscape()");
+    expect(arm).not.toContain("closeFleet()");
+    const from = FLEETUI.indexOf("export function fleetEscape");
+    const esc = FLEETUI.slice(from, FLEETUI.indexOf("\n}", from));
+    expect(esc, "Escape must widen the filter").toContain("maintFilter = null");
+    // The guard asks what is drawn: a lapsed filter must not swallow the first Escape.
+    expect(esc).toMatch(/fleetView === "maint" && liveFilter\(\) !== null/);
+    expect(esc.indexOf("maintFilter = null")).toBeLessThan(esc.indexOf("closeFleet()"));
+  });
+
+  it("lets a card line's verb win over the line, and opens the line on Enter as on a click", () => {
+    // Patch prefills and nothing else: the row's tab switch must never ride along on its verb.
+    expect(probed.indexOf("verb")).toBeLessThan(probed.indexOf("find"));
+    // The line's text is the focusable door, so the verb stays a control of its own and not one nested in a button.
+    expect(MAINTVIEW).toContain('<span class="t"${go ? ` tabindex="0" role="button"` : ""}>');
+    expect(MAINTVIEW).not.toMatch(/role="button" data-mtfind=/);
+    expect(MAINTUI).toContain('t.matches("[data-mtfind] > .t")');
+    expect(FLEETUI).toContain('$("fleetPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); })');
+    // The dashboard's To do rows are the same doors, onto its own sub-tabs.
+    expect(DASHBOARD).toContain('$("dashPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); })');
+    expect(MAINTVIEW).toMatch(/v\.rows\.map\(\(f\) => findingHtml\(f, undefined, true\)\)/);
+  });
+
+  it("opens a dashboard sub-tab where the fleet opens a tab, and never reaches for an id the fleet also draws", () => {
+    const at = DASHBOARD.indexOf("const maintHost: MaintHost = {");
+    const hostSrc = DASHBOARD.slice(at, DASHBOARD.indexOf("\n};", at));
+    expect(hostSrc).toMatch(/openTab: \(sub, _root, board\) => openMaintSub\(sub, board\)/);
+    expect(hostSrc).toMatch(/openCover: \(facet\) => openMaintSub\(FACET_TAB\[facet\], null, true\)/);
+    expect(hostSrc, "all projects lands narrowed to this project").toMatch(/openAcross: \(sub\) => host\.openFleetMaint\(sub, root\(\)\)/);
+    // Both panes draw mtb-<board>: a document-wide lookup would find the hidden pane's.
+    for (const src of [DASHBOARD, FLEETUI]) expect(src).not.toMatch(/document\.getElementById\(`mtb-/);
+  });
+
+  it("is asked before the fleet's own probes, so a card's click never reaches a data-fl* row", () => {
+    const pane = FLEETUI.slice(FLEETUI.indexOf('$("fleetPane").addEventListener("click"'));
+    const ask = pane.indexOf("if (maintClick(t, ");
+    expect(ask).toBeGreaterThan(0);
+    expect(ask).toBeLessThan(pane.indexOf('closest<HTMLElement>("[data-fl'));
   });
 });
 

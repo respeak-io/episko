@@ -129,6 +129,15 @@ part, the other claims, fetches, completes and must end with the same bytes, bot
 the app and server agree on the handoff channel. No tokens; a few seconds. Invites are single-use, so mint fresh
 ones for every run.
 
+`live_glab_reads_a_public_gitlab_project` is GitLab's half of Maintenance: it reads
+`gitlab-org/cli` through the real `glab` exactly as a scan does, and asserts that the REST
+shapes `gitlab-ci` parses (the project's default branch, its pipeline list) and the GraphQL
+answer `gitlab-work` parses still come back, with the `-f` variables passed through. A
+GitLab or glab release can change any of those, and every one fails silently into a muted
+cell. **It needs `glab` on PATH and network access to gitlab.com, and no sign-in**: the
+project is public and a signed-out glab costs only the review count. Without glab, add
+`--skip live_glab_` to the pass rather than reading its failure as a regression.
+
 It does **not** cover the statusLine half (`-p` is non-interactive), the
 `~/.claude/sessions` registry, or `PermissionRequest`. Those are the click-through
 below.
@@ -142,6 +151,16 @@ user reports.
 A tour chapter carrying a `since` (./tour) names the version it belongs to, and *What's
 new* offers it on that string alone. If the release is cut as anything else, the chapter
 is never offered and nothing says so — check the `since` against the version being bumped.
+
+### 3. Refresh the Public Suffix List
+
+`src-tauri/data/public_suffix_list.dat` is vendored verbatim and goes stale on its own: a
+platform suffix newer than the copy is sent to its TLD's registry by `rdap-domain` and drawn
+as a gap. Download it again from `https://publicsuffix.org/list/public_suffix_list.dat`
+(nowhere else), keep its MPL-2.0 header and `VERSION` line, and run `cargo test maint_rdap`:
+`the_list_is_upstreams_and_parses_whole` fails on a truncated download. If
+`the_supplement_never_shadows_iana` fails after re-recording `rdap-dns.json`, IANA now lists
+that TLD: drop it from `UNLISTED`.
 
 ---
 
@@ -538,6 +557,164 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       nearest ref above it, so a stale side branch further up must not claim it, and a
       release tag must not name a stretch of history at all. This wording is a claim
       about ancestry; if it reads wrong, it is wrong.
+
+### Maintenance
+
+- [ ] **Booting onto Maintenance scans nothing; switching to it does.** On the fleet, pick
+      *Maintenance* in the head, wait for the cards, then quit and relaunch. The app must open on
+      Maintenance with the head saying *Not checked this session · Check* and no cards under it,
+      and stay that way: a card appearing on its own means a boot started a sweep. Switch to *Activity* and back:
+      that one scans (every card shimmers, then fills), and a second switch within ten minutes
+      does not. ⟳ always does.
+- [ ] **Unknown is never green.** A folder that is not a repo says *not a git repository*, a repo
+      with a `Jenkinsfile` says *can't check (Jenkins)*, and only a facet something read draws the
+      grey dot. A card's *Push ↗* / *Tidy ↗* starts an agent with the brief typed and **not sent**.
+- [ ] **A project nobody read stays on screen.** After a check, switch one project's GitHub
+      account (or add a project) and switch back to Maintenance within ten minutes. Its card must
+      stay, every cell a dash, *not checked yet* under its name, and *Nothing needs you* must not show.
+- [ ] **A cell opens its tab, narrowed; a row's verb prefills and never sends.** Click a red CI
+      cell: *Delivery* opens with *only <project>* and that project's rows. Press Esc once: every
+      project's rows come back and the fleet stays. Press it again: the fleet closes (when a session
+      is open). On any tab, a row's *Fix ↗* / *Patch ↗* / *Set up ↗* starts an agent with the brief
+      typed and **not sent**, and *Review* on a Work row opens that project's dashboard.
+- [ ] **The project tab hides Today, never rebuilds it.** On a project dashboard, type a note in
+      *What's next here?* without sending it, open *Maintenance*, wait for its cards, go back to
+      *Today*: the draft is still there, and *Landed* draws as many rows as before (not three).
+      On Maintenance, ◨ is greyed and ⌘I does nothing; on Today it folds the queue again.
+- [ ] **Switching project mid-scan shows no foreign findings.** Open Maintenance on a GitHub
+      project and, while its cells still shimmer, open another project from the sidebar: it lands on
+      *Today*. Switch it to Maintenance: every line and card names that project only, and a cell
+      click scrolls to its card. A Dependencies ⤢ opens the overlay; Git hygiene's ⤢ opens Branches;
+      *all projects* opens the fleet's Maintenance on that tab.
+- [ ] **A maintenance session tiles.** On the fleet's Maintenance Overview, tick 3 lines across 2
+      projects (one *Push* or *Tidy* among them) and press *Brief 3 agents*. Three tiles appear in
+      ticked order whatever order their worktrees finished in, each prefilled, none sent. The
+      others stand in `maint/<line>` worktrees and the *Push* or *Tidy* in its project's folder.
+      Back returns to the fleet and forward to the mosaic. Press Back while worktrees are still
+      being cut: the fleet stays on stage as the remaining panes land, and forward shows them all.
+      A member's sidebar row shows one pane, and its ⊞ tag tiles them again. Closing one tile keeps
+      the mosaic. Ticking a line whose `maint/<line>` checkout already has a live agent says so in
+      the bar and disables Start. Scroll to the last card and tick a line: the view stays put.
+      Remove a `maint/<line>` worktree, keep its branch and tick that line: the bar says *earlier
+      fix branch* and the brief says to read it, not that it was cut from the trunk. In an advisory
+      sweep with one project's agent already open, *Brief N agents* starts the others and the toast
+      names that one. With an external terminal engine the bar says why and Start is disabled.
+      Press Enter in one tile and confirm its agent starts on the brief, with no second prompt
+      needed.
+- [ ] **A host's card connects only when asked, and its doors only type.** Name a host in a
+      project's `[deploy]` and open *Servers*: its card says *not allowed on this machine* and
+      offers only *Allow*. Allow it: nothing connects until *Check*, then the card fills (disk,
+      updates, reboot, containers, load, uptime), coloured only where a part needs you, a `?`
+      for what could not be read. *SSH* opens a shell with `ssh <alias>` typed and **not sent**,
+      *Brief* starts an agent with the brief typed and **not sent**, and *Disallow* puts the card
+      back. Two projects naming one host draw one card, and a line its Brief does not say stays
+      below the boards with its own *Fix*. Allow a host, change `[deploy] host` in the file by hand
+      and press *Check* without rescanning: nothing connects to the new name, the toast says so,
+      and the card now names it and offers *Allow*.
+- [ ] **Host and production lines stay in the folder.** Tick one host line and one address line:
+      the bar says *2 in their projects' folders* and no `maint/` worktree appears. Tick a second
+      line of the same host: the bar says another ticked line has that host's brief and Start is
+      disabled until it is unticked.
+- [ ] **Flaky jobs.** On *Delivery* the board states its window, the *Last* link opens that job's
+      log and *Fix* prefills an agent and does not send. Refuse the token the re-run read needs
+      (or point at a repo it cannot see): the board goes and Coverage has a row saying why.
+- [ ] **Deployments.** On *Delivery* the *Behind* column names the project's trunk (on a repo
+      whose trunk is `dev`, not *main*). A number opens Today's Landed, a failed attempt's link
+      opens its log, and an environment idle past 180 days is listed but colours nothing.
+- [ ] **Since last week.** The band appears only once a project has two marks a week apart, a
+      line opens its board, and opening the view triggers no scan of its own. A project with a
+      registry read and no update bot (a GitLab repo with a lockfile) adds nothing to *Not compared*.
+- [ ] **Since last week's Phase 2 figures.** These need seven days of use on a build with them:
+      the first week after an update compares nothing new and must add nothing to *Not compared*.
+      After it, on a project with a flaky job, a production deploy, a registry this machine
+      opted into and a `[deploy] sentry` asked with *Check prod* and then ⟳ on both days (a
+      click writes no mark; the scan after it, within a day, carries its answer), the band counts
+      jobs turned flaky (plain), *deployed to production*, majors closer or further (plain),
+      a failed production deploy in red and new errors in amber, each line opening the Flaky
+      jobs, Deployments, Packages or Errors board narrowed to its project. An error gone from
+      the list reads *cleared*, never *resolved* or *fixed*, and an old one firing again reads
+      *seen again*, plainly. A `[deploy] envs` committed during the week reads as no deploy. A GitLab project and a project with
+      no `[deploy]` add nothing to *Not compared*, and neither does a Sentry project not asked
+      this week.
+- [ ] **Packages.** The Settings switch and the *Check with* door both name who receives what.
+      *Behind* opens the dependency view's *Out of date* tab, *Upgrade* prefills and does not
+      send, and a floor shows as `?` or `+`. With a registry slow enough to pass 60 s (a
+      throttled network), the read stops, the cell carries a `+`, and a second check gets further.
+      Press *Check prod* during a long scan: it answers ahead of the scan's queue.
+- [ ] **Domains.** On a project whose `[deploy]` names a public address (`https://app.example.com`),
+      the dashboard's Coverage offers *Check with RDAP* with the sentence naming the registered
+      domain as all that leaves, and *Check prod*'s tip does **not** name RDAP. Click it: the
+      Runs on card gains a *Domain* row with its expiry and registrar (the name opens the
+      registrar's page), *Servers* draws the **Domains** board, and the Prod cell stays *not
+      checked* until *Check prod* answers too. Add `http://10.0.0.5` and `https://x.vercel.app`
+      to `urls` and check with RDAP again: neither is asked, and the Prod cell's tip says why,
+      before *Check prod* and after. Turn on *Ask RDAP when Maintenance checks* in Settings › On
+      its own and rescan: the domain is read with no click. On a project whose only domain is a
+      `.de`, the rescan leaves its Prod cell *not checked*, never *unavailable*. Set
+      `[maintenance.thresholds] domain_warn_days = 3650`: the cell turns amber with a
+      *domain 13mo*-style word, the line opens the Domains board, its *Fix* prefills a brief that
+      says *Change nothing* and does not send, and a ticked session runs it in the project's
+      folder. A registration inside 30 days is amber by default, so it is listed under *Coming
+      up* in the Overview's since-band, never in an all-clear.
+- [ ] **Errors in production.** On a project whose `[deploy]` says `sentry = "<org>/<project>"`
+      and on a machine with no token saved, the Runs on card has an *Errors* line reading *not
+      checked*, and *Check prod*'s tip names Sentry and says the project's name and the token
+      saved for its host are what it sends. Click *Check prod*: the line and the Prod cell say
+      *no token*, no request was made, and Coverage's row carries *Add token…*, which opens
+      Settings › Accounts lit at *Sentry tokens* and connects nowhere. Paste a user auth token
+      with `event:read`, `project:read` and `org:read` (from the *Make one at* page): the field
+      empties, the row lists `sentry.io` with *works as <you>*, and closing and reopening Settings
+      never shows the token again; a token missing a scope says which. Before the real one, save a
+      made-up token for `sentry.io` and click *Check prod*: the cell says *token refused*, and the
+      Coverage row on the dashboard and on the fleet's Servers tab carries *Replace token…*, which
+      opens the same place; a token without `org:read` reads *token scope* with that door too.
+      Back on the dashboard with the real token, *Check prod* again: an issue first seen since the
+      newest release, or regressed, turns the cell amber (*1 new since 1.4.0*), one fatal or
+      reaching 100 users red, a backlog alone *N unresolved* in plain text, and a quiet project
+      with no event in 14 days *silent*, never the grey dot. With a release older than 14 days, an
+      issue that fires daily but was first seen before it stays backlog, never *new*: compare its
+      *First seen* in Sentry's own issue page. Set `sentry_environment = "nope"`: the row names the
+      missing environment rather than the project or the token.
+      The *Fix* on the `N new errors` line (on the Servers tab's Errors board) prefills a
+      brief naming each issue with its link and saying to find the cause, add a failing test and
+      fix it, touching nothing in the tracker; it is not sent, and ticked in a session it runs on
+      `maint/prod-errors-new`. Set `sentry_url = "http://sentry.example"` in
+      `[maintenance.params]`: the row says it is not https and nothing is asked; set it to
+      `https://de.sentry.io`: the `sentry.io` token is used; set it to `https://docs.sentry.io`: the
+      row says it is not Sentry's API and nothing is asked. Settings › Accounts' *Sentry tokens* text
+      names every click that sends the token (Check prod, a Coverage row's Run, Fix, Brief N agents,
+      Check, Save and check). Click a saved row's *Check*, then type into the *Host* field before it
+      answers: the answer lands and the caret stays where it was. Paste a token without saving,
+      close Settings and reopen it: the field is empty. *Forget* the token (it asks first): the
+      next *Check prod* says *no token* again, and after a reload (Ctrl+R) before any scan the
+      card, the Errors board and Coverage show nothing the old token read. On Windows the token sits sealed under
+      `%APPDATA%\io.respeak.episko\maint-tokens\sentry\` (not readable as text); on macOS it is in the
+      login keychain under `episko-sentry-token`.
+- [ ] **The Errors board and Fix with stack traces.** With the real token and a checked project,
+      the fleet's Servers tab draws **Errors** between Hosts and Addresses: one row per linked
+      project, its *Unresolved* and *New or back* numbers opening the tracker's issue stream (one
+      new issue opens that issue's page), the newest release with its age, the worst issue's id
+      opening its page, and *Fix*. A project with only a backlog is a plain number and no *Fix*; a
+      zero is the grey dot, but a tracker no event reached in 14 days reads *silent*. Its card line (*N new errors since …*) now opens the tab scrolled to
+      this board, and the line is no longer listed again below the boards. Narrow to the project
+      (or open its dashboard's Servers sub-tab): the board adds an issue table, needy ones first
+      with a *new*, *back* or *rising* chip, *Events in 14d* and *Users in 14d* beside the issue's
+      own *First seen*, and *N more* past ten. Hover *Fix*: its tip says it reads the
+      latest event of the 5 worst issues from Sentry first, sending their ids and the token. Click it
+      twice quickly: one *Reading the stack traces…* toast, then *Still reading the stack traces*,
+      and one pane, whose prefilled brief gives each of those issues its
+      exception (type and message), the project's own frames as `file:line in function`
+      innermost last, how many other frames were left out, and nothing of the event's user, tags,
+      request or variables; issues past the fifth say *only the 5 worst issues' are read*. It is
+      not sent. Take the machine offline and click *Fix* again: the brief still opens, each issue
+      saying *stack trace not read:* with curl's own reason. Tick the line on the Overview
+      and hover *Brief 1 agent*: its tip says the same under that row. Press it: the pane's brief
+      carries the same traces (or the same reason).
+      No frame or message of a trace appears in `cc-maint`, `cc-maint-scan` or `episko.log`.
+- [ ] **The keyboard survives a repaint.** Tab to a tick and press Space: focus stays on it. Tab
+      to a host's *Check* and press Enter: when it turns to *checking…*, focus lands on what stands
+      there rather than on nothing, and Tab carries on from there. Scroll a wide board sideways and
+      let an answer land: it stays where you left it.
 
 ### Sessions Episko doesn't own
 

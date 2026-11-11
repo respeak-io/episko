@@ -2,9 +2,9 @@
 // function here that writes to a session. See test/grouping.test.ts.
 
 import { basename } from "./format";
-import { checkoutDir, sameDir } from "./gitwatch";
+import { checkoutDir, sameCheckout, sameDir } from "./gitwatch";
 import {
-  bgWaiting, hasSessionState, isAgent, paneDir, providerSessionKey,
+  bgWaiting, hasSessionState, isAgent, isExited, paneDir, providerSessionKey,
   type ExtSession, type LiveSess, type Phase, type Restorable, type Sess, type WtHead,
 } from "./types";
 import { attnCleared, attnOrder } from "./attn";
@@ -265,18 +265,52 @@ export function groupSummary(projects: ProjGroup[]): GroupSummary {
   }
   return { count, dirty, urgent };
 }
-// ---------- the stage's groups: run chains and split shells ----------
-// A `dependsOn` chain is one pane per step; folding them is presentational only. A session's
-// split shells (⌘T, `Sess.splitOf`) share its stage the same way, keyed by the session's own id.
+// ---------- the stage's groups: run chains, agent groups and split shells ----------
+// A `dependsOn` chain is one pane per step; folding them is presentational only. A maintenance
+// session's panes (`Sess.group`) tile the same way and are never folded: they sit under their own
+// projects. A session's split shells (⌘T, `Sess.splitOf`) share its stage, keyed by its own id.
 
-// The group a pane is a member of, if any: its chain, or the session it was split beside.
-export const stageKeyOf = (s: Sess): string | undefined => s.run?.groupId ?? s.splitOf;
+// A chain or an agent group, never a split: a split's anchor is the member of nothing.
+export const groupKey = (s: Sess): string | undefined => s.run?.groupId ?? s.group?.id;
+// The group a pane is a member of, if any: that one, or the session it was split beside.
+export const stageKeyOf = (s: Sess): string | undefined => groupKey(s) ?? s.splitOf;
 export const inStageGroup = (s: Sess, gid: string): boolean => s.id === gid || stageKeyOf(s) === gid;
 // In insertion order, which is launch order and the order the tiles stack in.
 export function splitShells(anchorId: string, all: Iterable<Sess> = sessions.values()): Sess[] {
   const out: Sess[] = [];
   for (const s of all) if (s.splitOf === anchorId) out.push(s);
   return out;
+}
+// Tile order: launch order for a chain, ticked order for a session however its worktrees finish.
+export function stageMembers(gid: string, all: Iterable<Sess> = sessions.values()): Sess[] {
+  const rank = (s: Sess) => s.run?.startedAt ?? s.group?.n ?? 0;
+  return [...all].filter((s) => groupKey(s) === gid).sort((a, b) => rank(a) - rank(b));
+}
+// A chain shows its failure, else its newest step. A session keeps the tile being read, so a
+// late member never pulls the keyboard off it.
+export function groupFocus(members: readonly Sess[], active: string | null): Sess | null {
+  if (!members.length) return null;
+  if (!members[0].run) return members.find((m) => m.id === active) ?? members[0];
+  return members.find((m) => m.phase === "error")
+    ?? members.reduce((a, b) => ((b.run?.startedAt ?? 0) > (a.run?.startedAt ?? 0) ? b : a));
+}
+// The first member takes the stage. A later one re-tiles only while a session holds it: leaving for
+// a mirror keeps `stageGroup`, and a tile landing a moment later must never pull you back.
+export const memberTakesStage = (first: boolean, gid: string, onStage: string | null, active: string | null): boolean =>
+  first || (active !== null && onStage === gid);
+// A tile's caption. A group's members need their project and their line: five panes all called
+// "Claude Code" say nothing, and a REPL titles itself that until a first prompt gives it more.
+export function paneCapName(s: Sess): string {
+  if (s.run) return s.run.label;
+  if (s.group) return `${s.project} · ${s.prompts.length && s.title ? s.title : s.group.what}`;
+  return s.title || (s.kind === "shell" ? "shell" : s.provider ?? "pane");
+}
+// Whether an agent is at work in the checkout holding `path`, pane or external, over a repo's `heads`.
+export function checkoutBusy(path: string, heads: readonly WtHead[], all: Iterable<Sess> = sessions.values(),
+  exts: readonly ExtSession[] = externals): boolean {
+  const here = (dir: string) => sameDir(dir, path) || sameCheckout(dir, path, heads);
+  for (const s of all) if (isAgent(s) && !isExited(s) && here(paneDir(s))) return true;
+  return exts.some((e) => here(e.cwd));
 }
 // Where ⌘T from `s` opens: beside it, or beside the session `s` itself is split from. A task
 // is never an anchor (its pane is a run's output, not a workspace), nor an external pane (none).

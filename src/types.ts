@@ -427,6 +427,7 @@ export interface Sess {
   adopt?: { pending: { seq: number; bytes: Uint8Array }[] } | null;
   provider: string | null; // AgentCli.id for an agent pane, null for shells/tasks
   splitOf?: string; // shells only: the session it was opened beside (⌘T); shares its stage and is never `activeId`
+  group?: { id: string; label: string; what: string; n: number }; // agent panes started together (a maintenance session): tiled like a run's steps, never persisted
   // copied at launch so the session stays self-describing if the catalogue changes
   capabilities: AgentCapability[];
   run?: { // task panes only

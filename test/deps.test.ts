@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  advisoryBrief, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depSilent, depTally,
+  advisoryBrief, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depReason, depSilent, depTally,
   fixKind, groupAdvisories, outdatedBrief, outRows, parseVer, prBlockers, prBrief, prFor,
   prPackages, prReady, renovateDashboard, satisfies, sevRank, verifyCommands,
   type DepAlert, type DepManifest, type DepPr, type OutdatedRun,
@@ -75,6 +75,16 @@ describe("ranges", () => {
     expect(satisfies("1.9.0", "1", "cargo")).toBe(true);
     expect(satisfies("1.9.0", "1", "npm")).toBe(false);
     expect(satisfies("2.0.0", "1", "cargo")).toBe(false);
+  });
+
+  it("reads an advisory sweep's ranges, in the ecosystem names the advisory database uses", () => {
+    // crates.io is how an advisory spells cargo's: a hand-typed bare version there means that version, never ^.
+    expect(satisfies("1.9.0", "1.2.3", "crates.io")).toBe(false);
+    expect(satisfies("1.2.3", "1.2.3", "crates.io")).toBe(true);
+    expect(satisfies("1.6.0", ">=1.0.0 <1.6.1", "crates.io")).toBe(true);
+    expect(satisfies("15.3.2", ">=15.0.0 <15.5.6 || <14.2.33", "npm")).toBe(true);
+    expect(satisfies("4.5.0", "<=4.5.0")).toBe(true);
+    expect(satisfies("1.0.0", "==1.0.0.post1", "PyPI")).toBeNull();
   });
 
   it("answers null for a shape it does not model, rather than guessing either way", () => {
@@ -263,6 +273,15 @@ describe("the tally the card reads", () => {
     // A blocked one is not: it could not answer anything either.
     expect(depSilent(empty, [{ id: "pnpm", label: "pnpm outdated", cmd: "c", blocked: "not on PATH" }])).toBe(true);
   });
+
+  it("says why the GitHub half is absent, and nothing when it is not", () => {
+    const rep = (enabled: boolean, reason: string | null = null) => ({ available: true, reason, alerts: [], prs: [], enabled });
+    expect(depReason(false, rep(true), "no GitHub")).toBe("no GitHub");
+    expect(depReason(true, rep(false, "alerts are off"), "no GitHub")).toBe("alerts are off");
+    expect(depReason(true, rep(false), "no GitHub")).toBe("");
+    expect(depReason(true, rep(true), "no GitHub")).toBe("");
+    expect(depReason(true, null, "no GitHub")).toBe("");
+  });
 });
 
 describe("the brief the agent is sent", () => {
@@ -294,6 +313,16 @@ describe("the brief the agent is sent", () => {
     const b = advisoryBrief(groupAdvisories([alert()], ctx.manifests), { ...ctx, verify: [] });
     expect(b).toContain("no test or check task");
     expect(b).not.toContain("pnpm test");
+  });
+
+  it("names the work, never who reported it", () => {
+    const url = "https://github.com/respeak-io/episko/security/dependabot/7";
+    const b = advisoryBrief(groupAdvisories([alert({ url }), alert({ ghsa: "GHSA-b" })], ctx.manifests), ctx);
+    expect(b.split("\n")[0]).toBe("Work through 2 security advisories in respeak-io/episko.");
+    expect(advisoryBrief(groupAdvisories([alert()], ctx.manifests), ctx)).toMatch(/^Work through 1 security advisory in/);
+    // The link is the reporter's own page; only the prose is held to the rule.
+    expect(b).toContain(url);
+    expect(b.replace(/https?:\/\/\S+/g, "")).not.toMatch(/dependabot|renovate/i);
   });
 
   it("says out loud when nothing declares the package", () => {

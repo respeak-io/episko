@@ -8,6 +8,8 @@
 
 **Three columns, left to right, each answering one question**: `#dashHere` (*where you are* — the sessions running here, the verb tiles, the branch and its position, the checkouts), `#dashMoved` (*what moved* — the *Since you were last here* band, the working set, and *Landed*), `#dashNext` (*what's next* — one ranked queue). The reading order is the decision order, which is why the queue is last and the verbs are first.
 
+**Two tabs, Today and Maintenance, and the columns above are Today** (`#dashTabs`, static markup probed as `data-dashtab`). Maintenance (`#dashMaint`, docs/maintenance.md) is the weekly question, *what is rotting while nobody looks*: the fleet card's seven-facet strip and its lines, then Delivery, Dependencies, Git hygiene and Coverage cards. Four rules hold it together. **`.db-cols` is hidden, never rebuilt** (`#dashPane.tab-maint`), so a `#dashJot` draft survives a look at Maintenance. **The tab is not persisted and resets to Today on a project switch**: the pane is opened for what moved. **The first look per open scans that one project** (`loadMaint`, under the `root() !== r` guard, with its own flag in `aria-busy`); `renderDash` only reads `./maintscan`'s cache, which the fleet shares, and the tab's red/amber count is drawn from that cache without ever asking. **Its cards emit only `data-mt*`**, and the pane's listener calls `maintClick` before any `data-dash*` probe, so a card's ⤢ reaches the existing `deps` and `branches` overlays through `MaintHost.openView` rather than through this pane's own attribute. A cell scrolls to its card; each card's *all projects* opens the fleet's Maintenance on its tab (`DashHost.openFleetMaint`).
+
 Split: **`dash.ts` pure and tested** (`projectTier`, `dashDays`, `dashPulse`, `projectCost`, `densePerDay`, `sinceFacts`), **`queue.ts`** the queue's rules, **`graph.ts`** `foldBots`; **`dashview.ts`** and **`landedview.ts`** data → string; **`dashboard.ts`** owns the pane, IPC, summary queue, events. Rides the `mirror` pointer (`kind: "dash"`) rather than a second flag. **Nothing runs until a project is clicked**: no probe at startup, nothing on `renderAll`.
 
 **Three gates, and they are not the same gate** (`projectTier`, one `project_facts` call):
@@ -68,6 +70,14 @@ Easy to get wrong:
   does nothing, `unkeep` is an undo on a keep list and has no row in a queue of open work, and
   `share` writes a committable file and the card carries no `canShare` fact. Each still lives in its
   overlay, which is what keeps `dispatch.test.ts`'s probe list satisfied.
+- **A red default branch is a queue row too** (`QueueInput.ci`, from ./maint's `ciRows`), so
+  nothing urgent hides behind the Maintenance tab. It **leads rank 0**, ahead of a critical
+  advisory: it blocks every merge after it. Today never scans, so the row is whatever
+  `./maintscan` already holds: this session's CI lines once the CI cell reaches a verdict (a
+  read that failed is none, and keeps the last known red), else the `cc-maint` snapshot's, drawn muted with *as of 5h ago* in its sub. Its **CI** chip is drawn
+  only while it holds a row (a greyed chip on every project would teach the eye to skip it), it
+  is never folded, and the whole row opens the Maintenance tab, where the Fix verb is and whose
+  first look re-reads it (docs/maintenance.md).
 
 - **The search is the pool, not a seventh chip.** `searchQueue` runs before the filter and before
   `queueTally`, so a chip says what it would reveal *within* the search rather than what the project
@@ -179,7 +189,9 @@ Easy to get wrong:
   after a pass that actually wrote** (`paint` now reports that) plus on a `ResizeObserver` over the
   column, because ⌘I, the rail and the window are the three things that move the box without an
   event this module hears, and because a layout read on every `renderAll` frame would force the
-  reflow the paint guards exist to avoid. And it **never grows past what the page can fill**
+  reflow the paint guards exist to avoid. **Both are gated on Today**: behind the Maintenance tab
+  the column measures 0, which would fit Landed down to `LANDED_MIN`, and the observer fires again
+  at full size on the way back, so the fit you left is the fit you return to. And it **never grows past what the page can fill**
   (`landedDrawn < landedFit` holds the count): banking room a short history cannot use would spend
   it in one overflowing paint on the next project. A column that hugs its content — the stacked
   breakpoints, where there is no bottom to fill to — measures `free === 0` and is left alone, which
@@ -208,7 +220,10 @@ Easy to get wrong:
   verb the pane has and nothing else offers, so hiding the button would leave the chord as the only
   way to find it. Only the fleet disables it, and a disabled button has to stay *visible* or the
   reason it gives is a tooltip nobody can reach. `syncStageButtons` lights it from the truth for
-  whichever stage is up — `fold-next` here, `insp-off` elsewhere — so the two cannot drift. **Every `data-dashact` surface is still dispatched by one if-chain
+  whichever stage is up — `fold-next` here, `insp-off` elsewhere — so the two cannot drift. **The
+  Maintenance tab disables it too** (`dashOnMaint`, read by `toggleInsp` and `syncStageButtons`):
+  there is no Next column there to fold, and a tour step lighting `#dashNext` or `#dashMoved` asks
+  for `today` before `next`. **Every `data-dashact` surface is still dispatched by one if-chain
   through `#dashPane`'s single listener**, and `dispatch.test.ts` still holds both halves in both
   directions across four surfaces (`verbTiles`, `repoCard`, `ghPicker`, `landedCard`): a row whose
   verb has no branch is a button that does nothing, a branch nobody emits is code that cannot run,
@@ -230,7 +245,7 @@ Easy to get wrong:
 - **The GitHub cards cross the `loading` branch** (`ghCards`, built once and emitted in both). Firing early only helps if an early answer can be *shown* early, and that branch used to switch the whole column. This is the same exemption Notes always had. It also gives the GitHub half a **skeleton of its own** during the long read; one generic `cardSkeleton` stood in for up to four cards, so the card people open the dashboard for read as absent rather than pending.
 - **The three `gh` calls run concurrently** (`std::thread::scope`, inside the existing `spawn_blocking`): 662 + 605 + 457 ms sequential measured against a real repo, 1.7–2.3s wall clock vs 0.7–1.0s for the same three at once. The viewer is now probed even when the issue read fails, which is consistent rather than new: that is the same gh-missing/logged-out failure `viewer_login` already caches deliberately, and the one case the two differ (a non-GitHub folder) is exactly where `gh api user` still answers, being repo-independent.
 
-- **The Dependencies card is the GitHub half's fourth card and has rules of its own** (`docs/dependencies.md`): it shares `gh()`'s account-and-token path, degrades on its own (the alert scope 403 is commoner than a gh outage, so a failed alert read must not take the bot-PR list down with it), and is the one card that still says something on a **non**-GitHub project, because the manifests and the package-manager scan need neither GitHub nor git.
+- **Dependencies has rules of its own** (`docs/dependencies.md`), and lives in two places on purpose. Today's queue carries an advisory and a bot pull request as **rows**, so nothing urgent hides behind the other tab; the **Maintenance tab's Security sub-tab** carries what `depsNow()` knows and no Maintenance source does (each advisory's fix verdict, and a Packages board with the out-of-date count, absent when `depSilent`), and its ⤢ opens the same `deps` overlay. Both read the one `dep_report`, which shares `gh()`'s account-and-token path and degrades on its own (the alert scope 403 is commoner than a gh outage, so a failed alert read must not take the bot-PR list down with it); the Packages board still says something on a **non**-GitHub project, because the manifests and the package-manager scan need neither GitHub nor git. An account switch re-reads it (`reloadDashGh`), and with it the Maintenance scan.
 - **A claim is only ever a hint**: shown, warned once, then you proceed. Claims expire (`CLAIM_STALE_MS`; a sleeping laptop must not block a colleague), and `pty-exit` releases what a session took.
 - **Preference AND `.episko/episko.toml`'s `[claim]`**: a project-disabled switch renders greyed rather than hidden ("why can't I assign?" needs an answer).
 - **`holderOf` reads in one order**: our ledger (knows unpushed dispatches) → assignee (the explicit human signal) → `agent:` label (a machine, which can't say whose).
@@ -284,3 +299,4 @@ Every project at once, and the one screen that is *not* about a project. `fleet.
 - **A session running outside Episko is still a live session.** The externals registry feeds *Live now* and each card's glyph row, and `FleetCard.live` counts both kinds — the band and the rows must not answer one question with two numbers. `needs` and `urgency` stay ours alone: an external has no hooks behind it and can want nothing. Its row opens the read-only mirror (`data-flext`) and carries **no ✕**, because the terminal it runs in is not ours to close.
 - **The two halves of the money column come from different places, and only one of them is a scan.** Tokens are `token_usage_by_day` over `~/.claude` — the whole machine, including every `claude` run outside Episko — and it used to be triggered only by opening the Usage window, so this screen's token half sat blank until you did. The home stage now asks for it on open (`FleetHost.refreshUsage`, throttled to ten minutes of its own). **Dollars are not a scan**: `cc-usage` is Episko's own telemetry ledger, written from the statusLine's cost, so it can only ever cover sessions Episko ran. A model can therefore show real tokens against a `—` cost, and the empty Spend section says which figure it is rather than showing a dash that reads as a failed read.
 - **Issues are not here.** A card says what this screen already read — commits and sessions in the window. Open work is the project dashboard's, bought when you open it, and a fleet-wide `gh` sweep is exactly the "nothing runs until you ask" rule this screen inherits.
+- **Two views, and only one of them is read at boot** (`cc-fleet-view`, `data-flview` in the head, Activity by default: a home stage that reshuffles itself on upgrade is a bug report). Everything above is *Activity*. *Maintenance* (docs/maintenance.md) is one card per project with seven facets, and its sweep is the fleet-wide read the previous rule forbids — so **choosing the view is the ask that buys it**. A switch scans when the cache is empty or older than `MAINT_FRESH_MS` (10 min), and ⟳ always does; nothing else may. A boot that lands on Maintenance because the pref was persisted paints the last session's scans (`cc-maint-scan`, whole, each card *as of* then; the `cc-maint` snapshot, muted, for one that did not fit) and, since landing on the view is choosing it, `maintOnBoot` (main.ts, once, never `openFleet`) re-reads what is older than the window while the earlier answers stay on screen dimmed. `openFleet`, `loadFleet`, `renderFleet` and `buildView` run at boot and on every exit from the stage, so none of them may reach `./maintscan`'s scans: `test/maint.test.ts` walks fleetui.ts's call graph from each and fails if one does. Both views paint `#fleetHead`/`#fleetBody` through the same `paint()` guard; a card's markup is `maintview.ts`'s (`data-mt*` only, probed by `maintClick` before any `data-fl*`), and its verbs prefill an agent through `FleetHost.prefill`, never pressing Enter.

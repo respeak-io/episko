@@ -1,0 +1,12 @@
+# hand-written: what a login shell may print before the script runs; a test cuts the end off
+Last login: Mon Nov  2 09:14:11 2026 from 203.0.113.9
+ * Documentation:  https://help.ubuntu.com
+bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)
+@@episko-host 1
+@@now
+1793700000
+@@uptime
+600.25 1100.00
+@@cpus
+2
+@@end

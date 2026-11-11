@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": { "name": "CodeQL", "organization": "GitHub", "semanticVersion": "2.19.1", "rules": [] },
+        "extensions": [
+          {
+            "name": "codeql/javascript-queries",
+            "semanticVersion": "1.2.0",
+            "rules": [
+              {
+                "id": "js/sql-injection",
+                "name": "js/sql-injection",
+                "shortDescription": { "text": "Database query built from user-controlled sources" },
+                "defaultConfiguration": { "enabled": true, "level": "error" },
+                "properties": { "tags": ["security", "external/cwe/cwe-089"], "kind": "path-problem", "precision": "high", "security-severity": "8.8" }
+              },
+              {
+                "id": "js/log-injection",
+                "name": "js/log-injection",
+                "shortDescription": { "text": "Log injection" },
+                "defaultConfiguration": { "enabled": true, "level": "error" },
+                "properties": { "tags": ["security", "external/cwe/cwe-117"], "precision": "medium", "security-severity": 7.8 }
+              }
+            ]
+          }
+        ]
+      },
+      "originalUriBaseIds": { "%SRCROOT%": { "uri": "file:///home/runner/work/app/app/" } },
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "rule": { "id": "js/sql-injection", "index": 0, "toolComponent": { "index": 0 } },
+          "message": { "text": "This query string depends on a [user-provided value](1)." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "src/db.js", "uriBaseId": "%SRCROOT%", "index": 0 },
+            "region": { "startLine": 42, "startColumn": 9, "endColumn": 31 } } }]
+        },
+        {
+          "rule": { "id": "js/log-injection", "index": 1, "toolComponent": { "index": 0 } },
+          "message": { "text": "Log entry depends on a [user-provided value](1)." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "file:///home/runner/work/app/app/src/log.js" }, "region": { "startLine": 5 } } }]
+        },
+        {
+          "ruleId": "js/sql-injection",
+          "baselineState": "absent",
+          "message": { "text": "Fixed since the baseline." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "src/old.js" }, "region": { "startLine": 1 } } }]
+        }
+      ]
+    }
+  ]
+}

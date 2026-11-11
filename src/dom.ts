@@ -82,6 +82,8 @@ export function takeStage(show: Stage) {
 
 // ⌘I on the dashboard folds the third column instead of an inspector it does not have.
 export function foldDashNext(): boolean { return $("dashPane").classList.toggle("fold-next"); }
+// Its Maintenance tab hides that column, so there ⌘I has nothing to fold. ./dashboard sets the class.
+export const dashOnMaint = (): boolean => $("dashPane").classList.contains("tab-maint");
 
 // The stage header's path: shown `~`-shortened and copied in full, so every stage taker
 // hands over the absolute one and the click never re-derives it from the label. The
@@ -138,6 +140,24 @@ export function wireTips() {
   });
   // Any of these moves the control out from under the tip, so it must not outlive them.
   for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, hideTip, true);
+}
+
+const FOCUSABLE = "button, a[href], [tabindex]";
+const mtKey = (el: HTMLElement) => JSON.stringify(Object.entries(el.dataset).filter(([k]) => k.startsWith("mt")).sort());
+/** Write a Maintenance surface, whose `innerHTML` rebuilds every control and every scroller. The keyboard
+ *  goes to the same control's successor, or, for a button that became *checking…*, to whatever stands where
+ *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place. */
+export function holdMaintPlace(el: HTMLElement, html: string): void {
+  const a = document.activeElement, on = a instanceof HTMLElement && a !== el && el.contains(a) && !(a instanceof HTMLInputElement) ? a : null;
+  const key = on && mtKey(on), at = on ? [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(on) : -1, typed = !!on?.matches(":focus-visible");
+  const boardOf = (s: Element) => s.closest("[id^='mtb-']")?.id ?? "";
+  const wide = [...el.querySelectorAll(".mt-scroll")].filter((s) => s.scrollLeft).map((s) => [boardOf(s), s.scrollLeft] as const);
+  el.innerHTML = html;
+  for (const [id, left] of wide) for (const s of el.querySelectorAll(".mt-scroll")) if (boardOf(s) === id) s.scrollLeft = left;
+  if (!on) return;
+  const all = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
+  const next = (key !== "[]" ? all.find((x) => mtKey(x) === key) : undefined) ?? (typed ? all[Math.min(at, all.length - 1)] : undefined);
+  next?.focus({ preventScroll: true });
 }
 
 // The avatar and the chip line belong to the project dashboard; every other stage taker clears

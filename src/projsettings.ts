@@ -15,6 +15,7 @@ import { clearStopRule, stopRules, trustOf, untrustProject } from "./tasks";
 import { projectIdOf, serverDigest, serverNotes, status as syncStatus, teamShare } from "./synclink";
 import { btnCtl, nilCtl, projSettingsHtml, segCtl, type PsRow, type PsSeg } from "./projsetview";
 import { stackSummary, type StackCfg } from "./stack";
+import { deploySummary, maintCfgSummary, narrowDeploy, narrowMaintCfg, type DeployCfg, type MaintCfg } from "./deploy";
 import { invoke } from "@tauri-apps/api/core";
 
 export interface ProjSetHost {
@@ -29,18 +30,23 @@ export interface ProjSetHost {
   refreshGh: () => Promise<unknown>;
   setupStack: (key: string) => void;
   openStackFile: (key: string) => void;
+  openTeamFile: (key: string) => void; // `[deploy]`'s and `[maintenance]`'s: the repo root's file
+  setupDeploy: (key: string) => Promise<void>; // settles once the proposal was applied or set aside
+  setupMaint: (key: string) => Promise<void>; // the same, for `[maintenance]`'s keys
   trust: (key: string) => void;
 }
 let host: ProjSetHost = {
   setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setTools: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
-  setupStack: () => {}, openStackFile: () => {}, trust: () => {},
+  setupStack: () => {}, openStackFile: () => {}, openTeamFile: () => {}, setupDeploy: () => Promise.resolve(), setupMaint: () => Promise.resolve(), trust: () => {},
 };
 export function setProjSetHost(h: ProjSetHost) { host = h; }
 
 let key: string | null = null;
 let digestFile = false;
 let stackCfg: StackCfg = {};
+let deployCfg: DeployCfg | null = null;
+let maintCfg: MaintCfg | null = null;
 let last = "";
 
 export const projSettingsOpen = () => $("projDlg").classList.contains("show");
@@ -49,6 +55,8 @@ export function openProjectSettings(k: string) {
   key = k;
   digestFile = false;
   stackCfg = {};
+  deployCfg = null;
+  maintCfg = null;
   last = "";
   $("scrim").classList.add("show");
   $("projDlg").classList.add("show");
@@ -57,6 +65,14 @@ export function openProjectSettings(k: string) {
   void host.refreshGh().then(renderProjSettings);
   void host.hasDigest(k).then((y) => { if (key === k) { digestFile = y; renderProjSettings(); } }).catch(() => {});
   void invoke<StackCfg>("stack_config", { dir: k }).then((c) => { if (key === k) { stackCfg = c; renderProjSettings(); } }).catch(() => {});
+  loadDeploy(k);
+  loadMaint(k);
+}
+function loadDeploy(k: string) {
+  void invoke<unknown>("deploy_config", { dir: k }).then((c) => { if (key === k) { deployCfg = narrowDeploy(c); renderProjSettings(); } }).catch(() => {});
+}
+function loadMaint(k: string) {
+  void invoke<unknown>("maint_setup", { dir: k }).then((c) => { if (key === k) { maintCfg = narrowMaintCfg(c); renderProjSettings(); } }).catch(() => {});
 }
 export function closeProjectSettings() {
   if (!projSettingsOpen()) return;
@@ -197,6 +213,32 @@ function stackRow(): PsRow {
   };
 }
 
+// Committed like [stack]: an agent proposes, a person applies, and nothing connects until a click.
+function deployRow(): PsRow {
+  const cur = deploySummary(deployCfg);
+  return {
+    id: "deploy", label: "Where it runs", hint: "The host, services and addresses Maintenance checks when you ask. [deploy] in .episko/episko.toml.",
+    cur: cur || undefined,
+    note: cur ? undefined : "Not set: Maintenance has no production to check, and the Runs on card stays empty.",
+    ctl: (cur ? btnCtl("deployfile", "Open file", "Open .episko/episko.toml") : "")
+      + btnCtl("deploysetup", cur ? "Re-check…" : "Propose…",
+        "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard."),
+  };
+}
+
+// The keys Maintenance cannot always tell on its own; the rest of [maintenance] is edited in the file.
+function maintRow(): PsRow {
+  const cur = maintCfgSummary(maintCfg);
+  return {
+    id: "maint", label: "Maintenance", hint: "The trunk, release tags, SARIF reports and self-hosted update bots Maintenance reads. [maintenance] in .episko/episko.toml.",
+    cur: cur || undefined,
+    note: cur ? undefined : "Not set: Maintenance measures against the remote's default branch and counts every tag.",
+    ctl: (cur ? btnCtl("maintfile", "Open file", "Open .episko/episko.toml") : "")
+      + btnCtl("maintsetup", cur ? "Re-check…" : "Propose…",
+        "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard."),
+  };
+}
+
 // Personal: whether YOU let Episko run this folder's justfile, Taskfile or mise to list them.
 function trustRow(k: string): PsRow {
   const t = trustOf(k);
@@ -218,8 +260,8 @@ export function renderProjSettings() {
   const html = projSettingsHtml({
     name: basename(k), path: tilde(k), accent: accentFor(k),
     mine: mineRows(k),
-    team: [shareRow(k), stackRow()],
-    teamNote: "Branch locks, claims, health thresholds and the dev stack are committed in .episko/episko.toml and edited where they act.",
+    team: [shareRow(k), stackRow(), deployRow(), maintRow()],
+    teamNote: "Branch locks, claims, health thresholds, the dev stack, where it runs and what Maintenance reads are committed in .episko/episko.toml and edited where they act.",
   });
   if (html === last) return;
   last = html;
@@ -240,6 +282,9 @@ function act(verb: string, val: string) {
   else if (verb === "share") host.setShare(k, val as ShareMode);
   else if (verb === "stacksetup") { host.setupStack(k); return; }
   else if (verb === "stackfile") { host.openStackFile(k); return; }
+  else if (verb === "deployfile" || verb === "maintfile") { host.openTeamFile(k); return; }
+  else if (verb === "deploysetup") { void host.setupDeploy(k).then(() => loadDeploy(k)); return; }
+  else if (verb === "maintsetup") { void host.setupMaint(k).then(() => loadMaint(k)); return; }
   else if (verb === "trust") { host.trust(k); return; }
   else if (verb === "untrust" || (verb === "reset" && val === "trust")) untrustProject(k);
   else if (verb === "movelog") { void host.moveLog(k).then(() => { digestFile = false; renderProjSettings(); }); return; }

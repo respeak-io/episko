@@ -6,18 +6,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { homeDir } from "@tauri-apps/api/path";
 import { open } from "@tauri-apps/plugin-dialog";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { $, actToast, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
+import { $, actToast, dashOnMaint, foldDashNext, holdNav, IS_MAC, toast } from "./dom";
 import { ask, askOpt } from "./confirm";
 import { basename, nfcPath } from "./format";
 import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
-import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillShell, shelveSession, tickAutoFetch } from "./panes";
+import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillFresh, prefillShell, refreshGitViews, shelveSession, tickAutoFetch } from "./panes";
 import { closePeek, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
 import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
 import { checkRun, describePrompt, runSummaryText, taskCmd, type RunInfo } from "./runinfo";
+import {
+  checkDeploy, checkMaintCfg, deployPrompt, deployText, isEmptyDeploy, maintCfgLosses, maintCfgText, maintPrompt, narrowDeploy,
+  isEmptyMaintCfg, narrowMaintCfg, NO_FILE, type DeployProposal, type MaintCfgProposal,
+} from "./deploy";
+import { coverRows, SESSION_EXTERNAL, sessionDone, type SessionLaunch } from "./maint";
 import { queueRosterSave } from "./mirror";
 import { sameCheckout } from "./gitwatch";
 import {
@@ -52,6 +57,7 @@ import {
   handoffs, setHandoffs,
   projPrefs, setProjPrefs, permissionModeFor,
   claudeAccts, setClaudeAccts, acctChecks, foundTokens, setFoundTokens,
+  maintTokens, setMaintTokens, maintTokenChecks, type MaintToken,
   type SortMode, type WtGroup,
 } from "./state";
 import { addAcct, hitUntil, quotaHit, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
@@ -83,6 +89,7 @@ import { openFileOrRead, renderMdReader } from "./mdreader";
 import type { MdPrefs } from "./markdown";
 import { projectIdOf, publishDigest, publishShare, serverHandoff, status as syncStatus } from "./synclink";
 import { onCaps, reduce, type HandoffEv, type HandoffRec } from "./handoff";
+import { forgetMaint, forgetTokenReads, maintInput, maintOf, scanProject } from "./maintscan";
 
 let renderAll: () => void = () => {};
 export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
@@ -91,6 +98,35 @@ export function setActionsRenderAll(fn: typeof renderAll) { renderAll = fn; }
 // above this layer and owns the fetch, so it arrives as a hook rather than an import.
 let ghReload: (root: string) => void = () => {};
 export function setGhReload(fn: typeof ghReload) { ghReload = fn; }
+
+// One pane per row, tiled as one group, each prefilled and never sent: Enter stays the person's.
+// Roots run in parallel and one root's rows in turn, since git holds a repo's worktree lock.
+export async function launchTogether(label: string, rows: readonly SessionLaunch[], notes: readonly string[] = []): Promise<void> {
+  if (termEngine !== "embedded") { toast(SESSION_EXTERNAL); return; }
+  const id = crypto.randomUUID(), fails: string[] = [];
+  let started = 0;
+  const one = async (row: SessionLaunch, n: number) => {
+    const w = row.where;
+    try {
+      const dir = w.kind === "here" ? row.root : w.kind === "wt" ? w.path
+        : await invoke<string>("create_worktree", { repoDir: row.root, branch: w.branch, base: w.base || null });
+      const sid = await launch(row.project, dir, {
+        colorKey: row.root, worktree: dir === row.root ? null : row.branch, branch: row.branch ?? undefined,
+        group: { id, label, what: row.what, n },
+      });
+      if (typeof sid !== "string") { fails.push(`${row.project}: it did not start`); return; }
+      started++;
+      prefillFresh(sid, row.text);
+    } catch (e) { fails.push(`${row.project}: worktree: ${e}`); }
+  };
+  const byRoot = new Map<string, number[]>();
+  rows.forEach((r, n) => byRoot.set(r.root, [...(byRoot.get(r.root) ?? []), n]));
+  await Promise.all([...byRoot.values()].map(async (ns) => { for (const n of ns) await one(rows[n], n); }));
+  void refreshGitViews();
+  const said = sessionDone(started, rows.length, fails, notes);
+  // What failed or was left out names somewhere to go and look, so it outlives the plain toast's two seconds.
+  if (started < rows.length || notes.length) actToast(said); else toast(said);
+}
 
 export function openTerminalIn(project: string, dir: string) {
   if (termEngine !== "embedded") { invoke("open_terminal_here", { workdir: dir, engine: termEngine }).catch((e) => toast("terminal: " + e)); return; }
@@ -494,7 +530,8 @@ export function setProjectAgent(colorKey: string, id: string | null) {
 // Which account this project's `gh` calls run as; `null` follows gh's active account. It
 // must also forget what the previous identity answered: `gh_threads`, the day's activity
 // and the merged-PR evidence are cached per repo, hence `gh_invalidate` — and the
-// dependency reads are a cache of their own, which the same switch has to drop too.
+// dependency reads are a cache of their own, which the same switch has to drop too, as are
+// Maintenance's (maint.rs keys by account; ./maintscan does not, so it forgets the project).
 export function setProjectShareMode(colorKey: string, m: ShareMode, by?: string) {
   if (by !== undefined && shareModeOf(colorKey) === "off") return;
   if (by !== undefined && shareModeOf(colorKey) === m) return;
@@ -535,6 +572,8 @@ export function setProjectGhAccount(colorKey: string, login: string | null) {
   localStorage.setItem("cc-gh-account", JSON.stringify(ghAccountByProject));
   void invoke("gh_invalidate", { root: colorKey }).catch(() => {});
   void invoke("dep_invalidate", { root: colorKey }).catch(() => {});
+  void invoke("maint_invalidate", { root: colorKey }).catch(() => {});
+  forgetMaint(colorKey);
   toast(login
     ? `${basename(colorKey)} reads GitHub as ${login}`
     : `${basename(colorKey)} follows gh's active account`);
@@ -643,7 +682,7 @@ export function toggleRail() { $("app").classList.toggle("rail-mini"); }
 // The fleet has neither: CSS already hides that column, so flipping `insp-off` there
 // changes nothing on screen and only shows up on the session you go back to.
 export function toggleInsp() {
-  if (fleetMirror() || reviewMirror()) return;
+  if (fleetMirror() || reviewMirror() || (dashMirror() && dashOnMaint())) return;
   const app = $("app");
   if (dashMirror()) {
     const folded = foldDashNext();
@@ -901,6 +940,55 @@ export async function removeClaudeAcct(label: string) {
   void listClaudeTokens();
 }
 
+// ---------- Maintenance's service tokens (docs/accounts.md): sealed in Rust, never read back here ----------
+
+/** Every kind and host a token is saved for. A failed listing keeps the last one. */
+export async function listMaintTokens(): Promise<MaintToken[]> {
+  const found = await invoke<MaintToken[]>("maint_tokens").catch(() => null);
+  if (found) setMaintTokens(found);
+  renderSettings();
+  return found ?? maintTokens ?? [];
+}
+
+/** One cheap read of the host's API root as the token: whether it is known, as whom, and which scopes it lacks. */
+export async function checkMaintToken(kind: string, host: string): Promise<void> {
+  const k = `${kind}@${host}`, was = maintTokenChecks[k];
+  maintTokenChecks[k] = { ok: was?.ok ?? false, who: was?.who ?? null, missing: was?.missing ?? [], error: null, at: was?.at ?? 0, busy: true };
+  renderSettings();
+  try {
+    const c = await invoke<{ ok: boolean; who: string | null; missing: string[]; error: string | null }>("maint_token_check", { kind, host });
+    maintTokenChecks[k] = { ok: c.ok, who: c.who, missing: c.missing, error: c.error, at: Date.now() };
+  } catch (e) {
+    maintTokenChecks[k] = { ok: false, who: null, missing: [], error: String(e), at: Date.now() };
+  }
+  renderSettings();
+}
+
+/** A pasted token: sealed under the slot Rust folds the host into, then listed and checked there. */
+export async function addMaintToken(kind: string, host: string, token: string): Promise<boolean> {
+  let slot: string;
+  try {
+    slot = await invoke<string>("maint_token_save", { kind, host, token });
+  } catch (e) {
+    toast(String(e));
+    return false;
+  }
+  forgetTokenReads(kind);
+  await listMaintTokens();
+  void checkMaintToken(kind, slot);
+  return true;
+}
+
+export async function removeMaintToken(kind: string, host: string): Promise<void> {
+  const ok = await ask(`Forget the token for ${host}?\n\nIt is deleted from this machine's keychain. Maintenance stops reading what it read with it until you save another.`,
+    { title: "Forget token", kind: "warning", okLabel: "Forget", cancelLabel: "Cancel" });
+  if (!ok) return;
+  await invoke("maint_token_forget", { kind, host }).catch((e) => toast(String(e)));
+  forgetTokenReads(kind);
+  delete maintTokenChecks[`${kind}@${host}`];
+  void listMaintTokens();
+}
+
 // A pane's text with xterm's soft wraps joined back; a hard wrap is ./accounts' to undo.
 function paneLines(s: Sess): string[] {
   const b = s.term?.buffer.active;
@@ -968,5 +1056,88 @@ export async function resumeOnAccount(id: string, label: string) {
     await launch(project, workdir, { colorKey, worktree, branch, resume: resumeId, account: label });
   } finally {
     release();
+  }
+}
+
+// ---------- where it runs ----------
+
+// The repo root's file, not `root`'s: a subfolder project or a worktree shares its main checkout's.
+const teamFile = (root: string) => invoke<string>("episko_toml_path", { dir: root });
+
+/** Open the file `[deploy]` and `[maintenance]` are written to. */
+export async function openTeamFile(root: string): Promise<void> {
+  await openFileOrRead(await teamFile(root).catch(() => `${root}/.episko/episko.toml`));
+}
+
+// A new committable file is asked about once more: Apply answered for the table, not the file.
+async function writeTable(root: string, table: string, write: (create: boolean) => Promise<unknown>): Promise<boolean> {
+  try {
+    await write(false);
+    return true;
+  } catch (e) {
+    if (String(e) !== NO_FILE) throw e;
+  }
+  const file = await teamFile(root).catch(() => "");
+  const at = file ? basename(file.replace(/[\\/]\.episko[\\/]episko\.toml$/, "")) : basename(root);
+  const make = await ask(`${at} has no \`.episko/episko.toml\` yet. Create it to hold \`[${table}]\`? It is a new file to commit.`,
+    { title: "Create .episko/episko.toml", kind: "info", okLabel: "Create", cancelLabel: "Cancel" });
+  if (make) await write(true);
+  return make;
+}
+
+// The stack describer's agent with a narrower question, read-only and headless; nothing is
+// written until Apply, and nothing connects anywhere until a click (docs/maintenance.md).
+export async function proposeDeploy(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project to find where it runs. This can take a minute or two");
+  try {
+    const current = await invoke<unknown>("deploy_config", { dir: root }).then(narrowDeploy, () => null);
+    const p = await invoke<DeployProposal>("propose_deploy", { dir: root, prompt: deployPrompt(current) });
+    const checked = checkDeploy(p);
+    const text = deployText(p, checked, current);
+    if (isEmptyDeploy(checked.deploy)) {
+      await ask(text, { title: "Nowhere to point at", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    if (!await ask(text, { title: `Where ${basename(root)} runs`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    const deploy = checked.deploy;
+    if (!await writeTable(root, "deploy", (create) => invoke("write_deploy", { dir: root, deploy, create }))) return;
+    toast("[deploy] written. Commit .episko/ to share it");
+    // Only a project Maintenance already read: the write dropped the detection and the old probe.
+    if (maintOf(root)) void scanProject(root, false);
+  } catch (e) {
+    toast(`No deploy proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
+  }
+}
+
+// The same reader asked about `[maintenance]`'s keys, told what Maintenance could not settle on its
+// own; only those keys are written, and only after Apply (docs/maintenance.md).
+export async function proposeMaint(root: string): Promise<void> {
+  if (proposing.has(root)) { toast("Already reading this project"); return; }
+  proposing.add(root);
+  toast("Claude is reading the project's branches, releases and scanners. This can take a minute or two");
+  try {
+    const current = await invoke<unknown>("maint_setup", { dir: root }).then(narrowMaintCfg, () => null);
+    const inp = maintInput(root);
+    const asks = inp ? coverRows(inp).filter((r) => r.cfg).map((r) => `${r.label}: ${r.text}`) : [];
+    const p = await invoke<MaintCfgProposal>("propose_maint", { dir: root, prompt: maintPrompt(current, asks) });
+    const checked = checkMaintCfg(p);
+    const text = maintCfgText(p, checked, current);
+    const maintenance = checked.maintenance;
+    if (isEmptyMaintCfg(maintenance) && !maintCfgLosses(current, maintenance).length) {
+      await ask(text, { title: "Nothing to set", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      return;
+    }
+    if (!await ask(text, { title: `Maintenance settings of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    if (!await writeTable(root, "maintenance", (create) => invoke("write_maint", { dir: root, maintenance, create }))) return;
+    toast("[maintenance] written. Commit .episko/ to share it");
+    if (maintOf(root)) void scanProject(root, false);
+  } catch (e) {
+    toast(`No maintenance proposal: ${e}`);
+  } finally {
+    proposing.delete(root);
   }
 }

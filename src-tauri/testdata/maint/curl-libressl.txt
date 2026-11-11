@@ -1,0 +1,25 @@
+{"errormsg":null,"exitcode":0,"http_code":503,"response_code":503,"num_certs":2,"scheme":"https","time_total":0.0381,"url":"https://app.example.com","curl_version":"libcurl/8.4.0 (SecureTransport) LibreSSL/3.3.6 zlib/1.2.12"}
+Subject:CN = app.example.com
+Issuer:C = US, O = Let's Encrypt, CN = R11
+Version:2
+Serial Number:04a1b2c3d4e5f6
+Signature Algorithm:sha256WithRSAEncryption
+Start date:Sep  1 08:12:44 2026 GMT
+Expire date:Dec  4 08:12:43 2026 GMT
+Public Key Algorithm:rsaEncryption
+RSA Public Key:2048
+-----BEGIN CERTIFICATE-----
+MIIBdummy
+-----END CERTIFICATE-----
+Subject:C = US, O = Let's Encrypt, CN = R11
+Issuer:C = US, O = Internet Security Research Group, CN = ISRG Root X1
+Version:2
+Serial Number:8a7d3e13d62f30ef2386bd29076b34f8
+Signature Algorithm:sha256WithRSAEncryption
+Start date:Mar 13 00:00:00 2024 GMT
+Expire date:Mar 12 23:59:59 2027 GMT
+Public Key Algorithm:rsaEncryption
+RSA Public Key:2048
+-----BEGIN CERTIFICATE-----
+MIIBdummy2
+-----END CERTIFICATE-----

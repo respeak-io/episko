@@ -11,7 +11,8 @@ const OWN = [
   "cc-keys", "cc-sound", "cc-motion", "cc-foot", "cc-title", "cc-term-engine", "cc-term-font", "cc-term-split",
   "cc-drift-auto", "cc-copy-chord", "cc-close-ask", "cc-agent", "cc-diff-mode", "cc-diff-tree", "cc-scrollback",
   "cc-sort", "cc-fleet-sort", "cc-fleet-layout", "cc-fleet-group", "cc-fleet-range", "cc-peek", "cc-outline",
-  "cc-markdown", "cc-pr-links", "cc-shelved-tree", "cc-worktree-group", "cc-dash-summaries",
+  "cc-markdown", "cc-pr-links", "cc-shelved-tree", "cc-worktree-group", "cc-dash-summaries", "cc-fleet-view",
+  "cc-maint-chip", "cc-maint-prefs",
   "cc-perm-modes", "cc-perm-mode", "cc-trusted", "cc-autofetch", "cc-proj-prefs", "cc-agent-tools",
   "cc-task-prefs", "cc-task-onstop", "cc-task-runner", "cc-task-pins", "cc-task-hidden", "cc-revive", "cc-attn",
   "cc-caffeinate", "cc-caf-timer", "cc-caf-await", "cc-memory-sync", "cc-vitals",
@@ -27,7 +28,7 @@ const SHARED = [
   "cc-gh-account", "cc-episko-share", "cc-proj-ids", "cc-icons", "cc-icons-v",
   "cc-restore", "cc-handoff", "cc-notes", "cc-team-notes", "cc-claims", "cc-team-claims", "cc-review-drafts",
   "cc-review-viewed", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-branch-lists", "cc-frecency", "cc-tour",
-  "cc-legacy-import-done", "cc-channel",
+  "cc-legacy-import-done", "cc-channel", "cc-maint", "cc-maint-scan", "cc-maint-week",
   // Shared, or a preview that went back to stable would leave stable asking for the preview again.
   "cc-update-channel",
   "cc-usage-peers", "cc-detail-peers", "cc-sync-stamps", "cc-sync-dirty", "cc-sync-sent", "cc-sync-limits",

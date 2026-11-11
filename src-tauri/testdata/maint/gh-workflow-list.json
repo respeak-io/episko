@@ -1,0 +1,1 @@
+[{"name":"ci","path":".github/workflows/ci.yml","state":"active"},{"name":"nightly","path":".github/workflows/nightly.yml","state":"disabled_inactivity"},{"name":"deploy","path":".github/workflows/deploy.yml","state":"disabled_manually"},{"name":"Dependabot Updates","path":"dynamic/dependabot/dependabot-updates","state":"active"}]

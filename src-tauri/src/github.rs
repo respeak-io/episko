@@ -84,6 +84,23 @@ pub(crate) fn gh(root: &str, account: Option<&str>, args: &[&str]) -> Result<Str
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// How long a read nobody clicked waits on `gh`: a shared cache slot every later read joins
+/// must not hang on one stalled connection for the life of the app.
+pub(crate) const GH_SECS: u64 = 60;
+
+/// [`gh`] with [`GH_SECS`] as its deadline. `graphql`: a read that can half-answer, since gh exits 1
+/// on any `errors[]` while `data` still arrives beside them, and what it costs is the caller's to judge.
+pub(crate) fn gh_capped(root: &str, account: Option<&str>, args: &[&str], graphql: bool) -> Result<String, String> {
+    let out = crate::deps::run_capped(gh_command(root, account, args)?, GH_SECS).map_err(|e| {
+        if e.starts_with("no answer") { format!("gh gave no answer after {GH_SECS}s") } else { format!("gh not available: {e}") }
+    })?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() || (graphql && graphql_answered(&stdout)) {
+        return Ok(stdout);
+    }
+    Err(first_line(&String::from_utf8_lossy(&out.stderr)))
+}
+
 /// [`gh`] with `stdin` piped in, for `gh api --input -`: a JSON body never rides on argv.
 /// A failed API call prints GitHub's own `errors` on stdout, and that half is the actionable one.
 pub(crate) fn gh_input(root: &str, account: Option<&str>, args: &[&str], stdin: &str) -> Result<String, String> {
@@ -108,6 +125,11 @@ pub(crate) fn gh_input(root: &str, account: Option<&str>, args: &[&str], stdin: 
         });
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// A GraphQL body that carries a `data` object, whatever errors ride beside it.
+pub(crate) fn graphql_answered(stdout: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(stdout).ok().is_some_and(|v| v.get("data").is_some_and(|d| d.is_object()))
 }
 
 fn first_line(err: &str) -> String {
@@ -1332,6 +1354,15 @@ mod tests {
         assert_eq!(d.as_deref(), Some("Line could not be resolved; other"));
         assert_eq!(api_detail(r#"{"message":"Not Found"}"#), None);
         assert_eq!(api_detail("<html>"), None);
+    }
+
+    #[test]
+    fn a_graphql_failure_keeps_the_data_it_answered_beside_its_errors() {
+        let half = crate::maint::exec::FakeExec::testdata("gh-work-errors.json");
+        assert!(graphql_answered(&half), "gh exits 1 here, and the repository still answered");
+        assert!(!graphql_answered(r#"{"data":null,"errors":[{"message":"x"}]}"#));
+        assert!(!graphql_answered(r#"{"errors":[{"message":"Bad credentials"}]}"#));
+        assert!(!graphql_answered("gh: Search is temporarily unavailable"));
     }
 
     #[test]

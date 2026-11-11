@@ -1,0 +1,589 @@
+// One brief per finding, written from the facts alone so an agent gets the evidence rather than a
+// vendor's name for it. Each is prefilled and never sent: Episko presses Enter in two places only.
+
+import { compatBlock, verifyBlock } from "./deps";
+import {
+  affectedText, ciFailures, clampMaint, deployStates, deploysCut, DOMAIN_GRACE, DOMAIN_HELD, DOMAIN_LAPSED, envsFailed, envsToShip, errorStates, fixBranch, flakyJobs, HOST_KINDS, hostState, judgeDomains, majorsText, mergeAdvisories, okFacts, pkgStates, placeVersion, redFor, rtName, runtimeStates, span, sweepTitle, TRACE_PICKS, trunkOf, unplacedWhy,
+  type Advisory, type AdvisoryKind, type CiFailure, type EnvState, type ErrException, type ErrFrame, type ErrNeedy, type ErrTrace, type Facts, type Finding, type FlakyJob, type MaintInput, type MergedAdvisory, type RuntimeState, type SessionWhere,
+  type SweepAdvisory, type SweepFacts, type SweepRow, type Verb,
+} from "./maint";
+
+export interface MaintBriefCtx {
+  project: string;
+  verify: string[]; // the project's own check commands (`verifyCommands` in ./deps)
+  now?: number;
+  traces?: Readonly<Record<string, ErrTrace | string>>; // *Fix*'s stack traces by issue id, or why each was not read
+}
+
+type Brief = (f: Finding, inp: MaintInput, ctx: MaintBriefCtx) => string[] | null;
+
+const bullet = (s: string) => `- ${s}`;
+const ago = (at: number, ctx: MaintBriefCtx) => span((ctx.now ?? Date.now()) / 1000 - at);
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+function factsOf<K extends Facts["kind"]>(f: Finding, inp: MaintInput, kind: K): Extract<Facts, { kind: K }> | null {
+  const r = inp.reports[f.source];
+  return r?.coverage.state === "ok" && r.facts?.kind === kind ? r.facts as Extract<Facts, { kind: K }> : null;
+}
+
+// The rows behind the finding's line, from the reports that line counted, worst first, so the
+// brief names the fix whichever reporter knew it. `capped` when any of them hit its page cap.
+function advisoriesOf(f: Finding, inp: MaintInput, ...want: AdvisoryKind[]): { all: MergedAdvisory[]; capped: boolean } {
+  const kind = f.ref as AdvisoryKind;
+  if (!want.includes(kind)) return { all: [], capped: false };
+  const reps = okFacts(inp, "security").flatMap((r) =>
+    r.facts.kind === "advisories" && r.facts.items.some((i) => i.kind === kind) ? [{ ...r, items: r.facts.items }] : []);
+  return { all: mergeAdvisories(reps.map((r) => r.items)).filter((a) => a.kind === kind), capped: reps.some((r) => r.truncated) };
+}
+const cappedNote = (capped: boolean, what: string) =>
+  capped ? ["", `This list hit a page cap, so more ${what} may exist than are named here: check again once these are done.`] : [];
+
+const named = (a: MergedAdvisory) => `${a.id}${a.aliases.length ? ` (${a.aliases.join(", ")})` : ""}`;
+const placesOf = (a: MergedAdvisory) => [...new Set(a.items.map((x) => x.location).filter((l): l is string => !!l))];
+// One row reads as before; several get a heading each, so every one keeps its own facts.
+const each = <T>(all: T[], head: (a: T) => string, body: (a: T) => string[]) =>
+  all.length === 1 ? body(all[0]) : all.flatMap((a) => ["", `### ${head(a)}`, ...body(a)]);
+
+// Every red workflow, as the one CI line counts them, oldest first.
+const ciBrief: Brief = (_f, inp, ctx) => {
+  const red = ciFailures(okFacts(inp, "ci"));
+  if (!red.length) return null;
+  const one = red.length === 1, sec = (ctx.now ?? Date.now()) / 1000, x = red[0];
+  const age = (w: CiFailure) => redFor(w, sec);
+  const body = (w: CiFailure) => {
+    const facts = inp.reports[w.source]?.facts;
+    const runs = facts?.kind === "ciRuns" ? facts.runs.filter((r) => r.workflow === w.workflow).slice(0, 8) : [];
+    return [
+      ...(w.url ? [w.url] : []), ...(one ? [""] : []),
+      bullet(w.sha ? `first failing commit: ${w.sha}` : `failing at ${w.branch}'s head, ${runs[0]?.sha ?? "?"}; this CI reports no history`),
+      bullet(`recent runs, newest first: ${runs.map((r) => r.status).join(", ")}`),
+    ];
+  };
+  return [
+    one ? `CI is failing on ${x.branch} in ${ctx.project}: the ${x.workflow} workflow${age(x) ? `, red for ${age(x)}` : ""}.`
+      : `CI is failing in ${ctx.project}: ${red.length} workflows, oldest first. One cause may break several; say which.`,
+    ...each(red, (w) => `${w.workflow} on ${w.branch}${age(w) ? `, red for ${age(w)}` : ""}`, body),
+    "",
+    `Read the failing ${one ? "run's log at the link above" : "runs' logs at the links above"} and find the cause before changing anything:`,
+    "say whether the code, the test or the CI environment is wrong, and reproduce it locally if you can.",
+    "Fix the cause, never the symptom: do not skip, retry or loosen a test to get it green.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Noisy, not broken: a different agent from ciBrief's. A job is the finest grain read, so the
+// agent is sent to the logs, which name the test.
+const flakyBrief: Brief = (_f, inp, ctx) => {
+  const noisy = flakyJobs(inp, clampMaint(inp.det?.config.thresholds)).filter((j) => j.level === "warn");
+  if (!noisy.length) return null;
+  const one = noisy.length === 1, j = noisy[0];
+  const body = (x: FlakyJob) => [
+    ...(x.steps.length ? [bullet(`fails at: ${x.steps.join(", ")}`)] : []),
+    ...x.seen.map((s) => bullet(`${s.sha.slice(0, 7)} on ${s.branch}${s.at ? `, ${ago(s.at, ctx)} ago` : ""}`
+      + `${s.passed ? "" : ", and failed again"}: ${s.url ?? "no log link"}`)),
+  ];
+  return [
+    one ? `CI in ${ctx.project} is noisy: the ${j.job} job failed and then passed when the same commit was run again, ${j.passed} of ${j.reruns} times in the last ${j.days} days.`
+      : `CI in ${ctx.project} is noisy: ${noisy.length} jobs failed and then passed when the same commit was run again, in the last ${j.days} days.`,
+    ...(noisy.some((x) => x.short) ? ["A busy project's window was shorter, so these counts are floors."]
+      : noisy.some((x) => x.cut) ? ["Part of this read failed or hit a cap, so these counts are floors."] : []),
+    ...(one ? [""] : []),
+    ...each(noisy, (x) => `${x.job} (${x.workflow}): passed on re-run ${x.passed} of ${x.reruns}`, body),
+    "",
+    "A job is the finest unit read here; the logs at the links name the test.",
+    "Find what fails on one try and passes on the next (a race or an order dependence between tests, shared",
+    "state, a timeout too tight for a slow runner, the network, the runner itself) and say which, quoting the",
+    "log. Reproduce it by running it repeatedly if you can.",
+    "Fix the cause so it passes every time. Do not add a retry, skip or quarantine the test, mark it allowed",
+    "to fail, or raise a timeout without a reason: that hides the noise.",
+    "If the cause is outside the code, say what would fix it and change nothing.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Another reporter may know a package's fix; another package's fix is never this one's.
+function pkgRows(a: MergedAdvisory): string[] {
+  const seen = new Set<string>();
+  const fixOf = (x: (typeof a.items)[number]) =>
+    x.fixed ?? a.items.find((y) => y.fixed && y.pkg === x.pkg && y.ecosystem === x.ecosystem)?.fixed ?? null;
+  return a.items.filter((x) => { const k = `${x.pkg}@${x.version}@${x.location}`; return !seen.has(k) && !!seen.add(k); }).map((x) =>
+    bullet(`${x.pkg ?? "?"} ${x.version ?? "?"}${x.ecosystem ? ` (${x.ecosystem})` : ""}${x.location ? ` in ${x.location}` : ""}; `
+      + (fixOf(x) ? `fixed in ${fixOf(x)}` : "no fixed version published")));
+}
+
+// `why` says where the rows came from when it is not a reporter's list.
+function patchLines(all: MergedAdvisory[], capped: boolean, ctx: MaintBriefCtx, why: string[] = []): string[] {
+  const one = all.length === 1;
+  return [
+    one ? `Patch ${named(all[0])} · ${all[0].severity} in ${ctx.project}.`
+      : `Patch ${all.length} advisories in ${ctx.project}, worst first. One upgrade may clear several; say which.`,
+    ...each(all, (a) => `${named(a)} · ${a.severity}`, (a) => [a.summary, ...(a.url ? [a.url] : []), ...(one ? [""] : []), ...pkgRows(a)]),
+    ...why,
+    ...cappedNote(capped, "advisories"),
+    "",
+    ...compatBlock(),
+    ...verifyBlock(ctx.verify),
+  ];
+}
+
+const patchBrief: Brief = (f, inp, ctx) => {
+  const { all, capped } = advisoriesOf(f, inp, "dependency");
+  return all.length ? patchLines(all, capped, ctx) : null;
+};
+
+/** A sweep's affected project as any Patch reads: each copy inside a range is one advisory row. */
+export function sweepBrief(adv: SweepAdvisory, f: SweepFacts, ctx: MaintBriefCtx): string | null {
+  const items: Advisory[] = f.found.flatMap((c) => {
+    const p = adv.packages[c.pkg], at = p && placeVersion(p, c.version);
+    return p && at?.state === "in" ? [{
+      id: adv.id ?? `${p.name} ${at.range}`, aliases: adv.aliases, kind: "dependency" as const, pkg: p.name, ecosystem: p.ecosystem,
+      version: c.version, severity: adv.severity, rawSeverity: adv.rawSeverity, summary: adv.summary, fixed: at.fixed,
+      location: c.file, url: adv.url, tool: "advisory sweep",
+    }] : [];
+  });
+  if (!items.length) return null;
+  const why = ["", "An advisory sweep found each copy above inside the affected range, from the lockfiles alone.",
+    "Check for any other copy (a vendored one, another lockfile) before you call it done."];
+  return patchLines(mergeAdvisories([items]), false, ctx, why).join("\n");
+}
+
+/** What the read-only agent is asked of one project the lockfiles could not decide. */
+export function sweepPrompt(adv: SweepAdvisory, row: SweepRow, project: string): string {
+  return [
+    `Is the project in this folder (${project}) affected by ${sweepTitle(adv)}?`,
+    ...(adv.id && adv.summary ? [adv.summary] : []), ...(adv.url ? [adv.url] : []),
+    "", "The advisory affects:", ...adv.packages.map((p) => bullet(affectedText(p))),
+    "", "Reading the lockfiles could not decide it:", ...row.evidence.map(bullet),
+    "",
+    "Read the manifests, lockfiles, vendored or forked copies and the code that uses the package, and decide",
+    "whether a vulnerable version is installed here. Say what you read; never guess a version you could not find.",
+    "You can read files and nothing else, and nothing you answer is applied.",
+    "",
+    "Answer with one fenced toml block and nothing after it:",
+    "```toml",
+    `verdict = "unsure" # or "affected", or "not-affected"`,
+    `evidence = ["<file>: <what it says>"]`,
+    "```",
+  ].join("\n");
+}
+
+const rotateBrief: Brief = (f, inp, ctx) => {
+  const { all, capped } = advisoriesOf(f, inp, "secret");
+  if (!all.length) return null;
+  const one = all.length === 1;
+  return [
+    one ? `A secret was reported in ${ctx.project}: ${all[0].summary}` : `${all.length} secrets were reported in ${ctx.project}.`,
+    ...each(all, (a) => `${a.id}: ${a.summary}`, (a) => [
+      ...(a.url ? [a.url] : []), ...(one ? [""] : []),
+      bullet(`report: ${a.id}`), ...placesOf(a).map((l) => bullet(`found in ${l}`)),
+    ]),
+    ...cappedNote(capped, "secrets"),
+    "",
+    `Treat ${one ? "it" : "each"} as leaked. Say where it was issued and how to rotate or revoke it there, then remove it`,
+    "from the code and load it from the environment or a secret store instead. Rewriting git history",
+    "is a decision for a person: describe what it would take, do not do it.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// A scanner's finding in the project's own code or config: judged in place, never silenced.
+const codeBrief: Brief = (f, inp, ctx) => {
+  const { all, capped } = advisoriesOf(f, inp, "code", "config");
+  if (!all.length) return null;
+  const one = all.length === 1, config = f.ref === "config";
+  const sev = (a: MergedAdvisory) => a.severity === "unknown" ? "" : `, ${a.severity}`;
+  return [
+    one ? `A scanner reported ${config ? "a misconfiguration" : "a finding"} in ${ctx.project}: ${all[0].id}${sev(all[0])}.`
+      : `A scanner reported ${all.length} ${config ? "misconfigurations" : "findings"} in ${ctx.project}, worst first.`,
+    ...each(all, (a) => `${a.id}${sev(a)}`, (a) => [
+      a.summary, ...(a.url ? [a.url] : []), ...(one ? [""] : []), ...placesOf(a).map((l) => bullet(`at ${l}`)),
+    ]),
+    ...cappedNote(capped, "findings"),
+    "",
+    "Read the code at each place and say whether each report is right before changing anything. If it",
+    "is, fix the cause and add a test that would have caught it. If it is a false positive, say why and",
+    "change nothing: do not add a suppression comment or weaken the rule to make it go away.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Every runtime past or near its end, as the one Upgrade line counts them, worst first.
+const upgradeBrief: Brief = (_f, inp, ctx) => {
+  const due = runtimeStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now).filter((r) => r.level === "bad" || r.level === "warn");
+  if (!due.length) return null;
+  const one = due.length === 1, r = due[0];
+  const when = (x: RuntimeState) => typeof x.eol === "number" ? ` on ${new Date(x.eol * 1000).toISOString().slice(0, 10)}` : "";
+  const end = (x: RuntimeState) => x.level === "bad" ? `reached its end of life${when(x)}` : `reaches its end of life${when(x)}`;
+  return [
+    one ? `Upgrade ${rtName(r)} in ${ctx.project}: it ${end(r)}, and gets no security fixes after it.`
+      : `Upgrade ${due.length} runtimes in ${ctx.project} at or near their end of life, worst first. Each gets no security fixes after it.`,
+    ...each(due, (x) => `${rtName(x)} · ${x.text}`, (x) => [
+      ...(one ? [] : [`It ${end(x)}.`]), ...(x.url ? [x.url] : []), ...(one ? [""] : []),
+      ...x.decls.map((d) => bullet(`${d.file} declares ${d.declared}`)),
+      ...(x.newest ? [bullet(`the newest cycle is ${x.newest}`)] : []),
+    ]),
+    "",
+    "Move each to a supported cycle, the newest the project's dependencies allow, in every file that",
+    "declares it, and keep them in step: version files, the engines field, Dockerfiles, compose files and",
+    "the CI matrix. Search the repository for the old version too: the files above are only those read.",
+    "Read the runtime's release notes between the two cycles and say what changes for this code first.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Every direct dependency a major or more behind, as the one Upgrade line counts them, the most first.
+const packagesBrief: Brief = (_f, inp, ctx) => {
+  const s = pkgStates(inp);
+  if (!s.behind.length) return null;
+  const kind = (dev: boolean | null) => dev === false ? "shipped" : dev ? "development only" : "";
+  return [
+    `Bring ${plural(s.behind.length, "direct dependency", "direct dependencies")} of ${ctx.project} to their newest major, the most`
+      + " majors behind first. Each is a breaking upgrade: one at a time, and say which you would defer and why.",
+    "",
+    ...s.behind.map((p) => bullet([`${p.name} ${p.from} → ${p.latest}`, `${majorsText(p)}${p.floor ? " (a floor: from 0.x)" : ""}`,
+      kind(p.dev), `declared in ${p.importers.join(", ")}`, p.url ?? ""].filter(Boolean).join(" · "))),
+    ...(s.unplaced.length ? ["", `Not compared: ${s.unplaced.map((p) => `${p.name} (${unplacedWhy(p)})`).join(", ")}`] : []),
+    ...(s.gaps.length ? ["", `Not read: ${s.gaps.join("; ")}`] : []),
+    ...cappedNote(s.capped, "packages"),
+    "",
+    ...compatBlock(),
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+const releaseBrief: Brief = (f, inp, ctx) => {
+  const r = factsOf(f, inp, "release");
+  if (!r?.tag || !r.since) return null;
+  const range = `${r.tag}..${r.trunk ?? "HEAD"}`;
+  return [
+    `${plural(r.since, "commit")} since ${r.tag} in ${ctx.project}${r.oldestUnreleasedAt ? `, the oldest ${ago(r.oldestUnreleasedAt, ctx)} old` : ""}.`,
+    "",
+    `Draft the release notes for them: read \`git log ${range}\` and any Unreleased section of the`,
+    "changelog, group the changes the way this project's earlier releases do, and say what a user",
+    "would notice. Propose the next version number and why.",
+    "",
+    "Do not bump a version, tag, push or publish anything: a person cuts the release.",
+  ];
+};
+
+const envsOf = (inp: MaintInput, ctx: MaintBriefCtx) => deployStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now);
+// What is live: its name, the commit, since when and from which branch.
+const liveText = (e: EnvState) => [e.live ?? "nothing found", e.sha && e.live !== e.sha.slice(0, 7) ? `(${e.sha.slice(0, 7)})` : "",
+  e.age !== null ? `live for ${span(e.age)}` : "", e.branch ? `from ${e.branch}` : ""].filter(Boolean).join(" ");
+
+// Every production environment behind or off the trunk, as the one Plan deploy line counts them.
+const deployBrief: Brief = (_f, inp, ctx) => {
+  const due = envsToShip(envsOf(inp, ctx));
+  if (!due.length) return null;
+  const one = due.length === 1, e = due[0];
+  const lag = (x: EnvState) => x.ahead ? `runs ${plural(x.ahead, "commit")} not on ${x.trunk ?? "the trunk"}` : `is ${plural(x.behind ?? 0, "commit")} behind ${x.trunk ?? "the trunk"}`;
+  const body = (x: EnvState) => [
+    bullet(`live: ${liveText(x)}`),
+    ...(x.behind ? [bullet(`${plural(x.behind, "commit")} on ${x.trunk} not live${x.behindAge !== null ? `, the oldest ${span(x.behindAge)} old` : ""}: \`git log ${x.sha}..${x.trunk}\``)] : []),
+    ...(x.ahead ? [bullet(`${plural(x.ahead, "commit")} live that ${x.trunk} lacks: \`git log ${x.trunk}..${x.sha}\`. Get them onto the trunk first.`)] : []),
+  ];
+  return [
+    one ? `${e.env} in ${ctx.project} ${lag(e)}. Plan its next deploy.` : `Plan the next deploy of ${due.length} environments in ${ctx.project}.`,
+    ...(one ? [""] : []),
+    ...each(due, (x) => `${x.env} ${lag(x)}`, body),
+    "",
+    "List what would ship, grouped the way this project's changelog groups changes, and flag anything risky:",
+    "migrations, config, infrastructure, removed endpoints. Find how this project deploys (its CI workflows,",
+    "its scripts and the [deploy] table in .episko/episko.toml), and say whether CI on the trunk is green.",
+    ...cappedNote(deploysCut(inp), "environments"),
+    "",
+    "Do not deploy, tag, push or trigger any workflow: a person ships it.",
+  ];
+};
+
+// A failed deploy is read and explained; production is a person's to touch, as prodBrief's line says.
+const deployFixBrief: Brief = (_f, inp, ctx) => {
+  const broke = envsFailed(envsOf(inp, ctx));
+  if (!broke.length) return null;
+  const one = broke.length === 1, e = broke[0];
+  const body = (x: EnvState) => {
+    const a = x.last!;
+    return [
+      ...(a.url ? [a.url] : []), ...(one ? [""] : []),
+      bullet(`the failed attempt: ${a.sha}${a.age !== null ? `, ${span(a.age)} ago` : ""}`),
+      bullet(`still live: ${liveText(x)}`),
+      ...(x.sha ? [bullet(`what the attempt adds: \`git log ${x.sha}..${a.sha}\``)] : []),
+    ];
+  };
+  return [
+    one ? `A deploy of ${e.env} failed in ${ctx.project}.` : `${broke.length} deploys failed in ${ctx.project}.`,
+    ...each(broke, (x) => `${x.env}: ${x.last!.text}`, body),
+    "",
+    "Read the attempt's log and say why it failed: the code it shipped, the deploy itself, or the environment.",
+    ...cappedNote(deploysCut(inp), "environments"),
+    "",
+    "Change nothing in production yourself. Say what is wrong, what you would change and how to",
+    "verify it, and wait for a person before re-running, redeploying or rolling back anything.",
+  ];
+};
+
+const pushBrief: Brief = (f, inp, ctx) => {
+  const h = factsOf(f, inp, "hygiene");
+  if (!h?.unpushed) return null;
+  return [
+    `${plural(h.unpushed, "commit")} in ${ctx.project} exist only on this machine.`,
+    "",
+    ...(h.localOnly.length ? [bullet(`never pushed: ${h.localOnly.join(", ")}`)] : []),
+    bullet("list them with `git log --branches --not --remotes --oneline`"),
+    "",
+    "For each branch, say what the work is and whether it is ready. Run the project's checks on the",
+    "ready ones and push them to their upstream; leave the rest with a one-line reason. Never force-push.",
+    ...(ctx.verify.length ? ["", "The checks:", ...ctx.verify.map((c) => `    ${c}`)] : []),
+  ];
+};
+
+const tidyBrief: Brief = (f, inp, ctx) => {
+  const h = factsOf(f, inp, "hygiene");
+  if (!h || !(h.merged.length + h.gone.length)) return null;
+  return [
+    `Tidy the local branches in ${ctx.project}.`,
+    "",
+    ...(h.merged.length ? [bullet(`merged into ${h.trunk ?? "the trunk"}: ${h.merged.join(", ")}`)] : []),
+    ...(h.gone.length ? [bullet(`upstream gone: ${h.gone.join(", ")}`)] : []),
+    "",
+    "Delete the merged ones with `git branch -d`, never `-D`: a refusal means one is not merged after",
+    "all, so report it instead. A branch whose upstream is gone may still hold work; check before",
+    "deleting it and ask if it does. Touch no remote branch and no worktree.",
+  ];
+};
+
+const reviewBrief: Brief = (f, inp, ctx) => {
+  const u = factsOf(f, inp, "updatePrs");
+  if (!u?.prs.length) return null;
+  const prs = [...u.prs].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  return [
+    `Review ${plural(prs.length, "open update pull request")} in ${ctx.project}, oldest first.`,
+    "",
+    ...prs.map((p) => bullet(`#${p.number} ${p.title} · checks ${p.checks}${p.draft ? " · draft" : ""} · ${p.url}`)),
+    "",
+    "For each, read the diff and the package's release notes between the two versions and say",
+    "whether it is safe to merge. Fix a red one on its own branch.",
+    "",
+    ...compatBlock(),
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+const prodBrief: Brief = (f, inp, ctx) => {
+  const p = factsOf(f, inp, "probes")?.items.find((x) => x.name === f.ref);
+  if (!p) return null;
+  const head = f.key.startsWith("prod:cert:") && p.certNotAfter !== null
+    ? [`The certificate for ${p.url} (${ctx.project}) ${p.certNotAfter * 1000 <= (ctx.now ?? Date.now()) ? "has expired" : `expires in ${span(p.certNotAfter - (ctx.now ?? Date.now()) / 1000)}`}.`,
+      "Find what is meant to renew it and why it has not."]
+    : [`${p.name} (${p.url}) in ${ctx.project} ${p.code !== null ? `answered ${p.code}` : "did not answer"}${p.err ? `: ${p.err}` : ""}.`,
+      "Find out why: read the service's logs and its recent deploys."];
+  return [
+    ...head,
+    "",
+    "Change nothing in production yourself. Say what is wrong, what you would change and how to",
+    "verify it, and wait for a person before restarting, redeploying or rolling back anything.",
+  ];
+};
+
+// A renewal is paid at the registrar, so the agent finds who pays it and changes nothing.
+const domainBrief: Brief = (f, inp, ctx) => {
+  const raw = factsOf(f, inp, "domains")?.items.find((x) => x.domain === f.ref);
+  const [d] = raw ? judgeDomains([raw], clampMaint(inp.det?.config.thresholds), ctx.now ?? Date.now()) : [];
+  if (!d) return null;
+  const date = d.expires !== null ? new Date(d.expires * 1000).toISOString().slice(0, 10) : "a date the registry does not publish";
+  const word = d.status.find((s) => DOMAIN_LAPSED.includes(s) || DOMAIN_HELD.includes(s));
+  const state = word ? `is ${d.text}, in its registry's own words`
+    : d.status.some((s) => DOMAIN_GRACE.includes(s)) ? `was ${d.text}: the registry moved its date on to ${date}, and the registrar may still let it go`
+    : `${d.text}, on ${date}`;
+  return [
+    `The domain ${d.domain}, behind ${d.names.join(", ")} in ${ctx.project}'s [deploy], ${state}.`,
+    ...(d.status.length ? [bullet(`status: ${d.status.join(", ")}`)] : []),
+    ...(d.registrar ? [`Registered through ${d.registrar}.`] : []),
+    "",
+    "Find what is meant to renew it: where the project records its registrar, DNS or billing (infrastructure code,",
+    "docs, deploy scripts), and whether auto-renew is on. Say who renews it and what a person must do, by when.",
+    "",
+    "Change nothing in production yourself. Say what is wrong, what you would change and how to",
+    "verify it, and wait for a person before renewing, transferring or editing anything at the registrar or in DNS.",
+  ];
+};
+
+// Each new or returning issue with its facts, worst first. This one is code work: the cause is found and fixed
+// in the repository, and nothing is marked resolved in the tracker, since a fix that ships resolves it.
+export const ERR_BRIEF = 10;
+const ERR_WHY: Record<ErrNeedy["why"], string> = { new: "new", regressed: "back after it was resolved", escalating: "rising sharply" };
+const frameText = (f: ErrFrame) => `${f.file ?? "?"}${f.line !== null ? `:${f.line}` : ""}${f.function ? ` in ${f.function}` : ""}`;
+// The project's own frames, or every frame when none is; what was left out is counted, never dropped silently.
+function excLines(e: ErrException): string[] {
+  const mine = e.frames.filter((f) => f.inApp), shown = mine.length ? mine : e.frames;
+  const left = [mine.length ? e.frames.length - mine.length : 0, e.framesCut];
+  const said = [left[0] ? `${plural(left[0], "frame")} outside this project's code` : "", left[1] ? `${plural(left[1], "frame")} not read, outer or unnamed` : ""];
+  return [`    ${e.kind}${e.value ? `: ${e.value}` : ""}`, ...shown.map((f) => `      ${frameText(f)}`),
+    ...(left[0] + left[1] ? [`      (${said.filter(Boolean).join(", ")})`] : [])];
+}
+function traceLines(t: ErrTrace | string | undefined, url: string | null): string[] {
+  const open = url ? "; open the link above" : "";
+  if (t === undefined) return [bullet(`stack trace not read: only the ${TRACE_PICKS} worst issues' are read on a click${open}`)];
+  if (typeof t === "string") return [bullet(`stack trace not read: ${t}${open}`)];
+  const chain = t.exceptions.length > 1 ? ", a chain in which each exception caused the next" : "";
+  // A long chain keeps its root cause first and the last two, so the gap is said where it falls.
+  const gap = t.exceptionsCut ? [`    (${plural(t.exceptionsCut, "exception")} between these in the chain not read)`] : [];
+  return [
+    ...(t.message ? [bullet(`message: ${t.message}`)] : []),
+    ...(t.exceptions.length ? [bullet(`stack trace of the latest event, innermost frame last${chain}:`), ...t.exceptions.flatMap((e, n) => [...(n === 1 ? gap : []), ...excLines(e)])]
+      : [bullet("the latest event carries no stack trace")]),
+  ];
+}
+const errorBrief: Brief = (_f, inp, ctx) => {
+  const [st] = errorStates(inp, clampMaint(inp.det?.config.thresholds), ctx.now);
+  if (!st?.needy.length) return null;
+  const when = (s: number | null) => s === null ? "unknown" : `${ago(s, ctx)} ago`;
+  const since = st.rule === "release" && st.release ? `since ${st.release.version} went out` : "in the last 7 days, by the tracker's own word";
+  const where = `${ctx.project}'s error tracker (${st.project}, ${st.environment ? `environment ${st.environment}` : "every environment"})`;
+  const shown = st.needy.slice(0, ERR_BRIEF), x = shown[0], one = st.needy.length === 1 && !st.cut;
+  const body = (i: ErrNeedy) => [
+    ...(i.url ? [i.url] : []),
+    bullet(`${ERR_WHY[i.why]}${i.why === "new" ? ` ${since}` : ""}`),
+    bullet(`level ${i.rawLevel || i.level}${i.unhandled === true ? ", unhandled" : i.unhandled === false ? ", handled" : ""}`),
+    bullet(`${plural(i.events, "event")} from ${plural(i.users, "user")} in ${st.windowDays} days; first seen ${when(i.firstSeen)}, last seen ${when(i.lastSeen)}`),
+    ...(i.culprit ? [bullet(`where: ${i.culprit}`)] : []),
+    ...(ctx.traces ? traceLines(ctx.traces[i.id], i.url) : []),
+  ];
+  const more = st.needy.length - shown.length;
+  return [
+    one ? `${x.shortId} in ${where} needs fixing: ${x.title}` : `${where} has ${st.needy.length}${st.cut ? "+" : ""} errors new or back that need fixing:`,
+    ...(one ? [""] : []),
+    ...each(shown, (i) => `${i.shortId} · ${i.title}`, body),
+    ...(more > 0 ? ["", `${plural(more, "more issue")} like these${st.url ? `: ${st.url}` : ""}.`] : []),
+    ...cappedNote(st.cut, "issues"),
+    "",
+    ctx.traces ? "Each trace is the newest event's, so its lines are the deployed code's: match them against what was released."
+      : "The latest event's stack trace is not copied here: open each link above to read it.",
+    "For each: find the cause in this repository and say which change introduced it. Reproduce it with a",
+    "failing test first, then fix the cause. Never swallow the error, widen a catch or silence the report.",
+    "",
+    "Do not mark anything resolved, ignored or assigned in the error tracker, and touch nothing in production:",
+    "a fix that ships resolves it.",
+    "",
+    ...verifyBlock(ctx.verify),
+  ];
+};
+
+// Every problem the host has, the clicked kind first. The agent looks over ssh and changes nothing:
+// a pane may be launched permissive, so the brief asks it to say each command and stop before any write.
+const hostBrief: Brief = (f, inp, ctx) => {
+  const h = factsOf(f, inp, "hosts")?.items.find((x) => x.alias === f.ref);
+  const lines = h ? hostState(h, h.compose, clampMaint(inp.det?.config.thresholds), ctx.now, inp.reports[f.source]?.truncated).lines : [];
+  if (!h || !lines.length) return null;
+  const kind = f.key.slice("prod:host:".length), at = inp.reports[f.source]?.at;
+  return [
+    `${h.alias} ([deploy] host of ${ctx.project}) needs attention, as Episko read it${at ? ` ${ago(at, ctx)} ago` : ""}:`,
+    "",
+    ...[...lines].sort((a, b) => Number(b.kind === kind) - Number(a.kind === kind)).flatMap((l) => l.points.map(bullet)),
+    "",
+    `Connect with \`ssh ${h.alias}\` and investigate read-only: what fills the disk, which services the pending updates`,
+    "touch, why a container fails (its logs and its health check). Say each read-only command before you run it on the",
+    "host, and stop for a person before anything that writes.",
+    "",
+    "Change nothing on the host yourself. Say what is wrong, what you would run and in what order, how to verify it,",
+    "and wait for a person before deleting, upgrading, restarting or rebooting anything.",
+  ];
+};
+
+// A facet with nothing reading it, or code scanning off; the forge is named only as the remote spells it.
+const setupBrief: Brief = (f, inp, ctx) => {
+  const host = inp.det?.forge.host;
+  const on = host ? ` The remote is on ${host}.` : "";
+  const found = inp.det?.markers.filter((m) => m.facet === f.facet).flatMap((m) => m.found) ?? [];
+  const seen = found.length ? ["", bullet(`already in the tree: ${found.join(", ")}`)] : [];
+  if (f.facet === "ci") {
+    return [
+      `${ctx.project} has no CI on its default branch that Episko can read.${on}`, ...seen, "",
+      "Add a CI workflow on the CI this remote already offers that runs the project's checks on every",
+      "push to the default branch and on every pull request. Match how the project is built today:",
+      "read its manifests and scripts first, and pin the toolchain versions they use.",
+      ...(ctx.verify.length ? ["", "The checks:", ...ctx.verify.map((c) => `    ${c}`)] : []),
+      "", "Do not push or enable anything on the remote: a person reviews the workflow first.",
+    ];
+  }
+  if (f.facet === "deps") {
+    return [
+      `${ctx.project} has no update bot opening dependency pull requests.${on}`, ...seen, "",
+      "Add the configuration for an update bot this remote supports, covering every package manager",
+      "the project uses: group patch and minor updates, keep majors separate, and schedule it weekly.",
+      "Say which bot you chose and why, and what a person must switch on for it to run.",
+    ];
+  }
+  // `coverSetups`: the forge offers code scanning and has it switched off.
+  if (f.facet === "security" && f.ref === "sec.code") {
+    return [
+      `${ctx.project} has code scanning switched off, so nothing analyses its code for vulnerabilities.${on}`, "",
+      "Add a code-scanning workflow on the CI this remote already offers that analyses every language",
+      "the project is written in, on every push to the default branch, on every pull request and once a",
+      "week, and uploads its results to the remote's code scanning. Read the manifests and build scripts",
+      "first, so a compiled language is built the way the project builds it today.",
+      "", "Do not push or enable anything on the remote: a person reviews the workflow first, then switches code scanning on.",
+    ];
+  }
+  return null;
+};
+
+// Fix's brief per kind, the first row whose test passes; each test is exact, so a new kind is one row.
+// A url name holds no ':', so a probe's keys are `prod:<name>` and `prod:cert:<name>`, and any
+// other `prod:<kind>:…` is another source's.
+export const FIX: readonly [(f: Pick<Finding, "key">) => boolean, Brief][] = [
+  [(f) => f.key === "ci", ciBrief],
+  [(f) => f.key === "ci:flaky", flakyBrief],
+  [(f) => f.key === "release:deploy-failed", deployFixBrief],
+  [(f) => /^prod:(cert:)?[^:]+$/.test(f.key), prodBrief],
+  [(f) => f.key === "security:code" || f.key === "security:config", codeBrief],
+  [(f) => HOST_KINDS.some((k) => f.key === `prod:host:${k}`), hostBrief],
+  [(f) => /^prod:domain:[^:]+$/.test(f.key), domainBrief],
+  [(f) => f.key === "prod:errors:new", errorBrief],
+];
+
+const BRIEFS: Record<Verb, Brief> = {
+  fix: (f, inp, ctx) => FIX.find(([test]) => test(f))?.[1](f, inp, ctx) ?? null,
+  patch: patchBrief,
+  rotate: rotateBrief,
+  upgrade: (f, inp, ctx) => (f.facet === "deps" ? packagesBrief : upgradeBrief)(f, inp, ctx),
+  release: releaseBrief,
+  deploy: deployBrief,
+  push: pushBrief,
+  tidy: tidyBrief,
+  review: reviewBrief,
+  setup: setupBrief,
+  fetch: () => null, // a fetch and a read are not an agent's work
+  run: () => null,
+};
+
+/** The brief a finding's verb prefills, or null once the facts behind it are gone. */
+export function briefFor(f: Finding, inp: MaintInput, ctx: MaintBriefCtx): string | null {
+  return BRIEFS[f.verb](f, inp, ctx)?.join("\n") ?? null;
+}
+
+const CHECKOUT_RULES = [
+  "Install the project's dependencies before running the checks if they are missing: a fresh worktree has no node_modules, .venv or target.",
+  "Commit your work here. Pushing and opening a pull request are a person's call: do neither.",
+];
+/** What a session's agent is told about where it stands; one in the project's own folder is told nothing. */
+export function branchNote(where: SessionWhere, trunk: string | null, branch: string): string[] {
+  if (where.kind === "here") return [];
+  const read = trunk ? `read \`git log ${trunk}..HEAD\` first, and bring in what \`git log HEAD..${trunk}\` shows it has fallen behind.` : "read `git log --oneline -20` first.";
+  const first = where.kind === "new"
+    ? `You are in a new checkout on ${where.branch}, cut from ${where.base || "what this project had checked out"} for this work alone.`
+    : `You are in ${where.kind === "wt" ? "an existing checkout on" : "a new checkout of the existing branch"} ${branch}, which may hold earlier work: ${read}`;
+  return ["", first, ...CHECKOUT_RULES];
+}
+const noted = (brief: string | null, f: Finding, inp: MaintInput, where: SessionWhere) =>
+  brief && [brief, ...branchNote(where, trunkOf(inp), fixBranch(f))].join("\n");
+/** A ticked line's brief, plus where it runs. */
+export const sessionBrief = (f: Finding, inp: MaintInput, ctx: MaintBriefCtx, where: SessionWhere) => noted(briefFor(f, inp, ctx), f, inp, where);
+/** The same for a sweep's affected project, whose line (`sweepLine`) names the advisory. */
+export const sweepSessionBrief = (adv: SweepAdvisory, facts: SweepFacts, f: Finding, inp: MaintInput, ctx: MaintBriefCtx, where: SessionWhere) =>
+  noted(sweepBrief(adv, facts, ctx), f, inp, where);

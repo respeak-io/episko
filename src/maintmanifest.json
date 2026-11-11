@@ -1,0 +1,200 @@
+{
+  "facets": [
+    { "id": "ci", "label": "CI", "none": "no CI" },
+    { "id": "security", "label": "Security", "none": "no security source" },
+    { "id": "deps", "label": "Dependencies", "none": "no update bot" },
+    { "id": "release", "label": "Release", "none": "no release" },
+    { "id": "git", "label": "Git", "none": "not a git repository" },
+    { "id": "prod", "label": "Prod", "none": "no deploy" },
+    { "id": "work", "label": "Work", "none": "no issue tracker" }
+  ],
+  "sources": {
+    "github-actions": {
+      "facet": "ci", "label": "GitHub Actions", "cost": "forge", "forge": ["github"], "detect": [".github/workflows/"],
+      "sees": ["ci.default-branch", "ci.per-workflow", "ci.failing-since", "ci.disabled"],
+      "blind": ["ci.other-branches", "ci.external"]
+    },
+    "github-actions-reruns": {
+      "facet": "ci", "label": "GitHub Actions re-runs", "cost": "forge", "forge": ["github"], "detect": [".github/workflows/"],
+      "sees": ["ci.reruns"],
+      "blind": ["ci.per-test"]
+    },
+    "forge-commit-status": {
+      "facet": "ci", "label": "commit statuses", "cost": "forge", "forge": ["github"],
+      "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/", ".circleci/config.yml", "azure-pipelines.yml", "azure-pipelines.yaml",
+                 "Jenkinsfile", ".drone.yml", ".drone.yaml", ".buildkite/", ".travis.yml", "appveyor.yml"],
+      "sees": ["ci.default-branch", "ci.external"],
+      "blind": ["ci.failing-since", "ci.other-branches", "ci.reruns"]
+    },
+    "gitlab-ci": {
+      "facet": "ci", "label": "GitLab CI", "cost": "forge", "forge": ["gitlab"], "detect": [".gitlab-ci.yml"],
+      "sees": ["ci.default-branch", "ci.failing-since"],
+      "blind": ["ci.per-workflow", "ci.other-branches", "ci.reruns"]
+    },
+    "dependabot-alerts": {
+      "facet": "security", "label": "Dependabot alerts", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "github-code-scanning": {
+      "facet": "security", "label": "GitHub code scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
+      "sees": ["sec.code"],
+      "blind": ["sec.dependency", "sec.secret"]
+    },
+    "github-secret-scanning": {
+      "facet": "security", "label": "GitHub secret scanning", "cost": "forge", "forge": ["github"], "detect": [],
+      "settings": "https://github.com/{path}/settings/security_analysis",
+      "sees": ["sec.secret"],
+      "blind": ["sec.dependency", "sec.code"]
+    },
+    "sarif-files": {
+      "facet": "security", "label": "SARIF files", "cost": "local", "forge": [], "detect": [], "needs": ["sarif"],
+      "sees": ["sec.code", "sec.secret"],
+      "blind": []
+    },
+    "osv": {
+      "facet": "security", "label": "OSV.dev", "cost": "public", "forge": [], "detect": ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml"],
+      "sends": "the name and version of every package in this project's lockfiles",
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "npm-audit": {
+      "facet": "security", "label": "npm audit", "cost": "tool", "forge": [], "detect": ["package-lock.json"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "pnpm-audit": {
+      "facet": "security", "label": "pnpm audit", "cost": "tool", "forge": [], "detect": ["pnpm-lock.yaml"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "cargo-audit": {
+      "facet": "security", "label": "cargo audit", "cost": "tool", "forge": [], "detect": ["Cargo.lock"],
+      "sees": ["sec.dependency"],
+      "blind": ["sec.code", "sec.secret"]
+    },
+    "runtime-eol": {
+      "facet": "security", "label": "endoflife.date", "cost": "public", "forge": [],
+      "detect": [".nvmrc", ".node-version", "package.json#engines", ".python-version", "pyproject.toml", "rust-toolchain",
+                 "rust-toolchain.toml", "go.mod", "Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml",
+                 "compose.yaml", ".tool-versions"],
+      "sends": "the name of each runtime this project declares (nodejs, python, postgresql…), never a version or a path",
+      "sees": ["sec.runtime"],
+      "blind": ["sec.dependency", "sec.code", "sec.secret"]
+    },
+    "dependabot-prs": {
+      "facet": "deps", "label": "Dependabot", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["deps.update-prs", "deps.pr-checks"],
+      "blind": []
+    },
+    "renovate-prs": {
+      "facet": "deps", "label": "Renovate", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["deps.update-prs", "deps.pr-checks"],
+      "blind": []
+    },
+    "npm-registry": {
+      "facet": "deps", "label": "npm registry", "cost": "public", "forge": [], "detect": ["package-lock.json", "pnpm-lock.yaml"],
+      "sends": "the name of each package this project's lockfiles list as a direct dependency, never a version or a path. A private one goes too unless an .npmrc in the project names its registry, whatever your own npm config says",
+      "sees": ["deps.latest"],
+      "blind": ["deps.transitive"]
+    },
+    "crates-registry": {
+      "facet": "deps", "label": "crates.io", "cost": "public", "forge": [], "detect": ["Cargo.lock"],
+      "sends": "the name of each crate this project's Cargo.lock lists as a direct dependency from crates.io, never a version or a path",
+      "sees": ["deps.latest"],
+      "blind": ["deps.transitive"]
+    },
+    "git-local": {
+      "facet": "git", "label": "local branches", "cost": "local", "forge": [], "detect": [".git"],
+      "sees": ["git.unpushed", "git.local-only", "git.merged", "git.gone", "git.branch-age", "git.worktree-age"],
+      "blind": ["git.squash-merged"]
+    },
+    "git-tags": {
+      "facet": "release", "label": "git tags", "cost": "local", "forge": [], "detect": [".git"],
+      "sees": ["rel.unreleased", "rel.last"],
+      "blind": ["rel.published", "rel.deployed"]
+    },
+    "changelog": {
+      "facet": "release", "label": "CHANGELOG.md", "cost": "local", "forge": [], "detect": ["./CHANGELOG.md"],
+      "sees": ["rel.changelog"],
+      "blind": []
+    },
+    "deploy-tags": {
+      "facet": "release", "label": "deploy tags", "cost": "local", "forge": [], "detect": [".git"], "needs": ["deploy.envs"],
+      "sees": ["rel.deployed"],
+      "blind": []
+    },
+    "github-releases": {
+      "facet": "release", "label": "GitHub releases", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["rel.published"],
+      "blind": []
+    },
+    "github-deployments": {
+      "facet": "release", "label": "GitHub deployments", "cost": "forge", "forge": ["github"], "detect": [],
+      "sees": ["rel.deployed"],
+      "blind": []
+    },
+    "github-work": {
+      "facet": "work", "label": "GitHub issues", "cost": "forge", "forge": ["github"], "detect": [], "queue": true,
+      "sees": ["work.issues", "work.prs", "work.review-requested"],
+      "blind": []
+    },
+    "gitlab-work": {
+      "facet": "work", "label": "GitLab issues", "cost": "forge", "forge": ["gitlab"], "detect": [],
+      "sees": ["work.issues", "work.prs", "work.review-requested"],
+      "blind": []
+    },
+    "http-probe": {
+      "facet": "prod", "label": "URL checks", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.urls"],
+      "sees": ["prod.status", "prod.cert"],
+      "blind": ["prod.host", "prod.domain", "prod.errors"]
+    },
+    "rdap-domain": {
+      "facet": "prod", "label": "RDAP", "cost": "public", "forge": [], "detect": [], "needs": ["deploy.domains"],
+      "sends": "the registered domain behind each [deploy] address (example.com: never a host name or a path), sent only to that domain's own registry, found in IANA's list of registries (data.iana.org), which is fetched once a day and sent nothing",
+      "sees": ["prod.domain"],
+      "blind": ["prod.status", "prod.cert", "prod.host"]
+    },
+    "ssh-host": {
+      "facet": "prod", "label": "SSH host", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.host"],
+      "sees": ["prod.host"],
+      "blind": ["prod.status", "prod.cert"]
+    },
+    "sentry-issues": {
+      "facet": "prod", "label": "Sentry", "cost": "remote", "forge": [], "detect": [], "needs": ["deploy.sentry"],
+      "token": { "id": "sentry", "label": "Sentry", "host": "sentry.io", "page": "https://{host}/settings/account/api/auth-tokens/", "scopes": ["event:read", "project:read", "org:read"] },
+      "sees": ["prod.errors", "prod.errors-new", "prod.error-trace"],
+      "blind": ["prod.status", "prod.cert", "prod.host", "prod.domain"]
+    }
+  },
+  "markers": [
+    { "facet": "ci", "label": "Forgejo/Gitea Actions", "forge": ["forgejo", "gitea"], "detect": [".forgejo/workflows/", ".gitea/workflows/", ".github/workflows/"] },
+    { "facet": "ci", "label": "CI on {host}", "forge": ["unknown"], "detect": [".github/workflows/", ".forgejo/workflows/", ".gitea/workflows/", ".gitlab-ci.yml"] },
+    { "facet": "ci", "label": "Woodpecker", "forge": ["!github"], "detect": [".woodpecker.yml", ".woodpecker.yaml", ".woodpecker/"] },
+    { "facet": "ci", "label": "CircleCI", "forge": ["!github"], "detect": [".circleci/config.yml"] },
+    { "facet": "ci", "label": "Azure Pipelines", "forge": ["!github"], "detect": ["azure-pipelines.yml", "azure-pipelines.yaml"] },
+    { "facet": "ci", "label": "Jenkins", "forge": ["!github"], "detect": ["Jenkinsfile"] },
+    { "facet": "ci", "label": "Bitbucket Pipelines", "forge": [], "detect": ["bitbucket-pipelines.yml"] },
+    { "facet": "ci", "label": "Drone", "forge": ["!github"], "detect": [".drone.yml", ".drone.yaml"] },
+    { "facet": "security", "label": "Snyk", "forge": [], "detect": [".snyk"] },
+    { "facet": "security", "label": "Mend", "forge": [], "detect": [".whitesource"] },
+    { "facet": "deps", "label": "Renovate", "forge": ["!github"], "detect": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"] },
+    { "facet": "deps", "label": "Depfu", "forge": [], "detect": [".depfu.yml"] }
+  ],
+  "bots": [
+    {
+      "id": "dependabot",
+      "logins": ["dependabot[bot]", "app/dependabot", "dependabot", "dependabot-preview[bot]", "app/dependabot-preview", "dependabot-preview"],
+      "branch": "dependabot/", "dashboard": null,
+      "config": [".github/dependabot.yml", ".github/dependabot.yaml"]
+    },
+    {
+      "id": "renovate",
+      "logins": ["renovate[bot]", "app/renovate", "renovate-bot"],
+      "branch": "renovate/", "dashboard": "Dependency Dashboard",
+      "config": ["renovate.json", "renovate.json5", ".github/renovate.json", ".github/renovate.json5", ".gitlab/renovate.json", ".renovaterc", ".renovaterc.json", "package.json#renovate"]
+    }
+  ]
+}

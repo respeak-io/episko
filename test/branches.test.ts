@@ -259,6 +259,38 @@ describe("the filter chips, which are also the quick-selects", () => {
     expect(only("all")).toHaveLength(6);
   });
 
+  it("narrows to branches holding commits no remote has: ahead of their upstream, or with nothing pushed", () => {
+    const rs = branchRows(ctx({ branches: [
+      B("ahead", { ahead: 2 }),
+      B("even"),
+      LOCAL("never-pushed", { t_ahead: 3 }),
+      LOCAL("empty"), // a fresh branch with nothing of its own has nothing to push
+      B("orphan", { gone: true, t_ahead: 1 }),
+      B("theirs", { remote: true, t_ahead: 4 }),
+      // Pushed without -u, then committed to: git counts those, and nothing here says how many.
+      B("untracked", { upstream: "", t_ahead: 2 }),
+      B("untracked-even", { upstream: "" }),
+    ] }));
+    expect(filterRows(rs, "unpushed", "", NOW).map((r) => r.name).sort())
+      .toEqual(["ahead", "never-pushed", "orphan", "untracked"]);
+    expect(filterCounts(rs, NOW).unpushed).toBe(4);
+  });
+
+  // Maintenance's Untouched count opens this chip, so it lists exactly what that number counts.
+  it("Untouched: only here, never gone, and idle past the project's own threshold", () => {
+    const rs = rows({ branches: [
+      LOCAL("idle", { unix: day(40) }), LOCAL("busy", { unix: day(3) }), B("old-remote", { remote: true, unix: day(90) }),
+      B("old-pushed", { unix: day(90) }), B("old-gone", { gone: true, unix: day(90) }),
+    ] });
+    const names = (days?: number) => filterRows(rs, "untouched", "", NOW, days).map((r) => r.name).sort();
+    expect(names()).toEqual(["idle"]);
+    expect(names(60)).toEqual([]);
+    expect(names(2)).toEqual(["busy", "idle"]);
+    expect(filterCounts(rs, NOW, 2).untouched).toBe(2);
+    expect(filterRows(rs, "stale", "", NOW, 2).map((r) => r.name).sort(), "Stale keeps its fixed 30 days")
+      .toEqual(["idle", "old-gone", "old-pushed", "old-remote"]);
+  });
+
   it("filters by name on top of the chip", () => {
     expect(filterRows(list(), "merged", "old", NOW).map((r) => r.name)).toEqual(["old-merged"]);
     expect(filterRows(list(), "gone", "old", NOW)).toEqual([]);

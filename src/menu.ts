@@ -12,10 +12,14 @@ export interface MenuItem {
   id: string;
   label: string;
   sub?: string;
+  /** Colours `sub` for a count that needs you: red broken, amber drifting; anything else stays muted. */
+  tone?: "bad" | "warn";
   /** Leading slot: a tick for the chosen one, a glyph for anything else. */
   mark?: string;
   /** Inline SVG markup (./providers/logos), NOT a url and NOT escaped — a fixed table, never user text. */
   logo?: string;
+  /** A project's own mark after the leading slot: its icon url, else its initial on its accent. */
+  avatar?: { icon: string | null; accent: string; name: string };
   /** Shown, never picked — the reason a row is here is usually the point (`not on PATH`). */
   disabled?: boolean;
   danger?: boolean;
@@ -61,11 +65,14 @@ function itemHtml(i: MenuItem, idx: number): string {
   const mark = i.logo
     ? `<span class="mn-mk agent-logo" aria-hidden="true">${i.logo}</span>`
     : `<span class="mn-mk">${i.mark ? markHtml(i.mark) : ""}</span>`;
+  const av = !i.avatar ? "" : i.avatar.icon
+    ? `<span class="mn-av"><img src="${escAttr(i.avatar.icon)}" alt="" /></span>`
+    : `<span class="mn-av" style="background:${escAttr(i.avatar.accent)}">${esc(i.avatar.name.slice(0, 1))}</span>`;
   const cls = `mn-i${i.disabled ? " dis" : ""}${i.danger ? " danger" : ""}`;
   return `<button class="${cls}" role="menuitem"${i.disabled ? " disabled" : ""}`
-    + `${i.disabled ? "" : ` data-mi="${escAttr(i.id)}" data-idx="${idx}"`}>${mark}`
+    + `${i.disabled ? "" : ` data-mi="${escAttr(i.id)}" data-idx="${idx}"`}>${mark}${av}`
     + `<span class="mn-b"><span class="mn-l">${esc(i.label)}</span>`
-    + (i.sub ? `<span class="mn-s2">${esc(i.sub)}</span>` : "") + `</span></button>`;
+    + (i.sub ? `<span class="mn-s2${i.tone ? ` t-${i.tone}` : ""}">${esc(i.sub)}</span>` : "") + `</span></button>`;
 }
 
 /** `at` is the control the menu belongs to; it opens under it and flips up when there is no room. */

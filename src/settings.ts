@@ -22,10 +22,10 @@ import {
   SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, closeAskIdle, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
-  claudeAccts, acctChecks, foundTokens,
+  claudeAccts, acctChecks, foundTokens, maintTokens, maintTokenChecks,
 } from "./state";
 import { acctFull, acctReady, addAcct, moveAcct, pickAcct, toggleAcct, validLabel, type ClaudeAcct } from "./accounts";
-import { accountsPanelHtml } from "./accountsview";
+import { accountsPanelHtml, maintTokensHtml } from "./accountsview";
 import {
   ATTN_DEFAULTS, ATTN_HIGHLIGHT_RANGE, ATTN_HIGHLIGHT_STEP, ATTN_ORDERS,
   isDefaultAttnPrefs, type AttnOrder, type AttnPrefs,
@@ -79,6 +79,9 @@ import {
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
 import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
+import { disclosure, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
+import { maintPrefs, setMaintPublic } from "./maintscan";
+import { tokenSends } from "./maint";
 import { CHANNEL, updateChannel } from "./channelhook";
 import type { Channel } from "./channel";
 
@@ -147,6 +150,11 @@ export interface SettingsHost {
   addClaudeToken: (label: string, token: string) => Promise<boolean>;
   setupClaudeToken: (label: string) => Promise<void>;
   removeClaudeAcct: (label: string) => Promise<void>;
+  // Maintenance's service tokens, the same shape: saved, checked and forgotten by kind and host, never read back.
+  listMaintTokens: () => Promise<unknown>;
+  addMaintToken: (kind: string, host: string, token: string) => Promise<boolean>;
+  checkMaintToken: (kind: string, host: string) => Promise<void>;
+  removeMaintToken: (kind: string, host: string) => Promise<void>;
   // Keeps the choice and checks at once (./update), so a switch is offered from here.
   setUpdateChannel: (c: Channel) => void;
 }
@@ -198,6 +206,8 @@ let host: SettingsHost = {
   syncReview: () => {},
   saveClaudeAccts: () => {}, listClaudeTokens: () => Promise.resolve([]), checkClaudeAcct: () => Promise.resolve(),
   addClaudeToken: () => Promise.resolve(false), setupClaudeToken: () => Promise.resolve(), removeClaudeAcct: () => Promise.resolve(),
+  listMaintTokens: () => Promise.resolve([]), addMaintToken: () => Promise.resolve(false), checkMaintToken: () => Promise.resolve(),
+  removeMaintToken: () => Promise.resolve(),
   setUpdateChannel: () => {},
 };
 export function setSettingsHost(h: SettingsHost) { host = h; }
@@ -236,6 +246,7 @@ type SetShape =
   | { kind: "guide" }
   | { kind: "sync" }
   | { kind: "accounts" }
+  | { kind: "maintTokens"; token: TokenDef }
   | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
@@ -528,13 +539,20 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends",
+    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends, and what Maintenance reads with",
     controls: () => [
       { kind: "accounts", id: "claudeaccts", key: "cc-claude-accounts", label: "Claude accounts",
         hint: "Subscriptions a new Claude session can start on, in order. When the first is full, the next takes over.",
         more: "Each account is a long-lived token from claude setup-token, kept in this machine's keychain and handed to one session at a time, so nothing is logged in or out. A running session keeps its account; when one hits its limit, Episko offers to resume it on the next. The usage probe answers nothing for a token, so a model's own weekly window (Fable's) shows only for the account you're logged in to.",
         aliases: ["subscription", "login", "logout", "max", "pro", "token", "setup-token", "fallback", "limit", "quota", "oauth", "keychain", "second account"], since: "0.39.0",
         summary: () => acctSummary() },
+      // One per kind of service token the manifest names: its label, default host, page and scopes are data.
+      ...tokenKinds().map((t): SetControl => ({
+        kind: "maintTokens", token: t, id: tokenRow(t.id), label: `${t.label} tokens`,
+        hint: "Tokens Maintenance reads errors in production with, only on a click, kept in this machine's keychain.",
+        more: `A token needs the scopes ${t.scopes.join(", ")}. ${tokenSends(t.label)} A host the team's .episko/episko.toml names picks among the tokens saved here and never gets one that is not. Nothing shows a token again once it is saved, and it never syncs.`,
+        aliases: [t.label.toLowerCase(), "error tracker", "errors", "token", "auth token", "api token", "maintenance", "prod", "keychain"],
+        summary: () => tokSummary(t.id) })),
     ],
   },
   {
@@ -604,6 +622,19 @@ const SET_TABS: SetTab[] = [
         more: "The session's row, header and inspector say which folder it started in. Move session here restarts it in the new folder, so its conversation lives there too; that is never done for you. Off, the inspector asks each time.",
         aliases: ["drift", "worktree", "moved", "track", "show it here", "checkout", "branch"], since: "0.34.0",
         on: () => driftAuto, isDefault: () => driftAuto, reset: () => host.setDriftAuto(true) },
+      // One per public source, its disclosure as the hint: the switch says what it sends (docs/maintenance.md).
+      ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
+        kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
+        hint: disclosure(src) ?? "",
+        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same is sent then. This machine only: the switch never syncs, because it changes what leaves it.`,
+        aliases: ["maintenance", "security", "public", "privacy",
+          ...src.sees.includes("sec.runtime") ? ["runtime", "end of life", "eol"]
+            : src.sees.includes("deps.latest") ? ["outdated", "major", "behind", "latest", "dependencies", "registry", "upgrade"]
+            : src.sees.includes("prod.domain") ? ["domain", "registration", "expiry", "registrar", "renewal", "prod"]
+            : ["vulnerability", "advisory", "lockfile", "cve", "dependencies"]],
+        on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
+        reset: () => applySetting(`maintpub:${src.id}`, "0"),
+      })),
       // Set from the project's task panel; reviewed and revoked here.
       { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
         hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
@@ -793,11 +824,14 @@ let query = "";                         // the search box, mirrored so a repaint
 const openPanels = new Set<string>();  // folded panels opened by hand; a search hit opens one without touching this
 const openWhy = new Set<string>();
 let spyHold = 0;                        // the spy stands down until then: a rail click is scrolling
+let landed: { row: string; at: number } | null = null; // a door's row, lit through the repaints its listings cause
+const LIT_MS = 3200;                    // styles.css's `set-lit`
 
 export function settingsOpen() { return $("setDlg").classList.contains("show"); }
 export function openSettings() {
   $("scrim").classList.add("show"); $("setDlg").classList.add("show"); refreshAccess(); renderSettings();
   void host.listClaudeTokens(); // a token added by hand since shows up without a restart
+  void host.listMaintTokens();
   $("setQ").focus(); // typing filters at once
 }
 // `setTab` is a module `let` and an ESM import of it is read-only, so this is the seam.
@@ -808,13 +842,14 @@ export function openSettings() {
 export function openSettingsOn(tab: string, row?: string) {
   setQuery("");
   setTab = tab;
+  landed = null;
   openSettings();
   const body = $("setBody");
   const hit = body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(row ?? tab)}"]`);
   const target = hit ?? body.querySelector<HTMLElement>(`.set-sec[data-sec="${CSS.escape(tab)}"]`);
   if (!target) return;
   scrollBodyTo(target, hit ? 120 : 0);
-  if (hit) { hit.classList.remove("set-lit"); void hit.offsetWidth; hit.classList.add("set-lit"); }
+  if (hit) { hit.classList.remove("set-lit"); void hit.offsetWidth; hit.classList.add("set-lit"); landed = { row: row ?? tab, at: Date.now() }; }
   markTab(tab);
 }
 export function closeSettings() {
@@ -822,6 +857,10 @@ export function closeSettings() {
   stopKeyRec();
   $("setDlg").classList.remove("show");
   dropScrim();
+  landed = null;
+  // A token pasted and never saved is not written back on the next open: the fields are write-only.
+  acctDraft.token = "";
+  for (const d of Object.values(tokDrafts)) d.token = "";
 }
 function setQuery(v: string) {
   query = v;
@@ -893,9 +932,25 @@ export function renderSettings() {
   }
   const body = $("setBody");
   const sc = body.scrollTop; // preserved across the rebuild; a stepper press must not jump the page
+  // An answer landing mid-typing (a token's Check) hands the field back as it was: focus and caret.
+  const typing = document.activeElement instanceof HTMLInputElement && document.activeElement.id && body.contains(document.activeElement)
+    ? { id: document.activeElement.id, from: document.activeElement.selectionStart, to: document.activeElement.selectionEnd } : null;
   body.innerHTML = html || `<div class="set-none">Nothing matches <b>${esc(query.trim())}</b>.<p>Fewer words, or ${
     SEARCH_FILTERS.map((f) => `<button class="set-chip" data-setq="${f}">${f}</button>`).join(" ")}.</p></div>`;
   body.scrollTop = sc;
+  const field = typing && document.getElementById(typing.id);
+  if (typing && field instanceof HTMLInputElement) {
+    field.focus({ preventScroll: true });
+    try { field.setSelectionRange(typing.from, typing.to); } catch { /* a type with no caret */ }
+  }
+  // A door's row stays lit, mid-animation, through the repaints its own listings cause, and its scroll goes on.
+  const since = landed ? Date.now() - landed.at : Infinity;
+  const lit = landed && since < LIT_MS ? body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(landed.row)}"]`) : null;
+  if (lit) {
+    lit.style.animationDelay = `-${since}ms`;
+    lit.classList.add("set-lit");
+    if (since < 700) scrollBodyTo(lit, 120);
+  }
   // The rail: a count per section while searching, a dot where something is changed.
   const tabHtml = (t: SetTab) => {
     const n = counts.get(t.id) ?? 0;
@@ -1543,6 +1598,14 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       always = true;
       break;
     }
+    case "maintTokens": {
+      ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
+      const mine = (maintTokens ?? []).filter((x) => x.kind === c.token.id);
+      panel = maintTokensHtml({ def: c.token, listed: maintTokens !== null, draft: tokDraftOf(c.token), now: Date.now(), sends: tokenSends(c.token.label),
+        rows: mine.map((x) => ({ host: x.host, check: maintTokenChecks[`${x.kind}@${x.host}`] })) });
+      always = true;
+      break;
+    }
     case "sync":
       ctl = `<span class="set-nil">${esc(c.summary!())}</span>`;
       panel = syncPanelHtml({
@@ -1769,6 +1832,28 @@ function applyAcctSetting(verb: string) {
   }
 }
 
+// Maintenance's tokens: a draft per kind, its token field write-only as the accounts' is.
+const tokDrafts: Record<string, { host: string; token: string }> = {};
+const tokDraftOf = (t: TokenDef) => (tokDrafts[t.id] ??= { host: t.host, token: "" });
+function tokSummary(kind: string): string {
+  const hosts = (maintTokens ?? []).filter((x) => x.kind === kind).map((x) => x.host);
+  return maintTokens === null ? "not listed yet" : hosts.length ? hosts.join(", ") : "none saved";
+}
+function applyTokSetting(verb: string) {
+  const [v, kind = "", slot = ""] = verb.split("|");
+  const def = tokenKinds().find((t) => t.id === kind);
+  if (!def) return;
+  if (v === "check") void host.checkMaintToken(kind, slot);
+  else if (v === "remove") void host.removeMaintToken(kind, slot);
+  else if (v === "save") {
+    const d = tokDraftOf(def), token = d.token.replace(/\s+/g, "");
+    if (!d.host.trim() || !token) { toast(d.host.trim() ? "Paste the token first" : "Name the host the token is for"); return; }
+    void host.addMaintToken(kind, d.host.trim(), token).then((ok) => {
+      if (ok) { tokDrafts[kind] = { host: def.host, token: "" }; renderSettings(); }
+    });
+  }
+}
+
 function syncProjects(): ProjectSyncRow[] {
   const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
   return keys.map((key) => ({ key, name: basename(key), mode: shareModeOf(key) }));
@@ -1836,6 +1921,7 @@ function applySetting(set: string, val: string) {
   else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
   else if (set === "agenttools") host.setAgentTools(val === "1");
+  else if (set.startsWith("maintpub:")) setMaintPublic(set.slice("maintpub:".length), val === "1");
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });
@@ -2049,6 +2135,8 @@ $("setBody").addEventListener("click", (e) => {
   if (sy) { applySyncSetting(sy.dataset.setsync!); return; }
   const ac = (e.target as HTMLElement).closest<HTMLElement>("[data-setacct]");
   if (ac) { applyAcctSetting(ac.dataset.setacct!); return; }
+  const tk = (e.target as HTMLElement).closest<HTMLElement>("[data-settok]");
+  if (tk) { applyTokSetting(tk.dataset.settok!); return; }
   const rv = (e.target as HTMLElement).closest<HTMLElement>("[data-setrevive]");
   if (rv) { applyReviveSetting(rv.dataset.setrevive!); return; }
   const sd = (e.target as HTMLElement).closest<HTMLElement>("[data-setsound]");
@@ -2077,6 +2165,9 @@ $("setBody").addEventListener("input", (e) => {
   if (sf) syncDraft[sf.dataset.syncfield as keyof SyncDraft] = sf.value;
   const af = (e.target as HTMLElement).closest<HTMLInputElement>("[data-acctfield]");
   if (af) acctDraft[af.dataset.acctfield as "name" | "token"] = af.value;
+  const tf = (e.target as HTMLElement).closest<HTMLInputElement>("[data-tokfield]");
+  const def = tf && tokenKinds().find((t) => t.id === tf.dataset.tokkind);
+  if (tf && def) tokDraftOf(def)[tf.dataset.tokfield === "host" ? "host" : "token"] = tf.value;
 });
 
 // Delegated on the persistent #setBody: renderSettings() replaces the demo DOM on every press.

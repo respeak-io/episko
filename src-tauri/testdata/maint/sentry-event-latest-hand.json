@@ -1,0 +1,132 @@
+{
+  "groupID": "6000000101",
+  "eventID": "9999aaaaca8b46d797c23c6077c6ff01",
+  "dist": null,
+  "userReport": null,
+  "previousEventID": null,
+  "nextEventID": null,
+  "message": "",
+  "title": "ZeroDivisionError: division by zero",
+  "id": "9999aaaaca8b46d797c23c6077c6ff01",
+  "size": 107762,
+  "errors": [],
+  "platform": "python",
+  "type": "error",
+  "metadata": { "type": "ZeroDivisionError", "value": "division by zero" },
+  "tags": [
+    { "key": "environment", "value": "production" },
+    { "key": "server_name", "value": "web-7f9c-secret-node" },
+    { "key": "user", "value": "email:hell@boy.cat" }
+  ],
+  "dateCreated": "2026-11-06T22:00:00.098086Z",
+  "dateReceived": "2026-11-06T22:00:00.428721Z",
+  "user": {
+    "username": null,
+    "name": "Hell Boy",
+    "ip_address": "192.168.1.1",
+    "email": "hell@boy.cat",
+    "data": { "isStaff": false },
+    "id": "550747"
+  },
+  "contexts": {
+    "os": { "name": "Linux", "version": "6.8.0" },
+    "runtime": { "name": "CPython", "version": "3.12.4" }
+  },
+  "entries": [
+    {
+      "type": "exception",
+      "data": {
+        "values": [
+          {
+            "type": "KeyError",
+            "value": "'discount'",
+            "module": "builtins",
+            "mechanism": { "type": "generic", "handled": true },
+            "stacktrace": {
+              "frames": [
+                {
+                  "function": "apply_discount",
+                  "module": "billing.discounts",
+                  "filename": "billing/discounts.py",
+                  "absPath": "/srv/app/billing/discounts.py",
+                  "lineNo": 17,
+                  "colNo": null,
+                  "inApp": true,
+                  "vars": { "customer_email": "hell@boy.cat", "card_last4": "4242" },
+                  "context": [[16, "    rates = load_rates()"], [17, "    return rates[order['discount']]"]]
+                }
+              ]
+            }
+          },
+          {
+            "type": "ZeroDivisionError",
+            "value": "division by zero",
+            "module": "builtins",
+            "mechanism": { "type": "django", "handled": false },
+            "stacktrace": {
+              "frames": [
+                {
+                  "function": "_bootstrap_inner",
+                  "module": "threading",
+                  "filename": "threading.py",
+                  "absPath": "/usr/lib/python3.12/threading.py",
+                  "lineNo": 1073,
+                  "inApp": false,
+                  "vars": { "self": "<Thread(Thread-1)>" },
+                  "context": [[1073, "            self.run()"]]
+                },
+                {
+                  "function": "checkout",
+                  "module": "billing.views",
+                  "filename": "billing/views.py",
+                  "absPath": "/srv/app/billing/views.py",
+                  "lineNo": 88,
+                  "inApp": true,
+                  "vars": { "request": "<WSGIRequest: POST '/checkout?session=s3cr3t'>", "password": "hunter2" },
+                  "context": [[88, "    total = invoice.total(order)"]]
+                },
+                {
+                  "function": "total",
+                  "module": "billing.invoice",
+                  "filename": null,
+                  "absPath": "https://app.example.com/static/invoice.js?token=t0ps3cr3t#L42",
+                  "lineNo": 42,
+                  "inApp": true,
+                  "vars": { "per_seat": 0, "seats": 12 },
+                  "context": [[42, "    return amount / per_seat"]]
+                },
+                {
+                  "instructionAddr": "0x7fff5bf3456c",
+                  "inApp": false
+                }
+              ]
+            }
+          }
+        ],
+        "excOmitted": null,
+        "hasSystemFrames": true
+      }
+    },
+    {
+      "type": "breadcrumbs",
+      "data": {
+        "values": [
+          { "type": "http", "category": "httplib", "message": "POST https://payments.example/charge?card=4242424242424242", "data": { "status_code": 200 } }
+        ]
+      }
+    },
+    {
+      "type": "request",
+      "data": {
+        "url": "https://app.example.com/checkout",
+        "method": "POST",
+        "headers": [["Cookie", "sessionid=s3cr3t"], ["Authorization", "Bearer leaked"]],
+        "data": { "card": "4242424242424242" }
+      }
+    },
+    {
+      "type": "message",
+      "data": { "formatted": "checkout failed for order 1182", "params": ["hell@boy.cat"] }
+    }
+  ]
+}

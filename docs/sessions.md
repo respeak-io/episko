@@ -50,10 +50,16 @@ sidebar row. Settings › Launching (`cc-term-split`, on by default) turns it of
 (⌘⌥T) takes whichever layout ⌘T is not set to. With an external launch engine ⌘T still opens the
 external app and the switch dims.
 
-- **One mechanism with run groups.** `stageGroup` holds a run's `groupId` *or* an anchor session's
-  own id; `inStageGroup`/`stageKeyOf` (./grouping) answer membership for both, `paintStage`
-  (./panes) lays either out, and `#terminals.tiled.split` is the grid variant. `groupMembers`, the
-  sidebar header and the run-only verbs stay run-only. A task never anchors — a shell tiled
+- **One mechanism with run groups.** `stageGroup` holds a run's `groupId`, a maintenance session's
+  `Sess.group.id` *or* an anchor session's own id; `inStageGroup`/`stageKeyOf` (./grouping) answer
+  membership for all three, `paintStage` (./panes) lays them out, and `#terminals.tiled.split` is the
+  grid variant. `stageMembers` answers a run or an agent group, never a split. The sidebar header and
+  the run-only verbs stay run-only. An **agent group** is never folded in the sidebar, since its
+  members sit under their own projects: it is reached from a member row's ⊞ N tag and from Back, and
+  it does not survive a quit, like a split. `groupFocus` keeps the active tile, so a late member
+  never takes the keyboard, `memberTakesStage` keeps it off the stage once you have left for a
+  mirror, and `paneCapName` names each tile by its project and, until a first prompt gives its
+  title something to say, by its line (docs/maintenance.md § Maintenance session). A task never anchors — a shell tiled
   into a run's output read as part of the run, and a chain's mosaic is the chain's — nor does an
   external pane (`splitAnchorFor`).
 - **A split shell is never `activeId`.** `setActive(shell)` redirects to its anchor and focuses the

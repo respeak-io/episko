@@ -193,6 +193,15 @@ describe("the invoke() ↔ #[tauri::command] argument contract", () => {
     expect([...new Set(bad)]).toEqual([]);
   });
 
+  it("reads Maintenance's three calls as literals, so the contract covers them", () => {
+    // A source is data, never a command name: one literal per capability keeps each checkable here.
+    for (const cmd of ["maint_detect", "maint_read", "maint_invalidate"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+  });
+
   it("says what it could not check, rather than reading as full coverage", () => {
     // Zero is not required; this keeps the blind spot small enough to know about.
     const opaque = sites.filter((s) => !s.literal).map((s) => `${s.file}: ${s.cmd}`);
@@ -331,5 +340,62 @@ describe("what a command returns", () => {
     const wire = sorted(bgMiss.variants.map((v) => v[0].toLowerCase() + v.slice(1)));
     expect(wire).toEqual(sorted(tsUnion(TYPES, "BgMissReason")));
     expect(wire).toEqual(["ambiguous", "badId", "none", "noRoot", "notYet", "unreadable"]);
+  });
+});
+
+// `[deploy]` crosses both ways: `write_deploy` deserialises the same struct `deploy_config` sends,
+// so a field renamed on one side alone is a table that silently loses a value on Apply.
+const DEPLOY_RS = read(RS, "deploy.rs");
+const DEPLOY_TS = read(SRC, "deploy.ts");
+const cfgHead = /pub\(crate\)\s+struct\s+DeployConfig\s*\{/.exec(DEPLOY_RS);
+
+describe("where a project runs", () => {
+  it("reads the [deploy] calls as literals", () => {
+    for (const cmd of ["deploy_config", "propose_deploy", "write_deploy", "episko_toml_path"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+    expect(cmds.get("write_deploy")!.required).toEqual(["dir", "deploy", "create"]);
+    // Open file asks Rust which file Apply writes; a subfolder project's own path is another file.
+    expect(cmds.get("episko_toml_path")!.required).toEqual(["dir"]);
+  });
+
+  it("names in DeployCfg exactly what DeployConfig carries, camelCased both ways", () => {
+    expect(cfgHead).not.toBeNull();
+    expect(attrsAbove(DEPLOY_RS, cfgHead!.index)).toMatch(/rename_all\s*=\s*"camelCase"/);
+    const rs = rustFields(declBody(DEPLOY_RS, cfgHead!.index + cfgHead![0].length - 1)).map(camel);
+    expect(sorted(rs)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployCfg\s*\{/))));
+    expect(sorted(rs)).toEqual(["compose", "envs", "host", "sentry", "urls", "versionUrl"]);
+    const prop = rustFields(bodyOf(DEPLOY_RS, /pub\(crate\)\s+struct\s+DeployProposal\s*\{/));
+    expect(sorted(prop)).toEqual(sorted(tsFields(bodyOf(DEPLOY_TS, /export\s+interface\s+DeployProposal\s*\{/))));
+  });
+});
+
+// The advisory sweep crosses three times, and maint.ts narrows each answer by these field names:
+// a field renamed on one side alone narrows every answer to nothing.
+const SWEEP_RS = read(RS, "maint_sweep.rs");
+const MAINT_TS = read(SRC, "maint.ts");
+
+describe("the advisory sweep", () => {
+  it("reads its three calls as literals", () => {
+    for (const cmd of ["sweep_advisory", "sweep_match", "sweep_check"]) {
+      const at = sites.filter((s) => s.cmd === cmd);
+      expect(at.length, `${cmd} is never invoked`).toBeGreaterThan(0);
+      expect(at.every((s) => s.literal && cmds.has(cmd)), `${cmd} has a site the contract cannot read`).toBe(true);
+    }
+    expect(cmds.get("sweep_match")!.required).toEqual(["roots", "packages"]);
+  });
+
+  it("names in each TS mirror exactly what its Rust struct carries", () => {
+    const pairs = [["Span", "SweepSpan"], ["Affected", "SweepPkg"], ["SweepAdvisory", "SweepAdvisory"], ["SweepCopy", "SweepCopy"],
+      ["SweepUnread", "SweepUnread"], ["SweepFacts", "SweepFacts"], ["SweepCheck", "SweepCheck"]];
+    for (const [rs, ts] of pairs) {
+      const head = new RegExp(`pub\\(crate\\)\\s+struct\\s+${rs}\\s*\\{`);
+      expect(attrsAbove(SWEEP_RS, head.exec(SWEEP_RS)!.index), rs).toMatch(/rename_all\s*=\s*"camelCase"/);
+      const r = rustFields(bodyOf(SWEEP_RS, head)).map(camel);
+      expect(r.length, rs).toBeGreaterThan(1);
+      expect(sorted(r), rs).toEqual(sorted(tsFields(bodyOf(MAINT_TS, new RegExp(`export\\s+interface\\s+${ts}\\s*\\{`)))));
+    }
   });
 });

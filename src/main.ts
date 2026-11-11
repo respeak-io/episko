@@ -43,10 +43,11 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
-  openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
+  openDevtools, openTeamFile, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
-  onLimitHit, syncShownAccount,
+  onLimitHit, syncShownAccount, launchTogether,
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
+  listMaintTokens, addMaintToken, checkMaintToken, removeMaintToken,
 } from "./actions";
 import { playSound, setSoundLogger } from "./chime";
 import { endBg, foldPages, liveServers } from "./servers";
@@ -61,7 +62,7 @@ import {
   noteGitCommand, openPlainTerminal, openRunGroup, openShellFor, pollIo, refreshGitViews,
   refreshPaneCaps, refreshSessionStats, renderHeader, requestLaunch, rerunRunGroup, runGit, tickAutoFetch,
   scheduleDismiss, setActive, setPanesOnClose, setPanesRenderAll, shelveSession,
-  syncStageButtons, toggleRunGroup,
+  syncStageButtons, toggleRunGroup, prefillFresh,
 } from "./panes";
 import {
   maybeRunOnStop, setTaskRunCloseSession, setTaskRunLaunchTask, setTaskRunSetActive,
@@ -101,13 +102,14 @@ import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnr
 import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, openDashboard,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashToday, openDashboard,
   refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, openFleet, renderFleet, renderFleetHeader, setFleetHost, wireFleet,
+  closeFleet, fleetEscape, maintOnBoot, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
 } from "./fleetui";
+import { setMaintRender } from "./maintscan";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -133,7 +135,7 @@ import {
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
 import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
-import { orderedSessions, syncAttn } from "./grouping";
+import { groupKey, orderedSessions, stageMembers, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
 import {
@@ -240,6 +242,7 @@ setProjSetHost({
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
   setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
+  openTeamFile: (root) => void openTeamFile(root), setupDeploy: proposeDeploy, setupMaint: proposeMaint,
   trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
@@ -275,6 +278,7 @@ setSettingsHost({
   // One dialog at a time at this depth: the project's panel replaces Settings rather than stacking on it.
   openProjectSettings: (k) => { closeSettings(); openProjectSettings(k); },
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
+  listMaintTokens, addMaintToken, checkMaintToken, removeMaintToken,
 });
 setTourHost({
   pasteToActive: (text) => {
@@ -290,6 +294,7 @@ setTourHost({
     const app = $("app");
     if (need === "rail" && app.classList.contains("rail-mini")) toggleRail();
     if (need === "inspector" && app.classList.contains("insp-off")) toggleInsp();
+    if (need === "today") dashToday();
   },
   renderAll,
 });
@@ -315,6 +320,11 @@ setDashHost({
   openReview: (project, root, number) => { openPrReview(project, root, number); },
   saveTrunk: (repoDir, ref) => { setCmpBase(repoDir, ref); },
   setGhAccount: (root, login) => { setProjectGhAccount(root, login); },
+  openFleetMaint: (sub, root) => { showFleetMaint(sub, root); openFleet(); },
+  proposeDeploy: (root) => { void proposeDeploy(root); },
+  proposeMaint: (root) => { void proposeMaint(root); },
+  openConfig: (root) => { void openTeamFile(root); },
+  openSettings: openSettingsOn,
   openHistory: () => { void openHistory(true); },
   openFolder: (dir) => { void openProjectFolder(dir); },
   copyPath: (dir) => { void copyPath(dir); },
@@ -330,11 +340,27 @@ setDashHost({
 wireDashboard();
 // The fleet pane's own host, for the same reason: ./fleetui imports neither main.ts nor ./panes.
 setFleetHost({
-  setActive, closeSession, openDashboard, renderAll,
-  openUsage, openHistory: () => { void openHistory(true); },
+  setActive,
+  closeSession,
+  openDashboard,
+  renderAll,
+  openUsage,
+  openHistory: () => { void openHistory(true); },
   refreshUsage: () => { void refreshTokens().then(renderAll); },
+  // Typed, never sent: the two places Episko presses Enter stay two (CLAUDE.md).
+  prefill: (project, path, text) => {
+    void launch(project, path, { colorKey: path }).then((sid) => {
+      if (typeof sid !== "string") return; // a failed launch already toasted
+      prefillFresh(sid, text);
+      toast("Started and prefilled. Read it, then press Enter");
+    });
+  },
+  session: (label, rows, notes) => launchTogether(label, rows, notes),
+  terminal: (project, path, cmd) => { void handToTerminal(project, path, cmd, { colorKey: path }); },
+  openSettings: openSettingsOn,
 });
 wireFleet();
+setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts
 // The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
 setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
 setReviewHost({
@@ -459,7 +485,7 @@ const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
   || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
 function navAlive(l: Loc): boolean {
   switch (l.kind) {
-    case "session": return l.group ? [...sessions.values()].some((s) => s.run?.groupId === l.group) : sessions.has(l.id);
+    case "session": return l.group ? [...sessions.values()].some((s) => groupKey(s) === l.group) : sessions.has(l.id);
     case "ext": return externals.some((e) => e.pid === l.pid);
     case "past": return dormants.some((d) => d.id === l.id);
     case "fleet": return true;
@@ -470,6 +496,8 @@ function navName(l: Loc): string {
   const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
   switch (l.kind) {
     case "session": {
+      const tiles = l.group ? stageMembers(l.group) : [];
+      if (tiles[0]?.group) return cap(`${tiles[0].group.label} · ${tiles.length} pane${tiles.length === 1 ? "" : "s"}`);
       const s = sessions.get(l.id);
       const t = s && !l.group ? (s.kind === "task" ? s.run?.label : s.title) : "";
       return s ? cap(t ? `${s.project}: ${t}` : s.project) : "";
@@ -935,7 +963,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Escape" && usageOpen()) { e.preventDefault(); closeUsage(); }
   else if (e.key === "Escape" && changelogOpen()) { e.preventDefault(); closeChangelog(); }
   else if (e.key === "Escape" && $("mgrDlg").classList.contains("show")) { e.preventDefault(); if (mgrEdit) { setMgrEdit(null); renderMgr(); } else closeTaskManager(); }
-  else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); closeFleet(); renderAll(); }
+  // fleetEscape, not closeFleet: a Maintenance tab narrowed to one project widens first.
+  else if (e.key === "Escape" && fleetMirror()) { e.preventDefault(); fleetEscape(); renderAll(); }
   // prReviewEscape, not closePrReview: a comment being written goes first.
   else if (e.key === "Escape" && reviewMirror()) { e.preventDefault(); prReviewEscape(); renderAll(); }
   // dashEscape, not closeDashboard: an enlarge overlay may be up, as with graphEscape.
@@ -1100,13 +1129,13 @@ setInterval(() => { void pollServers(); }, 4000);
 // is only how soon after it returns an overdue rung is noticed.
 setInterval(tickRevive, 10_000);
 
-refreshExternals();
+const externalsIn = refreshExternals();
 setInterval(refreshExternals, 3000);
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
 // After the roster: an outcome heard just before the last quit removes the row it settles.
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
+const rosterIn = agentDiscovery.then(() => adoptOrphans()).finally(() => loadDormants().then(() => settleDue()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 
@@ -1139,3 +1168,5 @@ renderAll();
 // Nothing restored takes the stage, so this is where the app lands: every project, not a
 // card saying no sessions are running. Last, because it is the fallback for all of the above.
 if (!activeId && !mirror) takeStage("home");
+// Once every project source is in: a scan over the favourites alone would stamp the fleet checked.
+void Promise.allSettled([rosterIn, externalsIn]).then(() => maintOnBoot());

@@ -2,7 +2,7 @@
 // ./fleetview the markup. It is the home stage, reached from the Episko logo. See docs/dashboard.md.
 
 import { invoke } from "@tauri-apps/api/core";
-import { $, clearStageBadges, setHeadPath, takeStage } from "./dom";
+import { $, clearStageBadges, holdMaintPlace, setHeadPath, takeStage } from "./dom";
 import { dlog } from "./debug";
 import { openExternal, refreshDirtyStates, rosterReady } from "./mirror";
 import { basename, fmtDay, fmtDayLong, relTime } from "./format";
@@ -12,12 +12,26 @@ import {
   type FleetCard, type FleetSection, type FleetSort, type NeedKind,
 } from "./fleet";
 import {
-  fleetBodyHtml, fleetHeadHtml,
+  fleetBodyHtml, fleetHeadHtml, fleetTopHtml,
   type FleetExtra, type FleetLayout, type FleetModel, type FleetResume, type FleetRow,
-  type FleetSpendRow, type FleetUsage, type FleetView,
+  type FleetSpendRow, type FleetUsage, type FleetView, type FleetViewKind,
 } from "./fleetview";
 import {
-  allProjects, attnPending, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
+  addCoverCaps, cardsShown, clampMaint, comingUp, facetCells, findings, hostRead, hostRows, hostSummary, pastCells, prodChecks, projectBand, projectPicks, rankMaint, sweepRows, sweepTitle,
+  sessionGate, sessionKey, sessionLines, sessionPlan, sessionText, sessionTip,
+  tabExtras, tabFindings, tabModel, weekDigest,
+  type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type SessionLaunch, type TabProject, type WeekPairIn,
+} from "./maint";
+import { findSource, type MaintCap } from "./maintsources";
+import {
+  askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, scanFleet, shownSweep, sweeps, type SweepRun,
+} from "./maintscan";
+import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
+import {
+  maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView, type ProdAsks,
+} from "./maintview";
+import {
+  allProjects, attnPending, checkoutBusy, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
 import { iconFor } from "./icons";
 import type { HistEntry } from "./history";
@@ -25,7 +39,7 @@ import { forecast5h, forecast7d, hasH5Window } from "./rl";
 import { extWorking, GCLASS, GLYPH } from "./sidebarview";
 import {
   accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, projGroups, sessions,
-  setActiveId, setMirror,
+  setActiveId, setMirror, termEngine, worktreesByRepo,
 } from "./state";
 import type { TrailCommit } from "./trail";
 import { phaseText, statusKey, type ExtSession, type Sess, type WtHead } from "./types";
@@ -40,7 +54,13 @@ import { tokenScanning } from "./usageview"; // the transcript scan's own flag, 
 export interface FleetHost {
   setActive: (id: string) => void;
   closeSession: (id: string) => void;
-  openDashboard: (project: string, path: string) => void;
+  openDashboard: (project: string, path: string, tab?: "today" | "maint", door?: Door) => void;
+  // Launch an agent and type `text` into it with no newline: a person reads it and presses Enter.
+  prefill: (project: string, path: string, text: string) => void;
+  session: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>;
+  // A shell with `cmd` typed in and never sent, as the dashboard's.
+  terminal: (project: string, path: string, cmd: string) => void;
+  openSettings: (section: string, row?: string) => void; // Maintenance's token door, at Settings › Accounts
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -49,8 +69,17 @@ export interface FleetHost {
   renderAll: () => void;
 }
 let host: FleetHost = {
-  setActive: () => {}, closeSession: () => {}, openDashboard: () => {},
-  openUsage: () => {}, openHistory: () => {}, refreshUsage: () => {}, renderAll: () => {},
+  setActive: () => {},
+  closeSession: () => {},
+  openDashboard: () => {},
+  prefill: () => {},
+  session: async () => {},
+  terminal: () => {},
+  openSettings: () => {},
+  openUsage: () => {},
+  openHistory: () => {},
+  refreshUsage: () => {},
+  renderAll: () => {},
 };
 export function setFleetHost(h: FleetHost) { host = h; }
 
@@ -92,6 +121,50 @@ export function setFleetRange(n: number) {
   fleetRange = n;
   localStorage.setItem("cc-fleet-range", String(n));
   void loadFleet();   // the commit scan is the range's, so it is re-read rather than re-sliced
+}
+// Activity by default: a home stage that reshuffles itself on upgrade is a bug report. Choosing the
+// view is the ask, and so is a boot that lands on it (`maintOnBoot`, docs/maintenance.md).
+export let fleetView: FleetViewKind = localStorage.getItem("cc-fleet-view") === "maint" ? "maint" : "activity";
+export function setFleetView(v: FleetViewKind) {
+  fleetView = v === "maint" ? "maint" : "activity";
+  localStorage.setItem("cc-fleet-view", fleetView);
+  if (fleetView === "maint" && !fleetScanning && Date.now() - fleetCheckedAt > MAINT_FRESH_MS) checkFleet(false);
+  renderFleet();
+}
+const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.path))];
+
+/** main.ts, once, after the boot picked its stage: Maintenance on screen re-reads what is older than the window.
+ *  Not from `openFleet`, which every exit from the stage runs too. */
+export function maintOnBoot(): void {
+  if (fleetView !== "maint" || !fleetMirror() || fleetScanning) return;
+  const now = Date.now();
+  if (maintRoots().some((r) => { const e = maintOf(r); return !e || now - e.at > MAINT_FRESH_MS; })) checkFleet(false);
+}
+// Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a nav
+// field: `{kind:"fleet"}` stays field-less, so no mirror read site changes (docs/maintenance.md).
+let maintSub: MaintSub = "overview";
+let maintFilter: string | null = null;
+// A project removed since its cell was clicked narrows to nothing, so its filter lapses everywhere.
+const liveFilter = () => maintFilter !== null && maintRoots().includes(maintFilter) ? maintFilter : null;
+function setMaintTab(sub: MaintSub, root?: string | null, board?: BoardId | null): void {
+  maintSub = sub;
+  if (root !== undefined) maintFilter = root;
+  if (sub === "overview") maintFilter = null; // the cards are every project's or nothing
+  renderFleet();
+  if (board === undefined) return;
+  // Painted above, so the board is there to scroll to; a board this project has none of lands on the tab's top.
+  // Focus follows, since the repaint took the focused line with it. Scoped: the dashboard draws the same ids.
+  const body = $("fleetBody"), at = board && body.querySelector<HTMLElement>(`#mtb-${board}`);
+  (at || body.querySelector(".mt-tabs"))?.scrollIntoView({ block: "start" });
+  (at || body.querySelector<HTMLElement>(".mt-pick"))?.focus({ preventScroll: true });
+}
+function checkFleet(force: boolean): void { void scanFleet(maintRoots(), force); }
+/** A dashboard's "all projects": Maintenance on that tab, narrowed to the project it came from, so
+ *  the picker is one click from every project. Choosing it is the ask. */
+export function showFleetMaint(sub: MaintSub, root: string | null = null): void {
+  maintSub = sub;
+  maintFilter = sub === "overview" ? null : root;
+  setFleetView("maint");
 }
 
 // ---------- what the reads left behind ----------
@@ -311,18 +384,179 @@ function buildView(now: number): FleetView {
   };
 }
 
+// ---------- the Maintenance view: the cache only, never a read ----------
+function whereSub(inp: MaintInput): string {
+  const f = inp.det?.forge;
+  if (!f) return "";
+  if (f.kind === "none") return "no remote";
+  return [f.host, f.path].filter(Boolean).join("/") || f.kind;
+}
+
+// One card per repo: worktrees collapse to their root, the first project of it naming the card.
+function maintProjects(): Map<string, ProjGroup> {
+  const byRoot = new Map<string, ProjGroup>();
+  for (const p of allProjects()) if (!byRoot.has(p.repoRoot ?? p.path)) byRoot.set(p.repoRoot ?? p.path, p);
+  return byRoot;
+}
+
+// The picker's list, on a click only: every project, with the rows buildMaint counts for the tab badges.
+function maintPicks(tab: MaintTab): PickRow[] {
+  const now = Date.now(), byRoot = maintProjects(), rows: Finding[] = [];
+  for (const root of byRoot.keys()) {
+    const inp = maintInput(root);
+    if (inp) rows.push(...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds), now));
+  }
+  return projectPicks(tab, rows, [...byRoot].map(([root, p]) => ({ root, name: p.name })))
+    .map((k) => { const p = byRoot.get(k.root)!; return { ...k, accent: p.accent, icon: iconFor(p.path) }; });
+}
+
+// The session's sweeps as drawn, from what they left: drawing one asks nothing.
+function sweepView(projects: number): MaintSweepView {
+  const rowsOf = (s: SweepRun) => s.adv && s.state === "done" ? sweepRows(s.adv, s.facts, s.roots) : [];
+  const cur = shownSweep();
+  return {
+    runs: sweeps.map((s) => ({
+      n: s.n, at: s.at, query: s.query, state: s.state, title: s.adv ? sweepTitle(s.adv) : s.query,
+      hit: rowsOf(s).filter((r) => r.verdict === "affected").length,
+    })),
+    cur: cur && { n: cur.n, query: cur.query, state: cur.state, err: cur.err, adv: cur.adv, rows: rowsOf(cur), agents: cur.agents },
+    projects, service: findSource("osv")?.label ?? "a public advisory database", // the one maint_sweep.rs asks
+    tiled: termEngine === "embedded",
+  };
+}
+
+// What Start would make, from the roster this paint already has: Start itself re-plans from fresh
+// heads (./maintui), so the bar can under-state a reuse but never launches into a busy checkout.
+function sessionView(cards: readonly MaintCard[], nameOf: (root: string) => string, now: number): MaintSession {
+  const lines = new Map(cards.flatMap((c) => c.findings.map((f) => [sessionKey(f), f] as const)));
+  const picked = [...maintPicked.picked].flatMap((k) => {
+    const f = lines.get(k), inp = f && maintInput(f.root);
+    return f && inp ? [{ f, inp }] : [];
+  });
+  const headsOf = (root: string) => worktreesByRepo.get(root) ?? [];
+  const plan = sessionPlan(picked, {
+    heads: headsOf, plain: (root) => worktreesByRepo.get(root)?.length === 0, earlier: maintEarlier,
+    busy: (path, root) => checkoutBusy(path, headsOf(root)), name: nameOf, now,
+  });
+  const shown = new Set(sessionLines(cardsShown(cards, maintChip)).order);
+  const hidden = picked.filter(({ f }) => !shown.has(sessionKey(f))).length;
+  return {
+    picked: maintPicked.picked, n: picked.length, start: plan.rows.length, text: sessionText(plan, hidden),
+    tip: sessionTip(plan, nameOf), why: sessionGate(plan, termEngine === "embedded"),
+  };
+}
+
+let lastCards: readonly MaintCard[] = []; // the ranked cards as last drawn, which is what a shift-range means
+
+function buildMaint(now: number): MaintView {
+  const byRoot = maintProjects();
+  const cards: MaintCard[] = [], read: { root: string; inp: MaintInput }[] = [];
+  const seen: TabProject[] = [];
+  const hosted: { path: string; hosts: string[]; prod?: Cell; read: boolean; allowed: boolean }[] = [];
+  let prodProjects = 0, prodChecking = false;
+  const prodEach: Record<string, ProdAsks> = {};
+  const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
+  // Once anything was checked, a root nobody read (added since, or forgotten on an account
+  // switch) is an unread card: leaving it out would let the all-clear speak for it.
+  const asked = fleetCheckedAt > 0 || [...byRoot.keys()].some((r) => maintOf(r));
+  for (const [root, p] of byRoot) {
+    // Not asked this session: the last finished scan's card, muted and as of then (docs/maintenance.md).
+    const e = maintOf(root), snap = e ? undefined : maintSnap(root);
+    const inp = maintInput(root) ?? (asked || snap ? { det: null, reports: {}, skip: [] } : null);
+    if (!inp) continue;
+    const th = clampMaint(inp.det?.config.thresholds);
+    const cells = snap ? pastCells(snap, now) : facetCells(inp, th, now);
+    addCoverCaps(inp, sees, blind);
+    read.push({ root, inp });
+    const ticked = hostSummary(inp, th, now);
+    hosted.push({ path: root, hosts: inp.det?.deploy?.host ? [inp.det.deploy.host] : [], prod: cells.find((c) => c.facet === "prod"), read: hostRead(inp), allowed: (inp.hosts ?? []).includes(inp.det?.deploy?.host ?? "") });
+    const prod = prodChecks(inp);
+    if (prod.length) { prodProjects++; prodChecking ||= askingFor(root, prod); }
+    if (prod.length) prodEach[root] = { sources: prod, hosts: ticked?.allowed ? [ticked.alias] : [] };
+    const fs = findings(root, inp, th, now);
+    const stale = !!e && (e.detecting || e.out > 0) && e.at > 0; // an earlier answer, drawn while its re-read is out
+    seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
+    cards.push({
+      path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
+      sub: stale ? `refreshing · as of ${relTime(e.at)}` : e?.kept ? `as of ${relTime(e.at)}`
+        : e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
+      stale,
+      cells, findings: fs, band: projectBand(cells), past: snap,
+      reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
+    });
+  }
+  // Since last week: each project's latest finished scan against one a week older, from marks alone.
+  const pairs: WeekPairIn[] = [], unmarked: string[] = [], unread: string[] = [];
+  for (const root of byRoot.keys()) {
+    const w = maintWeek(root);
+    if (w?.base) pairs.push({ root, base: w.base, now: w.now, th: clampMaint(maintInput(root)?.det?.config.thresholds) });
+    else if (w) unmarked.push(root);
+    else if (maintInput(root)?.det?.sources.length !== 0) unread.push(root); // a folder with nothing to read leaves no mark
+  }
+  const ranked = rankMaint(cards);
+  lastCards = ranked;
+  const n = (b: string) => ranked.filter((c) => c.band === b).length;
+  const only = liveFilter();
+  const nameOf = (r: string) => byRoot.get(r)?.name ?? basename(r);
+  return {
+    // The dashboard builds the same model for its one project (docs/maintenance.md).
+    ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, maintSev, now),
+    cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
+    kept: Math.max(0, ...[...byRoot.keys()].map((r) => maintOf(r)).filter((e) => e?.kept).map((e) => e!.at)),
+    tally: {
+      needs: n("needs"), drifting: n("drifting"), quiet: n("quiet"), unread: n("unread"),
+      cantCheck: ranked.reduce((k, c) => k + c.cells.filter((x) => x.state === "markers" || x.state === "cantCheck").length, 0),
+    },
+    sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
+    soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
+    sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
+    sev: maintSev, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
+    hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
+      ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
+    })),
+    prod: {
+      projects: prodProjects, checking: prodChecking, each: prodEach,
+      sources: [...new Set(Object.values(prodEach).flatMap((x) => x.sources))], hosts: [...new Set(Object.values(prodEach).flatMap((x) => x.hosts))].sort(),
+    },
+    sweep: maintSub === "security" ? sweepView(byRoot.size) : undefined,
+    week: pairs.length ? { ...weekDigest(pairs, unmarked, unread, maintPrefs.public), stale: fleetScanning } : null,
+    session: maintSub === "overview" ? sessionView(ranked, nameOf, now) : undefined,
+  };
+}
+
 // ---------- render ----------
 // Assign only when the markup changed: `renderFleet` is on `renderAll`'s path, and an
 // `innerHTML` assignment destroys the node under the pointer (docs/architecture.md).
 const painted = new Map<string, string>();
+let paintedSub: MaintSub = maintSub;
 function paint(id: string, html: string): void {
   if (painted.get(id) === html) return;
   painted.set(id, html);
-  $(id).innerHTML = html;
+  const el = $(id), q = el.querySelector<HTMLInputElement>(".mt-sweepq");
+  // The sweep's box is typed into while answers land: its text, caret and focus survive a repaint.
+  const kept = q && { v: q.value, on: document.activeElement === q, a: q.selectionStart, b: q.selectionEnd };
+  // The scroller is rebuilt too: a tick or an answer landing keeps your place, and a new tab starts at its top.
+  const top = paintedSub === maintSub ? el.querySelector(".mt-body")?.scrollTop : 0;
+  if (fleetView === "maint") holdMaintPlace(el, html); else el.innerHTML = html;
+  if (id === "fleetBody") paintedSub = maintSub;
+  const body = top ? el.querySelector(".mt-body") : null;
+  if (body && top) body.scrollTop = top;
+  const nq = kept && el.querySelector<HTMLInputElement>(".mt-sweepq");
+  if (!kept || !nq) return;
+  nq.value = kept.v;
+  if (kept.on) { nq.focus({ preventScroll: true }); nq.setSelectionRange(kept.a, kept.b); }
 }
 
 export function renderFleet(): void {
   if (!fleetMirror()) return;
+  if (fleetView === "maint") {
+    const now = Date.now(), mv = buildMaint(now), n = maintRoots().length;
+    const sub = `${fmtDayLong(now)} · ${n} project${n === 1 ? "" : "s"}`;
+    paint("fleetHead", fleetTopHtml("maint", sub, maintWhenHtml(mv)) + maintTilesHtml(mv));
+    paint("fleetBody", maintBodyHtml(mv));
+    $("fleetPane").setAttribute("aria-busy", mv.scanning ? "true" : "false");
+    return;
+  }
   const view = buildView(Date.now());
   // One `forecast7d()` for the head tile and the limits meter, so the two cannot disagree.
   paint("fleetHead", fleetHeadHtml(view));
@@ -371,6 +605,12 @@ export function openFleet(force = false): void {
   void refreshDirtyStates(true);
 }
 
+// Escape steps out of a project filter before it steps off the stage; ✕ always leaves.
+export function fleetEscape(): void {
+  if (fleetView === "maint" && liveFilter() !== null) { maintFilter = null; renderFleet(); return; }
+  closeFleet();
+}
+
 // ✕ and Escape, and neither can empty the stage: with no session to go back to this screen
 // IS the home stage, so it stays and `renderFleetHeader` offers no ✕ at all.
 export function closeFleet(): void {
@@ -382,10 +622,28 @@ export function closeFleet(): void {
 }
 
 // ---------- events ----------
+const maintHost: MaintHost = {
+  scan: (force) => checkFleet(force),
+  nameOf: (root) => allProjects().find((p) => (p.repoRoot ?? p.path) === root)?.name ?? basename(root),
+  prefill: (project, path, text) => host.prefill(project, path, text),
+  terminal: (project, path, cmd) => host.terminal(project, path, cmd),
+  openDashboard: (name, path, tab, door) => host.openDashboard(name, path, tab, door),
+  openTab: (sub, root, board) => setMaintTab(sub, root, board),
+  picks: (tab) => maintPicks(tab),
+  render: () => renderFleet(),
+  roots: () => maintRoots(),
+  lines: () => sessionLines(cardsShown(lastCards, maintChip)),
+  session: (label, rows, notes) => host.session(label, rows, notes),
+  openSettings: (section, row) => host.openSettings(section, row),
+};
+
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.
 export function wireFleet(): void {
   $("fleetPane").addEventListener("click", (e) => {
     const t = e.target as HTMLElement;
+    if (maintClick(t, maintHost, e.shiftKey)) return;
+    const view = t.closest<HTMLElement>("[data-flview]");
+    if (view) { setFleetView(view.dataset.flview as FleetViewKind); return; }
     const sort = t.closest<HTMLElement>("[data-flsort]");
     if (sort) { setFleetSort(sort.dataset.flsort as FleetSort); return; }
     const range = t.closest<HTMLElement>("[data-flrange]");
@@ -408,4 +666,5 @@ export function wireFleet(): void {
     const proj = t.closest<HTMLElement>("[data-flproj]");
     if (proj) { host.openDashboard(proj.dataset.flname!, proj.dataset.flproj!); return; }
   });
+  $("fleetPane").addEventListener("keydown", (e) => { maintKey(e, maintHost); });
 }

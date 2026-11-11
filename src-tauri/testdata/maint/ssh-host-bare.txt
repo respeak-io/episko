@@ -1,0 +1,24 @@
+# hand-written: a busybox container (LXC) with no package manager Episko reads, no /boot, and a docker it may not use
+@@episko-host 1
+@@now
+1793700000
+@@uname
+Linux 6.1.0-26-amd64
+@@uptime
+1209600.00 2400000.00
+@@load
+0.05 0.03 0.01 1/40 777
+@@cpus
+1
+@@df
+Filesystem           1024-blocks    Used Available Capacity Mounted on
+/dev/mapper/pve-vm--101--disk--0   8191416   2210460   5545144  29% /
+none                       492         4       488   1% /dev
+tmpfs                  2009212         0   2009212   0% /dev/shm
+@@reboot
+@@kernel
+6.1.0-26-amd64
+@@docker error
+permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.47/containers/json?all=1": dial unix /var/run/docker.sock: connect: permission denied
+exit 1
+@@end

@@ -1,0 +1,13 @@
+{
+  "version": "0",
+  "auth": { "scopes": ["event:write", "project:read", "member:read", "team:read"] },
+  "user": {
+    "id": "1",
+    "name": "Jane Bloggs",
+    "username": "jane",
+    "email": "jane@example.com",
+    "isActive": true,
+    "hasPasswordAuth": true,
+    "dateJoined": "2018-11-03T20:05:47.000000Z"
+  }
+}

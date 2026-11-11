@@ -1,0 +1,24 @@
+[
+  {
+    "id": 1122684517,
+    "authors": [],
+    "commitCount": 0,
+    "data": {},
+    "dateCreated": "2026-11-01T09:00:00.000000Z",
+    "dateReleased": "2026-11-01T10:30:00Z",
+    "deployCount": 1,
+    "firstEvent": "2026-11-01T10:31:00Z",
+    "lastCommit": null,
+    "lastDeploy": null,
+    "lastEvent": "2026-11-06T22:00:00Z",
+    "newGroups": 4,
+    "owner": null,
+    "projects": [
+      { "id": 4505278496, "slug": "pump-station", "name": "Pump Station", "newGroups": 4, "platform": "python", "platforms": ["python"], "hasHealthData": false }
+    ],
+    "ref": "6ba09a7c53235ee8a8fa5ee4c1ca8ca886e7fdbb",
+    "shortVersion": "1.4.0",
+    "version": "pump-station@1.4.0",
+    "url": null
+  }
+]

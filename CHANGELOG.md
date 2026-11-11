@@ -12,6 +12,27 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A *Maintenance* view beside *Activity* on the all-projects screen, and *Today | Maintenance* tabs
+  on a project's dashboard, show what is rotting while nobody looks: CI and flaky jobs, security
+  advisories, dependencies and packages behind their newest major, releases and deployments, git,
+  production, and open work, read from whatever CI, update bot or forge the project uses. A check
+  Episko cannot read says why instead of looking healthy, and every fix prefills a brief for an
+  agent that you send yourself.
++ Production is checked only when you click: the deploy addresses, a server over SSH once you allow
+  it on this machine, when a domain's registration runs out, and new errors in Sentry with a token
+  saved in *Settings › Accounts*. *Fix* on a new error hands the agent its stack trace.
++ Tick lines on Maintenance cards and *Brief N agents* starts one agent per line, tiled, each on a
+  fix branch of its own, or in the project folder for a line that changes nothing.
++ *Since last week* on the all-projects screen says what changed since the checks a week ago.
+~ Pull request checks and update-bot checks read GitHub's states through one vocabulary. In the
+  review pane a check GitHub marked *stale* now counts as failed (it showed as neutral); on the
+  Dependencies card a required status that has not reported yet counts as running (it counted as
+  failed).
+~ A check state Episko does not recognise, or a finished check with no conclusion, reads as still
+  running in both places, never as neutral or failed.
+~ The Dependencies card files pull requests from the bot logins `[maintenance] bots` names in
+  `.episko/episko.toml` (a self-hosted Renovate) as update-bot PRs, not as open work, and the
+  brief it sends an agent speaks of security advisories rather than naming Dependabot.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between

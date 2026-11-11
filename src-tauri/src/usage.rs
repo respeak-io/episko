@@ -135,9 +135,9 @@ impl TranscriptMeta {
     }
 }
 
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's `days_from_civil`); the only
-/// calendar arithmetic here, not worth a `chrono` dependency.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+/// Days since 1970-01-01 for a civil date and back (Howard Hinnant's `days_from_civil` and its
+/// inverse); the only calendar arithmetic here, not worth a `chrono` dependency.
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = y - i64::from(m <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
@@ -146,9 +146,22 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
 /// `2026-08-17T08:08:18.686Z` -> epoch seconds, `None` for any other shape: the caller's
-/// mtime fallback beats a misparsed date. The offset is ignored, since Claude writes UTC.
-fn iso_epoch_secs(ts: &str) -> Option<u64> {
+/// mtime fallback beats a misparsed date. A `±hh:mm` offset is applied: a self-hosted
+/// GitLab writes its own zone; `Z` or no suffix is UTC.
+pub(crate) fn iso_epoch_secs(ts: &str) -> Option<u64> {
     let b = ts.as_bytes();
     if b.len() < 19
         || b[4] != b'-'
@@ -165,7 +178,23 @@ fn iso_epoch_secs(ts: &str) -> Option<u64> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
         return None;
     }
-    u64::try_from(days_from_civil(y, mo, d) * 86_400 + h * 3_600 + mi * 60 + s).ok()
+    let tail = ts[19..].trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
+    let off = match tail.as_bytes().first() {
+        None | Some(b'Z' | b'z') if tail.len() <= 1 => 0,
+        Some(&sign @ (b'+' | b'-')) => {
+            let hm = tail[1..].replacen(':', "", 1);
+            if hm.len() != 4 || !hm.bytes().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let (oh, om) = (hm[0..2].parse::<i64>().ok()?, hm[2..4].parse::<i64>().ok()?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            (oh * 3_600 + om * 60) * if sign == b'-' { -1 } else { 1 }
+        }
+        _ => return None,
+    };
+    u64::try_from(days_from_civil(y, mo, d) * 86_400 + h * 3_600 + mi * 60 + s - off).ok()
 }
 
 /// The newest `"timestamp"` in one line. A substring scan rather than a parse: this runs
@@ -2889,6 +2918,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn civil_from_days_inverts_days_from_civil() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2000, 3, 1), (2026, 10, 4), (2026, 12, 31), (2027, 1, 1), (1969, 12, 31)] {
+            let z = days_from_civil(y, i64::from(m), i64::from(d));
+            assert_eq!(civil_from_days(z), (y, m, d), "{y}-{m}-{d}");
+        }
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(1_790_000_000 / 86_400), (2026, 9, 21));
+        for z in -800..800 {
+            let (y, m, d) = civil_from_days(z * 37);
+            assert_eq!(days_from_civil(y, i64::from(m), i64::from(d)), z * 37);
+        }
+    }
+
     /// Dates whose answers are fixed: the epoch, a leap day, a non-leap century, and the
     /// instants the shutdown regression test below is built on.
     #[test]
@@ -2897,6 +2940,15 @@ mod tests {
         assert_eq!(iso_epoch_secs("2026-08-17T08:08:18.686Z"), Some(1_786_954_098));
         assert_eq!(iso_epoch_secs("2024-02-29T12:00:00Z"), Some(1_709_208_000));
         assert_eq!(iso_epoch_secs("2100-03-01T00:00:00Z"), Some(4_107_542_400));
+        assert_eq!(iso_epoch_secs("2026-08-17T08:08:18"), Some(1_786_954_098), "no suffix is UTC");
+
+        // A forge in another zone: the same instant whatever offset it is spelled in.
+        let utc = iso_epoch_secs("2026-10-27T15:17:57.002Z");
+        assert_eq!(iso_epoch_secs("2026-10-27T17:17:57.002+02:00"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T10:17:57-0500"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57+00:00"), utc);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57+2:00"), None);
+        assert_eq!(iso_epoch_secs("2026-10-27T15:17:57Zjunk"), None);
 
         // Off-shape is None: the caller falls back to the mtime rather than invent a date.
         assert_eq!(iso_epoch_secs(""), None);

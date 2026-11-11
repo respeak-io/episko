@@ -28,7 +28,10 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - `openSettingsOn(tab, row?)`: the quick opens, the ⑃ dialog, ⌘K and the tour land on a row
   lit for three seconds (`.set-lit`). `row` is the control's `id`, else its `set` verb, else
   its kind (`rowId`). Keep those stable: they are addresses. With no `row`, a row that shares
-  the section's id is taken (`keys`), so a one-row section lights its row.
+  the section's id is taken (`keys`), so a one-row section lights its row. Opening Settings
+  lists the account and token stores, and each answer repaints the page: `renderSettings`
+  puts the light back mid-animation (`landed`) and resumes the scroll, and hands a text field
+  holding the caret back focused where it was, or a Check landing mid-typing ate the field.
 - A row is the label, `hint` (one sentence, on the page), `more` behind *why* (`openWhy`), the
   control on the right, and under it whatever folds (`openPanels`): the six panels, a toggle's
   preview, the agent's cards, a multi's chips. An action's preview is its answer and never
@@ -47,6 +50,13 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - `isDefault`/`reset` per control give the accent bar, ⟲ on hover and `@changed`. A control
   without `isDefault` is never marked; a list with no safe reset (trusted folders, stop rules)
   has none. `summary` is the fold button's text and the search's `value`.
+- **Accounts** is two kinds of credential, each a row that is its own panel and has no reset
+  (a credential is not a preference): *Claude accounts* (docs/accounts.md), then one
+  *<label> tokens* row per kind of service token Maintenance's manifest names (`tokenKinds`,
+  row id `tokenRow(kind)`, `tok-sentry`): each saved host with *Check* and *Forget*, and a
+  form with the host prefilled and a write-only token field that empties once saved. A
+  Coverage row's *Add token…* lands lit on that row through `openSettingsOn("accounts", …)`.
+  Opening Settings lists the saved tokens again, as it lists the Claude ones.
 - The rail ends with *Elsewhere*: Usage & spend and What's new keep their own windows
   (0.26.0). The doors call the openers through the host, and two pointer rows answer the
   search for them, because a search in Settings that says there is no such thing is worse
@@ -75,7 +85,7 @@ One project's own settings, in a dialog of its own. It opens from the dashboard'
 
 - **Two headed groups, *Yours* and *The team's*.** *Yours* holds overrides that stay on this
   machine and affect nobody else: agent, permission mode, agent tools, auto-fetch and its
-  cadence, GitHub account, run-on-stop, and whether its task files may be run to list them. *The team's* holds the sharing channel, which switches teammates too, and the dev stack's `[stack]` table, which is committed: its row shows what is set and starts an agent to write it (docs/stack.md).
+  cadence, GitHub account, run-on-stop, and whether its task files may be run to list them. *The team's* holds the sharing channel, which switches teammates too, and three committed tables of `.episko/episko.toml`: the dev stack's `[stack]` (docs/stack.md), *Where it runs* (`[deploy]`) and *Maintenance* (`[maintenance]`'s trunk, tag pattern, SARIF paths and bots; docs/maintenance.md). Each row shows what is set, opens the file and starts an agent to propose it, and nothing is written until its Apply.
   Changing a team setting while believing it is personal is the mistake the split exists to
   prevent, so a new row has to choose a group.
 - **Every override row offers *Settings* as its first option**, and that is the only way back:
