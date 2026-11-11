@@ -14,10 +14,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ## Unreleased
 
 ## 0.40.0 — 2026-11-11
-*Settings › Updates* can put Episko on the preview channel, so an unreleased feature can be tried
-in the running app and left again. Pasted text and compacted conversations read as folds in the
-Questions sheet, a review's file tree ticks whole folders as viewed, and on Windows Episko works
-against the lag that builds up over a long day.
+The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
+the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
+whole folders as viewed, and on Windows Episko works against the lag that builds up over a long day.
+*Settings › Updates* can also put Episko on a preview of what comes next.
 
 + A review's file list has a tick on every file and folder. A folder's tick marks everything under it
   as viewed in one click, and shows a dash while only part of it is.
