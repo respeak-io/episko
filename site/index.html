@@ -251,6 +251,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .entry b{font-weight:500;color:var(--ink)}
 h1{font-family:var(--f-body);font-weight:700;font-size:clamp(26px,3.4vw,40px);line-height:1.15;letter-spacing:-.015em;margin:30px 0 0;max-width:22em;text-wrap:balance}
 .hero-row{display:flex;flex-wrap:wrap;align-items:center;gap:14px 24px;margin-top:26px}
+.hero-row .fine{flex-basis:100%}
 .ctas{display:flex;flex-wrap:wrap;gap:12px}
 .fine{font-size:14px;color:var(--muted)}
 
@@ -289,7 +290,7 @@ h1{font-family:var(--f-body);font-weight:700;font-size:clamp(26px,3.4vw,40px);li
 .tally b{color:var(--st-attn);font-weight:600}
 .hint{position:absolute;right:max(20px,env(safe-area-inset-right,0px));bottom:16px;font:12.5px var(--f-mono);color:var(--ink);opacity:.75}
 @media (prefers-reduced-motion:no-preference){
-  .agent.s-work svg,.agent.s-bg svg{animation:bob 1.1s steps(2) infinite}
+  .agent.s-work svg,.agent.s-bg svg,.agent.s-term svg{animation:bob 1.1s steps(2) infinite}
   .agent.s-attn svg{animation:hop .7s ease-in-out infinite}
   .paused .agent .walk,.paused .agent svg{animation-play-state:paused}
 }
@@ -678,17 +679,10 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 .hero .orb{right:7%;top:44px;width:36px;height:36px}
 .star.big{width:3px;height:3px}
 .meteor{position:absolute;width:110px;height:1px;background:linear-gradient(90deg,transparent,var(--star));opacity:0;transform:rotate(-24deg)}
-.cons{position:absolute;right:6%;top:150px;width:380px;height:auto;display:none}
-.cons line{stroke:var(--star);stroke-width:1;opacity:.45}
-.cons circle{fill:var(--star)}
-.cons text{fill:var(--star);font:12px var(--f-mono)}
-@media (min-width:1180px){.cons{display:block}}
 @media (prefers-reduced-motion:no-preference){
   .meteor{animation:meteor 13s linear infinite}
   .meteor+.meteor{animation-duration:19s;animation-delay:7s}
-  .cons circle{animation:twinkle 4s ease-in-out infinite}
-  .cons circle:nth-of-type(2n){animation-delay:-1.7s}.cons circle:nth-of-type(3n){animation-delay:-2.9s}
-  .paused .meteor,.paused .cons circle{animation-play-state:paused}
+  .paused .meteor{animation-play-state:paused}
 }
 /* Life in the hero: birds and butterflies by day, fireflies by night, flowers in the grass either way. */
 :root{--day:1;--night:0;--bird:#46525c;--fly:#f3eea0}
@@ -727,6 +721,181 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 @keyframes glow{0%,100%{opacity:0}50%{opacity:calc(var(--night) * .95)}}
 @keyframes sway{from{rotate:-6deg}to{rotate:6deg}}
 @keyframes meteor{0%,93%{opacity:0;translate:0 0}94%{opacity:1}100%{opacity:0;translate:-260px 116px}}
+.meteor.once{animation:shoot 1.3s ease-out 0s 1 forwards!important}
+@keyframes shoot{0%{opacity:0;translate:0 0}12%{opacity:1}100%{opacity:0;translate:-300px 134px}}
+
+/* The cockpit: the flock below as Episko's own window shows it. Rows and agents answer each other,
+   and a leash runs from the session on screen to its agent in the pasture. Wide screens only. */
+.ck-wrap,.tether{display:none}
+@media (min-width:1180px){
+  .hero>.hero-in{max-width:1360px;display:grid;grid-template-columns:minmax(0,1fr) clamp(470px,38vw,560px);gap:56px;align-items:center;align-content:center}
+  .hero-in h1{font-size:clamp(28px,2.5vw,40px)}
+  .ck-wrap,.tether{display:block}
+}
+.ck-wrap{position:relative;--ckg:var(--accent)}
+.ck-wrap::before{content:"";position:absolute;inset:-90px -70px;z-index:-1;pointer-events:none;transition:background .8s;
+  background:radial-gradient(closest-side,color-mix(in srgb,var(--ckg) 26%,transparent),transparent)}
+.ck-wrap.attn{--ckg:var(--st-attn)}
+.cockpit{margin:0;padding:0;font-size:12px;border-radius:12px;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 40px 80px -36px rgba(0,0,0,.7)}
+.ck-bar{display:flex;align-items:center;gap:7px;padding:10px 14px;border-bottom:1px solid var(--a-ln);color:var(--a-mu)}
+.ck-bar i{width:10px;height:10px;border-radius:50%;background:#3a3446}
+.ck-name{margin-left:8px;color:var(--a-tx);font:600 13px var(--f-body)}
+.ck-need{margin-left:auto;padding:2px 10px;border-radius:999px;font-size:11.5px;transition:background .3s,color .3s}
+.ck-need.on{background:rgba(251,111,146,.15);color:var(--at);cursor:pointer}
+.ck-body{display:grid;grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);height:330px}
+@media (max-width:1439px){.ck-row .c{display:none}}
+.ck-side{border-right:1px solid var(--a-ln);padding:6px;overflow:hidden}
+.ck-grp{display:flex;align-items:center;gap:7px;padding:8px 8px 3px;font:600 12px var(--f-body);color:var(--a-tx)}
+.ck-grp i{width:7px;height:7px;border-radius:50%;background:var(--c)}
+.ck-row{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px 0 12px;border-radius:6px;cursor:pointer;color:#cfcadb;position:relative;transition:background .2s}
+.ck-row .g{width:12px;text-align:center;font-size:11px;flex:none}
+.ck-row .n{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:13px var(--f-body)}
+.ck-row .c{font-size:10.5px;color:var(--a-mu)}
+.ck-row:hover,.ck-row.hl{background:rgba(255,255,255,.05)}
+.ck-row.st-attn{background:rgba(251,111,146,.1)}
+.ck-row.sel{background:rgba(141,156,255,.16);color:var(--a-tx)}
+.ck-row.sel::before{content:"";position:absolute;left:3px;top:7px;bottom:7px;width:2px;border-radius:1px;background:var(--a-tx)}
+.st-work .g,.g.st-work,.st-boot .g,.g.st-boot{color:var(--w)}.st-attn .g,.g.st-attn{color:var(--at)}
+.st-done .g,.g.st-done,.st-up .g,.g.st-up,.st-sent .g,.g.st-sent{color:var(--dn)}.st-err .g,.g.st-err,.st-down .g,.g.st-down{color:var(--er)}
+.st-bg .g,.g.st-bg,.st-open .g,.g.st-open{color:var(--bgc)}.st-term .g,.g.st-term{color:var(--a-mu)}
+@media (prefers-reduced-motion:no-preference){.ck-row.st-attn .g{animation:blink 1s ease-in-out infinite}}
+.ck-term{display:flex;flex-direction:column;min-width:0;padding:10px 14px 12px}
+.ck-head{display:flex;align-items:baseline;gap:8px;margin:0 0 6px;padding-bottom:8px;border-bottom:1px solid var(--a-ln);white-space:nowrap;overflow:hidden}
+.ck-head b{font:600 13px var(--f-body);overflow:hidden;text-overflow:ellipsis}
+.ck-head span:last-child{color:var(--a-mu);margin-left:auto}
+.ck-head .pv{flex:none;margin-left:auto;color:var(--a-mu);font-size:10.5px;padding:0 6px;border:1px solid var(--a-ln);border-radius:4px}
+.ck-log{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;line-height:1.6}
+.ck-log p{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#d9d4e4}
+.ck-log .pr{color:var(--a-tx);white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;margin-top:6px}
+.ck-log .pr i{font-style:normal;color:var(--a-mu)}
+.ck-log .tl i{font-style:normal;color:var(--dn)}
+.ck-log .tl b{font-weight:600}
+.ck-log .rs{color:var(--a-mu);padding-left:14px}
+.ck-log .okl{color:var(--dn)}.ck-log .erl{color:var(--er)}.ck-log .bgl{color:var(--bgc)}
+.ck-log .sh{color:var(--a-mu)}
+.ck-log .new{animation:ckin .35s ease-out}
+@keyframes ckin{from{opacity:0;transform:translateY(5px)}}
+.ck-foot{margin-top:8px;min-height:30px}
+.ck-run{display:flex;align-items:center;gap:8px;margin:0;height:30px;white-space:nowrap;overflow:hidden}
+.ck-run .mu{color:var(--a-mu);min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ck-spin{display:inline-block;color:var(--w)}
+@media (prefers-reduced-motion:no-preference){.ck-spin{animation:spin 2.4s linear infinite}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ck-run .w{color:var(--w)}.okc{color:var(--dn)}.erc{color:var(--er)}.bgc{color:var(--bgc)}
+.ck-go{margin-left:auto;padding:3px 10px;border-radius:5px;border:1px solid var(--a-ln);color:var(--a-tx);cursor:pointer}
+.ck-go:hover{background:rgba(255,255,255,.07)}
+.ck-ask{background:var(--a-pn);border-radius:8px;padding:10px 12px;box-shadow:inset 0 0 0 1px rgba(251,111,146,.35);animation:ckin .35s ease-out}
+.ck-ask p{margin:0}
+.ck-ask-h{display:flex;justify-content:space-between;color:var(--a-mu)}
+.ck-cmd{margin:6px 0 8px!important;padding:6px 9px;border-radius:5px;background:var(--a-bg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ck-btns{display:flex;gap:6px}
+.ck-btns span{flex:1;text-align:center;padding:5px 0;border-radius:5px;border:1px solid var(--a-ln);font:600 12.5px var(--f-body);cursor:pointer}
+.ck-btns span:hover{background:rgba(255,255,255,.07)}
+.ck-btns .ok{background:var(--dn);border-color:var(--dn);color:#08140e}
+.ck-btns .ok:hover{background:#4bd89b}
+.agent.hl .tag{opacity:1}
+.tether{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;overflow:visible}
+.tether path{fill:none;stroke:var(--c);stroke-width:1.6;stroke-dasharray:1 7;stroke-linecap:round;opacity:.85;transition:stroke .4s}
+.tether circle{fill:var(--c);transition:fill .4s}
+@media (prefers-reduced-motion:no-preference){
+  .tether path{animation:march .8s linear infinite}
+  .ck-wrap{animation:ckup .9s cubic-bezier(.3,.7,.2,1) .5s both}
+  .paused .tether path{animation-play-state:paused}
+}
+/* Pressed by the demo itself, so you can see which button it was. */
+.cockpit .press{box-shadow:0 0 0 2px var(--a-tx);transform:scale(.96)}
+.ck-btns span,.ck-go,.ck-x{transition:transform .12s,box-shadow .12s}
+/* the title bar's server pill and its popover, as in the app's header */
+.ck-srv{margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:11.5px;background:rgba(55,201,139,.1);color:var(--dn);cursor:pointer;transition:background .3s,color .3s}
+.ck-srv::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.ck-srv.bad{background:rgba(242,109,109,.14);color:var(--er)}
+.ck-srv.boot{background:rgba(224,164,74,.12);color:var(--w)}
+.ck-srv+.ck-need{margin-left:6px}
+.ck-pop{position:absolute;right:10px;top:40px;width:290px;z-index:3;padding:10px 12px;border-radius:9px;background:var(--a-pn);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.08),0 18px 36px -12px rgba(0,0,0,.7);opacity:0;transform:translateY(-6px);pointer-events:none;transition:opacity .25s,transform .25s}
+.ck-pop.on{opacity:1;transform:none;pointer-events:auto}
+.ck-pop p{display:flex;align-items:center;gap:9px;height:28px;border-top:1px solid var(--a-ln);white-space:nowrap}
+.ck-pop .pp-h{height:auto;border:0;padding:6px 0 3px;font:600 11.5px var(--f-body);color:var(--a-mu)}
+.ck-pop .pp-h:first-child{padding-top:0}
+.ck-pop .pp-h span{margin-left:auto;font:11px var(--f-mono)}
+.ck-pop .bad .end{color:var(--er)}
+.dot.boot{background:var(--w)}
+.ck-x{margin-left:8px;padding:0 6px;border-radius:4px;border:1px solid var(--a-ln);color:var(--a-tx);cursor:pointer;font-weight:400}
+/* the footer: spend and the 5-hour window */
+.ck-stat{display:flex;align-items:center;gap:8px;padding:7px 14px;border-top:1px solid var(--a-ln);color:var(--a-mu);font-size:11px;white-space:nowrap}
+.ck-lim{width:64px;height:5px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden}
+.ck-lim i{display:block;height:100%;background:var(--w)}
+.ck-cost{margin-left:auto;color:var(--a-tx)}
+/* views the panel swaps to: a diff with its findings, a pull request under review, a retry ladder */
+.ck-log.alt{justify-content:flex-start;line-height:1.5;font-size:11.5px;font-variant-ligatures:none}
+.ck-log.alt p{white-space:pre}
+.ck-fh{display:flex;justify-content:space-between;color:var(--a-mu)!important;margin:2px 0 6px!important}
+.ck-diff p{padding:0 6px;border-radius:3px;color:#cfe9da!important;transition:background .25s,box-shadow .25s}
+.ck-diff p.rm{color:#f2b3b3!important}
+.ck-diff i{display:inline-block;width:24px;color:var(--a-mu);font-style:normal}
+.ck-diff p.lit{background:rgba(167,139,250,.16);box-shadow:inset 2px 0 0 var(--bgc)}
+.ck-diff p.lit.r{background:rgba(242,109,109,.16);box-shadow:inset 2px 0 0 var(--er)}
+.ck-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+.ck-chips span{font-size:11px;padding:1px 8px;border-radius:5px;border:1px solid;cursor:pointer;transition:background .25s}
+.ck-chips .cv{color:var(--bgc);border-color:rgba(167,139,250,.45)}
+.ck-chips .cr{color:var(--er);border-color:rgba(242,109,109,.45)}
+.ck-chips .ct{color:var(--a-mu);border-color:var(--a-ln)}
+.ck-chips .on{background:rgba(255,255,255,.1)}
+.ck-cm{margin:6px 0 8px 30px;padding:8px 10px;border-radius:7px;background:var(--a-pn);box-shadow:inset 0 0 0 1px rgba(167,139,250,.3);font-family:var(--f-body)}
+.ck-log.alt .ck-cm p{white-space:normal}
+.ck-cm b{font-weight:600;margin-right:6px;color:var(--bgc)}
+.ck-cm-b{display:flex;justify-content:flex-end;margin-top:6px!important;font:12px var(--f-mono)}
+.ck-cm-b .ck-go{background:var(--bgc);border-color:var(--bgc);color:#0f0c16;font-weight:600}
+.caret{display:inline-block;width:6px;height:13px;margin-left:1px;vertical-align:-2px;background:var(--a-tx)}
+@media (prefers-reduced-motion:no-preference){.caret{animation:blink .9s steps(1) infinite}}
+.ck-lad{display:flex;align-items:flex-end;gap:4px;height:16px;margin:4px 0 0!important}
+.ck-lad i{flex:1;height:calc(5px + var(--n) * 1.5px);border-radius:1px;background:rgba(255,255,255,.08)}
+.ck-lad i.f{background:rgba(242,109,109,.55)}.ck-lad i.cur{background:var(--w)}
+/* The slider under the panel: which part of the app is on screen, and how long until the next. */
+.ck-steps{display:flex;gap:8px;margin-top:18px}
+.ck-step{flex:1;min-width:0;position:relative;padding-top:10px;cursor:pointer;font:500 11.5px var(--f-mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .3s}
+.ck-step::before,.ck-step::after{content:"";position:absolute;left:0;top:0;height:3px}
+.ck-step::before{right:0;background:color-mix(in srgb,var(--ink) 14%,transparent)}
+.ck-step::after{width:calc(var(--p,0) * 100%);background:var(--ink)}
+.ck-step:hover,.ck-step.on{color:var(--ink)}
+@media (prefers-reduced-motion:no-preference){.ck-steps.held .ck-step.on::after{animation:blink 1.4s ease-in-out infinite}}
+.ck-note{display:inline-block;margin-top:12px;font:11.5px var(--f-mono);color:var(--muted);text-decoration:none}
+.ck-note:hover{color:var(--ink);text-decoration:underline}
+/* a prompt waiting in a session's input: Episko fills it in, you press Enter */
+.ck-comp{padding:8px 10px;border-radius:7px;background:var(--a-pn);box-shadow:inset 0 0 0 1px rgba(167,139,250,.35);animation:ckin .35s ease-out}
+.ck-comp p{margin:0}
+.ck-comp .q{color:var(--a-tx);line-height:1.45}
+.ck-comp .q i{font-style:normal;color:var(--a-mu)}
+.ck-comp-h{display:flex;align-items:center;gap:8px;margin-top:6px!important;color:var(--a-mu);font-size:11px;white-space:nowrap}
+.ck-comp-h .ck-go{padding:1px 9px}
+/* What else grazes: a dev server is a campfire, a pull request waiting on you a mailbox with its flag up. */
+.s-up{--c:var(--st-done)} .s-down{--c:var(--st-err)} .s-boot{--c:var(--st-work)} .s-open{--c:var(--st-bg)} .s-sent{--c:var(--st-done)} .s-term{--c:var(--muted)}
+.agent.o-srv{--w0:46px}.agent.o-pr{--w0:44px}
+.fire{display:block;position:relative}
+.fire .fl{width:69.3%;margin:0 auto;transform-origin:50% 100%;transition:scale .4s}
+.s-boot .fire .fl{scale:.5}
+.s-down .fire .fl{scale:0}
+.fire .smoke{position:absolute;left:28%;bottom:30%;width:44%;opacity:0}
+.s-down .fire .smoke{opacity:.8}
+.fire::before{content:"";position:absolute;left:50%;bottom:-8px;width:150px;height:70px;transform:translateX(-50%);pointer-events:none;z-index:-1;
+  background:radial-gradient(closest-side,rgba(255,160,60,.42),transparent);opacity:calc(.3 + var(--night) * .7);transition:opacity .5s}
+.s-down .fire::before{opacity:0}
+.s-boot .fire::before{opacity:calc(.15 + var(--night) * .35)}
+.o-pr .dn,.o-pr.s-sent .up{display:none}
+.o-pr.s-sent .dn{display:block}
+.obj.s-err svg{transform:none}
+@media (prefers-reduced-motion:no-preference){
+  .fire .fl{animation:flick .45s steps(1) infinite}
+  .s-down .fire .smoke{animation:smoke 1.6s ease-out infinite}
+  .o-pr.s-open svg{animation:nudge 2.6s ease-in-out infinite}
+  .paused .fire .fl,.paused .fire .smoke,.paused .o-pr svg{animation-play-state:paused}
+}
+@keyframes flick{50%{transform:scaleX(-1)}}
+@keyframes smoke{from{translate:0 0;opacity:.8}to{translate:4px -14px;opacity:0}}
+@keyframes nudge{0%,84%,100%{rotate:0deg}88%{rotate:-6deg}94%{rotate:5deg}}
+@keyframes march{to{stroke-dashoffset:-8}}
+@keyframes ckup{from{opacity:0;transform:translateY(18px)}}
 
 /* sections after the bento: the house, the time, the questions */
 code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule);border-radius:4px;padding:1px 5px}
@@ -867,7 +1036,8 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
 
 <main id="top">
   <div class="hero">
-    <div class="wrap">
+    <div class="wrap hero-in">
+     <div class="hero-copy">
       <p class="word" id="word" aria-label="ἐπίσκοπος, episko"></p>
       <p class="entry"><b lang="grc">ἐπίσκοπος</b><b>e·pí·sko·pos</b><i>n.</i><span>the one who watches over</span></p>
       <h1>Keep an eye on a whole flock of coding agents and see which one is waiting for you.</h1>
@@ -878,6 +1048,20 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </div>
         <span class="fine">macOS &amp; Windows · free and open source · <span class="mono" data-ver>v0.40.0</span></span>
       </div>
+     </div>
+      <div class="ck-wrap">
+        <div class="cockpit app" id="cockpit" aria-hidden="true">
+          <p class="ck-bar"><i></i><i></i><i></i><span class="ck-name">Episko</span><span class="ck-srv" id="ckSrv"></span><span class="ck-need" id="ckNeed"></span></p>
+          <div class="ck-body">
+            <div class="ck-side" id="ckSide"></div>
+            <div class="ck-term"><p class="ck-head" id="ckHead"></p><div class="ck-log" id="ckLog"></div><div class="ck-foot" id="ckFoot"></div></div>
+          </div>
+          <div class="ck-pop" id="ckPop"></div>
+          <p class="ck-stat"><span>5-hour</span><span class="ck-lim"><i style="width:62%"></i></span><span>62% · out at 16:40</span><span class="ck-cost" id="ckCost"></span></p>
+        </div>
+        <div class="ck-steps" id="ckSteps" aria-hidden="true"></div>
+        <a class="ck-note" href="#view">Simplified for this page · see the real app ↓</a>
+      </div>
     </div>
 
     <div class="pasture" id="pasture">
@@ -886,11 +1070,11 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         <div class="shep" id="shep" aria-hidden="true"></div>
       </div>
       <div class="tally" id="tally" aria-live="polite">7 agents · <b>1 needs you</b></div>
-      <div class="hint">click the one that's hopping</div>
+      <div class="hint">click any of them</div>
     </div>
   </div>
 
-  <section class="tour-sec">
+  <section class="tour-sec" id="view">
     <div class="wrap tourgrid">
       <div class="tour-copy">
         <p class="kicker"><span class="gk" lang="grc">ὅρασις</span><span>horasis · the view</span></p>
@@ -1158,19 +1342,23 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   document.getElementById('shep').innerHTML=svg(SHEP,{h:'#4b5563',s:'#e6d3b3',r:'var(--accent)',k:'#b08d57'});
   document.getElementById('logo').innerHTML=svg(AGENT,{b:'var(--accent)',d:'var(--bg)',s:'var(--accent)'}).replace(/^<svg[^>]*>|<\/svg>$/g,'');
 
-  var GLYPH={work:'●',attn:'◆',done:'✓',err:'✕',bg:'◐'};
-  var SAYS={work:'working',attn:'needs you',done:'done, your turn',err:'API error',bg:'3 subagents out'};
+  var GLYPH={work:'●',attn:'◆',done:'✓',err:'✕',bg:'◐',term:'»',up:'▸',down:'✕',boot:'●',open:'●',sent:'✓'};
+  var SAYS={work:'working',attn:'needs you',done:'done, your turn',err:'API error',bg:'3 subagents out',term:'terminal only',
+    up:'listening on :3000',down:'EADDRINUSE :3000',boot:'starting…',open:'review requested',sent:'handed to an agent'};
+  // Not only sessions graze here: a dev server is a campfire, a pull request waiting on you a mailbox with its flag up.
   var flock=[
-    {t:'Fix the flaky handoff test',p:'episko',st:'attn',ask:'Bash: pnpm vitest --repeat 20',x:22,y:52,c:'#a78bfa'},
-    {t:'Rewrite the README',p:'episko',st:'done',x:33,y:80,c:'#7cc7ff'},
-    {t:'Move auth to sessions',p:'billing-api',st:'err',x:45,y:46,c:'#f0a6d0'},
-    {t:'Back and forward',p:'episko',st:'work',x:56,y:74,c:'#9fd8b8'},
-    {t:'Settings search',p:'episko',st:'bg',x:66,y:90,c:'#e6c08a',far:1},
-    {t:'Retry failed webhooks',p:'billing-api',st:'work',x:77,y:56,c:'#c3b0ff'},
-    {t:'Proofread the quickstart',p:'docs-site',st:'work',x:88,y:78,c:'#a8d0f0',far:1}
+    {t:'Fix the flaky handoff test',p:'episko',pv:'Claude Code',st:'work',x:22,y:52,c:'#a78bfa'},
+    {t:'Rewrite the README',p:'episko',pv:'Claude Code',st:'done',x:33,y:80,c:'#7cc7ff'},
+    {t:'Move auth to sessions',p:'billing-api',pv:'Claude Code',st:'work',x:45,y:46,c:'#f0a6d0'},
+    {t:'Back and forward',p:'episko',pv:'Codex',st:'work',x:56,y:74,c:'#9fd8b8'},
+    {t:'Settings search',p:'episko',pv:'Claude Code',st:'bg',x:66,y:90,c:'#e6c08a',far:1},
+    {t:'Retry failed webhooks',p:'billing-api',pv:'Codex',st:'work',x:77,y:56,c:'#c3b0ff'},
+    {t:'Proofread the quickstart',p:'docs-site',pv:'Gemini',st:'term',x:84,y:78,c:'#a8d0f0',far:1},
+    {k:'srv',t:'pnpm serve',p:'docs-site',pv:'task',st:'up',x:39,y:90},
+    {k:'pr',t:'#262 Lease issues to agents',p:'billing-api',pv:'PR',st:'open',x:97,y:60}
   ];
   var COLORS=flock.map(function(a){ return a.c });
-  if(matchMedia('(max-width:640px)').matches) flock=[0,2,3,5].map(function(i,k){ var a=flock[i]; a.x=[20,44,64,86][k]; return a });
+  if(matchMedia('(max-width:640px)').matches) flock=[0,2,3,7,8].map(function(i,k){ var a=flock[i]; a.x=[12,32,52,72,90][k]; return a });
   var field=document.getElementById('field'), tally=document.getElementById('tally'), pasture=document.getElementById('pasture');
   var timer=null, reduce=matchMedia('(prefers-reduced-motion: reduce)').matches, going=false;
   function rnd(a,b){ return a+Math.random()*(b-a) }
@@ -1208,11 +1396,6 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   [[10,72],[22,40]].forEach(function(m){
     var el=document.createElement('i'); el.className='meteor'; el.style.cssText='top:'+m[0]+'%;left:'+m[1]+'%'; sky.appendChild(el);
   });
-  // ποιμήν, the shepherd: a crook drawn in stars, in the empty sky beside the name.
-  var CROOK=[[70,210],[78,160],[86,110],[94,62],[112,30],[142,20],[166,38],[164,66]], cs='';
-  CROOK.forEach(function(p,i){ if(i) cs+='<line x1="'+CROOK[i-1][0]+'" y1="'+CROOK[i-1][1]+'" x2="'+p[0]+'" y2="'+p[1]+'"/>' });
-  CROOK.concat([[214,150],[238,170],[226,196]]).forEach(function(p,i){ cs+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(i%3?1.6:2.4)+'"/>' });
-  sky.insertAdjacentHTML('beforeend','<svg class="cons" viewBox="0 0 300 240">'+cs+'<text x="186" y="40">ποιμήν</text></svg>');
   var orb=document.createElement('div'); orb.className='orb'; sky.appendChild(orb);
   hero.insertBefore(sky,hero.firstChild);
   var hl=document.createElement('div'); hl.className='hills'; hl.dataset.seed='1'; hills(hl,1);
@@ -1284,12 +1467,23 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     return t;
   }
 
+  // The campfire's flame flickers by mirroring itself; the mailbox has one sprite per flag position.
+  var FIRE=["....f....","....f..f.","...fyf.f.","..ffyff..",".ffyyyff.",".fyywyyf.","ffywwwyff","fyywwwyyf",".fyywyyf.","..fffff.."];
+  var LOGS=["kk.........kk",".kkkk...kkkk.","...kkkkkkk...",".kkkk...kkkk."];
+  var SMOKE=["..g....",".ggg.g.","..g.ggg","....g..","..g....",".ggg..."];
+  var MB_UP=["..........krr","..........krr","..........k..","..bbbbbbb.k..",".bbbbbbbbbk..",".bdddddddbk..",".bbbbbbbbbk..",".bbbbbbbbb...",".bbbbbbbbb...","....kkk......","....kkk......","....kkk......","...kkkkk....."];
+  var MB_DN=[".............",".............",".............","..bbbbbbb....",".bbbbbbbbb...",".bdddddddb...",".bbbbbbbbbkkk",".bbbbbbbbb.rr",".bbbbbbbbb.rr","....kkk......","....kkk......","....kkk......","...kkkkk....."];
+  var MB={b:'#8e9bc4',d:'#262a3a',k:'#8a6a44',r:'#e5484d'};
   flock.forEach(function(a){
-    var b=document.createElement('button');
-    b.type='button'; b.className='agent'+(a.far?' far':'');
-    b.innerHTML='<span class="walk"><span class="tag"><span class="tt"></span><small class="ts"></small></span><span class="pop"></span><span class="bubble"></span>'+svg(AGENT,{b:a.c,d:'#171320',s:'#f0ecf8'})+'</span>';
+    var b=document.createElement('button'), body;
+    a.k=a.k||'agent';
+    if(a.k==='srv') body='<span class="fire">'+svg(SMOKE,{g:'#a3a8a5'}).replace('<svg','<svg class="smoke"')+svg(FIRE,{f:'#e8742c',y:'#f6c34a',w:'#fff4c2'}).replace('<svg','<svg class="fl"')+svg(LOGS,{k:'#7a5232'})+'</span>';
+    else if(a.k==='pr') body=svg(MB_UP,MB).replace('<svg','<svg class="up"')+svg(MB_DN,MB).replace('<svg','<svg class="dn"');
+    else body=svg(AGENT,{b:a.c,d:'#171320',s:'#f0ecf8'});
+    b.type='button'; b.className='agent'+(a.k!=='agent'?' obj o-'+a.k:'')+(a.far?' far':'');
+    b.innerHTML='<span class="walk"><span class="tag"><span class="tt"></span><small class="ts"></small></span><span class="pop"></span><span class="bubble"></span>'+body+'</span>';
     a.el=b; a.hx=a.x; field.appendChild(b); putAt(a,a.x,a.y); paint(a);
-    b.addEventListener('click',function(){act(a)});
+    b.addEventListener('click',function(){ figClick(a) });
     b.addEventListener('mouseenter',function(){fitTag(b)}); b.addEventListener('focus',function(){fitTag(b)});
   });
   count();
@@ -1297,35 +1491,38 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     a.el.className=a.el.className.replace(/\bs-\w+/g,'').trim()+' s-'+a.st;
     a.el.querySelector('.bubble').textContent=GLYPH[a.st];
     a.el.querySelector('.tt').textContent=a.t;
-    a.el.querySelector('.ts').textContent=a.p+' · '+(a.st==='attn'&&a.ask?a.ask:SAYS[a.st]);
+    a.el.querySelector('.ts').textContent=a.p+' · '+(a.st==='attn'&&a.ask?a.ask:(a.pv?a.pv+' · ':'')+SAYS[a.st]);
     a.el.setAttribute('aria-label',a.t+', '+SAYS[a.st]);
+    ckPaint(a);
   }
   function count(){
     var n=flock.filter(function(a){return a.st==='attn'}).length;
-    tally.innerHTML=flock.length+' agents · '+(n?'<b>'+n+' needs you</b>':'all quiet');
+    tally.innerHTML=flock.filter(function(a){return a.k==='agent'}).length+' agents · '+(n?'<b>'+n+' needs you</b>':'all quiet');
+    ckCount(n);
   }
-  function act(a){
+  function popIt(a,txt){ var p=a.el.querySelector('.pop'); p.textContent=txt; p.classList.remove('go'); void p.offsetWidth; p.classList.add('go') }
+  function act(a,how){
     var said={attn:'allowed',err:'retried',done:'new prompt sent'}[a.st];
     if(!said) return;
-    a.st='work'; a.el.classList.remove('show'); paint(a); count();
-    var p=a.el.querySelector('.pop'); p.textContent=said; p.classList.remove('go'); void p.offsetWidth; p.classList.add('go');
+    a.said=how||said;
+    a.st='work'; a.el.classList.remove('show'); paint(a); count(); popIt(a,a.said);
     if(going) setTimeout(function(){ wander(a) },900);
   }
 
-  // Working and finished agents graze; one that is waiting or has fallen over stays put.
+  // Working and finished agents graze; one that is waiting or has fallen over stays put, and so does a campfire.
   function wander(a){
-    clearTimeout(a.wt); if(!going) return;
+    clearTimeout(a.wt); if(!going||a.k!=='agent') return;
     if(a.st==='attn'||a.st==='err'){ a.wt=setTimeout(function(){ wander(a) },2500); return }
     var t=walkTo(a,clamp(a.hx+rnd(-9,9),3,96),rnd(40,92),a.st==='work'?26:16);
     a.wt=setTimeout(function(){ wander(a) },t*1000+rnd(1200,5200));
   }
 
-  // The shepherd walks over to whoever needs you and holds up what it is asking.
+  // The shepherd walks over to whatever is on the cockpit's screen and holds up its tag.
   var shepEl=document.getElementById('shep'), S={el:shepEl,x:8,y:50};
   putAt(S,S.x,S.y);
   function herd(){
     clearTimeout(S.ht); if(!going) return;
-    var a=flock.filter(function(f){return f.st==='attn'})[0];
+    var a=ckSel;
     flock.forEach(function(f){ if(f!==a) f.el.classList.remove('show') });
     if(a){
       var gap=56/fw()*100, side=a.x-gap<3?1:-1, tx=a.x+side*gap;
@@ -1338,25 +1535,334 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
     S.ht=setTimeout(herd,walkTo(S,clamp(S.x+rnd(-12,12),3,96),rnd(44,84),22)*1000+rnd(2000,4500));
   }
 
+  // Away from the scene on screen, the rest of the flock keeps finishing and being sent on.
   var k=0;
   function tick(){
     k++;
-    var working=flock.filter(function(a){return a.st==='work'});
-    var waiting=flock.filter(function(a){return a.st==='attn'});
-    if(!working.length) return;
-    if(!waiting.length){
-      var a=working[(k*3)%working.length]; a.st='attn'; a.ask=ASKS[k%ASKS.length]; a.since=k; paint(a);
-      if(going) setTimeout(herd,50);
-    } else if(k-(waiting[0].since||0)>=4){
-      waiting[0].st='work'; waiting[0].el.classList.remove('show'); paint(waiting[0]); if(going) wander(waiting[0]);
-    } else if(k%2){
-      var d=working[k%working.length]; d.st='done'; paint(d);
-    } else {
-      var dn=flock.filter(function(a){return a.st==='done'})[0]; if(dn){ dn.st='work'; paint(dn) }
-    }
+    var idle=flock.filter(function(a){ return a.k==='agent'&&a!==ckSel });
+    var done=idle.filter(function(a){ return a.st==='done' }), work=idle.filter(function(a){ return a.st==='work'&&!a.scene });
+    if(k%2&&done.length){ var d=done[0]; d.st='work'; paint(d); if(going) wander(d) }
+    else if(!(k%2)&&work.length){ var w=work[(k>>1)%work.length]; w.st='done'; paint(w) }
     count();
   }
-  var ASKS=['Bash: git push origin fix/retry','Edit: src/auth/session.ts','Bash: rm -rf dist','WebFetch: docs.stripe.com'];
+
+  // The cockpit beside the name: the same flock, as rows and a terminal.
+  var TALK={
+    'Fix the flaky handoff test':[23,'Chasing the race…',['> the handoff test fails one run in ten, make it stable','● Read(src/handoff.ts)','⎿ Read 318 lines','● Search("settle(", path: "src")','⎿ Found 6 files'],
+      ['● Read(test/handoff.test.ts)','⎿ Read 140 lines','● Update(src/handoff.ts)','⎿ +6 −2','● Bash(pnpm vitest handoff)','⎿ 14 passed']],
+    'Rewrite the README':[72,'Tightening the intro…',['> rewrite the README for someone who has never seen the app','● Read(README.md)','⎿ Read 212 lines','● Write(README.md)','⎿ Wrote 168 lines','✓ Done. Shorter, and it opens with what it does.'],
+      ['● Read(docs/sessions.md)','⎿ Read 96 lines','● Update(README.md)','⎿ +12 −30']],
+    'Move auth to sessions':[51,'Moving the middleware…',['> move auth from JWTs to server-side sessions','● Read(src/auth/jwt.rs)','⎿ Read 88 lines','● Update(src/auth/session.rs)','⎿ +64 −12'],
+      ['● Bash(cargo test auth)','⎿ 41 passed','● Update(src/routes/login.rs)','⎿ +9 −22']],
+    'Back and forward':[41,'Wiring the keys…',['> add back and forward between screens, like a browser','● Read(src/nav.ts)','⎿ Read 212 lines','● Update(src/nav.ts)','⎿ +4 −1'],
+      ['● Write(test/nav.test.ts)','⎿ Wrote 64 lines','● Update(src/main.ts)','⎿ +18 −3','● Bash(pnpm test nav)','⎿ 9 passed']],
+    'Settings search':[64,'',['> make every setting searchable','● Workflow(3 agents)','⎿ Started run 7f3a','◐ 3 subagents out'],[]],
+    'Retry failed webhooks':[38,'Adding jitter…',['> retry failed webhooks with backoff','● Read(src/webhooks/retry.rs)','⎿ Read 74 lines','● Update(src/webhooks/retry.rs)','⎿ +31 −4'],
+      ['● Bash(cargo test webhooks)','⎿ 12 passed','● Update(src/webhooks/queue.rs)','⎿ +8 −1']],
+    'Proofread the quickstart':[0,'',['> proofread the quickstart','✦ I will read the quickstart first.','✓ ReadFile docs/quickstart.md','✦ Two typos and a stale link.'],
+      ['✓ Edit docs/quickstart.md','✦ Checking the install page too.','✓ ReadFile docs/install.md','✦ That one reads fine.']]
+  };
+  var ASK={
+    'Fix the flaky handoff test':['Bash: pnpm vitest --repeat 20','Bash: git stash'],
+    'Rewrite the README':['Bash: git push origin docs/readme'],
+    'Move auth to sessions':['Edit: src/auth/session.rs','Bash: cargo sqlx migrate run'],
+    'Back and forward':['Bash: pnpm test nav','Bash: rm -rf dist'],
+    'Retry failed webhooks':['Bash: git push origin fix/retry','WebFetch: docs.stripe.com'],
+    'Proofread the quickstart':['WebFetch: episko.dev/install','Edit: docs/quickstart.md']
+  };
+  var NEXT=['now add a test for it','looks good, commit it on a branch','also handle the empty case','carry on'];
+  var PCOL={episko:'#8d9cff','billing-api':'#f0a6d0','docs-site':'#7cc7ff'};
+  var STV={up:'done',down:'err',boot:'work',open:'bg',sent:'done'};
+  var CK=document.getElementById('cockpit'), ckWrap=CK.parentNode, ckSide=document.getElementById('ckSide'), ckHead=document.getElementById('ckHead'),
+    ckLog=document.getElementById('ckLog'), ckFoot=document.getElementById('ckFoot'), ckNeed=document.getElementById('ckNeed'),
+    ckSrv=document.getElementById('ckSrv'), ckPop=document.getElementById('ckPop'), ckCost=document.getElementById('ckCost'), ckSteps=document.getElementById('ckSteps'),
+    ckSel=null, ckUser=0, ckT=null, ckRaf=0, ckN=0, ckLast='', ckHover=false, cost=4.12, lastTs=0, stepEls=[];
+  // The scene on screen: its clock, the next beat, and whether you have wandered off it. Hovering the window holds the last frame.
+  var sc={i:0,s:null,t:0,b:0,free:false,press:'',chip:-1,copied:0};
+  function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+  // An innerHTML that is only replaced when it changes, so a button under the pointer survives the clock.
+  function put(el,h){ if(el._h!==h){ el._h=h; el.innerHTML=h } }
+  var LCLS={'✓':'okl','✕':'erl','◐':'bgl','$':'sh'};
+  function ckLine(s){
+    var c=s.charAt(0), b=esc(s.slice(1).trim());
+    if(c==='>') return '<p class="pr"><i>&gt;</i> '+b+'</p>';
+    if(c==='●') return '<p class="tl"><i>●</i> '+b.replace(/^(\w+)\(/,'<b>$1</b>(')+'</p>';
+    if(c==='⎿') return '<p class="rs">⎿ '+b.replace(/\+\d+/,'<span class="add">$&</span>').replace(/−\d+/,'<span class="del">$&</span>')+'</p>';
+    if(LCLS[c]) return '<p class="'+LCLS[c]+'">'+c+' '+b+'</p>';
+    return '<p>'+esc(s)+'</p>';
+  }
+  function ckFootHtml(a){
+    if(a.st==='attn'){
+      var m=(a.ask||'Bash: pnpm vitest --repeat 20').split(': ');
+      return '<div class="ck-ask"><p class="ck-ask-h"><span class="att">◆ Allow '+m[0]+'?</span><span>needs you</span></p><p class="ck-cmd">'+esc(m.slice(1).join(': '))+
+        '</p><p class="ck-btns"><span class="ok'+(sc.press==='allow'?' press':'')+'" data-ck="allow">Allow</span><span data-ck="deny">Deny</span></p></div>';
+    }
+    if(a.st==='done') return '<p class="ck-run"><span class="okc">✓ Your turn</span><span class="ck-go" data-ck="go">↵ carry on</span></p>';
+    if(a.st==='err') return '<p class="ck-run"><span class="erc">✕ The API ended this turn</span><span class="ck-go" data-ck="retry">↻ retry</span></p>';
+    if(a.st==='bg') return '<p class="ck-run"><span class="bgc">◐</span> 3 subagents out <span class="mu">· 0 of 3 back</span></p>';
+    if(a.st==='term') return '<p class="ck-run"><span class="mu">» a plain terminal: this CLI reports no status</span></p>';
+    if(a.st!=='work') return '';
+    return '<p class="ck-run"><span class="ck-spin">✻</span><span class="w">'+a.task+'</span><span class="mu">('+Math.round((Date.now()-a.t0)/1000)+'s · ↓ '+a.tok.toFixed(1)+'k tokens)</span></p>';
+  }
+  function ckShow(fresh){
+    var a=ckSel; if(!a) return;
+    var s=sc.s, v=(s&&!sc.free&&(s.fig===a||s.wf===a)&&s.view&&s.view(a))||{};
+    put(ckHead,'<span class="g st-'+a.st+'">'+GLYPH[a.st]+'</span><b>'+esc(a.t)+'</b><span class="pv">'+(a.pv||a.p)+'</span>');
+    ckLog.classList.toggle('alt',!!v.alt);
+    put(ckLog,v.body||a.log.slice(-10).map(ckLine).join(''));
+    if(fresh&&!v.body&&ckLog.lastChild) ckLog.lastChild.classList.add('new');
+    put(ckFoot,v.foot!=null?v.foot:ckFootHtml(a));
+    if(v.pop) put(ckPop,v.pop);
+    ckPop.classList.toggle('on',!!v.pop);
+  }
+  function ckSelect(a,byYou){
+    if(byYou) ckUser=Date.now();
+    var was=ckSel; ckSel=a;
+    if(was&&was!==a) ckPaint(was);
+    ckPaint(a); leash();
+    if(going&&was!==a) herd();
+  }
+  function ckPaint(a){
+    if(!CK) return;
+    if(a.prev&&a.prev!==a.st) ckMoved(a);
+    a.prev=a.st;
+    if(a.row){
+      a.row.className='ck-row st-'+a.st+(a===ckSel?' sel':'')+(a.el.matches(':hover')?' hl':'');
+      a.row.querySelector('.g').textContent=GLYPH[a.st];
+      a.row.querySelector('.c').textContent=a.k==='srv'?':3000':a.st==='bg'?'0/3':a.st==='term'?'':a.ctx+'%';
+    }
+    if(a.k==='srv'){
+      put(ckSrv,a.st==='down'?'1 failed':a.st==='boot'?'2 servers':'3 servers');
+      ckSrv.className='ck-srv'+(a.st==='down'?' bad':a.st==='boot'?' boot':'');
+    }
+    if(a===ckSel) ckShow();
+  }
+  // What a change of state leaves in the conversation. A finished turn also crosses the sky.
+  function ckMoved(a){
+    if(a.k!=='agent') return;
+    var from=a.prev, to=a.st;
+    if(to==='done'){ a.log.push('✓ Done.'); shoot() }
+    else if(to==='work'){
+      a.log.push(from==='done'?'> '+NEXT[ckN++%NEXT.length]:from==='err'?'⎿ Retried, back at it':'⎿ '+(a.said==='denied'?'Denied, it will try another way':'Allowed'));
+      a.t0=Date.now(); a.tok=0;
+    }
+    a.said=null;
+    if(a.log.length>40) a.log.splice(0,a.log.length-20);
+  }
+  function ckCount(n){
+    if(!CK) return;
+    put(ckNeed,n?'◆ '+n+' needs you':ckSide.querySelectorAll('.ck-row').length+' sessions');
+    ckNeed.classList.toggle('on',!!n); ckWrap.classList.toggle('attn',!!n);
+  }
+  // The live half: working sessions keep talking, the one on screen streams in, and the day's spend creeps up.
+  function ckTick(){
+    flock.forEach(function(a){
+      if((a.st!=='work'&&a.st!=='term')||!a.more||!a.more.length) return;
+      a.tok+=Math.random()*.4+.1; cost+=.005;
+      if(a!==ckSel&&Math.random()<.6) return;
+      var s=a.more[a.mi++%a.more.length]; a.log.push(s);
+      if(a.log.length>40) a.log.splice(0,20);
+      if(s.charAt(0)==='●'&&a.row){ a.ctx=Math.min(94,a.ctx+1); a.row.querySelector('.c').textContent=a.ctx+'%' }
+      if(a===ckSel) ckShow(true);
+    });
+    put(ckCost,'$'+cost.toFixed(2)+' today');
+  }
+  function shoot(){
+    if(reduce||!going) return;
+    var m=document.createElement('i'); m.className='meteor once'; m.style.cssText='top:'+rnd(4,26)+'%;left:'+rnd(45,92)+'%';
+    sky.appendChild(m); setTimeout(function(){ m.remove() },1500);
+  }
+  // The leash: from the selected row (or the window's edge), to the thing in the pasture it is showing.
+  hero.insertAdjacentHTML('beforeend','<svg class="tether" aria-hidden="true"><path/><circle r="2.5"/><circle r="2.5"/></svg>');
+  var teth=hero.lastElementChild, tPath=teth.querySelector('path'), tDots=teth.querySelectorAll('circle');
+  function leash(){
+    if(!ckSel||!CK.offsetWidth) return;
+    var h=hero.getBoundingClientRect(), p=CK.getBoundingClientRect(), r=(ckSel.row||ckHead).getBoundingClientRect(),
+      t=ckSel.el.matches(':hover,.show,.hl')?ckSel.el.querySelector('.tag'):ckSel.el.querySelector('.bubble'), b=t.getBoundingClientRect();
+    var ex=b.left+b.width/2-h.left, ey=b.top-6-h.top, pl=p.left-h.left, pr=p.right-h.left, d, sx, sy;
+    if(ex<pl-40){
+      sx=pl; sy=r.top+r.height/2-h.top;
+      d='M'+sx+' '+sy+'C'+sx+' '+ey+' '+(ex+(sx-ex)*.6)+' '+(ey-70)+' '+ex+' '+ey;
+    } else {
+      sx=clamp(ex,pl+30,pr-30); sy=ckWrap.getBoundingClientRect().bottom-h.top+6;
+      d='M'+sx+' '+sy+'C'+sx+' '+(sy+(ey-sy)*.5)+' '+ex+' '+(ey-(ey-sy)*.5)+' '+ex+' '+ey;
+    }
+    d=d.replace(/\d+\.\d+/g,function(n){ return (+n).toFixed(1) });
+    var st=ckSel.st, col=st==='term'?'var(--muted)':'var(--st-'+(STV[st]||st)+')';
+    if(d+col===ckLast) return; ckLast=d+col;
+    tPath.setAttribute('d',d); teth.style.setProperty('--c',col);
+    tDots[0].setAttribute('cx',sx); tDots[0].setAttribute('cy',sy); tDots[1].setAttribute('cx',ex); tDots[1].setAttribute('cy',ey);
+  }
+
+  // The scenes the slider walks through: each is one thing in the pasture and the part of the app that answers it.
+  // A beat marked 1 only shows a button being pressed, so a click of yours skips straight past it.
+  var LAD=[0,1,2,3,4,5,6,7].map(function(n){ return '<i class="'+(n<2?'f':n===2?'cur':'')+'" style="--n:'+n+'"></i>' }).join('');
+  var SC=[
+    {label:'Approvals',f:'Fix the flaky handoff test',dur:8400,key:0,
+      in:function(a){ if(a.st==='attn') return; a.ai=(a.ai||0)+1; a.ask=a.asks[a.ai%a.asks.length]; a.st='attn'; paint(a) },
+      at:[[5800,function(){ sc.press='allow' },1],[6200,function(a){ sc.press=''; act(a) }]],
+      poke:function(a){ if(a.st==='attn'){ act(a); sc.b=this.at.length; sc.t=Math.max(sc.t,this.dur-1800) } },
+      out:function(a){ if(a.st==='attn') act(a) }},
+    {label:'Retries',f:'Move auth to sessions',dur:7600,key:0,
+      in:function(a){ if(a.st==='err') return; a.log.push('✕ API Error: 529 overloaded'); a.st='err'; paint(a) },
+      at:[[4300,function(){ sc.press='now' },1],[5000,function(a){ sc.press=''; act(a) }]],
+      view:function(a){
+        if(a.st!=='err') return null;
+        var go=sc.t>=4300;
+        return {foot:'<p class="ck-run"><span class="w">↻ retry 3 of 8</span><span class="mu">'+(go?'retrying…':'in 0:0'+Math.max(1,Math.ceil((4300-sc.t)/1000)))+'</span>'+
+          (go?'':'<span class="ck-go" data-ck="now">now</span>')+'</p><p class="ck-lad">'+LAD+'</p>'};
+      },
+      out:function(a){ if(a.st==='err') act(a) }},
+    {label:'Code checks',f:'Back and forward',dur:7600,key:1300,
+      in:function(a){ a.prev=a.st='work'; a.st='done'; paint(a) },
+      at:[[1300,function(){ sc.chip=0 }],[3300,function(){ sc.chip=1 }],[5300,function(){ sc.chip=2 }]],
+      view:function(a){
+        if(a.st!=='done') return null;
+        var lit=['d','s','-'][sc.chip];
+        var L=[['d','41','+ function back() {'],['d','42','+   const at = max(0, cur - 1)'],['d','43','+   if (at === cur) return'],['s','44','+   try { open(at) } catch {}'],['','45','+   cur = at'],['','46','+ }']];
+        return {alt:1,body:'<p class="ck-fh"><span>src/nav.ts</span><span><b class="add">+18</b> <b class="del">−3</b></span></p><div class="ck-diff">'+
+          L.map(function(l){ return '<p class="'+(l[0]===lit?'lit'+(lit==='s'?' r':''):'')+'"><i>'+l[1]+'</i>'+esc(l[2])+'</p>' }).join('')+'</div><p class="ck-chips">'+
+          [['cv','duplicate block'],['cr','silenced error'],['ct','no test changed']].map(function(c,j){ return '<span class="'+c[0]+(j===sc.chip?' on':'')+'" data-ck="chip'+j+'">'+c[1]+'</span>' }).join('')+'</p>',
+          foot:'<p class="ck-run"><span class="okc">✓ Your turn</span><span class="ck-go" data-ck="copy">'+(sc.copied?'copied ✓':'copy 3 findings')+'</span></p>'};
+      }},
+    {label:'Dev servers',f:'pnpm serve',dur:8800,key:1500,
+      in:function(a){ a.left=1; a.log=['$ pnpm serve','node server.js']; a.st='boot'; paint(a) },
+      at:[[1500,function(a){ a.log.push('✕ listen EADDRINUSE :::3000'); a.st='down'; paint(a) }],
+        [3600,function(){ sc.press='kill' },1],[4000,function(a){ sc.press=''; a.left=0; popIt(a,'old one stopped') }],
+        [4800,function(){ sc.press='run' },1],[5200,function(a){ sc.press=''; a.log.push('$ pnpm serve','node server.js'); a.st='boot'; paint(a) }],
+        [6300,function(a){ a.log.push('✓ listening on localhost:3000'); a.st='up'; paint(a) }]],
+      view:function(a){
+        var st=a.st, row=st==='up'?['live','localhost:3000']:st==='down'?['bad','EADDRINUSE']:['boot','starting…'];
+        return {body:a.log.slice(-8).map(ckLine).join(''),
+          pop:'<p class="pp-h">Running servers<span>'+(st==='up'?'3':st==='down'?'2 · 1 failed':'2')+'</span></p>'+
+            '<p><i class="dot live"></i>vite<span class="end">localhost:5173</span></p><p><i class="dot live"></i>wrangler dev<span class="end">localhost:8787</span></p>'+
+            '<p class="'+(st==='down'?'bad':'')+'"><i class="dot '+row[0]+'"></i>node server.js<span class="end">'+row[1]+'</span></p>'+
+            (a.left?'<p class="pp-h">Left behind<span>its pane was closed</span></p><p><i class="dot bad"></i>node server.js<span class="end">:3000</span><b class="ck-x'+(sc.press==='kill'?' press':'')+'" data-ck="kill">✕</b></p>':''),
+          foot:st==='down'?'<p class="ck-run"><span class="erc">✕ exited 1</span>'+(a.left?'<span class="mu">port 3000 is taken</span>':'<span class="ck-go'+(sc.press==='run'?' press':'')+'" data-ck="run">▸ Run again</span>')+'</p>'
+            :st==='boot'?'<p class="ck-run"><span class="ck-spin">✻</span><span class="w">starting…</span></p>'
+            :'<p class="ck-run"><span class="okc">● localhost:3000</span><span class="mu">· ready in 0.4s</span></p>'};
+      },
+      out:function(a){ a.left=0; if(a.st!=='up'){ a.st='up'; paint(a) } }},
+    // Feedback reaches an agent as a prefill, never a send: the scene walks over to the session and Enter is pressed there.
+    {label:'PR reviews',f:'#262 Lease issues to agents',w:'Retry failed webhooks',dur:9400,key:3000,
+      in:function(a){ a.st='open'; paint(a); if(this.wf) this.wf.fill='' },
+      at:[[3500,function(){ sc.press='send' },1],[3900,function(a){
+        sc.press=''; a.st='sent'; paint(a); popIt(a,'handed over');
+        var g=sc.s.wf; if(!g) return;
+        g.fill='fix the review on #262: ttl should come from settings'; ckSelect(g);
+      }],[6200,function(){ sc.press='enter' },1],[6600,function(){
+        var g=sc.s.wf; sc.press=''; if(!g||!g.fill) return;
+        g.log.push('> '+g.fill); g.fill=''; popIt(g,'sent'); g.task='Moving ttl into settings…'; g.t0=Date.now(); g.tok=0;
+        if(g.st!=='work'){ g.prev=g.st='work'; paint(g); if(going) wander(g) }
+      }]],
+      out:function(){ if(this.wf) this.wf.fill='' },
+      view:function(a){
+        if(a!==this.fig) return a.fill?{foot:'<div class="ck-comp"><p class="q"><i>&gt;</i> '+esc(a.fill)+'<i class="caret"></i></p><p class="ck-comp-h"><span>prefilled · not sent yet</span>'+
+          '<span class="ck-go'+(sc.press==='enter'?' press':'')+'" data-ck="enter">↵ send</span></p></div>'}:null;
+        var txt='ttl should come from settings', sent=a.st==='sent', n=sent?txt.length:clamp(Math.floor((sc.t-700)/55),0,txt.length);
+        return {alt:1,body:'<p class="ck-fh"><span>src/claim.ts</span><span><b class="add">+42</b> <b class="del">−8</b></span></p>'+
+          '<div class="ck-diff"><p class="rm"><i>11</i>- lease = claim(issue)</p><p><i>11</i>+ lease = claim(issue, ttl)</p><p class="lit"><i>12</i>+ const ttl = 15 * 60_000</p></div>'+
+          '<div class="ck-cm"><p><b>you</b>'+esc(txt.slice(0,n))+(sent?'':'<i class="caret"></i>')+'</p><p class="ck-cm-b">'+
+          (sent?'<span class="okc">✓ waiting in the agent’s input</span>':'<span class="ck-go'+(sc.press==='send'?' press':'')+'" data-ck="send">Send to agent →</span>')+'</p></div>'+
+          '<div class="ck-diff"><p><i>13</i>+ return lease</p></div>',
+          foot:'<p class="ck-run"><span class="okc">✓ checks 14/14</span><span class="mu">· 2 files · 1 comment</span></p>'};
+      }}
+  ].filter(function(s){ s.fig=byT(s.f); s.wf=s.w?byT(s.w):null; if(s.fig) s.fig.scene=s; return !!s.fig });
+  function byT(t){ return flock.filter(function(a){ return a.t===t })[0] }
+  function catchUp(){ var s=sc.s; while(sc.b<s.at.length&&s.at[sc.b][0]<=sc.t) s.at[sc.b++][1](s.fig) }
+  function goScene(i){
+    var o=sc.s; if(o&&o.out) o.out(o.fig);
+    var s=SC[(i+SC.length)%SC.length];
+    sc.s=s; sc.i=SC.indexOf(s); sc.t=0; sc.b=0; sc.free=false; sc.press=''; sc.chip=-1; sc.copied=0;
+    s.in(s.fig);
+    if(!going){ sc.t=s.key; catchUp() }
+    ckSelect(s.fig); paintSteps(); count();
+  }
+  // Your click moves the story on: to the next beat that does something, or towards the next scene.
+  function nudge(){
+    var s=sc.s, j=sc.b;
+    while(j<s.at.length&&s.at[j][2]) j++;
+    sc.t=j<s.at.length?Math.max(sc.t,s.at[j][0]):Math.max(sc.t,s.dur-1500);
+    if(!going&&s.at.length) sc.t=Math.max(sc.t,s.at[s.at.length-1][0]);
+    catchUp();
+  }
+  function scStep(dt){
+    var s=sc.s; if(!s) return;
+    if(sc.free){ if(!ckHover&&Date.now()-ckUser>12000) goScene(sc.i+1); return }
+    sc.t=Math.min(s.dur,sc.t+dt); catchUp();
+    ckSteps.classList.toggle('held',ckHover&&sc.t>=s.dur);
+    if(sc.t>=s.dur&&!ckHover) goScene(sc.i+1);
+  }
+  function paintSteps(){
+    stepEls.forEach(function(el,j){
+      el.classList.toggle('on',j===sc.i&&!sc.free);
+      el.style.setProperty('--p',j<sc.i?1:j>sc.i||sc.free?0:Math.min(1,sc.t/sc.s.dur).toFixed(4));
+    });
+  }
+  function figClick(a){
+    ckUser=Date.now();
+    var s=a.scene, on=sc.s&&!sc.free&&sc.s.wf===a;
+    if(on&&a.fill){ nudge(); return }
+    if(!s){ if(!on) act(a); wanderOff(a); return }
+    if(s===sc.s&&!sc.free){ if(s.poke) s.poke(a); else nudge(); ckShow() }
+    else goScene(SC.indexOf(s));
+  }
+  function rowClick(a){
+    ckUser=Date.now();
+    if(!a.scene){ if(!(sc.s&&!sc.free&&sc.s.wf===a&&ckSel===a)) wanderOff(a) }
+    else if(a.scene!==sc.s||sc.free) goScene(SC.indexOf(a.scene));
+  }
+  // Picking something the slider is not about leaves the slider where it was, until you have been idle a while.
+  function wanderOff(a){ var o=sc.s; if(o&&o.out&&!sc.free) o.out(o.fig); sc.free=true; sc.press=''; ckSelect(a,true); paintSteps() }
+
+  var groups=[];
+  flock.forEach(function(a){
+    var T=TALK[a.t]||[0,'',[],[]]; a.ctx=T[0]; a.task=T[1]; a.log=T[2].slice(); a.more=T[3]; a.asks=ASK[a.t]; a.mi=0; a.tok=rnd(.4,2); a.t0=Date.now()-rnd(4,40)*1000;
+    if(a.k!=='pr'&&groups.indexOf(a.p)<0) groups.push(a.p);
+  });
+  groups.forEach(function(g){
+    ckSide.insertAdjacentHTML('beforeend','<p class="ck-grp" style="--c:'+PCOL[g]+'"><i></i>'+g+'</p>');
+    flock.forEach(function(a){
+      if(a.p!==g||a.k==='pr') return;
+      var r=document.createElement('div'); r.innerHTML='<span class="g"></span><span class="n"></span><span class="c"></span>';
+      r.querySelector('.n').textContent=a.t; a.row=r; ckSide.appendChild(r);
+      r.addEventListener('click',function(){ rowClick(a) });
+      r.addEventListener('mouseenter',function(){ a.el.classList.add('hl'); fitTag(a.el) });
+      r.addEventListener('mouseleave',function(){ a.el.classList.remove('hl') });
+      a.el.addEventListener('mouseenter',function(){ r.classList.add('hl') });
+      a.el.addEventListener('mouseleave',function(){ r.classList.remove('hl') });
+    });
+  });
+  CK.addEventListener('click',function(e){
+    var b=e.target.closest('[data-ck]'); if(!b||!ckSel) return;
+    var c=b.getAttribute('data-ck'), s=sc.s, live=s&&!sc.free&&(s.fig===ckSel||s.wf===ckSel);
+    ckUser=Date.now();
+    if(c==='allow'||c==='deny'){ act(ckSel,c==='deny'?'denied':null); if(live){ sc.b=s.at.length; sc.press=''; sc.t=Math.max(sc.t,s.dur-1800) } }
+    else if(c==='go'||c==='retry') act(ckSel);
+    else if(c.slice(0,4)==='chip') sc.chip=+c.slice(4);
+    else if(c==='copy') sc.copied=1;
+    else if(live) nudge();
+    ckShow();
+  });
+  ckNeed.addEventListener('click',function(){ var a=flock.filter(function(f){ return f.st==='attn' })[0]; if(a&&a.scene) goScene(SC.indexOf(a.scene)) });
+  ckSrv.addEventListener('click',function(){ var a=flock.filter(function(f){ return f.k==='srv' })[0]; if(a&&a.scene){ ckUser=Date.now(); goScene(SC.indexOf(a.scene)) } });
+  SC.forEach(function(s,j){
+    var el=document.createElement('span'); el.className='ck-step'; el.textContent=s.label;
+    el.addEventListener('click',function(){ ckUser=Date.now(); goScene(j) });
+    ckSteps.appendChild(el); stepEls.push(el);
+  });
+  ckWrap.addEventListener('mouseenter',function(){ ckHover=true });
+  ckWrap.addEventListener('mouseleave',function(){ ckHover=false });
+  flock.forEach(ckPaint); put(ckCost,'$'+cost.toFixed(2)+' today');
+  goScene(0);
+  function loop(ts){
+    var dt=lastTs?Math.min(100,ts-lastTs):0; lastTs=ts;
+    scStep(dt);
+    if(CK.offsetWidth){ ckShow(); var el=stepEls[sc.i]; if(el&&!sc.free) el.style.setProperty('--p',Math.min(1,sc.t/sc.s.dur).toFixed(4)); leash() }
+    ckRaf=going?requestAnimationFrame(loop):0;
+  }
+  addEventListener('resize',leash);
+  if(document.fonts) document.fonts.ready.then(function(){ setTimeout(leash,1500) });
   // Runs only while the pasture is on screen, so nothing moves while you read the rest.
 
   // ἐπίσκοπος → episkopos → episko
@@ -1385,8 +1891,11 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
   function run(on){
     clearInterval(timer); timer=null; hero.classList.toggle('paused',!on); going=on&&!reduce;
     flock.forEach(function(a){ clearTimeout(a.wt) }); clearTimeout(S.ht);
-    if(!going) return;
-    timer=setInterval(tick,3800); herd();
+    clearInterval(ckT); ckT=null; cancelAnimationFrame(ckRaf); ckRaf=0;
+    if(!going){ leash(); return }
+    timer=setInterval(tick,4200); herd();
+    var odd=0; ckT=setInterval(function(){ if(odd++%2) ckTick() },900);
+    lastTs=0; ckRaf=requestAnimationFrame(loop);
     flock.forEach(function(a,i){ a.wt=setTimeout(function(){ wander(a) },300+i*450) });
   }
   if('IntersectionObserver' in window){ new IntersectionObserver(function(e){run(e[0].isIntersecting)}).observe(pasture); } else run(true);
