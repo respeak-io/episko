@@ -36,11 +36,12 @@ import {
   allProjects, attnPending, checkoutBusy, needsYouSessions, orderedSessions, reactorState, urgencyRank, type ProjGroup,
 } from "./grouping";
 import { iconFor } from "./icons";
+import { ghReadsAs } from "./ghwork";
 import type { HistEntry } from "./history";
 import { forecast5h, forecast7d, hasH5Window } from "./rl";
 import { extWorking, GCLASS, GLYPH } from "./sidebarview";
 import {
-  accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, projGroups, sessions,
+  accentFor, activeId, dirtyByFolder, dormants, externals, fleetMirror, ghAccountFor, ghLogins, projGroups, sessions,
   setActiveId, setMirror, termEngine, worktreesByRepo,
 } from "./state";
 import type { TrailCommit } from "./trail";
@@ -63,6 +64,7 @@ export interface FleetHost {
   // A shell with `cmd` typed in and never sent, as the dashboard's.
   terminal: (project: string, path: string, cmd: string) => void;
   openSettings: (section: string, row?: string) => void; // Maintenance's token door, at Settings › Accounts
+  pickAccount: (at: HTMLElement, root: string, then: () => void) => void; // a Coverage row's account picker
   openUsage: () => void;
   openHistory: () => void;
   // The machine-wide token scan. It lives behind the Usage window, which is where it used to
@@ -78,6 +80,7 @@ let host: FleetHost = {
   session: async () => {},
   terminal: () => {},
   openSettings: () => {},
+  pickAccount: () => {},
   openUsage: () => {},
   openHistory: () => {},
   refreshUsage: () => {},
@@ -542,6 +545,8 @@ function buildMaint(now: number): MaintView {
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
     sev: maintSev, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
+    faces: Object.fromEntries([...byRoot].map(([r, p]) => [r, { icon: iconFor(p.path), accent: p.accent }])),
+    accounts: ghReadsAs([...byRoot.keys()], ghAccountFor, ghLogins),
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({
       ...h, projects: h.projects.map((r) => ({ root: r, name: byRoot.get(r)?.name ?? basename(r) })),
     })),
@@ -666,6 +671,7 @@ const maintHost: MaintHost = {
   lines: () => sessionLines(cardsShown(lastCards, maintChip)),
   session: (label, rows, notes) => host.session(label, rows, notes),
   openSettings: (section, row) => host.openSettings(section, row),
+  pickAccount: (at, root, then) => host.pickAccount(at, root, then),
 };
 
 // One delegated listener, bound once: the markup is rebuilt wholesale on every change.

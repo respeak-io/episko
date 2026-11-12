@@ -1915,6 +1915,8 @@ export const coverByKind = (gs: readonly CoverGroup[]): [CoverKind, CoverGroup[]
 const PROSE = /[A-Z,]|\b(the|an?|from|that|which|it|to|your)\b/;
 /** A fix is a command to copy ("<cli> auth login"), or an instruction a person reads ("pick the account…"). */
 export const fixIsCommand = (fix: string): boolean => /^[a-z][\w.-]*\s+\S/.test(fix.trim()) && !PROSE.test(fix);
+/** A fix the project's account picker answers, so a Coverage row can be that picker rather than say where it is. */
+export const fixPicksAccount = (fix: string): boolean => /^pick the \w[\w ]* account\b.*\bproject menu$/i.test(fix.trim());
 
 // ---------- the cross-project tabs' boards ----------
 

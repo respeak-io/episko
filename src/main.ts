@@ -362,6 +362,7 @@ setFleetHost({
   session: (label, rows, notes) => launchTogether(label, rows, notes),
   terminal: (project, path, cmd) => { void handToTerminal(project, path, cmd, { colorKey: path }); },
   openSettings: openSettingsOn,
+  pickAccount: (at, root, then) => openGhPicker(at, root, then),
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts

@@ -58,14 +58,14 @@ import {
   type WtInfo,
 } from "./branches";
 import { openMenu } from "./menu";
-import { openBranchMenu } from "./projmenu";
+import { openBranchMenu, openGhPicker } from "./projmenu";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, defaultBase, defaultWhere, dispatchBases,
   dispatchBranch, dropClaim, recordClaim, resolveClaim, whereProblem,
   type ClaimAllow, type ClaimOutcome, type ClaimPolicy, type DispatchWhere,
 } from "./claim";
 import {
-  bucketed, claimComment, closeComment, filterWork, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  bucketed, claimComment, closeComment, filterWork, ghPickable, ghReadsAs, ghWho, holderOf, isoDay, quietFor,
   releaseComment, staleCandidates, workTally, type GhResult, type GhThread, type KeptIssue, type WorkKind,
 } from "./ghwork";
 import type { HistEntry } from "./history";
@@ -1330,6 +1330,7 @@ function maintNow(now: number): MaintDash {
     tab: {
       ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
       sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
+      faces: { [r]: { icon: iconFor(r), accent: accentFor(r) } }, accounts: ghReadsAs([r], ghAccountFor, ghLogins),
       prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod), sources: prod, hosts: host?.allowed ? [host.alias] : [] },
       dash: {
         outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
@@ -1371,6 +1372,7 @@ const maintHost: MaintHost = {
   nameOf: (r) => r === root() ? name() : basename(r),
   prefill: (project, path, text) => { void prefillAgent(project, path, text); },
   terminal: (project, path, cmd) => host.handToTerminal(project, path, cmd),
+  pickAccount: (at, r, then) => openGhPicker(at, r, then),
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
   openDashboard: (n, p, tab, door) => {
     if (p !== root()) openDashboard(n, p, tab, door);

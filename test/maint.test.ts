@@ -6,7 +6,7 @@ import {
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
-  COVER_KINDS, coverByKind, coverKind, fixIsCommand, type CoverGroup,
+  COVER_KINDS, coverByKind, coverKind, fixIsCommand, fixPicksAccount, type CoverGroup,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
@@ -1257,6 +1257,14 @@ describe("the cross-project tabs", () => {
       }
       for (const p of ["pick the GitHub account that can see it from the project menu", "install Node.js, which brings npm: https://nodejs.org",
         "install the GitHub CLI from https://cli.github.com", "", "login", "add a Host entry to your ssh config"]) expect(fixIsCommand(p), p).toBe(false);
+    });
+
+    it("knows the fixes the account picker answers", () => {
+      for (const p of ["pick the GitHub account that can see it from the project menu",
+        "pick the GitHub account that administers it from the project menu"]) expect(fixPicksAccount(p), p).toBe(true);
+      for (const p of ["gh auth login", "pick a token with the security_events scope", "add the account in Settings › Accounts", ""]) {
+        expect(fixPicksAccount(p), p).toBe(false);
+      }
     });
 
     it("names a settings page only from the manifest, for a forge path it can spell, none otherwise", () => {

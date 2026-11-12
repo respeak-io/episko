@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
@@ -51,9 +51,12 @@ export interface MaintTabView extends TabModel {
   prod: MaintProd;
   sev: SevBucket | null; // the Security strip's pick
   names: Record<string, string>; // every root's project name
+  faces: Record<string, ProjFace>; // every root's avatar, as its card draws it
+  accounts: Record<string, string> | null; // the forge account each root reads as, only where a picker can change it
   dash?: MaintDashExtra; // the dashboard's: one project for good, so no picker, and its own reads
   sweep?: MaintSweepView; // the fleet's Security tab only: the question is asked of every project
 }
+export interface ProjFace { icon: string | null; accent: string }
 /** The advisory sweep: the run drawn and this session's others, newest first. Never stored. */
 export interface MaintSweepView {
   runs: { n: number; at: number; query: string; title: string; hit: number; state: SweepState }[];
@@ -274,14 +277,31 @@ const tokenHtml = (source: string, door: TokenDoor) => {
 const settingsHtml = (url: string, label = "Settings", mark = true) =>
   `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}${mark ? ` ${icon("externalLink", "solo")}` : ""}</button>`;
 
-// Across projects a name is a chip: that project's door, its settings page when the fix is a forge
-// switch, or its door with its own Check when the fix is one click there.
+// Across projects a project is a chip, and the chip is the row's action for it: its check, its settings
+// page, its account, else its door. The avatar is its card's.
 const SHOWN = 8;
+const faceHtml = (v: MaintTabView, root: string) => {
+  const f = v.faces[root];
+  return f?.icon ? `<img src="${escAttr(f.icon)}" alt="" />` : `<i style="background:${escAttr(f?.accent ?? "var(--muted-2)")}">${esc(nameOf(v, root).slice(0, 1))}</i>`;
+};
+const projChip = (v: MaintTabView, root: string, attrs: string, tip: string, tail = "", cls = "") =>
+  `<button class="mt-chip${cls}"${attrs} data-tip="${escAttr(tip)}"><span class="av">${faceHtml(v, root)}</span>`
+  + `<span class="nm">${esc(nameOf(v, root))}</span>${tail}</button>`;
+// The account a project reads as, and the picker that changes it; the project is checked again after a pick.
+const acctHtml = (v: MaintTabView, root: string, label = false) => projChip(v, root, ` data-mtacct="${escAttr(root)}"`,
+  `${nameOf(v, root)} reads as ${v.accounts?.[root] ?? "the active account"}. Pick one that can see it, and the project is checked again`,
+  `<span class="as">${label ? "reads as " : ""}${esc(v.accounts?.[root] ?? "")}</span>${icon("chevronDown", "solo")}`, " acct");
 function coverChip(v: MaintTabView, g: CoverGroup, root: string): string {
   const a = g.action, name = nameOf(v, root);
-  if (a?.kind === "settings" && a.urls[root]) return `<span class="mt-pc">${settingsHtml(a.urls[root], name)}</span>`;
+  if (a?.kind === "settings" && a.urls[root]) return projChip(v, root, ` data-mturl="${escAttr(a.urls[root])}"`, `Open ${a.urls[root]}`, icon("externalLink", "solo"));
+  if (a?.kind === "fix" && v.accounts && fixPicksAccount(a.fix)) return acctHtml(v, root);
   const o = a?.kind === "run" ? v.offers.find((x) => x.source === a.source && x.root === root) : undefined;
-  return `<span class="mt-pc">${projHtml(root, name)}${o ? verbHtml(o, `${name}:`, findSource(o.source)?.cost === "tool" ? "Run" : "Check") : ""}</span>`;
+  if (o?.busy) return projChip(v, root, ` aria-disabled="true"`, `${name}: running`, `<span class="u-spin"></span>`, " run");
+  if (o) {
+    const [word, tip] = verbText(o);
+    return projChip(v, root, ` data-mtverb="${escAttr(o.key)}" data-mtroot="${escAttr(root)}"`, `${word} for ${name}\n${tip}`, icon("playSolid", "solo"), " run");
+  }
+  return projChip(v, root, ` data-mtproj="${escAttr(root)}" data-mtname="${escAttr(name)}"`, `Open ${name}`);
 }
 function coverChips(v: MaintTabView, g: CoverGroup): string {
   const rest = g.roots.slice(SHOWN).map((r) => nameOf(v, r));
@@ -299,15 +319,18 @@ const setupHtml = (root: string) => [["propose", "Propose with an agent",
 
 // Each kind says what it means and what answers it, so a row's short word never stands alone.
 const COVER_HEAD: Record<CoverKind, [title: string, why: string, ic: IconName]> = {
-  ask: ["Ready to check", "These read only when you click, so a scan never sends anything or runs anything in a project. A public service gets names, never code; a tool runs in the project, on this machine.", "play"],
+  ask: ["Ready to check", "These read only when you click a project, so a scan never sends anything or runs anything in one. A public service gets names, never code; a tool runs in the project, on this machine.", "play"],
   unread: ["Not read yet", "This session has not read these, or their read is still out.", "clock"],
-  access: ["Needs a login, token or tool", "Episko asked and was refused, or has nothing to ask with. Do what the row says and the next check reads it.", "lock"],
+  access: ["Needs a login, token or tool", "Episko asked and was refused, or has nothing to ask with. Run the command, add the token or pick the account the row offers, and the next check reads it.", "lock"],
   forge: ["Switched off on the forge", "The repository has this feature turned off, so there is nothing to read. The link on each row opens the page that switches it on.", "ban"],
   failed: ["Could not be read", "The read was tried and failed; hover a row for what it said. Checking again retries it.", "triangleAlert"],
   gap: ["Not covered here", "Nothing reads these here: a tool Episko recognises but has no reader for, a feature the forge does not offer, a setting that would answer it, or a source switched off on this machine.", "circleDashed"],
   note: ["Worth knowing", "Not gaps: nothing here stops a check.", "info"],
 };
-const copyBtn = (fix: string) => `<button class="aslink" data-mtcopy="${escAttr(fix)}" data-tip="Copy the command">Copy</button>`;
+// A command is run where it is read: typed into a terminal here and never sent, or copied.
+const cmdHtml = (v: MaintTabView, fix: string, root: string) => `<button class="mt-verb" data-mtterm="${escAttr(fix)}" data-mtroot="${escAttr(root)}"`
+  + ` data-tip="${escAttr(`Open a terminal in ${nameOf(v, root)} with this typed in. Nothing runs until you press Enter`)}">${icon("squareTerminal")}Run in terminal</button>`
+  + `<button class="aslink" data-mtcopy="${escAttr(fix)}" data-tip="Copy the command">Copy</button>`;
 
 // A row: what it is about and why, then the sentence that explains it, its projects as chips, and the one action.
 function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
@@ -316,15 +339,19 @@ function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
   const offer = a?.kind === "run" ? v.offers.find((o) => o.source === a.source) : undefined;
   const setup = one && g.source ? v.setups.find((x) => x.source === g.source) : undefined;
   const fix = a?.kind === "fix" ? a.fix : null, cmd = !!fix && fixIsCommand(fix);
+  // Where the row's chips are the account picker, the sentence no longer sends you to a menu.
+  const acct = !!fix && !!v.accounts && fixPicksAccount(fix);
   const said = a?.kind === "run" ? (d && disclosure(d)) ?? (d?.cost === "tool" ? `Runs ${d.label} in the project, on this machine.` : g.detail) : g.detail;
-  const detail = fix ? (cmd ? `<code class="mt-fix">${esc(fix)}</code>` : esc(fix)) : esc(said);
+  // A command wraps between its words only, never after a flag's hyphen.
+  const words = (x: string) => x.split(/\s+/).map((w) => `<span>${esc(w)}</span>`).join(" ");
+  const detail = fix ? (cmd ? `<code class="mt-fix">${words(fix)}</code>` : esc(acct ? fix.replace(/\s+from the project menu$/i, "") : fix)) : esc(said);
   // Public reads may also ride every scan: that is a per-machine switch, so the door is Settings'.
   const always = pub && d ? ` <button class="aslink" data-mtpref="${escAttr(d.id)}"`
     + ` data-tip="${escAttr(`Settings › On its own: ask ${d.label} in every check, from this machine only`)}">Ask in every check…</button>` : "";
   // A public read across projects is one click; a tool stays one project at a time, from its chip.
   const all = pub && !one && g.roots.length > 1 ? `<button class="mt-verb" data-mtrunall="${escAttr(d!.id)}"`
     + ` data-tip="${escAttr(`Check with ${d!.label} for these ${g.roots.length} projects, once each. ${said}`)}">Check all ${g.roots.length}</button>` : "";
-  const act = (cmd ? copyBtn(fix!) : "")
+  const act = (cmd ? cmdHtml(v, fix!, g.roots[0]) : "") + (acct && one ? acctHtml(v, g.roots[0], true) : "")
     + (a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0]) : "")
     + (a?.kind === "allow" ? allowHtml(a.host) : "")
     + (a?.kind === "token" ? tokenHtml(a.source, a.door) : "")
@@ -343,7 +370,7 @@ function coverHtml(v: MaintTabView): string {
     const [title, why, ic] = COVER_HEAD[k];
     const check = k === "unread" ? `<button class="aslink" data-mtscan="check" data-tip="Read what is not read yet. Nothing runs in a project">Check</button>` : "";
     return `<div class="mt-cvk k-${k}"><div class="mt-cvk-h">${icon(ic)}<b>${esc(title)}</b><span class="n">${gs.length}</span>${check}</div>`
-      + `<p class="mt-cvk-w">${esc(why)}</p><div class="mt-cvs">${gs.map((g) => coverRowHtml(v, g, one)).join("")}</div></div>`;
+      + `<p class="mt-cvk-w">${esc(why)}</p><div class="mt-cvs${one ? " one" : ""}">${gs.map((g) => coverRowHtml(v, g, one)).join("")}</div></div>`;
   }).join("");
   const across = new Set(gaps.flatMap((g) => g.roots)).size;
   const note = !gaps.length ? "nothing missing" : one ? plural(gaps.length, "gap") : `${plural(gaps.length, "gap")} across ${plural(across, "project")}`;

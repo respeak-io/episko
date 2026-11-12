@@ -32,7 +32,10 @@ Markers: `+` new · `~` changed · `!` fixed
   the check finishes instead of counting up project by project.
 + Maintenance's *Coverage* sorts what it could not read by what closes the gap: a click, a login or
   token, a switch on GitHub, a retry. Each group says what it means, each row says why under its
-  name, and each project's name carries its own *Check*, with *Check all* where a public service is asked.
+  name, and each project is a chip with its icon that does the row's fix for it: click it to check
+  that project, open its settings page or pick the GitHub account it reads as. *Check all* asks a
+  public service for every project at once, and a fix that is a command opens in a terminal with it
+  typed in, for you to press Enter.
 + Every Maintenance card has an (i) that says what it shows, what it reads, how to read its colours
   and what you can do there. A card with something red or amber in it counts those in its head and
   wears the colour down its edge, an empty one says *none open* in one line, and each tab says what

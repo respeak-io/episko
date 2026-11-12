@@ -49,6 +49,7 @@ export interface MaintHost {
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
   session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
   openSettings?: (section: string, row?: string) => void; // a Coverage row's token door: Settings › Accounts at that kind
+  pickAccount?: (at: HTMLElement, root: string, then: () => void) => void; // the project's forge account picker; `then` after a pick
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -416,6 +417,11 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("accounts", k ? tokenRow(k.id) : undefined); return true; }
   const url = t.closest<HTMLElement>("[data-mturl]");
   if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
+  // A fix is typed into a terminal and never sent; a pick of account re-reads the project it was for.
+  const term = t.closest<HTMLElement>("[data-mtterm]");
+  if (term) { const r = term.dataset.mtroot!; host.terminal(host.nameOf(r), r, term.dataset.mtterm!); return true; }
+  const acct = t.closest<HTMLElement>("[data-mtacct]");
+  if (acct) { const r = acct.dataset.mtacct!; host.pickAccount?.(acct, r, () => void scanProject(r, false)); return true; }
   const copy = t.closest<HTMLElement>("[data-mtcopy]");
   if (copy) {
     // Tauri's clipboard, never navigator.clipboard, which raises an OS permission prompt.
