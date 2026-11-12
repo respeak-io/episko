@@ -302,7 +302,7 @@ const COVER_HEAD: Record<CoverKind, [title: string, why: string, ic: IconName]> 
   ask: ["Ready to check", "These read only when you click, so a scan never sends anything or runs anything in a project. A public service gets names, never code; a tool runs in the project, on this machine.", "play"],
   unread: ["Not read yet", "This session has not read these, or their read is still out.", "clock"],
   access: ["Needs a login, token or tool", "Episko asked and was refused, or has nothing to ask with. Do what the row says and the next check reads it.", "lock"],
-  forge: ["Switched off on the forge", "The repository has this feature turned off, so there is nothing to read. A project's name opens the page that switches it on.", "ban"],
+  forge: ["Switched off on the forge", "The repository has this feature turned off, so there is nothing to read. The link on each row opens the page that switches it on.", "ban"],
   failed: ["Could not be read", "The read was tried and failed; hover a row for what it said. Checking again retries it.", "triangleAlert"],
   gap: ["Not covered here", "Nothing reads these here: a tool Episko recognises but has no reader for, a feature the forge does not offer, a setting that would answer it, or a source switched off on this machine.", "circleDashed"],
   note: ["Worth knowing", "Not gaps: nothing here stops a check.", "info"],
