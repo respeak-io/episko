@@ -455,6 +455,11 @@ pinned by the `--ignored` test above, but every surface below is DOM.
 ### Panes that aren't agents
 
 - [ ] **`❯ Terminal`** opens a working shell pane.
+- [ ] **Panes run below the desktop.** In that shell, start a child (`ping -n 60 127.0.0.1`
+      / `sleep 60`). Task Manager › Details › Base priority (`ps -o ni`) reads *Below
+      normal* (10) for the shell and the child. Switch *Settings › Launching › Run sessions
+      below your other apps* off: on Windows both read *Normal* at once; on macOS a new
+      shell reads 0. Turn it back on.
 - [ ] **`▶ Run`** discovers this project's tasks and runs one; exit 0 shows `done`,
       non-zero shows `error` and raises attention.
 - [ ] **A run-on-stop rule fires** once per turn, does not steal the stage, and offers

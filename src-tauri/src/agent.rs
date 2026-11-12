@@ -901,6 +901,8 @@ fn start_codex(
     let mut child = command
         .spawn()
         .map_err(|e| format!("start Codex App Server: {e}"))?;
+    // The app server, not the TUI, runs the agent's commands, so it is what must yield.
+    state.pane_priority.adopt(Some(child.id()));
 
     let mut last_error = String::new();
     let mut socket = None;

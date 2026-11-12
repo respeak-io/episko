@@ -15,6 +15,7 @@ mod icons;
 mod mcp;
 mod notes;
 mod platform;
+mod priority;
 mod pty;
 mod review;
 mod stack;
@@ -98,6 +99,8 @@ pub(crate) struct AppState {
     /// Windows' `SetThreadExecutionState` assertion, the `caffeinate` equivalent.
     #[cfg(windows)]
     caffeinate: Mutex<Option<KeepAwake>>,
+    /// Settings › Launching: whether pane processes run below the desktop (priority.rs).
+    pane_priority: priority::PanePriority,
     /// The sync connection's control and last status; idle unless sync is set up (sync.rs).
     sync: std::sync::Arc<sync::SyncCtl>,
 }
@@ -316,6 +319,8 @@ pub fn run() {
                 mcp_tokens: Mutex::new(HashMap::new()),
                 mcp_pending: Mutex::new(HashMap::new()),
                 caffeinate: Mutex::new(None),
+                // On until the webview says otherwise: its setting ships on.
+                pane_priority: priority::PanePriority::new(true),
                 sync: Default::default(),
             });
             sync::init(app.handle());
@@ -491,6 +496,7 @@ pub fn run() {
             pty::all_sessions_resources,
             git::create_worktree,
             platform::set_caffeinate,
+            priority::set_pane_priority,
             platform::play_wav,
             telemetry::resolve_permission,
             mcp::resolve_mcp,

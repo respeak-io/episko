@@ -41,6 +41,7 @@ import {
   setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
   closeAskIdle, setCloseAskIdle as setCloseAskIdleState,
+  paneLow, setPaneLow as setPaneLowState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -306,6 +307,19 @@ export function setTermSplit(on: boolean) {
 }
 
 // Read at the next ✕; a session mid-turn asks whatever this says.
+// Windows moves the panes already running at once; macOS lowers only what starts next.
+export function setPaneLow(on: boolean) {
+  setPaneLowState(on);
+  localStorage.setItem("cc-pane-priority", on ? "1" : "0");
+  syncPanePriority();
+  renderSettings();
+}
+
+/** The backend boots lowered; boot and every change tell it what the setting says. */
+export function syncPanePriority() {
+  invoke("set_pane_priority", { low: paneLow }).catch((e) => dlog("warn", `pane priority: ${e}`));
+}
+
 export function setCloseAskIdle(on: boolean) {
   setCloseAskIdleState(on);
   localStorage.setItem("cc-close-ask", on ? "1" : "0");

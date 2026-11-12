@@ -361,6 +361,7 @@ mod tests {
             mcp_tokens: Mutex::new(HashMap::new()),
             mcp_pending: Mutex::new(HashMap::new()),
             caffeinate: Mutex::new(None),
+            pane_priority: crate::priority::PanePriority::new(false),
             sync: Default::default(),
         });
         let handle = app.handle().clone();

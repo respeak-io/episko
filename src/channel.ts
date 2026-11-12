@@ -14,7 +14,7 @@ const OWN = [
   "cc-markdown", "cc-pr-links", "cc-shelved-tree", "cc-worktree-group", "cc-dash-summaries",
   "cc-perm-modes", "cc-perm-mode", "cc-trusted", "cc-autofetch", "cc-proj-prefs", "cc-agent-tools",
   "cc-task-prefs", "cc-task-onstop", "cc-task-runner", "cc-task-pins", "cc-task-hidden", "cc-revive", "cc-attn",
-  "cc-caffeinate", "cc-caf-timer", "cc-caf-await", "cc-memory-sync", "cc-vitals",
+  "cc-caffeinate", "cc-caf-timer", "cc-caf-await", "cc-memory-sync", "cc-vitals", "cc-pane-priority",
   // A preview's version is not stable's, so What's new keeps a separate tally for each.
   "cc-seen-versions", "cc-seen-version",
 ];
