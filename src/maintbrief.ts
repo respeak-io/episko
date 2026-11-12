@@ -13,6 +13,7 @@ export interface MaintBriefCtx {
   verify: string[]; // the project's own check commands (`verifyCommands` in ./deps)
   now?: number;
   traces?: Readonly<Record<string, ErrTrace | string>>; // *Fix*'s stack traces by issue id, or why each was not read
+  only?: readonly string[]; // one advisory's id and aliases: a board row's own verb briefs that one alone
 }
 
 type Brief = (f: Finding, inp: MaintInput, ctx: MaintBriefCtx) => string[] | null;
@@ -28,12 +29,16 @@ function factsOf<K extends Facts["kind"]>(f: Finding, inp: MaintInput, kind: K):
 
 // The rows behind the finding's line, from the reports that line counted, worst first, so the
 // brief names the fix whichever reporter knew it. `capped` when any of them hit its page cap.
-function advisoriesOf(f: Finding, inp: MaintInput, ...want: AdvisoryKind[]): { all: MergedAdvisory[]; capped: boolean } {
+// `only` matches by id or alias, since another project's reporter may have filed it under either.
+function advisoriesOf(f: Finding, inp: MaintInput, ctx: MaintBriefCtx, ...want: AdvisoryKind[]): { all: MergedAdvisory[]; capped: boolean } {
   const kind = f.ref as AdvisoryKind;
   if (!want.includes(kind)) return { all: [], capped: false };
   const reps = okFacts(inp, "security").flatMap((r) =>
     r.facts.kind === "advisories" && r.facts.items.some((i) => i.kind === kind) ? [{ ...r, items: r.facts.items }] : []);
-  return { all: mergeAdvisories(reps.map((r) => r.items)).filter((a) => a.kind === kind), capped: reps.some((r) => r.truncated) };
+  const all = mergeAdvisories(reps.map((r) => r.items)).filter((a) => a.kind === kind);
+  if (!ctx.only) return { all, capped: reps.some((r) => r.truncated) };
+  const ids = new Set(ctx.only.map((x) => x.toLowerCase()));
+  return { all: all.filter((a) => [a.id, ...a.aliases].some((x) => ids.has(x.toLowerCase()))), capped: false };
 }
 const cappedNote = (capped: boolean, what: string) =>
   capped ? ["", `This list hit a page cap, so more ${what} may exist than are named here: check again once these are done.`] : [];
@@ -129,7 +134,7 @@ function patchLines(all: MergedAdvisory[], capped: boolean, ctx: MaintBriefCtx, 
 }
 
 const patchBrief: Brief = (f, inp, ctx) => {
-  const { all, capped } = advisoriesOf(f, inp, "dependency");
+  const { all, capped } = advisoriesOf(f, inp, ctx, "dependency");
   return all.length ? patchLines(all, capped, ctx) : null;
 };
 
@@ -170,7 +175,7 @@ export function sweepPrompt(adv: SweepAdvisory, row: SweepRow, project: string):
 }
 
 const rotateBrief: Brief = (f, inp, ctx) => {
-  const { all, capped } = advisoriesOf(f, inp, "secret");
+  const { all, capped } = advisoriesOf(f, inp, ctx, "secret");
   if (!all.length) return null;
   const one = all.length === 1;
   return [
@@ -191,7 +196,7 @@ const rotateBrief: Brief = (f, inp, ctx) => {
 
 // A scanner's finding in the project's own code or config: judged in place, never silenced.
 const codeBrief: Brief = (f, inp, ctx) => {
-  const { all, capped } = advisoriesOf(f, inp, "code", "config");
+  const { all, capped } = advisoriesOf(f, inp, ctx, "code", "config");
   if (!all.length) return null;
   const one = all.length === 1, config = f.ref === "config";
   const sev = (a: MergedAdvisory) => a.severity === "unknown" ? "" : `, ${a.severity}`;

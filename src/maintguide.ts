@@ -24,9 +24,9 @@ interface Guide {
 const LEGEND = "Red is broken and needs you now, amber is drifting. A grey dot was checked and is fine; a ? could not be counted, a dash was not read.";
 const G: Record<GuideId, Guide> = {
   advisories: { title: "Advisories and findings", ic: "shield", caps: ["sec.dependency", "sec.code", "sec.secret"],
-    what: "Known vulnerabilities in what each project installs, and what code and secret scanning found in its code. One row per vulnerability across every project and reporter; its chips are the projects it hits.",
-    look: "The strip counts the rows by severity, and a click on one shows only those. Critical and high are red, medium amber; a committed secret counts as worse than any of them.",
-    act: "Patch on a project's chip starts an agent with a brief from the advisory: what is installed, what fixes it, how to verify. It is prefilled and never sent: you press Enter." },
+    what: "Known vulnerabilities in what each project installs, and what code and secret scanning found in its code. One row per vulnerability across every project and reporter, grouped by severity; a group's chips are the projects it hits.",
+    look: "Critical and high are red and open on their first rows, medium amber, low muted; a committed secret counts as worse than any of them. Click a group's head to fold or open it, and a project's chip to see only that project.",
+    act: "Patch on a row starts an agent on that advisory alone; Patch all at the top briefs one agent per project on every advisory there. Each brief says what is installed, what fixes it and how to verify, and is prefilled, never sent: you press Enter." },
   runtimes: { title: "Runtime end-of-life", ic: "hourglass", caps: ["sec.runtime"],
     what: "The runtime and image versions each project declares (.nvmrc, engines, a toolchain file, a Dockerfile's image…) and when their release cycle ends.",
     look: "Ended is red, ending soon amber. A version no cycle holds is a ?, never fine.",

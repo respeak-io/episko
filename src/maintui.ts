@@ -10,10 +10,10 @@ import { dlog } from "./debug";
 import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
+  ADV_FOLDS, BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
   sweepRows, tabFindings, traceAsk, type Finding,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
-  type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
+  type AdvFold, type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
 import { guideHtml, isGuideId } from "./maintguide";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
@@ -60,8 +60,8 @@ function setMaintChip(c: MaintChip) {
 }
 // Not persisted: a fold you opened is a glance, and the next visit starts with the loud cards.
 export let quietOpen = false;
-// The Security strip's bucket, a glance like the fold: a second click on it shows every row again.
-export let maintSev: SevBucket | null = null;
+// The advisories' severity groups as folded or opened this session, a glance like the quiet fold.
+export const maintAdv: Partial<Record<SevBucket, AdvFold>> = {};
 // The ticked card lines (`sessionKey`), a glance too: never persisted, and cleared by the session they start.
 export let maintPicked = emptyPick();
 
@@ -97,7 +97,8 @@ const lineOf = (root: string, key: string, inp: MaintInput) =>
   [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)].find((x) => x.key === key);
 
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
-async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
+// `only`: an advisory row's own verb, which briefs that advisory alone (its id and aliases).
+async function runVerb(root: string, key: string, host: MaintHost, only?: string[]): Promise<void> {
   const inp = maintInput(root);
   const f = inp && lineOf(root, key, inp);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
@@ -121,10 +122,22 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   }
   try {
     const [verify, traces] = await Promise.all([verifyFor(root), tracesFor(root, f, inp)]);
-    const text = briefFor(f, inp, { project: name, verify, traces });
+    const text = briefFor(f, inp, { project: name, verify, traces, only });
     if (!text) { toast("That has changed since the last check. Check again"); return; }
     host.prefill(name, root, text);
   } finally { tracing.delete(out); }
+}
+
+// An advisory row's verb: straight to its one project's agent, or a menu of the projects it hits.
+function advVerb(at: HTMLElement, host: MaintHost): void {
+  const only = (at.dataset.mtadv ?? "").split(" ").filter(Boolean), key = at.dataset.mtkey!;
+  const roots = (at.dataset.mtroot ?? "").split("\n").filter(Boolean);
+  if (roots.length === 1) { void runVerb(roots[0], key, host, only); return; }
+  openMenu(at, {
+    title: `${at.textContent?.trim() || "Brief"} ${only[0] ?? ""}`, sub: "an agent on this alone, in the project you pick",
+    groups: [{ items: roots.map((r) => ({ id: r, label: host.nameOf(r) })) }],
+    onPick: (r) => void runVerb(r, key, host, only),
+  });
 }
 
 // A board number: a fetch runs here; anything else is a view of the project's dashboard (a page is data-mturl's).
@@ -387,11 +400,11 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   }
   const fold = t.closest<HTMLElement>("[data-mtfold]");
   if (fold) { quietOpen = fold.dataset.mtfold === "1"; host.render(); return true; }
+  // A severity group's head folds or opens it, and its foot shows every row or its first again.
   const sev = t.closest<HTMLElement>("[data-mtsev]");
   if (sev) {
-    const b = sev.dataset.mtsev as SevBucket;
-    if (maintSev === b || !SEV_BUCKETS.includes(b)) maintSev = null;
-    else if (sev.getAttribute("aria-disabled") !== "true") maintSev = b;
+    const b = sev.dataset.mtsev as SevBucket, f = sev.dataset.mtkey as AdvFold;
+    if (SEV_BUCKETS.includes(b) && ADV_FOLDS.includes(f)) maintAdv[b] = f;
     host.render();
     return true;
   }
@@ -433,6 +446,8 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (hostDoor) { hostAct(hostDoor, host); return true; }
   const door = t.closest<HTMLElement>("[data-mtdoor]");
   if (door) { openDoor(door.dataset.mtdoor ?? "", door.dataset.mtroot!, host); return true; }
+  const adv = t.closest<HTMLElement>("[data-mtadv]");
+  if (adv) { advVerb(adv, host); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   // A card line, after its verb so Patch only prefills: the tab and board that line summarises.
@@ -441,7 +456,6 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
     const facet = find.dataset.mtfind as Facet;
     if (!FACETS.includes(facet)) return true;
     const to = findingTarget({ facet, key: find.dataset.mtkey ?? "" });
-    maintSev = null; // a severity picked earlier could hide the very rows this line counts
     host.openTab(to.tab, find.dataset.mtroot!, to.board);
     return true;
   }

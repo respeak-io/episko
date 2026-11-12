@@ -27,7 +27,7 @@ import {
   askingFor, fleetCheckedAt, fleetProgress, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, projectProgress, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
 import { progressText, readingNow, readingSub } from "./maintbadge";
-import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
+import { maintClick, maintChip, maintEarlier, maintKey, maintAdv, maintPicked, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import type { Place } from "./nav";
 import {
   MAINT_SUBS, maintBodyHtml, maintTilesHtml, maintWhenHtml, type MaintCard, type MaintSession, type MaintSub, type MaintSweepView, type MaintView, type ProdAsks,
@@ -533,7 +533,7 @@ function buildMaint(now: number): MaintView {
   const sweep = fleetProgress();
   return {
     // The dashboard builds the same model for its one project (docs/maintenance.md).
-    ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, maintSev, now),
+    ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, now),
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
     progress: sweep && { frac: sweep.frac, text: progressText(sweep, false), now: readingNow(sweep, nameOf) },
     kept: Math.max(0, ...[...byRoot.keys()].map((r) => maintOf(r)).filter((e) => e?.kept).map((e) => e!.at)),
@@ -544,7 +544,7 @@ function buildMaint(now: number): MaintView {
     sees: [...sees].sort(), blind: [...blind].filter((c) => !sees.has(c)).sort(),
     soon: comingUp(read, now).map((s) => ({ name: byRoot.get(s.root)?.name ?? basename(s.root), what: s.what, at: s.at })),
     sub: maintSub, filter: only ? { root: only, name: byRoot.get(only)!.name } : null,
-    sev: maintSev, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
+    adv: { ...maintAdv }, names: Object.fromEntries([...byRoot.keys()].map((r) => [r, nameOf(r)])),
     faces: Object.fromEntries([...byRoot].map(([r, p]) => [r, { icon: iconFor(p.path), accent: p.accent }])),
     accounts: ghReadsAs([...byRoot.keys()], ghAccountFor, ghLogins),
     hosts: hostRows(hosted.filter((h) => only === null || h.path === only)).map((h) => ({

@@ -5,9 +5,9 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
+  ADV_PEEK, advFix, advFold, advVerbs, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvFold, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
-  type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type TokenDoor, type Verb,
+  type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SevGroup, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
   SESSION_MAX, SESSION_OVER, sessionKey, sessionPickable,
@@ -49,7 +49,7 @@ export interface MaintTabView extends TabModel {
   sub: MaintSub;
   filter: { root: string; name: string } | null; // a tab narrowed to one project, from a cell or the picker
   prod: MaintProd;
-  sev: SevBucket | null; // the Security strip's pick
+  adv: Partial<Record<SevBucket, AdvFold>>; // the advisories' severity groups as folded or opened
   names: Record<string, string>; // every root's project name
   faces: Record<string, ProjFace>; // every root's avatar, as its card draws it
   accounts: Record<string, string> | null; // the forge account each root reads as, only where a picker can change it
@@ -596,42 +596,67 @@ const projTd = (v: MaintTabView, b: Boards, root: string) => b.one ? "" : td(pro
 const grow = (view: "deps" | "branches", tip: string) => `<button class="xb" data-mtview="${view}" aria-label="${escAttr(tip)}" data-tip="${escAttr(tip)}">${icon("arrowUpRight", "solo")}</button>`;
 
 const SEV_TEXT: Record<SevBucket, string> = { secret: "secret", critical: "critical", high: "high", medium: "medium", low: "low", unknown: "unknown" };
-function stripHtml(v: MaintTabView, b: Boards): string {
-  return `<div class="mt-sevs" role="group" aria-label="Severity">` + b.strip.map((c) => {
-    const on = v.sev === c.bucket, off = !c.n && !on;
-    const tip = on ? "Every severity again" : c.n ? `Only the ${SEV_TEXT[c.bucket]} rows` : `No ${SEV_TEXT[c.bucket]} row`;
-    return `<button class="mt-sevb${on ? " on" : ""}${c.n ? ` ${LEVEL_CLS[c.level]}` : ""}"${off ? ` aria-disabled="true"` : ""} aria-pressed="${on}"`
-      + ` data-mtsev="${c.bucket}" data-tip="${escAttr(tip)}"><b>${c.n}${c.n && b.capped ? "+" : ""}</b><span>${SEV_TEXT[c.bucket]}</span></button>`;
-  }).join("") + `</div>`;
-}
+// A small project chip: its avatar and name, `n` its rows here; it narrows the tab to that project.
+const tinyChip = (v: MaintTabView, root: string, key: string, n?: number) =>
+  `<button class="mt-chip sm" data-mtfind="security" data-mtkey="${escAttr(key)}" data-mtroot="${escAttr(root)}"`
+  + ` data-tip="${escAttr(`Only ${nameOf(v, root)}`)}"><span class="av">${faceHtml(v, root)}</span><span class="nm">${esc(nameOf(v, root))}</span>`
+  + `${n === undefined ? "" : `<span class="c">${n}</span>`}</button>`;
 
 const KIND_WORD: Record<AdvRow["kind"], string> = { dependency: "advisory", code: "code finding", config: "misconfiguration", secret: "secret" };
-function advHtml(v: MaintTabView, b: Boards, r: AdvRow): string {
+// `who` false: the group's head already names the one project every row is from.
+function advHtml(v: MaintTabView, b: Boards, r: AdvRow, who = true): string {
   const ver = r.kind === "dependency" ? `${r.installed.join(", ") || "?"} → ${r.fixed.join(", ") || "no fix published"}` : "";
   const fix = v.dash ? advFix(r, v.dash.fixes) : null; // the dashboard's own read knows what the fix takes
   const id = r.url ? settingsHtml(r.url, r.id, false) : `<span>${esc(r.id)}</span>`;
-  const chips = r.projects.map((p) => {
-    // The verb is the project's line for this kind, so its brief covers every row of it there.
-    const why = p.verb ? `${nameOf(v, p.root)}: one brief for every ${KIND_WORD[r.kind]} there` : "";
-    return b.one ? (p.verb ? `<span class="mt-pc solo">${verbHtml(p.verb, why)}</span>` : "")
-      : `<span class="mt-pc">${projHtml(p.root, nameOf(v, p.root))}${p.verb ? verbHtml(p.verb, why) : ""}</span>`;
-  }).join("");
+  const chips = b.one || !who ? "" : r.projects.map((p) => tinyChip(v, p.root, `security:${r.kind}`)).join("");
   const tip = [r.summary, r.aliases.length ? `also ${r.aliases.join(", ")}` : ""].filter(Boolean).join("\n");
   const sub = [ver, fix].filter(Boolean).map((x) => `${esc(x!)} · `).join("");
-  return `<div class="mt-adv"><span class="mt-sevl ${LEVEL_CLS[r.level]}">${esc(SEV_TEXT[r.bucket])}</span>`
-    + `<span class="m"><span class="t" data-tip="${escAttr(tip)}"><b>${esc(r.what || r.id)}</b> ${esc(r.summary)}</span>`
-    + `<span class="s mono">${sub}${id}</span></span><span class="mt-pcs">${chips}</span></div>`;
+  return `<div class="mt-adv"><span class="m"><span class="t" data-tip="${escAttr(tip)}"><b>${esc(r.what || r.id)}</b> ${esc(r.summary)}</span>`
+    + `<span class="s mono">${sub}${id}</span></span><span class="mt-pcs">${chips}${advActHtml(v, r)}</span></div>`;
+}
+// A row's own verb briefs an agent on that advisory alone; hitting several projects, it asks which first.
+function advActHtml(v: MaintTabView, r: AdvRow): string {
+  const ps = r.projects.filter((p) => p.verb), f = ps[0]?.verb;
+  if (!f) return "";
+  const where = ps.length === 1 ? `in ${nameOf(v, ps[0].root)}` : `in one of the ${ps.length} projects it hits`;
+  return `<button class="mt-verb" data-mtadv="${escAttr([r.id, ...r.aliases].join(" "))}" data-mtkey="${escAttr(f.key)}"`
+    + ` data-mtroot="${escAttr(ps.map((p) => p.root).join("\n"))}" data-tip="${escAttr(`Brief an agent ${where} on this ${KIND_WORD[r.kind]} alone\n${AGENT_TIP}`)}">`
+    + `${icon("agent")}${esc(verbText(f)[0])}${ps.length > 1 ? icon("chevronDown", "solo") : ""}</button>`;
+}
+
+// A severity is a group: its head says how many and who is hit, and folds it; red ones open on their first rows.
+function sevGroupHtml(v: MaintTabView, b: Boards, g: SevGroup): string {
+  const f = advFold(g, v.adv[g.bucket]), open = f.fold !== "shut", n = `${g.rows.length}${b.capped ? "+" : ""}`;
+  const head = `<button class="mt-sevt" data-mtsev="${g.bucket}" data-mtkey="${open ? "shut" : "open"}" aria-expanded="${open}"`
+    + ` data-tip="${open ? "Fold" : "Show"} the ${SEV_TEXT[g.bucket]} rows">${icon(open ? "chevronDown" : "chevronRight", "solo")}`
+    + `<span class="mt-sevl ${LEVEL_CLS[g.level]}">${esc(SEV_TEXT[g.bucket])}</span><b class="${LEVEL_CLS[g.level]}">${n}</b></button>`;
+  const who = b.one ? "" : `<span class="mt-pcs">${g.projects.slice(0, SHOWN).map((p) => tinyChip(v, p.root, `security:${g.rows.find((r) => r.projects.some((x) => x.root === p.root))?.kind ?? "dependency"}`, p.n)).join("")}`
+    + `${g.projects.length > SHOWN ? `<span class="dim">+${g.projects.length - SHOWN}</span>` : ""}</span>`;
+  const foot = f.more ? `<button class="mt-more" data-mtsev="${g.bucket}" data-mtkey="all">Show ${f.more} more</button>`
+    : f.fold === "all" && g.rows.length > ADV_PEEK ? `<button class="mt-more" data-mtsev="${g.bucket}" data-mtkey="open">Show fewer</button>` : "";
+  return `<div class="mt-sevg ${LEVEL_CLS[g.level]}${open ? " open" : ""}"><div class="mt-sevh">${head}${who}</div>`
+    + (open ? `<div class="mt-advs">${f.shown.map((r) => advHtml(v, b, r, g.projects.length > 1)).join("")}</div>${foot}` : "") + `</div>`;
+}
+
+// A brief is per project and kind, so its verb sits once above the groups rather than on every row.
+function advVerbsHtml(v: MaintTabView, b: Boards): string {
+  const vs = advVerbs(b.adv);
+  if (!vs.length) return "";
+  return `<div class="mt-advbar"><span class="k">All in one brief</span>` + vs.map((f) => {
+    const kind = b.adv.find((r) => r.projects.some((p) => p.verb?.key === f.key))?.kind ?? "dependency";
+    const word = `${verbText(f)[0]} all`;
+    return verbHtml(f, `${nameOf(v, f.root)}: ${f.text}, one brief for every ${KIND_WORD[kind]} there`, b.one ? word : `${word} · ${nameOf(v, f.root)}`);
+  }).join("") + `</div>`;
 }
 
 const DEPS_TIP = "Every advisory, update pull request and out-of-date package";
 function securityHtml(v: MaintTabView, b: Boards): string {
-  const all = b.strip.reduce((k, c) => k + c.n, 0);
-  const rows = b.adv.length ? `<div class="mt-advs">${b.adv.map((r) => advHtml(v, b, r)).join("")}</div>`
-    : empty(all ? "No row of that severity. Click it again for every one." : "No open advisory or finding.");
+  const all = b.adv.length;
+  const rows = advVerbsHtml(v, b) + b.groups.map((g) => sevGroupHtml(v, b, g)).join("");
   // The overlay's ⤢ sits once, on the first board drawn; with none, Packages is drawn to carry it.
   const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.advRead || all), hasPrs = !!(b.prs.length || b.read.deps);
-  const advLv = b.strip.flatMap((c) => many(c.n, c.level));
-  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.advRead)}`, stripHtml(v, b) + rows, door, advLv,
+  const advLv = b.groups.flatMap((g) => many(g.rows.length, g.level));
+  const adv = hasAdv ? board("advisories", "Advisories and findings", `by severity · ${readNote(b.advRead)}`, rows, door, advLv,
     all ? "" : "none open") : "";
   const prs = b.prs.length ? table([...projCol(b), "Bot", ">Open", ">Green", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info", "", ["update-prs", "open", r.root]) + (r.capped ? "+" : ""), "r")

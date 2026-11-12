@@ -41,7 +41,7 @@ import {
 import { askingFor, maintInput, maintOf, maintSnap, projectProgress, scanProject } from "./maintscan";
 import { progressText, readingNow } from "./maintbadge";
 import { findSource, type Facet } from "./maintsources";
-import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
+import { maintAdv, maintClick, maintKey, type MaintHost } from "./maintui";
 import { MAINT_SUBS, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import type { Place } from "./nav";
 import { discoverTasks, execCmd } from "./tasks";
@@ -1328,8 +1328,8 @@ function maintNow(now: number): MaintDash {
     rows, offers: offers(r, inp), setups: coverSetups(r, inp), checked: e?.at ?? 0,
     progress: prog && { frac: prog.frac, text: progressText(prog, true), now: readingNow(prog) },
     tab: {
-      ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
-      sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
+      ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, now),
+      sub: dashSub, filter: { root: r, name: nm }, adv: { ...maintAdv }, names: { [r]: nm },
       faces: { [r]: { icon: iconFor(r), accent: accentFor(r) } }, accounts: ghReadsAs([r], ghAccountFor, ghLogins),
       prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod), sources: prod, hosts: host?.allowed ? [host.alias] : [] },
       dash: {

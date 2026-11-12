@@ -1983,13 +1983,34 @@ export function eolBoard(ps: readonly TabProject[], root: string | null = null, 
     || a.root.localeCompare(b.root) || rtName(a).localeCompare(rtName(b)));
 }
 
-export interface SevCount { bucket: SevBucket; n: number; level: Finding["level"] }
-/** The four severities always, a secret or an unknown one only when there is one or it is the pick,
- *  so a pick whose rows went away still has the button that clears it. */
-export const sevStrip = (rows: readonly AdvRow[], sev: SevBucket | null = null): SevCount[] => SEV_BUCKETS
-  .map((bucket) => ({ bucket, n: rows.filter((r) => r.bucket === bucket).length, level: BUCKET_LEVEL[bucket] }))
-  .filter((c) => c.n || c.bucket === sev || (c.bucket !== "secret" && c.bucket !== "unknown"));
-export const bySev = (rows: readonly AdvRow[], sev: SevBucket | null): AdvRow[] => rows.filter((r) => sev === null || r.bucket === sev);
+export interface SevGroup { bucket: SevBucket; level: Finding["level"]; rows: AdvRow[]; projects: { root: string; n: number }[] }
+/** The advisories by severity, worst first and only those with a row; each group's projects by how
+ *  many of its rows they have, so its head says who is hit before a row is read. */
+export const sevGroups = (rows: readonly AdvRow[]): SevGroup[] => SEV_BUCKETS.flatMap((bucket) => {
+  const mine = rows.filter((r) => r.bucket === bucket), n = new Map<string, number>();
+  for (const r of mine) for (const p of r.projects) n.set(p.root, (n.get(p.root) ?? 0) + 1);
+  const projects = [...n].map(([root, k]) => ({ root, n: k })).sort((a, b) => b.n - a.n || a.root.localeCompare(b.root));
+  return mine.length ? [{ bucket, level: BUCKET_LEVEL[bucket], rows: mine, projects }] : [];
+});
+
+/** A severity group as you left it this session: folded, its first rows, or every row. */
+export const ADV_FOLDS = ["shut", "open", "all"] as const;
+export type AdvFold = (typeof ADV_FOLDS)[number];
+export const ADV_PEEK = 5;
+/** What a group shows: a red one opens on its first rows by default, the rest start folded. */
+export function advFold(g: Pick<SevGroup, "level" | "rows">, fold?: AdvFold): { fold: AdvFold; shown: AdvRow[]; more: number } {
+  const f = fold ?? (g.level === "bad" ? "open" : "shut");
+  const shown = f === "shut" ? [] : f === "all" ? g.rows : g.rows.slice(0, ADV_PEEK);
+  return { fold: f, shown, more: f === "shut" ? 0 : g.rows.length - shown.length };
+}
+
+/** Each project's one line per kind of advisory, once however many rows it covers: a brief is per
+ *  project, so its verb sits on the board once rather than on every row. Worst first. */
+export const advVerbs = (rows: readonly AdvRow[]): Finding[] => {
+  const seen = new Map<string, Finding>();
+  for (const r of rows) for (const p of r.projects) if (p.verb && !seen.has(`${p.root}|${p.verb.key}`)) seen.set(`${p.root}|${p.verb.key}`, p.verb);
+  return [...seen.values()].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || a.root.localeCompare(b.root) || a.key.localeCompare(b.key));
+};
 
 export interface PrRow {
   root: string; bot: string; open: number; red: number;
@@ -2295,7 +2316,7 @@ export function hostBoard(ps: readonly TabProject[], root: string | null = null,
 
 export interface Boards {
   adv: AdvRow[];
-  strip: SevCount[];
+  groups: SevGroup[]; // adv by severity
   capped: boolean;
   prs: PrRow[];
   advRead: number; // projects an advisory source answered: what the advisories board may claim
@@ -2321,11 +2342,11 @@ export interface Boards {
   one: boolean; // narrowed to one project, so no row names it: the column would only repeat the name
 }
 
-/** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
-export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
+/** The open tab's boards over the project filter. */
+export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, now = Date.now()): Boards {
   const b: Boards = {
     adv: [],
-    strip: [],
+    groups: [],
     capped: false,
     prs: [],
     advRead: 0,
@@ -2354,7 +2375,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f, READ_KIND[f]);
   const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false, read: 0 };
   if (tab === "security") {
-    Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, advRead: all.read,
+    Object.assign(b, { adv: all.rows, groups: sevGroups(all.rows), capped: all.capped, advRead: all.read,
       eol: eolBoard(ps, root, now), prs: updatePrRows(ps, root, now) });
     b.pkgs = packagesBoard(ps, root);
     b.pkgRead = b.pkgs.length;
@@ -2375,7 +2396,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
       return ids.length && ids.every((id) => (p.inp.reports[id]?.coverage.state ?? "notRun") === "notRun");
     }).length;
   }
-  // A filtered-out severity hides its rows, not their lines: those are still the board's.
+  // A folded severity hides its rows, not their lines: those are still the board's.
   const verbs = [
     ...all.rows.flatMap((r) => r.projects.map((x) => x.verb)),
     ...b.eol.map((r) => r.verb),
@@ -2407,11 +2428,10 @@ export interface TabModel {
   cover: CoverGroup[];
   read: number; unset: number; // what an empty tab may claim (tabGaps)
 }
-export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null,
-  sev: SevBucket | null = null, now = Date.now()): TabModel {
+export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null, now = Date.now()): TabModel {
   const rows = ps.flatMap((p) => p.rows), tabs = tabTally(rows, root);
   if (!sub) return { tabs, boards: null, rows: [], offers: [], setups: [], cover: [], read: 0, unset: 0 };
-  const boards = tabBoards(sub, ps, root, sev, now), drawn = new Set(boards.drawn);
+  const boards = tabBoards(sub, ps, root, now), drawn = new Set(boards.drawn);
   return {
     tabs, boards, ...tabGaps(sub, ps, root),
     rows: tabRows(sub, rows, root).filter((r) => !drawn.has(`${r.root}|${r.key}`)),
@@ -2437,7 +2457,7 @@ export type Door =
 const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
 // Every number column of every board; "url" takes the cell's own address, null is a number with no door.
 const DOORS = {
-  advisories: {}, // the severity strip filters in place
+  advisories: {}, // its severity groups fold in place
   packages: { behind: { to: "deps", tab: "stale" }, latest: "url" }, // where <pm> outdated is asked; the package's page
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },

@@ -36,6 +36,10 @@ Markers: `+` new · `~` changed · `!` fixed
   that project, open its settings page or pick the GitHub account it reads as. *Check all* asks a
   public service for every project at once, and a fix that is a command opens in a terminal with it
   typed in, for you to press Enter.
++ Maintenance's *Advisories and findings* are grouped by severity. Critical and high open on their
+  first five rows, medium and low start folded, and each group's head names the projects it hits.
+  Each row has its own *Patch* for that advisory alone, and *Patch all* briefs one agent per project
+  on every advisory there.
 + Every Maintenance card has an (i) that says what it shows, what it reads, how to read its colours
   and what you can do there. A card with something red or amber in it counts those in its head and
   wears the colour down its edge, an empty one says *none open* in one line, and each tab says what

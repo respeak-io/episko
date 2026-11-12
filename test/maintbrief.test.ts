@@ -144,6 +144,21 @@ describe("briefFor", () => {
     expect(b).toContain("pnpm test");
   });
 
+  it("briefs one advisory alone when a board row asks, found by its id or any alias", () => {
+    const two = input(ok("dependabot-alerts", { kind: "advisories", items: [
+      { id: "GHSA-1", kind: "dependency", pkg: "lodash", version: "4.17.20", severity: "high", summary: "Prototype pollution", fixed: "4.17.21", tool: "x", ...advisory },
+      { id: "GHSA-2", aliases: [], kind: "dependency", pkg: "qs", version: "6.0.0", severity: "low", summary: "Slow parse", fixed: "6.1.0", ecosystem: "npm", rawSeverity: "LOW", url: null, location: "package-lock.json", tool: "x" },
+    ] }));
+    const f = findings("/r", two, MAINT_DEFAULTS, NOW).find((x) => x.key === "security:dependency")!;
+    expect(briefFor(f, two, ctx)).toContain("Patch 2 advisories in acme");
+    for (const only of [["GHSA-1"], ["cve-2026-0001"]]) {
+      const one = briefFor(f, two, { ...ctx, only })!;
+      expect(one, only[0]).toMatch(/^Patch GHSA-1 \(CVE-2026-0001\) · high in acme\./);
+      expect(one, only[0]).not.toContain("qs");
+    }
+    expect(briefFor(f, two, { ...ctx, only: ["GHSA-9"] }), "gone since the board was drawn").toBeNull();
+  });
+
   it("names no vendor, even when the facts came from one", () => {
     for (const f of fs) expect(briefFor(f, inp, ctx), f.key).not.toMatch(/dependabot|osv|github|renovate/i);
   });
