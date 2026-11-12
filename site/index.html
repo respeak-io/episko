@@ -731,6 +731,11 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
   .hero>.hero-in{max-width:1360px;display:grid;grid-template-columns:minmax(0,1fr) clamp(470px,38vw,560px);gap:56px;align-items:center;align-content:center}
   .hero-in h1{font-size:clamp(28px,2.5vw,40px)}
   .ck-wrap,.tether{display:block}
+  /* The window is taller than the text was, so the hero gives up its padding, then sky, before it outgrows the screen.
+     570px is the bar, the padding and the window; below ~810px tall it scrolls after all. */
+  .hero{padding-top:28px}
+  .hero>.wrap{padding-bottom:0}
+  .hero .pasture{flex-basis:clamp(230px,calc(100vh - 570px),310px);margin-top:0}
 }
 .ck-wrap{position:relative;--ckg:var(--accent)}
 .ck-wrap::before{content:"";position:absolute;inset:-90px -70px;z-index:-1;pointer-events:none;transition:background .8s;
