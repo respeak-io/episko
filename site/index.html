@@ -800,7 +800,9 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 .tether circle{fill:var(--c);transition:fill .4s}
 @media (prefers-reduced-motion:no-preference){
   .tether path{animation:march .8s linear infinite}
-  .ck-wrap{animation:ckup .9s cubic-bezier(.3,.7,.2,1) .5s both}
+  /* The window lands first and the leash follows it, or the line hangs in the air on its own. */
+  .ck-wrap{animation:ckup .6s cubic-bezier(.3,.7,.2,1) .1s both}
+  .tether{animation:tin .5s ease-out .65s both}
   .paused .tether path{animation-play-state:paused}
 }
 /* Pressed by the demo itself, so you can see which button it was. */
@@ -896,6 +898,7 @@ footer .links{display:flex;flex-wrap:wrap;gap:8px 20px}
 @keyframes nudge{0%,84%,100%{rotate:0deg}88%{rotate:-6deg}94%{rotate:5deg}}
 @keyframes march{to{stroke-dashoffset:-8}}
 @keyframes ckup{from{opacity:0;transform:translateY(18px)}}
+@keyframes tin{from{opacity:0}}
 
 /* sections after the bento: the house, the time, the questions */
 code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule);border-radius:4px;padding:1px 5px}
