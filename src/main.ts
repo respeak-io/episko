@@ -113,6 +113,7 @@ import {
 import { MAINT_SUBS, tabName, type MaintSub } from "./maintview";
 import { setMaintRender } from "./maintscan";
 import { closeMaintPop, maintPopOpen, renderMaintBadge, setMaintPopHost, wireMaintPop } from "./maintpop";
+import { closeMaintGuide, maintGuideOpen } from "./maintui";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -797,6 +798,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
   if (!t.closest("#mtPop, #mtBadge")) closeMaintPop();
+  if (!t.closest("#mtGuide, [data-mthelp]")) closeMaintGuide();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
   if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
@@ -974,6 +976,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   // A popover over the stage goes before the stage does: Esc on the fleet would otherwise leave it.
   else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
+  else if (e.key === "Escape" && maintGuideOpen()) { e.preventDefault(); closeMaintGuide(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }

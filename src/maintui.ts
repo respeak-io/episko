@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { actToast, toast } from "./dom";
+import { $, actToast, toast } from "./dom";
 import { dlog } from "./debug";
 import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
@@ -15,6 +15,7 @@ import {
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
   type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
+import { guideHtml, isGuideId } from "./maintguide";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
 import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, tokenRow, type Facet } from "./maintsources";
@@ -317,6 +318,31 @@ function sweepAct(at: HTMLElement, host: MaintHost): void {
   }
 }
 
+// ---------- a card's (i): what it shows, from where, and how to read it ----------
+
+let guideAt: string | null = null; // the card whose guide is open: its (i) clicked again closes it
+const offGuide = (e: Event) => { if (!$("mtGuide").contains(e.target as Node)) closeMaintGuide(); };
+export const maintGuideOpen = (): boolean => guideAt !== null;
+export function closeMaintGuide(): void {
+  if (guideAt === null) return;
+  guideAt = null;
+  $("mtGuide").classList.remove("show");
+  document.removeEventListener("scroll", offGuide, true); // the card it explains has moved away
+}
+// Under the (i), right edges aligned, and above it where the window has no room below.
+function toggleGuide(at: HTMLElement): void {
+  const id = at.dataset.mthelp ?? "";
+  if (guideAt === id || !isGuideId(id)) { closeMaintGuide(); return; }
+  const pop = $("mtGuide");
+  pop.innerHTML = guideHtml(id);
+  pop.classList.add("show");
+  guideAt = id;
+  document.addEventListener("scroll", offGuide, true);
+  const r = at.getBoundingClientRect(), p = pop.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(window.innerWidth - p.width - 8, r.right - p.width))}px`;
+  pop.style.top = `${r.bottom + 6 + p.height <= window.innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - 6 - p.height)}px`;
+}
+
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
 
 export type PickRow = ProjectPick & { accent: string; icon: string | null };
@@ -339,6 +365,8 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost, shift = false): boolean {
+  const help = t.closest<HTMLElement>("[data-mthelp]");
+  if (help) { toggleGuide(help); return true; }
   const tick = t.closest<HTMLElement>("[data-mttick]");
   if (tick) { tickLine(sessionKey({ root: tick.dataset.mtroot!, key: tick.dataset.mttick! }), host, shift); return true; }
   const none = t.closest<HTMLElement>("[data-mtpicknone]");

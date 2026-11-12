@@ -16,6 +16,7 @@ import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import { trackerProject, type DeployCfg } from "./deploy";
 import { icon, type IconName } from "./svgicons";
+import { guideIcon, type GuideId } from "./maintguide";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
 export type MaintChip = (typeof MAINT_CHIPS)[number];
@@ -346,7 +347,7 @@ function coverHtml(v: MaintTabView): string {
   }).join("");
   const across = new Set(gaps.flatMap((g) => g.roots)).size;
   const note = !gaps.length ? "nothing missing" : one ? plural(gaps.length, "gap") : `${plural(gaps.length, "gap")} across ${plural(across, "project")}`;
-  return `<section class="mt-sec mt-board mt-cover" tabindex="-1"><div class="mt-sec-h"><span class="label">Coverage</span><span class="mt-note mono">${esc(note)}</span></div>`
+  return `<section class="mt-sec mt-board mt-cover" tabindex="-1">${headHtml("cover", "Coverage", note)}`
     + `<p class="mt-lede">What this tab could not read, grouped by what closes the gap. A gap is never counted as fine.</p>${kinds}</section>`;
 }
 
@@ -386,7 +387,7 @@ function hostsHtml(hosts: readonly MaintHostRow[]): string {
     return `<div class="mt-host"><span class="hn mono" data-tip="${escAttr(tip)}">${esc(h.host)}</span>`
       + `<span class="hl">runs ${runs}</span><span class="mt-v ${LEVEL_CLS[h.level]}">${v}</span></div>`;
   }).join("");
-  return `<section class="mt-sec mt-hosts"><div class="mt-sec-h label">Hosts</div>${rows}</section>`;
+  return `<section class="mt-sec mt-hosts">${headHtml("hosts", "Hosts", "the worst Prod cell of the projects each runs")}${rows}</section>`;
 }
 
 // ---------- the body ----------
@@ -447,7 +448,7 @@ function weekHtml(v: MaintView): string {
   // Held as the sweep found it (./maintscan maintWeek), so it says why it is not moving.
   const held = d.stale ? `<span class="sb-ago sb-held">updates when the check finishes</span>` : "";
   return `<section class="sinceb mt-week${d.stale ? " stale" : ""}" aria-label="Since last week">`
-    + `<div class="sb-h"><span class="t">${esc(weekHead(d))}</span><span class="sb-ago">${esc(ago)}</span>${held}</div>`
+    + `<div class="sb-h"><span class="t">${esc(weekHead(d))}</span><span class="sb-ago">${esc(ago)}</span>${held}<span class="mt-grow"></span>${helpBtn("week")}</div>`
     + (figs ? `<div class="sb-figs">${figs}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "")
     + (rows ? `<div class="mt-finds">${rows}</div>` : "") + more
     + (gaps ? `<p class="mt-said" data-tip="${escAttr(gaps.tip.join("\n"))}">${esc(gaps.line)}</p>` : "")
@@ -530,11 +531,31 @@ function runsHtml(runs: readonly RunDot[], root: string): string {
   }).join("") + `</span>`;
 }
 
+// ---------- a card's head: what it is, how it stands, and its (i) ----------
+
+const helpBtn = (id: GuideId) => `<button class="mt-help" data-mthelp="${id}" aria-label="What this shows"`
+  + ` aria-haspopup="dialog" data-tip="What this shows, and how to read it">${icon("info", "solo")}</button>`;
+type Lv = Level | null | undefined;
+const worse = (...ls: Lv[]): Lv => ls.includes("bad") ? "bad" : ls.includes("warn") ? "warn" : null;
+// Red and amber are counted on a card's head, so the eye finds the cards that need it before reading one.
+function flagOf(ls: readonly Lv[]): { html: string; cls: string } {
+  const bad = ls.filter((l) => l === "bad").length, warn = ls.filter((l) => l === "warn").length;
+  const pill = (n: number, l: string, w: string) => n ? `<span class="mt-flag l-${l}">${n} ${w}</span>` : "";
+  return { html: pill(bad, "bad", bad === 1 ? "needs you" : "need you") + pill(warn, "warn", "drifting"), cls: bad ? " l-bad" : warn ? " l-warn" : "" };
+}
+// `clear` is a board read and empty: said in its head, with no body under it.
+const headHtml = (id: GuideId, title: string, note: string, extra = "", flag = "", clear = "") =>
+  `<div class="mt-sec-h"><span class="mt-hi">${icon(guideIcon(id))}</span><span class="mt-ht">${esc(title)}</span><span class="mt-note">${esc(note)}</span>`
+  + `<span class="mt-hx">${clear ? `<span class="mt-ok">${icon("check")}${esc(clear)}</span>` : ""}${flag}${extra}${helpBtn(id)}</span></div>`;
+
 // A board is a card of its own; its note says what it covers and how many projects were read. Its
 // id is where a card line opens (./maint findingTarget); `extra` is a host's door in its head.
-const board = (id: BoardId, title: string, note: string, body: string, extra = "") =>
-  `<section class="mt-sec mt-board" id="mtb-${id}" tabindex="-1"><div class="mt-sec-h"><span class="label">${esc(title)}</span>`
-  + `<span class="mt-note mono">${esc(note)}</span>${extra}</div>${body}</section>`;
+const board = (id: BoardId, title: string, note: string, body: string, extra = "", ls: readonly Lv[] = [], clear = "") => {
+  const f = flagOf(ls);
+  return `<section class="mt-sec mt-board${f.cls}${clear ? " clear" : ""}" id="mtb-${id}" tabindex="-1">`
+    + `${headHtml(id, title, note, extra, f.html, clear)}${clear ? "" : body}</section>`;
+};
+const many = <T>(n: number, x: T): T[] => Array.from({ length: n }, () => x);
 const empty = (text: string) => `<p class="fl-none">${esc(text)}</p>`;
 const table = (cols: string[], rows: string[]) => `<div class="mt-scroll"><table class="mt-tbl"><thead><tr>`
   + cols.map((c) => `<th${c.startsWith(">") ? ` class="r"` : ""}>${esc(c.replace(/^>/, ""))}</th>`).join("")
@@ -582,7 +603,9 @@ function securityHtml(v: MaintTabView, b: Boards): string {
     : empty(all ? "No row of that severity. Click it again for every one." : "No open advisory or finding.");
   // The overlay's ⤢ sits once, on the first board drawn; with none, Packages is drawn to carry it.
   const door = v.dash?.deps ? grow("deps", DEPS_TIP) : "", hasAdv = !!(b.advRead || all), hasPrs = !!(b.prs.length || b.read.deps);
-  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.advRead)}`, stripHtml(v, b) + rows, door) : "";
+  const advLv = b.strip.flatMap((c) => many(c.n, c.level));
+  const adv = hasAdv ? board("advisories", "Advisories and findings", `one row each · ${readNote(b.advRead)}`, stripHtml(v, b) + rows, door, advLv,
+    all ? "" : "none open") : "";
   const prs = b.prs.length ? table([...projCol(b), "Bot", ">Open", ">Green", ">Red", ">Oldest", ""], b.prs.map((r) => `<tr>${projTd(v, b, r.root)}`
     + td(esc(r.bot), "mono") + td(num(r.open, r.level === "warn" && !r.red ? "warn" : "info", "", ["update-prs", "open", r.root]) + (r.capped ? "+" : ""), "r")
     + td(num(r.green, "info", "checks pass and not a draft", ["update-prs", "green", r.root]), "r")
@@ -596,9 +619,11 @@ function securityHtml(v: MaintTabView, b: Boards): string {
     b.pkgRead ? pkgsHtml(v, b) + kv : kv || empty("Every advisory and update pull request the dependency read found opens from this board's arrow."),
     first ? door : "") : "";
   const eol = b.eol.length ? board("runtimes", "Runtime end-of-life",
-    `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b)) : "";
+    `as each project declares it · ${readNote(new Set(b.eol.map((r) => r.root)).size)}`, eolHtml(v, b), "", b.eol.map((r) => r.level)) : "";
   const sweep = v.sweep ? sweepHtml(v, b, v.sweep) : "";
-  return adv + sweep + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door) : "") + pkgs;
+  const prsLv = b.prs.map((r) => worse(r.level, r.red ? "warn" : null));
+  return adv + sweep + eol + (hasPrs ? board("update-prs", "Update pull requests", readNote(b.read.deps), prs, hasAdv ? "" : door, prsLv,
+    b.prs.length ? "" : "none open") : "") + pkgs;
 }
 
 const kindHtml = (dev: boolean | null) => dev === false ? "shipped" : dev ? "dev" : `<span class="dim" data-tip="nothing read says whether it ships">?</span>`;
@@ -732,11 +757,12 @@ function deliveryHtml(v: MaintTabView, b: Boards): string {
       + td(r.changelog === null ? DASH : num(r.changelog, "info", "entries under Unreleased in CHANGELOG.md"), "r") + verbTd(r.verb) + `</tr>`;
   }));
   const fl = b.flaky, part = fl.short ? " · a busy project's window is shorter" : fl.cut ? " · part of it was not read" : "";
-  return (b.ci.length ? board("ci", "CI on the default branch", `${on}last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`) : "")
+  return (b.ci.length ? board("ci", "CI on the default branch", `${on}last ${CI_RUNS} runs · ${readNote(b.read.ci)}`, `<div class="mt-cis">${ci}</div>`, "",
+    b.ci.map((r) => r.level)) : "")
     + (fl.read ? board("flaky", "Flaky jobs", `${fl.days} days · failed, then passed on a re-run of the same commit · ${fl.reran}${fl.cut ? "+" : ""} of ${fl.runs} runs re-run${part} · ${readNote(fl.read)}`,
-      fl.rows.length ? flakyHtml(v, b) : empty(fl.clear)) : "")
-    + (b.deploys.length ? board("deployments", "Deployments", deployNote(b), deploysHtml(v, b)) : "")
-    + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel) : "");
+      flakyHtml(v, b), "", fl.rows.map((r) => r.level), fl.rows.length ? "" : fl.clear) : "")
+    + (b.deploys.length ? board("deployments", "Deployments", deployNote(b), deploysHtml(v, b), "", b.deploys.map((r) => worse(r.idle ? null : r.lag, r.last?.level))) : "")
+    + (b.releases.length ? board("releases", "Releases", `since the last tag · ${readNote(b.read.release)}`, rel, "", b.releases.map((r) => r.level)) : "");
 }
 
 function codeHtml(v: MaintTabView, b: Boards): string {
@@ -756,9 +782,10 @@ function codeHtml(v: MaintTabView, b: Boards): string {
       + td(r.verbs.map((f) => verbHtml(f)).join(""), "a") + `</tr>`;
   });
   const against = b.one && b.hygiene[0].trunk ? `against ${b.hygiene[0].trunk} · ` : "";
+  const lv = b.hygiene.map((r) => worse(...[r.unpushed, r.localOnly, r.merged, r.gone, r.stale, r.idle, r.fetched].map((c) => c.level)));
   return board("hygiene", "Git hygiene", `${against}as of each repo's last fetch · ${readNote(b.read.git)}`,
     table([...projCol(b), ">Unpushed", ">Only here", ">Merged", ">Gone", ">Untouched", ">Idle worktrees", ">Fetched", ""], rows),
-    v.dash ? grow("branches", "Open Branches, where merged branches are swept") : "");
+    v.dash ? grow("branches", "Open Branches, where merged branches are swept") : "", lv);
 }
 
 function workHtml(v: MaintTabView, b: Boards): string {
@@ -776,7 +803,7 @@ function workHtml(v: MaintTabView, b: Boards): string {
       + verbTd(r.verbs[0] ?? null) + `</tr>`;
   });
   return board("work", "Open work", `reviews waiting on you first · ${readNote(b.read.work)}`,
-    table([...projCol(b), ">Review requested", "Issues", "Pull requests", ""], rows));
+    table([...projCol(b), ">Review requested", "Issues", "Pull requests", ""], rows), "", b.work.map((r) => r.review ? "warn" : null));
 }
 
 // ---------- the Hosts board: a card per [deploy] host, each with its own verbs ----------
@@ -826,7 +853,7 @@ function hostCardHtml(v: MaintTabView, b: Boards, r: HostBoardRow): string {
 
 function hostBoardHtml(v: MaintTabView, b: Boards): string {
   return b.hosts.length ? board("hosts", "Hosts", "as last checked · nothing connects until you ask",
-    `<div class="mt-hostgrid">${b.hosts.map((r) => hostCardHtml(v, b, r)).join("")}</div>`) : "";
+    `<div class="mt-hostgrid">${b.hosts.map((r) => hostCardHtml(v, b, r)).join("")}</div>`, "", b.hosts.map((r) => r.allowed ? r.state?.level : null)) : "";
 }
 
 function addressBoardHtml(v: MaintTabView, b: Boards): string {
@@ -840,7 +867,7 @@ function addressBoardHtml(v: MaintTabView, b: Boards): string {
     + td(r.ms === null ? DASH : esc(`${r.ms}ms`), "r mono")
     + td(r.cert ? `<span class="mt-n ${LEVEL_CLS[r.certLevel]}">${esc(r.cert)}</span>` : DASH, "r mono") + verbTd(r.verb) + `</tr>`);
   return board("addresses", "Addresses", `as last checked · ${readNote(new Set(b.probes.map((r) => r.root)).size)}`,
-    table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows));
+    table([...projCol(b), "Address", ">Status", ">Latency", ">Certificate", ""], rows), "", b.probes.map((r) => worse(r.level, r.certLevel)));
 }
 
 // One row per registered domain, as each registry last said; its registrar opens the page a renewal is paid on.
@@ -853,7 +880,7 @@ function domainBoardHtml(v: MaintTabView, b: Boards): string {
       + td(doorHtml(esc(r.registrar ?? "?"), "dim", ["domains", "registrar", r.root], r.registrar ? r.url : null)) + verbTd(r.verb) + `</tr>`;
   });
   return board("domains", "Domains", `as each registry last said · ${readNote(new Set(b.domains.map((r) => r.root)).size)}`,
-    table([...projCol(b), "Domain", "Behind", ">Expires", "Registrar", ""], rows));
+    table([...projCol(b), "Domain", "Behind", ">Expires", "Registrar", ""], rows), "", b.domains.map((r) => r.level));
 }
 
 // ---------- the Errors board: each linked tracker as last asked, the new and returning first ----------
@@ -898,7 +925,7 @@ function errorBoardHtml(v: MaintTabView, b: Boards): string {
   });
   const one = b.one ? b.errors.map((r) => issuesHtml(b, r, loudOf(r))).join("") : "";
   return board("errors", "Errors", `as last checked · nothing connects until you ask · ${readNote(new Set(b.errors.map((r) => r.root)).size)}`,
-    table([...projCol(b), "Linked", ">Unresolved", ">New or back", "Release", "Worst", ""], rows) + one);
+    table([...projCol(b), "Linked", ">Unresolved", ">New or back", "Release", "Worst", ""], rows) + one, "", b.errors.map((r) => r.level));
 }
 
 function serversHtml(v: MaintTabView, b: Boards): string {
@@ -975,8 +1002,7 @@ function sweepHtml(v: MaintTabView, b: Boards, s: MaintSweepView): string {
     `<button class="mt-sw-past${r.n === s.cur?.n ? " on" : ""}" data-mtsweep="open" data-mtkey="${r.n}" data-tip="${escAttr(`${r.query}, ${relTime(r.at)}`)}">`
     + `<span class="mt-n ${r.hit ? "l-bad" : "l-muted"}">${r.state === "done" ? `${r.hit} hit` : r.state === "error" ? "failed" : "…"}</span>${esc(r.title)}</button>`).join("") + `</div>` : "";
   const body = s.cur ? sweepRunHtml(v, b, s, s.cur) : "";
-  return `<section class="mt-sec mt-board mt-sweep"><div class="mt-sec-h"><span class="label">Advisory sweep</span>`
-    + `<span class="mt-note mono">${esc(`does it affect any project? · ${plural(s.projects, "project")}`)}</span></div>${ask}${body}${recent}</section>`;
+  return `<section class="mt-sec mt-board mt-sweep">${headHtml("sweep", "Advisory sweep", `does it affect any project? · ${plural(s.projects, "project")}`)}${ask}${body}${recent}</section>`;
 }
 
 const BOARDS: Record<MaintTab, (v: MaintTabView, b: Boards) => string> = {
@@ -1000,13 +1026,15 @@ function tabHtml(v: MaintTabView, tab: MaintTab): string {
   const rest = FACETS.filter((f) => FACET_TAB[f] === tab).flatMap((f) => {
     const rows = v.rows.filter((r) => r.facet === f);
     const head = boards ? `Also · ${SECTION[f]}` : SECTION[f]; // a board above already wears the bare name
-    return rows.length ? [`<section class="mt-sec"><div class="mt-sec-h label">${esc(head)}</div>`
+    const flag = flagOf(rows.map((r) => r.level));
+    return rows.length ? [`<section class="mt-sec mt-board${flag.cls}">${headHtml("also", head, "", "", flag.html)}`
       + `<div class="mt-finds">${rows.map((r) => findingHtml(r, v.filter ? undefined : nameOf(v, r.root))).join("")}</div></section>`] : [];
   }).join("");
+  const lede = `<p class="mt-tablede">${esc(tabTip(v, tab))}.</p>`;
   const none = v.read ? (v.filter ? `Nothing to do in ${label} for ${v.filter.name}.` : `Nothing to do in ${label}: ${plural(v.read, "project")} read.`)
     : v.unset ? (v.filter ? `${v.filter.name} has nothing in ${label} set up.` : `Nothing to check in ${label}: ${plural(v.unset, "project")} with none set up.`)
     : `Nothing in ${label} could be read${v.filter ? ` for ${v.filter.name}` : ""}.`;
-  return (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
+  return lede + (boards + rest || `<p class="fl-none">${esc(none)}</p>`) + coverHtml(v);
 }
 
 export function maintBodyHtml(v: MaintView): string {
@@ -1031,7 +1059,8 @@ export function maintBodyHtml(v: MaintView): string {
   }
   // The all-clear carries the week as a row of its own; anywhere else it opens the view.
   const clear = allClear && v.chip === "all";
-  return `<div class="mt-body">${bar}${clear ? "" : weekHtml(v)}<div class="mt-top">${chipsHtml(v)}</div>`
+  return `<div class="mt-body">${bar}${clear ? "" : weekHtml(v)}<div class="mt-top">${chipsHtml(v)}<span class="mt-grow"></span>`
+    + `<span class="mt-note">${esc(tabTip(v, "overview"))}</span>${helpBtn("cards")}</div>`
     + (clear ? clearHtml(v) : "")
     + `<div class="mt-cards">${html || `<p class="fl-none">Nothing in this group.</p>`}</div>`
     + (v.chip === "all" ? hostsHtml(v.hosts) : "") + sessionBarHtml(v.session) + `</div>`;
@@ -1065,9 +1094,9 @@ export interface MaintDash {
   errors: ErrSummary | null; // the error tracker [deploy] links, as it last answered or why not
 }
 
-const dcard = (id: string, title: string, n: string, extra: string, body: string) =>
+const dcard = (id: string, title: string, n: string, extra: string, body: string, help?: GuideId) =>
   `<section class="ac mt-dc" id="mtc-${id}"><div class="ac-h"><span class="t">${esc(title)}</span>`
-  + `<span class="n">${esc(n)}</span>${extra}</div><div class="ac-b">${body}</div></section>`;
+  + `<span class="n">${esc(n)}</span>${extra}${help ? helpBtn(help) : ""}</div><div class="ac-b">${body}</div></section>`;
 const kv = (k: string, v: string, cls = "") =>
   `<div class="mt-kv"><span>${esc(k)}</span><span class="mono${cls ? " " + cls : ""}">${esc(v)}</span></div>`;
 
@@ -1079,7 +1108,7 @@ function todoCard(v: MaintDash): string {
   const body = v.rows.length
     ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f, undefined, true)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
   const n = needsCount(v.rows); // red and amber only, as the tab badges
-  return dcard("todo", "To do", n ? String(n) : "", across("overview"), body);
+  return dcard("todo", "To do", n ? String(n) : "", across("overview"), body, "todo");
 }
 
 // The doors are the project settings row's: an agent proposes, a person applies, the file is git's.
@@ -1091,12 +1120,12 @@ function runsCard(v: MaintDash): string {
     "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard");
   // A failed detection is not a loading one: say so, and keep the door the card exists for.
   if (!v.detected) {
-    return dcard("runs", "Runs on", "", across("servers", name), v.card.err && !v.card.reading
+    return dcard("runs", "Runs on", "", across("servers", name) + helpBtn("runs"), v.card.err && !v.card.reading
       ? `<p class="ac-empty">Could not read this project, so its [deploy] table is unknown.</p><p class="ac-empty">${ask}</p>`
       : `<p class="ac-empty">${sk("62%", 9)}</p>`);
   }
   if (!d) {
-    return dcard("runs", "Runs on", "", across("servers", name),
+    return dcard("runs", "Runs on", "", across("servers", name) + helpBtn("runs"),
       `<p class="ac-empty">No [deploy] table, so Episko does not know where this project runs.</p><p class="ac-empty">${ask}</p>`);
   }
   // An address shows its last answer once one exists; until then it is the table's value.
@@ -1121,7 +1150,7 @@ function runsCard(v: MaintDash): string {
   const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0, v.errors?.at ?? 0);
   const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
   const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
-  return dcard("runs", "Runs on", "from [deploy]", across("servers", name),
+  return dcard("runs", "Runs on", "from [deploy]", across("servers", name) + helpBtn("runs"),
     rows + `<p class="ac-empty">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`);
 }
 
@@ -1175,7 +1204,7 @@ function coverCard(v: MaintDash): string {
       + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "")
       + (r.cfg ? `<div class="mt-fixrow">${setupHtml(v.card.path)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
   }).join("");
-  return dcard("cover", "Coverage", v.forge, "", head + (rows || `<p class="ac-empty">${sk("62%", 9)}</p>`));
+  return dcard("cover", "Coverage", v.forge, "", head + (rows || `<p class="ac-empty">${sk("62%", 9)}</p>`), "sources");
 }
 
 /** The dashboard's Maintenance tab: the fleet card's strip, then the fleet's sub-tabs for this project. */
