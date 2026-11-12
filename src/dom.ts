@@ -144,6 +144,7 @@ export function wireTips() {
 
 const FOCUSABLE = "button, a[href], [tabindex]";
 const mtKey = (el: HTMLElement) => JSON.stringify(Object.entries(el.dataset).filter(([k]) => k.startsWith("mt")).sort());
+const barKey = (b: HTMLElement) => b.closest<HTMLElement>("[data-mtroot]")?.dataset.mtroot ?? "";
 /** Write a Maintenance surface, whose `innerHTML` rebuilds every control and every scroller. The keyboard
  *  goes to the same control's successor, or, for a button that became *checking…*, to whatever stands where
  *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place. */
@@ -152,8 +153,17 @@ export function holdMaintPlace(el: HTMLElement, html: string): void {
   const key = on && mtKey(on), at = on ? [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(on) : -1, typed = !!on?.matches(":focus-visible");
   const boardOf = (s: Element) => s.closest("[id^='mtb-']")?.id ?? "";
   const wide = [...el.querySelectorAll(".mt-scroll")].filter((s) => s.scrollLeft).map((s) => [boardOf(s), s.scrollLeft] as const);
+  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
   el.innerHTML = html;
   for (const [id, left] of wide) for (const s of el.querySelectorAll(".mt-scroll")) if (boardOf(s) === id) s.scrollLeft = left;
+  // A bar rebuilt by innerHTML would jump: start each where its predecessor stood, so the width glides.
+  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
+    const from = bars.get(barKey(b)), to = b.style.width;
+    if (!from || from === to) continue;
+    b.style.width = from;
+    void b.offsetWidth;
+    b.style.width = to;
+  }
   if (!on) return;
   const all = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const next = (key !== "[]" ? all.find((x) => mtKey(x) === key) : undefined) ?? (typed ? all[Math.min(at, all.length - 1)] : undefined);

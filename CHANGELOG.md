@@ -24,6 +24,12 @@ Markers: `+` new · `~` changed · `!` fixed
 + Tick lines on Maintenance cards and *Brief N agents* starts one agent per line, tiled, each on a
   fix branch of its own, or in the project folder for a line that changes nothing.
 + *Since last week* on the all-projects screen says what changed since the checks a week ago.
++ A Maintenance chip in the top bar shows the project you are looking at as seven dots, red or amber
+  where something needs you, or, on the all-projects screen, how many projects do. Click it for the
+  project's facets, what to do there and the worst projects elsewhere, each one click from its board.
++ A Maintenance check shows its progress: a bar with how many projects are done, what is being read
+  right now, and a spinner on each card's facet while it is read. *Since last week* holds still until
+  the check finishes instead of counting up project by project.
 + Back and forward, the mouse's side buttons included, step through those tabs as a browser's do:
   *Activity* and *Maintenance*, a Maintenance tab and the project it is narrowed to, and a
   dashboard's *Today* and *Maintenance*.

@@ -4,6 +4,7 @@
 
 import { $, FILE_MANAGER, IS_MAC, toast } from "./dom";
 import { closeServersPop } from "./serversui";
+import { closeMaintPop } from "./maintpop";
 import { toggleDbg } from "./debug";
 import { esc, fmtMb, fmtUntil, uUsd2 } from "./format";
 import { abbr } from "./phase";
@@ -223,7 +224,7 @@ export function closeFootMenus(keep?: string) {
     ["colorPop", closeColorPop], ["enginePop", closeEnginePop], ["cafPop", closeCafPop],
     ["usagePop", closeUsagePop], ["attnPop", closeAttnPop], ["shortPop", closeShortPop],
     ["costPop", closeCostPop], ["ioPop", closeIoPop], ["svrPop", closeServersPop],
-    ["soPop", closeSignoffPop],
+    ["soPop", closeSignoffPop], ["mtPop", closeMaintPop],
   ];
   for (const [id, close] of menus) if (id !== keep) close();
 }

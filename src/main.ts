@@ -103,7 +103,7 @@ import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
   closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashPlace, dashToday, openDashboard,
-  openDashboardAt, refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
+  openDashboardAt, openDashboardMaint, refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
@@ -112,6 +112,7 @@ import {
 } from "./fleetui";
 import { MAINT_SUBS, tabName, type MaintSub } from "./maintview";
 import { setMaintRender } from "./maintscan";
+import { closeMaintPop, maintPopOpen, renderMaintBadge, setMaintPopHost, wireMaintPop } from "./maintpop";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -363,6 +364,13 @@ setFleetHost({
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts
+// The header's Maintenance chip: a project's tab, or the board itself, which every exit already knows.
+setMaintPopHost({
+  openProject: (name, root, sub, board) => openDashboardMaint(name, root, sub, board),
+  openBoard: () => { showFleetMaint("overview"); if (!fleetMirror()) openFleet(); },
+  closeMenus: () => closeFootMenus(),
+});
+wireMaintPop();
 // The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
 setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
 setReviewHost({
@@ -444,7 +452,7 @@ function renderAllNow() {
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
   if (!navHeld()) nav = visit(nav, here()); // the one place history records; a back/forward step already moved its cursor
   renderNav();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderMaintBadge(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (fleetMirror()) {
@@ -788,6 +796,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
+  if (!t.closest("#mtPop, #mtBadge")) closeMaintPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
   if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
@@ -963,6 +972,8 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && e.defaultPrevented) return;
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
+  // A popover over the stage goes before the stage does: Esc on the fleet would otherwise leave it.
+  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }

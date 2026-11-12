@@ -4267,10 +4267,10 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintEarlier", "maintPicked", "maintSev", "quietOpen",
+    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "fleetProgress", "projectProgress", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintEarlier", "maintPicked", "maintSev", "quietOpen",
       "MaintHost", "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "projectProgress", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);
@@ -4288,6 +4288,16 @@ describe("nothing scans until a person asks", () => {
 
   it("never reaches a scan from the dashboard's render path", () => {
     for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow"]) expect(dash.reaches(f), f).toEqual([]);
+  });
+
+  // The header chip paints on every renderAll pass and its popover opens on a glance: neither is an ask.
+  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress"], []);
+  it("never reaches a scan from the header chip or from opening its popover, only from its Check", () => {
+    for (const f of ["renderMaintBadge", "current", "paintPop", "openMaintPop", "closeMaintPop"]) {
+      expect(pop.bodies.has(f), f).toBe(true);
+      expect(pop.reaches(f), f).toEqual([]);
+    }
+    expect(pop.reaches("popClick")).toEqual(["scanProject"]);
   });
 });
 

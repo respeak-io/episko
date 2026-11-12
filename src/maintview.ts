@@ -28,10 +28,14 @@ export interface MaintCard {
   cells: Cell[]; findings: Finding[]; band: Band;
   reading: boolean; // a read is still out: only then is an unread cell a shimmer rather than a dash
   stale: boolean; // drawn from an earlier answer while it is re-read: dimmed until the new one lands
+  prog: number | null; // the share of its scan done (0..1) while one is out
+  busy: Facet[]; // facets with a read holding a slot this moment
   err: string | null;
   past?: MaintSnap; // drawn from the last boot's snapshot: muted, as of then, its lines verb-less
 }
 export interface MaintTally { needs: number; drifting: number; quiet: number; unread: number; cantCheck: number }
+/** A scan while it runs: how far (./maintbadge's progressText), and what is being read this moment. */
+export interface MaintProgress { frac: number; text: string; now: string }
 export interface MaintSoon { name: string; what: string; at: number } // at: unix secs
 /** A host row: `[deploy] host` joined to every project that names it; `read` once the host itself answered. */
 export interface MaintHostRow { host: string; projects: { root: string; name: string }[]; level: Level; text: string; read: boolean }
@@ -70,6 +74,7 @@ export interface MaintView extends MaintTabView {
   checked: number; // the last finished sweep this session (ms), 0 for none
   kept: number; // the newest of the last session's scans painted at boot (ms), 0 for none
   scanning: boolean;
+  progress: MaintProgress | null; // the fleet sweep's, while it runs
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
   soon: MaintSoon[];
@@ -145,7 +150,8 @@ const sshHtml = (alias: string, root: string, cls = "mt-verb") => `<button class
 
 /** The fleet head's right-hand note: when this was last asked, and the one way to ask again. */
 export function maintWhenHtml(v: MaintView): string {
-  if (v.scanning) return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing every project…" : "checking every project…"}</span>`;
+  if (v.scanning) return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing every project" : "checking every project"}`
+    + `${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>`;
   if (!v.checked) {
     return `<span class="fl-when mono">${v.kept ? `as of ${esc(relTime(v.kept))}` : "Not checked this session"}</span>
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
@@ -169,7 +175,17 @@ export function maintTilesHtml(v: MaintView): string {
     + tile("Drifting", n(t.drifting), t.drifting ? "going stale" : unread || "nothing going stale", t.drifting ? "s-warn" : "")
     + tile("Quiet", n(t.quiet), "nothing to do")
     + tile("Can't check", n(t.cantCheck), "facets nothing here can read yet")
-    + `</div>`;
+    + `</div>` + (v.progress ? progressHtml(v.progress) : "");
+}
+
+/** A scan's bar: what it does in words, a percentage, and what holds a slot right now. `data-mtroot`
+ *  keys the bar, so a repaint glides it from where it stood (./dom holdMaintPlace). */
+export function progressHtml(p: MaintProgress, root = ""): string {
+  const n = Math.round(Math.min(1, Math.max(0, p.frac)) * 100);
+  return `<div class="mt-prog" data-mtroot="${escAttr(root)}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}" aria-label="${escAttr(p.text)}">`
+    + `<div class="mt-prog-h"><span class="u-spin"></span><span class="t">${esc(p.text)}</span>`
+    + `<span class="now mono"${p.now ? ` data-tip="${escAttr(`Being read right now: ${p.now}`)}"` : ""}>${esc(p.now)}</span>`
+    + `<span class="pc mono">${n}%</span></div><div class="mt-pbar"><i style="width:${n}%"></i></div></div>`;
 }
 
 // ---------- a card ----------
@@ -182,9 +198,11 @@ function cellHtml(c: Cell, card: MaintCard, go = `Click: ${TAB_TEXT[FACET_TAB[c.
   const v = c.level === "unread"
     ? card.reading ? sk("54px", 9) : DASH
     : c.level === "ok" && !c.text ? `<i class="mt-dot" aria-label="healthy"></i>` : esc(c.text);
-  const tip = [label, ...c.tip, ...(c.fix ? [`fix: ${c.fix}`] : []), go].join("\n");
-  return `<button class="mt-cell" data-mtcell="${c.facet}" data-mtroot="${escAttr(card.path)}" data-tip="${escAttr(tip)}">`
-    + `<span class="fk">${esc(label)}</span><span class="mt-v ${LEVEL_CLS[c.level]}">${v}</span></button>`;
+  // A facet whose read holds a slot says so where the eye already is, so a scan shows where it works.
+  const busy = card.busy.includes(c.facet);
+  const tip = [label, ...(busy ? ["being read right now"] : []), ...c.tip, ...(c.fix ? [`fix: ${c.fix}`] : []), go].join("\n");
+  return `<button class="mt-cell${busy ? " busy" : ""}" data-mtcell="${c.facet}" data-mtroot="${escAttr(card.path)}" data-tip="${escAttr(tip)}">`
+    + `<span class="fk">${busy ? `<span class="u-spin"></span>` : ""}${esc(label)}</span><span class="mt-v ${LEVEL_CLS[c.level]}">${v}</span></button>`;
 }
 
 const VERB: Record<Verb, [string, string]> = {
@@ -315,7 +333,9 @@ function cardHtml(c: MaintCard, compact: boolean, s?: MaintSession): string {
   const finds = compact ? ""
     : c.findings.length ? `<div class="mt-finds${s ? " ticks" : ""}">${c.findings.map((f) => findingHtml(f, undefined, true, tick(f))).join("")}</div>`
     : c.past?.findings.length ? `<div class="mt-finds">${c.past.findings.map((f) => pastHtml(f, c.path)).join("")}</div>` : "";
-  return `<article class="mt-card b-${c.band}${compact ? " quiet" : ""}${c.stale ? " stale" : ""}"${c.stale ? ` aria-busy="true"` : ""}>${id}${cells}${finds}</article>`;
+  const bar = c.prog === null ? "" : `<div class="mt-pbar mt-cbar" data-mtroot="${escAttr(c.path)}"><i style="width:${Math.round(c.prog * 100)}%"></i></div>`;
+  const cls = `${compact ? " quiet" : ""}${c.stale ? " stale" : ""}${c.prog !== null ? " reading" : ""}`;
+  return `<article class="mt-card b-${c.band}${cls}"${c.stale || c.prog !== null ? ` aria-busy="true"` : ""}>${id}${cells}${finds}${bar}</article>`;
 }
 
 // ---------- hosts ----------
@@ -388,8 +408,10 @@ function weekHtml(v: MaintView): string {
     + `+${rest.length} more</span>` : "";
   const said = d.quiet ? `No change in the ${plural(d.compared, "project")} compared.` : d.changes.length ? "" : "Nothing could be compared yet.";
   const gaps = weekNotCompared(d, v.names);
+  // Held as the sweep found it (./maintscan maintWeek), so it says why it is not moving.
+  const held = d.stale ? `<span class="sb-ago sb-held">updates when the check finishes</span>` : "";
   return `<section class="sinceb mt-week${d.stale ? " stale" : ""}" aria-label="Since last week">`
-    + `<div class="sb-h"><span class="t">${esc(weekHead(d))}</span><span class="sb-ago">${esc(ago)}</span></div>`
+    + `<div class="sb-h"><span class="t">${esc(weekHead(d))}</span><span class="sb-ago">${esc(ago)}</span>${held}</div>`
     + (figs ? `<div class="sb-figs">${figs}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "")
     + (rows ? `<div class="mt-finds">${rows}</div>` : "") + more
     + (gaps ? `<p class="mt-said" data-tip="${escAttr(gaps.tip.join("\n"))}">${esc(gaps.line)}</p>` : "")
@@ -997,6 +1019,7 @@ export interface MaintDash {
   offers: Finding[]; // click-only sources nobody ran: Coverage's buttons, never To do's rows
   setups: Finding[]; // Coverage rows an agent could set up (`coverSetups`)
   checked: number; // this project's last finished scan (ms), 0 for none
+  progress: MaintProgress | null; // its scan, while one is out
   tab: MaintTabView; // the sub-tabs: the fleet's boards, narrowed to this project for good
   cover: CoverRow[]; forge: string; unreadable: boolean;
   deploy: DeployCfg | null; detected: boolean; // `[deploy]`, once detection has answered
@@ -1122,7 +1145,7 @@ function coverCard(v: MaintDash): string {
 /** The dashboard's Maintenance tab: the fleet card's strip, then the fleet's sub-tabs for this project. */
 export function maintDashHtml(v: MaintDash): string {
   const go = (c: Cell) => `Click: ${tabName(FACET_TAB[c.facet])}${coverFirst(c) ? ", at its Coverage" : ""}`;
-  const when = v.card.reading ? `<span class="fl-when mono">reading this project…</span>`
+  const when = v.card.reading ? `<span class="fl-when mono">reading this project${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>`
     : v.checked ? `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>`
       + `<button class="aslink" data-mtscan="force" aria-label="Check again" data-tip="Check this project again, past every cache">${icon("rotateCw", "solo")}</button>`
     : `<span class="fl-when mono">Not checked yet</span>`
@@ -1132,5 +1155,5 @@ export function maintDashHtml(v: MaintDash): string {
     ? `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}</div><div class="mt-dcol">${runsCard(v)}${coverCard(v)}</div></div>`
     : tabHtml(v.tab, v.tab.sub);
   return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
-    + `<div class="mt-dwhen">${when}</div></div>${err}${tabsHtml(v.tab)}${body}`;
+    + `<div class="mt-dwhen">${when}</div></div>${v.progress ? progressHtml(v.progress, v.card.path) : ""}${err}${tabsHtml(v.tab)}${body}`;
 }

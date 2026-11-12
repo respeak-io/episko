@@ -22,10 +22,11 @@ import {
   tabExtras, tabFindings, tabModel, weekDigest,
   type BoardId, type Cell, type Door, type Finding, type MaintInput, type MaintTab, type SessionLaunch, type TabProject, type WeekPairIn,
 } from "./maint";
-import { findSource, type MaintCap } from "./maintsources";
+import { findSource, type Facet, type MaintCap } from "./maintsources";
 import {
-  askingFor, fleetCheckedAt, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, scanFleet, shownSweep, sweeps, type SweepRun,
+  askingFor, fleetCheckedAt, fleetProgress, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, projectProgress, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
+import { progressText, readingNow, readingSub } from "./maintbadge";
 import { maintClick, maintChip, maintEarlier, maintKey, maintPicked, maintSev, quietOpen, type MaintHost, type PickRow } from "./maintui";
 import type { Place } from "./nav";
 import {
@@ -415,6 +416,10 @@ function whereSub(inp: MaintInput): string {
   return [f.host, f.path].filter(Boolean).join("/") || f.kind;
 }
 
+// The facets a scan is reading this moment, from the sources holding a slot.
+const busyFacets = (live?: ReadonlySet<string>): Facet[] =>
+  [...new Set([...live ?? []].flatMap((id) => { const f = findSource(id)?.facet; return f ? [f] : []; }))];
+
 // One card per repo: worktrees collapse to their root, the first project of it naming the card.
 function maintProjects(): Map<string, ProjGroup> {
   const byRoot = new Map<string, ProjGroup>();
@@ -498,12 +503,13 @@ function buildMaint(now: number): MaintView {
     if (prod.length) prodEach[root] = { sources: prod, hosts: ticked?.allowed ? [ticked.alias] : [] };
     const fs = findings(root, inp, th, now);
     const stale = !!e && (e.detecting || e.out > 0) && e.at > 0; // an earlier answer, drawn while its re-read is out
+    const prog = projectProgress(root);
     seen.push({ path: root, inp, cells, rows: [...fs, ...tabExtras(root, inp, th, now)] });
     cards.push({
       path: root, name: p.name, accent: p.accent, icon: iconFor(p.path),
-      sub: stale ? `refreshing · as of ${relTime(e.at)}` : e?.kept ? `as of ${relTime(e.at)}`
+      sub: prog ? readingSub(prog, stale ? relTime(e!.at) : null) : e?.kept ? `as of ${relTime(e.at)}`
         : e ? whereSub(inp) : snap ? `as of ${relTime(snap.at)}` : "not checked yet",
-      stale,
+      stale, prog: prog && prog.frac, busy: busyFacets(e?.live),
       cells, findings: fs, band: projectBand(cells), past: snap,
       reading: !!e && (e.detecting || e.out > 0), err: e?.err ?? null,
     });
@@ -521,10 +527,12 @@ function buildMaint(now: number): MaintView {
   const n = (b: string) => ranked.filter((c) => c.band === b).length;
   const only = liveFilter();
   const nameOf = (r: string) => byRoot.get(r)?.name ?? basename(r);
+  const sweep = fleetProgress();
   return {
     // The dashboard builds the same model for its one project (docs/maintenance.md).
     ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, maintSev, now),
     cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
+    progress: sweep && { frac: sweep.frac, text: progressText(sweep, false), now: readingNow(sweep, nameOf) },
     kept: Math.max(0, ...[...byRoot.keys()].map((r) => maintOf(r)).filter((e) => e?.kept).map((e) => e!.at)),
     tally: {
       needs: n("needs"), drifting: n("drifting"), quiet: n("quiet"), unread: n("unread"),

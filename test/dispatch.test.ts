@@ -479,6 +479,27 @@ describe("Maintenance's own dispatcher", () => {
   });
 });
 
+// The header's Maintenance popover writes and probes `data-mb*` in one file, ./maintpop, with its own
+// `#mtPop` listener; `data-mt*` would put it inside maintClick's contract above, which it never calls.
+const MAINTPOP = readFileSync(new URL("../src/maintpop.ts", import.meta.url), "utf8");
+
+describe("the Maintenance popover's own dispatcher", () => {
+  const PAYLOAD = new Set(["root", "name", "key"]);
+  const emitted = [...new Set([...MAINTPOP.matchAll(/data-mb([a-z]+)="/g)].map((m) => m[1]))];
+  const probed = [...MAINTPOP.matchAll(/closest<HTMLElement>\("\[data-mb([a-z]+)\]"\)/g)].map((m) => m[1]);
+
+  it("finds both halves, and keeps every other pane's prefix out", () => {
+    expect(emitted.length).toBeGreaterThan(4);
+    expect(probed.length).toBeGreaterThan(4);
+    expect(MAINTPOP).not.toMatch(/data-(mt|dash|fl)[a-z]+="/);
+  });
+
+  it("emits no attribute it never probes, and probes none it never emits", () => {
+    expect(emitted.filter((k) => !probed.includes(k) && !PAYLOAD.has(k))).toEqual([]);
+    expect(probed.filter((k) => !emitted.includes(k))).toEqual([]);
+  });
+});
+
 // The review stage is the fleet's shape again: `reviewview.ts` writes `data-rv*`, `reviewui.ts`
 // owns the one `#reviewPane` listener. A thread's head is its whole background, so it goes last
 // among the thread's controls or Reply/Resolve/→ agent would fold the thread instead.

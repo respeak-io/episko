@@ -2564,6 +2564,56 @@ select.in-ctl { cursor: pointer; }
 .svr-badge.failed { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
 @media (prefers-reduced-motion: no-preference) { .svr-badge.serving .svr-ic { animation: pulse 2.4s ease-in-out infinite; } }
 
+/* The Maintenance chip (./maintpop): always drawn, as flat as a jobs-only pill until something needs
+   you. A project's seven facets are dots in card order (hollow: nothing read it); the fleet counts. */
+.mt-badge { display: none; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--muted-2); background: transparent; border: 1px solid var(--hair-strong); }
+.mt-badge.show { display: flex; }
+.mt-badge:hover { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+.mt-badge .mb-ic { display: flex; --ic: 12px; }
+.mt-badge .u-spin { width: 10px; height: 10px; margin: 0; }
+.mt-badge .mb-n { font-variant-numeric: tabular-nums; }
+.mt-badge .mb-dots { display: flex; gap: 2.5px; }
+.mt-badge .mb-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--muted-2); }
+.mt-badge .mb-dots i.l-bad { background: var(--st-error); }
+.mt-badge .mb-dots i.l-warn { background: var(--st-working); }
+.mt-badge .mb-dots i.l-muted, .mt-badge .mb-dots i.l-unread { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); opacity: .75; }
+.mt-badge.t-ok, .mt-badge.busy { color: var(--muted); }
+.mt-badge.t-warn { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 11%, transparent); border-color: color-mix(in srgb, var(--st-working) 30%, transparent); }
+.mt-badge.t-bad { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 12%, transparent); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
+
+/* Its popover: the facets as two columns of cells, what to do, then every project in a line. */
+.mtpop { width: 392px; max-height: min(72vh, 620px); overflow-y: auto; padding: 8px; gap: 3px; }
+.mtpop .mb-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mt-prog { margin: 2px 4px 5px; }
+.mtpop .mb-cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 6px; padding: 1px 0 3px; }
+.mtpop .mb-cell { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mtpop .mb-cell:hover { background: var(--surface); }
+.mtpop .mb-cell .fk { flex: none; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+.mtpop .mb-cell .mt-v { min-width: 0; text-align: right; }
+.mtpop .mb-h { display: flex; align-items: center; gap: 6px; margin-top: 3px; padding: 7px 4px 3px; border-top: 1px solid var(--hair); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.mtpop .mb-h .n { color: var(--text); }
+.mtpop .mb-h .w { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.mtpop .mb-line, .mtpop .mb-proj { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font: 600 11.5px var(--font-ui); text-align: left; cursor: pointer; }
+.mtpop .mb-line:hover, .mtpop .mb-proj:hover { background: var(--surface); }
+.mtpop .mb-line .t { flex: none; max-width: 64%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-line .d, .mtpop .mb-proj .d { flex: 1; min-width: 0; font-size: 10px; font-weight: 500; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-line.past .t { font-weight: 500; color: var(--muted-2); }
+.mtpop .mb-proj .nm { flex: none; max-width: 40%; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-proj .t { flex: 1; min-width: 0; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-proj .d { flex: none; }
+.mtpop .mb-more { display: block; width: 100%; padding: 4px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); font: 500 10.5px var(--font-ui); text-align: left; cursor: pointer; }
+.mtpop .mb-more:hover { background: var(--surface); color: var(--muted); }
+.mtpop .mb-said { margin: 3px 6px 5px; font-size: 11px; line-height: 1.45; color: var(--muted-2); }
+.mtpop .mb-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 6px 2px; font-size: 10px; color: var(--muted-2); }
+.mtpop .mb-tally { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 12px; padding: 4px 6px 3px; font-size: 11px; color: var(--muted); }
+.mtpop .mb-tally b { font: 700 13px var(--font-mono); color: var(--text); }
+.mtpop .mb-tally .l-bad b { color: var(--st-error); }
+.mtpop .mb-tally .l-warn b { color: var(--st-working); }
+.mtpop .mb-tally .w { margin-left: auto; font-size: 10px; color: var(--muted-2); }
+.mtpop .mb-board { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 6px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font: 600 11.5px var(--font-ui); cursor: pointer; }
+.mtpop .mb-board:hover { border-color: var(--accent-line); color: var(--accent-ink); }
+.mtpop .mb-board .ic { --ic: 13px; }
+
 /* The clamp is not cosmetic: openServersPop pins top to the pill with no viewport check, and a
    dozen auto-backgrounded commands would run off the screen. The width pays for the two log buttons. */
 .svrpop { min-width: 330px; max-width: 520px; padding: 7px; max-height: min(70vh, 560px); overflow-y: auto; }
@@ -3133,7 +3183,24 @@ select.in-ctl { cursor: pointer; }
 .mt-card.b-needs { border-color: color-mix(in srgb, var(--st-error) 28%, transparent); }
 .mt-card.quiet { padding: 5px 12px; background: transparent; }
 /* An earlier answer while its re-read is out: still legible, plainly not this moment's. */
-.mt-card.stale .mt-cells, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
+.mt-card.stale .mt-cells .mt-v, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
+/* A scan while it runs (./maintview progressHtml): its words, a share, and what holds a slot right now.
+   The width is set, never looped, and glides from where it stood (./dom holdMaintPlace). */
+.mt-prog { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.mt-prog-h { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--muted); }
+.mt-prog-h .u-spin { flex: none; margin: 0; }
+.mt-prog-h .t { flex: none; font-weight: 600; color: var(--text); white-space: nowrap; }
+.mt-prog-h .now { flex: 1; min-width: 0; font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-prog-h .pc { flex: none; font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.mt-pbar { height: 4px; border-radius: 3px; background: var(--surface); overflow: hidden; }
+.mt-pbar > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease-out; }
+/* A card being read: a hairline of the same bar along its foot, a spinner on each facet whose read holds a slot. */
+.mt-card { position: relative; }
+.mt-card .mt-cbar { position: absolute; left: 12px; right: 12px; bottom: 3px; height: 2px; background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.mt-cell.busy .fk { color: var(--accent-ink); }
+.mt-cell .fk .u-spin { width: 8px; height: 8px; border-width: 1.2px; margin: 0 4px 0 0; vertical-align: -1px; }
+.mt-dhead + .mt-prog { margin: -2px 2px 2px; }
+.sb-held { font-style: italic; }
 .mt-card.quiet .fc-av { width: 18px; height: 18px; font-size: 9.5px; }
 .mt-id { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; min-width: 0; cursor: pointer; }
 .mt-id .fc-av { grid-row: span 2; }

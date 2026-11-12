@@ -38,7 +38,9 @@ import {
   ciRows, clampMaint, coverRows, coverSetups, domainStates, errorSummary, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
-import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
+import { askingFor, maintInput, maintOf, maintSnap, projectProgress, scanProject } from "./maintscan";
+import { progressText, readingNow } from "./maintbadge";
+import { findSource, type Facet } from "./maintsources";
 import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
 import { MAINT_SUBS, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
 import type { Place } from "./nav";
@@ -1282,6 +1284,14 @@ export function openDashboardAt(project: string, path: string, at?: Place): void
   openDashboard(project, path, tab);
 }
 
+/** The header's Maintenance popover: this project's tab, at a sub-tab and board when a line names one.
+ *  Choosing the tab is the ask, as a click on it here is. */
+export function openDashboardMaint(project: string, path: string, sub: MaintSub = "overview", board?: BoardId | null): void {
+  if (root() !== path) openDashboard(project, path, "maint");
+  else if (dashTab !== "maint") setDashTab("maint");
+  openMaintSub(sub, board);
+}
+
 // Painted now so the board is there to scroll to; scoped, since the fleet draws the same ids. A cell
 // that cannot check lands on its tab's Coverage, which says why.
 function openMaintSub(sub: MaintSub, board?: BoardId | null, cover = false): void {
@@ -1307,13 +1317,16 @@ function maintNow(now: number): MaintDash {
   const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
   const quiet = depSilent(tally, depTools) && !depLoading;
   const host = hostSummary(inp, th, now);
+  const prog = projectProgress(r);
+  const busy = [...new Set([...e?.live ?? []].flatMap((id): Facet[] => { const f = findSource(id)?.facet; return f ? [f] : []; }))];
   return {
     card: {
       path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
-      stale: !!e && (e.detecting || e.out > 0) && e.at > 0,
+      stale: !!e && (e.detecting || e.out > 0) && e.at > 0, prog: prog && prog.frac, busy,
     },
     rows, offers: offers(r, inp), setups: coverSetups(r, inp), checked: e?.at ?? 0,
+    progress: prog && { frac: prog.frac, text: progressText(prog, true), now: readingNow(prog) },
     tab: {
       ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
       sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
