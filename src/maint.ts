@@ -1911,10 +1911,10 @@ export function coverKind(g: CoverGroup): CoverKind {
 /** The groups under each kind, in COVER_KINDS' order, an empty kind left out; each keeps coverGroups' order. */
 export const coverByKind = (gs: readonly CoverGroup[]): [CoverKind, CoverGroup[]][] =>
   COVER_KINDS.flatMap((k) => { const mine = gs.filter((g) => coverKind(g) === k); return mine.length ? [[k, mine] as [CoverKind, CoverGroup[]]] : []; });
-// The CLIs a coverage's fix may name; anything else is an instruction for a person, not a line to paste.
-const FIX_BINS = /^(gh|glab|cargo|corepack|npm|pnpm|yarn|rustup|brew|winget|scoop|pipx?|git|ssh)\s/;
-/** A fix is a command to copy only when it starts with a CLI's name ("gh auth login"), never prose ("pick the account…"). */
-export const fixIsCommand = (fix: string): boolean => FIX_BINS.test(fix.trim());
+// A command is lower-case words and flags; a sentence has capitals, commas or the small words no command needs.
+const PROSE = /[A-Z,]|\b(the|an?|from|that|which|it|to|your)\b/;
+/** A fix is a command to copy ("<cli> auth login"), or an instruction a person reads ("pick the account…"). */
+export const fixIsCommand = (fix: string): boolean => /^[a-z][\w.-]*\s+\S/.test(fix.trim()) && !PROSE.test(fix);
 
 // ---------- the cross-project tabs' boards ----------
 

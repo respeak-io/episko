@@ -1256,7 +1256,7 @@ describe("the cross-project tabs", () => {
         expect(fixIsCommand(c), c).toBe(true);
       }
       for (const p of ["pick the GitHub account that can see it from the project menu", "install Node.js, which brings npm: https://nodejs.org",
-        "install the GitHub CLI from https://cli.github.com", "", "ghost town"]) expect(fixIsCommand(p), p).toBe(false);
+        "install the GitHub CLI from https://cli.github.com", "", "login", "add a Host entry to your ssh config"]) expect(fixIsCommand(p), p).toBe(false);
     });
 
     it("names a settings page only from the manifest, for a forge path it can spell, none otherwise", () => {
