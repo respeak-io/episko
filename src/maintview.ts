@@ -258,7 +258,7 @@ function findingHtml(f: Finding, name?: string, go = false, tick?: "on" | "off")
   const detail = verbText(f)[2];
   const who = name === undefined ? "" : projHtml(f.root, name);
   return `<div class="mt-find l-${f.level}${go ? " go" : ""}"${go ? goAttrs(f.facet, f.key, f.root) : ""}>${tick ? tickHtml(f, tick === "on") : ""}<i class="mt-sev"></i>${who}
-    <span class="t"${go ? ` tabindex="0" role="button"` : ""}>${esc(f.text)}</span><span class="d mono">${esc(detail)}</span>
+    <span class="t"${go ? ` tabindex="0" role="button"` : ""}>${esc(f.text)}</span><span class="d">${esc(detail)}</span>
     ${verbHtml(f)}</div>`;
 }
 
@@ -439,7 +439,7 @@ function weekHtml(v: MaintView): string {
     + `<span class="k">${esc(f.text)}</span></span>`).join("");
   const rows = d.changes.slice(0, WEEK_LINES).map((c) => `<div class="mt-find l-${c.level} past go"${goAttrs(c.facet, c.key, c.root)}>`
     + `<i class="mt-sev"></i><span class="mt-rn">${esc(nameOf(v, c.root))}</span><span class="t" tabindex="0" role="button">${esc(c.text)}</span>`
-    + `<span class="d mono">${esc(c.detail)}</span></div>`).join("");
+    + `<span class="d">${esc(c.detail)}</span></div>`).join("");
   const rest = d.changes.slice(WEEK_LINES);
   const more = rest.length ? `<span class="mt-more dim" data-tip="${escAttr(rest.map((c) => `${nameOf(v, c.root)}: ${c.text}`).join("\n"))}">`
     + `+${rest.length} more</span>` : "";

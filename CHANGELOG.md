@@ -33,6 +33,10 @@ Markers: `+` new · `~` changed · `!` fixed
 + Maintenance's *Coverage* sorts what it could not read by what closes the gap: a click, a login or
   token, a switch on GitHub, a retry. Each group says what it means, each row says why under its
   name, and each project's name carries its own *Check*, with *Check all* where a public service is asked.
++ Every Maintenance card has an (i) that says what it shows, what it reads, how to read its colours
+  and what you can do there. A card with something red or amber in it counts those in its head and
+  wears the colour down its edge, an empty one says *none open* in one line, and each tab says what
+  it answers under its bar.
 + Back and forward, the mouse's side buttons included, step through those tabs as a browser's do:
   *Activity* and *Maintenance*, a Maintenance tab and the project it is narrowed to, and a
   dashboard's *Today* and *Maintenance*.
