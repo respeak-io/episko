@@ -27,7 +27,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The merge commit and its base parent, which is all the diff below needs.
+          fetch-depth: 2
+      # The landing page is not in What's new, so a PR that only touches site/ owes it nothing.
+      - name: Does this PR change the app?
+        id: scope
+        run: |
+          if git diff --name-only HEAD^1 HEAD | grep -qv '^site/'; then app=true; else app=false; fi
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "changes outside site/: $app"
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.app == 'true'
         with:
           node-version-file: .nvmrc
           # No deps, so no cache. Left on, setup-node reads `packageManager` from
@@ -35,6 +46,7 @@ jobs:
           # install, and which fails the gate before it ever reads the changelog.
           package-manager-cache: false
       - name: CHANGELOG.md has an Unreleased section
+        if: steps.scope.outputs.app == 'true'
         run: node scripts/changelog.mjs check
 
   build-check:
