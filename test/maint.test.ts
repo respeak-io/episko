@@ -6,6 +6,7 @@ import {
   advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
+  COVER_KINDS, coverByKind, coverKind, fixIsCommand, type CoverGroup,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
@@ -1220,6 +1221,42 @@ describe("the cross-project tabs", () => {
       expect(g.some((x) => x.roots.includes("/a")), "a verdict is not a coverage row").toBe(false);
       const quiet = at("/q", on("/q", ok("dependabot-alerts", { kind: "advisories", items: [] })));
       expect(coverGroups("security", [quiet], null, NOW), "a clean read leaves nothing to explain").toEqual([]);
+    });
+
+    it("files each row under what closes it, in the card's order", () => {
+      const fail = (root: string): MaintInput => {
+        const r = not("dependabot-alerts", "security", { state: "error", reason: "HTTP 502" });
+        return { det: det([r.source], { repoRoot: root, forge: hub(`o${root}`) }), reports: { [r.source]: r } };
+      };
+      const projects = [at("/a", switchedOff("/a")), at("/b", switchedOff("/b", null)), at("/d", scope("/d")), at("/f", fail("/f")),
+        at("/u", { det: null, reports: {} }), at("/s", { ...scope("/s"), skip: ["dependabot-alerts"] })];
+      const kinds = coverByKind(coverGroups("security", projects, null, NOW)).map(([k, gs]) => [k, gs.map((g) => `${g.what}: ${g.why}`)]);
+      expect(kinds).toEqual([
+        ["ask", ["npm audit: not run"]],
+        ["unread", ["Security: not read yet", "Dependencies: not read yet"]],
+        ["access", ["Dependabot alerts: token scope"]],
+        ["forge", ["Dependabot alerts: alerts off"]],
+        ["failed", ["Dependabot alerts: read failed"]],
+        ["gap", ["Dependabot alerts: skipped here"]],
+      ]);
+      const g = (o: Partial<CoverGroup>): CoverGroup => ({ key: "k", facet: "ci", source: null, cfg: false, what: "w", why: "", detail: "", roots: ["/r"], quiet: false, action: null, ...o });
+      expect(coverKind(g({ why: "alerts off", action: null })), "off with no page it can name is still the forge's").toBe("forge");
+      expect(coverKind(g({ why: "not allowed here", action: { kind: "allow", host: "h" } })), "a host to allow is one click, like an offer").toBe("ask");
+      expect(coverKind(g({ why: "no token", action: { kind: "token", source: "sentry-issues", door: "add" } }))).toBe("access");
+      expect(coverKind(g({ why: "tool missing" })), "a tool with no command to install it").toBe("access");
+      expect(coverKind(g({ why: "nothing reads it yet", key: "marker:Woodpecker" }))).toBe("gap");
+      expect(coverKind(g({ why: "never ran" })), "a cell's own word with no fix is not a failure").toBe("gap");
+      expect(coverKind(g({ why: "configured, no open pull request", quiet: true }))).toBe("note");
+      expect(COVER_KINDS.indexOf("ask"), "a click comes before anything a person has to go and do").toBe(0);
+      expect(coverByKind([]), "no row, no kind").toEqual([]);
+    });
+
+    it("copies a fix only when it is a command", () => {
+      for (const c of ["gh auth login", "gh auth refresh -h github.com -s security_events", "cargo install cargo-audit --locked", "corepack enable pnpm", "glab auth login --hostname gitlab.example"]) {
+        expect(fixIsCommand(c), c).toBe(true);
+      }
+      for (const p of ["pick the GitHub account that can see it from the project menu", "install Node.js, which brings npm: https://nodejs.org",
+        "install the GitHub CLI from https://cli.github.com", "", "ghost town"]) expect(fixIsCommand(p), p).toBe(false);
     });
 
     it("names a settings page only from the manifest, for a forge path it can spell, none otherwise", () => {

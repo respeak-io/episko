@@ -1894,6 +1894,28 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.what.localeCompare(b.what) || a.key.localeCompare(b.key));
 }
 
+/** What closes a Coverage row, which is how the card groups them: a click, a check, a login, a forge
+ *  switch, a retry, nothing here, or nothing at all. In the order the card draws them. */
+export const COVER_KINDS = ["ask", "unread", "access", "forge", "failed", "gap", "note"] as const;
+export type CoverKind = (typeof COVER_KINDS)[number];
+const ACCESS_WHY = new Set(["no access", "token scope", "token refused", "signed out", "no token", "tool missing"]);
+export function coverKind(g: CoverGroup): CoverKind {
+  const a = g.action?.kind;
+  if (g.quiet) return "note";
+  if (a === "run" || a === "allow") return "ask";
+  if (a === "fix" || a === "token" || ACCESS_WHY.has(g.why)) return "access";
+  if (a === "settings" || g.why === "alerts off" || g.why === "switched off") return "forge";
+  if (g.why === "not read yet" || g.why === "not checked this session") return "unread";
+  return g.why === "read failed" ? "failed" : "gap";
+}
+/** The groups under each kind, in COVER_KINDS' order, an empty kind left out; each keeps coverGroups' order. */
+export const coverByKind = (gs: readonly CoverGroup[]): [CoverKind, CoverGroup[]][] =>
+  COVER_KINDS.flatMap((k) => { const mine = gs.filter((g) => coverKind(g) === k); return mine.length ? [[k, mine] as [CoverKind, CoverGroup[]]] : []; });
+// The CLIs a coverage's fix may name; anything else is an instruction for a person, not a line to paste.
+const FIX_BINS = /^(gh|glab|cargo|corepack|npm|pnpm|yarn|rustup|brew|winget|scoop|pipx?|git|ssh)\s/;
+/** A fix is a command to copy only when it starts with a CLI's name ("gh auth login"), never prose ("pick the account…"). */
+export const fixIsCommand = (fix: string): boolean => FIX_BINS.test(fix.trim());
+
 // ---------- the cross-project tabs' boards ----------
 
 /** One project as a tab's boards take it: `rows` are its `tabFindings`, where every verb comes from. */

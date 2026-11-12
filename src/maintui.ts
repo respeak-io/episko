@@ -134,6 +134,19 @@ function openDoor(at: string, root: string, host: MaintHost): void {
   host.openDashboard(host.nameOf(root), root, d.to === "queue" || d.to === "landed" ? "today" : undefined, d);
 }
 
+// Coverage's Check all: a public source once per project still offering it. Never a tool: an audit
+// runs in the project's folder, so those stay one chip, one project, at a time.
+async function runAll(source: string, host: MaintHost): Promise<void> {
+  const d = findSource(source);
+  if (d?.cost !== "public") return;
+  const roots = host.roots().filter((r) => { const inp = maintInput(r); return !!inp && !askingFor(r, [source]) && offers(r, inp).some((o) => o.source === source); });
+  if (!roots.length) return;
+  toast(`${d.label} for ${roots.length} project${roots.length === 1 ? "" : "s"}…`);
+  const reps = await Promise.all(roots.map((r) => runSource(r, source)));
+  const failed = reps.filter((x) => x.coverage.state !== "ok").length;
+  if (failed) toast(`${d.label}: ${failed} of ${reps.length} could not be read. Coverage says why`);
+}
+
 // Every address of every project asked, each project's checks as one click-only read per source.
 async function checkProd(roots: readonly string[]): Promise<void> {
   const jobs = roots.flatMap((r) => { const inp = maintInput(r); return inp ? prodChecks(inp).map((id) => [r, id] as const) : []; });
@@ -365,6 +378,11 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
   const cfg = t.closest<HTMLElement>("[data-mtcfg]");
   if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
+  const all = t.closest<HTMLElement>("[data-mtrunall]");
+  if (all) { void runAll(all.dataset.mtrunall ?? "", host); return true; }
+  // Asking a public source in every scan is Settings › On its own's switch; this only opens it there.
+  const pref = t.closest<HTMLElement>("[data-mtpref]");
+  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("auto", `maintpub:${pref.dataset.mtpref}`); return true; }
   // A token is pasted in Settings, never here: the door names the kind, and nothing it opens connects.
   const tok = t.closest<HTMLElement>("[data-mttoken]");
   if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("accounts", k ? tokenRow(k.id) : undefined); return true; }

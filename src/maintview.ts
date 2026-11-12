@@ -5,8 +5,8 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverFirst, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
+  advFix, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -273,45 +273,81 @@ const tokenHtml = (source: string, door: TokenDoor) => {
 const settingsHtml = (url: string, label = "Settings", mark = true) =>
   `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}${mark ? ` ${icon("externalLink", "solo")}` : ""}</button>`;
 
-// Across projects a name is that project's door, or its settings page when the fix is a forge switch.
+// Across projects a name is a chip: that project's door, its settings page when the fix is a forge
+// switch, or its door with its own Check when the fix is one click there.
 const SHOWN = 8;
-function namesHtml(v: MaintTabView, g: CoverGroup): string {
-  const urls = g.action?.kind === "settings" ? g.action.urls : {};
-  const one = (r: string) => urls[r] ? settingsHtml(urls[r], nameOf(v, r)) : projHtml(r, nameOf(v, r));
+function coverChip(v: MaintTabView, g: CoverGroup, root: string): string {
+  const a = g.action, name = nameOf(v, root);
+  if (a?.kind === "settings" && a.urls[root]) return `<span class="mt-pc">${settingsHtml(a.urls[root], name)}</span>`;
+  const o = a?.kind === "run" ? v.offers.find((x) => x.source === a.source && x.root === root) : undefined;
+  return `<span class="mt-pc">${projHtml(root, name)}${o ? verbHtml(o, `${name}:`, findSource(o.source)?.cost === "tool" ? "Run" : "Check") : ""}</span>`;
+}
+function coverChips(v: MaintTabView, g: CoverGroup): string {
   const rest = g.roots.slice(SHOWN).map((r) => nameOf(v, r));
-  return g.roots.slice(0, SHOWN).map(one).join(", ")
-    + (rest.length ? ` <span class="dim" data-tip="${escAttr(rest.join(", "))}">+${rest.length}</span>` : "");
+  return g.roots.slice(0, SHOWN).map((r) => coverChip(v, g, r)).join("")
+    + (rest.length ? `<span class="dim" data-tip="${escAttr(rest.join(", "))}">+${rest.length}</span>` : "");
 }
 
-// Offers and forge switches are not findings: one row per reason, however many projects share it.
-// Across projects a click-only source only counts, since nine audits at once is not a click to offer.
-const OFFER_TIP = "Runs only when asked, one project at a time: from its Coverage card, or this tab narrowed to it";
 // What a [maintenance] key would answer: an agent proposes it, or a person edits the file.
 const setupHtml = (root: string) => [["propose", "Propose with an agent",
   "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard"],
 ["file", "Open file", "Open .episko/episko.toml"]].map(([what, label, tip]) =>
   `<button class="aslink" data-mtcfg="${what}" data-mtroot="${escAttr(root)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`).join(" · ");
 
+// ---------- Coverage: what could not be read, grouped by what closes the gap ----------
+
+// Each kind says what it means and what answers it, so a row's short word never stands alone.
+const COVER_HEAD: Record<CoverKind, [title: string, why: string, ic: IconName]> = {
+  ask: ["Ready to check", "These read only when you click, so a scan never sends anything or runs anything in a project. A public service gets names, never code; a tool runs in the project, on this machine.", "play"],
+  unread: ["Not read yet", "This session has not read these, or their read is still out.", "clock"],
+  access: ["Needs a login, token or tool", "Episko asked and was refused, or has nothing to ask with. Do what the row says and the next check reads it.", "lock"],
+  forge: ["Switched off on the forge", "The repository has this feature turned off, so there is nothing to read. A project's name opens the page that switches it on.", "ban"],
+  failed: ["Could not be read", "The read was tried and failed; hover a row for what it said. Checking again retries it.", "triangleAlert"],
+  gap: ["Not covered here", "Nothing reads these here: a tool Episko recognises but has no reader for, a feature the forge does not offer, a setting that would answer it, or a source switched off on this machine.", "circleDashed"],
+  note: ["Worth knowing", "Not gaps: nothing here stops a check.", "info"],
+};
+const copyBtn = (fix: string) => `<button class="aslink" data-mtcopy="${escAttr(fix)}" data-tip="Copy the command">Copy</button>`;
+
+// A row: what it is about and why, then the sentence that explains it, its projects as chips, and the one action.
+function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
+  const a = g.action, d = g.source ? findSource(g.source) : undefined;
+  const pub = a?.kind === "run" && d?.cost === "public";
+  const offer = a?.kind === "run" ? v.offers.find((o) => o.source === a.source) : undefined;
+  const setup = one && g.source ? v.setups.find((x) => x.source === g.source) : undefined;
+  const fix = a?.kind === "fix" ? a.fix : null, cmd = !!fix && fixIsCommand(fix);
+  const said = a?.kind === "run" ? (d && disclosure(d)) ?? (d?.cost === "tool" ? `Runs ${d.label} in the project, on this machine.` : g.detail) : g.detail;
+  const detail = fix ? (cmd ? `<code class="mt-fix">${esc(fix)}</code>` : esc(fix)) : esc(said);
+  // Public reads may also ride every scan: that is a per-machine switch, so the door is Settings'.
+  const always = pub && d ? ` <button class="aslink" data-mtpref="${escAttr(d.id)}"`
+    + ` data-tip="${escAttr(`Settings › On its own: ask ${d.label} in every check, from this machine only`)}">Ask in every check…</button>` : "";
+  // A public read across projects is one click; a tool stays one project at a time, from its chip.
+  const all = pub && !one && g.roots.length > 1 ? `<button class="mt-verb" data-mtrunall="${escAttr(d!.id)}"`
+    + ` data-tip="${escAttr(`Check with ${d!.label} for these ${g.roots.length} projects, once each. ${said}`)}">Check all ${g.roots.length}</button>` : "";
+  const act = (cmd ? copyBtn(fix!) : "")
+    + (a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0]) : "")
+    + (a?.kind === "allow" ? allowHtml(a.host) : "")
+    + (a?.kind === "token" ? tokenHtml(a.source, a.door) : "")
+    + (one && offer ? verbHtml(offer) : all)
+    + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
+  const tip = g.detail && g.detail !== said ? ` data-tip="${escAttr(g.detail)}"` : "";
+  return `<div class="mt-cv${one ? " one" : ""}${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
+    + `<span class="m"><span class="t"${tip}><b>${esc(g.what)}</b><em>${esc(g.why)}</em></span>`
+    + `<span class="d">${detail}${always}</span></span>${one ? "" : `<span class="p">${coverChips(v, g)}</span>`}<span class="a">${act}</span></div>`;
+}
+
 function coverHtml(v: MaintTabView): string {
   if (!v.cover.length) return "";
-  const one = !!v.filter;
-  const rows = v.cover.map((g) => {
-    const a = g.action, offer = a?.kind === "run" ? v.offers.find((o) => o.source === a.source) : undefined;
-    const d = a?.kind === "run" ? findSource(a.source) : undefined, said = d && disclosure(d);
-    const setup = one && g.source ? v.setups.find((x) => x.source === g.source) : undefined;
-    const act = (a?.kind === "fix" ? copyHtml(a.fix)
-      : a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0])
-      : a?.kind === "allow" ? allowHtml(a.host)
-      : a?.kind === "token" ? tokenHtml(a.source, a.door)
-      : offer && one ? verbHtml(offer) : "")
-      + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
-    const where = one ? "" : `<span class="p">${esc(plural(g.roots.length, "project"))}: ${namesHtml(v, g)}</span>`;
-    const tip = [g.detail, a?.kind === "run" && !one ? OFFER_TIP : "", said ?? ""].filter(Boolean).join("\n");
-    return `<div class="mt-cv${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
-      + `<span class="t" data-tip="${escAttr(tip)}">${esc(g.what)} <em>${esc(g.why)}</em></span>${where}`
-      + `<span class="d mono">${esc(one ? g.detail : "")}</span><span class="a">${act}</span></div>`;
+  const one = !!v.filter, gaps = v.cover.filter((g) => !g.quiet);
+  const kinds = coverByKind(v.cover).map(([k, gs]) => {
+    const [title, why, ic] = COVER_HEAD[k];
+    const check = k === "unread" ? `<button class="aslink" data-mtscan="check" data-tip="Read what is not read yet. Nothing runs in a project">Check</button>` : "";
+    return `<div class="mt-cvk k-${k}"><div class="mt-cvk-h">${icon(ic)}<b>${esc(title)}</b><span class="n">${gs.length}</span>${check}</div>`
+      + `<p class="mt-cvk-w">${esc(why)}</p><div class="mt-cvs">${gs.map((g) => coverRowHtml(v, g, one)).join("")}</div></div>`;
   }).join("");
-  return `<section class="mt-sec mt-cover" tabindex="-1"><div class="mt-sec-h label">Coverage</div><div class="mt-finds">${rows}</div></section>`;
+  const across = new Set(gaps.flatMap((g) => g.roots)).size;
+  const note = !gaps.length ? "nothing missing" : one ? plural(gaps.length, "gap") : `${plural(gaps.length, "gap")} across ${plural(across, "project")}`;
+  return `<section class="mt-sec mt-board mt-cover" tabindex="-1"><div class="mt-sec-h"><span class="label">Coverage</span><span class="mt-note mono">${esc(note)}</span></div>`
+    + `<p class="mt-lede">What this tab could not read, grouped by what closes the gap. A gap is never counted as fine.</p>${kinds}</section>`;
 }
 
 // A snapshot's line has no verb: a verb acts on facts, and this session has read none of them.

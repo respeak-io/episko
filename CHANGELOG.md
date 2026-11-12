@@ -30,6 +30,9 @@ Markers: `+` new · `~` changed · `!` fixed
 + A Maintenance check shows its progress: a bar with how many projects are done, what is being read
   right now, and a spinner on each card's facet while it is read. *Since last week* holds still until
   the check finishes instead of counting up project by project.
++ Maintenance's *Coverage* sorts what it could not read by what closes the gap: a click, a login or
+  token, a switch on GitHub, a retry. Each group says what it means, each row says why under its
+  name, and each project's name carries its own *Check*, with *Check all* where a public service is asked.
 + Back and forward, the mouse's side buttons included, step through those tabs as a browser's do:
   *Activity* and *Maintenance*, a Maintenance tab and the project it is narrowed to, and a
   dashboard's *Today* and *Maintenance*.
