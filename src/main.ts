@@ -43,6 +43,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
+  setPaneLow, syncPanePriority,
   openDevtools, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
   onLimitHit, syncShownAccount,
@@ -260,6 +261,7 @@ setSettingsHost({
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
+  setPaneLow,
   openDevtools, reloadUi, resetCompositor: () => { void resetCompositor(); },
   setUpdateChannel: switchChannel,
   vitalsDrift: currentDrift,
@@ -1135,6 +1137,7 @@ initFileDrop();
 // caffeinate starts off: the last run's assertion died with its process, and cafArmed is
 // false at boot. initCaf covers a webview reload that left the backend still asserting.
 initCaf();
+syncPanePriority(); // before anything can launch: the backend boots lowered whatever was chosen
 renderAll();
 // Nothing restored takes the stage, so this is where the app lands: every project, not a
 // card saying no sessions are running. Last, because it is the fallback for all of the above.

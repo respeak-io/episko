@@ -177,6 +177,7 @@ pub(crate) fn spawn_claude(
     let killer = child.clone_killer();
     // Recorded so the session is still recognisable on disk after Claude rotates its id.
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     if let Some(p) = child_pid {
         state.owned_pids.lock().unwrap().insert(p);
     }
@@ -458,6 +459,7 @@ pub(crate) fn spawn_shell(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     // Not added to owned_pids: not a claude process, so it cannot leak as "external".
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
@@ -631,6 +633,7 @@ pub(crate) fn spawn_task(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
@@ -965,6 +968,7 @@ pub(crate) fn spawn_agent(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(

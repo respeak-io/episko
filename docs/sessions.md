@@ -41,6 +41,32 @@ Claude validates its mode spellings and exits on an unknown one;
 auth) checks the real binary per `RELEASE.md`. Rust unit tests pin every Codex mapping,
 including hostile/unknown input and flag ordering before `resume`.
 
+## Priority (`priority.rs`, Settings › Launching)
+
+Five agents running their test suites at once oversubscribe any machine, and at normal
+priority they compete with the desktop on equal terms: the window you are typing in
+stalls. `cc-pane-priority` (on by default, `local`) puts everything a pane starts below
+normal instead. That is a priority, not a cap: an idle machine still gives a pane every
+core, which is why there is no CPU-percent limit beside it (a hard cap throttles an
+overnight fleet nobody is competing with).
+
+- **Every spawner calls `PanePriority::adopt` on the child pid**: claude, shell, task,
+  agent, and the Codex App Server, because that sidecar rather than the TUI runs the
+  agent's commands. Adopting never fails a launch.
+- **Windows: one job object for every pane.** `JOB_OBJECT_LIMIT_PRIORITY_CLASS` pins
+  every process in the job, children included, and a process inside cannot raise itself
+  (Chromium sets its renderers' class; it is ignored). Because it is a job, the switch
+  reaches running trees: off sets the class to normal, then drops the limit so programs
+  may choose again. `BREAKAWAY_OK` stays set, since a program that asks to leave a job
+  fails to start without it. No `KILL_ON_JOB_CLOSE`: quitting kills nothing new.
+- **macOS: `setpriority` to nice 10 at launch**, inherited by everything forked after.
+  Only new sessions follow a change: raising a process back takes root, so lowering the
+  running ones would be a switch with no way back.
+- **What it cannot reach**: whatever a child starts before it is adopted (microseconds;
+  even a `.cmd` shim takes milliseconds to start its target), Docker's VM, and system
+  services a command calls into — `tasklist` and `wmic` are served by WMI's host.
+- The executed tests (`priority.rs`) spawn real processes and read the class back.
+
 ## A terminal beside the session (⌘T)
 
 Most shells are opened to run a command the agent just printed, so ⌘T puts the shell **beside**

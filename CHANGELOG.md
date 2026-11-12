@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Sessions run below your other apps, so a handful of agents running their tests at once no longer
+  freezes the machine. They still get every core nothing else is using. *Settings › Launching*
+  turns it off; on Windows that reaches sessions already running, on macOS the next one started.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
