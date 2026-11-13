@@ -44,6 +44,9 @@ export const SORT_MODES: SortMode[] = ["manual", "active", "attention"];
 export let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";
 if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
 export function setSortMode(m: SortMode) { sortMode = m; }
+// The rail's ranks while the pointer is on it (./grouping's `railRanks`, armed by ./sidebar); null otherwise.
+export let railHold: ReadonlyMap<string, number> | null = null;
+export function setRailHold(h: ReadonlyMap<string, number> | null) { railHold = h; }
 export const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
   manual:    { glyph: "≡", label: "Manual order · drag to arrange" },
   active:    { glyph: "◷", label: "Latest activity first" },

@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! The sidebar holds still while the pointer is on it. Closing one of a checkout's two sessions
+  used to drop that checkout below its neighbour, right under the mouse. Now every project,
+  checkout and session keeps its place until the pointer leaves, and the sidebar re-sorts then.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
