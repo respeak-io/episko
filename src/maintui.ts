@@ -5,18 +5,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { actToast, toast } from "./dom";
+import { $, actToast, toast } from "./dom";
 import { dlog } from "./debug";
 import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
 import {
-  BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
-  sweepRows, tabFindings, traceAsk, type Finding,
+  ADV_FOLDS, BOARD_IDS, boardTab, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
+  sourceResult, sweepRows, tabFindings, traceAsk, type Finding, type Level,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
-  type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
+  type AdvFold, type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
+import { guideHtml, isGuideId } from "./maintguide";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
-import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
+import { askingFor, checkSweep, forgetClicked, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, tokenRow, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
 import { checkoutBusy } from "./grouping";
@@ -34,7 +35,7 @@ export interface MaintHost {
   terminal: (project: string, path: string, cmd: string) => void; // a shell with `cmd` typed in and never sent
   // `door` opens the view a board number counts (./maint Door); on its own dashboard, that view in place.
   openDashboard: (name: string, path: string, tab?: "today" | "maint", door?: Door) => void;
-  // `root` undefined keeps the project filter, null clears it; the host owns both, never a nav field.
+  // `root` undefined keeps the project filter, null clears it; the host owns both, never `mirror`.
   // `board` set scrolls to that board once painted, null to the tab's top.
   openTab: (sub: MaintSub, root?: string | null, board?: BoardId | null) => void;
   picks?: (tab: MaintTab) => PickRow[]; // the fleet's project picker; the dashboard is one project
@@ -48,6 +49,7 @@ export interface MaintHost {
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
   session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
   openSettings?: (section: string, row?: string) => void; // a Coverage row's token door: Settings › Accounts at that kind
+  pickAccount?: (at: HTMLElement, root: string, then: () => void) => void; // the project's forge account picker; `then` after a pick
 }
 
 const stored = localStorage.getItem("cc-maint-chip");
@@ -58,8 +60,8 @@ function setMaintChip(c: MaintChip) {
 }
 // Not persisted: a fold you opened is a glance, and the next visit starts with the loud cards.
 export let quietOpen = false;
-// The Security strip's bucket, a glance like the fold: a second click on it shows every row again.
-export let maintSev: SevBucket | null = null;
+// The advisories' severity groups as folded or opened this session, a glance like the quiet fold.
+export const maintAdv: Partial<Record<SevBucket, AdvFold>> = {};
 // The ticked card lines (`sessionKey`), a glance too: never persisted, and cleared by the session they start.
 export let maintPicked = emptyPick();
 
@@ -95,7 +97,8 @@ const lineOf = (root: string, key: string, inp: MaintInput) =>
   [...tabFindings(root, inp, clampMaint(inp.det?.config.thresholds)), ...offers(root, inp), ...coverSetups(root, inp)].find((x) => x.key === key);
 
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
-async function runVerb(root: string, key: string, host: MaintHost): Promise<void> {
+// `only`: an advisory row's own verb, which briefs that advisory alone (its id and aliases).
+async function runVerb(root: string, key: string, host: MaintHost, only?: string[]): Promise<void> {
   const inp = maintInput(root);
   const f = inp && lineOf(root, key, inp);
   if (!inp || !f) { toast("That has changed since the last check. Check again"); return; }
@@ -119,10 +122,22 @@ async function runVerb(root: string, key: string, host: MaintHost): Promise<void
   }
   try {
     const [verify, traces] = await Promise.all([verifyFor(root), tracesFor(root, f, inp)]);
-    const text = briefFor(f, inp, { project: name, verify, traces });
+    const text = briefFor(f, inp, { project: name, verify, traces, only });
     if (!text) { toast("That has changed since the last check. Check again"); return; }
     host.prefill(name, root, text);
   } finally { tracing.delete(out); }
+}
+
+// An advisory row's verb: straight to its one project's agent, or a menu of the projects it hits.
+function advVerb(at: HTMLElement, host: MaintHost): void {
+  const only = (at.dataset.mtadv ?? "").split(" ").filter(Boolean), key = at.dataset.mtkey!;
+  const roots = (at.dataset.mtroot ?? "").split("\n").filter(Boolean);
+  if (roots.length === 1) { void runVerb(roots[0], key, host, only); return; }
+  openMenu(at, {
+    title: `${at.textContent?.trim() || "Brief"} ${only[0] ?? ""}`, sub: "an agent on this alone, in the project you pick",
+    groups: [{ items: roots.map((r) => ({ id: r, label: host.nameOf(r) })) }],
+    onPick: (r) => void runVerb(r, key, host, only),
+  });
 }
 
 // A board number: a fetch runs here; anything else is a view of the project's dashboard (a page is data-mturl's).
@@ -133,6 +148,22 @@ function openDoor(at: string, root: string, host: MaintHost): void {
   if (d.to === "fetch") { void fetchHere(root, host.nameOf(root)); return; }
   host.openDashboard(host.nameOf(root), root, d.to === "queue" || d.to === "landed" ? "today" : undefined, d);
 }
+
+// Coverage's Check all: a public source once per project still offering it. Never a tool: an audit
+// runs in the project's folder, so those stay one chip, one project, at a time.
+async function runAll(source: string, host: MaintHost): Promise<void> {
+  const d = findSource(source);
+  if (d?.cost !== "public") return;
+  const roots = host.roots().filter((r) => { const inp = maintInput(r); return !!inp && !askingFor(r, [source]) && offers(r, inp).some((o) => o.source === source); });
+  if (!roots.length) return;
+  toast(`${d.label} for ${roots.length} project${roots.length === 1 ? "" : "s"}…`);
+  const reps = await Promise.all(roots.map((r) => runSource(r, source)));
+  const failed = reps.filter((x) => x.coverage.state !== "ok").length;
+  const found = reps.filter((x, i) => { const inp = maintInput(roots[i]); return !!inp && FOUND.includes(sourceResult(x, inp, clampMaint(inp.det?.config.thresholds)).level); }).length;
+  const said = [found ? `${found} found something` : failed < reps.length ? "nothing found" : "", failed ? `${failed} could not be read` : ""];
+  toast(`${d.label}, ${reps.length} project${reps.length === 1 ? "" : "s"}: ${said.filter(Boolean).join(", ")}. Each chip in Coverage says what`);
+}
+const FOUND: readonly Level[] = ["bad", "warn", "info"];
 
 // Every address of every project asked, each project's checks as one click-only read per source.
 async function checkProd(roots: readonly string[]): Promise<void> {
@@ -304,6 +335,31 @@ function sweepAct(at: HTMLElement, host: MaintHost): void {
   }
 }
 
+// ---------- a card's (i): what it shows, from where, and how to read it ----------
+
+let guideAt: string | null = null; // the card whose guide is open: its (i) clicked again closes it
+const offGuide = (e: Event) => { if (!$("mtGuide").contains(e.target as Node)) closeMaintGuide(); };
+export const maintGuideOpen = (): boolean => guideAt !== null;
+export function closeMaintGuide(): void {
+  if (guideAt === null) return;
+  guideAt = null;
+  $("mtGuide").classList.remove("show");
+  document.removeEventListener("scroll", offGuide, true); // the card it explains has moved away
+}
+// Under the (i), right edges aligned, and above it where the window has no room below.
+function toggleGuide(at: HTMLElement): void {
+  const id = at.dataset.mthelp ?? "";
+  if (guideAt === id || !isGuideId(id)) { closeMaintGuide(); return; }
+  const pop = $("mtGuide");
+  pop.innerHTML = guideHtml(id);
+  pop.classList.add("show");
+  guideAt = id;
+  document.addEventListener("scroll", offGuide, true);
+  const r = at.getBoundingClientRect(), p = pop.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(window.innerWidth - p.width - 8, r.right - p.width))}px`;
+  pop.style.top = `${r.bottom + 6 + p.height <= window.innerHeight - 8 ? r.bottom + 6 : Math.max(8, r.top - 6 - p.height)}px`;
+}
+
 const subOf = (v: string | undefined): MaintSub => MAINT_SUBS.includes(v as MaintSub) ? v as MaintSub : "overview";
 
 export type PickRow = ProjectPick & { accent: string; icon: string | null };
@@ -326,6 +382,8 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost, shift = false): boolean {
+  const help = t.closest<HTMLElement>("[data-mthelp]");
+  if (help) { toggleGuide(help); return true; }
   const tick = t.closest<HTMLElement>("[data-mttick]");
   if (tick) { tickLine(sessionKey({ root: tick.dataset.mtroot!, key: tick.dataset.mttick! }), host, shift); return true; }
   const none = t.closest<HTMLElement>("[data-mtpicknone]");
@@ -345,11 +403,11 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   }
   const fold = t.closest<HTMLElement>("[data-mtfold]");
   if (fold) { quietOpen = fold.dataset.mtfold === "1"; host.render(); return true; }
+  // A severity group's head folds or opens it, and its foot shows every row or its first again.
   const sev = t.closest<HTMLElement>("[data-mtsev]");
   if (sev) {
-    const b = sev.dataset.mtsev as SevBucket;
-    if (maintSev === b || !SEV_BUCKETS.includes(b)) maintSev = null;
-    else if (sev.getAttribute("aria-disabled") !== "true") maintSev = b;
+    const b = sev.dataset.mtsev as SevBucket, f = sev.dataset.mtkey as AdvFold;
+    if (SEV_BUCKETS.includes(b) && ADV_FOLDS.includes(f)) maintAdv[b] = f;
     host.render();
     return true;
   }
@@ -365,11 +423,26 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
   const cfg = t.closest<HTMLElement>("[data-mtcfg]");
   if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
+  const all = t.closest<HTMLElement>("[data-mtrunall]");
+  if (all) { void runAll(all.dataset.mtrunall ?? "", host); return true; }
+  // A click's answer on Coverage: its chip opens the board that shows it, and Clear takes the answers off the row.
+  const brd = t.closest<HTMLElement>("[data-mtboard]");
+  if (brd) { const b = brd.dataset.mtboard as BoardId; if (BOARD_IDS.includes(b)) host.openTab(boardTab(b), brd.dataset.mtroot!, b); return true; }
+  const seen = t.closest<HTMLElement>("[data-mtseen]");
+  if (seen) { forgetClicked(seen.dataset.mtseen!, (seen.dataset.mtroot ?? "").split("\n").filter(Boolean)); return true; }
+  // Asking a public source in every scan is Settings › On its own's switch; this only opens it there.
+  const pref = t.closest<HTMLElement>("[data-mtpref]");
+  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("auto", `maintpub:${pref.dataset.mtpref}`); return true; }
   // A token is pasted in Settings, never here: the door names the kind, and nothing it opens connects.
   const tok = t.closest<HTMLElement>("[data-mttoken]");
   if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("accounts", k ? tokenRow(k.id) : undefined); return true; }
   const url = t.closest<HTMLElement>("[data-mturl]");
   if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
+  // A fix is typed into a terminal and never sent; a pick of account re-reads the project it was for.
+  const term = t.closest<HTMLElement>("[data-mtterm]");
+  if (term) { const r = term.dataset.mtroot!; host.terminal(host.nameOf(r), r, term.dataset.mtterm!); return true; }
+  const acct = t.closest<HTMLElement>("[data-mtacct]");
+  if (acct) { const r = acct.dataset.mtacct!; host.pickAccount?.(acct, r, () => void scanProject(r, false)); return true; }
   const copy = t.closest<HTMLElement>("[data-mtcopy]");
   if (copy) {
     // Tauri's clipboard, never navigator.clipboard, which raises an OS permission prompt.
@@ -381,6 +454,8 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (hostDoor) { hostAct(hostDoor, host); return true; }
   const door = t.closest<HTMLElement>("[data-mtdoor]");
   if (door) { openDoor(door.dataset.mtdoor ?? "", door.dataset.mtroot!, host); return true; }
+  const adv = t.closest<HTMLElement>("[data-mtadv]");
+  if (adv) { advVerb(adv, host); return true; }
   const verb = t.closest<HTMLElement>("[data-mtverb]");
   if (verb) { void runVerb(verb.dataset.mtroot!, verb.dataset.mtverb!, host); return true; }
   // A card line, after its verb so Patch only prefills: the tab and board that line summarises.
@@ -389,7 +464,6 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
     const facet = find.dataset.mtfind as Facet;
     if (!FACETS.includes(facet)) return true;
     const to = findingTarget({ facet, key: find.dataset.mtkey ?? "" });
-    maintSev = null; // a severity picked earlier could hide the very rows this line counts
     host.openTab(to.tab, find.dataset.mtroot!, to.board);
     return true;
   }

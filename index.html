@@ -28,6 +28,9 @@
                sit left of the reactor ("wants you now"). -->
           <button class="tel-badge" id="telBadge" aria-label="Telemetry server down"><span class="tel-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span><span id="telBadgeTxt">telemetry</span></button>
           <button class="tel-badge" id="syncBadge" aria-label="Sync server unreachable"><span class="tel-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span><span>sync</span></button>
+          <!-- Always there, muted when nothing needs you: Maintenance is otherwise two clicks deep. It
+               speaks for the project on the stage, or for every project on the fleet (maintpop.ts). -->
+          <button class="mt-badge" id="mtBadge" aria-label="Maintenance" aria-haspopup="dialog"></button>
           <button class="svr-badge" id="svrBadge" aria-label="Running servers"><span class="svr-ic"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M16.247 7.761a6 6 0 0 1 0 8.478"/><path d="M19.075 4.933a10 10 0 0 1 0 14.134"/><path d="M4.925 19.067a10 10 0 0 1 0-14.134"/><path d="M7.753 16.239a6 6 0 0 1 0-8.478"/><circle cx="12" cy="12" r="2"/></svg></span><span id="svrBadgeTxt"></span></button>
           <button class="attn-badge" id="attnBadge"><span class="bdot"></span><span id="attnBadgeTxt"></span></button>
           <div class="caf" id="caf">
@@ -549,6 +552,9 @@
     <div class="menupop sopop" id="soPop"></div>
     <div class="menupop attnpop" id="attnPop"></div>
     <div class="menupop svrpop" id="svrPop"></div>
+    <div class="menupop mtpop" id="mtPop"></div>
+    <!-- A Maintenance card's (i): what it shows and how to read it (./maintui, ./maintguide) -->
+    <div class="menupop mtguide" id="mtGuide" role="dialog" aria-label="About this card"></div>
     <div class="menupop usagepop" id="usagePop"></div>
     <div class="menupop costpop" id="costPop"></div>
     <div class="menupop iopop" id="ioPop"></div>

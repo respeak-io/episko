@@ -739,7 +739,8 @@ function ghSub(key: string): string {
   return w.known ? "set for this project" : "set for this project · gh is not logged in as it";
 }
 
-export function openGhPicker(at: HTMLElement | DOMRect, key: string) {
+// `then` runs after a pick changed the account, for a caller whose answer was read as the old one.
+export function openGhPicker(at: HTMLElement | DOMRect, key: string, then?: () => void) {
   const cur = ghAccountFor(key);
   const w = ghWho(cur, ghLogins);
   const accounts: MenuItem[] = ghLogins.map((a) => ({
@@ -762,8 +763,10 @@ export function openGhPicker(at: HTMLElement | DOMRect, key: string) {
         sub: "what every project with no setting uses" }] : [] },
     ],
     onPick: (id) => {
-      host.setGhAccount(key, id === "clear" ? null : id.slice(5));
+      const next = id === "clear" ? null : id.slice(5);
+      host.setGhAccount(key, next);
       host.renderAll();
+      if (next !== cur) then?.();
     },
   });
 }

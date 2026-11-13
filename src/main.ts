@@ -102,14 +102,18 @@ import { changelogOpen, closeChangelog, initChangelog, openChangelog, versionUnr
 import { initCompositorReset, resetCompositor } from "./compositorresetui";
 import { initTour, setTourHost, startChapter, tourTick } from "./tourui";
 import {
-  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashToday, openDashboard,
-  refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
+  closeDashboard, dashBranchSwitched, dashEscape, dashKey, dashLaunchHint, dashPlace, dashToday, openDashboard,
+  openDashboardAt, openDashboardMaint, refreshDashWorkset, releaseClaimFor, reloadDashGh, renderDash, renderDashHeader,
   setDashHost, wireDashboard,
 } from "./dashboard";
 import {
-  closeFleet, fleetEscape, maintOnBoot, openFleet, renderFleet, renderFleetHeader, setFleetHost, showFleetMaint, wireFleet,
+  closeFleet, fleetEscape, fleetPlace, fleetPlaceLive, maintOnBoot, openFleet, openFleetAt, renderFleet, renderFleetHeader,
+  setFleetHost, showFleetMaint, wireFleet,
 } from "./fleetui";
+import { MAINT_SUBS, tabName, type MaintSub } from "./maintview";
 import { setMaintRender } from "./maintscan";
+import { closeMaintPop, maintPopOpen, renderMaintBadge, setMaintPopHost, wireMaintPop } from "./maintpop";
+import { closeMaintGuide, maintGuideOpen } from "./maintui";
 import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
@@ -134,7 +138,7 @@ import {
 } from "./state";
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
-import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir } from "./nav";
+import { emptyNav, navTip, peek, step, visit, type Loc, type NavDir, type Place } from "./nav";
 import { groupKey, orderedSessions, stageMembers, syncAttn } from "./grouping";
 import { flushIo, flushUsageDetail } from "./usage";
 import { openReview, refreshReview, setReviewReload } from "./syncreview";
@@ -358,9 +362,17 @@ setFleetHost({
   session: (label, rows, notes) => launchTogether(label, rows, notes),
   terminal: (project, path, cmd) => { void handToTerminal(project, path, cmd, { colorKey: path }); },
   openSettings: openSettingsOn,
+  pickAccount: (at, root, then) => openGhPicker(at, root, then),
 });
 wireFleet();
 setMaintRender(renderAll); // coalesced: a sweep's answers land in bursts
+// The header's Maintenance chip: a project's tab, or the board itself, which every exit already knows.
+setMaintPopHost({
+  openProject: (name, root, sub, board) => openDashboardMaint(name, root, sub, board),
+  openBoard: () => { showFleetMaint("overview"); if (!fleetMirror()) openFleet(); },
+  closeMenus: () => closeFootMenus(),
+});
+wireMaintPop();
 // The review stage's host: the same one-object seam, so ./reviewui imports neither main.ts nor ./panes.
 setPrLinkOpener((url, s) => openPrLink(url, s ? { project: s.project, root: s.colorKey } : undefined));
 setReviewHost({
@@ -442,7 +454,7 @@ function renderAllNow() {
   syncAttn(); // first, before anything paints: the one place attnAt is stamped
   if (!navHeld()) nav = visit(nav, here()); // the one place history records; a back/forward step already moved its cursor
   renderNav();
-  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderServers(); syncStageButtons();
+  renderSidebar(); renderMini(); renderFoot(); renderAttn(); renderTelemetry(); renderSync(); renderMaintBadge(); renderServers(); syncStageButtons();
   refreshPaneCaps(); // panes sit outside the sweep; no-op unless a group is tiled
   // A mirror owns the stage while activeId is null: paint it, not the "no session" state.
   if (fleetMirror()) {
@@ -477,7 +489,11 @@ function here(): Loc | null {
     const group = stageGroup && !sessions.has(stageGroup) ? stageGroup : undefined; // a run group, not a split
     return group ? { kind: "session", id: activeId, group } : { kind: "session", id: activeId };
   }
-  return mirror ? { ...mirror } : null;
+  if (!mirror) return null;
+  // The tab a screen is on rides on the entry, never on `mirror` (docs/maintenance.md).
+  if (mirror.kind === "fleet") return { kind: "fleet", at: fleetPlace() };
+  if (mirror.kind === "dash") return { ...mirror, at: dashPlace() };
+  return { ...mirror };
 }
 // The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
 const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
@@ -488,9 +504,16 @@ function navAlive(l: Loc): boolean {
     case "session": return l.group ? [...sessions.values()].some((s) => groupKey(s) === l.group) : sessions.has(l.id);
     case "ext": return externals.some((e) => e.pid === l.pid);
     case "past": return dormants.some((d) => d.id === l.id);
-    case "fleet": return true;
+    case "fleet": return fleetPlaceLive(l.at);
     case "dash": case "review": return knownRoot(l.root);
   }
+}
+// A place as its tab strip spells it; Today and an absent place say nothing.
+function placeName(at?: Place): string {
+  if (at?.tab === "activity") return "Activity";
+  if (at?.tab !== "maint") return "";
+  const sub = at.sub && at.sub !== "overview" && MAINT_SUBS.includes(at.sub as MaintSub) ? ` › ${tabName(at.sub as MaintSub)}` : "";
+  return `Maintenance${sub}${at.only ? ` · ${basename(at.only)}` : ""}`;
 }
 function navName(l: Loc): string {
   const cap = (t: string) => (t.length > 48 ? `${t.slice(0, 47)}…` : t);
@@ -504,8 +527,9 @@ function navName(l: Loc): string {
     }
     case "ext": return cap(externals.find((e) => e.pid === l.pid)?.name ?? "");
     case "past": { const d = dormants.find((x) => x.id === l.id); return d ? cap(d.title ? `${d.project}: ${d.title}` : d.project) : ""; }
-    case "fleet": return "";
-    case "dash": case "review": return l.name;
+    case "fleet": return placeName(l.at);
+    case "dash": { const p = placeName(l.at); return p ? `${l.name} · ${p}` : l.name; }
+    case "review": return l.name;
   }
 }
 // Every location reopens through the verb a click on it would use; none touches the stage itself.
@@ -514,8 +538,8 @@ function openLoc(l: Loc) {
     case "session": if (l.group) openRunGroup(l.group); else setActive(l.id); break;
     case "ext": { const e = externals.find((x) => x.pid === l.pid); if (e) openExternal(e.session_id); break; }
     case "past": openDormant(l.id); break;
-    case "dash": openDashboard(l.name, l.root); break;
-    case "fleet": openFleet(); break;
+    case "dash": openDashboardAt(l.name, l.root, l.at); break;
+    case "fleet": openFleetAt(l.at); break;
     case "review": openPrReview(l.name, l.root, l.number); break;
   }
 }
@@ -774,6 +798,8 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
+  if (!t.closest("#mtPop, #mtBadge")) closeMaintPop();
+  if (!t.closest("#mtGuide, [data-mthelp]")) closeMaintGuide();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
   if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
@@ -949,6 +975,9 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && e.defaultPrevented) return;
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
+  // A popover over the stage goes before the stage does: Esc on the fleet would otherwise leave it.
+  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
+  else if (e.key === "Escape" && maintGuideOpen()) { e.preventDefault(); closeMaintGuide(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }

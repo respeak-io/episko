@@ -406,6 +406,7 @@ export interface MaintInput {
   reports: Readonly<Record<string, SourceReport>>;
   skip?: readonly string[]; // sources this machine skips (`MaintPrefs.off`)
   asking?: readonly string[]; // click-only sources whose read is still out
+  clicked?: readonly string[]; // click-only sources a click asked of it this session: Coverage says what came back
   hosts?: readonly string[]; // the [deploy] hosts this machine may ssh to (`MaintPrefs.hosts`)
   moved?: readonly string[]; // sources whose whole kept answer `[deploy]` no longer names (currentReports)
 }
@@ -432,6 +433,8 @@ export function covText(c: Coverage): string {
     case "error": return `failed: ${c.reason}`;
   }
 }
+// A coverage's reason without the word a cell already says.
+const covReason = (c: Coverage): string => c.state === "ok" ? "" : c.state === "notRun" ? ONLY_ASKED : c.state === "noTool" ? covText(c) : c.reason;
 const fixOf = (c: Coverage): string | null => c.state === "noAccess" || c.state === "noTool" ? c.fix : null;
 const labelOf = (id: string) => findSource(id)?.label ?? id;
 
@@ -1619,7 +1622,7 @@ export function offers(root: string, inp: MaintInput): Finding[] {
     const r = inp.reports[id], facet = findSource(id)?.facet;
     if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
     out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: ${offerWord(id)}`,
-      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: readsHost(id) ? inp.det?.deploy?.host ?? null : null,
+      detail: ONLY_ASKED, verb: "run", source: id, ref: readsHost(id) ? inp.det?.deploy?.host ?? null : null,
       ...(inp.asking?.includes(id) ? { busy: true } : {}) });
   }
   return out;
@@ -1707,6 +1710,9 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
 export function findingTarget(f: Pick<Finding, "facet" | "key">): { tab: MaintTab; board: BoardId | null } {
   return { tab: FACET_TAB[f.facet], board: FACET_BOARD[f.facet].find(([, keys]) => keys.test(f.key))?.[0] ?? null };
 }
+/** The tab a board is drawn on. */
+export const boardTab = (b: BoardId): MaintTab =>
+  FACET_TAB[FACETS.find((f) => FACET_BOARD[f].some(([id]) => id === b)) ?? "security"];
 
 export interface ProjectPick { root: string; name: string; n: number; level: Finding["level"] | null }
 /** A tab's project picker: every project with what needs you there (red and amber, as the badges),
@@ -1795,7 +1801,29 @@ export interface CoverGroup {
   roots: string[];
   quiet: boolean; // a bot nothing shows to be alive: said, but below what stops a check
   action: CoverAction | null;
+  ran?: Record<string, CoverResult>; // a click-only row's projects a click asked this session, and what came back
 }
+
+/** One click-only read of one project in a Coverage chip's words, and the board that shows it. */
+export interface CoverResult { level: Level; text: string; tip: string[]; board: BoardId | null }
+// Where each kind of facts is drawn; a record, so a new kind fails to compile here.
+const KIND_BOARD: Record<FactKind, BoardId> = {
+  ciRuns: "ci", ciReruns: "flaky", advisories: "advisories", updatePrs: "update-prs", packages: "packages",
+  release: "releases", releases: "releases", changelog: "releases", deployments: "deployments", hygiene: "hygiene",
+  work: "work", probes: "addresses", hosts: "hosts", domains: "domains", errors: "errors", runtimes: "runtimes",
+};
+/** What one read came back with: its facet's own judge over that report alone, or why it could not
+ *  answer. A read that found nothing is said so, never left blank, and one that failed never passes. */
+export function sourceResult(r: SourceReport, inp: MaintInput, th = MAINT_DEFAULTS, now = Date.now()): CoverResult {
+  if (r.coverage.state !== "ok" || !r.facts) {
+    const facet = findSource(r.source)?.facet ?? r.facet ?? "security";
+    return { level: "muted", text: whyWord(r.coverage, facet), tip: [covText(r.coverage)], board: null };
+  }
+  const j = RULES[FACT_FACET[r.facts.kind]]([r.facts], { th, now, trunc: r.truncated, reps: [r], tagged: taggedEnvs(inp) });
+  const clear = unsure(j) || (j.level === "ok" && !j.text);
+  return { level: clear ? "ok" : j.level, text: clear ? "nothing found" : j.text, tip: [...j.tip, ...r.gaps], board: KIND_BOARD[r.facts.kind] };
+}
+const ONLY_ASKED = "runs only when asked, never in a scan";
 
 /** One tab's Coverage, grouped by reason across projects rather than by project: every cell with no
  *  verdict, explained by its sources, and every click-only source nobody ran. Widest first. */
@@ -1878,6 +1906,16 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
       add(path, { key: `${o.source}|notRun`, facet: o.facet, source: o.source, what: labelOf(o.source), why: offerWord(o.source), detail: o.detail },
         { kind: "run", source: o.source });
     }
+    // A click's answer keeps its offer's row and place, the project's chip now saying what came back.
+    for (const id of inp.clicked ?? []) {
+      const r = inp.reports[id], facet = findSource(id)?.facet;
+      if (!det || !facet || FACET_TAB[facet] !== tab || !det.sources.includes(id) || inp.skip?.includes(id) || det.config.off.includes(facet)) continue;
+      if (!r || r.coverage.state === "notRun") continue; // still out, or asked of nothing: the offer above
+      const key = `${id}|notRun`;
+      add(path, { key, facet, source: id, what: labelOf(id), why: "checked", detail: ONLY_ASKED }, { kind: "run", source: id });
+      const g = by.get(key)!;
+      g.ran = { ...g.ran, [path]: sourceResult(r, inp, th, now) };
+    }
     // Like an offer: one Allow away from a click, whatever the cell read from the rest.
     const host = det?.deploy?.host;
     for (const id of det && host ? det.sources : []) {
@@ -1889,10 +1927,35 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
   }
   return [...by.values()].map((g) => ({
     ...g, roots: g.roots.sort((a, b) => a.localeCompare(b)),
+    why: !g.ran ? g.why : g.roots.every((r) => g.ran![r]) ? "checked" : offerWord(g.source!),
     action: g.action?.kind === "settings" && !Object.keys(g.action.urls).length ? null : g.action,
   })).sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.roots.length - a.roots.length
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.what.localeCompare(b.what) || a.key.localeCompare(b.key));
 }
+
+/** What closes a Coverage row, which is how the card groups them: a click, a check, a login, a forge
+ *  switch, a retry, nothing here, or nothing at all. In the order the card draws them. */
+export const COVER_KINDS = ["ask", "unread", "access", "forge", "failed", "gap", "note"] as const;
+export type CoverKind = (typeof COVER_KINDS)[number];
+const ACCESS_WHY = new Set(["no access", "token scope", "token refused", "signed out", "no token", "tool missing"]);
+export function coverKind(g: CoverGroup): CoverKind {
+  const a = g.action?.kind;
+  if (g.quiet) return "note";
+  if (a === "run" || a === "allow") return "ask";
+  if (a === "fix" || a === "token" || ACCESS_WHY.has(g.why)) return "access";
+  if (a === "settings" || g.why === "alerts off" || g.why === "switched off") return "forge";
+  if (g.why === "not read yet" || g.why === "not checked this session") return "unread";
+  return g.why === "read failed" ? "failed" : "gap";
+}
+/** The groups under each kind, in COVER_KINDS' order, an empty kind left out; each keeps coverGroups' order. */
+export const coverByKind = (gs: readonly CoverGroup[]): [CoverKind, CoverGroup[]][] =>
+  COVER_KINDS.flatMap((k) => { const mine = gs.filter((g) => coverKind(g) === k); return mine.length ? [[k, mine] as [CoverKind, CoverGroup[]]] : []; });
+// A command is lower-case words and flags; a sentence has capitals, commas or the small words no command needs.
+const PROSE = /[A-Z,]|\b(the|an?|from|that|which|it|to|your)\b/;
+/** A fix is a command to copy ("<cli> auth login"), or an instruction a person reads ("pick the account…"). */
+export const fixIsCommand = (fix: string): boolean => /^[a-z][\w.-]*\s+\S/.test(fix.trim()) && !PROSE.test(fix);
+/** A fix the project's account picker answers, so a Coverage row can be that picker rather than say where it is. */
+export const fixPicksAccount = (fix: string): boolean => /^pick the \w[\w ]* account\b.*\bproject menu$/i.test(fix.trim());
 
 // ---------- the cross-project tabs' boards ----------
 
@@ -1959,13 +2022,34 @@ export function eolBoard(ps: readonly TabProject[], root: string | null = null, 
     || a.root.localeCompare(b.root) || rtName(a).localeCompare(rtName(b)));
 }
 
-export interface SevCount { bucket: SevBucket; n: number; level: Finding["level"] }
-/** The four severities always, a secret or an unknown one only when there is one or it is the pick,
- *  so a pick whose rows went away still has the button that clears it. */
-export const sevStrip = (rows: readonly AdvRow[], sev: SevBucket | null = null): SevCount[] => SEV_BUCKETS
-  .map((bucket) => ({ bucket, n: rows.filter((r) => r.bucket === bucket).length, level: BUCKET_LEVEL[bucket] }))
-  .filter((c) => c.n || c.bucket === sev || (c.bucket !== "secret" && c.bucket !== "unknown"));
-export const bySev = (rows: readonly AdvRow[], sev: SevBucket | null): AdvRow[] => rows.filter((r) => sev === null || r.bucket === sev);
+export interface SevGroup { bucket: SevBucket; level: Finding["level"]; rows: AdvRow[]; projects: { root: string; n: number }[] }
+/** The advisories by severity, worst first and only those with a row; each group's projects by how
+ *  many of its rows they have, so its head says who is hit before a row is read. */
+export const sevGroups = (rows: readonly AdvRow[]): SevGroup[] => SEV_BUCKETS.flatMap((bucket) => {
+  const mine = rows.filter((r) => r.bucket === bucket), n = new Map<string, number>();
+  for (const r of mine) for (const p of r.projects) n.set(p.root, (n.get(p.root) ?? 0) + 1);
+  const projects = [...n].map(([root, k]) => ({ root, n: k })).sort((a, b) => b.n - a.n || a.root.localeCompare(b.root));
+  return mine.length ? [{ bucket, level: BUCKET_LEVEL[bucket], rows: mine, projects }] : [];
+});
+
+/** A severity group as you left it this session: folded, its first rows, or every row. */
+export const ADV_FOLDS = ["shut", "open", "all"] as const;
+export type AdvFold = (typeof ADV_FOLDS)[number];
+export const ADV_PEEK = 5;
+/** What a group shows: a red one opens on its first rows by default, the rest start folded. */
+export function advFold(g: Pick<SevGroup, "level" | "rows">, fold?: AdvFold): { fold: AdvFold; shown: AdvRow[]; more: number } {
+  const f = fold ?? (g.level === "bad" ? "open" : "shut");
+  const shown = f === "shut" ? [] : f === "all" ? g.rows : g.rows.slice(0, ADV_PEEK);
+  return { fold: f, shown, more: f === "shut" ? 0 : g.rows.length - shown.length };
+}
+
+/** Each project's one line per kind of advisory, once however many rows it covers: a brief is per
+ *  project, so its verb sits on the board once rather than on every row. Worst first. */
+export const advVerbs = (rows: readonly AdvRow[]): Finding[] => {
+  const seen = new Map<string, Finding>();
+  for (const r of rows) for (const p of r.projects) if (p.verb && !seen.has(`${p.root}|${p.verb.key}`)) seen.set(`${p.root}|${p.verb.key}`, p.verb);
+  return [...seen.values()].sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level] || a.root.localeCompare(b.root) || a.key.localeCompare(b.key));
+};
 
 export interface PrRow {
   root: string; bot: string; open: number; red: number;
@@ -2271,7 +2355,7 @@ export function hostBoard(ps: readonly TabProject[], root: string | null = null,
 
 export interface Boards {
   adv: AdvRow[];
-  strip: SevCount[];
+  groups: SevGroup[]; // adv by severity
   capped: boolean;
   prs: PrRow[];
   advRead: number; // projects an advisory source answered: what the advisories board may claim
@@ -2297,11 +2381,11 @@ export interface Boards {
   one: boolean; // narrowed to one project, so no row names it: the column would only repeat the name
 }
 
-/** The open tab's boards over the project filter; `sev` narrows the advisories, never the strip. */
-export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, sev: SevBucket | null = null, now = Date.now()): Boards {
+/** The open tab's boards over the project filter. */
+export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string | null = null, now = Date.now()): Boards {
   const b: Boards = {
     adv: [],
-    strip: [],
+    groups: [],
     capped: false,
     prs: [],
     advRead: 0,
@@ -2330,7 +2414,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
   for (const f of FACETS) if (FACET_TAB[f] === tab) b.read[f] = readOf(mine, f, READ_KIND[f]);
   const all = tab === "security" ? advisoryRows(ps, root) : { rows: [], capped: false, read: 0 };
   if (tab === "security") {
-    Object.assign(b, { adv: bySev(all.rows, sev), strip: sevStrip(all.rows, sev), capped: all.capped, advRead: all.read,
+    Object.assign(b, { adv: all.rows, groups: sevGroups(all.rows), capped: all.capped, advRead: all.read,
       eol: eolBoard(ps, root, now), prs: updatePrRows(ps, root, now) });
     b.pkgs = packagesBoard(ps, root);
     b.pkgRead = b.pkgs.length;
@@ -2351,7 +2435,7 @@ export function tabBoards(tab: MaintTab, ps: readonly TabProject[], root: string
       return ids.length && ids.every((id) => (p.inp.reports[id]?.coverage.state ?? "notRun") === "notRun");
     }).length;
   }
-  // A filtered-out severity hides its rows, not their lines: those are still the board's.
+  // A folded severity hides its rows, not their lines: those are still the board's.
   const verbs = [
     ...all.rows.flatMap((r) => r.projects.map((x) => x.verb)),
     ...b.eol.map((r) => r.verb),
@@ -2383,11 +2467,10 @@ export interface TabModel {
   cover: CoverGroup[];
   read: number; unset: number; // what an empty tab may claim (tabGaps)
 }
-export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null,
-  sev: SevBucket | null = null, now = Date.now()): TabModel {
+export function tabModel(sub: MaintTab | null, ps: readonly TabProject[], root: string | null = null, now = Date.now()): TabModel {
   const rows = ps.flatMap((p) => p.rows), tabs = tabTally(rows, root);
   if (!sub) return { tabs, boards: null, rows: [], offers: [], setups: [], cover: [], read: 0, unset: 0 };
-  const boards = tabBoards(sub, ps, root, sev, now), drawn = new Set(boards.drawn);
+  const boards = tabBoards(sub, ps, root, now), drawn = new Set(boards.drawn);
   return {
     tabs, boards, ...tabGaps(sub, ps, root),
     rows: tabRows(sub, rows, root).filter((r) => !drawn.has(`${r.root}|${r.key}`)),
@@ -2413,7 +2496,7 @@ export type Door =
 const br = (filter: Extract<Door, { to: "branches" }>["filter"]): Door => ({ to: "branches", filter });
 // Every number column of every board; "url" takes the cell's own address, null is a number with no door.
 const DOORS = {
-  advisories: {}, // the severity strip filters in place
+  advisories: {}, // its severity groups fold in place
   packages: { behind: { to: "deps", tab: "stale" }, latest: "url" }, // where <pm> outdated is asked; the package's page
   runtimes: { ends: "url" }, // the runtime's page on the list that dates its cycles
   "update-prs": { open: { to: "deps", tab: "prs" }, green: { to: "deps", tab: "prs" }, red: { to: "deps", tab: "prs" } },
@@ -2523,6 +2606,7 @@ export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
 
 export interface CoverRow {
   facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null;
+  why: string; detail: string; // the cell's word and the rest, as a tab's Coverage splits them (sourceCover)
   source: string | null; // a source's id, so an offer's button can sit on its row; null for the rest
   url: string | null; // the forge page that switches an `off` source on
   cfg: boolean; // a [maintenance] key would answer it: the setup doors
@@ -2534,30 +2618,51 @@ export interface CoverRow {
 export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
-  const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null, cfg: false, host: null, token: null }));
+  const bare = { fix: null, source: null, url: null, cfg: false, host: null, token: null };
+  const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet)).map((facet) => ({ ...bare, facet, label: facetDef(facet).label,
+    state: "untracked", text: "switched off in .episko/episko.toml", why: "off in episko.toml", detail: "switched off in .episko/episko.toml" }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
     const alias = readsHost(id) ? det.deploy?.host : null;
     const host = alias ? { alias, allowed: (inp.hosts ?? []).includes(alias) } : null;
-    const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null, token: TokenDoor | null = null) =>
-      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text), host, token });
+    const row = (state: CoverRow["state"], text: string, why: string, detail: string, fix: string | null = null, url: string | null = null, token: TokenDoor | null = null) =>
+      out.push({ facet, label: labelOf(id), state, text, why, detail, fix, source: id, url, cfg: !!setupKeyOf(text), host, token });
     // A read that answered without a key it needed says so: merged branches want a trunk.
     const gap = r?.coverage.state === "ok" ? r.gaps.find((g) => setupKeyOf(g)) : undefined;
-    if (unticked(inp, id)) row("skipped", notAllowed(inp));
-    else if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
-    else if (!r) row("unread", "not read yet");
-    else row(r.coverage.state, gap ? `read; ${gap}` : covText(r.coverage), fixOf(r.coverage), settingsFor(r, det), tokenDoor(id, r.coverage, facet));
+    if (unticked(inp, id)) row("skipped", notAllowed(inp), "not allowed here", notAllowed(inp));
+    else if (inp.skip?.includes(id)) row("skipped", "skipped on this machine", "skipped here", "skipped on this machine");
+    else if (!r) row("unread", "not read yet", "not read yet", "");
+    else {
+      const c = r.coverage, why = gap ? "partly read" : c.state === "notRun" ? offerWord(id) : whyWord(c, facet);
+      row(c.state, gap ? `read; ${gap}` : covText(c), why, gap ?? covReason(c), fixOf(c), settingsFor(r, det), tokenDoor(id, c, facet));
+    }
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null, cfg: false, host: null, token: null });
+    const found = `found ${m.found.join(", ") || "on this forge"}`;
+    out.push({ ...bare, facet: m.facet, label: m.label, state: "marker", text: `${found}, nothing reads it yet`, why: "nothing reads it yet", detail: found });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null, cfg: false, host: null, token: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ ...bare, facet, label: facetDef(facet).none, state: "none", text: "nothing detected", why: "nothing detected", detail: "" });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }
+
+/** The Overview's Coverage over `coverRows`: what read cleanly is only named, and every other row
+ *  becomes a group worded as a tab's, so coverKind sorts both the same way. */
+export function sourceCover(root: string, rows: readonly CoverRow[]): { read: CoverRow[]; groups: CoverGroup[] } {
+  const read = rows.filter((r) => r.state === "ok" && !r.cfg);
+  const groups = rows.filter((r) => !read.includes(r)).map((r): CoverGroup => ({
+    key: `${r.source ?? `${r.facet}:${r.label}`}|${r.state}`, facet: r.facet, source: r.source, cfg: r.cfg,
+    what: r.label, why: r.why, detail: r.detail, roots: [root], quiet: false, action: rowAction(root, r),
+  }));
+  return { read, groups };
+}
+const rowAction = (root: string, r: CoverRow): CoverAction | null =>
+  r.state === "notRun" && r.source ? { kind: "run", source: r.source }
+    : r.state === "skipped" && r.host && !r.host.allowed ? { kind: "allow", host: r.host.alias }
+    : r.fix ? { kind: "fix", fix: r.fix } : r.token && r.source ? { kind: "token", source: r.source, door: r.token }
+    : r.url ? { kind: "settings", urls: { [root]: r.url } } : null;
 
 // ---------- the all-clear's two lists ----------
 

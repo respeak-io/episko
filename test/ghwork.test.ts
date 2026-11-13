@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import "./localstorage"; // must precede the subject imports
 import { CLAIM_STALE_MS, type ClaimRecord } from "../src/claim";
 import {
-  bucketOf, bucketed, cardRows, closeComment, GH_ACCOUNTS_MIN, ghOutdatedText, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  bucketOf, bucketed, cardRows, closeComment, GH_ACCOUNTS_MIN, ghOutdatedText, ghPickable, ghReadsAs, ghWho, holderOf, isoDay, quietFor,
   staleCandidates, STALE_DAYS, filterWork, workTally, type GhAccount, type GhThread, type KeptIssue,
   type WorkFilter,
 } from "../src/ghwork";
@@ -214,6 +214,14 @@ describe("ghPickable", () => {
     expect(ghPickable([])).toBe(false);
     expect(ghPickable([{ login: "octo", active: true }])).toBe(false);
     expect(ghPickable([{ login: "octo", active: true }, { login: "octo-work", active: false }])).toBe(true);
+  });
+
+  it("says who each project reads as only where it could be changed", () => {
+    const two = [{ login: "octo", active: true }, { login: "octo-work", active: false }];
+    const pins: Record<string, string> = { "/b": "octo-work", "/c": "gone" };
+    expect(ghReadsAs(["/a", "/b", "/c"], (r) => pins[r] ?? null, two)).toEqual({ "/a": "octo", "/b": "octo-work", "/c": "gone" });
+    expect(ghReadsAs(["/a"], () => null, [two[0]])).toBeNull();
+    expect(ghReadsAs(["/a"], () => null, [{ ...two[0], active: false }, two[1]])).toEqual({ "/a": "—" });
   });
 });
 

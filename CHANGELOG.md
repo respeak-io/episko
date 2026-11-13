@@ -24,6 +24,37 @@ Markers: `+` new · `~` changed · `!` fixed
 + Tick lines on Maintenance cards and *Brief N agents* starts one agent per line, tiled, each on a
   fix branch of its own, or in the project folder for a line that changes nothing.
 + *Since last week* on the all-projects screen says what changed since the checks a week ago.
++ A Maintenance chip in the top bar shows the project you are looking at as seven dots, red or amber
+  where something needs you, or, on the all-projects screen, how many projects do. Click it for the
+  project's facets, what to do there and the worst projects elsewhere, each one click from its board.
++ A Maintenance check shows its progress: a bar with how many projects are done, what is being read
+  right now, and a spinner on each card's facet while it is read. *Since last week* holds still until
+  the check finishes instead of counting up project by project. Going from the all-projects view to a
+  project's Maintenance tab and back reads a project again only once its last check is ten minutes
+  old; the ⟳ beside *checked* always reads again.
++ Maintenance's *Coverage* sorts what it could not read by what closes the gap: a click, a login or
+  token, a switch on GitHub, a retry. Each group says what it means, each row says why under its
+  name, and each project is a chip with its icon that does the row's fix for it: click it to check
+  that project, open its settings page or pick the GitHub account it reads as. *Check all* asks a
+  public service for every project at once, and a fix that is a command opens in a terminal with it
+  typed in, for you to press Enter. After a check, the row stays where it was and each project's chip
+  says what came back, such as *node 18 EOL* or *nothing found*; click it for the board that shows it.
+  A board that appears above while you read no longer pushes the page down.
++ A project's Maintenance *Overview* is laid out like its tabs: *To do* and *Runs on* side by side
+  with *Coverage* across both, each card with its icon and its red and amber counted on its head.
+  *Coverage* there groups what could not be read the way a tab's does, with the same fixes, and
+  names every source that read cleanly on one line instead of a row each.
++ Maintenance's *Advisories and findings* are grouped by severity. Critical and high open on their
+  first five rows, medium and low start folded, and each group's head names the projects it hits.
+  Each row has its own *Patch* for that advisory alone, and *Patch all* briefs one agent per project
+  on every advisory there.
++ Every Maintenance card has an (i) that says what it shows, what it reads, how to read its colours
+  and what you can do there. A card with something red or amber in it counts those in its head and
+  wears the colour down its edge, an empty one says *none open* in one line, and each tab says what
+  it answers under its bar.
++ Back and forward, the mouse's side buttons included, step through those tabs as a browser's do:
+  *Activity* and *Maintenance*, a Maintenance tab and the project it is narrowed to, and a
+  dashboard's *Today* and *Maintenance*.
 ~ Pull request checks and update-bot checks read GitHub's states through one vocabulary. In the
   review pane a check GitHub marked *stale* now counts as failed (it showed as neutral); on the
   Dependencies card a required status that has not reported yet counts as running (it counted as

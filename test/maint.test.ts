@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import {
   ADVISORY_KINDS, BOARD_IDS, CI_STATUSES, rtName, CI_STRIP, COV_STATES, FACET_TAB, FACT_FACET, FACT_KINDS, MAINT_DEFAULTS, MAINT_TABS, SEVERITIES,
   SNAP_FINDINGS, SNAP_KEY, SNAP_ROOTS, SNAP_TEXT, clampKept, packKept, ciFailures, findingTarget, projectPicks, ciFlows, ciRows, clampMaint, clampSnaps, pastCells, snapFor, takeSnap, comingUp, coverFirst, coverGroups, coverRows, facetCell, facetCells, findings, forgeText, hostRows, hygieneOf, mergeAdvisories, narrowDetection,
-  advisoryRows, bySev, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevStrip, tabBoards, updatePrRows, workBoard,
+  advisoryRows, ADV_PEEK, advFold, advVerbs, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevGroups, tabBoards, updatePrRows, workBoard, type AdvRow,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
+  COVER_KINDS, coverByKind, coverKind, sourceCover, fixIsCommand, fixPicksAccount, type CoverGroup, sourceResult, boardTab,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
@@ -515,14 +516,14 @@ describe("flaky jobs: noise beside a red default branch, never in place of it", 
   });
 
   it("keeps the CI board the default branch's: green stays green beside noise, red stays red", () => {
-    const b = tabBoards("delivery", [tp("/a", green(), ok(RR, reruns(rjob("t", 2)))), tp("/b", green())], null, null, NOW);
+    const b = tabBoards("delivery", [tp("/a", green(), ok(RR, reruns(rjob("t", 2)))), tp("/b", green())], null, NOW);
     expect(b.ci.map((r) => [r.root, r.level, r.text])).toEqual([["/a", "ok", ""], ["/b", "ok", ""]]);
-    const red = tabBoards("delivery", [tp("/a", ok(GHA, ci(run("build", "fail", S - D))), ok(RR, reruns(rjob("t", 2))))], null, null, NOW);
+    const red = tabBoards("delivery", [tp("/a", ok(GHA, ci(run("build", "fail", S - D))), ok(RR, reruns(rjob("t", 2))))], null, NOW);
     expect(red.ci.map((r) => [r.level, r.text])).toEqual([["bad", "failing 1d"]]);
   });
 
   it("never claims a whole window it did not read, and says why it did not", () => {
-    const board = (...reps: SourceReport[]) => tabBoards("delivery", [tp("/a", ...reps)], null, null, NOW).flaky;
+    const board = (...reps: SourceReport[]) => tabBoards("delivery", [tp("/a", ...reps)], null, NOW).flaky;
     expect(board(green(), ok(RR, reruns()))).toMatchObject({ cut: false, short: false, clear: "No job needed a re-run to pass in 30 days." });
     const failed = ok(RR, { ...reruns(), reran: 3 } as Facts, { truncated: true, gaps: ["CI on abc: jobs not read: HTTP 502"] });
     expect(board(green(), failed)).toMatchObject({ rows: [], cut: true, short: false, clear: "No flaky job in what could be read." });
@@ -536,7 +537,7 @@ describe("flaky jobs: noise beside a red default branch, never in place of it", 
       tp("/b", green(), ok(RR, reruns(rjob("net", 2)), { truncated: true })),
       tp("/c", ok(RR, reruns())),
     ];
-    const b = tabBoards("delivery", ps, null, null, NOW);
+    const b = tabBoards("delivery", ps, null, NOW);
     expect(b.flaky.rows.map((r) => [r.root, r.job, r.passed, r.reruns, r.level, r.capped, r.verb?.key ?? null])).toEqual([
       ["/a", "race", 3, 4, "warn", false, "ci:flaky"], ["/b", "net", 2, 2, "warn", true, "ci:flaky"], ["/a", "slow", 1, 1, "info", false, null],
     ]);
@@ -546,8 +547,8 @@ describe("flaky jobs: noise beside a red default branch, never in place of it", 
     expect(b.ci.map((r) => r.root), "re-runs alone give no CI row").toEqual(["/a", "/b"]);
     expect(b.read.ci, "the CI board counts the runs read, not the re-runs").toBe(2);
     expect(flakyBoard(ps, "/c", NOW)).toEqual([]);
-    expect(tabBoards("delivery", ps, "/c", null, NOW).flaky).toMatchObject({ read: 1, cut: false });
-    expect(tabBoards("security", ps, null, null, NOW).flaky.read, "only Delivery reads it").toBe(0);
+    expect(tabBoards("delivery", ps, "/c", NOW).flaky).toMatchObject({ read: 1, cut: false });
+    expect(tabBoards("security", ps, null, NOW).flaky.read, "only Delivery reads it").toBe(0);
     expect(boardDoor("flaky", "last", b.flaky.rows[0].url)).toEqual({ to: "url", url: `https://ci.example/job/${S - D}` });
     expect(boardDoor("flaky", "last", "file:///etc/passwd")).toBeNull();
     expect(boardDoor("flaky", "passed", 3), "a count with no door, as the changelog's").toBeNull();
@@ -752,19 +753,19 @@ describe("deployments: what each environment runs", () => {
     const retired = deployBoard([tp("/e", ok(GD, deps([env({ env: "old", sha: null, tag: null, at: null, behind: null, ahead: null, last: fail(S - 400 * D) })])))], null, NOW).rows[0];
     expect(retired).toMatchObject({ idle: true, level: "info", verbs: [] });
     expect(retired.last, "a failure from 13 months ago is history, not red").toMatchObject({ level: "muted", text: "failed 400d ago" });
-    const tb = tabBoards("delivery", [a, b, c], null, null, NOW);
+    const tb = tabBoards("delivery", [a, b, c], null, NOW);
     expect(tb.deploys.length).toBe(5);
     expect([tb.deployHidden, tb.deployRead]).toEqual([1, 3]);
     expect(tb.deployCut).toBe(false);
-    expect(tabBoards("delivery", [a, tp("/s", ok(GD, deps([env()]), { truncated: true }))], null, null, NOW).deployCut, "the board says a list was cut").toBe(true);
+    expect(tabBoards("delivery", [a, tp("/s", ok(GD, deps([env()]), { truncated: true }))], null, NOW).deployCut, "the board says a list was cut").toBe(true);
     expect(tb.drawn).toEqual(expect.arrayContaining(["/a|release:deploy", "/b|release:deploy-failed"]));
-    const narrowed = tabBoards("delivery", [a, b, c], "/a", null, NOW);
+    const narrowed = tabBoards("delivery", [a, b, c], "/a", NOW);
     expect(narrowed.deploys.map((r) => r.env)).toEqual(["prod", "old"]);
     expect(narrowed.one).toBe(true);
-    expect(tabBoards("security", [a], null, null, NOW).deploys).toEqual([]);
+    expect(tabBoards("security", [a], null, NOW).deploys).toEqual([]);
     // Environments are not releases: the release table's note counts what it lists.
-    expect(tabBoards("delivery", [a], null, null, NOW).read.release).toBe(0);
-    expect(tabModel("delivery", [a, b], null, null, NOW).rows.filter((f) => f.key.startsWith("release:")), "every verb is on the board").toEqual([]);
+    expect(tabBoards("delivery", [a], null, NOW).read.release).toBe(0);
+    expect(tabModel("delivery", [a, b], null, NOW).rows.filter((f) => f.key.startsWith("release:")), "every verb is on the board").toEqual([]);
   });
 
   it("lists a refused read of the environments in Coverage, whatever the release half said", () => {
@@ -1222,6 +1223,50 @@ describe("the cross-project tabs", () => {
       expect(coverGroups("security", [quiet], null, NOW), "a clean read leaves nothing to explain").toEqual([]);
     });
 
+    it("files each row under what closes it, in the card's order", () => {
+      const fail = (root: string): MaintInput => {
+        const r = not("dependabot-alerts", "security", { state: "error", reason: "HTTP 502" });
+        return { det: det([r.source], { repoRoot: root, forge: hub(`o${root}`) }), reports: { [r.source]: r } };
+      };
+      const projects = [at("/a", switchedOff("/a")), at("/b", switchedOff("/b", null)), at("/d", scope("/d")), at("/f", fail("/f")),
+        at("/u", { det: null, reports: {} }), at("/s", { ...scope("/s"), skip: ["dependabot-alerts"] })];
+      const kinds = coverByKind(coverGroups("security", projects, null, NOW)).map(([k, gs]) => [k, gs.map((g) => `${g.what}: ${g.why}`)]);
+      expect(kinds).toEqual([
+        ["ask", ["npm audit: not run"]],
+        ["unread", ["Security: not read yet", "Dependencies: not read yet"]],
+        ["access", ["Dependabot alerts: token scope"]],
+        ["forge", ["Dependabot alerts: alerts off"]],
+        ["failed", ["Dependabot alerts: read failed"]],
+        ["gap", ["Dependabot alerts: skipped here"]],
+      ]);
+      const g = (o: Partial<CoverGroup>): CoverGroup => ({ key: "k", facet: "ci", source: null, cfg: false, what: "w", why: "", detail: "", roots: ["/r"], quiet: false, action: null, ...o });
+      expect(coverKind(g({ why: "alerts off", action: null })), "off with no page it can name is still the forge's").toBe("forge");
+      expect(coverKind(g({ why: "not allowed here", action: { kind: "allow", host: "h" } })), "a host to allow is one click, like an offer").toBe("ask");
+      expect(coverKind(g({ why: "no token", action: { kind: "token", source: "sentry-issues", door: "add" } }))).toBe("access");
+      expect(coverKind(g({ why: "tool missing" })), "a tool with no command to install it").toBe("access");
+      expect(coverKind(g({ why: "nothing reads it yet", key: "marker:Woodpecker" }))).toBe("gap");
+      expect(coverKind(g({ why: "never ran" })), "a cell's own word with no fix is not a failure").toBe("gap");
+      expect(coverKind(g({ why: "configured, no open pull request", quiet: true }))).toBe("note");
+      expect(COVER_KINDS.indexOf("ask"), "a click comes before anything a person has to go and do").toBe(0);
+      expect(coverByKind([]), "no row, no kind").toEqual([]);
+    });
+
+    it("copies a fix only when it is a command", () => {
+      for (const c of ["gh auth login", "gh auth refresh -h github.com -s security_events", "cargo install cargo-audit --locked", "corepack enable pnpm", "glab auth login --hostname gitlab.example"]) {
+        expect(fixIsCommand(c), c).toBe(true);
+      }
+      for (const p of ["pick the GitHub account that can see it from the project menu", "install Node.js, which brings npm: https://nodejs.org",
+        "install the GitHub CLI from https://cli.github.com", "", "login", "add a Host entry to your ssh config"]) expect(fixIsCommand(p), p).toBe(false);
+    });
+
+    it("knows the fixes the account picker answers", () => {
+      for (const p of ["pick the GitHub account that can see it from the project menu",
+        "pick the GitHub account that administers it from the project menu"]) expect(fixPicksAccount(p), p).toBe(true);
+      for (const p of ["gh auth login", "pick a token with the security_events scope", "add the account in Settings › Accounts", ""]) {
+        expect(fixPicksAccount(p), p).toBe(false);
+      }
+    });
+
     it("names a settings page only from the manifest, for a forge path it can spell, none otherwise", () => {
       const A = "dependabot-alerts", page = "https://github.com/o/r/settings/security_analysis";
       expect(settingsUrl(A, hub("o/r"))).toBe(page);
@@ -1268,10 +1313,10 @@ describe("the cross-project tabs", () => {
 
     it("puts Set up on the code-scanning row of a narrowed tab's Coverage", () => {
       const p = (path: string) => { const inp = noScan(path), cells = facetCells(inp, MAINT_DEFAULTS, NOW); return { path, inp, cells, rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) }; };
-      const m = tabModel("security", [p("/a"), p("/b")], "/b", null, NOW);
+      const m = tabModel("security", [p("/a"), p("/b")], "/b", NOW);
       expect(m.setups.map((f) => [f.root, f.key])).toEqual([["/b", "setup:github-code-scanning"]]);
       expect(m.cover.map((g) => [g.what, g.source, g.cfg])).toEqual([["GitHub code scanning", "github-code-scanning", false]]);
-      expect(tabModel("delivery", [p("/a")], "/a", null, NOW).setups).toEqual([]);
+      expect(tabModel("delivery", [p("/a")], "/a", NOW).setups).toEqual([]);
     });
 
     it("knows which Coverage reasons a [maintenance] key answers", () => {
@@ -1369,6 +1414,39 @@ describe("runtime end-of-life", () => {
     expect(offers("/r", input(never)).map((f) => [f.key, f.text])).toEqual([["run:runtime-eol", "endoflife.date: not checked"]]);
   });
 
+  it("keeps a clicked offer's row in its place, each project's chip saying what came back", () => {
+    const never = { ...not("runtime-eol", "security", { state: "notRun" }), cost: "public" as const };
+    const asked = (inp: MaintInput): MaintInput => ({ ...inp, clicked: ["runtime-eol"] });
+    const at = (path: string, inp: MaintInput): TabProject => ({ path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: [] });
+    const row = (...ps: TabProject[]) => coverGroups("security", ps, null, NOW).find((g) => g.source === "runtime-eol");
+    const fine = rt("node", "24", S + 400 * D);
+    const ps = [at("/a", asked(input(eol(ended)))), at("/b", asked(input(eol(fine)))), at("/c", input(never))];
+    const g = row(...ps)!;
+    expect([g.key, g.why, g.roots, g.action], "one row, its offer's, while a project is still to ask")
+      .toEqual(["runtime-eol|notRun", "not checked", ["/a", "/b", "/c"], { kind: "run", source: "runtime-eol" }]);
+    expect(g.ran).toMatchObject({
+      "/a": { level: "bad", text: "node 18 EOL", board: "runtimes" },
+      "/b": { level: "ok", text: "nothing found", board: "runtimes" },
+    });
+    expect(Object.keys(g.ran!), "an unasked project keeps its run door").toEqual(["/a", "/b"]);
+    const all = row(ps[0], ps[1])!;
+    expect([all.why, coverKind(all)], "every project asked: the row says so where it stood").toEqual(["checked", "ask"]);
+    expect(row(at("/a", asked({ ...input(never), asking: ["runtime-eol"] })))!.ran, "still out: its spinner, no answer yet").toBeUndefined();
+    expect(row(at("/a", input(eol(ended)))), "an answer nobody asked for this session is no row").toBeUndefined();
+    expect(coverGroups("delivery", ps, null, NOW).some((x) => x.source === "runtime-eol"), "another tab's").toBe(false);
+  });
+
+  it("says what one read came back with, and never passes one that failed", () => {
+    const res = (r: SourceReport) => { const { tip: _, ...rest } = sourceResult(r, input(r), MAINT_DEFAULTS, NOW); return rest; };
+    expect(res(eol(rt("node", "20", S + 52 * D)))).toEqual({ level: "warn", text: "node 20 EOL in 52d", board: "runtimes" });
+    expect(res(eol(rt("postgres", null, null))), "unknown is said, never nothing").toEqual({ level: "muted", text: "postgres 99 unknown", board: "runtimes" });
+    expect(res(ok("osv", { kind: "advisories", items: [adv()] }, { cost: "public" }))).toEqual({ level: "bad", text: "1 high", board: "advisories" });
+    expect(res(ok("osv", { kind: "advisories", items: [] }, { cost: "public" }))).toEqual({ level: "ok", text: "nothing found", board: "advisories" });
+    const failed = { ...not("runtime-eol", "security", { state: "error", reason: "HTTP 502" }), cost: "public" as const };
+    expect(sourceResult(failed, input(failed), MAINT_DEFAULTS, NOW)).toEqual({ level: "muted", text: "read failed", tip: ["failed: HTTP 502"], board: null });
+    expect([boardTab("runtimes"), boardTab("packages"), boardTab("errors"), boardTab("flaky")]).toEqual(["security", "security", "servers", "delivery"]);
+  });
+
   it("folds every runtime to upgrade into one line, worst first, and leaves the supported ones out", () => {
     const line = (...items: Runtime[]) => findings("/r", input(eol(...items)), MAINT_DEFAULTS, NOW).map((f) => [f.key, f.level, f.text, f.detail, f.verb]);
     expect(line(ended, { ...ended, file: "Dockerfile" }, rt("go", "1.27", false))).toEqual([
@@ -1394,12 +1472,12 @@ describe("runtime end-of-life", () => {
       ["/b", "node 24", "ok", "ends in 13mo", null], ["/a", "go 1.27", "ok", "no end announced", null],
     ]);
     expect(rows[0].decls).toEqual([{ file: ".nvmrc", declared: "18" }, { file: "Dockerfile", declared: "18.20.1" }]);
-    const b = tabBoards("security", ps, null, null, NOW);
+    const b = tabBoards("security", ps, null, NOW);
     expect(b.eol).toEqual(rows);
     expect(b.drawn).toEqual(["/a|security:runtime", "/b|security:runtime"]);
     expect(b.advRead, "no advisory source answered, so no advisories board").toBe(0);
-    expect(tabBoards("security", [...ps].reverse(), null, null, NOW).eol, "a repaint never reorders").toEqual(rows);
-    expect(tabBoards("security", ps, "/b", null, NOW).eol.map((r) => r.root)).toEqual(["/b", "/b"]);
+    expect(tabBoards("security", [...ps].reverse(), null, NOW).eol, "a repaint never reorders").toEqual(rows);
+    expect(tabBoards("security", ps, "/b", NOW).eol.map((r) => r.root)).toEqual(["/b", "/b"]);
     expect(boardDoor("runtimes", "ends", rows[0].url)).toEqual({ to: "url", url: "https://eol.example/node" });
     expect(runtimeStates(ps[1].inp, MAINT_DEFAULTS, NOW).map(rtName), "worst first").toEqual(["node 18", "go 1.27"]);
   });
@@ -1515,11 +1593,11 @@ describe("packages behind their newest major", () => {
   });
 
   it("claims update pull requests only of projects a bot was read for, whatever the registries answered", () => {
-    const read = (...ps: TabProject[]) => { const b = tabBoards("security", ps, null, null, NOW); return [b.read.deps, b.pkgRead]; };
+    const read = (...ps: TabProject[]) => { const b = tabBoards("security", ps, null, NOW); return [b.read.deps, b.pkgRead]; };
     expect(read(tp("/gl", reg([pkg("react", ["17.0.0"], "19.0.0")], 2))), "a registry is no update-PR read").toEqual([0, 1]);
     expect(read(tp("/gh", not("dependabot-prs", "deps", { state: "noAccess", reason: "no", fix: null }), reg([], 2))), "nor beside a bot that failed").toEqual([0, 1]);
     expect(read(tp("/gh", ok("dependabot-prs", prs(1)), reg([], 2)), tp("/gl", reg([], 2)))).toEqual([1, 2]);
-    expect(tabBoards("delivery", [tp("/r", ok("github-actions", ci()))], null, null, NOW).read.ci, "the other facets count as before").toBe(1);
+    expect(tabBoards("delivery", [tp("/r", ok("github-actions", ci()))], null, NOW).read.ci, "the other facets count as before").toBe(1);
   });
 
   it("lists what a package count cannot answer in Coverage, and groups one reason across projects", () => {
@@ -1616,11 +1694,11 @@ describe("packages behind their newest major", () => {
     ]);
     expect(rows([...ps].reverse()), "a repaint never reorders").toEqual(rows(ps));
     expect(rows(ps, "/small").map((r) => r[0])).toEqual(["/small"]);
-    const b = tabBoards("security", ps, null, null, NOW);
+    const b = tabBoards("security", ps, null, NOW);
     expect([b.pkgRead, b.drawn.filter((k) => k.endsWith("|deps:packages"))]).toEqual([4, ["/big|deps:packages", "/small|deps:packages"]]);
     expect(findingTarget({ facet: "deps", key: "deps:packages" })).toEqual({ tab: "security", board: "packages" });
     expect(findingTarget({ facet: "deps", key: "deps:renovate" }).board, "a bot's line stays on its board").toBe("update-prs");
-    expect(tabBoards("delivery", ps, null, null, NOW).pkgs, "only Security draws it").toEqual([]);
+    expect(tabBoards("delivery", ps, null, NOW).pkgs, "only Security draws it").toEqual([]);
   });
 
   it("opens Behind where the package manager is asked, and Latest on the package's page only over http(s)", () => {
@@ -2137,15 +2215,15 @@ describe("a host's vitals", () => {
       expect(row.verbs.map((f) => [f.root, f.key])).toEqual([
         ["/a", "prod:host:disk"], ["/b", "prod:host:disk"], ["/a", "prod:host:reboot"], ["/b", "prod:host:reboot"],
       ]);
-      const model = tabModel("servers", [a, b], null, null, NOW);
+      const model = tabModel("servers", [a, b], null, NOW);
       expect(model.boards?.drawn).toEqual(["/a|prod:host:disk", "/a|prod:host:reboot", "/b|prod:host:disk", "/b|prod:host:reboot"]);
       expect(model.rows).toEqual([]);
-      expect(tabBoards("servers", [a], "/a", null, NOW).one).toBe(true);
+      expect(tabBoards("servers", [a], "/a", NOW).one).toBe(true);
     });
 
     it("leaves a line the newest read no longer shows on the project that still says it", () => {
       const old = project("/old", named(), [read({ disks: [disk("/", 96)] }, S - D)]), fresh = project("/new", named(), [read()]);
-      const model = tabModel("servers", [old, fresh], null, null, NOW);
+      const model = tabModel("servers", [old, fresh], null, NOW);
       expect(model.boards?.hosts[0]).toMatchObject({ verbs: [], state: { level: "ok" } });
       expect(model.rows.map((r) => [r.root, r.key])).toEqual([["/old", "prod:host:disk"]]);
     });
@@ -2159,7 +2237,7 @@ describe("a host's vitals", () => {
     it("carries only what its Brief says: another project's service stays listed, with its Fix", () => {
       const a = project("/a", named("prod-1", ["api"]), [read({ containers: [], compose: ["api"] })]);
       const b = project("/b", named("prod-1", ["web"]), [read({ containers: [], compose: ["web"] })]);
-      const model = tabModel("servers", [a, b], null, null, NOW), [row] = model.boards!.hosts;
+      const model = tabModel("servers", [a, b], null, NOW), [row] = model.boards!.hosts;
       expect(row.state?.failing.map((f) => f.text), "the card says both").toEqual(["api not running", "web not running"]);
       expect(row.verbs.map((f) => [f.root, f.key])).toEqual([["/a", "prod:host:containers"]]);
       expect(model.rows.map((r) => [r.root, r.text])).toEqual([["/b", "web not running on prod-1"]]);
@@ -2167,14 +2245,14 @@ describe("a host's vitals", () => {
 
     it("reads a line's detail too, since two different pairs of services count the same", () => {
       const pair = (path: string, compose: string[]) => project(path, named("prod-1", compose), [read({ containers: [], compose })]);
-      const model = tabModel("servers", [pair("/a", ["a1", "a2"]), pair("/b", ["b1", "b2"])], null, null, NOW);
+      const model = tabModel("servers", [pair("/a", ["a1", "a2"]), pair("/b", ["b1", "b2"])], null, NOW);
       expect(model.rows.map((r) => [r.root, r.text, r.detail])).toEqual([["/b", "2 containers failing on prod-1", "b1 not running, b2 not running"]]);
     });
 
     it("holds what is carried against the Brief's project, not the first to say each kind", () => {
       const a = project("/a", named("prod-1", ["api"]), [read({ compose: ["api"], reboot: true })]);
       const b = project("/b", named("prod-1", ["web"]), [read({ compose: ["web"] }, S - D)]);
-      const model = tabModel("servers", [a, b], null, null, NOW);
+      const model = tabModel("servers", [a, b], null, NOW);
       expect(model.boards?.hosts[0].verbs.map((f) => [f.root, f.key]), "/b's brief says nothing of the reboot").toEqual([["/b", "prod:host:containers"]]);
       expect(model.rows.map((r) => [r.root, r.key])).toEqual([["/a", "prod:host:reboot"]]);
     });
@@ -2191,7 +2269,7 @@ describe("a host's vitals", () => {
       expect(board(project("/a", named(), [refused(S - 3 * D)]), project("/b", named(), [broke(S - 60)]))[0]).toMatchObject({ why: "read failed", at: S - 60, state: null });
       expect(board(project("/a", named(), [broke(S - 3 * D)]), project("/b", named(), [refused(S - 60)]))[0]).toMatchObject({ why: "no access", at: S - 60, state: null });
       const stale = project("/a", named(), [read({ disks: [disk("/", 96)] }, S - 3 * D)]);
-      const model = tabModel("servers", [stale, project("/b", named(), [refused(S - 60)])], null, null, NOW);
+      const model = tabModel("servers", [stale, project("/b", named(), [refused(S - 60)])], null, NOW);
       expect(model.boards?.hosts[0]).toMatchObject({ why: "no access", at: S - 60, facts: null, state: null, verbs: [] });
       expect(model.rows.map((r) => [r.root, r.key]), "the older read's line is still said, on its project").toEqual([["/a", "prod:host:disk"]]);
       expect(board(project("/a", named(), [read()]), project("/b", named(), [refused(S - 60)]))[0], "a read newer than the failure stands").toMatchObject({ why: null, at: S, state: { level: "ok" } });
@@ -2254,13 +2332,13 @@ describe("a host's vitals", () => {
 
     it("is built on Servers alone", () => {
       const a = project("/a", named(), [read()]);
-      expect(tabBoards("servers", [a], null, null, NOW).hosts).toHaveLength(1);
-      expect(tabBoards("code", [a], null, null, NOW).hosts).toEqual([]);
+      expect(tabBoards("servers", [a], null, NOW).hosts).toHaveLength(1);
+      expect(tabBoards("code", [a], null, NOW).hosts).toEqual([]);
     });
 
     it("lets a card ask for its host, so *not checked yet* speaks for the addresses alone", () => {
       const urls = { app: "https://app" }, probe = { ...not("http-probe", "prod", { state: "notRun" }), cost: "remote" as const };
-      const n = (p: TabProject) => tabBoards("servers", [p], null, null, NOW).unchecked;
+      const n = (p: TabProject) => tabBoards("servers", [p], null, NOW).unchecked;
       expect(n(project("/h", named(), [asked])), "a host alone has its card's Check").toBe(0);
       expect(n(project("/b", named("prod-1", [], urls), [asked, probe]))).toBe(1);
       expect(n(project("/r", named("prod-1", [], urls), [read(), probe])), "the host answered and the addresses did not").toBe(1);
@@ -2380,13 +2458,13 @@ describe("registered domains", () => {
       tp("/a", ok(RD, doms(dom("a.com", 400, { status: ["client hold"] })))),
       tp("/c", ok(RD, doms(dom("c.com", 12)))),
     ];
-    const b = tabBoards("servers", ps, null, null, NOW);
+    const b = tabBoards("servers", ps, null, NOW);
     expect(b.domains.map((r) => [r.root, r.domain, r.level, r.verb?.key ?? null])).toEqual([
       ["/a", "a.com", "bad", "prod:domain:a.com"], ["/c", "c.com", "warn", "prod:domain:c.com"],
       ["/b", "b.com", "warn", "prod:domain:b.com"], ["/b", "b.org", "ok", null],
     ]);
     expect(b.drawn).toEqual(["/a|prod:domain:a.com", "/b|prod:domain:b.com", "/c|prod:domain:c.com"]);
-    expect(tabBoards("servers", ps, "/c", null, NOW).domains.map((r) => r.domain)).toEqual(["c.com"]);
+    expect(tabBoards("servers", ps, "/c", NOW).domains.map((r) => r.domain)).toEqual(["c.com"]);
     expect(boardDoor("domains", "registrar", "https://registrar.example/")).toEqual({ to: "url", url: "https://registrar.example/" });
     expect(boardDoor("domains", "registrar", "javascript:alert(1)")).toBeNull();
   });
@@ -2563,7 +2641,7 @@ describe("errors in production", () => {
     expect(findingTarget({ facet: "prod", key: "prod:errors" }), "a url named errors is still an address").toEqual({ tab: "servers", board: "addresses" });
     expect(findingTarget({ facet: "prod", key: "prod:cert:app" }).board).toBe("addresses");
     const p = tp("/r", ok(HP, probes()), rep([iss()]));
-    const m = tabModel("servers", [p], "/r", null, NOW);
+    const m = tabModel("servers", [p], "/r", NOW);
     expect(m.rows.map((r) => r.key), "the board carries its verb, so it is not listed again below").not.toContain("prod:errors:new");
     expect(m.boards!.drawn).toContain("/r|prod:errors:new");
     expect(sessionKind(f), "its brief asks for a fix in code").toBe("branch");
@@ -2614,7 +2692,7 @@ describe("errors in production", () => {
     expect(prodChecks(inp)).toEqual([HP, SE]);
     const label = SOURCES.find((s) => s.id === SE)!.label;
     expect(prodTip([HP, SE], [])).toContain(`${label}: the unresolved issues and newest release of the project [deploy] names, sent its name and the token saved for its host`);
-    expect(tabBoards("servers", [tp("/r", rep([]))], null, null, NOW).unchecked, "a tracker alone leaves no address unchecked").toBe(0);
+    expect(tabBoards("servers", [tp("/r", rep([]))], null, NOW).unchecked, "a tracker alone leaves no address unchecked").toBe(0);
     const sees = new Set<MaintCap>(), blind = new Set<MaintCap>();
     addCoverCaps(input(ok(HP, probes())), sees, blind);
     expect(blind.has("prod.errors"), "an address says nothing of errors").toBe(true);
@@ -2711,10 +2789,10 @@ describe("errors in production", () => {
     expect([quiet(S - H).level, quiet(S - H).text], "an event inside the window is").toEqual(["ok", ""]);
     const kept = errorBoard([tp("/k", rep([old()], {}, { gaps: [KEPT_CUT] }))], null, NOW)[0];
     expect([kept.floor, kept.cut], "a slimmed backlog is a floor, its needy count exact").toEqual([true, false]);
-    const tb = tabBoards("servers", ps, null, null, NOW);
+    const tb = tabBoards("servers", ps, null, NOW);
     expect(tb.errors.map((r) => r.root)).toEqual(["/b", "/c", "/a"]);
     expect(tb.drawn).toEqual(expect.arrayContaining(["/b|prod:errors:new", "/c|prod:errors:new"]));
-    expect(tabBoards("delivery", ps, null, null, NOW).errors).toEqual([]);
+    expect(tabBoards("delivery", ps, null, NOW).errors).toEqual([]);
   });
 
   it("slims a kept list to what needs someone and the newest of the rest, never costing another project its place", () => {
@@ -2782,27 +2860,43 @@ describe("the tabs' boards", () => {
       .toEqual([["GHSA-x", "medium", 1]]);
   });
 
-  it("counts the strip per severity, the four always and a secret only when there is one, and filters the rows but never the strip", () => {
+  it("groups the rows by severity, worst first and only those with a row, each naming who is hit most", () => {
     const ps = [
-      tp("/a", alerts(adv({ id: "A", severity: "critical" }), adv({ id: "B", pkg: "x", severity: "medium" }))),
+      tp("/a", alerts(adv({ id: "A", severity: "critical" }), adv({ id: "B", pkg: "x", severity: "medium" }), adv({ id: "D", pkg: "z", severity: "medium" }))),
       tp("/b", alerts(adv({ id: "C", pkg: "y", severity: "medium" }))),
     ];
-    const strip = (rows: ReturnType<typeof advisoryRows>["rows"]) => sevStrip(rows).map((c) => [c.bucket, c.n, c.level]);
     const all = advisoryRows(ps).rows;
-    expect(strip(all)).toEqual([["critical", 1, "bad"], ["high", 0, "bad"], ["medium", 2, "warn"], ["low", 0, "info"]]);
+    expect(sevGroups(all).map((g) => [g.bucket, g.level, g.rows.map((r) => r.id), g.projects])).toEqual([
+      ["critical", "bad", ["A"], [{ root: "/a", n: 1 }]],
+      ["medium", "warn", ["B", "C", "D"], [{ root: "/a", n: 2 }, { root: "/b", n: 1 }]],
+    ]);
     const secret = tp("/s", ok("github-secret-scanning", { kind: "advisories", items: [adv({ id: "S", kind: "secret", pkg: null, severity: "unknown" })] }));
-    expect(strip(advisoryRows([...ps, secret]).rows)[0], "a secret leads, as it does in the cell").toEqual(["secret", 1, "bad"]);
-    expect(bySev(all, "medium").map((r) => r.id)).toEqual(["B", "C"]);
-    expect(bySev(all, null)).toEqual(all);
-    const b = tabBoards("security", ps, null, "critical", NOW);
-    expect(b.adv.map((r) => r.id)).toEqual(["A"]);
-    expect(b.strip.map((c) => c.n), "the strip still counts every row").toEqual([1, 0, 2, 0]);
-    // A severity filtered out still carries its projects' lines, so they never fall into the list below.
+    expect(sevGroups(advisoryRows([...ps, secret]).rows)[0].bucket, "a secret leads, as it does in the cell").toBe("secret");
+    const b = tabBoards("security", ps, null, NOW);
+    expect([b.adv, b.groups.map((g) => g.bucket)]).toEqual([all, ["critical", "medium"]]);
+    // A folded severity still carries its projects' lines, so they never fall into the list below.
     expect(b.drawn).toEqual(["/a|security:dependency", "/b|security:dependency"]);
-    // A secret picked and then gone (a rescan, a narrower filter) keeps its button, or nothing could clear it.
-    const gone = tabBoards("security", ps, null, "secret", NOW);
-    expect([gone.adv, gone.strip.map((c) => [c.bucket, c.n])[0]]).toEqual([[], ["secret", 0]]);
-    expect(sevStrip(all, "unknown").map((c) => c.bucket)).toEqual(["critical", "high", "medium", "low", "unknown"]);
+  });
+
+  it("opens a red group on its first rows and folds the rest, until a person says otherwise", () => {
+    const row = (id: string) => ({ id }) as AdvRow;
+    const many = { level: "bad" as const, rows: Array.from({ length: ADV_PEEK + 3 }, (_, i) => row(`r${i}`)) };
+    expect([advFold(many).fold, advFold(many).shown.length, advFold(many).more]).toEqual(["open", ADV_PEEK, 3]);
+    expect([advFold(many, "all").shown.length, advFold(many, "all").more]).toEqual([ADV_PEEK + 3, 0]);
+    expect(advFold(many, "shut")).toEqual({ fold: "shut", shown: [], more: 0 });
+    const amber = { level: "warn" as const, rows: [row("m")] };
+    expect([advFold(amber).fold, advFold(amber).shown]).toEqual(["shut", []]);
+    expect(advFold(amber, "open").shown.map((r) => r.id)).toEqual(["m"]);
+  });
+
+  it("puts each project's brief on the board once, however many rows it covers", () => {
+    const ps = [
+      tp("/b", alerts(adv({ id: "A", severity: "medium" }), adv({ id: "B", pkg: "x", severity: "low" }))),
+      tp("/a", alerts(adv({ id: "A", severity: "critical" }))),
+    ];
+    expect(advVerbs(advisoryRows(ps).rows).map((f) => [f.root, f.key, f.verb])).toEqual([
+      ["/a", "security:dependency", "patch"], ["/b", "security:dependency", "patch"],
+    ]);
   });
 
   it("lists update pull requests per project and bot: open, red, the oldest's age, red first", () => {
@@ -2898,7 +2992,7 @@ describe("the tabs' boards", () => {
     ]);
     // Both lines are the row's, so the open-work one never repeats below the board.
     expect(workBoard(ps)[0].verbs.map((f) => f.key)).toEqual(["work:review", "work:open"]);
-    expect(tabBoards("work", ps, "/asked", null, NOW).drawn).toEqual(["/asked|work:open", "/asked|work:review"]);
+    expect(tabBoards("work", ps, "/asked", NOW).drawn).toEqual(["/asked|work:open", "/asked|work:review"]);
   });
 
   it("keeps the reviews one source counted when another's search failed, as a floor", () => {
@@ -2937,9 +3031,9 @@ describe("the tabs' boards", () => {
       return { path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: tabFindings(path, inp, MAINT_DEFAULTS, NOW) };
     };
     const ps = [pp("/never", { state: "notRun" }), pp("/broke", { state: "error", reason: "refused" }), tp("/bare", ok("git-local", hyg()))];
-    expect(tabBoards("servers", ps, null, null, NOW).unchecked).toBe(1);
-    expect(tabBoards("servers", ps, "/bare", null, NOW).unchecked, "a project with no [deploy] is not 'not checked'").toBe(0);
-    expect(tabBoards("servers", ps, "/broke", null, NOW).unchecked, "a check that failed is Coverage's to explain").toBe(0);
+    expect(tabBoards("servers", ps, null, NOW).unchecked).toBe(1);
+    expect(tabBoards("servers", ps, "/bare", NOW).unchecked, "a project with no [deploy] is not 'not checked'").toBe(0);
+    expect(tabBoards("servers", ps, "/broke", NOW).unchecked, "a check that failed is Coverage's to explain").toBe(0);
   });
 
   it("honours the project filter and sorts the same whatever order the projects came in", () => {
@@ -2952,9 +3046,9 @@ describe("the tabs' boards", () => {
         ok("github-work", work(5, 2, 1)), ok("dependabot-prs", prs(2, {}, "fail")), probe("www", 500)),
     ];
     for (const tab of MAINT_TABS) {
-      const b = tabBoards(tab, ps, null, null, NOW);
-      expect(tabBoards(tab, shuffled(ps), null, null, NOW), `${tab}: a repaint never reorders`).toEqual(b);
-      const one = tabBoards(tab, ps, "/b", null, NOW);
+      const b = tabBoards(tab, ps, null, NOW);
+      expect(tabBoards(tab, shuffled(ps), null, NOW), `${tab}: a repaint never reorders`).toEqual(b);
+      const one = tabBoards(tab, ps, "/b", NOW);
       const roots = [...one.adv.flatMap((r) => r.projects.map((p) => p.root)), ...[one.prs, one.ci, one.releases, one.hygiene, one.work, one.probes]
         .flat().map((r) => r.root)];
       expect(new Set(roots), `${tab}: narrowed to /b`).toEqual(new Set(["/b"]));
@@ -2962,15 +3056,15 @@ describe("the tabs' boards", () => {
       const firsts = [b.prs, b.ci, b.releases, b.hygiene, b.work, b.probes].flatMap((xs) => xs.length ? [xs[0].root] : []);
       expect(firsts.every((r) => r === "/b"), `${tab}: the bigger first`).toBe(true);
     }
-    expect(tabBoards("delivery", ps, "/b", null, NOW).read).toEqual({ ci: 1, release: 1 });
+    expect(tabBoards("delivery", ps, "/b", NOW).read).toEqual({ ci: 1, release: 1 });
   });
 
   it("leaves a line no board carries to the list below them, and claims only the lines it draws a verb for", () => {
     const ps = [tp("/r", ok("git-local", hyg({ unpushed: 2, merged: ["x"] })))];
     const rows = ps[0].rows;
     expect(rows.map((f) => f.key)).toEqual(expect.arrayContaining(["ci:setup", "git:unpushed", "git:tidy"]));
-    expect(tabBoards("code", ps, null, null, NOW).drawn).toEqual(["/r|git:tidy", "/r|git:unpushed"]);
-    expect(tabBoards("delivery", ps, null, null, NOW).drawn, "Set up is no board's: it stays a line").toEqual([]);
+    expect(tabBoards("code", ps, null, NOW).drawn).toEqual(["/r|git:tidy", "/r|git:unpushed"]);
+    expect(tabBoards("delivery", ps, null, NOW).drawn, "Set up is no board's: it stays a line").toEqual([]);
   });
 });
 
@@ -3083,7 +3177,7 @@ describe("a card line opens what it summarises", () => {
     });
     // The anchor is only right if that board really draws the line: its verb is on it.
     for (const f of p.rows) {
-      expect(tabBoards(findingTarget(f).tab, [p], "/r", null, NOW).drawn, f.key).toContain(`/r|${f.key}`);
+      expect(tabBoards(findingTarget(f).tab, [p], "/r", NOW).drawn, f.key).toContain(`/r|${f.key}`);
     }
   });
 
@@ -3175,11 +3269,9 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
   it("builds exactly the fleet's tab narrowed to the project, for every sub-tab and the bar's counts", () => {
     const fleet = [many("/a", true), many("/b", false), tp("/c", ok("git-local", hyg()))];
     for (const sub of [null, ...MAINT_TABS]) {
-      for (const sev of [null, "medium"] as const) {
-        expect(tabModel(sub, [fleet[1]], "/b", sev, NOW), `${sub} ${sev}`).toEqual(tabModel(sub, fleet, "/b", sev, NOW));
-      }
+      expect(tabModel(sub, [fleet[1]], "/b", NOW), `${sub}`).toEqual(tabModel(sub, fleet, "/b", NOW));
     }
-    const sec = tabModel("security", [fleet[0]], "/a", null, NOW);
+    const sec = tabModel("security", [fleet[0]], "/a", NOW);
     expect(sec.boards!.adv.map((r) => [r.id, r.projects.map((p) => p.verb?.key)]), "one row per advisory, each with its own Patch").toEqual([
       ["A-1", ["security:dependency"]], ["C-1", ["security:code"]], ["B-2", ["security:dependency"]],
     ]);
@@ -3191,18 +3283,19 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
   it("marks a board narrowed to one project, so the view drops the column that would only repeat its name", () => {
     const ps = [many("/a", true), many("/b", false)];
     for (const tab of MAINT_TABS) {
-      expect(tabBoards(tab, ps, "/a", null, NOW).one, tab).toBe(true);
-      expect(tabBoards(tab, ps, null, null, NOW).one, tab).toBe(false);
+      expect(tabBoards(tab, ps, "/a", NOW).one, tab).toBe(true);
+      expect(tabBoards(tab, ps, null, NOW).one, tab).toBe(false);
     }
     // Every table's Project column goes through the one switch, and the two places a name is drawn
-    // outside a table (a CI row with no workflows, an advisory's chip) ask the same flag first.
+    // outside a table (a CI row with no workflows, an advisory's and a severity group's chips) ask the same flag first.
     const src = readFileSync(new URL("../src/maintview.ts", import.meta.url), "utf8");
     const tables = src.match(/table\(\[[^\]]*/g) ?? [];
     expect(tables.length).toBeGreaterThan(0);
     for (const t of tables) expect(t, "a table's columns start at projCol").toMatch(/^table\(\[\.\.\.projCol\(b\)/);
     expect(src.match(/"Project"/g)?.length, "the column is named in projCol alone").toBe(1);
     expect(src).toMatch(/\$\{b\.one \? `<span class="wn">\$\{esc\(r\.branch \?\? ""\)\}<\/span>` : projHtml\(/);
-    expect(src).toMatch(/return b\.one \? \(p\.verb \? `<span class="mt-pc solo">/);
+    expect(src).toMatch(/const chips = b\.one \|\| !who \? "" : r\.projects\.map\(/);
+    expect(src).toMatch(/const who = b\.one \? "" :/);
   });
 
   it("opens every To do row on a sub-tab that carries it: on its board, else listed below the boards", () => {
@@ -3211,7 +3304,7 @@ describe("the project dashboard's sub-tabs are the fleet's, narrowed", () => {
     for (const q of [p, setup]) {
       expect(q.rows.length).toBeGreaterThan(0);
       for (const f of q.rows) {
-        const t = findingTarget(f), m = tabModel(t.tab, [q], q.path, null, NOW);
+        const t = findingTarget(f), m = tabModel(t.tab, [q], q.path, NOW);
         expect(t.tab, f.key).toBe(FACET_TAB[f.facet]);
         if (t.board) expect(m.boards!.drawn, f.key).toContain(`${q.path}|${f.key}`);
         else expect(m.rows.map((r) => r.key), f.key).toContain(f.key);
@@ -3317,6 +3410,40 @@ describe("the project tab's cards", () => {
       ["release", "skipped", null, "git-tags"], ["git", "ok", null, "git-local"], ["prod", "untracked", null, null], ["work", "none", null, null],
     ]);
     expect(coverRows({ det: null, reports: {} })).toEqual([]);
+  });
+
+  it("sorts the Overview's Coverage as a tab's: a clean read is only named, every other row is a group of its kind", () => {
+    const AL = "dependabot-alerts", CS = "github-code-scanning";
+    const inp: MaintInput = {
+      det: det(["git-local", GHA, "git-tags", AL, "npm-audit", CS], {
+        forge: { kind: "github", host: "github.com", path: "o/a", by: "table" },
+        markers: [{ facet: "ci", label: "Woodpecker", found: [".woodpecker.yml"] }],
+        config: { ...det([]).config, off: ["prod"] },
+      }),
+      reports: {
+        [GHA]: not(GHA, "ci", { state: "noAccess", reason: "who", fix: "gh auth login" }),
+        "git-local": ok("git-local", hyg()),
+        "git-tags": ok("git-tags", rel(), { gaps: ["no trunk known: set [maintenance] trunk"] }),
+        [AL]: not(AL, "security", { state: "off", reason: "alerts are switched off" }),
+        "npm-audit": { ...not("npm-audit", "security", { state: "notRun" }), cost: "tool" },
+        [CS]: not(CS, "security", { state: "unsupported", reason: "needs Code Security" }),
+      },
+    };
+    const { read, groups } = sourceCover("/a", coverRows(inp));
+    expect(read.map((r) => r.source), "a read with a gap a key answers is not clean").toEqual(["git-local"]);
+    expect(coverByKind(groups).map(([k, gs]) => [k, gs.map((g) => `${g.what}: ${g.why}`)])).toEqual([
+      ["ask", ["npm audit: not run"]],
+      ["access", ["GitHub Actions: no access"]],
+      ["forge", ["Dependabot alerts: alerts off"]],
+      ["gap", ["Woodpecker: nothing reads it yet", "GitHub code scanning: unavailable", "no update bot: nothing detected", "git tags: partly read",
+        "Prod: off in episko.toml", "no issue tracker: nothing detected"]],
+    ]);
+    const of = (id: string) => groups.find((g) => g.source === id);
+    expect(of(AL)).toMatchObject({ detail: "alerts are switched off", action: { kind: "settings", urls: { "/a": "https://github.com/o/a/settings/security_analysis" } } });
+    expect(of(GHA)).toMatchObject({ detail: "who", roots: ["/a"], action: { kind: "fix", fix: "gh auth login" } });
+    expect(of("npm-audit")?.action).toEqual({ kind: "run", source: "npm-audit" });
+    expect(of("git-tags"), "its setup doors").toMatchObject({ cfg: true, detail: "no trunk known: set [maintenance] trunk", action: null });
+    expect(new Set(groups.map((g) => g.key)).size, "one key per row, so the repaint holds each in place").toBe(groups.length);
   });
 });
 
@@ -4267,10 +4394,10 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintEarlier", "maintPicked", "maintSev", "quietOpen",
+    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "fleetProgress", "projectProgress", "askingFor", "maintStale", "maintChip", "maintEarlier", "maintPicked", "maintAdv", "quietOpen",
       "MaintHost", "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "askingFor", "maintSev", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "maintStale", "projectProgress", "askingFor", "maintAdv", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);
@@ -4286,8 +4413,32 @@ describe("nothing scans until a person asks", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView"]) expect(fleet.reaches(f), f).toEqual([]);
   });
 
+  // A look is per project and bounded by the window, so going fleet → project → fleet reads each project once.
+  it("asks from a look at either view only through the per-project window", () => {
+    for (const f of ["setFleetView", "maintOnBoot"]) {
+      expect(fleet.bodies.get(f), f).toMatch(/checkStale\(/);
+      expect(fleet.bodies.get(f), f).not.toMatch(/(?:checkFleet|scanFleet)\(/);
+    }
+    expect(fleet.bodies.get("checkStale")).toMatch(/maintStale\(/);
+    for (const f of ["openDashboard", "setDashTab"]) {
+      expect(dash.bodies.get(f), f).toMatch(/lookMaint\(/);
+      expect(dash.bodies.get(f), f).not.toMatch(/loadMaint\(/);
+    }
+    expect(dash.bodies.get("lookMaint")).toMatch(/maintStale\(/);
+  });
+
   it("never reaches a scan from the dashboard's render path", () => {
     for (const f of ["renderDash", "renderDashHeader", "paintMaint", "maintNow"]) expect(dash.reaches(f), f).toEqual([]);
+  });
+
+  // The header chip paints on every renderAll pass and its popover opens on a glance: neither is an ask.
+  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress"], []);
+  it("never reaches a scan from the header chip or from opening its popover, only from its Check", () => {
+    for (const f of ["renderMaintBadge", "current", "paintPop", "openMaintPop", "closeMaintPop"]) {
+      expect(pop.bodies.has(f), f).toBe(true);
+      expect(pop.reaches(f), f).toEqual([]);
+    }
+    expect(pop.reaches("popClick")).toEqual(["scanProject"]);
   });
 });
 

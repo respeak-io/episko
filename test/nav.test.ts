@@ -4,6 +4,8 @@ import { emptyNav, locKind, NAV_CAP, navTip, peek, sameLoc, step, visit, type Lo
 const ses = (id: string): Loc => ({ kind: "session", id });
 const dash = (root: string, name = root): Loc => ({ kind: "dash", root, name });
 const fleet: Loc = { kind: "fleet" };
+const fleetAt = (tab: string, sub?: string, only?: string): Loc => ({ kind: "fleet", at: { tab, sub, only } });
+const dashAt = (root: string, tab: string, sub?: string): Loc => ({ kind: "dash", root, name: root, at: { tab, sub } });
 const all = () => true;
 const walk = (...locs: Loc[]): Nav => locs.reduce(visit, emptyNav());
 
@@ -42,6 +44,17 @@ describe("sameLoc", () => {
     expect(sameLoc({ kind: "past", id: "a" }, { kind: "past", id: "a" })).toBe(true);
     expect(sameLoc({ kind: "past", id: "a" }, ses("a"))).toBe(false);
   });
+
+  // A tab switch is a step of its own: Back from Maintenance lands on Activity, as a browser's would.
+  it("tells a screen's tabs, sub-tabs and narrowing apart", () => {
+    expect(sameLoc(fleetAt("activity"), fleetAt("maint", "overview"))).toBe(false);
+    expect(sameLoc(fleetAt("maint", "security"), fleetAt("maint", "code"))).toBe(false);
+    expect(sameLoc(fleetAt("maint", "security", "/a"), fleetAt("maint", "security"))).toBe(false);
+    expect(sameLoc(fleetAt("maint", "security", "/a"), fleetAt("maint", "security", "/a"))).toBe(true);
+    expect(sameLoc(dashAt("/r", "today"), dashAt("/r", "maint", "overview"))).toBe(false);
+    expect(sameLoc(dashAt("/r", "maint", "work"), { ...dashAt("/r", "maint", "work"), name: "renamed" } as Loc)).toBe(true);
+    expect(sameLoc(dashAt("/r", "today"), dashAt("/s", "today"))).toBe(false);
+  });
 });
 
 describe("visit", () => {
@@ -71,6 +84,18 @@ describe("visit", () => {
     const n = visit(walk(fleet, { kind: "ext", id: "x", pid: 7 }), { kind: "ext", id: "y", pid: 7 });
     expect(n.cur).toEqual({ kind: "ext", id: "y", pid: 7 });
     expect(n.back).toEqual([fleet]);
+  });
+
+  it("records a tab switch and steps back onto the tab you left", () => {
+    let n = walk(ses("a"), fleetAt("activity"), fleetAt("maint", "overview"), fleetAt("maint", "security", "/r"));
+    expect(n.back).toEqual([ses("a"), fleetAt("activity"), fleetAt("maint", "overview")]);
+    n = step(n, "back", all)!.nav;
+    expect(n.cur).toEqual(fleetAt("maint", "overview"));
+    n = step(n, "back", all)!.nav;
+    expect(n.cur).toEqual(fleetAt("activity"));
+    // The pass after the step finds the screen on that tab and records nothing.
+    expect(visit(n, fleetAt("activity"))).toBe(n);
+    expect(step(n, "forward", all)!.to).toEqual(fleetAt("maint", "overview"));
   });
 
   it("caps the back stack at the oldest end", () => {
@@ -162,6 +187,7 @@ describe("labels", () => {
     expect(navTip("back", dash("/r"), "episko", "⌘[")).toBe("Back to episko · dashboard (⌘[)");
     expect(navTip("forward", ses("a"), "episko: fix it", "Alt+→")).toBe("Forward to episko: fix it · session (Alt+→)");
     expect(navTip("back", fleet, "", "")).toBe("Back to All projects");
+    expect(navTip("back", fleetAt("maint", "security"), "Maintenance › Security", "")).toBe("Back to All projects · Maintenance › Security");
     expect(navTip("back", ses("a"), "", "")).toBe("Back to session");
   });
 

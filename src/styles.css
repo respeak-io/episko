@@ -2564,6 +2564,56 @@ select.in-ctl { cursor: pointer; }
 .svr-badge.failed { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 13%, transparent); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
 @media (prefers-reduced-motion: no-preference) { .svr-badge.serving .svr-ic { animation: pulse 2.4s ease-in-out infinite; } }
 
+/* The Maintenance chip (./maintpop): always drawn, as flat as a jobs-only pill until something needs
+   you. A project's seven facets are dots in card order (hollow: nothing read it); the fleet counts. */
+.mt-badge { display: none; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px; cursor: pointer; font: 650 11px var(--font-ui); color: var(--muted-2); background: transparent; border: 1px solid var(--hair-strong); }
+.mt-badge.show { display: flex; }
+.mt-badge:hover { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
+.mt-badge .mb-ic { display: flex; --ic: 12px; }
+.mt-badge .u-spin { width: 10px; height: 10px; margin: 0; }
+.mt-badge .mb-n { font-variant-numeric: tabular-nums; }
+.mt-badge .mb-dots { display: flex; gap: 2.5px; }
+.mt-badge .mb-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--muted-2); }
+.mt-badge .mb-dots i.l-bad { background: var(--st-error); }
+.mt-badge .mb-dots i.l-warn { background: var(--st-working); }
+.mt-badge .mb-dots i.l-muted, .mt-badge .mb-dots i.l-unread { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); opacity: .75; }
+.mt-badge.t-ok, .mt-badge.busy { color: var(--muted); }
+.mt-badge.t-warn { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 11%, transparent); border-color: color-mix(in srgb, var(--st-working) 30%, transparent); }
+.mt-badge.t-bad { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 12%, transparent); border-color: color-mix(in srgb, var(--st-error) 32%, transparent); }
+
+/* Its popover: the facets as two columns of cells, what to do, then every project in a line. */
+.mtpop { width: 392px; max-height: min(72vh, 620px); overflow-y: auto; padding: 8px; gap: 3px; }
+.mtpop .mb-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mt-prog { margin: 2px 4px 5px; }
+.mtpop .mb-cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 6px; padding: 1px 0 3px; }
+.mtpop .mb-cell { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mtpop .mb-cell:hover { background: var(--surface); }
+.mtpop .mb-cell .fk { flex: none; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
+.mtpop .mb-cell .mt-v { min-width: 0; text-align: right; }
+.mtpop .mb-h { display: flex; align-items: center; gap: 6px; margin-top: 3px; padding: 7px 4px 3px; border-top: 1px solid var(--hair); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2); }
+.mtpop .mb-h .n { color: var(--text); }
+.mtpop .mb-h .w { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.mtpop .mb-line, .mtpop .mb-proj { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 5px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font: 600 11.5px var(--font-ui); text-align: left; cursor: pointer; }
+.mtpop .mb-line:hover, .mtpop .mb-proj:hover { background: var(--surface); }
+.mtpop .mb-line .t { flex: none; max-width: 64%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-line .d, .mtpop .mb-proj .d { flex: 1; min-width: 0; font-size: 10px; font-weight: 500; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-line.past .t { font-weight: 500; color: var(--muted-2); }
+.mtpop .mb-proj .nm { flex: none; max-width: 40%; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-proj .t { flex: 1; min-width: 0; font-weight: 500; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtpop .mb-proj .d { flex: none; }
+.mtpop .mb-more { display: block; width: 100%; padding: 4px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--muted-2); font: 500 10.5px var(--font-ui); text-align: left; cursor: pointer; }
+.mtpop .mb-more:hover { background: var(--surface); color: var(--muted); }
+.mtpop .mb-said { margin: 3px 6px 5px; font-size: 11px; line-height: 1.45; color: var(--muted-2); }
+.mtpop .mb-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 6px 2px; font-size: 10px; color: var(--muted-2); }
+.mtpop .mb-tally { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 12px; padding: 4px 6px 3px; font-size: 11px; color: var(--muted); }
+.mtpop .mb-tally b { font: 700 13px var(--font-mono); color: var(--text); }
+.mtpop .mb-tally .l-bad b { color: var(--st-error); }
+.mtpop .mb-tally .l-warn b { color: var(--st-working); }
+.mtpop .mb-tally .w { margin-left: auto; font-size: 10px; color: var(--muted-2); }
+.mtpop .mb-board { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 6px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--hair-strong); background: var(--surface); color: var(--text); font: 600 11.5px var(--font-ui); cursor: pointer; }
+.mtpop .mb-board:hover { border-color: var(--accent-line); color: var(--accent-ink); }
+.mtpop .mb-board .ic { --ic: 13px; }
+
 /* The clamp is not cosmetic: openServersPop pins top to the pill with no viewport check, and a
    dozen auto-backgrounded commands would run off the screen. The width pays for the two log buttons. */
 .svrpop { min-width: 330px; max-width: 520px; padding: 7px; max-height: min(70vh, 560px); overflow-y: auto; }
@@ -3130,25 +3180,44 @@ select.in-ctl { cursor: pointer; }
 .mt-chip { display: inline-flex; align-items: center; gap: 6px; }
 .mt-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .mt-card { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: 4px 16px; align-items: center; padding: 10px 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
-.mt-card.b-needs { border-color: color-mix(in srgb, var(--st-error) 28%, transparent); }
+.mt-card.b-needs { border-color: color-mix(in srgb, var(--st-error) 30%, transparent); box-shadow: inset 3px 0 0 var(--st-error); }
+.mt-card.b-drifting { box-shadow: inset 3px 0 0 var(--st-working); }
 .mt-card.quiet { padding: 5px 12px; background: transparent; }
 /* An earlier answer while its re-read is out: still legible, plainly not this moment's. */
-.mt-card.stale .mt-cells, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
+.mt-card.stale .mt-cells .mt-v, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
+/* A scan while it runs (./maintview progressHtml): its words, a share, and what holds a slot right now.
+   The width is set, never looped, and glides from where it stood (./dom holdMaintPlace). */
+.mt-prog { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.mt-prog-h { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--muted); }
+.mt-prog-h .u-spin { flex: none; margin: 0; }
+.mt-prog-h .t { flex: none; font-weight: 600; color: var(--text); white-space: nowrap; }
+.mt-prog-h .now { flex: 1; min-width: 0; font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-prog-h .pc { flex: none; font-size: 10px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.mt-pbar { height: 4px; border-radius: 3px; background: var(--surface); overflow: hidden; }
+.mt-pbar > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease-out; }
+/* A card being read: a hairline of the same bar along its foot, a spinner on each facet whose read holds a slot. */
+.mt-card { position: relative; }
+.mt-card .mt-cbar { position: absolute; left: 12px; right: 12px; bottom: 3px; height: 2px; background: color-mix(in srgb, var(--surface) 70%, transparent); }
+.mt-cell.busy .fk { color: var(--accent-ink); }
+.mt-cell .fk .u-spin { width: 8px; height: 8px; border-width: 1.2px; margin: 0 4px 0 0; vertical-align: -1px; }
+.mt-dhead + .mt-prog { margin: -2px 2px 2px; }
+.sb-held { font-style: italic; }
 .mt-card.quiet .fc-av { width: 18px; height: 18px; font-size: 9.5px; }
 .mt-id { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; min-width: 0; cursor: pointer; }
 .mt-id .fc-av { grid-row: span 2; }
 .mt-card.quiet .mt-id .fc-av { grid-row: auto; }
-.mt-nm { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-nm { font-size: 13.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-id:hover .mt-nm { color: var(--accent-ink); }
-.mt-sub { font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-sub { font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-card.quiet .mt-sub { display: none; }
 .mt-cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 2px 8px; min-width: 0; }
 .mt-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 3px 6px; border-radius: 6px; cursor: pointer;
   border: 0; background: none; font: inherit; color: inherit; text-align: left; }
 .mt-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mt-cell:hover { background: var(--lift); }
-.mt-cell .fk { font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
-.mt-v { font: 11px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.mt-cell .fk { font: 600 10px var(--font-ui); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.mt-v { font: 500 11.5px var(--font-ui); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.mt-v.l-bad, .mt-v.l-warn { font-weight: 650; }
 .mt-v.l-bad { color: var(--st-error); }
 .mt-v.l-bad::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
 .mt-v.l-warn { color: var(--st-working); }
@@ -3156,10 +3225,10 @@ select.in-ctl { cursor: pointer; }
 .mt-v.l-muted, .mt-v.l-unread { color: var(--muted-2); opacity: .7; }
 .mt-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); vertical-align: 1px; }
 .mt-finds { grid-column: 1 / -1; display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--hair); }
-.mt-find { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-find { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 32px; padding: 4px 4px; border-bottom: 1px solid var(--hair); }
 .mt-find:last-child { border-bottom: 0; }
 .mt-find .t { flex: none; max-width: 55%; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-find .d { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-find .d { flex: 1; min-width: 0; font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-sev { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); align-self: center; }
 .l-bad > .mt-sev, .mt-sev.l-bad { background: var(--st-error); }
 .l-warn > .mt-sev, .mt-sev.l-warn { background: var(--st-working); }
@@ -3175,8 +3244,9 @@ select.in-ctl { cursor: pointer; }
 .mt-find.go:has(> .t:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mt-find.go > .t:focus-visible { outline: 0; }
 .mt-board:focus { outline: 0; }
-.mt-verb { --ic: 12px; flex: none; border: 1px solid transparent; background: none; color: var(--muted-2); font: 10.5px var(--font-mono); padding: 2px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
-.mt-find:hover .mt-verb, .mt-cov:hover .mt-verb, .mt-cv:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-verb { --ic: 12px; flex: none; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--hair-strong); background: none; color: var(--muted); font: 600 11px var(--font-ui); padding: 2px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.mt-verb:hover { background: var(--accent-wash); }
+.mt-find:hover .mt-verb, .mt-cv:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
 .mt-fold { align-self: stretch; text-align: left; border: 1px dashed var(--hair-strong); background: none; color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-fold:hover { color: var(--text); }
 .mt-clear { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
@@ -3206,29 +3276,74 @@ select.in-ctl { cursor: pointer; }
 .mt-pick:hover { background: var(--lift); }
 .mt-pick.on { border-color: var(--accent-line); background: var(--accent-wash); }
 .mt-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.mt-sec { display: flex; flex-direction: column; padding: 8px 12px 2px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
+.mt-sec { display: flex; flex-direction: column; padding: 10px 14px 4px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
 .mt-sec .mt-finds { margin-top: 4px; }
 .mt-rn { flex: none; max-width: 24%; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .mt-rn:hover { color: var(--accent-ink); }
-/* Coverage: one row per reason across projects, muted throughout; a quiet bot below what stops a check. */
-.mt-cover { margin-top: 10px; }
-.mt-cv { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); font-size: 11.5px; color: var(--muted); }
+/* Coverage: grouped by what closes a gap, each kind headed by what it means. A row is centred on its
+   line: what and why over the sentence that explains it, its projects as chips, then its one action. */
+.mt-cover { margin-top: 10px; padding-bottom: 10px; }
+.mt-lede { margin: 3px 0 2px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.mt-cvk { display: flex; flex-direction: column; min-width: 0; margin-top: 12px; }
+.mt-cvk-h { --ic: 13px; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; }
+.mt-cvk-h .ic { flex: none; color: var(--muted); }
+.mt-cvk-h b { font-weight: 650; color: var(--text); }
+.mt-cvk-h .n { font: 600 10px var(--font-mono); padding: 1px 6px; border-radius: 8px; background: var(--surface); color: var(--muted); }
+.mt-cvk-h .aslink { margin-left: auto; }
+.mt-cvk.k-ask .mt-cvk-h .ic { color: var(--accent-ink); }
+.mt-cvk.k-access .mt-cvk-h .ic, .mt-cvk.k-failed .mt-cvk-h .ic { color: var(--st-working); }
+.mt-cvk-w { margin: 2px 0 6px 20px; font-size: 11px; line-height: 1.45; color: var(--muted-2); }
+.mt-cvs { display: grid; grid-template-columns: 84px minmax(200px, 1fr) fit-content(50%) auto; column-gap: 12px; min-width: 0; margin-left: 20px; border-top: 1px solid var(--hair); }
+.mt-cvs.one { grid-template-columns: 84px minmax(0, 1fr) auto; }
+/* each row is a subgrid of its kind, so chips and actions line up from row to row */
+.mt-cv { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; row-gap: 4px; min-width: 0; min-height: 38px;
+  padding: 5px 4px; border-bottom: 1px solid var(--hair); font-size: 11.5px; color: var(--muted); }
 .mt-cv:last-child { border-bottom: 0; }
-.mt-cv .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
-.mt-cv .t { flex: none; max-width: 38%; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-cv .t em { font: 500 11px var(--font-mono); font-style: normal; color: var(--muted); margin-left: 6px; }
-.mt-cv .p, .mt-cv .d { flex: 1; min-width: 0; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-cv .d { font-size: 10.5px; }
+.mt-cv .fk { font: 650 9.5px var(--font-ui); letter-spacing: .07em; text-transform: uppercase; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cv .m { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mt-cv .t { min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-cv .t b { font-weight: 600; color: var(--text); }
+.mt-cv .t em { margin-left: 7px; font-style: normal; color: var(--muted); }
+.mt-cv .d { min-width: 0; font-size: 10.5px; line-height: 1.4; color: var(--muted-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .mt-cv .d:empty { display: none; }
-.mt-cv .p .mt-rn, .mt-cv .p .aslink { max-width: none; font-size: 11.5px; }
-.mt-cv .a { flex: none; max-width: 45%; display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mt-cv .d .mt-fix { display: inline; margin: 0; white-space: normal; }
+.mt-cv .d .mt-fix > span { white-space: nowrap; }
+.mt-cv .d .aslink { font-size: 10.5px; }
+.mt-cv .p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.mt-cv .a { display: inline-flex; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
 .mt-cv .a:empty { display: none; }
-.mt-cv .mt-fix { min-width: 0; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-cv .mt-verb { padding: 0 6px; }
-.mt-cv.quiet { opacity: .75; }
-.mt-cv.quiet .t { font-weight: 500; color: var(--muted); }
-.mt-fixrow { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0 7px 5px 105px; }
-.mt-fixrow .mt-fix { min-width: 0; margin: 0; }
+.mt-cv .mt-verb { padding: 2px 8px; }
+.mt-cv.quiet .t b { font-weight: 500; color: var(--muted); }
+@media (max-width: 900px) {
+  .mt-cvs, .mt-cvs.one { display: flex; flex-direction: column; }
+  .mt-cv { grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; } .mt-cv .fk { display: none; }
+  .mt-cv .m { grid-area: 1 / 1; } .mt-cv .a { grid-area: 1 / 2; } .mt-cv .p { grid-area: 2 / 1 / 3 / 3; }
+}
+/* A project on a Coverage row: its card's avatar and its name, and the chip is the row's action for it
+   (its check, its settings page, its account), so no word rides inside it. */
+.mt-chip { --ic: 8px; display: inline-flex; align-items: center; gap: 5px; max-width: 220px; height: 22px; padding: 0 7px 0 2px; border-radius: 6px;
+  border: 1px solid var(--hair-strong); background: none; color: var(--muted); font: 450 11px var(--font-ui); white-space: nowrap; cursor: pointer; }
+.mt-chip .av { flex: none; display: grid; place-items: center; width: 16px; height: 16px; }
+.mt-chip .av img { width: 14px; height: 14px; border-radius: 4px; object-fit: cover; }
+.mt-chip .av i { display: grid; place-items: center; width: 14px; height: 14px; border-radius: 4px; font: 700 8.5px var(--font-ui); font-style: normal; color: var(--bg-2); }
+.mt-chip .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mt-chip .as { flex: none; padding-left: 6px; border-left: 1px solid var(--hair-strong); color: var(--text); }
+.mt-chip.acct { --ic: 11px; }
+.mt-chip > .ic { flex: none; margin: 0; color: var(--muted-2); }
+.mt-chip:hover > .ic { color: var(--accent-ink); }
+.mt-chip:hover { color: var(--text); border-color: var(--accent-line); background: var(--accent-wash); }
+.mt-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mt-chip[aria-disabled="true"] { cursor: default; border-color: var(--hair); background: none; }
+.mt-chip .u-spin { margin: 0; }
+/* A click's answer on its project's chip, in its level's colour; one that failed opens nothing, so it never lights up. */
+.mt-chip.res { max-width: 320px; }
+.mt-chip.res .rs { flex: none; padding-left: 6px; border-left: 1px solid var(--hair-strong); color: var(--muted-2); }
+.mt-chip.res.one .rs { padding-left: 4px; border-left: 0; }
+.mt-chip.res .rs.l-bad { color: var(--st-error); font-weight: 600; }
+.mt-chip.res .rs.l-warn { color: var(--st-working); font-weight: 600; }
+.mt-chip.res .rs.l-info { color: var(--text); }
+span.mt-chip.res { cursor: default; border-style: dashed; }
+span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); background: none; }
 /* Hosts are not projects: a row each, below the cards, the worst Prod cell of what it runs. */
 .mt-hosts { margin-top: 10px; padding-bottom: 6px; }
 .mt-host { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
@@ -3257,9 +3372,45 @@ select.in-ctl { cursor: pointer; }
 .mt-hostcard .mt-verb { padding: 0 6px; }
 .mt-hostcard:hover .mt-verb { color: var(--accent-ink); border-color: var(--accent-line); }
 /* A tab's boards: built for its question, muted throughout; only a value that needs you is coloured. */
-.mt-board { padding-bottom: 8px; scroll-margin-top: 10px; }
-.mt-sec-h { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.mt-note { min-width: 0; font-size: 10px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-board { padding-bottom: 10px; scroll-margin-top: 10px; }
+/* A card's head: its icon, a real title, what it covers, then how it stands and its (i). A card with
+   something red or amber in it says so on the left edge and in a count, before you read a row. */
+.mt-sec-h { display: flex; align-items: center; gap: 9px; min-width: 0; min-height: 26px; }
+/* .ic's trailing margin is for an icon before a word; a centred or gapped icon drops it */
+:is(.mt-hi, .mt-help, .mt-ok, .mt-ring, .mt-cvk-h, .mt-verb, .mtguide .mg-h) > .ic { margin: 0; }
+.mt-hi { --ic: 13px; flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--surface); color: var(--muted); }
+.mt-ht { flex: none; font-size: 13px; font-weight: 650; letter-spacing: -.005em; color: var(--text); white-space: nowrap; }
+.mt-note { min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-sec-h .mt-note { flex: 1; font-size: 11px; }
+.mt-hx { flex: none; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.mt-flag { font: 650 10.5px var(--font-ui); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.mt-flag.l-bad { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); }
+.mt-flag.l-warn { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
+.mt-ok { --ic: 12px; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.mt-ok .ic { color: var(--st-done); }
+.mt-sec.l-bad { box-shadow: inset 3px 0 0 var(--st-error); }
+.mt-sec.l-warn { box-shadow: inset 3px 0 0 var(--st-working); }
+.mt-sec.l-bad .mt-hi { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); }
+.mt-sec.l-warn .mt-hi { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
+.mt-board.clear { padding-bottom: 10px; }
+.mt-board.clear .mt-ht { color: var(--muted); }
+.mt-help { --ic: 14px; flex: none; display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--muted-2); cursor: pointer; }
+.mt-help:hover, .mt-help:focus-visible { color: var(--accent-ink); background: var(--accent-wash); outline: 0; }
+.ac-h .mt-help { width: 20px; height: 20px; --ic: 13px; }
+/* What a tab answers, under its bar, so a board is never the first thing that has to explain itself. */
+.mt-tablede { margin: -2px 2px 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.mt-top .mt-note { flex: 0 1 auto; }
+/* A card's (i) popover (./maintguide): what it shows, what it reads, how to read it, what you can do. */
+.mtguide { width: 380px; max-width: calc(100vw - 16px); padding: 13px 15px 14px; gap: 9px; }
+.mtguide .mg-h { --ic: 15px; display: flex; align-items: center; gap: 8px; }
+.mtguide .mg-h .ic { color: var(--accent-ink); }
+.mtguide .mg-h b { font-size: 13.5px; font-weight: 650; }
+.mtguide .mg-what { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text); }
+.mtguide .mg-part { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--hair); }
+.mtguide .mg-k { font: 650 9.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--muted-2); }
+.mtguide p { margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+.mtguide .mg-src { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; line-height: 1.4; color: var(--text); }
+.mtguide .mg-src .k { display: block; font-size: 10px; color: var(--muted-2); }
 .mt-n { font: 11px var(--font-mono); color: var(--muted); }
 .mt-n.l-bad { color: var(--st-error); }
 .mt-n.l-warn { color: var(--st-working); }
@@ -3268,32 +3419,39 @@ select.in-ctl { cursor: pointer; }
 :where(.mt-door) { border: 0; background: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; border-radius: 3px; }
 .mt-door:hover { text-decoration: underline; text-underline-offset: 2px; }
 .mt-door:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.mt-sevs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
-.mt-sevb { display: inline-flex; align-items: baseline; gap: 6px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--hair); background: none; color: var(--muted-2); font: 10.5px var(--font-mono); cursor: pointer; }
-.mt-sevb b { font-size: 15px; font-weight: 600; color: var(--muted); }
-.mt-sevb.l-bad b { color: var(--st-error); }
-.mt-sevb.l-warn b { color: var(--st-working); }
-.mt-sevb[aria-disabled="true"] { cursor: default; opacity: .55; }
-.mt-sevb:not([aria-disabled="true"]):hover { background: var(--lift); }
-.mt-sevb.on { border-color: var(--accent-line); background: var(--accent-wash); color: var(--text); }
-.mt-advs { display: flex; flex-direction: column; border-top: 1px solid var(--hair); }
-.mt-adv { display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(0, auto); gap: 4px 12px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
-.mt-adv:last-child { border-bottom: 0; }
-.mt-sevl { font: 10.5px var(--font-mono); color: var(--muted-2); white-space: nowrap; }
+/* Advisories by severity: each group's head folds it and names who is hit; a row is the advisory and its projects. */
+.mt-advbar { --ic: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 2px; }
+.mt-advbar .k { margin-right: 4px; font: 650 9.5px var(--font-ui); letter-spacing: .07em; text-transform: uppercase; color: var(--muted-2); }
+.mt-sevg { display: flex; flex-direction: column; min-width: 0; border-top: 1px solid var(--hair); }
+.mt-sec-h + .mt-sevg, .mt-advbar + .mt-sevg { margin-top: 6px; }
+.mt-sevh { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 36px; padding: 0 4px 0 0; }
+.mt-sevt { --ic: 13px; flex: none; display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 4px; border: 0; border-radius: 6px; background: none; color: var(--muted-2); cursor: pointer; }
+.mt-sevt:hover { background: var(--lift); }
+.mt-sevt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mt-sevt b { font: 650 13px var(--font-ui); color: var(--muted); font-variant-numeric: tabular-nums; }
+.mt-sevt b.l-bad { color: var(--st-error); }
+.mt-sevt b.l-warn { color: var(--st-working); }
+.mt-sevh .mt-pcs { flex: 1; justify-content: flex-start; }
+.mt-sevl { font: 600 11.5px var(--font-ui); color: var(--muted); white-space: nowrap; text-transform: capitalize; }
 .mt-sevl.l-bad { color: var(--st-error); }
-.mt-sevl.l-bad::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; }
 .mt-sevl.l-warn { color: var(--st-working); }
+.mt-sevg .mt-advs { margin: 0 0 4px 25px; }
+.mt-advs { display: flex; flex-direction: column; border-top: 1px solid var(--hair); }
+.mt-adv { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 4px 12px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
+.mt-adv:last-child { border-bottom: 0; }
 .mt-adv .m { display: grid; min-width: 0; }
 .mt-adv .t { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-adv .t b { font-weight: 600; color: var(--text); }
 .mt-adv .s { display: flex; align-items: baseline; gap: 4px; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; }
 .mt-adv .s .aslink { padding: 0 2px; font: 10.5px var(--font-mono); }
+.mt-more { align-self: flex-start; margin: 0 0 8px 25px; padding: 2px 6px; border: 0; border-radius: 5px; background: none; color: var(--accent-ink); font: 500 11px var(--font-ui); cursor: pointer; }
+.mt-more:hover { background: var(--accent-wash); }
 .mt-pcs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
-.mt-pc { display: inline-flex; align-items: baseline; gap: 2px; max-width: 100%; padding: 1px 2px 1px 8px; border-radius: 7px; border: 1px solid var(--hair); }
-.mt-pc .mt-rn { max-width: 140px; font-size: 11px; }
-.mt-pc .mt-verb { padding: 0 6px; }
-.mt-pc:hover .mt-verb { color: var(--accent-ink); }
-.mt-pc.solo { padding: 1px 2px; }
+/* the small chip: who an advisory hits; it narrows the tab to that project */
+.mt-chip.sm { gap: 4px; height: 20px; padding: 0 6px 0 2px; border-color: var(--hair); font-size: 10.5px; }
+.mt-chip.sm .av { width: 14px; height: 14px; }
+.mt-chip.sm .av img, .mt-chip.sm .av i { width: 12px; height: 12px; border-radius: 3px; font-size: 7.5px; }
+.mt-chip.sm .c { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .mt-cis { display: flex; flex-direction: column; margin-top: 6px; border-top: 1px solid var(--hair); }
 .mt-ci { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 120px) minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
 .mt-ci:last-child { border-bottom: 0; }
@@ -3307,7 +3465,7 @@ select.in-ctl { cursor: pointer; }
 .mt-runs > .l-run { background: transparent; box-shadow: inset 0 0 0 1px var(--muted-2); }
 .mt-scroll { overflow-x: auto; margin-top: 6px; }
 .mt-tbl { width: 100%; min-width: 520px; border-collapse: collapse; font-size: 11.5px; }
-.mt-tbl th { padding: 4px 6px 6px; text-align: left; font: 500 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); white-space: nowrap; }
+.mt-tbl th { padding: 4px 6px 6px; text-align: left; font: 650 9.5px var(--font-ui); letter-spacing: .07em; text-transform: uppercase; color: var(--muted-2); border-bottom: 1px solid var(--hair); white-space: nowrap; }
 .mt-tbl td { padding: 6px; border-bottom: 1px solid var(--hair); white-space: nowrap; vertical-align: middle; }
 .mt-tbl tr:last-child td { border-bottom: 0; }
 .mt-tbl .r { text-align: right; }
@@ -3349,7 +3507,7 @@ select.in-ctl { cursor: pointer; }
 .mt-sw-past.on { border-color: var(--accent-line); background: var(--accent-wash); color: var(--text); }
 @media (max-width: 760px) {
   .mt-card { grid-template-columns: minmax(0, 1fr); } .mt-find .t { max-width: none; } .mt-rn { max-width: 40%; }
-  .mt-adv { grid-template-columns: 54px minmax(0, 1fr); } .mt-pcs { grid-column: 2; justify-content: flex-start; }
+  .mt-adv { grid-template-columns: minmax(0, 1fr); } .mt-adv .mt-pcs { justify-content: flex-start; }
   .mt-ci { grid-template-columns: minmax(0, 1fr) auto auto; } .mt-ci .w, .mt-ci .mt-runs { display: none; }
 }
 
@@ -3363,26 +3521,37 @@ select.in-ctl { cursor: pointer; }
 .mt-dhead { display: flex; align-items: center; gap: 8px 16px; padding: 6px 8px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
 .mt-dhead .mt-cells { flex: 1; }
 .mt-dwhen { flex: none; display: flex; align-items: center; gap: 8px; }
+/* To do and Runs on side by side, Coverage across both: a short card never leaves a column empty. */
 .mt-dgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; align-items: start; }
-.mt-dcol { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.mt-dc { scroll-margin-top: 8px; }
-.mt-dc .mt-finds { margin-top: 0; border-top: 0; padding: 0 6px; }
+.mt-dgrid > #mtc-sources { grid-column: 1 / -1; }
+.mt-dc { min-width: 0; scroll-margin-top: 8px; }
+.mt-dnone { padding: 6px 4px 0; }
+.mt-dacts { display: flex; gap: 8px; padding: 2px 4px 0; }
+.mt-drows { display: flex; flex-direction: column; margin-top: 4px; border-top: 1px solid var(--hair); }
+.mt-drows:empty { display: none; }
+.mt-drows > .mt-kv, .mt-drows > .mt-probe { padding: 7px 4px; border-bottom: 1px solid var(--hair); }
+.mt-drows > :last-child { border-bottom: 0; }
+.mt-dfoot { margin: 0; padding: 7px 4px 0; border-top: 1px solid var(--hair); font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+.mt-drows:empty + .mt-dfoot { border-top: 0; }
+.mt-dfoot .aslink { font-size: 11px; }
+/* What read cleanly, as one line per facet under the gaps. */
+.mt-cvk.k-read .mt-cvk-h .ic { color: var(--st-done); }
+.mt-rds { display: flex; flex-wrap: wrap; gap: 6px 24px; min-width: 0; margin: 6px 0 0 20px; padding-top: 8px; border-top: 1px solid var(--hair); font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.mt-rd .fk { margin-right: 8px; font: 650 9.5px var(--font-ui); letter-spacing: .07em; text-transform: uppercase; color: var(--muted-2); }
 .mt-across { flex: none; font-size: 10px; }
 /* a sub-tab's top row on the dashboard: no picker, only the way across, on the right */
 .mt-grow { flex: 1; }
-.mt-board .mt-sec-h .xb { margin-left: auto; align-self: center; }
+.mt-board .mt-sec-h .xb { align-self: center; }
 .mt-board > .mt-kv { padding: 6px 4px; margin-top: 4px; border-top: 1px solid var(--hair); }
-.mt-kv, .mt-cov { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
-.mt-kv > span:first-child, .mt-cov .s { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-kv { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
+.mt-kv > span:first-child { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-kv .mono { flex: none; max-width: 60%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-kv .l-warn, .mt-cov .mt-v.l-warn { color: var(--st-working); }
+.mt-kv .l-warn { color: var(--st-working); }
 .mt-runs { flex: none; display: inline-flex; gap: 3px; align-self: center; }
 .mt-runs > * { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
 .mt-runs > .l-ok { background: var(--muted-2); }
 .mt-runs > .l-bad { background: var(--st-error); }
 .mt-runs > .mt-door:hover { box-shadow: 0 0 0 1px var(--muted); }
-.mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
-.mt-cov .mt-v { flex: none; max-width: 55%; }
 .mt-probe { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
 .mt-probe .k { flex: none; max-width: 30%; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-probe .u { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3390,8 +3559,7 @@ select.in-ctl { cursor: pointer; }
 .mt-probe .mt-v:empty { display: none; }
 .mt-hostl .aslink { flex: none; font-size: 11px; }
 .mt-dom .aslink { flex: none; max-width: 30%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-said { margin: -3px 7px 5px 105px; font-size: 10.5px; color: var(--muted-2); }
-.mt-fix { display: block; margin: 0 7px 5px 105px; font: 10.5px var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mt-fix { font: 10.5px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
 @media (max-width: 1080px) { .mt-dgrid { grid-template-columns: minmax(0, 1fr); } .mt-dhead { flex-wrap: wrap; } }
 
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card

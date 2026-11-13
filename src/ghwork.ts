@@ -51,6 +51,10 @@ export function ghWho(pinned: string | null, accounts: GhAccount[]): GhWho {
 
 export const ghPickable = (accounts: GhAccount[]): boolean => accounts.length > 1;
 
+/** The login each project reads as, for a surface that offers the picker; null where there is nothing to pick. */
+export const ghReadsAs = (roots: readonly string[], pinOf: (root: string) => string | null, accounts: GhAccount[]): Record<string, string> | null =>
+  ghPickable(accounts) ? Object.fromEntries(roots.map((r) => [r, ghWho(pinOf(r), accounts).login ?? "—"])) : null;
+
 /// What `gh_accounts` returns: `outdated` is the installed version when gh predates
 /// `auth status --json`, which leaves `accounts` empty however many you have.
 export interface GhAccounts { accounts: GhAccount[]; outdated: string | null }

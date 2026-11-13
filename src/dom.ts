@@ -144,16 +144,56 @@ export function wireTips() {
 
 const FOCUSABLE = "button, a[href], [tabindex]";
 const mtKey = (el: HTMLElement) => JSON.stringify(Object.entries(el.dataset).filter(([k]) => k.startsWith("mt")).sort());
+const barKey = (b: HTMLElement) => b.closest<HTMLElement>("[data-mtroot]")?.dataset.mtroot ?? "";
+// A board, or a place a view marks: what a repaint keeps where it was on screen.
+const PLACES = "[id^='mtb-'], [data-place]";
+const placeKey = (p: Element) => p.id || (p as HTMLElement).dataset.place || "";
+function scrollerOf(n: Element): HTMLElement | null {
+  for (let x = n.parentElement; x; x = x.parentElement) {
+    const o = getComputedStyle(x).overflowY;
+    if ((o === "auto" || o === "scroll") && x.scrollHeight > x.clientHeight) return x;
+  }
+  return null;
+}
+// What the person is looking at: the place around the control they used while it is in view, else the
+// first place that starts in view, else the one the view's top falls inside.
+function lookedAt(el: HTMLElement, used: Element | null): { key: string; top: number } | null {
+  const all = [...el.querySelectorAll(PLACES)], s = all.length ? scrollerOf(all[0]) : null;
+  if (!s) return null;
+  const v = s.getBoundingClientRect();
+  const seen = (p: Element) => { const r = p.getBoundingClientRect(); return r.bottom > v.top && r.top < v.bottom; };
+  const mine = used?.closest(PLACES);
+  const p = mine && el.contains(mine) && seen(mine) ? mine : all.find((x) => seen(x) && x.getBoundingClientRect().top >= v.top) ?? all.find(seen);
+  return p ? { key: placeKey(p), top: p.getBoundingClientRect().top } : null;
+}
+
 /** Write a Maintenance surface, whose `innerHTML` rebuilds every control and every scroller. The keyboard
  *  goes to the same control's successor, or, for a button that became *checking…*, to whatever stands where
- *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place. */
-export function holdMaintPlace(el: HTMLElement, html: string): void {
+ *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place,
+ *  and so does what is on screen when something lands above it; `keep` false is a new tab, read from its top. */
+export function holdMaintPlace(el: HTMLElement, html: string, keep = true): void {
   const a = document.activeElement, on = a instanceof HTMLElement && a !== el && el.contains(a) && !(a instanceof HTMLInputElement) ? a : null;
   const key = on && mtKey(on), at = on ? [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(on) : -1, typed = !!on?.matches(":focus-visible");
   const boardOf = (s: Element) => s.closest("[id^='mtb-']")?.id ?? "";
   const wide = [...el.querySelectorAll(".mt-scroll")].filter((s) => s.scrollLeft).map((s) => [boardOf(s), s.scrollLeft] as const);
+  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
+  // The fleet's scroller is inside what is rewritten, so its offset goes back first and the place corrects it.
+  const top = keep ? el.querySelector(".mt-body")?.scrollTop ?? 0 : 0;
+  const was = keep ? lookedAt(el, a instanceof Element && el.contains(a) ? a : null) : null;
   el.innerHTML = html;
+  const body = top ? el.querySelector(".mt-body") : null;
+  if (body) body.scrollTop = top;
+  const now = was && [...el.querySelectorAll(PLACES)].find((p) => placeKey(p) === was.key), s = now && scrollerOf(now);
+  if (now && s) s.scrollTop += now.getBoundingClientRect().top - was.top;
   for (const [id, left] of wide) for (const s of el.querySelectorAll(".mt-scroll")) if (boardOf(s) === id) s.scrollLeft = left;
+  // A bar rebuilt by innerHTML would jump: start each where its predecessor stood, so the width glides.
+  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
+    const from = bars.get(barKey(b)), to = b.style.width;
+    if (!from || from === to) continue;
+    b.style.width = from;
+    void b.offsetWidth;
+    b.style.width = to;
+  }
   if (!on) return;
   const all = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const next = (key !== "[]" ? all.find((x) => mtKey(x) === key) : undefined) ?? (typed ? all[Math.min(at, all.length - 1)] : undefined);

@@ -1,13 +1,18 @@
 // Back and forward between what has owned the stage: a session or a copy of state.ts's
-// `mirror`. Pure; main.ts records in renderAllNow and reopens through the existing openers.
+// `mirror`, plus the tab a screen was on. Pure; main.ts records in renderAllNow and reopens
+// through the existing openers.
+
+// Where inside a screen: its tab, a sub-tab, the project a tab is narrowed to. Spelled by the
+// screen that owns it (./fleetui, ./dashboard) and only compared here; `mirror` never carries it.
+export interface Place { tab: string; sub?: string; only?: string }
 
 // A tiled run group is one place: clicking its tiles moves `activeId` but not the location.
 export type Loc =
   | { kind: "session"; id: string; group?: string }
   | { kind: "ext"; id: string; pid: number }
   | { kind: "past"; id: string }
-  | { kind: "dash"; root: string; name: string }
-  | { kind: "fleet" }
+  | { kind: "dash"; root: string; name: string; at?: Place }
+  | { kind: "fleet"; at?: Place }
   | { kind: "review"; root: string; name: string; number: number };
 
 export type NavDir = "back" | "forward";
@@ -25,10 +30,15 @@ export function sameLoc(a: Loc | null, b: Loc | null): boolean {
     case "session": return b.kind === "session" && (a.group || b.group ? a.group === b.group : a.id === b.id);
     case "ext": return b.kind === "ext" && a.pid === b.pid;
     case "past": return b.kind === "past" && a.id === b.id;
-    case "dash": return b.kind === "dash" && a.root === b.root;
-    case "fleet": return b.kind === "fleet";
+    case "dash": return b.kind === "dash" && a.root === b.root && samePlace(a.at, b.at);
+    case "fleet": return b.kind === "fleet" && samePlace(a.at, b.at);
     case "review": return b.kind === "review" && a.root === b.root && a.number === b.number;
   }
+}
+
+// A tab switch is a step of its own, so Back undoes it as a browser's would.
+function samePlace(a: Place | undefined, b: Place | undefined): boolean {
+  return (a?.tab ?? "") === (b?.tab ?? "") && (a?.sub ?? "") === (b?.sub ?? "") && (a?.only ?? "") === (b?.only ?? "");
 }
 
 /** Where the stage is now. `null` (a handover mid-flight) is not a place and records nothing. */
@@ -84,6 +94,7 @@ export function navTip(dir: NavDir, to: Loc | null, name: string, chord: string)
   const keys = chord ? ` (${chord})` : "";
   if (!to) return `${dir === "back" ? "Nothing to go back to" : "Nothing to go forward to"}${keys}`;
   const verb = dir === "back" ? "Back to" : "Forward to";
-  const what = to.kind === "fleet" ? "All projects" : name ? `${name} · ${locKind(to)}` : locKind(to);
+  const what = to.kind === "fleet" ? (name ? `All projects · ${name}` : "All projects")
+    : name ? `${name} · ${locKind(to)}` : locKind(to);
   return `${verb} ${what}${keys}`;
 }

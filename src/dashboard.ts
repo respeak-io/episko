@@ -38,9 +38,12 @@ import {
   ciRows, clampMaint, coverRows, coverSetups, domainStates, errorSummary, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
-import { askingFor, maintInput, maintOf, maintSnap, scanProject } from "./maintscan";
-import { maintClick, maintKey, maintSev, type MaintHost } from "./maintui";
-import { maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
+import { askingFor, maintInput, maintOf, maintSnap, maintStale, projectProgress, scanProject } from "./maintscan";
+import { progressText, readingNow } from "./maintbadge";
+import { findSource, type Facet } from "./maintsources";
+import { maintAdv, maintClick, maintKey, type MaintHost } from "./maintui";
+import { MAINT_SUBS, maintDashHtml, type MaintDash, type MaintSub } from "./maintview";
+import type { Place } from "./nav";
 import { discoverTasks, execCmd } from "./tasks";
 import {
   applyPick, emptyPick, pickNone, pickState, rangeOutcome, togglePickAll,
@@ -55,14 +58,14 @@ import {
   type WtInfo,
 } from "./branches";
 import { openMenu } from "./menu";
-import { openBranchMenu } from "./projmenu";
+import { openBranchMenu, openGhPicker } from "./projmenu";
 import {
   ALLOW_ALL, claims, claimForSession, DEFAULT_POLICY, defaultBase, defaultWhere, dispatchBases,
   dispatchBranch, dropClaim, recordClaim, resolveClaim, whereProblem,
   type ClaimAllow, type ClaimOutcome, type ClaimPolicy, type DispatchWhere,
 } from "./claim";
 import {
-  bucketed, claimComment, closeComment, filterWork, ghPickable, ghWho, holderOf, isoDay, quietFor,
+  bucketed, claimComment, closeComment, filterWork, ghPickable, ghReadsAs, ghWho, holderOf, isoDay, quietFor,
   releaseComment, staleCandidates, workTally, type GhResult, type GhThread, type KeptIssue, type WorkKind,
 } from "./ghwork";
 import type { HistEntry } from "./history";
@@ -429,8 +432,16 @@ export function reloadDashGh(r: string): void {
   if (dashTab === "maint") void loadMaint(true);
 }
 
-// One project's Maintenance scan, shaped like `loadBranches`: the first look at the tab per open
-// asks, a render never does, and the answers land in ./maintscan's cache, which renderAll paints.
+// A look at the tab, once per open, asks only past the window (`maintStale`): going between the
+// fleet and this tab re-reads nothing just read. ⟳ and an account switch go to `loadMaint` direct.
+function lookMaint(): void {
+  const r = root();
+  maintFor = r;
+  if (r && maintStale(r)) void loadMaint();
+}
+
+// One project's Maintenance scan, shaped like `loadBranches`: a render never asks, and the
+// answers land in ./maintscan's cache, which renderAll paints.
 async function loadMaint(force = false): Promise<void> {
   const r = root();
   if (!r) return;
@@ -1175,7 +1186,7 @@ export function openDashboard(project: string, path: string, tab?: DashTab, door
   showTab();
   host.renderAll();
   void loadDash();
-  if (dashTab === "maint") void loadMaint();
+  if (dashTab === "maint") lookMaint();
   if (door) openDashDoor(door);
 }
 
@@ -1263,12 +1274,31 @@ function showTab(): void {
 function setDashTab(tab: DashTab): void {
   dashTab = tab;
   showTab();   // now, not on the coalesced pass: ⌘I and the tour read the class straight after
-  if (tab === "maint" && maintFor !== root()) void loadMaint();
+  if (tab === "maint" && maintFor !== root()) lookMaint();
   host.renderAll();   // ◨ is greyed or lit from the truth by the pass
 }
 
 /** The tour's "today" need: a step lighting a Today column must not find it hidden. */
 export function dashToday(): void { if (dashMirror() && dashTab !== "today") setDashTab("today"); }
+
+/** Where on this pane the stage is: what main.ts's `here()` records for back/forward (./nav). */
+export const dashPlace = (): Place => dashTab === "maint" ? { tab: "maint", sub: dashSub } : { tab: "today" };
+
+/** Back/forward's way in. Same project: only the tab moves, since `openDashboard` re-reads it all. */
+export function openDashboardAt(project: string, path: string, at?: Place): void {
+  const tab: DashTab | undefined = at && (at.tab === "maint" ? "maint" : "today");
+  if (at?.tab === "maint" && MAINT_SUBS.includes(at.sub as MaintSub)) dashSub = at.sub as MaintSub;
+  if (tab && root() === path) { setDashTab(tab); return; }
+  openDashboard(project, path, tab);
+}
+
+/** The header's Maintenance popover: this project's tab, at a sub-tab and board when a line names one.
+ *  Choosing the tab is the ask, as a click on it here is. */
+export function openDashboardMaint(project: string, path: string, sub: MaintSub = "overview", board?: BoardId | null): void {
+  if (root() !== path) openDashboard(project, path, "maint");
+  else if (dashTab !== "maint") setDashTab("maint");
+  openMaintSub(sub, board);
+}
 
 // Painted now so the board is there to scroll to; scoped, since the fleet draws the same ids. A cell
 // that cannot check lands on its tab's Coverage, which says why.
@@ -1276,6 +1306,7 @@ function openMaintSub(sub: MaintSub, board?: BoardId | null, cover = false): voi
   dashSub = sub;
   if (dashTab !== "maint") setDashTab("maint");
   renderDash();
+  host.renderAll();   // the pass records the sub-tab for back/forward
   if (board === undefined && !cover) return;
   const box = $("dashMaint");
   const at = cover ? box.querySelector<HTMLElement>(".mt-cover") : board ? box.querySelector<HTMLElement>(`#mtb-${board}`) : null;
@@ -1294,16 +1325,20 @@ function maintNow(now: number): MaintDash {
   const dn = depsNow(), tally = depTally(dn.adv, dn.prs, dn.out);
   const quiet = depSilent(tally, depTools) && !depLoading;
   const host = hostSummary(inp, th, now);
+  const prog = projectProgress(r);
+  const busy = [...new Set([...e?.live ?? []].flatMap((id): Facet[] => { const f = findSource(id)?.facet; return f ? [f] : []; }))];
   return {
     card: {
       path: r, name: nm, accent: accentFor(r), icon: iconFor(r), sub: "", cells, findings: rows, band: projectBand(cells),
       reading: maintLoading || (!!e && (e.detecting || e.out > 0)), err: e?.err ?? null,
-      stale: !!e && (e.detecting || e.out > 0) && e.at > 0,
+      stale: !!e && (e.detecting || e.out > 0) && e.at > 0, prog: prog && prog.frac, busy,
     },
     rows, offers: offers(r, inp), setups: coverSetups(r, inp), checked: e?.at ?? 0,
+    progress: prog && { frac: prog.frac, text: progressText(prog, true), now: readingNow(prog) },
     tab: {
-      ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, maintSev, now),
-      sub: dashSub, filter: { root: r, name: nm }, sev: maintSev, names: { [r]: nm },
+      ...tabModel(dashSub === "overview" ? null : dashSub, [{ path: r, inp, cells, rows }], r, now),
+      sub: dashSub, filter: { root: r, name: nm }, adv: { ...maintAdv }, names: { [r]: nm },
+      faces: { [r]: { icon: iconFor(r), accent: accentFor(r) } }, accounts: ghReadsAs([r], ghAccountFor, ghLogins),
       prod: { projects: prod.length ? 1 : 0, checking: askingFor(r, prod), sources: prod, hosts: host?.allowed ? [host.alias] : [] },
       dash: {
         outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
@@ -1345,6 +1380,7 @@ const maintHost: MaintHost = {
   nameOf: (r) => r === root() ? name() : basename(r),
   prefill: (project, path, text) => { void prefillAgent(project, path, text); },
   terminal: (project, path, cmd) => host.handToTerminal(project, path, cmd),
+  pickAccount: (at, r, then) => openGhPicker(at, r, then),
   // Review lands here: on this project it is a tab switch, not a second load of the pane.
   openDashboard: (n, p, tab, door) => {
     if (p !== root()) openDashboard(n, p, tab, door);
