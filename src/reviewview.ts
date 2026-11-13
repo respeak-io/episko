@@ -120,7 +120,7 @@ export const addBtn = (fi: number, side: Side, line: number, pos: RangePos) =>
   `<button class="rv-add${pos ? ` on ${pos}` : ""}" data-rvadd="${fi}:${side}:${line}" title="Comment on this line · drag, or shift-click another, to take a range">+</button>`;
 
 function commentHtml(who: string, at: string, body: string, now: number, url = ""): string {
-  const md = body.trim() ? mdHtml(body) : `<p class="iss-none">No text.</p>`;
+  const md = body.trim() ? mdHtml(body, "data-rvurl") : `<p class="iss-none">No text.</p>`;
   return `<div class="rv-c"><div class="rv-ch"><span class="who">${esc(who || "someone")}</span>
     <span class="when">${esc(ago(at, now))}</span>${url ? `<button class="aslink sq" data-rvurl="${escAttr(url)}" title="Open this comment on github.com">${icon("externalLink", "solo")}</button>` : ""}</div>
     <div class="md">${md}</div></div>`;
@@ -166,7 +166,7 @@ export function draftHtml(d: DraftComment, showWhere: boolean): string {
       <span class="rv-sp"></span>
       <button class="rv-mini" data-rvdedit="${escAttr(d.id)}">${icon("pencil")}Edit</button>
       <button class="rv-mini danger" data-rvddel="${escAttr(d.id)}">${icon("trash")}Delete</button></div>
-    <div class="md">${mdHtml(d.body)}</div></div>`;
+    <div class="md">${mdHtml(d.body, "data-rvurl")}</div></div>`;
 }
 
 export interface ComposeModel {
@@ -182,7 +182,7 @@ export function composeHtml(c: ComposeModel): string {
   return `<div class="rv-compose"><div class="rv-ch"><b>${what}${c.side === "LEFT" ? " (removed)" : ""}</b>
       <span class="rv-sp"></span><div class="gseg">${tab(false, `${icon("pencil")}Write`)}${tab(true, `${icon("eye")}Preview`)}</div></div>
     ${c.preview
-      ? `<div class="md rv-prev">${c.text.trim() ? mdHtml(c.text) : `<p class="iss-none">Nothing to preview.</p>`}</div>`
+      ? `<div class="md rv-prev">${c.text.trim() ? mdHtml(c.text, "data-rvurl") : `<p class="iss-none">Nothing to preview.</p>`}</div>`
       : `<textarea id="rvCompText" rows="3" placeholder="Leave a comment · markdown · ⌘↵ adds it to your review" spellcheck="true">${esc(c.text)}</textarea>`}
     <div class="rv-cb">
       ${c.canSuggest ? `<button class="rv-mini" data-rvsuggest title="Propose the replacement text inline, as GitHub's suggestion block">${icon("suggest")}Suggest a change</button>` : ""}
@@ -233,7 +233,7 @@ export function conversationHtml(pr: PrReview, now: number, text: string, busy: 
       const word = it.state === "APPROVED" ? "approved" : it.state === "CHANGES_REQUESTED" ? "requested changes" : it.state === "DISMISSED" ? "review dismissed" : "reviewed";
       const tone = it.state === "APPROVED" ? "ok" : it.state === "CHANGES_REQUESTED" ? "bad" : "";
       const head = `<div class="rv-tl review"><span class="rv-tag ${tone}">${word}</span> <b>${esc(it.who)}</b> <span class="dim">${esc(ago(it.at, now))}</span></div>`;
-      return it.body.trim() ? head + `<div class="rv-c"><div class="md">${mdHtml(it.body)}</div></div>` : head;
+      return it.body.trim() ? head + `<div class="rv-c"><div class="md">${mdHtml(it.body, "data-rvurl")}</div></div>` : head;
     }
     return commentHtml(it.who, it.at, it.body, now);
   }).join("");

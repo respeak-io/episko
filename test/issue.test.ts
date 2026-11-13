@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, inlineIssue, mdHtml, stateWord, stepThread, threadLine, type GhIssueRead } from "../src/issue";
+import { ago, mdHtml, stateWord, stepThread, threadLine, type GhIssueRead } from "../src/issue";
 import { icon } from "../src/svgicons";
 
 const NOW = new Date(2026, 6, 31, 14, 0, 0).getTime();
@@ -50,78 +50,118 @@ describe("threadLine", () => {
   });
 });
 
-describe("inlineIssue", () => {
-  it("escapes the markup in somebody else's prose", () => {
-    expect(inlineIssue("<script>alert(1)</script>")).toBe("&lt;script&gt;alert(1)&lt;/script&gt;");
-  });
-
-  it("leaves a code span alone, whatever is inside it", () => {
-    // Taking code spans out first is the whole rule: every other order eats code.
-    expect(inlineIssue("try `a **b** [c](d)` here"))
-      .toBe("try <code>a **b** [c](d)</code> here");
-  });
-
-  it("links http(s) and nothing else", () => {
-    expect(inlineIssue("[docs](https://example.com/x)"))
-      .toContain('data-dashurl="https://example.com/x"');
-    // Nested parens leave the tail as text; what matters is that no link comes out of it.
-    expect(inlineIssue("[docs](javascript:alert(1))")).not.toContain("data-dashurl");
-    expect(inlineIssue("see https://example.com/y")).toContain('data-dashurl="https://example.com/y"');
-  });
-
-  it("draws an image as a link rather than fetching it", () => {
-    const out = inlineIssue("![a shot](https://example.com/s.png)");
-    expect(out).toContain(`${icon("image")}a shot`);
-    expect(out).not.toContain("<img");
-  });
-
-  it("leaves an underscore alone, because snake_case is commoner than _emphasis_", () => {
-    expect(inlineIssue("read bg_log_roots first")).toBe("read bg_log_roots first");
-    expect(inlineIssue("**hard** and *soft* and ~~gone~~"))
-      .toBe("<b>hard</b> and <i>soft</i> and <s>gone</s>");
-  });
-});
-
 describe("mdHtml", () => {
-  it("keeps a fenced block verbatim and escaped", () => {
-    const out = mdHtml("before\n```rs\nlet x = a<b;\n```\nafter");
-    expect(out).toContain("<pre><code>let x = a&lt;b;</code></pre>");
-    expect(out).toContain("<p>before</p>");
-    expect(out).toContain("<p>after</p>");
-  });
+  const rv = (src: string) => mdHtml(src, "data-rvurl");
 
-  it("does not leave an unclosed fence eating the rest of the thread", () => {
-    expect(mdHtml("```\nstill open")).toBe("<pre><code>still open</code></pre>");
-  });
-
-  it("draws both kinds of list, a task list included", () => {
-    const out = mdHtml("- one\n- [ ] two\n- [x] three\n\n1. first\n2. second");
-    expect(out).toContain("<ul><li>one</li>");
-    expect(out).toContain(`${icon("square", "solo")}</span> two`);
-    expect(out).toContain(`${icon("squareCheck", "solo")}</span> three`);
-    expect(out).toContain("<ol><li>first</li><li>second</li></ol>");
+  it("draws a table, which is why a PR's test report used to read as pipes", () => {
+    const out = rv("| Check | Result |\n| --- | --- |\n| `pytest` | 3111 passed |");
+    expect(out).toContain("<table>");
+    expect(out).toContain("<th>Check</th>");
+    expect(out).toContain("<td><code>pytest</code></td>");
+    expect(out).not.toContain("| ---");
   });
 
   it("keeps a soft line break, because people write issues in lines", () => {
-    expect(mdHtml("one\ntwo")).toBe("<p>one<br>two</p>");
+    expect(rv("one\ntwo")).toBe("<p>one<br>two</p>");
   });
 
-  it("draws headings, quotes and rules", () => {
-    expect(mdHtml("# Big")).toBe('<p class="md-h">Big</p>');
-    expect(mdHtml("#### Small")).toBe('<p class="md-h sm">Small</p>');
-    expect(mdHtml("> quoted")).toBe("<blockquote>quoted</blockquote>");
-    expect(mdHtml("---")).toBe("<hr>");
+  it("leaves snake_case alone and draws emphasis as GitHub does", () => {
+    expect(rv("read bg_log_roots first")).toBe("<p>read bg_log_roots first</p>");
+    expect(rv("**hard** and *soft* and ~~gone~~"))
+      .toBe("<p><strong>hard</strong> and <em>soft</em> and <del>gone</del></p>");
+  });
+
+  it("keeps code verbatim and escaped, whatever is inside it", () => {
+    expect(rv("try `a **b** [c](https://d.io)` here")).toBe("<p>try <code>a **b** [c](https://d.io)</code> here</p>");
+    const out = rv("before\n```rs\nlet x = a<b;\n```\nafter");
+    expect(out).toContain("<pre><code>let x = a&lt;b;</code></pre>");
+    expect(out).toContain("<p>before</p>");
+    expect(out).toContain("<p>after</p>");
+    expect(rv("```\nstill open")).toBe("<pre><code>still open</code></pre>");
+  });
+
+  it("draws nested lists and task lists", () => {
+    const out = rv("- one\n  - inner\n- [ ] two\n- [x] three\n\n1. first\n2. second");
+    expect(out).toMatch(/<li>one<ul>\s*<li>inner<\/li>/);
+    expect(out).toContain(`${icon("square", "solo")}</span> two`);
+    expect(out).toContain(`${icon("squareCheck", "solo")}</span> three`);
+    expect(out).not.toContain("<input");
+    expect(out).toMatch(/<ol>\s*<li>first<\/li>\s*<li>second<\/li>\s*<\/ol>/);
+  });
+
+  it("draws headings at a thread's size, quotes and rules", () => {
+    expect(rv("# Big")).toBe('<p class="md-h">Big</p>');
+    expect(rv("#### Small")).toBe('<p class="md-h sm">Small</p>');
+    expect(rv("> quoted")).toMatch(/^<blockquote>\s*<p>quoted<\/p>\s*<\/blockquote>$/);
+    expect(rv("---")).toBe("<hr>");
   });
 
   it("renders an empty body as nothing rather than as a stray tag", () => {
-    expect(mdHtml("")).toBe("");
-    expect(mdHtml("\n\n")).toBe("");
+    expect(rv("")).toBe("");
+    expect(rv("\n\n")).toBe("");
   });
 
-  it("closes every block it opened", () => {
-    const out = mdHtml("- one\ntext");
-    expect(out).toBe("<ul><li>one</li></ul><p>text</p>");
+  it("hands a link to the pane it is drawn in, and never as an href", () => {
+    // The review stage listens for data-rvurl alone: a dashboard attribute there is a dead click.
+    expect(rv("[docs](https://x.io/?a=1&b=2)")).toContain('data-rvurl="https://x.io/?a=1&amp;b=2"');
+    expect(mdHtml("[docs](https://x.io)", "data-dashurl")).toContain('data-dashurl="https://x.io"');
+    expect(rv("see https://e.com/y.")).toContain('data-rvurl="https://e.com/y">https://e.com/y</a>.');
+    expect(rv("[a](https://x.io) https://y.io")).not.toMatch(/href="(?!#")/);
   });
+
+  it("links http(s) and nothing else", () => {
+    expect(rv("[docs](javascript:alert(1))")).not.toContain("data-rvurl");
+    expect(rv("[notes](docs/x.md) mail a@b.co")).toBe("<p>notes mail a@b.co</p>");
+  });
+
+  it("draws an image as a link rather than fetching it, markdown or HTML", () => {
+    const md = rv("![a shot](https://example.com/s.png)");
+    expect(md).toContain(`${icon("image")}a shot</a>`);
+    const html = rv('<img width="300" src="https://github.com/user-attachments/assets/abc" alt="shot">');
+    expect(html).toContain('data-rvurl="https://github.com/user-attachments/assets/abc"');
+    for (const out of [md, html]) expect(out).not.toMatch(/<img|\ssrc=/);
+  });
+
+  it("puts a badge in one link, not an anchor inside an anchor", () => {
+    const out = rv("[![ci](https://img.io/b.svg)](https://ci.io/run)");
+    expect(out.match(/<a\b/g)).toHaveLength(1);
+    expect(out).toContain('data-rvurl="https://ci.io/run"');
+  });
+
+  it("drops what a PR template left as a comment and keeps a fold around its code", () => {
+    expect(rv("<!-- describe your change -->\nFixes it")).toBe("<p>Fixes it</p>");
+    const out = rv("<details>\n<summary>Logs</summary>\n\n```\nlog\n```\n</details>");
+    expect(out).toMatch(/^<details>\s*<summary>Logs<\/summary><pre><code>log<\/code><\/pre><\/details>$/);
+  });
+
+  it("closes an author's tag inside the body it opened in", () => {
+    // Bodies are painted one after another, so an open <b> would embolden the next comment.
+    expect(rv("Text <b>bold\n\nnext").endsWith("</b>")).toBe(true);
+    expect(rv("</b></details> stray")).toBe("<p> stray</p>");
+  });
+
+  const nasty = [
+    "<script>alert(1)</script>",
+    "<img src=x onerror=alert(1)>",
+    "<a href=\"javascript:alert(1)\">x</a>",
+    "<iframe src=\"https://evil\"></iframe>",
+    "<svg onload=alert(1)>",
+    "<div style=\"background:url(javascript:x)\">x</div>",
+    "[x](<javascript:alert(1)>)",
+    "![x](javascript:alert(1))",
+    "<details open ontoggle=alert(1)><summary>s</summary>b</details>",
+    "<style>body{display:none}</style>",
+    "| a |\n|---|\n| <img src=x onerror=alert(1)> |",
+  ];
+  for (const src of nasty) {
+    it(`renders ${JSON.stringify(src).slice(0, 50)} inert`, () => {
+      const out = rv(src).replaceAll(icon("image"), "");
+      expect(out).not.toMatch(/<(script|iframe|svg|style|object|embed|form|input|img)\b/i);
+      expect(out).not.toMatch(/\son\w+\s*=/i);
+      expect(out).not.toMatch(/javascript:/i);
+      expect(out).not.toMatch(/\s(style|src)\s*=/i);
+    });
+  }
 });
 
 describe("stepThread", () => {
