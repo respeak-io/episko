@@ -147,7 +147,7 @@ export const AGENT_CAPABILITIES = [
 ] as const; // user-facing capabilities, not transport names: any protocol may produce session-state
 export type AgentCapability = typeof AGENT_CAPABILITIES[number];
 
-type ProviderManifestEntry = { capabilities: string[] };
+type ProviderManifestEntry = { capabilities: string[]; protocol?: unknown };
 const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
 const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
 
@@ -193,9 +193,12 @@ export function agentCapabilitySummary(a: AgentCli): string {
     a.capabilities.includes("usage") ? "usage" : "phase",
     a.capabilities.includes("context") ? "context" : "",
     a.capabilities.includes("permissions") ? "permissions" : "",
+    isCommunityProvider(a.id) ? "community" : "",
   ].filter(Boolean);
   return features.join(", ") || "integrated";
 }
+/** Reports through Episko's agent protocol, via an extension Episko does not vouch for at runtime. */
+export const isCommunityProvider = (id: string | null | undefined): boolean => !!id && !!PROVIDER_MANIFEST[id]?.protocol;
 // the one place the null-path convention is read
 export const agentInstalled = (a: AgentCli) => a.path !== null;
 // Claude's catalogue row, spelled here rather than in the backend's AGENTS table (it must go through

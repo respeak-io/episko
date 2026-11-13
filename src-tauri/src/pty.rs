@@ -384,6 +384,7 @@ fn stream_pty_session(
         if let Some(st) = app.try_state::<AppState>() {
             st.sessions.lock().unwrap().remove(&session_id);
             agent::stop_runtime(&st, &session_id);
+            crate::protocol::forget_session(&st, &session_id);
             if let Some(p) = child_pid {
                 st.owned_pids.lock().unwrap().remove(&p);
             }
@@ -927,7 +928,7 @@ pub(crate) fn spawn_agent(
         .map_err(|e| e.to_string())?;
 
     // Through `argv_command`: on Windows most of these are npm `.cmd` shims CreateProcessW cannot start.
-    let args = agent::start_provider(
+    let start = agent::start_provider(
         spec.id,
         app.clone(),
         &state,
@@ -939,15 +940,20 @@ pub(crate) fn spawn_agent(
             mode.as_deref(),
         ),
     )?;
-    let mut cmd = argv_command(&bin, args);
+    let mut cmd = argv_command(&bin, start.args);
     cmd.cwd(&workdir);
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
     }
+    // Ours is wherever Episko was started from; OpenCode picks its project from PWD, not cwd.
+    cmd.env("PWD", &workdir);
     cmd.env("PATH", augmented_path());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     apply_utf8_locale(&mut cmd);
+    for (k, v) in start.env {
+        cmd.env(k, v);
+    }
 
     log::info!(
         "spawn agent · {} · {session_id} · {workdir} · {bin}",
@@ -957,6 +963,7 @@ pub(crate) fn spawn_agent(
         Ok(child) => child,
         Err(e) => {
             agent::stop_runtime(&state, &session_id);
+            crate::protocol::forget_session(&state, &session_id);
             return Err(e.to_string());
         }
     };
@@ -1298,6 +1305,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
         let _ = s.killer.kill();
         agent::stop_runtime(&state, &session_id);
         crate::mcp::forget_session(&state, &session_id);
+        crate::protocol::forget_session(&state, &session_id);
     }
     Ok(())
 }

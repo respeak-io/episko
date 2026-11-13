@@ -23,5 +23,36 @@
       "resume",
       "history"
     ]
+  },
+  "omp": {
+    "capabilities": [
+      "session-state",
+      "activity",
+      "context",
+      "usage",
+      "launch-permissions"
+    ],
+    "protocol": {
+      "extension": "episko.ts",
+      "args": ["--extension", "{file}"],
+      "permissionModes": [
+        { "id": "default", "label": "OMP config", "sub": "Uses tools.approvalMode from your OMP config", "glyph": "◇", "asks": true, "args": [] },
+        { "id": "always-ask", "label": "Always ask", "sub": "Reads go through; asks before writes and commands", "glyph": "◆", "asks": true, "args": ["--approval-mode", "always-ask"] },
+        { "id": "write", "label": "Accept edits", "sub": "Reads and writes go through; commands still ask", "glyph": "✎", "asks": true, "args": ["--approval-mode", "write"] },
+        { "id": "yolo", "label": "Yolo", "sub": "Runs everything without asking", "glyph": "⚠", "asks": false, "args": ["--approval-mode", "yolo"] }
+      ]
+    }
+  },
+  "opencode": {
+    "capabilities": [
+      "session-state",
+      "activity",
+      "context",
+      "usage"
+    ],
+    "protocol": {
+      "extension": "plugins/episko.ts",
+      "env": { "OPENCODE_CONFIG_DIR": "{dir}" }
+    }
   }
 }

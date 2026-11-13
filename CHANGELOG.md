@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ OMP and OpenCode panes show their phase, tool calls, files, plan, context, tokens and cost,
+  as Claude Code and Codex panes do. Each reports through a small extension Episko loads into
+  it for that launch only, so nothing changes in the agent's own setup. Both are marked
+  *community*: approvals stay in the agent's terminal, and Episko never retries a turn for them.
+! An agent started from a pane now sees the pane's folder in `PWD`, not the folder Episko was
+  started from. OpenCode picks its project from `PWD`, so it could open in the wrong folder.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
