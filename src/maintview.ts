@@ -5,8 +5,8 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  ADV_PEEK, advFix, advFold, advVerbs, boardDoor, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvFold, type AdvRow, type Band,
-  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
+  ADV_PEEK, advFix, advFold, advVerbs, boardDoor, boardTab, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvFold, type AdvRow, type Band,
+  type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverResult, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SevGroup, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
   WEEK_LINES, weekFigs, weekNotCompared, weekSummary, type WeekDigest,
@@ -291,8 +291,20 @@ const projChip = (v: MaintTabView, root: string, attrs: string, tip: string, tai
 const acctHtml = (v: MaintTabView, root: string, label = false) => projChip(v, root, ` data-mtacct="${escAttr(root)}"`,
   `${nameOf(v, root)} reads as ${v.accounts?.[root] ?? "the active account"}. Pick one that can see it, and the project is checked again`,
   `<span class="as">${label ? "reads as " : ""}${esc(v.accounts?.[root] ?? "")}</span>${icon("chevronDown", "solo")}`, " acct");
+// A click's answer: the project, what came back in its level's colour, and the board that shows it.
+// A read that failed opens nothing, since no board holds it; `one` is a narrowed row's, which names no project.
+function resChip(v: MaintTabView, root: string, x: CoverResult, one = false): string {
+  const name = nameOf(v, root), said = `<span class="rs l-${x.level}">${esc(x.text)}</span>`;
+  const who = one ? "" : `<span class="av">${faceHtml(v, root)}</span><span class="nm">${esc(name)}</span>`;
+  const tip = [`${name}: ${x.text}`, ...x.tip.slice(0, 6)];
+  if (!x.board) return `<span class="mt-chip res${one ? " one" : ""}" data-tip="${escAttr(tip.join("\n"))}">${who}${said}</span>`;
+  return `<button class="mt-chip res${one ? " one" : ""}" data-mtboard="${x.board}" data-mtroot="${escAttr(root)}"`
+    + ` data-tip="${escAttr([...tip, `Open ${tabName(boardTab(x.board))} at its board, narrowed to ${name}`].join("\n"))}">${who}${said}</button>`;
+}
 function coverChip(v: MaintTabView, g: CoverGroup, root: string): string {
   const a = g.action, name = nameOf(v, root);
+  const ran = g.ran?.[root];
+  if (ran) return resChip(v, root, ran);
   if (a?.kind === "settings" && a.urls[root]) return projChip(v, root, ` data-mturl="${escAttr(a.urls[root])}"`, `Open ${a.urls[root]}`, icon("externalLink", "solo"));
   if (a?.kind === "fix" && v.accounts && fixPicksAccount(a.fix)) return acctHtml(v, root);
   const o = a?.kind === "run" ? v.offers.find((x) => x.source === a.source && x.root === root) : undefined;
@@ -319,7 +331,7 @@ const setupHtml = (root: string) => [["propose", "Propose with an agent",
 
 // Each kind says what it means and what answers it, so a row's short word never stands alone.
 const COVER_HEAD: Record<CoverKind, [title: string, why: string, ic: IconName]> = {
-  ask: ["Ready to check", "These read only when you click a project, so a scan never sends anything or runs anything in one. A public service gets names, never code; a tool runs in the project, on this machine.", "play"],
+  ask: ["Read on a click", "These read only when you click a project, so a scan never sends anything or runs anything in one. A public service gets names, never code; a tool runs in the project, on this machine. Once read, a project's chip says what came back and opens the board that shows it.", "play"],
   unread: ["Not read yet", "This session has not read these, or their read is still out.", "clock"],
   access: ["Needs a login, token or tool", "Episko asked and was refused, or has nothing to ask with. Run the command, add the token or pick the account the row offers, and the next check reads it.", "lock"],
   forge: ["Switched off on the forge", "The repository has this feature turned off, so there is nothing to read. The link on each row opens the page that switches it on.", "ban"],
@@ -349,16 +361,22 @@ function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
   const always = pub && d ? ` <button class="aslink" data-mtpref="${escAttr(d.id)}"`
     + ` data-tip="${escAttr(`Settings › On its own: ask ${d.label} in every check, from this machine only`)}">Ask in every check…</button>` : "";
   // A public read across projects is one click; a tool stays one project at a time, from its chip.
-  const all = pub && !one && g.roots.length > 1 ? `<button class="mt-verb" data-mtrunall="${escAttr(d!.id)}"`
-    + ` data-tip="${escAttr(`Check with ${d!.label} for these ${g.roots.length} projects, once each. ${said}`)}">Check all ${g.roots.length}</button>` : "";
+  const left = g.roots.filter((r) => !g.ran?.[r]), done = g.roots.filter((r) => g.ran?.[r]);
+  const all = pub && !one && left.length > 1 ? `<button class="mt-verb" data-mtrunall="${escAttr(d!.id)}"`
+    + ` data-tip="${escAttr(`Check with ${d!.label} for these ${left.length} projects, once each. ${said}`)}">Check all ${left.length}</button>` : "";
+  // What came back stays on the row until it is cleared; it is on the boards either way.
+  const clear = done.length && g.source ? `<button class="aslink" data-mtseen="${escAttr(g.source)}" data-mtroot="${escAttr(done.join("\n"))}"`
+    + ` data-tip="Take these answers off Coverage. What they found stays on its boards">Clear</button>` : "";
+  const mine = one ? g.ran?.[g.roots[0]] : undefined;
   const act = (cmd ? cmdHtml(v, fix!, g.roots[0]) : "") + (acct && one ? acctHtml(v, g.roots[0], true) : "")
     + (a?.kind === "settings" && one ? settingsHtml(Object.values(a.urls)[0]) : "")
     + (a?.kind === "allow" ? allowHtml(a.host) : "")
     + (a?.kind === "token" ? tokenHtml(a.source, a.door) : "")
-    + (one && offer ? verbHtml(offer) : all)
+    + (mine ? resChip(v, g.roots[0], mine, true) : one && offer ? verbHtml(offer) : all) + clear
     + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
   const tip = g.detail && g.detail !== said ? ` data-tip="${escAttr(g.detail)}"` : "";
-  return `<div class="mt-cv${one ? " one" : ""}${g.quiet ? " quiet" : ""}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
+  // A place the repaint holds still (./dom holdMaintPlace), keyed by tab since a row's key could recur on another.
+  return `<div class="mt-cv${one ? " one" : ""}${g.quiet ? " quiet" : ""}" data-place="${escAttr(`cv:${v.sub}:${g.key}`)}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
     + `<span class="m"><span class="t"${tip}><b>${esc(g.what)}</b><em>${esc(g.why)}</em></span>`
     + `<span class="d">${detail}${always}</span></span>${one ? "" : `<span class="p">${coverChips(v, g)}</span>`}<span class="a">${act}</span></div>`;
 }
@@ -374,7 +392,7 @@ function coverHtml(v: MaintTabView): string {
   }).join("");
   const across = new Set(gaps.flatMap((g) => g.roots)).size;
   const note = !gaps.length ? "nothing missing" : one ? plural(gaps.length, "gap") : `${plural(gaps.length, "gap")} across ${plural(across, "project")}`;
-  return `<section class="mt-sec mt-board mt-cover" tabindex="-1">${headHtml("cover", "Coverage", note)}`
+  return `<section class="mt-sec mt-board mt-cover" data-place="cover:${v.sub}" tabindex="-1">${headHtml("cover", "Coverage", note)}`
     + `<p class="mt-lede">What this tab could not read, grouped by what closes the gap. A gap is never counted as fine.</p>${kinds}</section>`;
 }
 

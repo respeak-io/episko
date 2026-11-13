@@ -115,7 +115,15 @@ export function maintInput(root: string): MaintInput | null {
   const e = cache.get(root);
   if (!e) return null;
   const skip = [...maintPrefs.off, ...hostSkips(e.det, maintPrefs.hosts)];
-  return { det: e.det, ...currentReports(e.det, e.reports), skip, asking: askingIds(root), hosts: maintPrefs.hosts };
+  return { det: e.det, ...currentReports(e.det, e.reports), skip, asking: askingIds(root), clicked: [...clicked.get(root) ?? []], hosts: maintPrefs.hosts };
+}
+
+// Per root, the click-only sources a click asked this session, so Coverage keeps saying what came back. Never a cc- key.
+const clicked = new Map<string, Set<string>>();
+/** Coverage's Clear: those projects' answers stay on their boards, and leave the row. */
+export function forgetClicked(id: string, roots: readonly string[]): void {
+  for (const r of roots) clicked.get(r)?.delete(id);
+  paint();
 }
 
 let running = 0;
@@ -222,6 +230,7 @@ export async function runSource(root: string, id: string): Promise<SourceReport>
   const g = forgotten.get(root) ?? 0;
   const k = askKey(root, id);
   asking.set(k, (asking.get(k) ?? 0) + 1);
+  clicked.set(root, (clicked.get(root) ?? new Set()).add(id));
   paint();
   try {
     const r = await slot(() => readOne(root, id, "explicit", true), true);
@@ -273,6 +282,7 @@ export function forgetTokenReads(kind: string): void {
 /** An account switch: what the other identity answered must not be drawn as this one's. */
 export function forgetMaint(root: string): void {
   cache.delete(root);
+  clicked.delete(root);
   if (weeksHeld?.[root]) weeksHeld = Object.fromEntries(Object.entries(weeksHeld).filter(([r]) => r !== root));
   if (snaps[root] || kept[root] || weeks[root]) { delete snaps[root]; delete kept[root]; delete weeks[root]; saveSnaps(); }
   forgotten.set(root, (forgotten.get(root) ?? 0) + 1);

@@ -10,14 +10,14 @@ import { dlog } from "./debug";
 import { sshPrefill } from "./deploy";
 import { verifyCommands } from "./deps";
 import {
-  ADV_FOLDS, BOARD_IDS, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
-  sweepRows, tabFindings, traceAsk, type Finding,
+  ADV_FOLDS, BOARD_IDS, boardTab, clampMaint, coverFirst, coverSetups, covText, doorAt, errorPicks, FACET_TAB, facetCell, findingTarget, narrowTrace, offers, prodChecks, prodNone, readsHost, SEV_BUCKETS, sweepReport,
+  sourceResult, sweepRows, tabFindings, traceAsk, type Finding, type Level,
   fixBranch, parseSessionKey, sessionGate, sessionKey, sessionKind, sessionLeft, sessionPlan, sweepGate, sweepLine,
   type AdvFold, type BoardId, type Door, type MaintInput, type MaintTab, type ProjectPick, type SessionLaunch, type SessionLine, type SessionWhere, type SevBucket,
 } from "./maint";
 import { guideHtml, isGuideId } from "./maintguide";
 import { briefFor, sessionBrief, sweepBrief, sweepPrompt, sweepSessionBrief, type MaintBriefCtx } from "./maintbrief";
-import { askingFor, checkSweep, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
+import { askingFor, checkSweep, forgetClicked, maintInput, runSource, runSweep, scanProject, setMaintHost, showSweep, shownSweep } from "./maintscan";
 import { FACETS, findSource, tokenRow, type Facet } from "./maintsources";
 import { MAINT_CHIPS, MAINT_SUBS, tabName, type MaintChip, type MaintSub } from "./maintview";
 import { checkoutBusy } from "./grouping";
@@ -159,8 +159,11 @@ async function runAll(source: string, host: MaintHost): Promise<void> {
   toast(`${d.label} for ${roots.length} project${roots.length === 1 ? "" : "s"}…`);
   const reps = await Promise.all(roots.map((r) => runSource(r, source)));
   const failed = reps.filter((x) => x.coverage.state !== "ok").length;
-  if (failed) toast(`${d.label}: ${failed} of ${reps.length} could not be read. Coverage says why`);
+  const found = reps.filter((x, i) => { const inp = maintInput(roots[i]); return !!inp && FOUND.includes(sourceResult(x, inp, clampMaint(inp.det?.config.thresholds)).level); }).length;
+  const said = [found ? `${found} found something` : failed < reps.length ? "nothing found" : "", failed ? `${failed} could not be read` : ""];
+  toast(`${d.label}, ${reps.length} project${reps.length === 1 ? "" : "s"}: ${said.filter(Boolean).join(", ")}. Each chip in Coverage says what`);
 }
+const FOUND: readonly Level[] = ["bad", "warn", "info"];
 
 // Every address of every project asked, each project's checks as one click-only read per source.
 async function checkProd(roots: readonly string[]): Promise<void> {
@@ -422,6 +425,11 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
   const all = t.closest<HTMLElement>("[data-mtrunall]");
   if (all) { void runAll(all.dataset.mtrunall ?? "", host); return true; }
+  // A click's answer on Coverage: its chip opens the board that shows it, and Clear takes the answers off the row.
+  const brd = t.closest<HTMLElement>("[data-mtboard]");
+  if (brd) { const b = brd.dataset.mtboard as BoardId; if (BOARD_IDS.includes(b)) host.openTab(boardTab(b), brd.dataset.mtroot!, b); return true; }
+  const seen = t.closest<HTMLElement>("[data-mtseen]");
+  if (seen) { forgetClicked(seen.dataset.mtseen!, (seen.dataset.mtroot ?? "").split("\n").filter(Boolean)); return true; }
   // Asking a public source in every scan is Settings › On its own's switch; this only opens it there.
   const pref = t.closest<HTMLElement>("[data-mtpref]");
   if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("auto", `maintpub:${pref.dataset.mtpref}`); return true; }

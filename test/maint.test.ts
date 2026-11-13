@@ -6,7 +6,7 @@ import {
   advisoryRows, ADV_PEEK, advFold, advVerbs, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevGroups, tabBoards, updatePrRows, workBoard, type AdvRow,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
-  COVER_KINDS, coverByKind, coverKind, fixIsCommand, fixPicksAccount, type CoverGroup,
+  COVER_KINDS, coverByKind, coverKind, fixIsCommand, fixPicksAccount, type CoverGroup, sourceResult, boardTab,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
@@ -1412,6 +1412,39 @@ describe("runtime end-of-life", () => {
     const never = { ...not("runtime-eol", "security", { state: "notRun" }), cost: "public" as const };
     expect(cell("security", input(never))).toMatchObject({ state: "cantCheck", text: "not checked" });
     expect(offers("/r", input(never)).map((f) => [f.key, f.text])).toEqual([["run:runtime-eol", "endoflife.date: not checked"]]);
+  });
+
+  it("keeps a clicked offer's row in its place, each project's chip saying what came back", () => {
+    const never = { ...not("runtime-eol", "security", { state: "notRun" }), cost: "public" as const };
+    const asked = (inp: MaintInput): MaintInput => ({ ...inp, clicked: ["runtime-eol"] });
+    const at = (path: string, inp: MaintInput): TabProject => ({ path, inp, cells: facetCells(inp, MAINT_DEFAULTS, NOW), rows: [] });
+    const row = (...ps: TabProject[]) => coverGroups("security", ps, null, NOW).find((g) => g.source === "runtime-eol");
+    const fine = rt("node", "24", S + 400 * D);
+    const ps = [at("/a", asked(input(eol(ended)))), at("/b", asked(input(eol(fine)))), at("/c", input(never))];
+    const g = row(...ps)!;
+    expect([g.key, g.why, g.roots, g.action], "one row, its offer's, while a project is still to ask")
+      .toEqual(["runtime-eol|notRun", "not checked", ["/a", "/b", "/c"], { kind: "run", source: "runtime-eol" }]);
+    expect(g.ran).toMatchObject({
+      "/a": { level: "bad", text: "node 18 EOL", board: "runtimes" },
+      "/b": { level: "ok", text: "nothing found", board: "runtimes" },
+    });
+    expect(Object.keys(g.ran!), "an unasked project keeps its run door").toEqual(["/a", "/b"]);
+    const all = row(ps[0], ps[1])!;
+    expect([all.why, coverKind(all)], "every project asked: the row says so where it stood").toEqual(["checked", "ask"]);
+    expect(row(at("/a", asked({ ...input(never), asking: ["runtime-eol"] })))!.ran, "still out: its spinner, no answer yet").toBeUndefined();
+    expect(row(at("/a", input(eol(ended)))), "an answer nobody asked for this session is no row").toBeUndefined();
+    expect(coverGroups("delivery", ps, null, NOW).some((x) => x.source === "runtime-eol"), "another tab's").toBe(false);
+  });
+
+  it("says what one read came back with, and never passes one that failed", () => {
+    const res = (r: SourceReport) => { const { tip: _, ...rest } = sourceResult(r, input(r), MAINT_DEFAULTS, NOW); return rest; };
+    expect(res(eol(rt("node", "20", S + 52 * D)))).toEqual({ level: "warn", text: "node 20 EOL in 52d", board: "runtimes" });
+    expect(res(eol(rt("postgres", null, null))), "unknown is said, never nothing").toEqual({ level: "muted", text: "postgres 99 unknown", board: "runtimes" });
+    expect(res(ok("osv", { kind: "advisories", items: [adv()] }, { cost: "public" }))).toEqual({ level: "bad", text: "1 high", board: "advisories" });
+    expect(res(ok("osv", { kind: "advisories", items: [] }, { cost: "public" }))).toEqual({ level: "ok", text: "nothing found", board: "advisories" });
+    const failed = { ...not("runtime-eol", "security", { state: "error", reason: "HTTP 502" }), cost: "public" as const };
+    expect(sourceResult(failed, input(failed), MAINT_DEFAULTS, NOW)).toEqual({ level: "muted", text: "read failed", tip: ["failed: HTTP 502"], board: null });
+    expect([boardTab("runtimes"), boardTab("packages"), boardTab("errors"), boardTab("flaky")]).toEqual(["security", "security", "servers", "delivery"]);
   });
 
   it("folds every runtime to upgrade into one line, worst first, and leaves the supported ones out", () => {

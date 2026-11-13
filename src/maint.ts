@@ -406,6 +406,7 @@ export interface MaintInput {
   reports: Readonly<Record<string, SourceReport>>;
   skip?: readonly string[]; // sources this machine skips (`MaintPrefs.off`)
   asking?: readonly string[]; // click-only sources whose read is still out
+  clicked?: readonly string[]; // click-only sources a click asked of it this session: Coverage says what came back
   hosts?: readonly string[]; // the [deploy] hosts this machine may ssh to (`MaintPrefs.hosts`)
   moved?: readonly string[]; // sources whose whole kept answer `[deploy]` no longer names (currentReports)
 }
@@ -1619,7 +1620,7 @@ export function offers(root: string, inp: MaintInput): Finding[] {
     const r = inp.reports[id], facet = findSource(id)?.facet;
     if (!facet || r?.coverage.state !== "notRun" || inp.skip?.includes(id) || inp.det!.config.off.includes(facet)) continue;
     out.push({ root, facet, key: `run:${id}`, level: "info", text: `${labelOf(id)}: ${offerWord(id)}`,
-      detail: "runs only when asked, never in a scan", verb: "run", source: id, ref: readsHost(id) ? inp.det?.deploy?.host ?? null : null,
+      detail: ONLY_ASKED, verb: "run", source: id, ref: readsHost(id) ? inp.det?.deploy?.host ?? null : null,
       ...(inp.asking?.includes(id) ? { busy: true } : {}) });
   }
   return out;
@@ -1707,6 +1708,9 @@ const FACET_BOARD: Record<Facet, [BoardId, RegExp][]> = {
 export function findingTarget(f: Pick<Finding, "facet" | "key">): { tab: MaintTab; board: BoardId | null } {
   return { tab: FACET_TAB[f.facet], board: FACET_BOARD[f.facet].find(([, keys]) => keys.test(f.key))?.[0] ?? null };
 }
+/** The tab a board is drawn on. */
+export const boardTab = (b: BoardId): MaintTab =>
+  FACET_TAB[FACETS.find((f) => FACET_BOARD[f].some(([id]) => id === b)) ?? "security"];
 
 export interface ProjectPick { root: string; name: string; n: number; level: Finding["level"] | null }
 /** A tab's project picker: every project with what needs you there (red and amber, as the badges),
@@ -1795,7 +1799,29 @@ export interface CoverGroup {
   roots: string[];
   quiet: boolean; // a bot nothing shows to be alive: said, but below what stops a check
   action: CoverAction | null;
+  ran?: Record<string, CoverResult>; // a click-only row's projects a click asked this session, and what came back
 }
+
+/** One click-only read of one project in a Coverage chip's words, and the board that shows it. */
+export interface CoverResult { level: Level; text: string; tip: string[]; board: BoardId | null }
+// Where each kind of facts is drawn; a record, so a new kind fails to compile here.
+const KIND_BOARD: Record<FactKind, BoardId> = {
+  ciRuns: "ci", ciReruns: "flaky", advisories: "advisories", updatePrs: "update-prs", packages: "packages",
+  release: "releases", releases: "releases", changelog: "releases", deployments: "deployments", hygiene: "hygiene",
+  work: "work", probes: "addresses", hosts: "hosts", domains: "domains", errors: "errors", runtimes: "runtimes",
+};
+/** What one read came back with: its facet's own judge over that report alone, or why it could not
+ *  answer. A read that found nothing is said so, never left blank, and one that failed never passes. */
+export function sourceResult(r: SourceReport, inp: MaintInput, th = MAINT_DEFAULTS, now = Date.now()): CoverResult {
+  if (r.coverage.state !== "ok" || !r.facts) {
+    const facet = findSource(r.source)?.facet ?? r.facet ?? "security";
+    return { level: "muted", text: whyWord(r.coverage, facet), tip: [covText(r.coverage)], board: null };
+  }
+  const j = RULES[FACT_FACET[r.facts.kind]]([r.facts], { th, now, trunc: r.truncated, reps: [r], tagged: taggedEnvs(inp) });
+  const clear = unsure(j) || (j.level === "ok" && !j.text);
+  return { level: clear ? "ok" : j.level, text: clear ? "nothing found" : j.text, tip: [...j.tip, ...r.gaps], board: KIND_BOARD[r.facts.kind] };
+}
+const ONLY_ASKED = "runs only when asked, never in a scan";
 
 /** One tab's Coverage, grouped by reason across projects rather than by project: every cell with no
  *  verdict, explained by its sources, and every click-only source nobody ran. Widest first. */
@@ -1878,6 +1904,16 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
       add(path, { key: `${o.source}|notRun`, facet: o.facet, source: o.source, what: labelOf(o.source), why: offerWord(o.source), detail: o.detail },
         { kind: "run", source: o.source });
     }
+    // A click's answer keeps its offer's row and place, the project's chip now saying what came back.
+    for (const id of inp.clicked ?? []) {
+      const r = inp.reports[id], facet = findSource(id)?.facet;
+      if (!det || !facet || FACET_TAB[facet] !== tab || !det.sources.includes(id) || inp.skip?.includes(id) || det.config.off.includes(facet)) continue;
+      if (!r || r.coverage.state === "notRun") continue; // still out, or asked of nothing: the offer above
+      const key = `${id}|notRun`;
+      add(path, { key, facet, source: id, what: labelOf(id), why: "checked", detail: ONLY_ASKED }, { kind: "run", source: id });
+      const g = by.get(key)!;
+      g.ran = { ...g.ran, [path]: sourceResult(r, inp, th, now) };
+    }
     // Like an offer: one Allow away from a click, whatever the cell read from the rest.
     const host = det?.deploy?.host;
     for (const id of det && host ? det.sources : []) {
@@ -1889,6 +1925,7 @@ export function coverGroups(tab: MaintTab, projects: readonly { path: string; in
   }
   return [...by.values()].map((g) => ({
     ...g, roots: g.roots.sort((a, b) => a.localeCompare(b)),
+    why: !g.ran ? g.why : g.roots.every((r) => g.ran![r]) ? "checked" : offerWord(g.source!),
     action: g.action?.kind === "settings" && !Object.keys(g.action.urls).length ? null : g.action,
   })).sort((a, b) => Number(a.quiet) - Number(b.quiet) || b.roots.length - a.roots.length
     || FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet) || a.what.localeCompare(b.what) || a.key.localeCompare(b.key));

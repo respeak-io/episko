@@ -3335,6 +3335,15 @@ select.in-ctl { cursor: pointer; }
 .mt-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mt-chip[aria-disabled="true"] { cursor: default; border-color: var(--hair); background: none; }
 .mt-chip .u-spin { margin: 0; }
+/* A click's answer on its project's chip, in its level's colour; one that failed opens nothing, so it never lights up. */
+.mt-chip.res { max-width: 320px; }
+.mt-chip.res .rs { flex: none; padding-left: 6px; border-left: 1px solid var(--hair-strong); color: var(--muted-2); }
+.mt-chip.res.one .rs { padding-left: 4px; border-left: 0; }
+.mt-chip.res .rs.l-bad { color: var(--st-error); font-weight: 600; }
+.mt-chip.res .rs.l-warn { color: var(--st-working); font-weight: 600; }
+.mt-chip.res .rs.l-info { color: var(--text); }
+span.mt-chip.res { cursor: default; border-style: dashed; }
+span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); background: none; }
 .mt-fixrow { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0 7px 5px 105px; }
 .mt-fixrow .mt-fix { min-width: 0; margin: 0; }
 /* Hosts are not projects: a row each, below the cards, the worst Prod cell of what it runs. */

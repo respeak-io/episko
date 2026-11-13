@@ -35,7 +35,9 @@ Markers: `+` new · `~` changed · `!` fixed
   name, and each project is a chip with its icon that does the row's fix for it: click it to check
   that project, open its settings page or pick the GitHub account it reads as. *Check all* asks a
   public service for every project at once, and a fix that is a command opens in a terminal with it
-  typed in, for you to press Enter.
+  typed in, for you to press Enter. After a check, the row stays where it was and each project's chip
+  says what came back, such as *node 18 EOL* or *nothing found*; click it for the board that shows it.
+  A board that appears above while you read no longer pushes the page down.
 + Maintenance's *Advisories and findings* are grouped by severity. Critical and high open on their
   first five rows, medium and low start folded, and each group's head names the projects it hits.
   Each row has its own *Patch* for that advisory alone, and *Patch all* briefs one agent per project

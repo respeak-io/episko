@@ -572,11 +572,8 @@ function paint(id: string, html: string): void {
   // The sweep's box is typed into while answers land: its text, caret and focus survive a repaint.
   const kept = q && { v: q.value, on: document.activeElement === q, a: q.selectionStart, b: q.selectionEnd };
   // The scroller is rebuilt too: a tick or an answer landing keeps your place, and a new tab starts at its top.
-  const top = paintedSub === maintSub ? el.querySelector(".mt-body")?.scrollTop : 0;
-  if (fleetView === "maint") holdMaintPlace(el, html); else el.innerHTML = html;
+  if (fleetView === "maint") holdMaintPlace(el, html, paintedSub === maintSub); else el.innerHTML = html;
   if (id === "fleetBody") paintedSub = maintSub;
-  const body = top ? el.querySelector(".mt-body") : null;
-  if (body && top) body.scrollTop = top;
   const nq = kept && el.querySelector<HTMLInputElement>(".mt-sweepq");
   if (!kept || !nq) return;
   nq.value = kept.v;
