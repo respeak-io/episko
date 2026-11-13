@@ -90,6 +90,11 @@ pub(crate) fn serve_telemetry<R: Runtime>(server: tiny_http::Server, app: AppHan
 pub(crate) fn run_telemetry_server<R: Runtime>(server: tiny_http::Server, app: AppHandle<R>) {
     for mut request in server.incoming_requests() {
         let url = request.url().to_string();
+        // Before the shared read: that route caps its own body.
+        if url.starts_with("/agent") {
+            crate::protocol::handle(request, &url, &app);
+            continue;
+        }
         let stable_sid = header_value(&request, "X-CC-Session").or_else(|| query_param(&url, "sid"));
         let mut body = String::new();
         let _ = request.as_reader().read_to_string(&mut body);
@@ -359,6 +364,7 @@ mod tests {
             pending: Mutex::new(HashMap::new()),
             next_perm: std::sync::atomic::AtomicU64::new(1),
             mcp_tokens: Mutex::new(HashMap::new()),
+            agent_tokens: Mutex::new(HashMap::new()),
             mcp_pending: Mutex::new(HashMap::new()),
             caffeinate: Mutex::new(None),
             sync: Default::default(),
@@ -1039,5 +1045,104 @@ mod tests {
         let _ = std::fs::remove_file(&settings);
         let _ = std::fs::remove_dir_all(&cwd);
         // The transcript stays: deleting inside ~/.claude/projects is not this test's job.
+    }
+
+    /// The agent protocol's whole round trip on our side: `prepare` hands out a token, the
+    /// route accepts only that token, and what it forwards names the provider the token was
+    /// issued for, never one the body claims (docs/agent-protocol.md).
+    #[test]
+    fn agent_protocol_route_accepts_only_the_launch_token() {
+        use tauri::Listener;
+        let (app, port) = mock_telemetry_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen("agent-event", move |e| {
+            let _ = tx.send(e.payload().to_string());
+        });
+        let sid = format!("proto-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+        let start = crate::protocol::prepare(&app.state::<AppState>(), "opencode", port, &sid, None)
+            .expect("prepare")
+            .expect("opencode speaks the protocol");
+        let env: HashMap<_, _> = start.env.iter().cloned().collect();
+        let url = env["EPISKO_URL"].clone();
+        let token = env["EPISKO_TOKEN"].clone();
+        let path = url.trim_start_matches(&format!("http://127.0.0.1:{port}"));
+        let wait = std::time::Duration::from_secs(5);
+        let body = r#"{"v":1,"events":[{"type":"turn-start"}],"provider":"claude"}"#;
+
+        let res = read_response(open_post(port, path, &[], body), wait);
+        assert!(res.starts_with("HTTP/1.1 401"), "no token: {res}");
+        let res = read_response(open_post(port, path, &[("Authorization", "Bearer nope")], body), wait);
+        assert!(res.starts_with("HTTP/1.1 401"), "wrong token: {res}");
+        let bearer = format!("Bearer {token}");
+        let res = read_response(open_post(port, "/agent?sid=someone-else", &[("Authorization", &bearer)], body), wait);
+        assert!(res.starts_with("HTTP/1.1 401"), "another pane's id: {res}");
+        let res = read_response(open_post(port, path, &[("Authorization", &bearer)], r#"{"v":2,"events":[{}]}"#), wait);
+        assert!(res.starts_with("HTTP/1.1 400") && res.contains("v1"), "a later version: {res}");
+        assert!(rx.try_recv().is_err(), "nothing refused may reach the frontend");
+
+        let res = read_response(open_post(port, path, &[("Authorization", &bearer)], body), wait);
+        assert!(res.starts_with("HTTP/1.1 204"), "the launch token: {res}");
+        let ev: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(std::time::Duration::from_secs(10)).expect("an agent-event")).unwrap();
+        assert_eq!(ev["sessionId"], sid.as_str());
+        assert_eq!(ev["provider"], "opencode", "the token's provider, not the body's");
+        assert_eq!(ev["method"], "protocol/v1");
+        assert_eq!(ev["params"]["events"][0]["type"], "turn-start");
+
+        crate::protocol::forget_session(&app.state::<AppState>(), &sid);
+        let res = read_response(open_post(port, path, &[("Authorization", &bearer)], body), wait);
+        assert!(res.starts_with("HTTP/1.1 401"), "a closed pane's token: {res}");
+    }
+
+    #[test]
+    fn agent_protocol_route_refuses_a_body_over_its_cap() {
+        let (app, port) = mock_telemetry_app();
+        let sid = format!("proto-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+        let start = crate::protocol::prepare(&app.state::<AppState>(), "omp", port, &sid, None).unwrap().unwrap();
+        let token = start.env.iter().find(|(k, _)| k == "EPISKO_TOKEN").unwrap().1.clone();
+        let big = format!(r#"{{"v":1,"events":[{{"type":"prompt","text":"{}"}}]}}"#, "x".repeat((1 << 20) + 10));
+        let res = read_response(
+            open_post(port, &format!("/agent?sid={sid}"), &[("Authorization", &format!("Bearer {token}"))], &big),
+            std::time::Duration::from_secs(10),
+        );
+        assert!(res.starts_with("HTTP/1.1 413"), "{}", &res[..res.len().min(200)]);
+        crate::protocol::forget_session(&app.state::<AppState>(), &sid);
+    }
+
+    /// What the manifest says a launch needs, after the per-launch paths are filled in: the
+    /// file on disk is the bundled extension, every placeholder is gone, and closing the
+    /// pane takes the folder with it.
+    #[test]
+    fn agent_protocol_launch_writes_the_extension_and_fills_the_manifest() {
+        let (app, port) = mock_telemetry_app();
+        let state = app.state::<AppState>();
+        let sid = format!("proto-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
+
+        let omp = crate::protocol::prepare(&state, "omp", port, &sid, Some("write")).unwrap().unwrap();
+        assert_eq!(&omp.args[..2], ["--approval-mode", "write"], "the mode's whitelisted args come first");
+        assert_eq!(omp.args[2], "--extension");
+        let file = std::path::PathBuf::from(&omp.args[3]);
+        assert!(file.ends_with("episko.ts"), "{}", file.display());
+        let body = std::fs::read_to_string(&file).expect("the extension is on disk");
+        assert!(body.contains("EPISKO_TOKEN"), "not the bundled extension");
+        assert!(omp.args.iter().all(|a| !a.contains('{')), "a placeholder survived: {:?}", omp.args);
+        let env: HashMap<_, _> = omp.env.iter().cloned().collect();
+        assert_eq!(env["EPISKO_URL"], format!("http://127.0.0.1:{port}/agent?sid={sid}"));
+        assert_eq!(env["EPISKO_TOKEN"].len(), 32);
+        assert!(!omp.args.iter().any(|a| a.contains(&env["EPISKO_TOKEN"])), "the token must stay out of argv");
+
+        let unknown = crate::protocol::prepare(&state, "omp", port, &sid, Some("--yolo")).unwrap().unwrap();
+        assert_eq!(unknown.args[0], "--extension", "an unknown mode adds nothing");
+
+        let opencode = crate::protocol::prepare(&state, "opencode", port, &sid, None).unwrap().unwrap();
+        let env: HashMap<_, _> = opencode.env.iter().cloned().collect();
+        let dir = std::path::PathBuf::from(&env["OPENCODE_CONFIG_DIR"]);
+        assert!(dir.join("plugins").join("episko.ts").is_file(), "OpenCode loads plugins/ under its config dir");
+        assert!(opencode.args.is_empty());
+
+        crate::protocol::forget_session(&state, &sid);
+        assert!(!dir.exists(), "the launch folder outlived its pane");
+        assert!(crate::protocol::prepare(&state, "amp", port, &sid, None).unwrap().is_none(), "a terminal-only agent");
+        assert!(crate::protocol::prepare(&state, "omp", port, "../escape", None).is_err());
     }
 }

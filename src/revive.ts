@@ -3,7 +3,7 @@
 // `now`; the driver (`tickRevive` in ./actions) decides nothing. See docs/sessions.md.
 
 // `ReviveState` is a `Sess` field, so it lives in ./types; defining it here would be a cycle.
-import { isAgent, type ReviveState, type Sess } from "./types";
+import { isAgent, isCommunityProvider, type ReviveState, type Sess } from "./types";
 export type { ReviveState };
 
 // ---------- what kind of failure this was ----------
@@ -137,7 +137,7 @@ export const reviveWindowMs = (p: RevivePrefs): number =>
 // ---------- the per-session schedule ----------
 
 export type ReviveSkip =
-  | "off" | "not-agent" | "external" | "no-failure" | "attention"
+  | "off" | "not-agent" | "community" | "external" | "no-failure" | "attention"
   | "kind" | "exhausted" | "waiting" | "offline";
 
 export type ReviveAction =
@@ -159,6 +159,8 @@ export function reviveStep(
 ): ReviveAction {
   if (!p.enabled) return { do: "none", why: "off" };
   if (!isAgent(s)) return { do: "none", why: "not-agent" };
+  // A community extension's failure report must never make Episko type into its agent.
+  if (isCommunityProvider(s.provider)) return { do: "none", why: "community" };
   if (s.external) return { do: "none", why: "external" }; // Episko holds no PTY for it
   // Only a turn the API killed: `phase === "error"` alone also covers a failed tool call.
   if (s.phase !== "error" || !s.apiErr) return { do: "none", why: "no-failure" };

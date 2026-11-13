@@ -5,9 +5,14 @@ capabilities; only provider adapters depend on vendor protocols.
 
 ```text
 Claude hooks/statusLine ─┐
-                        ├─ provider-neutral state/events ─ Sess ─ shared UI
-Codex App Server ───────┘
+Codex App Server ────────┼─ provider-neutral state/events ─ Sess ─ shared UI
+agent protocol ──────────┘   (OMP, OpenCode: an extension inside the agent translates)
 ```
+
+An agent nobody on the team runs is not integrated here: its extension speaks Episko's
+agent protocol from inside the agent instead (`docs/agent-protocol.md`). Such a provider is
+a manifest row with a `protocol` block, registered with the shared `protocolEvents`
+adapter; it needs no vendor module on either side.
 
 An agent with no structured integration still gets the PTY, worktree, project,
 terminal and git features. It advertises no session capabilities and is shown honestly
@@ -87,7 +92,8 @@ Terminal-only support begins with one `AgentSpec` row in `pty.rs`. First-class s
 also requires all of the following:
 
 1. Confirm the vendor exposes a structured, public interface. Do not parse screen
-   output or private databases.
+   output or private databases. If no one here will run and test the agent, stop and
+   use the agent protocol instead (`docs/agent-protocol.md`).
 2. Add the provider and only its proven capabilities to `manifest.json`.
 3. Add a native frontend adapter and register it in `PROVIDER_ADAPTERS`.
 4. Add the backend sidecar/control-plane branch in `agent.rs`; keep `pty.rs` generic.
