@@ -13,6 +13,13 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ Issues and pull requests read as they do on GitHub, in the thread reader and on the review stage:
+  tables, nested lists, folded `<details>` sections and the rest of GitHub's markdown. A pull
+  request's test report used to show as rows of pipes, and the hidden notes a template leaves in a
+  description no longer show at all.
+! On the review stage, a link in a pull request's description, a review comment or the conversation
+  tab opens in the browser. It used to do nothing.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks

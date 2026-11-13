@@ -3557,16 +3557,23 @@ select.in-ctl { cursor: pointer; }
 .iss-none { color: var(--muted-2); font-style: italic; }
 .iss-more { display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--muted-2); }
 
-/* Markdown as ./issue renders it. Nothing else in this app draws somebody else's prose, so
-   this vocabulary is the reader's own and stays scoped to it. */
+/* Markdown as ./issue renders it: a thread's flavour, smaller than the file reader's `.mdr`.
+   Scoped to the two panes that draw one. */
 :is(.iss, .review-view) .md { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 :is(.iss, .review-view) .md p { margin: 8px 0; }
 :is(.iss, .review-view) .md-h { margin: 12px 0 6px; font-size: 13px; font-weight: 700; color: var(--text); }
 :is(.iss, .review-view) .md-h.sm { font-size: 12px; }
 :is(.iss, .review-view) .md ul, :is(.iss, .review-view) .md ol { margin: 8px 0; padding-left: 20px; }
 :is(.iss, .review-view) .md li { margin: 3px 0; }
-:is(.iss, .review-view) .md li.in { margin-left: 18px; }
+:is(.iss, .review-view) .md :is(ul, ol) :is(ul, ol) { margin: 2px 0; }
+:is(.iss, .review-view) .md :is(li, blockquote) > p { margin: 4px 0; }
 :is(.iss, .review-view) .md-tk { color: var(--accent-ink); }
+:is(.iss, .review-view) .md table { margin: 9px 0; border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; font-size: 12px; line-height: 1.45; }
+:is(.iss, .review-view) .md :is(th, td) { padding: 4px 10px; border: 1px solid var(--hair); vertical-align: top; }
+:is(.iss, .review-view) .md th { background: var(--surface); font-weight: 650; color: var(--text); }
+:is(.iss, .review-view) .md details { margin: 8px 0; }
+:is(.iss, .review-view) .md summary { cursor: pointer; color: var(--text); }
+:is(.iss, .review-view) .md kbd { padding: 0 5px; border-radius: 4px; font: 10.5px var(--font-mono); background: var(--bg-2); border: 1px solid var(--hair-strong); border-bottom-width: 2px; }
 :is(.iss, .review-view) .md code { padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); color: var(--accent-ink); background: var(--bg-2); }
 :is(.iss, .review-view) .md pre { margin: 9px 0; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--hair); background: var(--bg-2); overflow-x: auto; }
 :is(.iss, .review-view) .md pre code { padding: 0; font-size: 10.5px; line-height: 1.5; color: var(--text); background: none; }

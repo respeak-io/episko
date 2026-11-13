@@ -114,7 +114,7 @@ const VOID = new Set(["br"]);
 const attrOf = (tag: string, name: string): string =>
   new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i").exec(tag)?.slice(1).find((x) => x != null) ?? "";
 
-function htmlOut(raw: string, img: (src: string, alt: string) => string): string {
+export function htmlOut(raw: string, img: (src: string, alt: string) => string): string {
   const src = raw.replace(/<!--[\s\S]*?(-->|$)/g, "");
   let out = "";
   let last = 0;
@@ -126,6 +126,20 @@ function htmlOut(raw: string, img: (src: string, alt: string) => string): string
     else if (KEEP_TAGS.has(name) && !(m[1] && VOID.has(name))) out += `<${m[1]}${name}>`;
   }
   return out + esc(src.slice(last)).replace(/>/g, "&gt;");
+}
+
+const PAIRED = new RegExp(`<(/?)(${[...KEEP_TAGS].filter((t) => !VOID.has(t)).join("|")})>`, "g");
+
+/// A kept tag is not a closed one, and an open `<b>` runs on into whatever is painted after it:
+/// the next comment in a thread. This closes every one where `html` ends and drops a stray closer.
+export function closeAuthorTags(html: string): string {
+  const open: string[] = [];
+  const out = html.replace(PAIRED, (m, close: string, name: string) => {
+    if (!close) { open.push(name); return m; }
+    const at = open.lastIndexOf(name);
+    return at < 0 ? "" : open.splice(at).reverse().map((n) => `</${n}>`).join("");
+  });
+  return out + open.reverse().map((n) => `</${n}>`).join("");
 }
 
 // ---------- render ----------
