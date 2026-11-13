@@ -433,6 +433,8 @@ export function covText(c: Coverage): string {
     case "error": return `failed: ${c.reason}`;
   }
 }
+// A coverage's reason without the word a cell already says.
+const covReason = (c: Coverage): string => c.state === "ok" ? "" : c.state === "notRun" ? ONLY_ASKED : c.state === "noTool" ? covText(c) : c.reason;
 const fixOf = (c: Coverage): string | null => c.state === "noAccess" || c.state === "noTool" ? c.fix : null;
 const labelOf = (id: string) => findSource(id)?.label ?? id;
 
@@ -2604,6 +2606,7 @@ export function hygieneOf(inp: MaintInput, th: MaintThresholds = MAINT_DEFAULTS,
 
 export interface CoverRow {
   facet: Facet; label: string; state: CovState | "unread" | "skipped" | "marker" | "untracked" | "none"; text: string; fix: string | null;
+  why: string; detail: string; // the cell's word and the rest, as a tab's Coverage splits them (sourceCover)
   source: string | null; // a source's id, so an offer's button can sit on its row; null for the rest
   url: string | null; // the forge page that switches an `off` source on
   cfg: boolean; // a [maintenance] key would answer it: the setup doors
@@ -2615,30 +2618,51 @@ export interface CoverRow {
 export function coverRows(inp: MaintInput): CoverRow[] {
   const det = inp.det;
   if (!det) return [];
-  const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet))
-    .map((facet) => ({ facet, label: facetDef(facet).label, state: "untracked", text: "switched off in .episko/episko.toml", fix: null, source: null, url: null, cfg: false, host: null, token: null }));
+  const bare = { fix: null, source: null, url: null, cfg: false, host: null, token: null };
+  const out: CoverRow[] = det.config.off.filter((f): f is Facet => FACETS.includes(f as Facet)).map((facet) => ({ ...bare, facet, label: facetDef(facet).label,
+    state: "untracked", text: "switched off in .episko/episko.toml", why: "off in episko.toml", detail: "switched off in .episko/episko.toml" }));
   for (const id of det.sources) {
     const r = inp.reports[id], facet = findSource(id)?.facet ?? r?.facet;
     if (!facet) continue;
     const alias = readsHost(id) ? det.deploy?.host : null;
     const host = alias ? { alias, allowed: (inp.hosts ?? []).includes(alias) } : null;
-    const row = (state: CoverRow["state"], text: string, fix: string | null = null, url: string | null = null, token: TokenDoor | null = null) =>
-      out.push({ facet, label: labelOf(id), state, text, fix, source: id, url, cfg: !!setupKeyOf(text), host, token });
+    const row = (state: CoverRow["state"], text: string, why: string, detail: string, fix: string | null = null, url: string | null = null, token: TokenDoor | null = null) =>
+      out.push({ facet, label: labelOf(id), state, text, why, detail, fix, source: id, url, cfg: !!setupKeyOf(text), host, token });
     // A read that answered without a key it needed says so: merged branches want a trunk.
     const gap = r?.coverage.state === "ok" ? r.gaps.find((g) => setupKeyOf(g)) : undefined;
-    if (unticked(inp, id)) row("skipped", notAllowed(inp));
-    else if (inp.skip?.includes(id)) row("skipped", "skipped on this machine");
-    else if (!r) row("unread", "not read yet");
-    else row(r.coverage.state, gap ? `read; ${gap}` : covText(r.coverage), fixOf(r.coverage), settingsFor(r, det), tokenDoor(id, r.coverage, facet));
+    if (unticked(inp, id)) row("skipped", notAllowed(inp), "not allowed here", notAllowed(inp));
+    else if (inp.skip?.includes(id)) row("skipped", "skipped on this machine", "skipped here", "skipped on this machine");
+    else if (!r) row("unread", "not read yet", "not read yet", "");
+    else {
+      const c = r.coverage, why = gap ? "partly read" : c.state === "notRun" ? offerWord(id) : whyWord(c, facet);
+      row(c.state, gap ? `read; ${gap}` : covText(c), why, gap ?? covReason(c), fixOf(c), settingsFor(r, det), tokenDoor(id, c, facet));
+    }
   }
   for (const m of det.markers) {
-    out.push({ facet: m.facet, label: m.label, state: "marker", text: `found ${m.found.join(", ") || "on this forge"}, nothing reads it yet`, fix: null, source: null, url: null, cfg: false, host: null, token: null });
+    const found = `found ${m.found.join(", ") || "on this forge"}`;
+    out.push({ ...bare, facet: m.facet, label: m.label, state: "marker", text: `${found}, nothing reads it yet`, why: "nothing reads it yet", detail: found });
   }
   for (const facet of FACETS) {
-    if (!out.some((r) => r.facet === facet)) out.push({ facet, label: facetDef(facet).none, state: "none", text: "nothing detected", fix: null, source: null, url: null, cfg: false, host: null, token: null });
+    if (!out.some((r) => r.facet === facet)) out.push({ ...bare, facet, label: facetDef(facet).none, state: "none", text: "nothing detected", why: "nothing detected", detail: "" });
   }
   return out.sort((a, b) => FACETS.indexOf(a.facet) - FACETS.indexOf(b.facet));
 }
+
+/** The Overview's Coverage over `coverRows`: what read cleanly is only named, and every other row
+ *  becomes a group worded as a tab's, so coverKind sorts both the same way. */
+export function sourceCover(root: string, rows: readonly CoverRow[]): { read: CoverRow[]; groups: CoverGroup[] } {
+  const read = rows.filter((r) => r.state === "ok" && !r.cfg);
+  const groups = rows.filter((r) => !read.includes(r)).map((r): CoverGroup => ({
+    key: `${r.source ?? `${r.facet}:${r.label}`}|${r.state}`, facet: r.facet, source: r.source, cfg: r.cfg,
+    what: r.label, why: r.why, detail: r.detail, roots: [root], quiet: false, action: rowAction(root, r),
+  }));
+  return { read, groups };
+}
+const rowAction = (root: string, r: CoverRow): CoverAction | null =>
+  r.state === "notRun" && r.source ? { kind: "run", source: r.source }
+    : r.state === "skipped" && r.host && !r.host.allowed ? { kind: "allow", host: r.host.alias }
+    : r.fix ? { kind: "fix", fix: r.fix } : r.token && r.source ? { kind: "token", source: r.source, door: r.token }
+    : r.url ? { kind: "settings", urls: { [root]: r.url } } : null;
 
 // ---------- the all-clear's two lists ----------
 

@@ -5,7 +5,7 @@
 import { esc, escAttr, fmtDay, fmtSince, relTime } from "./format";
 import { PICK_MARK, sk } from "./dashview"; // the one shimmer and the one tick; ./dashview declares them
 import {
-  ADV_PEEK, advFix, advFold, advVerbs, boardDoor, boardTab, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, needsCount, peekNames, prodTip, relName, rtName, span, traceAsk, unplacedWhy, upSpan, type AdvFold, type AdvRow, type Band,
+  ADV_PEEK, advFix, advFold, advVerbs, boardDoor, boardTab, cardsShown, CI_STRIP as CI_RUNS, coverByKind, coverFirst, fixIsCommand, fixPicksAccount, FACET_TAB, findingTarget, HOST_READ, MAINT_TABS, majorsText, peekNames, prodTip, relName, rtName, sourceCover, span, traceAsk, unplacedWhy, upSpan, type AdvFold, type AdvRow, type Band,
   type BoardCol, type BoardId, type Boards, type Cell, type CiBoardRow, type CiStatus, type CoverGroup, type CoverKind, type CoverResult, type CoverRow, type DeployRow, type DomainState, type Door, type ErrIssueRow, type ErrRow, type ErrSummary, type Finding, type FlowRow, type HostBoardRow, type HostDisk, type HostFacts, type HostState, type HostSummary, type HygCount,
   type Level, type MaintSnap, type MaintTab, type PkgState, type ProbeRow, type RelRow, type RunDot, type SevBucket, type SevGroup, type SnapFinding, type TabModel, type TokenDoor, type Verb,
   affectedText, sweepTitle, SWEEP_VERDICTS, type SweepAdvisory, type SweepAgent, type SweepCheck, type SweepRow, type SweepState, type SweepVerdict,
@@ -269,15 +269,13 @@ function findingHtml(f: Finding, name?: string, go = false, tick?: "on" | "off")
     ${verbHtml(f)}</div>`;
 }
 
-// A fix is the command itself, copied rather than retyped; a forge switch is its settings page.
-const copyHtml = (fix: string) => `<code class="mt-fix">${esc(fix)}</code><button class="aslink" data-mtcopy="${escAttr(fix)}"`
-  + ` data-tip="Copy the command">Copy</button>`;
 // No command saves a token, so its door is Settings › Accounts, at the kind the manifest names.
 const tokenHtml = (source: string, door: TokenDoor) => {
   const t = findSource(source)?.token;
   const tip = `Settings › Accounts: ${door === "add" ? "save" : "replace"} the ${t?.label ?? source} token, kept in this machine's keychain`;
   return t ? `<button class="aslink" data-mttoken="${escAttr(source)}" data-tip="${escAttr(tip)}">${door === "add" ? "Add token…" : "Replace token…"}</button>` : "";
 };
+// A forge switch is its settings page.
 const settingsHtml = (url: string, label = "Settings", mark = true) =>
   `<button class="aslink" data-mturl="${escAttr(url)}" data-tip="${escAttr(`Open ${url}`)}">${esc(label)}${mark ? ` ${icon("externalLink", "solo")}` : ""}</button>`;
 
@@ -385,15 +383,20 @@ function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
     + `<span class="d">${detail}${always}</span></span>${one ? "" : `<span class="p">${coverChips(v, g)}</span>`}<span class="a">${act}</span></div>`;
 }
 
+// One kind's block: its icon, what it means, then its rows. The Overview's Coverage draws the same.
+function coverKindsHtml(v: MaintTabView, gs: readonly CoverGroup[], one: boolean): string {
+  return coverByKind(gs).map(([k, mine]) => {
+    const [title, why, ic] = COVER_HEAD[k];
+    const check = k === "unread" ? `<button class="aslink" data-mtscan="check" data-tip="Read what is not read yet. Nothing runs in a project">Check</button>` : "";
+    return `<div class="mt-cvk k-${k}"><div class="mt-cvk-h">${icon(ic)}<b>${esc(title)}</b><span class="n">${mine.length}</span>${check}</div>`
+      + `<p class="mt-cvk-w">${esc(why)}</p><div class="mt-cvs${one ? " one" : ""}">${mine.map((g) => coverRowHtml(v, g, one)).join("")}</div></div>`;
+  }).join("");
+}
+
 function coverHtml(v: MaintTabView): string {
   if (!v.cover.length) return "";
   const one = !!v.filter, gaps = v.cover.filter((g) => !g.quiet);
-  const kinds = coverByKind(v.cover).map(([k, gs]) => {
-    const [title, why, ic] = COVER_HEAD[k];
-    const check = k === "unread" ? `<button class="aslink" data-mtscan="check" data-tip="Read what is not read yet. Nothing runs in a project">Check</button>` : "";
-    return `<div class="mt-cvk k-${k}"><div class="mt-cvk-h">${icon(ic)}<b>${esc(title)}</b><span class="n">${gs.length}</span>${check}</div>`
-      + `<p class="mt-cvk-w">${esc(why)}</p><div class="mt-cvs${one ? " one" : ""}">${gs.map((g) => coverRowHtml(v, g, one)).join("")}</div></div>`;
-  }).join("");
+  const kinds = coverKindsHtml(v, v.cover, one);
   const across = new Set(gaps.flatMap((g) => g.roots)).size;
   const note = !gaps.length ? "nothing missing" : one ? plural(gaps.length, "gap") : `${plural(gaps.length, "gap")} across ${plural(across, "project")}`;
   return `<section class="mt-sec mt-board mt-cover" data-place="cover:${v.sub}" tabindex="-1">${headHtml("cover", "Coverage", note)}`
@@ -1168,9 +1171,11 @@ export interface MaintDash {
   errors: ErrSummary | null; // the error tracker [deploy] links, as it last answered or why not
 }
 
-const dcard = (id: string, title: string, n: string, extra: string, body: string, help?: GuideId) =>
-  `<section class="ac mt-dc" id="mtc-${id}"><div class="ac-h"><span class="t">${esc(title)}</span>`
-  + `<span class="n">${esc(n)}</span>${extra}${help ? helpBtn(help) : ""}</div><div class="ac-b">${body}</div></section>`;
+// The Overview's cards are boards, as a tab's are: an icon, a title, and red and amber counted on the head.
+const dcard = (id: "todo" | "runs" | "sources", title: string, note: string, extra: string, body: string, ls: readonly Lv[] = []) => {
+  const f = flagOf(ls);
+  return `<section class="mt-sec mt-board mt-dc${f.cls}" id="mtc-${id}" data-place="mtc-${id}">${headHtml(id, title, note, extra, f.html)}${body}</section>`;
+};
 const kv = (k: string, v: string, cls = "") =>
   `<div class="mt-kv"><span>${esc(k)}</span><span class="mono${cls ? " " + cls : ""}">${esc(v)}</span></div>`;
 
@@ -1180,28 +1185,23 @@ function todoCard(v: MaintDash): string {
   const none = v.card.band === "unread" ? (v.card.reading ? "Reading this project…" : "Not checked yet.")
     : `Nothing to do in the ${plural(read, "facet")} that could be read${read < FACETS.length ? "; Coverage says what could not" : ""}.`;
   const body = v.rows.length
-    ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f, undefined, true)).join("")}</div>` : `<p class="ac-empty">${esc(none)}</p>`;
-  const n = needsCount(v.rows); // red and amber only, as the tab badges
-  return dcard("todo", "To do", n ? String(n) : "", across("overview"), body, "todo");
+    ? `<div class="mt-finds">${v.rows.map((f) => findingHtml(f, undefined, true)).join("")}</div>` : `<p class="fl-none mt-dnone">${esc(none)}</p>`;
+  return dcard("todo", "To do", v.rows.length ? "worst first" : "", across("overview"), body, v.rows.map((f) => f.level));
 }
 
 // The doors are the project settings row's: an agent proposes, a person applies, the file is git's.
 function runsCard(v: MaintDash): string {
-  const d = v.deploy, name = v.card.name;
-  const door = (what: "propose" | "file", label: string, tip: string) =>
-    `<button class="aslink" data-mtdeploy="${what}" data-mtroot="${escAttr(v.card.path)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`;
-  const ask = door("propose", d ? "Re-check…" : "Propose with an agent",
-    "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard");
+  const d = v.deploy, name = v.card.name, extra = across("servers", name);
+  const door = (what: "propose" | "file", label: string, tip: string, cls = "aslink") =>
+    `<button class="${cls}" data-mtdeploy="${what}" data-mtroot="${escAttr(v.card.path)}" data-tip="${escAttr(tip)}">${cls === "aslink" ? "" : icon("sparkle")}${esc(label)}</button>`;
+  const PROPOSE = "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard";
+  const empty = (said: string) => `<p class="fl-none mt-dnone">${esc(said)}</p><div class="mt-dacts">${door("propose", "Propose with an agent", PROPOSE, "mt-verb")}</div>`;
   // A failed detection is not a loading one: say so, and keep the door the card exists for.
   if (!v.detected) {
-    return dcard("runs", "Runs on", "", across("servers", name) + helpBtn("runs"), v.card.err && !v.card.reading
-      ? `<p class="ac-empty">Could not read this project, so its [deploy] table is unknown.</p><p class="ac-empty">${ask}</p>`
-      : `<p class="ac-empty">${sk("62%", 9)}</p>`);
+    return dcard("runs", "Runs on", "", extra, v.card.err && !v.card.reading
+      ? empty("Could not read this project, so its [deploy] table is unknown.") : `<p class="fl-none mt-dnone">${sk("62%", 9)}</p>`);
   }
-  if (!d) {
-    return dcard("runs", "Runs on", "", across("servers", name) + helpBtn("runs"),
-      `<p class="ac-empty">No [deploy] table, so Episko does not know where this project runs.</p><p class="ac-empty">${ask}</p>`);
-  }
+  if (!d) return dcard("runs", "Runs on", "", extra, empty("No [deploy] table, so Episko does not know where this project runs."));
   // An address shows its last answer once one exists; until then it is the table's value.
   const probe = (n: string | null, u: string) => v.probes?.rows.find((r) => (n === null || r.name === n) && r.url === u);
   const addr = (n: string | null, u: string, label = n ?? u) => {
@@ -1223,9 +1223,11 @@ function runsCard(v: MaintDash): string {
   const prod = v.tab.prod;
   const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0, v.errors?.at ?? 0);
   const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
-  const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), ask].filter(Boolean).join(" · ");
-  return dcard("runs", "Runs on", "from [deploy]", across("servers", name) + helpBtn("runs"),
-    rows + `<p class="ac-empty">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`);
+  const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), door("propose", "Re-check…", PROPOSE)].filter(Boolean).join(" · ");
+  // What was answered colours the head, as a board's rows do; an address nobody asked colours nothing.
+  const ls = [...v.probes?.rows.flatMap((r) => [r.level, r.certLevel]) ?? [], v.host?.state?.level, ...v.domains.map((r) => r.level), v.errors?.level];
+  return dcard("runs", "Runs on", "from [deploy]", extra,
+    `<div class="mt-drows">${rows}</div><p class="mt-dfoot">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`, ls);
 }
 
 // The tracker's project and what it last said, at the cell's level; Check prod asks it, Coverage says why not.
@@ -1261,24 +1263,20 @@ function probeHtml(label: string, p: ProbeRow): string {
     + `<span class="mt-v ${LEVEL_CLS[p.certLevel]}">${esc(p.cert)}</span></div>`;
 }
 
-// Amber only where a fix exists or a read broke; every other state is a fact, muted.
-const COVER_CLS: Partial<Record<CoverRow["state"], string>> = { noAccess: "l-warn", noTool: "l-warn", error: "l-warn" };
-function coverCard(v: MaintDash): string {
-  const head = v.unreadable
-    ? `<p class="ac-empty">.episko/episko.toml does not parse, so its [maintenance] settings are not applied.</p>` : "";
-  const rows = v.cover.map((r) => {
-    // A never-run source is offered here, on its own row; a public one says what leaves the machine.
-    const o = r.state === "notRun" ? v.offers.find((x) => x.source === r.source) : undefined;
-    const up = r.state === "off" ? v.setups.find((x) => x.source === r.source) : undefined;
-    const d = o && findSource(o.source), said = d && disclosure(d);
-    return `<div class="mt-cov"><span class="fk">${esc(facetDef(r.facet).label)}</span><span class="s">${esc(r.label)}</span>`
-      + `<span class="mt-v ${COVER_CLS[r.state] ?? "l-muted"}">${esc(r.text)}</span>${o ? verbHtml(o) : ""}${up ? verbHtml(up) : ""}${r.host ? allowHtml(r.host.alias, !r.host.allowed) : ""}`
-      + `${r.token && r.source ? tokenHtml(r.source, r.token) : ""}`
-      + `${r.url ? settingsHtml(r.url) : ""}</div>`
-      + (r.fix ? `<div class="mt-fixrow">${copyHtml(r.fix)}</div>` : "")
-      + (r.cfg ? `<div class="mt-fixrow">${setupHtml(v.card.path)}</div>` : "") + (said ? `<p class="mt-said">${esc(said)}</p>` : "");
-  }).join("");
-  return dcard("cover", "Coverage", v.forge, "", head + (rows || `<p class="ac-empty">${sk("62%", 9)}</p>`), "sources");
+// Every source and what became of it, sorted as a tab's Coverage is; what read cleanly is one line, by facet.
+function sourcesCard(v: MaintDash): string {
+  const { read, groups } = sourceCover(v.card.path, v.cover);
+  const tv: MaintTabView = { ...v.tab, offers: v.offers, setups: v.setups }; // the Overview's own doors
+  const head = v.unreadable ? `<p class="mt-lede">.episko/episko.toml does not parse, so its [maintenance] settings are not applied.</p>` : "";
+  const by = FACETS.flatMap((f) => {
+    const ls = read.filter((r) => r.facet === f).map((r) => r.label);
+    return ls.length ? [`<span class="mt-rd"><span class="fk">${esc(facetDef(f).label)}</span>${esc(ls.join(", "))}</span>`] : [];
+  });
+  const ok = read.length ? `<div class="mt-cvk k-read"><div class="mt-cvk-h">${icon("check")}<b>Read</b><span class="n">${read.length}</span></div>`
+    + `<div class="mt-rds">${by.join("")}</div></div>` : "";
+  const gaps = groups.length, note = [v.forge, v.cover.length ? gaps ? plural(gaps, "gap") : "nothing missing" : ""].filter(Boolean).join(" · ");
+  const body = v.cover.length ? head + coverKindsHtml(tv, groups, true) + ok : `<p class="fl-none mt-dnone">${sk("62%", 9)}</p>`;
+  return dcard("sources", "Coverage", note, "", body);
 }
 
 /** The dashboard's Maintenance tab: the fleet card's strip, then the fleet's sub-tabs for this project. */
@@ -1291,7 +1289,7 @@ export function maintDashHtml(v: MaintDash): string {
       + `<button class="aslink" data-mtscan="check" data-tip="Read this project once. Nothing runs in it">Check</button>`;
   const err = v.card.err ? `<p class="fl-none">Could not read: ${esc(v.card.err)}</p>` : "";
   const body = v.tab.sub === "overview"
-    ? `<div class="mt-dgrid"><div class="mt-dcol">${todoCard(v)}</div><div class="mt-dcol">${runsCard(v)}${coverCard(v)}</div></div>`
+    ? `<div class="mt-dgrid">${todoCard(v)}${runsCard(v)}${sourcesCard(v)}</div>`
     : tabHtml(v.tab, v.tab.sub);
   return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
     + `<div class="mt-dwhen">${when}</div></div>${v.progress ? progressHtml(v.progress, v.card.path) : ""}${err}${tabsHtml(v.tab)}${body}`;

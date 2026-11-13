@@ -6,7 +6,7 @@ import {
   advisoryRows, ADV_PEEK, advFold, advVerbs, ciBoard, hygieneBoard, probeBoard, releaseBoard, sevGroups, tabBoards, updatePrRows, workBoard, type AdvRow,
   narrowMaint, needsCount, offers, probeRows, prodChecks, projectBand, rankMaint, settingsUrl, span, tabExtras, tabFindings, tabGaps, tabModel, tabRows, tabTally, whyWord,
   advFix, outdatedText, BOARD_COLS, boardDoor, doorAt, peekNames, coverSetups, setupKeyOf, SETUP_KEYS, eolBoard, longSpan, runtimeStates,
-  COVER_KINDS, coverByKind, coverKind, fixIsCommand, fixPicksAccount, type CoverGroup, sourceResult, boardTab,
+  COVER_KINDS, coverByKind, coverKind, sourceCover, fixIsCommand, fixPicksAccount, type CoverGroup, sourceResult, boardTab,
   affectedText, narrowSweep, narrowSweepCheck, narrowSweepFacts, placeVersion, spanRange, sweepReport, sweepRows, sweepTitle, sweepVerdict, SWEEP_VERDICTS,
   worseOf, type Judged, flakyBoard, flakyJobs, type RerunJob,
   deployBoard, deployStates, envsFailed, envsToShip, DEPLOY_STATES, ENV_TIERS, type Deployed,
@@ -3410,6 +3410,40 @@ describe("the project tab's cards", () => {
       ["release", "skipped", null, "git-tags"], ["git", "ok", null, "git-local"], ["prod", "untracked", null, null], ["work", "none", null, null],
     ]);
     expect(coverRows({ det: null, reports: {} })).toEqual([]);
+  });
+
+  it("sorts the Overview's Coverage as a tab's: a clean read is only named, every other row is a group of its kind", () => {
+    const AL = "dependabot-alerts", CS = "github-code-scanning";
+    const inp: MaintInput = {
+      det: det(["git-local", GHA, "git-tags", AL, "npm-audit", CS], {
+        forge: { kind: "github", host: "github.com", path: "o/a", by: "table" },
+        markers: [{ facet: "ci", label: "Woodpecker", found: [".woodpecker.yml"] }],
+        config: { ...det([]).config, off: ["prod"] },
+      }),
+      reports: {
+        [GHA]: not(GHA, "ci", { state: "noAccess", reason: "who", fix: "gh auth login" }),
+        "git-local": ok("git-local", hyg()),
+        "git-tags": ok("git-tags", rel(), { gaps: ["no trunk known: set [maintenance] trunk"] }),
+        [AL]: not(AL, "security", { state: "off", reason: "alerts are switched off" }),
+        "npm-audit": { ...not("npm-audit", "security", { state: "notRun" }), cost: "tool" },
+        [CS]: not(CS, "security", { state: "unsupported", reason: "needs Code Security" }),
+      },
+    };
+    const { read, groups } = sourceCover("/a", coverRows(inp));
+    expect(read.map((r) => r.source), "a read with a gap a key answers is not clean").toEqual(["git-local"]);
+    expect(coverByKind(groups).map(([k, gs]) => [k, gs.map((g) => `${g.what}: ${g.why}`)])).toEqual([
+      ["ask", ["npm audit: not run"]],
+      ["access", ["GitHub Actions: no access"]],
+      ["forge", ["Dependabot alerts: alerts off"]],
+      ["gap", ["Woodpecker: nothing reads it yet", "GitHub code scanning: unavailable", "no update bot: nothing detected", "git tags: partly read",
+        "Prod: off in episko.toml", "no issue tracker: nothing detected"]],
+    ]);
+    const of = (id: string) => groups.find((g) => g.source === id);
+    expect(of(AL)).toMatchObject({ detail: "alerts are switched off", action: { kind: "settings", urls: { "/a": "https://github.com/o/a/settings/security_analysis" } } });
+    expect(of(GHA)).toMatchObject({ detail: "who", roots: ["/a"], action: { kind: "fix", fix: "gh auth login" } });
+    expect(of("npm-audit")?.action).toEqual({ kind: "run", source: "npm-audit" });
+    expect(of("git-tags"), "its setup doors").toMatchObject({ cfg: true, detail: "no trunk known: set [maintenance] trunk", action: null });
+    expect(new Set(groups.map((g) => g.key)).size, "one key per row, so the repaint holds each in place").toBe(groups.length);
   });
 });
 

@@ -40,6 +40,10 @@ Markers: `+` new · `~` changed · `!` fixed
   typed in, for you to press Enter. After a check, the row stays where it was and each project's chip
   says what came back, such as *node 18 EOL* or *nothing found*; click it for the board that shows it.
   A board that appears above while you read no longer pushes the page down.
++ A project's Maintenance *Overview* is laid out like its tabs: *To do* and *Runs on* side by side
+  with *Coverage* across both, each card with its icon and its red and amber counted on its head.
+  *Coverage* there groups what could not be read the way a tab's does, with the same fixes, and
+  names every source that read cleanly on one line instead of a row each.
 + Maintenance's *Advisories and findings* are grouped by severity. Critical and high open on their
   first five rows, medium and low start folded, and each group's head names the projects it hits.
   Each row has its own *Patch* for that advisory alone, and *Patch all* briefs one agent per project

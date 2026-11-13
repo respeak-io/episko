@@ -113,7 +113,7 @@ const G: Record<GuideId, Guide> = {
   sources: { title: "Coverage", ic: "eyeOff",
     what: "Every source Maintenance found for this project and what became of it: read, switched off, refused, or not run yet.",
     from: "Detection: the project's files and its forge decide which sources apply.",
-    look: "Amber only where something can fix it or a read broke; everything else is a fact.",
+    look: "Grouped as a tab's Coverage is, by what closes each gap: a click, a login or token, a switch on the forge, a retry, or nothing here. What read cleanly is only named, under Read.",
     act: "Each row carries its action: a check to run, a command to copy, a settings page, a token or a host to allow." },
 };
 

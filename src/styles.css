@@ -3246,7 +3246,7 @@ select.in-ctl { cursor: pointer; }
 .mt-board:focus { outline: 0; }
 .mt-verb { --ic: 12px; flex: none; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--hair-strong); background: none; color: var(--muted); font: 600 11px var(--font-ui); padding: 2px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .mt-verb:hover { background: var(--accent-wash); }
-.mt-find:hover .mt-verb, .mt-cov:hover .mt-verb, .mt-cv:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
+.mt-find:hover .mt-verb, .mt-cv:hover .mt-verb, .mt-verb:focus-visible { color: var(--accent-ink); border-color: var(--accent-line); }
 .mt-fold { align-self: stretch; text-align: left; border: 1px dashed var(--hair-strong); background: none; color: var(--muted); font: 11px var(--font-mono); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-fold:hover { color: var(--text); }
 .mt-clear { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
@@ -3344,8 +3344,6 @@ select.in-ctl { cursor: pointer; }
 .mt-chip.res .rs.l-info { color: var(--text); }
 span.mt-chip.res { cursor: default; border-style: dashed; }
 span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); background: none; }
-.mt-fixrow { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin: 0 7px 5px 105px; }
-.mt-fixrow .mt-fix { min-width: 0; margin: 0; }
 /* Hosts are not projects: a row each, below the cards, the worst Prod cell of what it runs. */
 .mt-hosts { margin-top: 10px; padding-bottom: 6px; }
 .mt-host { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 6px 4px; border-bottom: 1px solid var(--hair); }
@@ -3523,26 +3521,37 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mt-dhead { display: flex; align-items: center; gap: 8px 16px; padding: 6px 8px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
 .mt-dhead .mt-cells { flex: 1; }
 .mt-dwhen { flex: none; display: flex; align-items: center; gap: 8px; }
+/* To do and Runs on side by side, Coverage across both: a short card never leaves a column empty. */
 .mt-dgrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; align-items: start; }
-.mt-dcol { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.mt-dc { scroll-margin-top: 8px; }
-.mt-dc .mt-finds { margin-top: 0; border-top: 0; padding: 0 6px; }
+.mt-dgrid > #mtc-sources { grid-column: 1 / -1; }
+.mt-dc { min-width: 0; scroll-margin-top: 8px; }
+.mt-dnone { padding: 6px 4px 0; }
+.mt-dacts { display: flex; gap: 8px; padding: 2px 4px 0; }
+.mt-drows { display: flex; flex-direction: column; margin-top: 4px; border-top: 1px solid var(--hair); }
+.mt-drows:empty { display: none; }
+.mt-drows > .mt-kv, .mt-drows > .mt-probe { padding: 7px 4px; border-bottom: 1px solid var(--hair); }
+.mt-drows > :last-child { border-bottom: 0; }
+.mt-dfoot { margin: 0; padding: 7px 4px 0; border-top: 1px solid var(--hair); font-size: 11px; line-height: 1.5; color: var(--muted-2); }
+.mt-drows:empty + .mt-dfoot { border-top: 0; }
+.mt-dfoot .aslink { font-size: 11px; }
+/* What read cleanly, as one line per facet under the gaps. */
+.mt-cvk.k-read .mt-cvk-h .ic { color: var(--st-done); }
+.mt-rds { display: flex; flex-wrap: wrap; gap: 6px 24px; min-width: 0; margin: 6px 0 0 20px; padding-top: 8px; border-top: 1px solid var(--hair); font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.mt-rd .fk { margin-right: 8px; font: 650 9.5px var(--font-ui); letter-spacing: .07em; text-transform: uppercase; color: var(--muted-2); }
 .mt-across { flex: none; font-size: 10px; }
 /* a sub-tab's top row on the dashboard: no picker, only the way across, on the right */
 .mt-grow { flex: 1; }
 .mt-board .mt-sec-h .xb { align-self: center; }
 .mt-board > .mt-kv { padding: 6px 4px; margin-top: 4px; border-top: 1px solid var(--hair); }
-.mt-kv, .mt-cov { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
-.mt-kv > span:first-child, .mt-cov .s { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-kv { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
+.mt-kv > span:first-child { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-kv .mono { flex: none; max-width: 60%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-kv .l-warn, .mt-cov .mt-v.l-warn { color: var(--st-working); }
+.mt-kv .l-warn { color: var(--st-working); }
 .mt-runs { flex: none; display: inline-flex; gap: 3px; align-self: center; }
 .mt-runs > * { width: 6px; height: 10px; border-radius: 2px; background: var(--hair-strong); }
 .mt-runs > .l-ok { background: var(--muted-2); }
 .mt-runs > .l-bad { background: var(--st-error); }
 .mt-runs > .mt-door:hover { box-shadow: 0 0 0 1px var(--muted); }
-.mt-cov .fk { flex: none; width: 88px; font: 9px var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); }
-.mt-cov .mt-v { flex: none; max-width: 55%; }
 .mt-probe { display: flex; align-items: baseline; gap: 10px; min-width: 0; padding: 5px 7px; font-size: 11.5px; }
 .mt-probe .k { flex: none; max-width: 30%; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mt-probe .u { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3550,8 +3559,7 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mt-probe .mt-v:empty { display: none; }
 .mt-hostl .aslink { flex: none; font-size: 11px; }
 .mt-dom .aslink { flex: none; max-width: 30%; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mt-said { margin: -3px 7px 5px 105px; font-size: 10.5px; color: var(--muted-2); }
-.mt-fix { display: block; margin: 0 7px 5px 105px; font: 10.5px var(--font-mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mt-fix { font: 10.5px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
 @media (max-width: 1080px) { .mt-dgrid { grid-template-columns: minmax(0, 1fr); } .mt-dhead { flex-wrap: wrap; } }
 
 /* Three columns — what is HERE, what MOVED, what is NEXT — each its own scroller, so one long card
