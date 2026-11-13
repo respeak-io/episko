@@ -570,9 +570,10 @@ html.win .wctl { display: flex; }
 /* ---- drift card ---- */
 /* .attn's grammar in the working colour: nothing is wrong, but every figure below reads the launch folder */
 .drift { border-radius: var(--radius); padding: 11px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--st-working) 13%, transparent), color-mix(in srgb, var(--st-working) 5%, transparent)); border: 1px solid color-mix(in srgb, var(--st-working) 30%, transparent); }
-.drift-h { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12px; color: var(--st-working); }
-.drift-h .b { font-family: var(--font-mono); font-size: 11px; }
-.drift-g { font-size: 13px; line-height: 1; }
+.drift-h { display: flex; align-items: flex-start; gap: 7px; font-weight: 700; font-size: 12px; line-height: 1.35; color: var(--st-working); }
+.drift-t { min-width: 0; }
+.drift-h .b { font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.drift-g { font-size: 13px; line-height: 1; margin-top: 1px; }
 .drift-path { font: 10.5px var(--font-mono); color: var(--muted); word-break: break-all; }
 .drift-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
 .drift-note .b { font-family: var(--font-mono); color: var(--muted); }
@@ -581,7 +582,7 @@ html.win .wctl { display: flex; }
 .drift.tracked { padding: 9px 11px; background: none; }
 .drift.tracked .drift-h { color: var(--text); }
 .sdrift.tracked { color: var(--muted); font-weight: 500; }
-.drift-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
+.drift-btns button { flex: 1 1 0; min-width: 0; min-height: 28px; padding: 4px 8px; line-height: 1.25; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
 .drift-btns button:hover { background: color-mix(in srgb, var(--st-working) 14%, var(--surface)); border-color: var(--st-working); }
 
 /* The stage header's branch chip, when the two branches disagree. */

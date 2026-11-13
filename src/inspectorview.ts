@@ -164,7 +164,7 @@ export function driftHtml(s: Sess): string {
     ? `<button data-driftfollow="${esc(s.id)}">Follow it here</button>`
     : `<button data-driftfollow="${esc(s.id)}">Move session here</button><button data-drifttrack="${esc(s.id)}" title="Show this checkout without restarting; the agent keeps running where it started">Just show it here</button>`;
   return `<div class="drift">
-    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span>Working in <span class="b">${esc(d.branch)}</span></div>
+    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span><span class="drift-t">Working in <span class="b">${esc(d.branch)}</span></span></div>
     <div class="drift-path" title="${esc(d.dir)}">${esc(tilde(d.dir))}</div>
     <div class="drift-note">${note}</div>
     <div class="drift-btns">${btns}</div>
@@ -175,10 +175,10 @@ export function trackedHtml(s: Sess): string {
   const h = s.home!;
   const at = esc(h.branch || basename(h.workdir));
   return `<div class="drift tracked">
-    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span>Started in <span class="b">${at}</span></div>
+    <div class="drift-h"><span class="drift-g">${icon("route", "solo")}</span><span class="drift-t">Started in <span class="b">${at}</span></span></div>
     <div class="drift-path" title="${esc(h.workdir)}">${esc(tilde(h.workdir))}</div>
     <div class="drift-note">Episko shows <span class="b">${esc(s.branch || basename(s.workdir))}</span>, where its work lands. The agent itself still runs in <span class="b">${at}</span>: its relative paths, project instructions and settings come from there, and resuming reopens it there.</div>
-    <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">Move session here</button><button data-driftback="${esc(s.id)}">Show ${at} again</button></div>
+    <div class="drift-btns"><button data-driftfollow="${esc(s.id)}">Move session here</button><button data-driftback="${esc(s.id)}" title="Show ${at} again; nothing restarts">Show where it runs</button></div>
   </div>`;
 }
 // The clickable half of the working-set card; ./mirror paints the same block for an
