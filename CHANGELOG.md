@@ -13,6 +13,10 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! Windows: Esc works again in a Claude pane after you have typed an umlaut or any other non-ASCII
+  character into it. Until now a dialog such as `/tasks` or `/status` stayed open on Esc for the rest
+  of that session while the arrow keys still worked.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks

@@ -228,15 +228,21 @@ fn note_win32_input_mode(chunk: &[u8], carry: &mut Vec<u8>, flag: &AtomicBool) {
     *carry = buf.split_off(buf.len() - keep);
 }
 
+/// The Esc key as Windows Terminal sends it: VK_ESCAPE, scan 1, down then up.
+const ESC_KEY_RECORD: &str = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_";
+
 /// Re-encode a keystroke for a ConPTY that asked for win32 input records. ConPTY best-fits
 /// a non-ASCII character into an Alt+numpad sequence riding on the key-UP record, where
 /// `_getwch` (Python's `getpass`) never looks, so a secret loses characters silently. Only
-/// non-ASCII is re-encoded; ASCII and escape sequences pass byte-exact (docs/architecture.md).
+/// non-ASCII and the Esc key are re-encoded; everything else passes byte-exact (docs/architecture.md).
 fn win32_input_encode(data: &str) -> String {
     let mut out = String::with_capacity(data.len());
     let mut it = data.chars().peekable();
     while let Some(c) = it.next() {
-        if c == '\x1b' {
+        // Once ConPTY has seen one record it holds a bare ESC ending a write as a sequence's start.
+        if c == '\x1b' && it.peek().is_none() {
+            out.push_str(ESC_KEY_RECORD);
+        } else if c == '\x1b' {
             out.push(c);
             copy_escape(&mut it, &mut out);
         } else if c.is_ascii() {
@@ -2150,6 +2156,15 @@ mod tests {
     }
 
     #[test]
+    fn the_esc_key_becomes_a_key_record_pair() {
+        assert_eq!(win32_input_encode("\x1b"), ESC_KEY_RECORD);
+        assert_eq!(win32_input_encode("x\x1b"), format!("x{ESC_KEY_RECORD}"));
+        // Alt+x and an arrow are whole sequences ConPTY parses either way.
+        assert_eq!(win32_input_encode("\x1bx"), "\x1bx");
+        assert_eq!(win32_input_encode("\x1b[A"), "\x1b[A");
+    }
+
+    #[test]
     fn a_non_bmp_character_goes_as_its_two_surrogates() {
         assert_eq!(
             win32_input_encode("🔑"), // U+1F511 -> D83D DD11
@@ -2296,14 +2311,21 @@ mod tests {
             ("no-break space", "ab\u{a0}cd\r", "ab\u{a0}cd"),
         ];
         for (name, send, want) in cases {
-            let got = round_trip(send);
+            let got = round_trip(&[send]);
             // A real tty passes the paste brackets to the child; ConPTY consumes them.
             let got = got.replace("\x1b[200~", "").replace("\x1b[201~", "");
             assert_eq!(got, want, "{name}: the child did not receive what was sent");
         }
     }
 
-    fn round_trip(send: &str) -> String {
+    /// One keystroke per write, as xterm sends them. After a single record (the umlaut),
+    /// ConPTY holds a bare ESC ending a write as the start of a sequence: Esc goes dead.
+    #[test]
+    fn esc_still_reaches_the_child_after_an_umlaut() {
+        assert_eq!(round_trip(&["ä", "\x1b", "\r"]), "ä\x1b");
+    }
+
+    fn round_trip(writes: &[&str]) -> String {
         use std::time::{Duration, Instant};
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -2366,11 +2388,13 @@ mod tests {
             out.lock().unwrap()
         );
         std::thread::sleep(Duration::from_millis(200));
-        {
+        for send in writes {
             let payload = pty_payload(&flag, send);
             let mut g = writer.lock().unwrap();
             g.write_all(payload.as_bytes()).expect("write");
             g.flush().expect("flush");
+            drop(g);
+            std::thread::sleep(Duration::from_millis(150));
         }
         let seen = wait_for("GOT:");
         let _ = child.kill();
