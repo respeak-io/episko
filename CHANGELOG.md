@@ -29,7 +29,9 @@ Markers: `+` new · `~` changed · `!` fixed
   project's facets, what to do there and the worst projects elsewhere, each one click from its board.
 + A Maintenance check shows its progress: a bar with how many projects are done, what is being read
   right now, and a spinner on each card's facet while it is read. *Since last week* holds still until
-  the check finishes instead of counting up project by project.
+  the check finishes instead of counting up project by project. Going from the all-projects view to a
+  project's Maintenance tab and back reads a project again only once its last check is ten minutes
+  old; the ⟳ beside *checked* always reads again.
 + Maintenance's *Coverage* sorts what it could not read by what closes the gap: a click, a login or
   token, a switch on GitHub, a retry. Each group says what it means, each row says why under its
   name, and each project is a chip with its icon that does the row's fix for it: click it to check

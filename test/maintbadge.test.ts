@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DETECT, fleetChip, pct, popLines, progressText, projectChip, readingNow, readingSub, scanProgress, worstProjects,
+  DETECT, fleetChip, MAINT_FRESH_MS, pct, popLines, progressText, projectChip, readingNow, readingSub, scanProgress, scanStale, worstProjects,
   type ProjectChipIn, type ScanState,
 } from "../src/maintbadge";
 import type { Cell, Finding } from "../src/maint";
@@ -57,6 +57,31 @@ describe("how far a scan has got", () => {
   it("gives a card's sub how far it is and as of when its earlier answer is", () => {
     expect(readingSub(scanProgress([st("/a", { total: 5, out: 2 })]), "3h ago")).toBe("reading 3 of 5 · as of 3h ago");
     expect(readingSub(scanProgress([st("/a", { detecting: true })]), null)).toBe("looking at the project…");
+  });
+});
+
+describe("whether a look at a view reads a project again", () => {
+  const NOW = 1_800_000_000_000;
+  const done = (ago: number, err: string | null = null) => ({ detecting: false, out: 0, at: NOW - ago, err });
+
+  it("reads one never read, or last read past the window", () => {
+    expect(scanStale(undefined, NOW)).toBe(true);
+    expect(scanStale({ ...done(0), at: 0 }, NOW)).toBe(true);
+    expect(scanStale(done(MAINT_FRESH_MS + 1), NOW)).toBe(true);
+  });
+
+  it("re-reads nothing inside the window, so going fleet → project → fleet asks once", () => {
+    expect(scanStale(done(0), NOW)).toBe(false);
+    expect(scanStale(done(MAINT_FRESH_MS), NOW)).toBe(false);
+  });
+
+  it("never starts a second read over one still out, however old its last answer", () => {
+    expect(scanStale({ detecting: true, out: 0, at: 0, err: null }, NOW)).toBe(false);
+    expect(scanStale({ detecting: false, out: 3, at: NOW - 3 * MAINT_FRESH_MS, err: null }, NOW)).toBe(false);
+  });
+
+  it("asks again after a failed detection, which is no answer to keep", () => {
+    expect(scanStale(done(1000, "not a folder"), NOW)).toBe(true);
   });
 });
 

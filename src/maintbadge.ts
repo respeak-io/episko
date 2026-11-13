@@ -38,6 +38,17 @@ export function scanProgress(rows: readonly ScanState[], projects = rows.length)
   return { projects: n, done, looking: looking + n - rows.length, reads, readsDone, frac: n ? sum / n : 1, live };
 }
 
+/** A look at a view inside this re-reads nothing for that project; ⟳ always does. */
+export const MAINT_FRESH_MS = 10 * 60_000;
+
+/** Whether a look at a view should read this project again. Per project, so going between the fleet and
+ *  one project's tab re-reads nothing just read; a read already out is its own answer, a failed detection none. */
+export function scanStale(e: (Pick<ScanState, "detecting" | "out"> & { at: number; err: string | null }) | undefined, now: number): boolean {
+  if (!e) return true;
+  if (e.detecting || e.out > 0) return false;
+  return !!e.err || now - e.at > MAINT_FRESH_MS;
+}
+
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 export const pct = (p: ScanProgress): number => Math.round(Math.min(1, Math.max(0, p.frac)) * 100);
 

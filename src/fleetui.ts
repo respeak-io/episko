@@ -24,7 +24,7 @@ import {
 } from "./maint";
 import { findSource, type Facet, type MaintCap } from "./maintsources";
 import {
-  askingFor, fleetCheckedAt, fleetProgress, fleetScanning, MAINT_FRESH_MS, maintInput, maintOf, maintPrefs, maintSnap, maintWeek, projectProgress, scanFleet, shownSweep, sweeps, type SweepRun,
+  askingFor, fleetCheckedAt, fleetProgress, fleetScanning, maintInput, maintOf, maintPrefs, maintStale, maintSnap, maintWeek, projectProgress, scanFleet, shownSweep, sweeps, type SweepRun,
 } from "./maintscan";
 import { progressText, readingNow, readingSub } from "./maintbadge";
 import { maintClick, maintChip, maintEarlier, maintKey, maintAdv, maintPicked, quietOpen, type MaintHost, type PickRow } from "./maintui";
@@ -133,7 +133,7 @@ export let fleetView: FleetViewKind = localStorage.getItem("cc-fleet-view") === 
 export function setFleetView(v: FleetViewKind) {
   fleetView = v === "maint" ? "maint" : "activity";
   localStorage.setItem("cc-fleet-view", fleetView);
-  if (fleetView === "maint" && !fleetScanning && Date.now() - fleetCheckedAt > MAINT_FRESH_MS) checkFleet(false);
+  if (fleetView === "maint") checkStale();
   renderFleet();
   host.renderAll();   // the pass is what records the switch for back/forward
 }
@@ -142,9 +142,13 @@ const maintRoots = () => [...new Set(allProjects().map((p) => p.repoRoot ?? p.pa
 /** main.ts, once, after the boot picked its stage: Maintenance on screen re-reads what is older than the window.
  *  Not from `openFleet`, which every exit from the stage runs too. */
 export function maintOnBoot(): void {
-  if (fleetView !== "maint" || !fleetMirror() || fleetScanning) return;
-  const now = Date.now();
-  if (maintRoots().some((r) => { const e = maintOf(r); return !e || now - e.at > MAINT_FRESH_MS; })) checkFleet(false);
+  if (fleetView === "maint" && fleetMirror()) checkStale();
+}
+/** A look at the view reads only the projects older than the window, so a project's tab just read is not read twice. */
+function checkStale(): void {
+  if (fleetScanning) return;
+  const now = Date.now(), stale = maintRoots().filter((r) => maintStale(r, now));
+  if (stale.length) void scanFleet(stale, false);
 }
 // Which part of Maintenance is up, and the project a cell narrowed it to. Module state, not a
 // `mirror` field, so no mirror read site changes; back/forward reads it as `fleetPlace` (docs/maintenance.md).
@@ -534,7 +538,7 @@ function buildMaint(now: number): MaintView {
   return {
     // The dashboard builds the same model for its one project (docs/maintenance.md).
     ...tabModel(maintSub === "overview" ? null : maintSub, seen, only, now),
-    cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning,
+    cards: ranked, chip: maintChip, quietOpen, checked: fleetCheckedAt, scanning: fleetScanning, scanOf: sweep?.projects ?? 0,
     progress: sweep && { frac: sweep.frac, text: progressText(sweep, false), now: readingNow(sweep, nameOf) },
     kept: Math.max(0, ...[...byRoot.keys()].map((r) => maintOf(r)).filter((e) => e?.kept).map((e) => e!.at)),
     tally: {

@@ -10,7 +10,7 @@ import {
   type Detection, type KeptScans, type MaintInput, type MaintSnap, type SourceReport, type SweepAdvisory, type SweepAgent,
   type SweepFacts, type SweepState, type WeekMark, type WeekMarks,
 } from "./maint";
-import { DETECT, scanProgress, type ScanProgress } from "./maintbadge";
+import { DETECT, scanProgress, scanStale, type ScanProgress } from "./maintbadge";
 import { findSource, MAINT_PREFS_DEFAULT, SOURCES, type MaintPrefs, type Mode } from "./maintsources";
 import { ghAccountFor } from "./state";
 import { readObj } from "./store";
@@ -29,12 +29,12 @@ export interface ProjectMaint {
   kept?: boolean; // the last session's scan, painted at boot; no read of this session has replaced it
 }
 
-/** A switch to the view inside this window re-reads nothing; ⟳ always does. */
-export const MAINT_FRESH_MS = 10 * 60_000;
 const IN_FLIGHT = 6; // maint_detect and maint_read share it: one slow `gh` never queues the rest
 
 const cache = new Map<string, ProjectMaint>();
 export const maintOf = (root: string): ProjectMaint | undefined => cache.get(root);
+/** Whether a look at a view should read this project again (./maintbadge scanStale). */
+export const maintStale = (root: string, now = Date.now()): boolean => scanStale(cache.get(root), now);
 
 // Copied from ./fleetui's loadSeq: only the newest fleet scan may clear the flag or stamp the time.
 let maintSeq = 0;

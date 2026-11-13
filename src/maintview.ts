@@ -78,6 +78,7 @@ export interface MaintView extends MaintTabView {
   checked: number; // the last finished sweep this session (ms), 0 for none
   kept: number; // the newest of the last session's scans painted at boot (ms), 0 for none
   scanning: boolean;
+  scanOf: number; // the projects the running sweep reads, 0 for none; fewer than the cards when only the stale ones are
   progress: MaintProgress | null; // the fleet sweep's, while it runs
   tally: MaintTally;
   sees: MaintCap[]; blind: MaintCap[]; // what the sources that answered can and cannot see
@@ -154,8 +155,11 @@ const sshHtml = (alias: string, root: string, cls = "mt-verb") => `<button class
 
 /** The fleet head's right-hand note: when this was last asked, and the one way to ask again. */
 export function maintWhenHtml(v: MaintView): string {
-  if (v.scanning) return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing every project" : "checking every project"}`
-    + `${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>`;
+  if (v.scanning) {
+    const what = v.scanOf && v.scanOf < v.cards.length ? plural(v.scanOf, "project") : "every project";
+    return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing" : "checking"} ${what}`
+      + `${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>`;
+  }
   if (!v.checked) {
     return `<span class="fl-when mono">${v.kept ? `as of ${esc(relTime(v.kept))}` : "Not checked this session"}</span>
       <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;

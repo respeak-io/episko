@@ -4360,10 +4360,10 @@ describe("nothing scans until a person asks", () => {
   };
 
   const fleet = callGraph("fleetui.ts",
-    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "fleetProgress", "projectProgress", "askingFor", "MAINT_FRESH_MS", "maintChip", "maintEarlier", "maintPicked", "maintAdv", "quietOpen",
+    ["maintOf", "maintInput", "maintSnap", "maintWeek", "maintPrefs", "fleetCheckedAt", "fleetScanning", "fleetProgress", "projectProgress", "askingFor", "maintStale", "maintChip", "maintEarlier", "maintPicked", "maintAdv", "quietOpen",
       "MaintHost", "sweeps", "shownSweep", "SweepRun"],
     ["maint_read", "maint_detect"]);
-  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "projectProgress", "askingFor", "maintAdv", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
+  const dash = callGraph("dashboard.ts", ["maintOf", "maintInput", "maintSnap", "maintStale", "projectProgress", "askingFor", "maintAdv", "MaintHost"], ["loadMaint", "maint_read", "maint_detect"]);
 
   it("finds the functions it is about, and a walk that can see a scan", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView", "buildMaint"]) expect(fleet.bodies.has(f), f).toBe(true);
@@ -4377,6 +4377,20 @@ describe("nothing scans until a person asks", () => {
 
   it("never reaches a scan from openFleet, loadFleet, renderFleet or buildView", () => {
     for (const f of ["openFleet", "loadFleet", "renderFleet", "buildView"]) expect(fleet.reaches(f), f).toEqual([]);
+  });
+
+  // A look is per project and bounded by the window, so going fleet → project → fleet reads each project once.
+  it("asks from a look at either view only through the per-project window", () => {
+    for (const f of ["setFleetView", "maintOnBoot"]) {
+      expect(fleet.bodies.get(f), f).toMatch(/checkStale\(/);
+      expect(fleet.bodies.get(f), f).not.toMatch(/(?:checkFleet|scanFleet)\(/);
+    }
+    expect(fleet.bodies.get("checkStale")).toMatch(/maintStale\(/);
+    for (const f of ["openDashboard", "setDashTab"]) {
+      expect(dash.bodies.get(f), f).toMatch(/lookMaint\(/);
+      expect(dash.bodies.get(f), f).not.toMatch(/loadMaint\(/);
+    }
+    expect(dash.bodies.get("lookMaint")).toMatch(/maintStale\(/);
   });
 
   it("never reaches a scan from the dashboard's render path", () => {

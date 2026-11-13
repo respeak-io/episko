@@ -38,7 +38,7 @@ import {
   ciRows, clampMaint, coverRows, coverSetups, domainStates, errorSummary, FACET_TAB, facetCells, findings, forgeText, hostSummary, offers, outdatedText, probeRows, prodChecks, projectBand,
   tabFindings, tabModel, type BoardId, type Door, type MaintInput,
 } from "./maint";
-import { askingFor, maintInput, maintOf, maintSnap, projectProgress, scanProject } from "./maintscan";
+import { askingFor, maintInput, maintOf, maintSnap, maintStale, projectProgress, scanProject } from "./maintscan";
 import { progressText, readingNow } from "./maintbadge";
 import { findSource, type Facet } from "./maintsources";
 import { maintAdv, maintClick, maintKey, type MaintHost } from "./maintui";
@@ -432,8 +432,16 @@ export function reloadDashGh(r: string): void {
   if (dashTab === "maint") void loadMaint(true);
 }
 
-// One project's Maintenance scan, shaped like `loadBranches`: the first look at the tab per open
-// asks, a render never does, and the answers land in ./maintscan's cache, which renderAll paints.
+// A look at the tab, once per open, asks only past the window (`maintStale`): going between the
+// fleet and this tab re-reads nothing just read. ⟳ and an account switch go to `loadMaint` direct.
+function lookMaint(): void {
+  const r = root();
+  maintFor = r;
+  if (r && maintStale(r)) void loadMaint();
+}
+
+// One project's Maintenance scan, shaped like `loadBranches`: a render never asks, and the
+// answers land in ./maintscan's cache, which renderAll paints.
 async function loadMaint(force = false): Promise<void> {
   const r = root();
   if (!r) return;
@@ -1178,7 +1186,7 @@ export function openDashboard(project: string, path: string, tab?: DashTab, door
   showTab();
   host.renderAll();
   void loadDash();
-  if (dashTab === "maint") void loadMaint();
+  if (dashTab === "maint") lookMaint();
   if (door) openDashDoor(door);
 }
 
@@ -1266,7 +1274,7 @@ function showTab(): void {
 function setDashTab(tab: DashTab): void {
   dashTab = tab;
   showTab();   // now, not on the coalesced pass: ⌘I and the tour read the class straight after
-  if (tab === "maint" && maintFor !== root()) void loadMaint();
+  if (tab === "maint" && maintFor !== root()) lookMaint();
   host.renderAll();   // ◨ is greyed or lit from the truth by the pass
 }
 
