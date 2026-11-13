@@ -141,14 +141,15 @@ fn alert_page(ctx: &Ctx, ex: &dyn Exec, what: &str, cov: fn(&str, Option<&str>) 
 }
 
 /// Named before `coverage_of` (the token scope, then `gh_coverage`): no analysis uploaded is the
-/// feature unused, and a private repository without Advanced Security cannot have it at all.
+/// feature unused, and a private repository without Code Security cannot have it at all. GitHub
+/// renamed that product from Advanced Security in 2025, so its 403 comes in either spelling.
 fn code_scanning_coverage(err: &str, account: Option<&str>) -> Coverage {
     let e = err.to_lowercase();
     if e.contains("no analysis found") || e.contains("code scanning is not enabled") {
         return Coverage::Off { reason: "code scanning has no analysis for this repository".into() };
     }
-    if e.contains("advanced security") {
-        return Coverage::Unsupported { reason: "code scanning needs GitHub Advanced Security on this repository".into() };
+    if e.contains("advanced security") || e.contains("code security must be enabled") {
+        return Coverage::Unsupported { reason: "code scanning needs GitHub Code Security on this repository".into() };
     }
     coverage_of(err, account)
 }
@@ -923,6 +924,9 @@ mod tests {
         assert!(matches!(cs("gh: no analysis found (HTTP 404)"), Coverage::Off { .. }));
         let ghas = cs("gh: Advanced Security must be enabled for this repository to use code scanning. (HTTP 403)");
         assert!(matches!(ghas, Coverage::Unsupported { .. }), "{ghas:?}");
+        // What GitHub answers since the rename, for an admin of a private repository: not a refusal.
+        let renamed = cs("gh: Code Security must be enabled for this repository to use code scanning. (HTTP 403)");
+        assert!(matches!(renamed, Coverage::Unsupported { .. }), "{renamed:?}");
         let Coverage::NoAccess { fix, .. } = cs("HTTP 403: Resource not accessible by integration (needs security_events)") else { panic!() };
         assert!(fix.unwrap().contains("security_events"), "the scope, as Dependabot's alerts need it");
         assert!(matches!(cs("gh: Not Found (HTTP 404)"), Coverage::NoAccess { .. }), "a repository the account cannot see");

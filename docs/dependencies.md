@@ -56,7 +56,8 @@ nothing. Maintenance's Security facet reads them instead (`github-code-scanning`
 `github-secret-scanning`, `sarif-files`; docs/maintenance.md), beside the same Dependabot
 alerts, and `mergeAdvisories` folds one CVE that several reporters name into one row. The code
 scanning endpoint needs the same `security_events` scope, so it reuses `coverage_of` after its
-own two cases (no analysis is `off`, no Advanced Security is `unsupported`).
+own two cases (no analysis is `off`, no Code Security, which GitHub called Advanced Security
+until 2025 and still answers in either spelling, is `unsupported`).
 
 ## The two failures that name nothing unless you name them
 
