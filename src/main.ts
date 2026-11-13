@@ -76,7 +76,7 @@ import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
 import { switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
-  closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
+  closePeek, initFileDrop, initProjectDnD, initRailHold, initSidebarPeek, renderMini, renderSidebar,
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import { closeBranchPop } from "./bpop";
@@ -1128,6 +1128,7 @@ void refreshGitViews(); // seed the roster so the first paint isn't a checkout s
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
 initSidebarPeek();
+initRailHold();
 // The tour goes first: on a first run it takes the screen, and the release notes stay quiet.
 initChangelog(initTour());
 initCompositorReset();
