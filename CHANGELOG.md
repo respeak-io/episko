@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! A session whose workflow or subagents work in another worktree now moves to that worktree in the
+  sidebar on its own, as it already did when the agent itself wrote there. Until now it stayed under
+  the checkout it was started in, with a card asking, until the fan-out ended. If the agents write
+  to two checkouts at once, the card still asks.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks

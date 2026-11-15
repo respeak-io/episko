@@ -14,7 +14,7 @@ import { basename, cleanTitle, esc } from "./format";
 import { icon } from "./svgicons";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
-  isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
+  isClaude, liveFanout, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -23,7 +23,7 @@ import { readList } from "./store";
 import { seedPrompts } from "./outline";
 import { readProviderAsked } from "./providers";
 import { setPhase } from "./phase";
-import { driftUpdate, gitMutates } from "./gitwatch";
+import { driftMoved, driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
   attachWebgl, claudeInput, claudeKeys, clipboardKeys, detachWebgl, fitSession, MONO,
@@ -886,7 +886,8 @@ export function noteDrift(s: Sess, tool: string, data: any) {
   // All three fields: the branch of a drifted-into checkout can be switched underneath us.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;
-  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
+  s.driftSeen = driftMoved(s.driftSeen, liveFanout(s)?.since ?? null, Date.now());
+  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via}${s.driftSeen.mixed ? ", mixed" : ""})` : `drift cleared ${s.id.slice(0, 8)}`);
   renderAll();
 }
 

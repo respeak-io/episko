@@ -1,7 +1,7 @@
 // What a session's tool activity implies about git: re-read now (`gitMutates`), and which
 // checkout its work lands in (drift). A trigger, not an authority, so `VERBS` leans inclusive.
 
-import type { Drift } from "./types";
+import type { Drift, DriftSeen } from "./types";
 
 const VERBS ="checkout|switch|worktree|branch|merge|rebase|reset|pull|stash";
 
@@ -140,12 +140,23 @@ function writeSite(tool: string, input: unknown, cwd: string | null): string | n
   return tool === "Bash" ? bashWroteIn(field(input, "command"), cwd) : null;
 }
 
-// What a fresh drift gets without asking (Settings › On its own): a cwd drift is followed, a
-// write drift is shown in place. Moving a write drift restarts the agent, so it is never automatic.
-// Not while subagents run: their hooks arrive under the parent's id, so a fan-out across two
-// worktrees flipped the pane between them several times a second, a toast each time.
-export function driftRepair(d: Drift | null, auto: boolean, agentsUp = false): "follow" | "track" | null {
-  return !auto || !d || agentsUp ? null : d.via === "cwd" ? "follow" : "track";
+// How long a drift seen during a fan-out must hold before it is shown without asking.
+export const DRIFT_SETTLE_MS = 10_000;
+
+// `fleet`: the live fan-out's `since`, or null. Its second move makes the drift `mixed`.
+export function driftMoved(prev: DriftSeen | null | undefined, fleet: number | null, now: number): DriftSeen {
+  return { at: now, fleet, mixed: fleet !== null && prev?.fleet === fleet };
+}
+
+// What a drift gets without asking (Settings › On its own): a cwd drift is followed, a write
+// drift is shown in place; a move restarts the agent, so it never is. A fan-out's hooks arrive
+// under the parent's id, so then only a settled write drift qualifies, and never a mixed one.
+export function driftRepair(
+  d: Drift | null, auto: boolean, seen: DriftSeen | null = null, fleetUp = false, now = Date.now(),
+): "follow" | "track" | null {
+  if (!auto || !d || seen?.mixed) return null;
+  if (fleetUp && (d.via === "cwd" || !seen || now - seen.at < DRIFT_SETTLE_MS)) return null;
+  return d.via === "cwd" ? "follow" : "track";
 }
 
 export function driftTarget(

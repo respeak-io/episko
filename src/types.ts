@@ -106,6 +106,9 @@ export interface WtHead { path: string; branch: string; is_main: boolean; exists
 // A checkout other than the launch one (./gitwatch). via decides the repair: "cwd" means Claude moved
 // the session itself, so the dir is adopted; "write" means only its writes moved, so it relaunches there.
 export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
+// The last change an observation made to `drift`: when, under which fan-out (its `since`),
+// and whether that fan-out had moved it before (./gitwatch's driftMoved).
+export interface DriftSeen { at: number; fleet: number | null; mixed: boolean }
 // Where process and transcript really are on a pane tracking another checkout; resume uses this.
 export interface Home { workdir: string; branch: string; worktree: string | null }
 // A background fan-out (Workflow, or a burst of Task subagents). It ends the parent's turn, so done alone
@@ -405,6 +408,7 @@ export interface Sess {
   revive: ReviveState | null;
   // another checkout of this repo (Drift.via, ./gitwatch); display-only, workdir is unchanged until followed
   drift: Drift | null;
+  driftSeen?: DriftSeen | null;
   home?: Home | null;
   account?: string; // the setup-token account it launched on (./accounts); absent follows the login
   model: string; effort: string | null; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;
