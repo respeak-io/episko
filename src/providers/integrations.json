@@ -1,5 +1,5 @@
 {
-  "source": "respeak-io/episko-integrations@34881fa1bff9598346e4e6532993bde11186231b",
+  "source": "respeak-io/episko-integrations@c66fd7eb28430f2f06de75b403d25a5f40dab123",
   "agents": {
     "omp": {
       "name": "OMP",

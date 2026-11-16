@@ -144,7 +144,9 @@ Episko ships the extensions it loads, a v2 lands in both repositories together.
 ## Shipping a change
 
 A change to an extension lands in episko-integrations' `main` through a pull request whose CI
-ran it in the real agent. From there it reaches Episko only through a pull request here:
+ran it in the real agent. Branch protection holds that, admins included: no direct push, and
+`unit` plus the three pinned `agents` jobs green on a branch level with `main`. From there it
+reaches Episko only through a pull request here:
 
 1. `.github/workflows/integrations.yml` runs daily (and by hand). It runs
    `scripts/vendor-integrations.mjs` on that `main`, which refuses a commit whose CI there
