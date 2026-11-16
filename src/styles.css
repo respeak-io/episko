@@ -3469,6 +3469,8 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mt-tbl td { padding: 6px; border-bottom: 1px solid var(--hair); white-space: nowrap; vertical-align: middle; }
 .mt-tbl tr:last-child td { border-bottom: 0; }
 .mt-tbl .r { text-align: right; }
+/* A figure column is as wide as its figures; a table's slack goes to its text columns. */
+.mt-tbl th.r { width: 1%; }
 .mt-tbl .a { width: 1%; text-align: right; }
 .mt-tbl td.mono { font: 11px var(--font-mono); color: var(--muted); }
 .mt-tbl td.u { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
