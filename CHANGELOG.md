@@ -13,6 +13,9 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! Killing a process from the running-servers list keeps the list open, with its tree still unfolded, so the next one is one click away.
+! The running-servers list no longer shows empty cells that light up like a button with its icon missing; *Left behind* and *Running in your panes* drop the columns they never use.
+
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
