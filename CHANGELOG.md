@@ -13,6 +13,7 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+! With *Shelved sessions under their checkout* on, a project you have not pinned lists its shelved sessions under their branch headers right away. Before, they only moved there once a session in that project was open.
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
 the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
