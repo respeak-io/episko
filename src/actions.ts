@@ -139,10 +139,20 @@ export function addProjectPath(picked: string) {
   probeIcon(dir); // scour the repo for a favicon/logo to use as the project glyph
   toast(`Added ${basename(dir)}`);
 }
+// The header's hover ✕ removes in one click, so the way back is on screen, at its old place.
 export function removeFavorite(path: string) {
+  const at = FAVORITES.findIndex((f) => f.path === path);
+  if (at < 0) return;
+  const fav = FAVORITES[at];
   setFavorites(FAVORITES.filter((f) => f.path !== path));
   saveFavorites();
   renderAll();
+  actToast(`Removed ${fav.name} from the sidebar`, [{ label: "Undo", run: () => {
+    if (FAVORITES.some((f) => f.path === path)) return;
+    setFavorites([...FAVORITES.slice(0, at), fav, ...FAVORITES.slice(at)]);
+    saveFavorites();
+    renderAll();
+  } }]);
 }
 // Shelve one session, asking first if it is mid-turn. The sign-off sheet calls
 // `shelveSession` directly, having already asked about the whole fleet.
