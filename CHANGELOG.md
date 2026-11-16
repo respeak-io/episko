@@ -16,6 +16,13 @@ Markers: `+` new · `~` changed · `!` fixed
   branch, or under the project when that branch is not checked out here. A session and its review
   are one click apart, and coming back keeps the tab, the scroll position and what you were writing.
   The row counts the comments you have not sent yet. ✕ or Esc on the review closes it, row and all.
+
+## 0.40.0 — 2026-11-11
+The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
+the questions instead of one of them. The branch picker opens at once, a review's file tree ticks
+whole folders as viewed, and on Windows Episko works against the lag that builds up over a long day.
+*Settings › Updates* can also put Episko on a preview of what comes next.
+
 + A review's file list has a tick on every file and folder. A folder's tick marks everything under it
   as viewed in one click, and shows a dash while only part of it is.
 + *Settings › Updates* can put Episko on the preview channel: a build of a feature that has not
