@@ -8,9 +8,9 @@ extension, next to the agent it depends on, and Episko only checks, clips and di
 arrives.
 
 The extensions Episko ships live in
-[episko-integrations](https://github.com/respeak-io/episko-integrations), where CI runs each
-one inside its real agent against a scripted model. Copies are vendored into
-`src-tauri/integrations/` (see its README). Today: OMP and OpenCode.
+[episko-integrations](https://github.com/respeak-io/episko-integrations), one folder per
+agent, where CI runs each one inside its real agent against a scripted model. Copies are
+vendored here by pull request (§ Shipping a change). Today: OMP and OpenCode.
 
 ```text
 agent process                                   Episko
@@ -27,15 +27,18 @@ The JSON Schema in `src/providers/protocol-v1.schema.json` is the contract;
 
 ## How Episko launches a protocol agent
 
-A manifest entry (`src/providers/manifest.json`) with a `protocol` block is all Episko needs:
+Each agent's `integration.json` in episko-integrations says how; Episko vendors its name,
+homepage, tested version, capabilities and `launch` block into
+`src/providers/integrations.json`, which both halves read as they read `manifest.json`:
 
 ```json
 "omp": {
+  "name": "OMP",
+  "testedWith": "18.20.0",
   "capabilities": ["session-state", "activity", "context", "usage", "launch-permissions"],
-  "protocol": {
+  "launch": {
     "extension": "episko.ts",
     "args": ["--extension", "{file}"],
-    "env": {},
     "permissionModes": [{ "id": "write", "label": "Accept edits", "sub": "…", "glyph": "✎", "asks": true,
                           "args": ["--approval-mode", "write"] }]
   }
@@ -111,10 +114,11 @@ the day's usage, so a counter that restarts without a new `id` would be read as 
 
 ## What Episko does with it
 
-- The manifest's capabilities decide which surfaces appear; claim only what the extension
-  actually sends (`docs/providers.md`).
-- Every such session carries a **community** chip in the inspector, and the agent picker
-  says so too. Episko ships these files but cannot vouch for the agent they run in.
+- The integration's capabilities decide which surfaces appear; claim only what the
+  extension actually sends (`docs/providers.md`).
+- Every such session carries a **community** chip in the inspector, naming the agent version
+  CI tested it with, and the agent picker says so too. Episko ships these files but cannot
+  vouch for the agent they run in.
 - The revive watchdog never acts on a community session: a failure an extension reports
   must not make Episko type into the agent (`revive.ts`).
 - Shared code sees normal `AgentEvent`s and never branches on the provider.
@@ -137,16 +141,36 @@ tell. Additive changes (a new event type, a new optional field) stay in v1. Anyt
 changes what an existing field means is v2, and Episko then accepts both for a while. Since
 Episko ships the extensions it loads, a v2 lands in both repositories together.
 
+## Shipping a change
+
+A change to an extension lands in episko-integrations' `main` through a pull request whose CI
+ran it in the real agent. From there it reaches Episko only through a pull request here:
+
+1. `.github/workflows/integrations.yml` runs daily (and by hand). It runs
+   `scripts/vendor-integrations.mjs` on that `main`, which refuses a commit whose CI there
+   has not passed, re-checks the launch rules that matter to Episko, and writes the copies:
+   `src-tauri/integrations/<id>.ts`, the generated `bundle.rs` table,
+   `src/providers/integrations.json`, and the site's agent chips and FAQ names.
+2. If anything changed, it opens or refreshes one pull request from `bot/integrations` into
+   `dev`, listing the commits since the last vendoring. That PR runs no CI: the code was
+   tested in its agents, and Episko's suites run on `dev` once it is merged. The review is
+   the diff, which is exactly what will ship.
+3. The next release carries whatever was merged.
+
+It never happens at release time. A tag must name what it ships, and nothing should reach a
+signed build that nobody merged here, however it got into the other repository. By hand:
+`node scripts/vendor-integrations.mjs ../episko-integrations [ref]`.
+
 ## Adding an agent
 
 1. The agent must have a public, per-launch way to load code into its own process: a flag,
    an environment variable, a config folder. Reading its screen does not count.
-2. Write the extension in episko-integrations, with a replayed recording and an e2e run in
-   the real CLI (its README has the steps).
-3. Here: a manifest row with a `protocol` block and only the capabilities it sends, a
-   registry entry `{ id, label, events: protocolEvents }` in `src/providers/index.ts`, the
-   file added to `EXTENSIONS` in `protocol.rs`, then
-   `node scripts/vendor-integrations.mjs ../episko-integrations`.
-4. `cargo test` checks every protocol entry has a bundled extension and a path that cannot
-   escape its folder; `pnpm test` checks the registry against the manifest.
-5. Run the session in the app before you believe it (`RELEASE.md`).
+2. Episko must already list it in its catalogue (`AGENTS` in `pty.rs`, with a logo); the
+   twenty-odd terminal-only CLIs all are. A new one gets that row here first.
+3. Add `agents/<id>/` in episko-integrations: the extension, its `integration.json`, a
+   replayed recording and the e2e recipe (its README has the steps).
+4. Nothing else here. The vendoring PR carries the launch data, the registry entry follows
+   from `integrations.json`, the Rust table is generated, and the site's chips are stamped.
+5. On `dev`, `cargo test` checks every integration has a bundled extension and a path that
+   cannot escape its folder; `pnpm test` checks the registry against the capabilities.
+6. Run the session in the app before you believe it (`RELEASE.md`).

@@ -9,7 +9,7 @@ import {
   agentInstalled, CLAUDE_CLI, type AgentCli, type AgentPermissionMode, type Restorable,
 } from "../types";
 import { CODEX_PERMISSION_MODES, codexEvents, codexHistoryEntries, codexHistoryMessages } from "./codex";
-import { protocolEvents, protocolPermissionModes } from "./protocol";
+import { protocolEvents, protocolPermissionModes, protocolProviders } from "./protocol";
 import { account, accountName, forecast5h, forecast7d, hasH5Window, otherAccounts, scopedForecasts, type Forecast } from "../rl";
 
 const CLAUDE_PERMISSION_MODES: readonly AgentPermissionMode[] = [
@@ -145,9 +145,8 @@ export const PROVIDER_ADAPTERS: readonly AgentProviderAdapter[] = [
     })),
   } },
   { id: "codex", label: "Codex", events: codexEvents, history: codexHistory, permissionModes: CODEX_PERMISSION_MODES },
-  // Community integrations: the extension in the agent translates (docs/agent-protocol.md).
-  { id: "omp", label: "OMP", events: protocolEvents, permissionModes: protocolPermissionModes("omp") },
-  { id: "opencode", label: "OpenCode", events: protocolEvents },
+  // Community integrations, vendored from episko-integrations: the extension translates.
+  ...protocolProviders().map(({ id, label }) => ({ id, label, events: protocolEvents, permissionModes: protocolPermissionModes(id) })),
 ];
 
 const PROVIDERS = new Map(PROVIDER_ADAPTERS.map((provider) => [provider.id, provider]));

@@ -1,0 +1,84 @@
+{
+  "source": "respeak-io/episko-integrations@34881fa1bff9598346e4e6532993bde11186231b",
+  "agents": {
+    "omp": {
+      "name": "OMP",
+      "homepage": "https://github.com/can1357/oh-my-pi",
+      "testedWith": "18.20.0",
+      "capabilities": [
+        "session-state",
+        "activity",
+        "context",
+        "usage",
+        "launch-permissions"
+      ],
+      "launch": {
+        "extension": "episko.ts",
+        "args": [
+          "--extension",
+          "{file}"
+        ],
+        "permissionModes": [
+          {
+            "id": "default",
+            "label": "OMP config",
+            "sub": "Uses tools.approvalMode from your OMP config",
+            "glyph": "◇",
+            "asks": true,
+            "args": []
+          },
+          {
+            "id": "always-ask",
+            "label": "Always ask",
+            "sub": "Reads go through; asks before writes and commands",
+            "glyph": "◆",
+            "asks": true,
+            "args": [
+              "--approval-mode",
+              "always-ask"
+            ]
+          },
+          {
+            "id": "write",
+            "label": "Accept edits",
+            "sub": "Reads and writes go through; commands still ask",
+            "glyph": "✎",
+            "asks": true,
+            "args": [
+              "--approval-mode",
+              "write"
+            ]
+          },
+          {
+            "id": "yolo",
+            "label": "Yolo",
+            "sub": "Runs everything without asking",
+            "glyph": "⚠",
+            "asks": false,
+            "args": [
+              "--approval-mode",
+              "yolo"
+            ]
+          }
+        ]
+      }
+    },
+    "opencode": {
+      "name": "OpenCode",
+      "homepage": "https://opencode.ai",
+      "testedWith": "1.19.5",
+      "capabilities": [
+        "session-state",
+        "activity",
+        "context",
+        "usage"
+      ],
+      "launch": {
+        "extension": "plugins/episko.ts",
+        "env": {
+          "OPENCODE_CONFIG_DIR": "{dir}"
+        }
+      }
+    }
+  }
+}

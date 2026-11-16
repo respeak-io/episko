@@ -860,10 +860,21 @@ struct ProviderManifestEntry {
     capabilities: Vec<String>,
 }
 
-/// The one capability matrix shared with the TypeScript provider registry (checked-in JSON).
+#[derive(serde::Deserialize)]
+struct Integrations {
+    agents: std::collections::HashMap<String, ProviderManifestEntry>,
+}
+
+/// The one capability matrix shared with the TypeScript provider registry: the first-party
+/// manifest plus the integrations vendored from episko-integrations.
 fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntry> {
-    serde_json::from_str(include_str!("../../src/providers/manifest.json"))
-        .expect("src/providers/manifest.json must be valid provider metadata")
+    let mut all: std::collections::HashMap<String, ProviderManifestEntry> =
+        serde_json::from_str(include_str!("../../src/providers/manifest.json"))
+            .expect("src/providers/manifest.json must be valid provider metadata");
+    let vendored: Integrations = serde_json::from_str(include_str!("../../src/providers/integrations.json"))
+        .expect("src/providers/integrations.json must be valid provider metadata");
+    all.extend(vendored.agents);
+    all
 }
 
 /// The whole catalogue, each entry saying whether it is installed. Never a filtered list:

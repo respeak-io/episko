@@ -7,7 +7,7 @@ import { FILE_MANAGER } from "./dom";
 import { glyphIcon, icon } from "./svgicons";
 import { fileLabel, GROUP_ORDER, groupTouches, otherTools, shortTool } from "./files";
 import {
-  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState, isCommunityProvider,
+  actKey, apiErrText, bgWaiting, fanoutTally, fanoutText, hasSessionState, integrationOf,
   liveCount, liveFanout, orphanAgents, statusKey,
   type Act, type DiffStat, type FileTouch, type Prompt, type Risk, type Sess, type TouchKind,
 } from "./types";
@@ -89,8 +89,9 @@ export function vitalHtml(s: Sess): string {
     .filter(Boolean).map((c) => `<span class="chip-s">${c}</span>`).join("");
   const longest = s.phase === "done" && !bgWaiting(s) && isLongestWaiting(s) ? `<span class="chip-s hot">longest waiting</span>` : "";
   // Said beside the figures: an extension inside a third-party agent supplies them.
-  const community = isCommunityProvider(s.provider)
-    ? `<span class="chip-s" title="Community integration: these figures come from an extension running inside the agent. Approvals stay in its terminal.">community</span>` : "";
+  const integ = integrationOf(s.provider);
+  const community = integ
+    ? `<span class="chip-s" title="${escAttr(`Community integration, tested with ${integ.name} ${integ.testedWith}: these figures come from an extension running inside the agent. Approvals stay in its terminal.`)}">community</span>` : "";
   const meta = chips || longest || community ? `<div class="vmeta">${chips}${community}${longest}</div>` : "";
   return `<div class="vital st-${sk}">
     <div class="vrow">

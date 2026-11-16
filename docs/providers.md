@@ -11,8 +11,9 @@ agent protocol ──────────┘   (OMP, OpenCode: an extension 
 
 An agent nobody on the team runs is not integrated here: its extension speaks Episko's
 agent protocol from inside the agent instead (`docs/agent-protocol.md`). Such a provider is
-a manifest row with a `protocol` block, registered with the shared `protocolEvents`
-adapter; it needs no vendor module on either side.
+a folder in episko-integrations, vendored into `src/providers/integrations.json`; the
+registry adds one shared `protocolEvents` entry per vendored integration, so it needs no
+vendor module and no hand-written row on either side.
 
 An agent with no structured integration still gets the PTY, worktree, project,
 terminal and git features. It advertises no session capabilities and is shown honestly

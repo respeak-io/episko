@@ -4,7 +4,7 @@
 
 import type { AgentEvent, AgentFileTouch, ProviderEvent } from "../agents";
 import type { AgentPermissionMode, AgentTokenBreakdown, Todo, TouchKind } from "../types";
-import manifest from "./manifest.json";
+import integrations from "./integrations.json";
 
 /** The `method` protocol.rs forwards a POST under. */
 export const PROTOCOL_METHOD = "protocol/v1";
@@ -164,11 +164,16 @@ export function protocolEvents(event: ProviderEvent): AgentEvent[] {
   return out;
 }
 
-type ManifestMode = AgentPermissionMode & { args?: string[] };
-type ProtocolSpec = { permissionModes?: ManifestMode[] };
-const PROTOCOL = manifest as Record<string, { protocol?: ProtocolSpec }>;
+type LaunchMode = AgentPermissionMode & { args?: string[] };
+type Vendored = { name: string; launch: { permissionModes?: LaunchMode[] } };
+const AGENTS = new Map(Object.entries(integrations.agents as Record<string, Vendored>));
 
-/** The launch choices a manifest row declares; their argv stays with protocol.rs. */
+/** The launch choices an integration declares; their argv stays with protocol.rs. */
 export function protocolPermissionModes(id: string): readonly AgentPermissionMode[] {
-  return (PROTOCOL[id]?.protocol?.permissionModes ?? []).map(({ id, label, sub, glyph, asks }) => ({ id, label, sub, glyph, asks }));
+  const modes = AGENTS.get(id)?.launch.permissionModes ?? [];
+  return modes.map(({ id, label, sub, glyph, asks }) => ({ id, label, sub, glyph, asks }));
 }
+
+/** Every vendored integration, in id order: their registry entries differ only in data. */
+export const protocolProviders = (): { id: string; label: string }[] =>
+  [...AGENTS].sort(([a], [b]) => a.localeCompare(b)).map(([id, a]) => ({ id, label: a.name }));

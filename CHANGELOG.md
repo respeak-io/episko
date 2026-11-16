@@ -17,6 +17,7 @@ Markers: `+` new · `~` changed · `!` fixed
   as Claude Code and Codex panes do. Each reports through a small extension Episko loads into
   it for that launch only, so nothing changes in the agent's own setup. Both are marked
   *community*: approvals stay in the agent's terminal, and Episko never retries a turn for them.
+  The chip's tooltip names the agent version the extension was tested with.
 ! An agent started from a pane now sees the pane's folder in `PWD`, not the folder Episko was
   started from. OpenCode picks its project from `PWD`, so it could open in the wrong folder.
 

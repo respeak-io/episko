@@ -6,6 +6,7 @@ import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
 import providerManifest from "./providers/manifest.json";
+import integrations from "./providers/integrations.json";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -147,8 +148,11 @@ export const AGENT_CAPABILITIES = [
 ] as const; // user-facing capabilities, not transport names: any protocol may produce session-state
 export type AgentCapability = typeof AGENT_CAPABILITIES[number];
 
-type ProviderManifestEntry = { capabilities: string[]; protocol?: unknown };
-const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
+type ProviderManifestEntry = { capabilities: string[] };
+/** A community integration's facts, vendored from episko-integrations (docs/agent-protocol.md). */
+export interface Integration extends ProviderManifestEntry { name: string; homepage: string; testedWith: string }
+const INTEGRATIONS = new Map(Object.entries(integrations.agents as Record<string, Integration>));
+const PROVIDER_MANIFEST: Record<string, ProviderManifestEntry> = { ...providerManifest, ...integrations.agents };
 const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
 
 /** The manifest is shared with Rust; a misspelt capability must throw here, not turn a feature off. */
@@ -198,7 +202,8 @@ export function agentCapabilitySummary(a: AgentCli): string {
   return features.join(", ") || "integrated";
 }
 /** Reports through Episko's agent protocol, via an extension Episko does not vouch for at runtime. */
-export const isCommunityProvider = (id: string | null | undefined): boolean => !!id && !!PROVIDER_MANIFEST[id]?.protocol;
+export const integrationOf = (id: string | null | undefined): Integration | null => (id && INTEGRATIONS.get(id)) || null;
+export const isCommunityProvider = (id: string | null | undefined): boolean => !!integrationOf(id);
 // the one place the null-path convention is read
 export const agentInstalled = (a: AgentCli) => a.path !== null;
 // Claude's catalogue row, spelled here rather than in the backend's AGENTS table (it must go through

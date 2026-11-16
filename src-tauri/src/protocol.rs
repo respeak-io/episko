@@ -21,11 +21,12 @@ const MAX_EVENTS: usize = 500;
 /// The `method` the frontend's protocol adapter is registered under.
 pub(crate) const METHOD: &str = "protocol/v1";
 
-/// The extensions Episko ships, vendored from episko-integrations (`src-tauri/integrations/`).
-const EXTENSIONS: &[(&str, &str)] = &[
-    ("omp", include_str!("../integrations/omp.ts")),
-    ("opencode", include_str!("../integrations/opencode.ts")),
-];
+// `EXTENSIONS`: (id, source) for every extension Episko ships, written by
+// scripts/vendor-integrations.mjs beside the files it vendors.
+include!("../integrations/bundle.rs");
+
+/// The vendored half of each episko-integrations `integration.json`; the frontend reads it too.
+const INTEGRATIONS: &str = include_str!("../../src/providers/integrations.json");
 
 /// Who a launch token belongs to. Held from before the spawn, so the agent's first POST
 /// routes even if it lands before `spawn_agent` has filed the `Session`.
@@ -35,12 +36,17 @@ pub(crate) struct AgentToken {
 }
 
 #[derive(Deserialize)]
-struct ManifestEntry {
-    protocol: Option<Spec>,
+struct Integrations {
+    agents: HashMap<String, Integration>,
 }
 
-/// The `protocol` block of a manifest entry: data only, so a new agent is a manifest row
-/// and an extension rather than a branch here.
+#[derive(Deserialize)]
+struct Integration {
+    launch: Spec,
+}
+
+/// An integration's `launch` block: data only, so a new agent is an extension and its
+/// `integration.json` rather than a branch here.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Spec {
@@ -61,9 +67,8 @@ struct Mode {
 }
 
 fn spec(provider: &str) -> Option<Spec> {
-    let mut all: HashMap<String, ManifestEntry> =
-        serde_json::from_str(include_str!("../../src/providers/manifest.json")).ok()?;
-    all.remove(provider)?.protocol
+    let mut all: Integrations = serde_json::from_str(INTEGRATIONS).ok()?;
+    Some(all.agents.remove(provider)?.launch)
 }
 
 /// Pasted into a folder name: uuid characters only, so `..` can never leave `cc-launcher`.
@@ -75,7 +80,8 @@ fn launch_dir(session_id: &str) -> PathBuf {
     std::env::temp_dir().join("cc-launcher").join(format!("ext-{session_id}"))
 }
 
-/// The manifest is ours, but a path that climbs out of the launch folder is refused anyway.
+/// The integration was reviewed when it was vendored, but a path that climbs out of the
+/// launch folder is refused anyway.
 fn inside(rel: &str) -> bool {
     let p = Path::new(rel);
     !rel.is_empty() && p.components().all(|c| matches!(c, Component::Normal(_)))
@@ -247,12 +253,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_protocol_provider_has_a_bundled_extension_and_a_safe_path() {
-        let all: HashMap<String, ManifestEntry> =
+    fn every_integration_has_a_bundled_extension_and_a_safe_path() {
+        let all: Integrations = serde_json::from_str(INTEGRATIONS).unwrap();
+        assert!(!all.agents.is_empty(), "no integration is vendored");
+        let first_party: HashMap<String, Value> =
             serde_json::from_str(include_str!("../../src/providers/manifest.json")).unwrap();
-        let speaking: Vec<_> = all.iter().filter_map(|(id, e)| e.protocol.as_ref().map(|s| (id, s))).collect();
-        assert!(!speaking.is_empty(), "no manifest entry speaks the protocol");
-        for (id, spec) in speaking {
+        for (id, Integration { launch: spec }) in &all.agents {
+            assert!(!first_party.contains_key(id), "{id} is both first-party and an integration");
             assert!(EXTENSIONS.iter().any(|(e, _)| e == id), "{id} has no bundled extension");
             assert!(inside(&spec.extension), "{id}'s extension path climbs out");
             assert!(
@@ -262,7 +269,7 @@ mod tests {
             );
         }
         for (id, _) in EXTENSIONS {
-            assert!(spec(id).is_some(), "{id} is bundled but the manifest does not launch it");
+            assert!(spec(id).is_some(), "{id} is bundled but no integration launches it");
         }
     }
 

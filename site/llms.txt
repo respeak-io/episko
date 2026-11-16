@@ -1,6 +1,6 @@
 # episko
 
-> A free, open-source desktop app for macOS on Apple silicon and Windows 10/11 that runs Claude Code, Codex and 20 other coding agent CLIs at once, each in its own real terminal. Claude Code and Codex report live status, model, context use, cost, running tool and permission requests into one view, with history and resume. The others run as plain terminals with no status reporting.
+> A free, open-source desktop app for macOS on Apple silicon and Windows 10/11 that runs Claude Code, Codex and 20 other coding agent CLIs at once, each in its own real terminal. Claude Code and Codex report live status, model, context use, cost, running tool and permission requests into one view, with history and resume. OMP and OpenCode report status through community integrations; the rest run as plain terminals with no status reporting.
 
 episko is built by Respeak GmbH (Karlsruhe, Germany) and released under the MIT licence. It is an independent project, **not affiliated with, endorsed, or sponsored by Anthropic, OpenAI or the other agent providers**. Claude and Claude Code are trademarks of Anthropic, PBC.
 
@@ -8,7 +8,7 @@ The name comes from Greek ἐπίσκοπος (*episkopos*), "the one who watche
 
 ## What it does
 
-- **Runs sessions in parallel.** Each session is a separate process in its own PTY, and these are the agents' real interactive terminals, so you can type into them. Claude Code and Codex are integrated; OpenCode, Gemini, Cursor, Copilot, Amp, Qwen, Kimi and others run as plain terminals. On macOS a Claude Code session can also run in an external Ghostty, Terminal.app or iTerm2 window.
+- **Runs sessions in parallel.** Each session is a separate process in its own PTY, and these are the agents' real interactive terminals, so you can type into them. Claude Code and Codex are integrated; OMP and OpenCode report through community integrations Episko ships; Gemini, Cursor, Copilot, Amp, Qwen, Kimi and others run as plain terminals. On macOS a Claude Code session can also run in an external Ghostty, Terminal.app or iTerm2 window.
 - **Shows what Claude Code and Codex are doing.** Per session: phase (idle, thinking, working, done, needs-you, error), model, context-window use, dollar cost, elapsed time, the tool currently running, and a short history of recent tool calls with latencies.
 - **Answers permission prompts.** When Claude Code or Codex asks to run a command, episko shows the request with a risk label and lets you allow it, deny it, or jump into the terminal, so you don't have to hunt for the blocked window.
 - **Tracks usage limits.** Reads your 5-hour and weekly Claude limits and Codex's rate-limit windows and forecasts your pace, warning from amber to red before you hit a wall. Includes a usage dashboard: daily spend heatmap, tokens by model, token composition, and cost attributed per project.

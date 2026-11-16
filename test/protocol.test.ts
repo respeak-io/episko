@@ -5,7 +5,7 @@ import { applyAgentEvent } from "../src/agents";
 import { PROTOCOL_METHOD, protocolEvents, protocolPermissionModes, setProtocolLogger } from "../src/providers/protocol";
 import { REVIVE_DEFAULTS, reviveStep } from "../src/revive";
 import { resetCostBaselines } from "../src/usage";
-import { agentCapabilitySummary, isCommunityProvider, providerCapabilities, type Sess } from "../src/types";
+import { agentCapabilitySummary, integrationOf, isCommunityProvider, providerCapabilities, type Sess } from "../src/types";
 
 // The receiving half of docs/agent-protocol.md. Everything arriving here was written by an
 // extension Episko does not vet at runtime, so the tests are as much about what is refused.
@@ -148,7 +148,8 @@ describe("agent protocol v1", () => {
 
   it("knows which providers are community integrations and offers OMP's launch modes", () => {
     expect(["omp", "opencode"].map(isCommunityProvider)).toEqual([true, true]);
-    expect(["claude", "codex", "amp", "", null].map(isCommunityProvider)).toEqual([false, false, false, false, false]);
+    expect(["claude", "codex", "amp", "", null, "toString"].map(isCommunityProvider)).toEqual([false, false, false, false, false, false]);
+    expect(integrationOf("opencode")).toMatchObject({ name: "OpenCode", testedWith: expect.stringMatching(/^\d+\.\d+\.\d+$/) });
     expect(protocolPermissionModes("omp").map((m) => m.id)).toEqual(["default", "always-ask", "write", "yolo"]);
     expect(protocolPermissionModes("omp")[0]).not.toHaveProperty("args");
     expect(protocolPermissionModes("opencode")).toEqual([]);
