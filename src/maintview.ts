@@ -187,7 +187,7 @@ export function maintTilesHtml(v: MaintView): string {
 }
 
 /** A scan's bar: what it does in words, a percentage, and what holds a slot right now. `data-mtroot`
- *  keys the bar, so a repaint glides it from where it stood (./dom holdMaintPlace). */
+ *  keys the bar, so a repaint glides it from where it stood (./dom rewriteMoving). */
 export function progressHtml(p: MaintProgress, root = ""): string {
   const n = Math.round(Math.min(1, Math.max(0, p.frac)) * 100);
   return `<div class="mt-prog" data-mtroot="${escAttr(root)}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}" aria-label="${escAttr(p.text)}">`

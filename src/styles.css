@@ -3186,7 +3186,7 @@ select.in-ctl { cursor: pointer; }
 /* An earlier answer while its re-read is out: still legible, plainly not this moment's. */
 .mt-card.stale .mt-cells .mt-v, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
 /* A scan while it runs (./maintview progressHtml): its words, a share, and what holds a slot right now.
-   The width is set, never looped, and glides from where it stood (./dom holdMaintPlace). */
+   The width is set, never looped, and glides from where it stood (./dom rewriteMoving). */
 .mt-prog { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .mt-prog-h { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--muted); }
 .mt-prog-h .u-spin { flex: none; margin: 0; }

@@ -167,6 +167,23 @@ function lookedAt(el: HTMLElement, used: Element | null): { key: string; top: nu
   return p ? { key: placeKey(p), top: p.getBoundingClientRect().top } : null;
 }
 
+const MOVING = ".u-spin, .u-skel, .u-skelbar, .db-sk";
+/** `el.innerHTML = html` without restarting what moves in it: a scan's bar glides on from the width it had,
+ *  and a spinner or shimmer runs on the document's clock, so its replacement turns on from the same angle. */
+export function rewriteMoving(el: HTMLElement, html: string): void {
+  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
+  el.innerHTML = html;
+  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
+    const from = bars.get(barKey(b)), to = b.style.width;
+    if (!from || from === to) continue;
+    b.style.width = from;
+    void b.offsetWidth;
+    b.style.width = to;
+  }
+  // Only a running one: setting a paused one's start would play it, past fx-idle's pause.
+  for (const n of el.querySelectorAll(MOVING)) for (const a of n.getAnimations()) if (a.playState === "running") a.startTime = 0;
+}
+
 /** Write a Maintenance surface, whose `innerHTML` rebuilds every control and every scroller. The keyboard
  *  goes to the same control's successor, or, for a button that became *checking…*, to whatever stands where
  *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place,
@@ -176,24 +193,15 @@ export function holdMaintPlace(el: HTMLElement, html: string, keep = true): void
   const key = on && mtKey(on), at = on ? [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(on) : -1, typed = !!on?.matches(":focus-visible");
   const boardOf = (s: Element) => s.closest("[id^='mtb-']")?.id ?? "";
   const wide = [...el.querySelectorAll(".mt-scroll")].filter((s) => s.scrollLeft).map((s) => [boardOf(s), s.scrollLeft] as const);
-  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
   // The fleet's scroller is inside what is rewritten, so its offset goes back first and the place corrects it.
   const top = keep ? el.querySelector(".mt-body")?.scrollTop ?? 0 : 0;
   const was = keep ? lookedAt(el, a instanceof Element && el.contains(a) ? a : null) : null;
-  el.innerHTML = html;
+  rewriteMoving(el, html);
   const body = top ? el.querySelector(".mt-body") : null;
   if (body) body.scrollTop = top;
   const now = was && [...el.querySelectorAll(PLACES)].find((p) => placeKey(p) === was.key), s = now && scrollerOf(now);
   if (now && s) s.scrollTop += now.getBoundingClientRect().top - was.top;
   for (const [id, left] of wide) for (const s of el.querySelectorAll(".mt-scroll")) if (boardOf(s) === id) s.scrollLeft = left;
-  // A bar rebuilt by innerHTML would jump: start each where its predecessor stood, so the width glides.
-  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
-    const from = bars.get(barKey(b)), to = b.style.width;
-    if (!from || from === to) continue;
-    b.style.width = from;
-    void b.offsetWidth;
-    b.style.width = to;
-  }
   if (!on) return;
   const all = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const next = (key !== "[]" ? all.find((x) => mtKey(x) === key) : undefined) ?? (typed ? all[Math.min(at, all.length - 1)] : undefined);

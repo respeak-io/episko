@@ -3,7 +3,7 @@
 // and owns the clicks. It reads ./maintscan's cache and never asks: its one scan is the popover's
 // Check, a person's click (docs/maintenance.md).
 
-import { $ } from "./dom";
+import { $, rewriteMoving } from "./dom";
 import { basename, esc, escAttr, relTime } from "./format";
 import { allProjects } from "./grouping";
 import {
@@ -115,7 +115,7 @@ export function renderMaintBadge(): void {
   if (el.className !== cls) el.className = cls;
   if (el.title !== tip) el.title = tip;
   const html = chipHtml(c);
-  if (html !== lastChip) { lastChip = html; el.innerHTML = html; }
+  if (html !== lastChip) { lastChip = html; rewriteMoving(el, html); }
   if (open) paintPop(m);
 }
 
@@ -128,8 +128,9 @@ export const maintPopOpen = (): boolean => open;
 const ON = (root: string, name: string) => `data-mbroot="${escAttr(root)}" data-mbname="${escAttr(name)}"`;
 const goHtml = (attr: string, label: string) =>
   `<button class="pgo" ${attr} title="${escAttr(label)}" aria-label="${escAttr(label)}">${icon("externalLink", "solo")}</button>`;
-const progHtml = (p: ScanProgress, one: boolean, nameOf?: (r: string) => string) =>
-  progressHtml({ frac: p.frac, text: progressText(p, one), now: readingNow(p, nameOf, 1) });
+// The project's bar is keyed by its root and the fleet's by "", so each glides from its own width.
+const progHtml = (p: ScanProgress, root: string, nameOf?: (r: string) => string) =>
+  progressHtml({ frac: p.frac, text: progressText(p, !!root), now: readingNow(p, nameOf, 1) }, root);
 
 function cellHtml(c: Cell, p: ProjRead, reading: boolean): string {
   const label = facetDef(c.facet).label;
@@ -161,7 +162,7 @@ function projectHtml(p: ProjRead, prog: ScanProgress | null): string {
     ? "Check this project again, past every cache. Nothing runs in it" : "Read this project once. Nothing runs in it")}">${p.when ? "Check again" : "Check"}</button>`;
   return `<div class="up-h"><span class="mb-t">Maintenance · ${esc(p.name)}</span>`
     + goHtml(`data-mbopen="${escAttr(p.root)}" data-mbname="${escAttr(p.name)}"`, `Open ${p.name}'s Maintenance tab`) + `</div>`
-    + (prog ? progHtml(prog, true) : "")
+    + (prog ? progHtml(prog, p.root) : "")
     + `<div class="mb-cells">${p.cells.map((c) => cellHtml(c, p, !!prog)).join("")}</div>`
     + lines
     + `<div class="mb-foot"><span class="mono">${esc(prog ? "reading…" : p.when ?? "never checked")}</span>${check}</div>`;
@@ -178,7 +179,7 @@ function fleetHtml(f: Model["fleet"], head: boolean): string {
   const worst = worstProjects(f.rows, PROJECTS).map((w) => `<button class="mb-proj" data-mbproj="${escAttr(w.root)}" data-mbname="${escAttr(w.name)}"`
     + ` title="${escAttr(`Open ${w.name}'s Maintenance tab`)}"><i class="mt-sev ${w.band === "needs" ? "l-bad" : "l-warn"}"></i>`
     + `<span class="nm">${esc(w.name)}</span><span class="t">${esc(w.line)}</span>${w.more ? `<span class="d mono">+${w.more}</span>` : ""}</button>`).join("");
-  return top + (f.prog ? progHtml(f.prog, false, nameOf) : "") + tally + worst
+  return top + (f.prog ? progHtml(f.prog, "", nameOf) : "") + tally + worst
     + `<button class="mb-board" data-mbboard="1">${icon("layoutGrid")}Open the Maintenance board</button>`;
 }
 
@@ -188,7 +189,7 @@ function paintPop(m: Model): void {
   if (html === lastPop) return;
   lastPop = html;
   const pop = $("mtPop"), at = pop.scrollTop;
-  pop.innerHTML = html;
+  rewriteMoving(pop, html);
   pop.scrollTop = at;
 }
 
