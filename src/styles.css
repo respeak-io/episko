@@ -3798,6 +3798,11 @@ select.in-ctl { cursor: pointer; }
 /* nowrap: a chip dropping to a second line changes the row height and the table stops being one */
 .br .sub, .tg .sub { display: flex; align-items: center; gap: 5px; margin-top: 3px; flex-wrap: nowrap; overflow: hidden; min-width: 0; }
 .br .sub > *, .tg .sub > * { flex: none; }
+/* head → base: only the head may shrink, so the target and the labels after it stay readable */
+.br .sub > .refs { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 3px; font: 9px var(--font-mono); color: var(--muted-2); }
+.refs .hd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.refs .bs { flex: none; white-space: nowrap; color: var(--muted); }
+.refs .ic { --ic: 9px; flex: none; }
 .br .age { font: 9.5px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--muted-2); text-align: right; }
 .lbl { font: 8.5px var(--font-mono); padding: 0 5px; border-radius: 4px; line-height: 15px; white-space: nowrap; border: 1px solid color-mix(in srgb, var(--lc) 34%, transparent); color: var(--lc); background: color-mix(in srgb, var(--lc) 11%, transparent); }
 /* ONE action slot, one width: a button that sizes to its label moves every column after it */

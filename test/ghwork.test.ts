@@ -12,7 +12,7 @@ const ago = (days: number) => new Date(NOW - days * 86_400_000).toISOString();
 
 const th = (o: Partial<GhThread> = {}): GhThread => ({
   number: 1, kind: "issue", title: "a thing", url: "", assignees: [], labels: [],
-  branch: null, author: null, draft: false, updated_at: ago(0), ...o,
+  branch: null, base: null, fork: null, author: null, draft: false, updated_at: ago(0), ...o,
 });
 const rec = (o: Partial<ClaimRecord> = {}): ClaimRecord => ({
   threadId: "t", root: "/w/epi", number: 1, kind: "issue", sessionId: "s", at: NOW, ...o,
