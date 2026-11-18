@@ -7,7 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isClaude, isExited, liveCount, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, liveFanout, statusKey, type AgentCli, type Sess } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
 import { setProtocolLogger } from "./providers/protocol";
@@ -201,9 +201,12 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
-  const repair = driftRepair(s.drift, driftAuto, liveCount(s) > 0);
-  if (repair) void followSessionDrift(s.id, repair);
+  repairDrift(s);
 });
+function repairDrift(s: Sess) {
+  const repair = driftRepair(s.drift, driftAuto, s.driftSeen ?? null, !!liveFanout(s));
+  if (repair) void followSessionDrift(s.id, repair);
+}
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -1104,6 +1107,9 @@ setInterval(tickRevive, 10_000);
 
 refreshExternals();
 setInterval(refreshExternals, 3000);
+
+// A fan-out's drift settles, and its fleet ends, with no hook to say so.
+setInterval(() => { for (const s of sessions.values()) if (s.drift && !isExited(s)) repairDrift(s); }, 5000);
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
