@@ -30,6 +30,8 @@ Markers: `+` new · `~` changed · `!` fixed
   request's test report used to show as rows of pipes, and the hidden notes a template leaves in a
   description no longer show at all.
 ~ Removing a project from the sidebar offers *Undo* for a few seconds, which puts it back where it was. The ✕ on a project's header removes it in one click, so it could go without you noticing.
+~ In *Open work*, a pull request's row names its branch and the one it merges into (`head → base`),
+  so you can see where it lands without opening it. A fork's branch reads `owner:branch`, as on GitHub.
 ! On the review stage, a link in a pull request's description, a review comment or the conversation
   tab opens in the browser. It used to do nothing.
 ! An agent started from a pane now sees the pane's folder in `PWD`, not the folder Episko was
@@ -47,6 +49,8 @@ Markers: `+` new · `~` changed · `!` fixed
 ! Killing a process from the running-servers list keeps the list open, with its tree still unfolded, so the next one is one click away.
 ! The running-servers list no longer shows empty cells that light up like a button with its icon missing; *Left behind* and *Running in your panes* drop the columns they never use.
 ! With *Shelved sessions under their checkout* on, a project you have not pinned lists its shelved sessions under their branch headers right away. Before, they only moved there once a session in that project was open.
+! In the inspector, the card for a session working in another checkout keeps its buttons and heading
+  inside the card. A long branch name used to push the second button's label out below it.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
