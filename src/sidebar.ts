@@ -11,7 +11,7 @@ import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
 import { icon } from "./svgicons";
-import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupSummary, projectList, railRanks, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
@@ -23,8 +23,8 @@ import { incomingRowHtml, incomingStripHtml } from "./handoffview";
 import { deviceLabel, pathsOfId } from "./synclink";
 import {
   activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, peekPrefs,
-  projGroups,
-  saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
+  projGroups, railHold,
+  saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, setRailHold, sortMode,
   type SortMode,
 } from "./state";
 import { activeBind, comboText, type KeyAction } from "./keys";
@@ -50,10 +50,12 @@ let incoming = new Map<string | null, HandoffRec[]>();
 const incomingRows = (recs: HandoffRec[] | undefined) =>
   (recs ?? []).map((r) => { const t = rowText(r, Date.now(), deviceLabel); return incomingRowHtml(r, t.tag, t.title); }).join("");
 
+const railList = () => projectList([...incoming.keys()].filter((k): k is string => !!k));
+
 export function renderSidebar() {
   if (draggingProjects) return;
   incoming = incomingByProject(handoffs, pathsOfId);
-  const list = projectList([...incoming.keys()].filter((k): k is string => !!k));
+  const list = railList();
   // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const loose = incoming.get(null) ?? [];
@@ -192,6 +194,23 @@ export function initSidebarPeek() {
   });
 }
 
+// ---------- the hold: nothing on the rail re-sorts under the pointer ----------
+// ./grouping applies it; this arms it on the first move over the rail (not on enter, so it
+// re-arms after a blur released it) and drops it on leaving, which is when the re-sort paints.
+function armRailHold() { setRailHold(null); setRailHold(railRanks(railList())); }
+// A reorder the user asked for (the sort button, a drag) must land while they are still there.
+export function rearmRailHold() { if (railHold) armRailHold(); }
+export function releaseRailHold() {
+  if (!railHold) return;
+  setRailHold(null);
+  renderAll();
+}
+export function initRailHold() {
+  const rail = $("projects").closest<HTMLElement>(".rail")!; // the list, its header and the mini-rail
+  rail.addEventListener("pointermove", () => { if (!railHold) armRailHold(); });
+  rail.addEventListener("pointerleave", releaseRailHold);
+}
+
 // ---------- the finish highlight ----------
 // ./attn owns the rules; this is the driver, shaped like peek's. The lit state is not in
 // the markup (it would change on every repaint while lit), a repaint must not restart the
@@ -306,6 +325,7 @@ export function initProjectDnD() {
     if (marker.parentNode) marker.parentNode.insertBefore(dragEl, marker);
     cleanup();
     saveSidebarArrangement(container);
+    rearmRailHold();
     if (sortMode !== "manual") setSort("manual", false); // a sorted mode would override the drag at once
     // A pointerup may synthesise a click; a timestamp guard self-heals if none fires.
     reorderGuardUntil = performance.now() + 250;

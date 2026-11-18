@@ -7,14 +7,14 @@ import { store } from "./localstorage"; // must precede the subject imports
 import {
   accentFor, colorOverrides, dirtyByFolder, sessions, setActiveId, setAttnPrefs,
   setBackendLive, setDormants, setHandoffs,
-  setExternals, setFavorites, setProjGroups, setProjOrder, setSortMode, setWtGroup,
+  setExternals, setFavorites, setProjGroups, setProjOrder, setRailHold, setSortMode, setWtGroup,
   worktreesByRepo,
 } from "../src/state";
 import { ATTN_DEFAULTS } from "../src/attn";
 import {
   adoptIdentity,
   allProjects, attnPending, checkoutOf, clusterByWorktree, clusterIsLive, dashHeads, dormantBusy,
-  foldRunGroups, inStageGroup, splitAnchorFor, splitShells, stageKeyOf,
+  foldRunGroups, holdOrder, inStageGroup, railRanks, splitAnchorFor, splitShells, stageKeyOf,
   groupedProjects, groupPhase, groupSummary, needsYou, needsYouSessions,
   nextAfterClose, nextInGroup, orderedSessions, orphanAdoptions, placeDormants, projectList,
   reactorLabel, reactorState, shellElsewhere, splitByWorktree, syncAttn, urgencyRank,
@@ -70,6 +70,7 @@ beforeEach(() => {
   setExternals([]); setDormants([]); setFavorites([]); setProjOrder([]);
   setBackendLive(new Set()); setHandoffs([]);
   setSortMode("manual"); setWtGroup("off"); setProjGroups(NO_GROUPS);
+  setRailHold(null);
   worktreesByRepo.clear();
   dirtyByFolder.clear();
   for (const k of Object.keys(colorOverrides)) delete colorOverrides[k];
@@ -685,6 +686,76 @@ describe("projectList — worktree grouping", () => {
     const out = projectList();
     expect(names(out)).toEqual(["/w/wt", "/w/epi"]);   // the worktree holds the liveliest session
     expect(ids(out[0].sessions)).toEqual(["wt-new", "wt-old"]);
+  });
+});
+
+// ./sidebar arms the hold on the first move over the rail and drops it on leaving.
+describe("the rail holds still under the pointer", () => {
+  const hold = () => setRailHold(railRanks(projectList()));
+  const keysOf = (p: ProjGroup) => clusterByWorktree(p, true).map((c) => c.key);
+
+  it("holdOrder ranks what it saw and puts the rest after, in their own order", () => {
+    const held = new Map([["b", 0], ["a", 1]]);
+    expect(holdOrder(["x", "a", "y", "b"], (k) => k, held)).toEqual(["b", "a", "x", "y"]);
+    expect(holdOrder(["x", "a"], (k) => k, null)).toEqual(["x", "a"]);
+  });
+  // The report: closing one of a checkout's two sessions dropped the checkout below its neighbour,
+  // because a checkout sits where its first-listed session does.
+  it("keeps a checkout in place when one of its sessions closes", () => {
+    setWtGroup("subheader");
+    open(
+      sess({ id: "a1", workdir: "/w/wt-a", branch: "a" }),
+      sess({ id: "b1", workdir: "/w/wt-b", branch: "b" }),
+      sess({ id: "a2", workdir: "/w/wt-a", branch: "a" }),
+    );
+    hold();
+    sessions.delete("a1");
+    expect(keysOf(projectList()[0])).toEqual(["/w/wt-a", "/w/wt-b"]);
+    setRailHold(null); // the pointer left: now it may re-sort
+    expect(keysOf(projectList()[0])).toEqual(["/w/wt-b", "/w/wt-a"]);
+  });
+  it("keeps a worktree's own top-level row in place too", () => {
+    setWtGroup("toplevel");
+    open(
+      sess({ id: "a1", workdir: "/w/wt-a", branch: "a" }),
+      sess({ id: "b1", workdir: "/w/wt-b", branch: "b" }),
+      sess({ id: "a2", workdir: "/w/wt-a", branch: "a" }),
+    );
+    hold();
+    sessions.delete("a1");
+    expect(names(projectList())).toEqual(["/w/wt-a", "/w/wt-b"]);
+  });
+  it("holds the projects of a sorted mode until the pointer leaves", () => {
+    setSortMode("attention");
+    setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }]);
+    const [s1] = open(sess({ id: "s1", project: "a", colorKey: "/w/a", phase: "working" }));
+    open(sess({ id: "s2", project: "b", colorKey: "/w/b", phase: "done" }));
+    expect(names(projectList())).toEqual(["/w/b", "/w/a"]);
+    hold();
+    s1.phase = "error";
+    expect(names(projectList())).toEqual(["/w/b", "/w/a"]);
+    setRailHold(null);
+    expect(names(projectList())).toEqual(["/w/a", "/w/b"]);
+  });
+  it("holds the sessions too, and so the ⌘1–9 order the rail shows", () => {
+    setSortMode("active");
+    const [a] = open(sess({ id: "a", lastActivity: 1 }), sess({ id: "b", lastActivity: 5 }));
+    hold();
+    a.lastActivity = 9;
+    expect(ids(orderedSessions())).toEqual(["b", "a"]);
+  });
+  it("lists a session started under the pointer after the ones it holds", () => {
+    setSortMode("active");
+    open(sess({ id: "a", lastActivity: 1 }), sess({ id: "b", lastActivity: 5 }));
+    hold();
+    open(sess({ id: "new", lastActivity: 99 }));
+    expect(ids(projectList()[0].sessions)).toEqual(["b", "a", "new"]);
+  });
+  it("tells a project row from the checkout row at the same path", () => {
+    setFavorites([{ name: "epi", path: "/w/epi" }]);
+    open(sess({ id: "m", workdir: "/w/epi" }), sess({ id: "w", workdir: "/w/wt" }));
+    const r = railRanks(projectList());
+    expect([...r.keys()]).toEqual(["p:/w/epi", "c:/w/epi", "c:/w/wt", "s:m", "s:w"]);
   });
 });
 

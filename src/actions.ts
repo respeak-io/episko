@@ -13,7 +13,7 @@ import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillShell, shelveSession, tickAutoFetch } from "./panes";
-import { closePeek, renderMini, renderSidebar } from "./sidebar";
+import { closePeek, rearmRailHold, releaseRailHold, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
 import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
@@ -607,6 +607,7 @@ export function setSort(m: SortMode, announce = true) {
   b.title = `Sort: ${SORT_META[m].label} · click to change`;
   b.classList.toggle("on", m !== "manual");
   if (announce) toast(SORT_META[m].label);
+  rearmRailHold(); // the button sits on the rail, so a held order would swallow the click
   renderSidebar(); renderMini();
 }
 export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length]); }
@@ -634,6 +635,8 @@ export function setWindowFocused(v: boolean) {
   if (v === winFocused) return;
   setWinFocusedState(v);
   applyFx();
+  // A pointer parked on the rail while you work elsewhere must not freeze its order (or the tray's).
+  if (!v) releaseRailHold();
   // Coming back from System Settings is the one way the access probe goes stale.
   if (v && settingsOpen()) refreshAccess();
 }

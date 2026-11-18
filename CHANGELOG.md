@@ -26,6 +26,9 @@ Markers: `+` new · `~` changed · `!` fixed
   tab opens in the browser. It used to do nothing.
 ! An agent started from a pane now sees the pane's folder in `PWD`, not the folder Episko was
   started from. OpenCode picks its project from `PWD`, so it could open in the wrong folder.
+! The sidebar holds still while the pointer is on it. Closing one of a checkout's two sessions
+  used to drop that checkout below its neighbour, right under the mouse. Now every project,
+  checkout and session keeps its place until the pointer leaves, and the sidebar re-sorts then.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
