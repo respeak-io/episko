@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
++ A pull request you open for review gets its own row in the sidebar, under the checkout of its
+  branch, or under the project when that branch is not checked out here. A session and its review
+  are one click apart, and coming back keeps the tab, the scroll position and what you were writing.
+  The row counts the comments you have not sent yet. ✕ or Esc on the review closes it, row and all.
 
 + OMP and OpenCode panes show their phase, tool calls, files, plan, context, tokens and cost,
   as Claude Code and Codex panes do. Each reports through a small extension Episko loads into

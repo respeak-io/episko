@@ -46,7 +46,7 @@ import {
   accentFor, acctChecks, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror, foundTokens,
   fetchedByRepo,
   effectiveAgent, engineDef,
-  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
+  externals, extMirrorId, FAVORITES, ioAll, openReviews, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
@@ -816,9 +816,14 @@ async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
-  // A favourite or a shelved-only project needs a roster too, or the peek rows and the shelved
-  // rows' ⑃ headers (clusterByWorktree reads worktreesByRepo) are a feature of busy projects only.
-  const idle = new Set([...FAVORITES.map((f) => f.path), ...dormants.map((d) => d.colorKey).filter(Boolean)]);
+  // A favourite, a shelved-only project or an open review's project needs a roster too, or the peek
+  // rows, the shelved rows' ⑃ headers and a review's row (clusterByWorktree and the review's checkout
+  // read worktreesByRepo) are a feature of busy projects only.
+  const idle = new Set([
+    ...FAVORITES.map((f) => f.path),
+    ...dormants.map((d) => d.colorKey).filter(Boolean),
+    ...openReviews.map((r) => r.root),
+  ]);
   const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
   const roots = new Set(live);
   for (const p of idle) {

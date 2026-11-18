@@ -7,7 +7,7 @@ import { readHandoffs, type HandoffRec } from "./handoff";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
-import type { RailLayout } from "./review";
+import { clampOpenReviews, type OpenReview, type RailLayout } from "./review";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { IS_MAC } from "./dom";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
@@ -39,6 +39,11 @@ export function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.str
 export let projGroups: GroupStore = clampGroups(safeParse(localStorage.getItem("cc-proj-groups")));
 export function setProjGroups(g: GroupStore) { projGroups = clampGroups(g); }
 export function saveProjGroups() { localStorage.setItem("cc-proj-groups", JSON.stringify(projGroups)); }
+// The pull requests open in the sidebar, in the order they were opened (./review's rules).
+export let openReviews: OpenReview[] = clampOpenReviews(safeParse(localStorage.getItem("cc-review-open")))
+  .map((r) => ({ ...r, root: nfcPath(r.root) }));
+export function setOpenReviews(l: OpenReview[]) { openReviews = l; }
+export function saveOpenReviews() { localStorage.setItem("cc-review-open", JSON.stringify(openReviews)); }
 export type SortMode = "manual" | "active" | "attention";
 export const SORT_MODES: SortMode[] = ["manual", "active", "attention"];
 export let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";

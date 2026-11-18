@@ -40,7 +40,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // The memory stream's switch is this machine's to throw; what it holds is the stream's own.
   "cc-memory-sync": "local", "cc-sync-memory": "local",
   // A review in progress is about one machine's checkout of the PR; GitHub holds the sent one.
-  "cc-review-drafts": "local", "cc-review-viewed": "local",
+  "cc-review-drafts": "local", "cc-review-viewed": "local", "cc-review-open": "local",
   // Measured on this machine (its disk, its transcripts): a sum across machines means nothing.
   "cc-io": "local", "cc-usage-tokens": "local", "cc-agent-usage-tokens": "local",
   // Sync's own bookkeeping, and what it received: never sent back.
