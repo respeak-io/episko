@@ -29,6 +29,9 @@ Markers: `+` new · `~` changed · `!` fixed
 ! The sidebar holds still while the pointer is on it. Closing one of a checkout's two sessions
   used to drop that checkout below its neighbour, right under the mouse. Now every project,
   checkout and session keeps its place until the pointer leaves, and the sidebar re-sorts then.
+! Windows: Esc works again in a Claude pane after you have typed an umlaut or any other non-ASCII
+  character into it. Until now a dialog such as `/tasks` or `/status` stayed open on Esc for the rest
+  of that session while the arrow keys still worked.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
