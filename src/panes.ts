@@ -816,18 +816,19 @@ async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
-  // A favourite with nothing running needs a roster too, or the sidebar's peek rows
-  // (clusterByWorktree reads worktreesByRepo) become a feature of busy projects only.
+  // A favourite or a shelved-only project needs a roster too, or the peek rows and the shelved
+  // rows' ⑃ headers (clusterByWorktree reads worktreesByRepo) are a feature of busy projects only.
+  const idle = new Set([...FAVORITES.map((f) => f.path), ...dormants.map((d) => d.colorKey).filter(Boolean)]);
   const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
   const roots = new Set(live);
-  for (const f of FAVORITES) {
-    if (live.has(f.path)) continue;
+  for (const p of idle) {
+    if (live.has(p)) continue;
     // Never read yet: seed it now rather than up to a sweep later.
-    if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
+    if (sweep || !worktreesByRepo.has(p)) roots.add(p);
   }
   if (sweep) idleWtSweptAt = Date.now();
-  // Keep favourites' rosters too, or the tick that stops reading one would drop it.
-  const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
+  // Keep idle rosters too, or the tick that stops reading one would drop it.
+  const keep = new Set([...live, ...idle]);
   for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
   let changed = false;
   await Promise.all([...roots].map(async (root) => {
