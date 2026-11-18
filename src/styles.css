@@ -2101,9 +2101,12 @@ select.in-ctl { cursor: pointer; }
 .u-pjbar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
 .u-usd { font-weight: 700; }
 
-/* `pre-line` so a tip written with a newline in it keeps the break and still wraps. */
-.tip { white-space: pre-line; position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
+/* `pre-line` so a tip written with a newline in it keeps the break and still wraps; a path has no
+   spaces to wrap at. Over every overlay a control with a tip can sit in; only ./confirm's is higher. */
+.tip { white-space: pre-line; overflow-wrap: break-word; position: fixed; z-index: 90; pointer-events: none; max-width: 320px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
 .tip[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) { .tip { animation: tip-in .12s ease-out; } }
+@keyframes tip-in { from { opacity: 0; transform: translateY(2px); } }
 .u-tip { position: fixed; z-index: 60; pointer-events: none; transform: translate(-50%, -100%); background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 7px 9px; font-size: 11px; line-height: 1.5; white-space: nowrap; box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
 
 /* loading state while the (off-thread) transcript token scan runs */

@@ -63,10 +63,10 @@ $("usageBody").addEventListener("click", (e) => {
 const uTip = Object.assign(document.createElement("div"), { className: "u-tip", hidden: true });
 document.body.appendChild(uTip);
 $("usageBody").addEventListener("mousemove", (e) => {
-  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
+  const t = (e.target as HTMLElement).closest<HTMLElement>("[data-utip]");
   if (!t) { uTip.hidden = true; return; }
-  // dataset.tip is HTML-decoded on read; re-escape each line before re-inserting.
-  uTip.innerHTML = t.dataset.tip!.split("||").map(esc).join("<br>");
+  // dataset.utip is HTML-decoded on read; re-escape each line before re-inserting.
+  uTip.innerHTML = t.dataset.utip!.split("||").map(esc).join("<br>");
   uTip.hidden = false;
   uTip.style.left = e.clientX + "px";
   uTip.style.top = (e.clientY - 14) + "px";

@@ -51,6 +51,32 @@ site changes only its import.
   destructive question, and an invisible "Remove worktree" left in the tab order is
   reachable by ⇥ from anywhere in the app.
 
+## No native tooltips: `wireTips`
+
+The same argument again: the browser's own `title` box is the OS's font and colours, appears
+late, and sits wherever the cursor happened to be. Every tooltip is the app's `.tip`, drawn by
+`wireTips` in `dom.ts`, and nothing changes at a call site: `title="…"` and `data-tip="…"` both work.
+
+- **The title is taken on hover, not rewritten in source.** Blink and WebKit both decide which
+  title to draw *after* the mouse event that reached the element has been dispatched (`mouseMoved`
+  dispatches, then calls `mouseDidMoveOverElement`), so a capture-phase `mouseover`/`mousemove`
+  that moves it into `data-tip` is in time. **Every ancestor's title is moved too**, because a
+  parent's title shows through a child that has none; an empty one still ends the walk, as it does
+  natively. `mousemove` is there for a repaint that sets a title again under a pointer that has
+  not moved.
+- **Once hovered, `el.title` reads `""`.** Read a tooltip's words from your own model, never back
+  from the DOM. A guard written as `el.title !== tip` still works, and rewrites once per hover.
+- **An icon whose title was its only name gets it as `aria-label`**, so a screen reader keeps it.
+- **Anchored to the control, not the cursor**: above it, below when there is no room, clamped to
+  the window. A host taller than 48px (a row, a card) puts it by the pointer instead.
+- **A repaint's twin keeps the tip**: a node with the same words replaces the hovered one
+  without a blink or a second wait. A click, a key or the wheel puts it away until the pointer
+  moves on, and within 500ms of one tip the next opens at once.
+- **A surface with a tooltip of its own uses its own attribute.** The usage heatmap's follows
+  the cursor and reads `data-utip`; while it read `data-tip`, both were drawn.
+- **It sits at z-index 90**, over every overlay but `confirm.ts`'s, which holds no tips and must
+  stay on top (`test/confirm.test.ts`).
+
 ## The tray menu
 
 The OS owns the font, row height, highlight and radius; Episko controls each row's string and its 16px image. Sessions group under their project and carry status as a coloured icon beside a `title · status` label, the title being Claude's own OSC summary of the conversation (clipped to one line; the branch fills in until a summary arrives); the header row says which repo. The menu is as wide as its widest row, so the clip length in `tray.ts` is the width policy.

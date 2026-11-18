@@ -99,47 +99,103 @@ export function setHeadPath(abs: string) {
 // tip should sit still while you read it. ./usagedlg keeps its own cursor-following one, which
 // is a different job — it labels a point on a heatmap, not a control.
 const TIP_MS = 320;
+const WARM_MS = 500; // the next tip within this opens at once, as a toolbar's do
 let tipEl: HTMLElement | null = null;
-let tipTimer: ReturnType<typeof setTimeout> | null = null;
+let tipTimer: ReturnType<typeof setTimeout> | undefined;
+let tipFor: Element | null = null; // the control under the pointer, its tip shown or waiting
+let tipText = "";
+let warmUntil = 0;
+let px = 0, py = 0;
+let quietAt: [number, number] | null = null; // a click, key or wheel put it away: not back until the pointer moves on
 
-function hideTip() {
-  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
-  if (tipEl) tipEl.hidden = true;
+// The browser picks a `title` to draw after the mouse event that reached it is dispatched, so
+// lifting it into `data-tip` here, ancestors too, is in time: every title is this tip instead.
+function claimTitles(from: Element | null) {
+  for (let n = from?.closest("[title]") ?? null; n; n = n.parentElement?.closest("[title]") ?? null) {
+    const t = n.getAttribute("title")!;
+    n.removeAttribute("title");
+    n.setAttribute("data-tip", t);
+    // An icon's title was its only name; a screen reader keeps it.
+    if (t && !n.hasAttribute("aria-label") && !n.textContent?.trim()) n.setAttribute("aria-label", t.split("\n")[0]);
+  }
 }
 
-function showTip(host: HTMLElement) {
+const tipShown = () => !!tipEl && !tipEl.hidden;
+
+function hideTip(warm: boolean) {
+  clearTimeout(tipTimer);
+  tipTimer = undefined;
+  if (!tipShown()) return;
+  tipEl!.hidden = true;
+  if (warm) warmUntil = performance.now() + WARM_MS;
+}
+
+function placeTip() {
+  const b = tipFor!.getBoundingClientRect();
+  if (!b.width && !b.height) { hideTip(false); return; }
+  tipEl!.textContent = tipText;
+  tipEl!.hidden = false;
+  const t = tipEl!.getBoundingClientRect();
+  // Above by default, below when there is no room, clamped to the window. A row or a card is too
+  // tall to sit beside, so its tip goes by the pointer.
+  const tall = b.height > 48, top = tall ? py - 12 : b.top, bottom = tall ? py + 20 : b.bottom;
+  const mid = tall ? px : b.left + b.width / 2;
+  const y = top - t.height - 8 >= 4 ? top - t.height - 8 : Math.min(bottom + 8, innerHeight - t.height - 4);
+  tipEl!.style.top = `${Math.max(4, y)}px`;
+  tipEl!.style.left = `${Math.max(6, Math.min(innerWidth - t.width - 6, mid - t.width / 2))}px`;
+}
+
+function showTip() {
+  tipTimer = undefined;
+  if (!tipFor?.isConnected || !tipText) return;
   if (!tipEl) {
     tipEl = Object.assign(document.createElement("div"), { className: "tip", hidden: true });
+    tipEl.setAttribute("role", "tooltip");
     document.body.appendChild(tipEl);
   }
-  const text = host.dataset.tip ?? "";
-  if (!text) return;
-  tipEl.textContent = text;
-  tipEl.hidden = false;
-  const r = host.getBoundingClientRect();
-  const t = tipEl.getBoundingClientRect();
-  // Above by default, below when there is no room; clamped so a tip on a first-column button
-  // cannot run off the left edge.
-  const above = r.top - t.height - 8 >= 4;
-  tipEl.style.top = `${above ? r.top - t.height - 8 : r.bottom + 8}px`;
-  tipEl.style.left = `${Math.max(6, Math.min(window.innerWidth - t.width - 6, r.left + r.width / 2 - t.width / 2))}px`;
+  placeTip();
+}
+
+function trackTip(target: EventTarget | null) {
+  const el = target instanceof Element ? target : null;
+  claimTitles(el);
+  const host = el?.closest("[data-tip]") ?? null, text = host?.getAttribute("data-tip") ?? "";
+  if (host === tipFor && text === tipText) return;
+  const still = !!quietAt && Math.abs(px - quietAt[0]) + Math.abs(py - quietAt[1]) < 6;
+  if (!still) quietAt = null;
+  // The same control with new words, or its twin after a repaint: no blink and no second wait.
+  if (host && tipFor && (host === tipFor || text === tipText)) {
+    tipFor = host;
+    tipText = text;
+    if (tipShown()) { if (text) placeTip(); else hideTip(false); }
+    else if (text && !tipTimer && !still) tipTimer = setTimeout(showTip, TIP_MS);
+    return;
+  }
+  const warm = tipShown() || performance.now() < warmUntil;
+  tipFor = host;
+  tipText = text;
+  if (still || !host || !text) { hideTip(true); return; }
+  if (tipShown()) { placeTip(); return; } // straight from one tip to the next, with no fade between
+  clearTimeout(tipTimer);
+  if (warm) showTip(); else tipTimer = setTimeout(showTip, TIP_MS);
 }
 
 // Wired from main.ts, never at module scope: vitest runs in the node environment and any module
 // a test can reach must not touch `document` on import (CLAUDE.md's rule; dom.ts is reached by
 // nearly everything).
 export function wireTips() {
-  document.addEventListener("pointerover", (e) => {
-    const host = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
-    if (!host) return;
-    hideTip();
-    tipTimer = setTimeout(() => showTip(host), TIP_MS);
-  });
-  document.addEventListener("pointerout", (e) => {
-    if ((e.target as HTMLElement).closest("[data-tip]")) hideTip();
-  });
+  const at = (e: MouseEvent) => { px = e.clientX; py = e.clientY; };
+  document.addEventListener("mouseover", (e) => { at(e); trackTip(e.target); }, true);
+  // A repaint may set a title again under a pointer that is still: take it before the next move draws it.
+  document.addEventListener("mousemove", (e) => {
+    at(e);
+    if (e.target instanceof Element && e.target.closest("[title]")) trackTip(e.target);
+  }, true);
+  document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) { hideTip(false); tipFor = null; tipText = ""; } }, true);
   // Any of these moves the control out from under the tip, so it must not outlive them.
-  for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, hideTip, true);
+  const quiet = () => { hideTip(false); quietAt = [px, py]; };
+  for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, quiet, { capture: true, passive: true });
+  window.addEventListener("blur", () => hideTip(false));
 }
 
 const FOCUSABLE = "button, a[href], [tabindex]";

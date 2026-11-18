@@ -187,7 +187,7 @@ function uHeatmap(): string {
     const d = new Date(t), key = uDkey(d), v = dayTotal(key);
     if (v > maxCost) { maxCost = v; maxKey = key; }
     const head = `${U_WD[d.getDay()]}, ${U_MONTHS[d.getMonth()]} ${d.getDate()}`;
-    cells += `<i class="u-cell l${level(v)}" data-tip="${esc(head + "||" + (v > 0 ? uUsd2(v) : "no sessions"))}"></i>`;
+    cells += `<i class="u-cell l${level(v)}" data-utip="${esc(head + "||" + (v > 0 ? uUsd2(v) : "no sessions"))}"></i>`;
   }
   const active = nz.length;
   let busiest = "—";
@@ -215,7 +215,7 @@ function uBars(): string {
     for (const r of series) { const v = d.models[r.name] || 0; if (v > 0) segs += `<i class="u-seg" style="height:${(v / max * H).toFixed(1)}px;background:${color.get(r.name)}"></i>`; }
     const lines = series.filter((r) => (d.models[r.name] || 0) > 0).map((r) => `${r.name} ${uTok(d.models[r.name])}`);
     const tip = [d.tip, ...lines, `Total ${uTok(d.total)}`].join("||");
-    return `<div class="u-col" data-tip="${esc(tip)}"><div class="u-stack">${segs}</div></div>`;
+    return `<div class="u-col" data-utip="${esc(tip)}"><div class="u-stack">${segs}</div></div>`;
   }).join("");
   const step = Math.ceil(data.length / 12);
   const labels = data.map((d, i) => `<span>${(i % step === 0 || i === data.length - 1) ? esc(d.label) : ""}</span>`).join("");

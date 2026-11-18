@@ -64,6 +64,10 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ The Dependencies card files pull requests from the bot logins `[maintenance] bots` names in
   `.episko/episko.toml` (a self-hosted Renovate) as update-bot PRs, not as open work, and the
   brief it sends an agent speaks of security advisories rather than naming Dependabot.
+~ Every tooltip in the app is drawn in Episko's own style, next to the control it explains, instead
+  of the system's plain box. Moving along a row of buttons shows the next one at once, and a click
+  puts it away until you move on.
+! The usage heatmap and bar chart show one tooltip again, not two.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between
