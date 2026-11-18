@@ -2587,6 +2587,9 @@ select.in-ctl { cursor: pointer; }
 /* Its popover: the facets as two columns of cells, what to do, then every project in a line. */
 .mtpop { width: 392px; max-height: min(72vh, 620px); overflow-y: auto; padding: 8px; gap: 3px; }
 .mtpop .mb-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The (i) takes the auto margin, so it sits beside the quick open rather than splitting the space with it. */
+.mtpop .up-h .mt-help { width: 20px; height: 20px; --ic: 13px; margin: -3px 0 -3px auto; }
+.mtpop .up-h .mt-help + .pgo { margin-left: -4px; }
 .mtpop .mt-prog { margin: 2px 4px 5px; }
 .mtpop .mb-cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 6px; padding: 1px 0 3px; }
 .mtpop .mb-cell { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -3414,6 +3417,8 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mtguide p { margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--muted); }
 .mtguide .mg-src { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; line-height: 1.4; color: var(--text); }
 .mtguide .mg-src .k { display: block; font-size: 10px; color: var(--muted-2); }
+.mtguide .mg-shapes { display: grid; grid-template-columns: max-content 1fr; gap: 10px 12px; align-items: start; }
+.mtguide .mg-shapes .mt-badge { justify-self: start; margin-top: -2px; cursor: default; pointer-events: none; }
 .mt-n { font: 11px var(--font-mono); color: var(--muted); }
 .mt-n.l-bad { color: var(--st-error); }
 .mt-n.l-warn { color: var(--st-working); }

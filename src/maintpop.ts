@@ -13,8 +13,10 @@ import {
 import {
   fleetChip, popLines, progressText, projectChip, readingNow, worstProjects, type ChipModel, type FleetTally, type ScanProgress,
 } from "./maintbadge";
+import { chipClass, chipHtml } from "./maintguide";
 import { fleetCheckedAt, fleetProgress, maintGen, maintInput, maintOf, maintSnap, projectProgress, scanProject } from "./maintscan";
 import { facetDef, type Facet } from "./maintsources";
+import { closeMaintGuide, toggleGuide } from "./maintui";
 import { progressHtml, tabName, type MaintSub } from "./maintview";
 import { activeId, dashMirror, dormants, externals, extMirrorId, pastMirrorId, reviewMirror, sessions } from "./state";
 import { icon } from "./svgicons";
@@ -101,17 +103,12 @@ function current(now: number): Model | null {
 // ---------- the chip ----------
 
 let lastChip = "";
-function chipHtml(c: ChipModel): string {
-  if (c.busy) return `<span class="u-spin"></span><span class="mb-n mono">${esc(c.busy)}</span>`;
-  const dots = c.dots ? `<span class="mb-dots">${c.dots.map((l) => `<i class="l-${l}"></i>`).join("")}</span>` : "";
-  return `<span class="mb-ic">${icon("wrench", "solo")}</span>${dots}${c.count ? `<span class="mb-n">${c.count}</span>` : ""}`;
-}
 
 /** On renderAll's path: guarded, so an unchanged chip is never rewritten under the pointer. */
 export function renderMaintBadge(): void {
   const el = $("mtBadge"), m = current(Date.now());
   if (!m) { el.className = "mt-badge"; closeMaintPop(); return; }
-  const c = m.chip, cls = `mt-badge show t-${c.tone}${c.busy ? " busy" : ""}`, tip = c.tip.join("\n");
+  const c = m.chip, cls = chipClass(c), tip = c.tip.join("\n");
   if (el.className !== cls) el.className = cls;
   if (el.title !== tip) el.title = tip;
   const html = chipHtml(c);
@@ -128,6 +125,9 @@ export const maintPopOpen = (): boolean => open;
 const ON = (root: string, name: string) => `data-mbroot="${escAttr(root)}" data-mbname="${escAttr(name)}"`;
 const goHtml = (attr: string, label: string) =>
   `<button class="pgo" ${attr} title="${escAttr(label)}" aria-label="${escAttr(label)}">${icon("externalLink", "solo")}</button>`;
+// The chip changes shape with the stage and nothing else says so: its (i) sits in either heading.
+const HELP = `<button class="mt-help" data-mbhelp="chip" title="How to read this chip" aria-label="How to read this chip"`
+  + ` aria-haspopup="dialog">${icon("info", "solo")}</button>`;
 // The project's bar is keyed by its root and the fleet's by "", so each glides from its own width.
 const progHtml = (p: ScanProgress, root: string, nameOf?: (r: string) => string) =>
   progressHtml({ frac: p.frac, text: progressText(p, !!root), now: readingNow(p, nameOf, 1) }, root);
@@ -160,7 +160,7 @@ function projectHtml(p: ProjRead, prog: ScanProgress | null): string {
     : said ? `<p class="mb-said">${esc(said)}</p>` : "";
   const check = prog ? "" : `<button class="aslink" data-mbcheck="${escAttr(p.root)}" title="${escAttr(p.when
     ? "Check this project again, past every cache. Nothing runs in it" : "Read this project once. Nothing runs in it")}">${p.when ? "Check again" : "Check"}</button>`;
-  return `<div class="up-h"><span class="mb-t">Maintenance · ${esc(p.name)}</span>`
+  return `<div class="up-h"><span class="mb-t">Maintenance · ${esc(p.name)}</span>${HELP}`
     + goHtml(`data-mbopen="${escAttr(p.root)}" data-mbname="${escAttr(p.name)}"`, `Open ${p.name}'s Maintenance tab`) + `</div>`
     + (prog ? progHtml(prog, p.root) : "")
     + `<div class="mb-cells">${p.cells.map((c) => cellHtml(c, p, !!prog)).join("")}</div>`
@@ -171,7 +171,7 @@ function projectHtml(p: ProjRead, prog: ScanProgress | null): string {
 function fleetHtml(f: Model["fleet"], head: boolean): string {
   const t = f.tally, nameOf = (r: string) => f.rows.find((x) => x.root === r)?.name ?? basename(r);
   const top = head
-    ? `<div class="up-h"><span class="mb-t">Maintenance · all projects</span>${goHtml(`data-mbboard="1"`, "Open the Maintenance board")}</div>`
+    ? `<div class="up-h"><span class="mb-t">Maintenance · all projects</span>${HELP}${goHtml(`data-mbboard="1"`, "Open the Maintenance board")}</div>`
     : `<div class="mb-h mb-h2">All projects<span class="w mono">${esc(f.when ?? "")}</span></div>`;
   const tally = !t ? `<p class="mb-said">Not checked this session. The board reads every project once; nothing runs in them.</p>`
     : `<div class="mb-tally">${[["needs", t.needs, "need you", "l-bad"], ["drifting", t.drifting, "drifting", "l-warn"], ["quiet", t.quiet, "quiet", ""], ["unread", t.unread, "not checked", ""]]
@@ -206,7 +206,7 @@ export function openMaintPop(): void {
   pop.style.top = (r.bottom + 6) + "px";
   pop.classList.add("show");
 }
-export function closeMaintPop(): void { open = false; $("mtPop").classList.remove("show"); }
+export function closeMaintPop(): void { open = false; $("mtPop").classList.remove("show"); closeMaintGuide("chip"); }
 
 /** main.ts, once: the chip's toggle and the popover's own listener. */
 export function wireMaintPop(): void {
@@ -220,6 +220,9 @@ export function wireMaintPop(): void {
 
 function popClick(e: MouseEvent): void {
   const t = e.target as HTMLElement;
+  // Its own: the document's closer would take the guide down again on this same click.
+  const help = t.closest<HTMLElement>("[data-mbhelp]");
+  if (help) { e.stopPropagation(); toggleGuide(help, help.dataset.mbhelp!); return; }
   const chk = t.closest<HTMLElement>("[data-mbcheck]");
   if (chk) { e.stopPropagation(); const r = chk.dataset.mbcheck!; void scanProject(r, !!maintOf(r)?.at); return; }
   const go = t.closest<HTMLElement>("[data-mbopen]");

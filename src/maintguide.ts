@@ -1,13 +1,14 @@
-// What each Maintenance card answers, for its (i): what it shows, what it reads, how to read it and
-// what you can do there. Markup only; ./maintui opens it. The sources are the manifest's, never named here.
+// What each Maintenance card and the header's chip answer, for their (i): what it shows, what it reads,
+// how to read it and what you can do there. Markup only; ./maintui opens it. Sources are never named here.
 
 import { esc } from "./format";
-import { SOURCES, type Cost, type MaintCap } from "./maintsources";
+import type { ChipModel } from "./maintbadge";
+import { FACET_DEFS, SOURCES, type Cost, type MaintCap } from "./maintsources";
 import { icon, type IconName } from "./svgicons";
 
 export const GUIDE_IDS = [
   "advisories", "runtimes", "update-prs", "packages", "ci", "flaky", "deployments", "releases", "hygiene", "work",
-  "hosts", "addresses", "domains", "errors", "sweep", "cover", "also", "cards", "week", "todo", "runs", "sources",
+  "hosts", "addresses", "domains", "errors", "sweep", "cover", "also", "cards", "week", "todo", "runs", "sources", "chip",
 ] as const;
 export type GuideId = (typeof GUIDE_IDS)[number];
 export const isGuideId = (s: string): s is GuideId => (GUIDE_IDS as readonly string[]).includes(s);
@@ -19,6 +20,7 @@ interface Guide {
   from?: string; // or, where no source feeds it, where its rows come from
   look?: string; // how to read its colours and marks; the shared legend when absent
   act: string; // what you can do from it
+  shapes?: [ChipModel, string][]; // the header chip only: each shape it takes, drawn, and when
 }
 
 const LEGEND = "Red is broken and needs you now, amber is drifting. A grey dot was checked and is fine; a ? could not be counted, a dash was not read.";
@@ -115,7 +117,31 @@ const G: Record<GuideId, Guide> = {
     from: "Detection: the project's files and its forge decide which sources apply.",
     look: "Grouped as a tab's Coverage is, by what closes each gap: a click, a login or token, a switch on the forge, a retry, or nothing here. What read cleanly is only named, under Read.",
     act: "Each row carries its action: a check to run, a command to copy, a settings page, a token or a host to allow." },
+  chip: { title: "The Maintenance chip", ic: "wrench",
+    what: "It speaks for whatever is on the stage, so it changes shape as you move between a project and the overview of every project.",
+    shapes: [
+      [{ tone: "bad", dots: ["ok", "warn", "ok", "ok", "bad", "ok", "unread"], count: 2, busy: null, frac: null, tip: [] },
+        `A project is on the stage: one of its sessions, its dashboard or a review. One dot per facet, in card order: ${FACET_DEFS.map((f) => f.label).join(", ")}. The number is its red and amber lines.`],
+      [{ tone: "bad", dots: null, count: 3, busy: null, frac: null, tip: [] },
+        "No project on the stage: it speaks for every project. No dots; the number counts the projects that need you or are drifting."],
+      [{ tone: "muted", dots: null, count: null, busy: "4/11", frac: null, tip: [] },
+        "A check is reading: reads done of one project's, or projects done of all."],
+    ],
+    from: "Each project's last check, kept on this machine. The chip asks nothing itself; Check in its overview reads a project again.",
+    look: "Red needs you now, amber is drifting, a grey dot was checked and is fine, a hollow one was not read. No colour at all: only an earlier check is known until this session checks again. No number: nothing is red or amber.",
+    act: "Click it for an overview: the project on the stage, then every project. A facet or a line opens its tab in that project's Maintenance view; the ↗ in a heading opens the whole view." },
 };
+
+/** The header chip's markup, here so the chip guide draws exactly what the header does. */
+export function chipHtml(c: ChipModel): string {
+  if (c.busy) return `<span class="u-spin"></span><span class="mb-n mono">${esc(c.busy)}</span>`;
+  const dots = c.dots ? `<span class="mb-dots">${c.dots.map((l) => `<i class="l-${l}"></i>`).join("")}</span>` : "";
+  return `<span class="mb-ic">${icon("wrench", "solo")}</span>${dots}${c.count ? `<span class="mb-n">${c.count}</span>` : ""}`;
+}
+export const chipClass = (c: ChipModel): string => `mt-badge show t-${c.tone}${c.busy ? " busy" : ""}`;
+
+const shapesHtml = (ss: readonly [ChipModel, string][]) => `<div class="mg-shapes">${ss.map(([c, said]) =>
+  `<span class="${chipClass(c)}" aria-hidden="true">${chipHtml(c)}</span><p>${esc(said)}</p>`).join("")}</div>`;
 
 const COST_WORD: Record<Cost, string> = {
   local: "Every check · this machine", forge: "Every check · the forge", public: "On a click · a public service",
@@ -137,6 +163,7 @@ export function guideHtml(id: GuideId): string {
   const from = g.caps ? fromHtml(g.caps) : g.from ? `<p>${esc(g.from)}</p>` : "";
   const part = (k: string, body: string) => body ? `<div class="mg-part"><span class="mg-k">${esc(k)}</span>${body}</div>` : "";
   return `<div class="mg-h">${icon(g.ic)}<b>${esc(g.title)}</b></div><p class="mg-what">${esc(g.what)}</p>`
+    + (g.shapes ? part("Its shapes", shapesHtml(g.shapes)) : "")
     + part("Read from", from) + part("How to read it", `<p>${esc(g.look ?? LEGEND)}</p>`) + part("What you can do", `<p>${esc(g.act)}</p>`);
 }
 /** The icon a card's head wears, the same as its popover's. */

@@ -340,15 +340,15 @@ function sweepAct(at: HTMLElement, host: MaintHost): void {
 let guideAt: string | null = null; // the card whose guide is open: its (i) clicked again closes it
 const offGuide = (e: Event) => { if (!$("mtGuide").contains(e.target as Node)) closeMaintGuide(); };
 export const maintGuideOpen = (): boolean => guideAt !== null;
-export function closeMaintGuide(): void {
-  if (guideAt === null) return;
+/** `only`: close it only while it explains that one, as the chip's popover does when it goes. */
+export function closeMaintGuide(only?: string): void {
+  if (guideAt === null || (only && guideAt !== only)) return;
   guideAt = null;
   $("mtGuide").classList.remove("show");
   document.removeEventListener("scroll", offGuide, true); // the card it explains has moved away
 }
-// Under the (i), right edges aligned, and above it where the window has no room below.
-function toggleGuide(at: HTMLElement): void {
-  const id = at.dataset.mthelp ?? "";
+// Under the (i), right edges aligned, and above it where the window has no room below. ./maintpop's chip too.
+export function toggleGuide(at: HTMLElement, id: string): void {
   if (guideAt === id || !isGuideId(id)) { closeMaintGuide(); return; }
   const pop = $("mtGuide");
   pop.innerHTML = guideHtml(id);
@@ -383,7 +383,7 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost, shift = false): boolean {
   const help = t.closest<HTMLElement>("[data-mthelp]");
-  if (help) { toggleGuide(help); return true; }
+  if (help) { toggleGuide(help, help.dataset.mthelp ?? ""); return true; }
   const tick = t.closest<HTMLElement>("[data-mttick]");
   if (tick) { tickLine(sessionKey({ root: tick.dataset.mtroot!, key: tick.dataset.mttick! }), host, shift); return true; }
   const none = t.closest<HTMLElement>("[data-mtpicknone]");

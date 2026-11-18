@@ -27,6 +27,7 @@ Markers: `+` new · `~` changed · `!` fixed
 + A Maintenance chip in the top bar shows the project you are looking at as seven dots, red or amber
   where something needs you, or, on the all-projects screen, how many projects do. Click it for the
   project's facets, what to do there and the worst projects elsewhere, each one click from its board.
+  The (i) in its heading explains each shape the chip takes and when.
 + A Maintenance check shows its progress: a bar with how many projects are done, what is being read
   right now, and a spinner on each card's facet while it is read. *Since last week* holds still until
   the check finishes instead of counting up project by project. Going from the all-projects view to a

@@ -798,7 +798,7 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
   if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
-  if (!t.closest("#mtPop, #mtBadge")) closeMaintPop();
+  if (!t.closest("#mtPop, #mtBadge, #mtGuide")) closeMaintPop(); // the chip's guide opens over it
   if (!t.closest("#mtGuide, [data-mthelp]")) closeMaintGuide();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
@@ -976,8 +976,9 @@ window.addEventListener("keydown", (e) => {
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   // A popover over the stage goes before the stage does: Esc on the fleet would otherwise leave it.
-  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
+  // The guide first, since the chip's opens over the chip's popover.
   else if (e.key === "Escape" && maintGuideOpen()) { e.preventDefault(); closeMaintGuide(); }
+  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }

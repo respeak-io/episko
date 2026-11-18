@@ -4432,7 +4432,9 @@ describe("nothing scans until a person asks", () => {
   });
 
   // The header chip paints on every renderAll pass and its popover opens on a glance: neither is an ask.
-  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress"], []);
+  // The chip's (i) only opens and closes ./maintui's guide.
+  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress",
+    "toggleGuide", "closeMaintGuide"], []);
   it("never reaches a scan from the header chip or from opening its popover, only from its Check", () => {
     for (const f of ["renderMaintBadge", "current", "paintPop", "openMaintPop", "closeMaintPop"]) {
       expect(pop.bodies.has(f), f).toBe(true);
