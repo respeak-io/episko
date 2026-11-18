@@ -36,6 +36,8 @@ Markers: `+` new · `~` changed · `!` fixed
   sidebar on its own, as it already did when the agent itself wrote there. Until now it stayed under
   the checkout it was started in, with a card asking, until the fan-out ended. If the agents write
   to two checkouts at once, the card still asks.
+! Killing a process from the running-servers list keeps the list open, with its tree still unfolded, so the next one is one click away.
+! The running-servers list no longer shows empty cells that light up like a button with its icon missing; *Left behind* and *Running in your panes* drop the columns they never use.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between

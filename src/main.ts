@@ -750,7 +750,8 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
-  if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
+  // Answering a ✕'s confirm is not leaving: the open tree stays for the next kill.
+  if (!t.closest("#svrPop, #svrBadge, #cfmDlg, #cfmScrim")) closeServersPop();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
   if (!t.closest("#bPop, [data-wtpick], [data-dashbrtrunk], [data-dashswitch], [data-brswitch]")) closeBranchPop(false);
