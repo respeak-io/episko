@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+## 0.41.0 — 2026-11-18
+Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
+machine. A pull request under review gets its own row in the sidebar, issues and pull requests read
+as GitHub draws them, and the sidebar holds still while the pointer is on it. OMP and OpenCode panes
+now report their phase, tools, files and cost, as Claude Code and Codex panes do.
+
 + A pull request you open for review gets its own row in the sidebar, under the checkout of its
   branch, or under the project when that branch is not checked out here. A session and its review
   are one click apart, and coming back keeps the tab, the scroll position and what you were writing.
