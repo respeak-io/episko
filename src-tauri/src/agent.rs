@@ -811,23 +811,34 @@ impl<'a> ProviderLaunch<'a> {
     }
 }
 
+/// The arguments and extra environment a provider's TUI starts with.
+#[derive(Default)]
+pub(crate) struct ProviderStart {
+    pub(crate) args: Vec<String>,
+    pub(crate) env: Vec<(String, String)>,
+}
+
+/// Codex is the one sidecar; an agent-protocol provider is a manifest row (protocol.rs);
+/// anything else starts bare and stays terminal-only.
 pub(crate) fn start_provider(
     provider: &str,
     app: AppHandle,
     state: &AppState,
     launch: ProviderLaunch<'_>,
-) -> Result<Vec<String>, String> {
+) -> Result<ProviderStart, String> {
     match provider {
         "codex" => {
             let endpoint = start_codex(app, state, launch.session_id, launch.workdir, launch.bin)?;
-            Ok(codex_launch_args(
-                &endpoint,
-                launch.workdir,
-                launch.resume,
-                launch.mode,
-            ))
+            Ok(ProviderStart {
+                args: codex_launch_args(&endpoint, launch.workdir, launch.resume, launch.mode),
+                env: Vec::new(),
+            })
         }
-        _ => Ok(Vec::new()),
+        _ => {
+            let port = state.port.load(Ordering::Relaxed);
+            Ok(crate::protocol::prepare(state, provider, port, launch.session_id, launch.mode)?
+                .unwrap_or_default())
+        }
     }
 }
 

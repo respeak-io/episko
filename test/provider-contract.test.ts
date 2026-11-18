@@ -17,7 +17,10 @@ function tsFiles(dir = SRC_PATH): string[] {
     return entry.isDirectory() ? tsFiles(path) : entry.name.endsWith(".ts") ? [path] : [];
   });
 }
-const manifest = JSON.parse(read("providers/manifest.json")) as Record<string, { capabilities: string[] }>;
+type Vendored = { capabilities: string[]; launch: { permissionModes?: unknown[] } };
+const firstParty = JSON.parse(read("providers/manifest.json")) as Record<string, { capabilities: string[] }>;
+const vendored = (JSON.parse(read("providers/integrations.json")) as { agents: Record<string, Vendored> }).agents;
+const manifest = { ...firstParty, ...vendored };
 const types = read("types.ts");
 const registry = read("providers/index.ts");
 const pty = readFileSync(new URL("../src-tauri/src/pty.rs", import.meta.url), "utf8");
@@ -38,7 +41,9 @@ describe("provider integration contract", () => {
 
   it("has one adapter entry for every provider in the shared capability matrix", () => {
     expect(registryIds.length).toBeGreaterThan(0);
-    expect([...registryIds].sort()).toEqual(Object.keys(manifest).sort());
+    // Integrations arrive through one data-driven spread, not a hand-written row each.
+    expect(registryBlock).toMatch(/\.\.\.protocolProviders\(\)\.map\([^\n]*events:\s*protocolEvents[^\n]*permissionModes:/);
+    expect([...registryIds, ...Object.keys(vendored)].sort()).toEqual(Object.keys(manifest).sort());
   });
 
   it("advertises only known, unique capabilities and makes integration explicit", () => {
@@ -54,7 +59,11 @@ describe("provider integration contract", () => {
   });
 
   it("backs structured capability claims with registry services", () => {
-    for (const [provider, entry] of Object.entries(manifest)) {
+    for (const [provider, entry] of Object.entries(vendored)) {
+      expect(entry.capabilities.includes("launch-permissions"), `${provider}'s launch choices and its claim disagree`)
+        .toBe((entry.launch.permissionModes ?? []).length > 0);
+    }
+    for (const [provider, entry] of Object.entries(firstParty)) {
       const adapter = new RegExp(
         `\\{\\s*id:\\s*["']${provider}["']([^}]*)\\}`,
       ).exec(registryBlock)?.[1] ?? "";

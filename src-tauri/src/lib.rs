@@ -15,6 +15,7 @@ mod icons;
 mod mcp;
 mod notes;
 mod platform;
+mod protocol;
 mod pty;
 mod review;
 mod stack;
@@ -90,6 +91,8 @@ pub(crate) struct AppState {
     next_perm: std::sync::atomic::AtomicU64,
     /// Pane id → the bearer token its `--mcp-config` carries (mcp.rs).
     mcp_tokens: Mutex<HashMap<String, String>>,
+    /// Pane id → the token and provider an agent-protocol extension reports with (protocol.rs).
+    agent_tokens: Mutex<HashMap<String, protocol::AgentToken>>,
     /// Held-open MCP `tools/call` requests and their JSON-RPC ids, answered by `resolve_mcp`.
     mcp_pending: Mutex<HashMap<String, (tiny_http::Request, serde_json::Value)>>,
     /// The `caffeinate` child; started with `-w <our pid>` so it dies with Episko.
@@ -314,6 +317,7 @@ pub fn run() {
                 pending: Mutex::new(HashMap::new()),
                 next_perm: std::sync::atomic::AtomicU64::new(1),
                 mcp_tokens: Mutex::new(HashMap::new()),
+                agent_tokens: Mutex::new(HashMap::new()),
                 mcp_pending: Mutex::new(HashMap::new()),
                 caffeinate: Mutex::new(None),
                 sync: Default::default(),

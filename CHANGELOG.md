@@ -13,12 +13,19 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ OMP and OpenCode panes show their phase, tool calls, files, plan, context, tokens and cost,
+  as Claude Code and Codex panes do. Each reports through a small extension Episko loads into
+  it for that launch only, so nothing changes in the agent's own setup. Both are marked
+  *community*: approvals stay in the agent's terminal, and Episko never retries a turn for them.
+  The chip's tooltip names the agent version the extension was tested with.
 ~ Issues and pull requests read as they do on GitHub, in the thread reader and on the review stage:
   tables, nested lists, folded `<details>` sections and the rest of GitHub's markdown. A pull
   request's test report used to show as rows of pipes, and the hidden notes a template leaves in a
   description no longer show at all.
 ! On the review stage, a link in a pull request's description, a review comment or the conversation
   tab opens in the browser. It used to do nothing.
+! An agent started from a pane now sees the pane's folder in `PWD`, not the folder Episko was
+  started from. OpenCode picks its project from `PWD`, so it could open in the wrong folder.
 
 ## 0.40.0 — 2026-11-11
 The Questions sheet reads cleaner: pasted text folds into a box, and a compaction is a band between

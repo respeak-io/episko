@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 import { hasSessionState, isAgent, isClaude, isExited, liveCount, statusKey, type AgentCli } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
+import { setProtocolLogger } from "./providers/protocol";
 import { queuePermission } from "./permissions";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, navHeld, setStageHome, setStageMoved, takeStage, toast, wireTips } from "./dom";
 import { wireMenu } from "./menu";
@@ -677,6 +678,7 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   queueRosterSave();
   renderAll();
 });
+setProtocolLogger((msg) => dlog("warn", msg));
 // Integrated providers: one raw transport event through the adapter, then the shared model.
 listen<ProviderEvent>("agent-event", (e) => {
   const raw = e.payload;
