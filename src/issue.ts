@@ -2,6 +2,9 @@
 // answers "what is this actually about?" without a browser and without losing the pane. Data
 // in, string out — ./issueview draws it, ./dashboard fetches it. See docs/dashboard.md.
 
+import { Marked, type Tokens } from "marked";
+import { esc, escAttr } from "./format";
+import { closeAuthorTags, htmlOut } from "./markdown";
 import { icon } from "./svgicons";
 
 /// One comment, as the backend's `GhComment` sends it.
@@ -70,100 +73,58 @@ export function threadLine(i: GhIssueRead, now: number): string {
   ].filter(Boolean).join(" · ");
 }
 
-// ---------- markdown, enough for a thread and no more ----------
-// Fenced code, headings, lists (task lists included), quotes, rules and paragraphs. GitHub's
-// flavour is far larger; what this does not know renders as the paragraph it looks like,
-// which is honest where half-parsing it would quietly drop somebody's words.
+// ---------- markdown, as GitHub draws a thread ----------
+// `marked` (GFM) behind ./markdown's guard on author HTML: tables, task lists and `<details>`
+// come through, an attribute never does. A soft break is a break, as it is on github.com.
 
-const escHtml = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/// Where a link's URL goes: the attribute the host pane's own click listener probes.
+export type LinkAttr = "data-dashurl" | "data-rvurl";
 
-const HTTP = /^https?:\/\/[^\s<>"']+$/i;
+const HTTP = /^https?:\/\/[^\s<>"]+$/i;
 
-// A link opens in the OS browser through the pane's own `data-dashurl`, never by navigating
-// the webview — and anything that is not http(s) stays text, because a body is somebody
-// else's markup and `javascript:` is a URL too.
-function link(url: string, text: string): string {
-  const raw = url.replace(/&amp;/g, "&");
-  if (!HTTP.test(raw)) return text;
-  return `<a class="md-a" href="#" data-dashurl="${escHtml(raw).replace(/"/g, "&quot;")}">${text}</a>`;
+// Opened by the pane's listener, never by navigating the webview; anything but http(s) stays
+// text, because a body is somebody else's markup and `javascript:` is a URL too.
+const link = (url: string, inner: string, attr: LinkAttr): string =>
+  HTTP.test(url) ? `<a class="md-a" href="#" ${attr}="${escAttr(url)}">${inner}</a>` : inner;
+
+// Drawn as a link and never fetched: an image would reach the network for whatever a stranger
+// put in an issue.
+const image = (url: string, alt: string, attr: LinkAttr): string =>
+  link(url, `${icon("image")}${esc(alt || "image")}`, attr);
+
+function engine(attr: LinkAttr): Marked {
+  const md = new Marked({ gfm: true, breaks: true, async: false });
+  md.use({
+    renderer: {
+      html: ({ text }: Tokens.HTML | Tokens.Tag) => htmlOut(text, (src, alt) => (src ? image(src, alt, attr) : "")),
+      heading({ tokens, depth }: Tokens.Heading) {
+        return `<p class="md-h${depth > 2 ? " sm" : ""}">${this.parser.parseInline(tokens)}</p>`;
+      },
+      // A badge is an image inside a link, and an anchor inside an anchor splits the line.
+      link({ href, tokens }: Tokens.Link) {
+        return link(href, this.parser.parseInline(tokens).replace(/<a\b[^>]*>|<\/a>/g, ""), attr);
+      },
+      image: ({ href, text }: Tokens.Image) => image(href, text, attr),
+      code: ({ text }: Tokens.Code) => `<pre><code>${esc(text).replace(/>/g, "&gt;")}</code></pre>`,
+      checkbox: ({ checked }: Tokens.Checkbox) =>
+        `<span class="md-tk">${icon(checked ? "squareCheck" : "square", "solo")}</span> `,
+    },
+  });
+  return md;
 }
 
-/// Inline markup for one line. Code spans come out FIRST: a star or a bracket inside one is
-/// text, and every other order is how a renderer starts eating code. Underscores are left
-/// alone on purpose — `snake_case` is commoner than `_emphasis_` in a thread about code.
-export function inlineIssue(s: string): string {
-  const code: string[] = [];
-  let t = s.replace(/`([^`]+)`/g, (_m, c: string) =>
-    `\u0000${code.push(`<code>${escHtml(c)}</code>`) - 1}\u0000`);
-  t = escHtml(t);
-  // An image is drawn as a link and never fetched: rendering one would reach the network for
-  // whatever a stranger put in an issue.
-  t = t.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (_m, alt: string, url: string) =>
-    link(url, `${icon("image")}${alt || "image"}`));
-  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (_m, text: string, url: string) => link(url, text));
-  t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>()]+)/g, (_m, pre: string, url: string) => pre + link(url, url));
-  t = t.replace(/~~([\s\S]+?)~~/g, "<s>$1</s>")
-    .replace(/\*\*([\s\S]+?)\*\*/g, "<b>$1</b>")
-    .replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<i>$2</i>");
-  return t.replace(/\u0000(\d+)\u0000/g, (m, i: string) => code[+i] ?? m);
-}
+const engines: Partial<Record<LinkAttr, Marked>> = {};
+const cache = new Map<string, string>();
 
-/// A whole body or comment. A soft line break is a break, as GitHub renders one in a thread:
-/// people write issues in lines, and reflowing them loses the shape they typed.
-export function mdHtml(src: string): string {
-  const lines = (src || "").replace(/\r\n?/g, "\n").split("\n");
-  const out: string[] = [];
-  let list: "ul" | "ol" | null = null;
-  let para: string[] = [];
-  let quote: string[] = [];
-  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const closePara = () => {
-    if (para.length) out.push(`<p>${para.map(inlineIssue).join("<br>")}</p>`);
-    para = [];
-  };
-  const closeQuote = () => {
-    if (quote.length) out.push(`<blockquote>${quote.map(inlineIssue).join("<br>")}</blockquote>`);
-    quote = [];
-  };
-  const closeAll = () => { closePara(); closeQuote(); closeList(); };
-  for (let i = 0; i < lines.length; i++) {
-    const ln = lines[i];
-    if (/^\s*```/.test(ln)) {
-      closeAll();
-      const code: string[] = [];
-      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
-      out.push(`<pre><code>${escHtml(code.join("\n"))}</code></pre>`);
-      continue;
-    }
-    if (!ln.trim()) { closeAll(); continue; }
-    const h = /^\s{0,3}(#{1,6})\s+(.*)$/.exec(ln);
-    if (h) {
-      closeAll();
-      out.push(`<p class="md-h${h[1].length > 2 ? " sm" : ""}">${inlineIssue(h[2].trim())}</p>`);
-      continue;
-    }
-    if (/^\s{0,3}([-*_])\s*\1\s*\1[-*_\s]*$/.test(ln)) { closeAll(); out.push("<hr>"); continue; }
-    const q = /^\s{0,3}>\s?(.*)$/.exec(ln);
-    if (q) { closePara(); closeList(); quote.push(q[1]); continue; }
-    closeQuote();
-    const li = /^(\s*)(?:[-*+]|(\d+)[.)])\s+(.*)$/.exec(ln);
-    if (li) {
-      closePara();
-      const want = li[2] ? "ol" : "ul";
-      if (list !== want) { closeList(); out.push(`<${want}>`); list = want; }
-      const task = /^\[([ xX])\]\s+(.*)$/.exec(li[3]);
-      const text = task
-        ? `<span class="md-tk">${icon(task[1] === " " ? "square" : "squareCheck", "solo")}</span> ${inlineIssue(task[2])}`
-        : inlineIssue(li[3]);
-      out.push(`<li${li[1].length >= 2 ? ` class="in"` : ""}>${text}</li>`);
-      continue;
-    }
-    closeList();
-    para.push(ln.trim());
-  }
-  closeAll();
-  return out.join("");
+/// A body or a comment. Cached by text, since ./dashboard rebuilds the reader on every renderAll.
+export function mdHtml(src: string, attr: LinkAttr): string {
+  const key = `${attr}\u0000${src}`;
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  if (cache.size >= 200) cache.clear();
+  const html = closeAuthorTags((engines[attr] ??= engine(attr)).parse(src || "") as string).trim();
+  cache.set(key, html);
+  return html;
 }
 
 // ↑/↓ in the reader walks the rail it was opened from. A thread the list no longer holds (a

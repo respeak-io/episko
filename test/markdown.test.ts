@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  clampMdPrefs, dirOf, isMarkdownPath, joinPath, MD_DEFAULTS, renderMarkdown, resolveHref, slugify,
+  clampMdPrefs, closeAuthorTags, dirOf, isMarkdownPath, joinPath, MD_DEFAULTS, renderMarkdown, resolveHref, slugify,
 } from "../src/markdown";
 
 const DOC = "/repo/docs/guide.md";
@@ -170,6 +170,13 @@ describe("author HTML never reaches the webview", () => {
     const { html } = r("Press <kbd class=x>Ctrl</kbd> and <sup>2</sup>");
     expect(html).toContain("<kbd>Ctrl</kbd>");
     expect(html).toContain("<sup>2</sup>");
+  });
+  it("closes what an author left open and drops what they never opened", () => {
+    expect(closeAuthorTags("<p><b>x</p><p>y</p>")).toBe("<p><b>x</p><p>y</p></b>");
+    expect(closeAuthorTags("<b><i>x</b>y</i>")).toBe("<b><i>x</i></b>y");
+    expect(closeAuthorTags("</details>a<br>")).toBe("a<br>");
+    // Only bare kept tags are counted: ours carry attributes, and an <a> is never an author's.
+    expect(closeAuthorTags('<a class="md-a">x<code>y</code></a>')).toBe('<a class="md-a">x<code>y</code></a>');
   });
   it("turns a README's centred logo into one of our images", () => {
     const d = r("<p align=\"center\">\n  <img src=\"docs/logo.png\" alt=\"Logo\" width=\"120\">\n</p>");

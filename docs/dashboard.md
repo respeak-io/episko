@@ -148,12 +148,17 @@ Easy to get wrong:
   carries the thread number, which is what starts the next thread at its top. Below ~820px of pane
   (a container query, since the pane is narrower than the window) the rail becomes a drawer behind
   ☰, sliding in from the right. Close and Esc shut the whole view; the rail's *⤢ Table* goes back to the full list where it was
-  scrolled. The reader itself: the description and every comment, rendered by ./issue's own markdown — enough for a
-  thread and no more, so what it does not know renders as the paragraph it looks like, where
-  half-parsing would quietly drop somebody's words. Three rules hold it. A link is **http(s) only**
-  and opens through the pane's own `data-dashurl`, never by navigating the webview; an **image is
-  drawn as a link and never fetched**, because rendering one reaches the network for whatever a
-  stranger put in an issue; and the panel **writes nothing** — its ▶ opens the same dispatch sheet
+  scrolled. The reader itself: the description and every comment, rendered by ./issue's `mdHtml`, which
+  the review stage's threads share: `marked` (GFM, a soft break kept as github.com keeps it) behind
+  ./markdown's `htmlOut`, so tables, task lists and `<details>` come through and no attribute does.
+  It replaced a hand-rolled subset that printed a PR's test-report table as pipes. Four rules hold it.
+  A link is **http(s) only** and carries its URL in **the attribute the host pane's listener probes**
+  (`data-dashurl` here, `data-rvurl` on the review stage; `mdHtml` takes it as a required argument,
+  because borrowing the dashboard's left every link in a review a dead click), never as an `href`;
+  an **image is drawn as a link and never fetched**, because rendering one reaches the network for
+  whatever a stranger put in an issue; an author's tag is **closed where its body ends**
+  (`closeAuthorTags`), since bodies are painted one after another and an open `<b>` would run into
+  the next comment; and the panel **writes nothing** — its ▶ opens the same dispatch sheet
   the row's does, so a claim is still shown before it is posted. The read is cached on the board's
   own TTL (dropped with it by `gh_invalidate`, by key prefix since it is keyed by root AND thread —
   which is also why it is the one cache here with a size cap: every other is bounded by the projects
