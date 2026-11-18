@@ -12,16 +12,19 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+
 + A pull request you open for review gets its own row in the sidebar, under the checkout of its
   branch, or under the project when that branch is not checked out here. A session and its review
   are one click apart, and coming back keeps the tab, the scroll position and what you were writing.
   The row counts the comments you have not sent yet. ✕ or Esc on the review closes it, row and all.
-
 + OMP and OpenCode panes show their phase, tool calls, files, plan, context, tokens and cost,
   as Claude Code and Codex panes do. Each reports through a small extension Episko loads into
   it for that launch only, so nothing changes in the agent's own setup. Both are marked
   *community*: approvals stay in the agent's terminal, and Episko never retries a turn for them.
   The chip's tooltip names the agent version the extension was tested with.
++ Sessions run below your other apps, so a handful of agents running their tests at once no longer
+  freezes the machine. They still get every core nothing else is using. *Settings › Launching*
+  turns it off; on Windows that reaches sessions already running, on macOS the next one started.
 ~ Issues and pull requests read as they do on GitHub, in the thread reader and on the review stage:
   tables, nested lists, folded `<details>` sections and the rest of GitHub's markdown. A pull
   request's test report used to show as rows of pipes, and the hidden notes a template leaves in a

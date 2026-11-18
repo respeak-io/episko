@@ -29,6 +29,8 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-task-pins": "local", "cc-task-hidden": "local", "cc-digest-ok": "local", "cc-revive": "local",
   "cc-cost-base": "local", "cc-agent-token-base": "local", "cc-cmp-base": "local", "cc-restore": "local",
   "cc-attn": "local", "cc-caffeinate": "local", "cc-caf-timer": "local", "cc-caf-await": "local",
+  // Whether sessions should yield depends on this machine's cores and what else it runs.
+  "cc-pane-priority": "local",
   "cc-tour": "local", "cc-seen-versions": "local", "cc-seen-version": "local", "cc-claims": "local",
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
   "cc-forecast-log": "local", "cc-rl-accounts": "local",
