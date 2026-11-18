@@ -20,6 +20,8 @@ pub(crate) struct GhThread {
     pub assignees: Vec<String>, // logins; empty means unclaimed
     pub labels: Vec<String>,
     pub branch: Option<String>, // the PR's head branch, the join to a local checkout
+    pub base: Option<String>,   // the branch it merges into
+    pub fork: Option<String>,   // the head repo's owner when it is not this repo; None for an issue or same-repo PR
     pub author: Option<String>,
     pub draft: bool,
     pub updated_at: String, // ISO-8601 as gh gives it; the frontend parses
@@ -319,6 +321,12 @@ fn parse_list(json: &str, kind: &str) -> Vec<GhThread> {
                     .map(|a| a.iter().filter_map(|l| l.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
                     .unwrap_or_default(),
                 branch: o.get("headRefName").and_then(|x| x.as_str()).map(String::from),
+                base: o.get("baseRefName").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(String::from),
+                fork: o
+                    .get("isCrossRepository")
+                    .and_then(|x| x.as_bool())
+                    .filter(|&cross| cross)
+                    .map(|_| o.get("headRepositoryOwner").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("fork").to_string()),
                 author: o.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).map(String::from),
                 draft: o.get("isDraft").and_then(|x| x.as_bool()).unwrap_or(false),
                 updated_at: o.get("updatedAt").and_then(|x| x.as_str()).unwrap_or("").to_string(),
@@ -366,7 +374,7 @@ pub(crate) async fn gh_threads(root: String, force: bool, account: Option<String
             ]));
             let p = s.spawn(|| gh(&root, acct, &[
                 "pr", "list", "--state", "open", "--limit", "60",
-                "--json", "number,title,url,assignees,labels,updatedAt,headRefName,author,isDraft",
+                "--json", "number,title,url,assignees,labels,updatedAt,headRefName,baseRefName,isCrossRepository,headRepositoryOwner,author,isDraft",
             ]));
             let r = s.spawn(|| gh(&root, acct, &[
                 "pr", "list", "--search", "review-requested:@me", "--state", "open", "--limit", "60",
@@ -1198,7 +1206,10 @@ mod tests {
     const PRS: &str = r#"[
       {"assignees":[],"labels":[],"number":42,"title":"sidebar: a + on each worktree cluster header",
        "updatedAt":"2026-07-30T13:39:37Z","url":"https://github.com/respeak-io/episko/pull/42",
-       "headRefName":"feat/worktree-quick-launch","author":{"login":"FAbrahamDev"},"isDraft":false}
+       "headRefName":"feat/worktree-quick-launch","baseRefName":"dev","isCrossRepository":false,
+       "headRepositoryOwner":{"login":"respeak-io"},"author":{"login":"FAbrahamDev"},"isDraft":false},
+      {"assignees":[],"labels":[],"number":43,"title":"a fork's","updatedAt":"2026-07-30T13:39:37Z","url":"u",
+       "headRefName":"main","baseRefName":"main","isCrossRepository":true,"headRepositoryOwner":{"login":"ana"}}
     ]"#;
 
     #[test]
@@ -1294,6 +1305,10 @@ mod tests {
         assert_eq!(t[0].branch.as_deref(), Some("feat/worktree-quick-launch"));
         assert_eq!(t[0].author.as_deref(), Some("FAbrahamDev"));
         assert!(!t[0].draft);
+        assert_eq!((t[0].base.as_deref(), t[0].fork.as_deref()), (Some("dev"), None), "same repo names no fork");
+        assert_eq!((t[1].base.as_deref(), t[1].fork.as_deref()), (Some("main"), Some("ana")), "a fork's main is not ours");
+        let i = parse_issues(ISSUES);
+        assert!(i.iter().all(|x| x.base.is_none() && x.fork.is_none()), "an issue has neither");
     }
 
     #[test]

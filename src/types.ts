@@ -6,6 +6,7 @@ import type { WebglAddon } from "@xterm/addon-webgl";
 
 import { fmtShort } from "./format";
 import providerManifest from "./providers/manifest.json";
+import integrations from "./providers/integrations.json";
 
 // ---------- model ----------
 export type Phase = "idle" | "thinking" | "working" | "done" | "error" | "ended";
@@ -106,6 +107,9 @@ export interface WtHead { path: string; branch: string; is_main: boolean; exists
 // A checkout other than the launch one (./gitwatch). via decides the repair: "cwd" means Claude moved
 // the session itself, so the dir is adopted; "write" means only its writes moved, so it relaunches there.
 export interface Drift { dir: string; branch: string; via: "cwd" | "write" }
+// The last change an observation made to `drift`: when, under which fan-out (its `since`),
+// and whether that fan-out had moved it before (./gitwatch's driftMoved).
+export interface DriftSeen { at: number; fleet: number | null; mixed: boolean }
 // Where process and transcript really are on a pane tracking another checkout; resume uses this.
 export interface Home { workdir: string; branch: string; worktree: string | null }
 // A background fan-out (Workflow, or a burst of Task subagents). It ends the parent's turn, so done alone
@@ -148,7 +152,10 @@ export const AGENT_CAPABILITIES = [
 export type AgentCapability = typeof AGENT_CAPABILITIES[number];
 
 type ProviderManifestEntry = { capabilities: string[] };
-const PROVIDER_MANIFEST = providerManifest as Record<string, ProviderManifestEntry>;
+/** A community integration's facts, vendored from episko-integrations (docs/agent-protocol.md). */
+export interface Integration extends ProviderManifestEntry { name: string; homepage: string; testedWith: string }
+const INTEGRATIONS = new Map(Object.entries(integrations.agents as Record<string, Integration>));
+const PROVIDER_MANIFEST: Record<string, ProviderManifestEntry> = { ...providerManifest, ...integrations.agents };
 const AGENT_CAPABILITY_SET = new Set<string>(AGENT_CAPABILITIES);
 
 /** The manifest is shared with Rust; a misspelt capability must throw here, not turn a feature off. */
@@ -193,9 +200,13 @@ export function agentCapabilitySummary(a: AgentCli): string {
     a.capabilities.includes("usage") ? "usage" : "phase",
     a.capabilities.includes("context") ? "context" : "",
     a.capabilities.includes("permissions") ? "permissions" : "",
+    isCommunityProvider(a.id) ? "community" : "",
   ].filter(Boolean);
   return features.join(", ") || "integrated";
 }
+/** Reports through Episko's agent protocol, via an extension Episko does not vouch for at runtime. */
+export const integrationOf = (id: string | null | undefined): Integration | null => (id && INTEGRATIONS.get(id)) || null;
+export const isCommunityProvider = (id: string | null | undefined): boolean => !!integrationOf(id);
 // the one place the null-path convention is read
 export const agentInstalled = (a: AgentCli) => a.path !== null;
 // Claude's catalogue row, spelled here rather than in the backend's AGENTS table (it must go through
@@ -405,6 +416,7 @@ export interface Sess {
   revive: ReviveState | null;
   // another checkout of this repo (Drift.via, ./gitwatch); display-only, workdir is unchanged until followed
   drift: Drift | null;
+  driftSeen?: DriftSeen | null;
   home?: Home | null;
   account?: string; // the setup-token account it launched on (./accounts); absent follows the login
   model: string; effort: string | null; ctxPct: number | null; ctxTokens: number | null; cost: number | null; durMs: number | null;

@@ -11,7 +11,7 @@ import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
 import { icon } from "./svgicons";
-import { dashHeads, groupedProjects, groupSummary, projectList, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupReviews, groupSummary, projectList, railRanks, type ProjGroup } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
@@ -22,9 +22,9 @@ import { incomingByProject, rowText, type HandoffRec } from "./handoff";
 import { incomingRowHtml, incomingStripHtml } from "./handoffview";
 import { deviceLabel, pathsOfId } from "./synclink";
 import {
-  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, peekPrefs,
-  projGroups,
-  saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, sortMode,
+  activeId, attnPrefs, dashMirror, extMirrorId, FAVORITES, folderDirty, handoffs, keyPrefs, openReviews, peekPrefs,
+  projGroups, railHold,
+  saveProjGroups, saveProjOrder, sessions, setProjGroups, setProjOrder, setRailHold, sortMode,
   type SortMode,
 } from "./state";
 import { activeBind, comboText, type KeyAction } from "./keys";
@@ -47,13 +47,19 @@ function invalidateSidebarCache() { lastHtml = null; }
 
 // Sessions handed to this machine, by the checkout their project lives in (null: not cloned here).
 let incoming = new Map<string | null, HandoffRec[]>();
+let onScreen: ProjGroup[] = []; // this pass's groups: in toplevel mode a review's row goes to its worktree's own
 const incomingRows = (recs: HandoffRec[] | undefined) =>
   (recs ?? []).map((r) => { const t = rowText(r, Date.now(), deviceLabel); return incomingRowHtml(r, t.tag, t.title); }).join("");
+
+// An open review keeps its project on the rail, as an offer handed to this machine does.
+const railList = () =>
+  projectList([...[...incoming.keys()].filter((k): k is string => !!k), ...openReviews.map((r) => r.root)]);
 
 export function renderSidebar() {
   if (draggingProjects) return;
   incoming = incomingByProject(handoffs, pathsOfId);
-  const list = projectList([...incoming.keys()].filter((k): k is string => !!k));
+  const list = railList();
+  onScreen = list;
   // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const loose = incoming.get(null) ?? [];
@@ -80,7 +86,8 @@ function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string
 
 function projectHtml(p: ProjGroup, dash: Set<string>): string {
   const inbox = incoming.get(p.path);
-  const rows = groupBody(p) + incomingRows(inbox) + dormantRows(p);
+  const revs = groupReviews(p, onScreen);
+  const rows = groupBody(p, revs) + incomingRows(inbox) + dormantRows(p);
   const total = p.sessions.length + p.externals.length;
   const isFav = FAVORITES.some((f) => f.path === p.path);
   // A dirty worktree lights its parent project's dot too.
@@ -103,10 +110,11 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
     // discovered via an external session or a shelved one only — not a saved project
     const tail = p.externals.length
       ? `<span class="pcount ext">${p.externals.length} ext</span>`
-      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming` : "handed"}</span>`;
+      : `<span class="pcount ext">${p.dormants.length ? `${p.dormants.length} shelved` : inbox?.length ? `${inbox.length} incoming`
+        : revs.length ? `${revs.length} review${revs.length === 1 ? "" : "s"}` : "handed"}</span>`;
     head = `<div class="phead ext-only${on}" ${opens} data-key="${esc(p.path)}" title="${esc(tilde(p.path))}">${projGlyph(p.path, p.accent)}<span class="pname">${esc(p.name)}${wtSuffix}</span>${dot}${tail}<span class="padd" data-launch="${esc(p.path)}" data-proj="${esc(p.name)}" title="Launch an Episko session here">${icon("plus", "solo")}</span><span class="parm"></span></div>`;
   }
-  return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p)}</div>`;
+  return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p, revs)}</div>`;
 }
 
 // Expand the group a project is filed in: ⌘1–9, `nextAfterClose` and the tray can land on
@@ -190,6 +198,23 @@ export function initSidebarPeek() {
     peekHover = null;
     peekAdvance(peekLeaveAll(peek, Date.now(), peekPrefs));
   });
+}
+
+// ---------- the hold: nothing on the rail re-sorts under the pointer ----------
+// ./grouping applies it; this arms it on the first move over the rail (not on enter, so it
+// re-arms after a blur released it) and drops it on leaving, which is when the re-sort paints.
+function armRailHold() { setRailHold(null); setRailHold(railRanks(railList())); }
+// A reorder the user asked for (the sort button, a drag) must land while they are still there.
+export function rearmRailHold() { if (railHold) armRailHold(); }
+export function releaseRailHold() {
+  if (!railHold) return;
+  setRailHold(null);
+  renderAll();
+}
+export function initRailHold() {
+  const rail = $("projects").closest<HTMLElement>(".rail")!; // the list, its header and the mini-rail
+  rail.addEventListener("pointermove", () => { if (!railHold) armRailHold(); });
+  rail.addEventListener("pointerleave", releaseRailHold);
 }
 
 // ---------- the finish highlight ----------
@@ -306,6 +331,7 @@ export function initProjectDnD() {
     if (marker.parentNode) marker.parentNode.insertBefore(dragEl, marker);
     cleanup();
     saveSidebarArrangement(container);
+    rearmRailHold();
     if (sortMode !== "manual") setSort("manual", false); // a sorted mode would override the drag at once
     // A pointerup may synthesise a click; a timestamp guard self-heals if none fires.
     reorderGuardUntil = performance.now() + 250;

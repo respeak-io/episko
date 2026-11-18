@@ -1,0 +1,66 @@
+name: integrations
+
+# Keeps the agent extensions Episko ships level with episko-integrations' main, as a pull
+# request against dev (docs/agent-protocol.md § Shipping a change). Never at release time:
+# a tag must say what it ships, and nothing reaches a signed build that nobody merged here.
+#
+# The PR deliberately runs no CI. GitHub starts no workflow for a push or a PR made with
+# GITHUB_TOKEN (site.yml has the long version), and none is owed: the vendor script refuses
+# a commit whose CI there has not passed, and that CI runs each extension in its real agent.
+# Episko's own suites still run on dev once a person merges it.
+on:
+  schedule:
+    - cron: "30 6 * * *" # after episko-integrations' nightly run at 05:00
+  workflow_dispatch:
+
+concurrency:
+  group: integrations-vendor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: bot/integrations
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dev
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fetch episko-integrations
+        run: git clone --quiet https://github.com/respeak-io/episko-integrations "$RUNNER_TEMP/integrations"
+
+      - name: Vendor its main
+        run: node scripts/vendor-integrations.mjs "$RUNNER_TEMP/integrations" origin/main --notes "$RUNNER_TEMP/notes.md"
+
+      # One standing PR: a newer main replaces the branch rather than opening a second one.
+      - name: Open or refresh the pull request
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "dev already ships episko-integrations' main"
+            exit 0
+          fi
+          source=$(node -p 'require("./src/providers/integrations.json").source')
+          sha=${source#*@}
+          title="integrations: vendor episko-integrations@${sha:0:7}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -q -m "$title" -m "From $source."
+          git push --force origin "$BRANCH"
+          open=$(gh pr list --head "$BRANCH" --base dev --state open --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh pr edit "$open" --title "$title" --body-file "$RUNNER_TEMP/notes.md"
+          else
+            gh pr create --base dev --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/notes.md"
+          fi

@@ -54,6 +54,11 @@ Each PR they pick needs `build-check` green on **both** macOS and Windows. A dra
 unless they say otherwise. The `changelog` check shows `SKIPPED` on a PR onto `dev` — that
 gate only runs on a PR onto `main`, and skipped is correct here.
 
+**`integrations: vendor …` from `bot/integrations` is the one PR with no checks, by design**
+(`.github/workflows/integrations.yml`): its code passed CI in episko-integrations, and the
+gates on the merged result cover the rest. Offer it with the others; it is the only way a fix
+to the OMP or OpenCode extension reaches a release.
+
 ```sh
 gh pr merge <n> --merge        # a merge commit, never a squash
 ```

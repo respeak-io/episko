@@ -27,6 +27,10 @@ got into a rendered README could call every `#[tauri::command]` the app has. The
 `test/markdown.test.ts` renders a list of hostile inputs and asserts no tag, handler, `style`,
 `javascript:` or `src` survives. Add a case there before loosening anything above.
 
+The thread renderer (./issue's `mdHtml`: issues, pull requests and review comments) goes through
+the same `htmlOut`, with its own link and image rules (docs/dashboard.md), and `test/issue.test.ts`
+runs its own hostile list. Loosening `htmlOut` loosens both.
+
 ## The backend half
 
 `read_markdown` and `read_md_image` (platform.rs) each check the extension themselves (`MD_EXTS`,

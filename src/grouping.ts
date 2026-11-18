@@ -11,8 +11,9 @@ import { attnCleared, attnOrder } from "./attn";
 import { groupOf, type GroupDef } from "./projgroups";
 import {
   accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty, handoffs,
-  projGroups, projOrder, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
+  openReviews, projGroups, projOrder, railHold, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
 } from "./state";
+import type { OpenReview } from "./review";
 import { taskPrefs } from "./tasks";
 import { handoffBusy } from "./handoff";
 
@@ -76,7 +77,7 @@ export function clusterByWorktree(p: ProjGroup, withEmpty = false): WtCluster[] 
     }
   }
   for (const c of order) if (!c.branch) c.branch = c.isMain ? "main" : basename(c.key);
-  return order;
+  return holdOrder(order, (c) => `c:${c.key}`);
 }
 // A removal closes the checkout's sessions BEFORE git touches anything, so a row filtered on
 // liveness alone vanishes the instant you confirm it — no spinner, no sign, and the project
@@ -94,6 +95,35 @@ export function placeDormants(p: ProjGroup, cl: WtCluster[]): { by: Map<string, 
     const k = checkoutDir(d.workdir || p.path, roster);
     if (keys.has(k)) by.set(k, [...(by.get(k) ?? []), d]);
     else rest.push(d);
+  }
+  return { by, rest };
+}
+// An open review's checkout: the one on its head branch, as `checkoutDir` in ./reviewui finds it.
+// A fork's head names a branch of another repo, so a same-named local one is not it.
+export function reviewCheckout(r: OpenReview): string | null {
+  if (!r.head || !r.sameRepo) return null;
+  return (worktreesByRepo.get(r.root) ?? []).find((w) => w.exists && w.branch === r.head)?.path ?? null;
+}
+// The open reviews whose rows go in `p`. In toplevel mode a worktree's own group takes its
+// branch's review and the repo's root group every other; `list` is the groups on screen.
+export function groupReviews(p: ProjGroup, list: readonly ProjGroup[]): OpenReview[] {
+  const root = p.repoRoot ?? p.path;
+  return openReviews.filter((r) => {
+    if (r.root !== root) return false;
+    const at = reviewCheckout(r);
+    if (p.repoRoot) return at === p.path;
+    return !at || !list.some((g) => g.repoRoot === root && g.path === at);
+  });
+}
+// Like `placeDormants`: each review under its checkout's cluster, the rest below the project.
+export function placeReviews(revs: OpenReview[], cl: WtCluster[]): { by: Map<string, OpenReview[]>; rest: OpenReview[] } {
+  const keys = new Set(cl.map((c) => c.key));
+  const by = new Map<string, OpenReview[]>();
+  const rest: OpenReview[] = [];
+  for (const r of revs) {
+    const k = reviewCheckout(r);
+    if (k && keys.has(k)) by.set(k, [...(by.get(k) ?? []), r]);
+    else rest.push(r);
   }
   return { by, rest };
 }
@@ -198,6 +228,7 @@ export function projectList(keep: readonly string[] = []): ProjGroup[] {
     : sortMode === "attention" ? (a: Sess, b: Sess) => urgencyRank(a) - urgencyRank(b) || a.phaseSince - b.phaseSince
     : null;
   if (sessCmp) for (const p of list) p.sessions.sort(sessCmp);
+  if (railHold) for (const p of list) p.sessions = holdOrder(p.sessions, (s) => `s:${s.id}`);
   const groups = wtGroup === "toplevel" ? splitByWorktree(list, keep) : list;
   if (sortMode === "active") {
     groups.sort((a, b) => projActivity(b) - projActivity(a));
@@ -207,7 +238,28 @@ export function projectList(keep: readonly string[] = []): ProjGroup[] {
     const rank = (path: string) => { const i = projOrder.indexOf(path); return i === -1 ? Number.MAX_SAFE_INTEGER : i; };
     groups.sort((a, b) => rank(a.path) - rank(b.path));
   }
-  return groups;
+  return holdOrder(groups, (p) => `p:${p.path}`);
+}
+
+// While the pointer is on the rail, every row keeps the rank it was painted at: a re-sort there
+// moves the row about to be clicked, and closing a session re-sorts its own checkout. Stable, so
+// a row the hold never saw keeps its natural order, after the ones it did.
+export function holdOrder<T>(list: T[], key: (t: T) => string, held: ReadonlyMap<string, number> | null = railHold): T[] {
+  if (!held) return list;
+  const rank = (t: T) => held.get(key(t)) ?? Number.MAX_SAFE_INTEGER;
+  return [...list].sort((a, b) => rank(a) - rank(b));
+}
+// The hold for `list` as painted, taken with none in force. Prefixed, because one path can be a
+// project row and a checkout row at once.
+export function railRanks(list: ProjGroup[]): Map<string, number> {
+  const ranks = new Map<string, number>();
+  const put = (k: string) => { if (!ranks.has(k)) ranks.set(k, ranks.size); };
+  for (const p of list) {
+    put(`p:${p.path}`);
+    for (const c of clusterByWorktree(p, true)) put(`c:${c.key}`);
+    for (const s of p.sessions) put(`s:${s.id}`);
+  }
+  return ranks;
 }
 
 // Which rows the open dashboard (`root`) belongs to. In toplevel mode several rows open the same

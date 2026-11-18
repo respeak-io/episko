@@ -177,6 +177,7 @@ pub(crate) fn spawn_claude(
     let killer = child.clone_killer();
     // Recorded so the session is still recognisable on disk after Claude rotates its id.
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     if let Some(p) = child_pid {
         state.owned_pids.lock().unwrap().insert(p);
     }
@@ -228,15 +229,21 @@ fn note_win32_input_mode(chunk: &[u8], carry: &mut Vec<u8>, flag: &AtomicBool) {
     *carry = buf.split_off(buf.len() - keep);
 }
 
+/// The Esc key as Windows Terminal sends it: VK_ESCAPE, scan 1, down then up.
+const ESC_KEY_RECORD: &str = "\x1b[27;1;27;1;0;1_\x1b[27;1;27;0;0;1_";
+
 /// Re-encode a keystroke for a ConPTY that asked for win32 input records. ConPTY best-fits
 /// a non-ASCII character into an Alt+numpad sequence riding on the key-UP record, where
 /// `_getwch` (Python's `getpass`) never looks, so a secret loses characters silently. Only
-/// non-ASCII is re-encoded; ASCII and escape sequences pass byte-exact (docs/architecture.md).
+/// non-ASCII and the Esc key are re-encoded; everything else passes byte-exact (docs/architecture.md).
 fn win32_input_encode(data: &str) -> String {
     let mut out = String::with_capacity(data.len());
     let mut it = data.chars().peekable();
     while let Some(c) = it.next() {
-        if c == '\x1b' {
+        // Once ConPTY has seen one record it holds a bare ESC ending a write as a sequence's start.
+        if c == '\x1b' && it.peek().is_none() {
+            out.push_str(ESC_KEY_RECORD);
+        } else if c == '\x1b' {
             out.push(c);
             copy_escape(&mut it, &mut out);
         } else if c.is_ascii() {
@@ -384,6 +391,7 @@ fn stream_pty_session(
         if let Some(st) = app.try_state::<AppState>() {
             st.sessions.lock().unwrap().remove(&session_id);
             agent::stop_runtime(&st, &session_id);
+            crate::protocol::forget_session(&st, &session_id);
             if let Some(p) = child_pid {
                 st.owned_pids.lock().unwrap().remove(&p);
             }
@@ -458,6 +466,7 @@ pub(crate) fn spawn_shell(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     // Not added to owned_pids: not a claude process, so it cannot leak as "external".
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
@@ -631,6 +640,7 @@ pub(crate) fn spawn_task(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
@@ -859,10 +869,21 @@ struct ProviderManifestEntry {
     capabilities: Vec<String>,
 }
 
-/// The one capability matrix shared with the TypeScript provider registry (checked-in JSON).
+#[derive(serde::Deserialize)]
+struct Integrations {
+    agents: std::collections::HashMap<String, ProviderManifestEntry>,
+}
+
+/// The one capability matrix shared with the TypeScript provider registry: the first-party
+/// manifest plus the integrations vendored from episko-integrations.
 fn provider_manifest() -> std::collections::HashMap<String, ProviderManifestEntry> {
-    serde_json::from_str(include_str!("../../src/providers/manifest.json"))
-        .expect("src/providers/manifest.json must be valid provider metadata")
+    let mut all: std::collections::HashMap<String, ProviderManifestEntry> =
+        serde_json::from_str(include_str!("../../src/providers/manifest.json"))
+            .expect("src/providers/manifest.json must be valid provider metadata");
+    let vendored: Integrations = serde_json::from_str(include_str!("../../src/providers/integrations.json"))
+        .expect("src/providers/integrations.json must be valid provider metadata");
+    all.extend(vendored.agents);
+    all
 }
 
 /// The whole catalogue, each entry saying whether it is installed. Never a filtered list:
@@ -927,7 +948,7 @@ pub(crate) fn spawn_agent(
         .map_err(|e| e.to_string())?;
 
     // Through `argv_command`: on Windows most of these are npm `.cmd` shims CreateProcessW cannot start.
-    let args = agent::start_provider(
+    let start = agent::start_provider(
         spec.id,
         app.clone(),
         &state,
@@ -939,15 +960,20 @@ pub(crate) fn spawn_agent(
             mode.as_deref(),
         ),
     )?;
-    let mut cmd = argv_command(&bin, args);
+    let mut cmd = argv_command(&bin, start.args);
     cmd.cwd(&workdir);
     for (k, v) in std::env::vars() {
         cmd.env(k, v);
     }
+    // Ours is wherever Episko was started from; OpenCode picks its project from PWD, not cwd.
+    cmd.env("PWD", &workdir);
     cmd.env("PATH", augmented_path());
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     apply_utf8_locale(&mut cmd);
+    for (k, v) in start.env {
+        cmd.env(k, v);
+    }
 
     log::info!(
         "spawn agent · {} · {session_id} · {workdir} · {bin}",
@@ -957,6 +983,7 @@ pub(crate) fn spawn_agent(
         Ok(child) => child,
         Err(e) => {
             agent::stop_runtime(&state, &session_id);
+            crate::protocol::forget_session(&state, &session_id);
             return Err(e.to_string());
         }
     };
@@ -965,6 +992,7 @@ pub(crate) fn spawn_agent(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let killer = child.clone_killer();
     let child_pid = child.process_id();
+    state.pane_priority.adopt(child_pid);
     let scroll = Arc::new(Mutex::new(ScrollBuf::new()));
     let win32 = Arc::new(AtomicBool::new(false));
     state.sessions.lock().unwrap().insert(
@@ -1298,6 +1326,7 @@ pub(crate) fn kill_session(state: State<AppState>, session_id: String) -> Result
         let _ = s.killer.kill();
         agent::stop_runtime(&state, &session_id);
         crate::mcp::forget_session(&state, &session_id);
+        crate::protocol::forget_session(&state, &session_id);
     }
     Ok(())
 }
@@ -2150,6 +2179,15 @@ mod tests {
     }
 
     #[test]
+    fn the_esc_key_becomes_a_key_record_pair() {
+        assert_eq!(win32_input_encode("\x1b"), ESC_KEY_RECORD);
+        assert_eq!(win32_input_encode("x\x1b"), format!("x{ESC_KEY_RECORD}"));
+        // Alt+x and an arrow are whole sequences ConPTY parses either way.
+        assert_eq!(win32_input_encode("\x1bx"), "\x1bx");
+        assert_eq!(win32_input_encode("\x1b[A"), "\x1b[A");
+    }
+
+    #[test]
     fn a_non_bmp_character_goes_as_its_two_surrogates() {
         assert_eq!(
             win32_input_encode("🔑"), // U+1F511 -> D83D DD11
@@ -2296,14 +2334,21 @@ mod tests {
             ("no-break space", "ab\u{a0}cd\r", "ab\u{a0}cd"),
         ];
         for (name, send, want) in cases {
-            let got = round_trip(send);
+            let got = round_trip(&[send]);
             // A real tty passes the paste brackets to the child; ConPTY consumes them.
             let got = got.replace("\x1b[200~", "").replace("\x1b[201~", "");
             assert_eq!(got, want, "{name}: the child did not receive what was sent");
         }
     }
 
-    fn round_trip(send: &str) -> String {
+    /// One keystroke per write, as xterm sends them. After a single record (the umlaut),
+    /// ConPTY holds a bare ESC ending a write as the start of a sequence: Esc goes dead.
+    #[test]
+    fn esc_still_reaches_the_child_after_an_umlaut() {
+        assert_eq!(round_trip(&["ä", "\x1b", "\r"]), "ä\x1b");
+    }
+
+    fn round_trip(writes: &[&str]) -> String {
         use std::time::{Duration, Instant};
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -2366,11 +2411,13 @@ mod tests {
             out.lock().unwrap()
         );
         std::thread::sleep(Duration::from_millis(200));
-        {
+        for send in writes {
             let payload = pty_payload(&flag, send);
             let mut g = writer.lock().unwrap();
             g.write_all(payload.as_bytes()).expect("write");
             g.flush().expect("flush");
+            drop(g);
+            std::thread::sleep(Duration::from_millis(150));
         }
         let seen = wait_for("GOT:");
         let _ = child.kill();

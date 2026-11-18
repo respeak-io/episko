@@ -17,14 +17,14 @@
 <meta property="og:site_name" content="episko" />
 <meta property="og:url" content="https://episko.dev/" />
 <meta property="og:title" content="episko: run Claude Code, Codex and 20 more coding agents at once" />
-<meta property="og:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. The others run as plain terminals." />
+<meta property="og:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. Others report through community integrations or run as plain terminals." />
 <meta property="og:image" content="https://episko.dev/og.png" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
 <meta property="og:image:alt" content="episko: a pixel-art shepherd minding a flock of little coding agents, under the line &quot;Keep the flock in view.&quot;" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="episko: run Claude Code, Codex and 20 more coding agents at once" />
-<meta name="twitter:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. The others run as plain terminals." />
+<meta name="twitter:description" content="Run Claude Code, Codex and 20 more coding agents at once, each in its own terminal. Claude Code and Codex get live status, context use, cost and in-app permission prompts. Others report through community integrations or run as plain terminals." />
 <meta name="twitter:image" content="https://episko.dev/og.png" />
 
 <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -48,7 +48,7 @@
       "softwareHelp": "https://github.com/respeak-io/episko",
       "license": "https://opensource.org/licenses/MIT",
       "isAccessibleForFree": true,
-      "description": "episko is a desktop app for running Claude Code, Codex and 20 other coding agent CLIs at once, each in its own PTY terminal. Claude Code and Codex stream live state back: phase, model, context use, cost, the tool running, and permission requests you can answer without leaving the app. The other CLIs run as plain terminals with no status reporting. On macOS, a Claude Code session can also run in Ghostty, Terminal.app or iTerm2. episko also tracks usage limits and forecasts when you will hit them.",
+      "description": "episko is a desktop app for running Claude Code, Codex and 20 other coding agent CLIs at once, each in its own PTY terminal. Claude Code and Codex stream live state back: phase, model, context use, cost, the tool running, and permission requests you can answer without leaving the app. A few others report status through community integrations; the rest run as plain terminals. On macOS, a Claude Code session can also run in Ghostty, Terminal.app or iTerm2. episko also tracks usage limits and forecasts when you will hit them.",
       "featureList": [
         "Run Claude Code, Codex and 20 other coding agent CLIs in parallel, each in its own terminal",
         "Run the project's own tasks in the same panes — VS Code tasks, justfile, package.json scripts, Taskfile, mise, Makefile and Cargo",
@@ -112,7 +112,7 @@
           "name": "Which agents does it work with?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Claude Code and Codex get the full cockpit: status, approvals, context and usage. About twenty other CLIs, from OpenCode to Gemini, run in a terminal pane next to them. You need at least one of them installed, because Episko starts the real CLI."
+            "text": "Claude Code and Codex get the full cockpit: status, approvals, context and usage. OMP and OpenCode report status, tools, context and cost through community integrations, extensions Episko ships and loads into each session. About twenty other CLIs run in a terminal pane next to them. You need at least one of them installed, because Episko starts the real CLI."
           }
         },
         {
@@ -346,6 +346,7 @@ h2{font-family:var(--f-body);font-weight:700;font-size:clamp(28px,3.4vw,40px);li
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .chips span{font:13px var(--f-mono);padding:5px 10px;border:1px solid var(--rule);border-radius:4px}
 .chips span.on{border-color:var(--ink);background:var(--paper);font-weight:600}
+.chips span.co{border-color:var(--ink);border-style:dashed}
 .notes{list-style:none;margin:0;padding:0;font-size:15.5px;color:var(--muted)}
 .notes li{padding:14px 0;border-top:1px solid var(--rule)}
 .notes b{color:var(--ink);font-weight:600}
@@ -485,6 +486,7 @@ h2{font-family:var(--f-body);font-weight:700;font-size:clamp(28px,3.4vw,40px);li
 .ag{display:flex;flex-wrap:wrap;gap:6px}
 .ag span{padding:4px 9px;border-radius:5px;border:1px solid var(--a-ln);color:var(--a-mu);font-size:12px}
 .ag span.on{color:var(--a-tx);border-color:rgba(167,139,250,.6);background:rgba(167,139,250,.12)}
+.ag span.co{color:var(--a-tx);border-color:rgba(167,139,250,.6);border-style:dashed}
 
 /* tour teaser: a small stack of screenshots that shuffles */
 .tour-sec{padding-block:112px}
@@ -1186,9 +1188,9 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         </article>
 
         <article class="tile t-ag">
-          <header><h3>20+ coding agents</h3><p class="sub">Claude Code and Codex built in, the rest in a terminal.</p></header>
+          <header><h3>20+ coding agents</h3><p class="sub">Claude Code and Codex built in, dashed ones through a community integration, the rest in a terminal.</p></header>
           <div class="app ag">
-            <span class="on">Claude Code</span><span class="on">Codex</span><span>OpenCode</span><span>Gemini</span><span>Cursor</span><span>Copilot</span><span>Amp</span><span>Qwen</span><span>Kimi</span><span>+13</span>
+            <span class="on">Claude Code</span><span class="on">Codex</span><span class="co" title="Community integration: live status through an extension Episko ships">OMP</span><span class="co" title="Community integration: live status through an extension Episko ships">OpenCode</span><span>Gemini</span><span>Cursor</span><span>Copilot</span><span>Amp</span><span>Qwen</span><span>Kimi</span><span>+12</span>
           </div>
         </article>
 
@@ -1255,7 +1257,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
       </div>
       <div class="qs">
         <details><summary>Is it free?</summary><p>Yes. Episko is open source under the MIT license, and there's no paid tier and no account.</p></details>
-        <details><summary>Which agents does it work with?</summary><p>Claude Code and Codex get the full cockpit: status, approvals, context and usage. About twenty other CLIs, from OpenCode to Gemini, run in a terminal pane next to them. You need at least one of them installed, because Episko starts the real CLI.</p></details>
+        <details><summary>Which agents does it work with?</summary><p>Claude Code and Codex get the full cockpit: status, approvals, context and usage. OMP and OpenCode report status, tools, context and cost through community integrations, extensions Episko ships and loads into each session. About twenty other CLIs run in a terminal pane next to them. You need at least one of them installed, because Episko starts the real CLI.</p></details>
         <details><summary>Which systems?</summary><p>macOS on Apple silicon (signed and notarized) and Windows 10 and 11. Intel Macs and Linux aren't packaged yet.</p></details>
         <details><summary>Does it send my code anywhere?</summary><p>No. Your agents talk to their own APIs with your own login, as they would in a terminal. Episko listens on 127.0.0.1 and has no server of its own. The only thing it fetches is the list of releases on GitHub, to tell you about updates.</p></details>
         <details><summary>Will an update kill my running sessions?</summary><p>Not without asking. Episko tells you a new version is out and waits, because a restart would end the sessions you have open.</p></details>
@@ -1274,7 +1276,7 @@ code{font:.9em var(--f-mono);background:var(--paper);border:1px solid var(--rule
         <a id="dlMac" href="https://github.com/respeak-io/episko/releases/download/v0.40.0/Episko_0.40.0_aarch64.dmg"><b><svg class="os" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>macOS</b><span>.dmg · Apple silicon · notarized</span></a>
         <a id="dlWin" href="https://github.com/respeak-io/episko/releases/download/v0.40.0/Episko_0.40.0_x64_en-US.msi"><b><svg class="os" viewBox="0 0 24 24" aria-hidden="true"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>Windows</b><span id="dlWinSub">.msi · Windows 10 &amp; 11</span></a>
       </div>
-      <div class="chips"><span class="on">Claude Code</span><span class="on">Codex</span><span>OpenCode</span><span>Gemini</span><span>Cursor</span><span>Copilot</span><span>Amp</span><span>Qwen</span><span>Kimi</span><span>+13</span></div>
+      <div class="chips"><span class="on">Claude Code</span><span class="on">Codex</span><span class="co" title="Community integration: live status through an extension Episko ships">OMP</span><span class="co" title="Community integration: live status through an extension Episko ships">OpenCode</span><span>Gemini</span><span>Cursor</span><span>Copilot</span><span>Amp</span><span>Qwen</span><span>Kimi</span><span>+12</span></div>
     </div>
     <div class="meadow" id="meadow" aria-hidden="true">
       <div class="hills" data-seed="3"></div>

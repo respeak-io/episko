@@ -29,6 +29,8 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   "cc-task-pins": "local", "cc-task-hidden": "local", "cc-digest-ok": "local", "cc-revive": "local",
   "cc-cost-base": "local", "cc-agent-token-base": "local", "cc-cmp-base": "local", "cc-restore": "local",
   "cc-attn": "local", "cc-caffeinate": "local", "cc-caf-timer": "local", "cc-caf-await": "local",
+  // Whether sessions should yield depends on this machine's cores and what else it runs.
+  "cc-pane-priority": "local",
   "cc-tour": "local", "cc-seen-versions": "local", "cc-seen-version": "local", "cc-claims": "local",
   "cc-legacy-import-done": "local", "cc-icons-v": "local", "cc-usage-tokens-at": "local",
   "cc-forecast-log": "local", "cc-rl-accounts": "local",
@@ -40,7 +42,7 @@ export const SYNC_KEYS: Readonly<Record<string, SyncClass>> = {
   // The memory stream's switch is this machine's to throw; what it holds is the stream's own.
   "cc-memory-sync": "local", "cc-sync-memory": "local",
   // A review in progress is about one machine's checkout of the PR; GitHub holds the sent one.
-  "cc-review-drafts": "local", "cc-review-viewed": "local",
+  "cc-review-drafts": "local", "cc-review-viewed": "local", "cc-review-open": "local",
   // Measured on this machine (its disk, its transcripts): a sum across machines means nothing.
   "cc-io": "local", "cc-usage-tokens": "local", "cc-agent-usage-tokens": "local",
   // Sync's own bookkeeping, and what it received: never sent back.
