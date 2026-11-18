@@ -550,6 +550,22 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       the jump lands on the one running that session, not merely on the app. That
       tiebreak reads the window title, so it is the half no unit test can hold.
 
+### Community integrations (OMP, OpenCode)
+
+Needs `omp` (`bun install -g @oh-my-pi/pi-coding-agent`) and `opencode` (`npm i -g
+opencode-ai`) on PATH, each with a model it can reach; a prompt or two spends that account's
+tokens. episko-integrations' CI already ran both extensions inside the real CLIs, so what is
+left is Episko's half: the launch, the bundled file, and the cockpit reading the events.
+
+- [ ] **Both launch from the picker** and the inspector carries the dashed *community* chip,
+      whose tooltip names the version from `src/providers/integrations.json`.
+- [ ] **One prompt each drives the cockpit**: the glyph goes thinking → working → your turn,
+      tool calls fill *Tools*, an edited file lands in the Context card, and context % and cost
+      appear rather than `–`. Quitting the agent ends the pane.
+- [ ] **OMP's permission mode reaches it.** Set *Permission mode · OMP* to *Yolo* in Settings › Launching and
+      launch: OMP's own TUI must show that approval mode, since Episko only passes
+      `--approval-mode`.
+
 ### Sync
 
 Everything below the pairing form is driven by a live socket, so none of it has a test
