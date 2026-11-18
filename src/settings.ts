@@ -249,8 +249,11 @@ type SetShape =
   | { kind: "accounts" }
   | { kind: "maintTokens"; token: TokenDef }
   | { kind: "multi"; set: string; on: () => string[]; segs: () => SetSeg[]; empty?: string }
+  // Named switches behind one fold, each with the sentence that decides it; `data-val` is the item, and toggles.
+  | { kind: "switches"; set: string; items: () => SetSwitch[] }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
+interface SetSwitch { value: string; label: string; sub: string; on: boolean; idle?: string } // `idle`: why it decides nothing now
 type SetControl = SetMeta & SetShape;
 type SetGroupId = "look" | "work" | "app";
 // `when`: a section about an OS the app is not running on is worse than none; `os` tags its rows for `@mac`.
@@ -686,20 +689,18 @@ const SET_TABS: SetTab[] = [
         on: () => SOURCES.filter((s) => !maintPrefs.off.includes(s.id)).map((s) => s.id),
         segs: () => SOURCES.map((s) => ({ value: s.id, label: s.label, sub: `${facetDef(s.facet).label} · ${COST_WORD[s.cost]}` })),
         isDefault: () => !skippedSources().length, reset: () => setMaintOff([]) },
-      // One per public source, its disclosure as the hint: the switch says what it sends.
-      ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
-        kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
-        hint: disclosure(src) ?? "",
-        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same is sent then. This machine only: the switch never syncs, because it changes what leaves it.`,
-        aliases: ["maintenance", "security", "public", "privacy",
-          ...src.sees.includes("sec.runtime") ? ["runtime", "end of life", "eol"]
-            : src.sees.includes("deps.latest") ? ["outdated", "major", "behind", "latest", "dependencies", "registry", "upgrade"]
-            : src.sees.includes("prod.domain") ? ["domain", "registration", "expiry", "registrar", "renewal", "prod"]
-            : ["vulnerability", "advisory", "lockfile", "cve", "dependencies"]],
-        dim: () => maintPrefs.off.includes(src.id),
-        on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
-        reset: () => applySetting(`maintpub:${src.id}`, "0"),
-      })),
+      // One row for every public source; each switch keeps its disclosure beside it, since it says what that switch sends.
+      { kind: "switches", set: "maintpub", key: "cc-maint-prefs", label: "Public services every check may ask",
+        hint: `${listOf(publicSources().map((s) => s.label))} answer from the names a project's files list. Off, one is asked only when you click Check with it on a project; the list says what each receives.`,
+        more: "On, the same is sent on every check instead of on a click. This machine only: none of it syncs, because it changes what leaves the machine. A source switched off under Sources to read is never asked, whatever its switch here says.",
+        aliases: ["maintenance", "security", "public", "privacy", "every check", "on a click", "vulnerability", "advisory", "lockfile", "cve",
+          "dependencies", "runtime", "end of life", "eol", "outdated", "major", "behind", "latest", "registry", "upgrade",
+          "domain", "registration", "expiry", "registrar", "renewal", "prod"],
+        summary: () => { const n = askedPublic().length, all = publicSources().length; return !n ? "none" : n === all ? `all ${all}` : `${n} of ${all}`; },
+        lines: () => publicSources().map((s) => ({ label: s.label, value: maintPrefs.public.includes(s.id) ? "every check" : "on a click" })),
+        items: () => publicSources().map((s) => ({ value: s.id, label: s.label, sub: disclosure(s) ?? "", on: maintPrefs.public.includes(s.id),
+          idle: maintPrefs.off.includes(s.id) ? "Switched off under Sources to read, so it is not asked at all." : undefined })),
+        isDefault: () => !askedPublic().length, reset: () => askedPublic().forEach((s) => setMaintPublic(s.id, false)) },
       // A trust list like Trusted projects: allowing is a grant, so it has no reset.
       { kind: "multi", set: "mainthost", key: "cc-maint-prefs", label: "Servers this machine may check",
         hint: "The [deploy] hosts Check prod may reach from here, over your own ssh. Click one to allow it or take it back.",
@@ -871,6 +872,8 @@ export function openSettingsOn(tab: string, row?: string) {
   setQuery("");
   setTab = tab;
   landed = null;
+  // A row whose switches all sit behind its fold lands open: its summary alone changes nothing.
+  if (row && findControl(row)?.kind === "switches") openPanels.add(row);
   openSettings();
   const body = $("setBody");
   const hit = body.querySelector<HTMLElement>(`[data-setrow="${CSS.escape(row ?? tab)}"]`);
@@ -1681,6 +1684,13 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
         + `${s.glyph ? `<span class="seg-glyph">${setIcon(s.glyph)}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
       break;
     }
+    case "switches":
+      ctl = fold(c.summary?.() ?? "");
+      panel = `<div class="sndlist set-sws">${c.items().map((it) => `<div class="sndev${it.idle ? " off" : ""}"><div class="sndev-h">`
+        + `<div class="sndev-t"><div class="sndev-l">${highlight(it.label, words)}</div><div class="sndev-s">${esc(it.sub)}</div>`
+        + `${it.idle ? `<div class="sndev-s set-swidle">${esc(it.idle)}</div>` : ""}</div>`
+        + `${sw(it.on, `data-set="${c.set}" data-val="${escAttr(it.value)}" aria-label="${escAttr(it.label)}"`)}</div></div>`).join("")}</div>`;
+      break;
     case "seg": {
       const active = c.active();
       const segs = c.segs();
@@ -1869,6 +1879,9 @@ function tokSummary(kind: string): string {
 }
 // Only ids the manifest still knows: a skipped source it dropped decides nothing.
 const skippedSources = () => SOURCES.filter((s) => maintPrefs.off.includes(s.id));
+const publicSources = () => SOURCES.filter((s) => s.cost === "public");
+const askedPublic = () => publicSources().filter((s) => maintPrefs.public.includes(s.id));
+const listOf = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}` : xs[0] ?? "");
 // Every host a project read here names, and any allowed one none does now, so a grant can still be taken back.
 function hostSegs(): SetSeg[] {
   const named = deployHosts();
@@ -1959,7 +1972,7 @@ function applySetting(set: string, val: string) {
   else if (set === "md:images") host.setMdPrefs({ ...mdPrefs, images: val === "1" });
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
   else if (set === "agenttools") host.setAgentTools(val === "1");
-  else if (set.startsWith("maintpub:")) setMaintPublic(set.slice("maintpub:".length), val === "1");
+  else if (set === "maintpub") setMaintPublic(val, !maintPrefs.public.includes(val));
   else if (set === "maintread") setMaintOff(maintPrefs.off.includes(val) ? maintPrefs.off.filter((x) => x !== val) : [...maintPrefs.off, val]);
   else if (set === "mainthost") setMaintHost(val, !maintPrefs.hosts.includes(val));
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });

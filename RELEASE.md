@@ -648,8 +648,8 @@ pinned by the `--ignored` test above, but every surface below is DOM.
       registrar's page), *Servers* draws the **Domains** board, and the Prod cell stays *not
       checked* until *Check prod* answers too. Add `http://10.0.0.5` and `https://x.vercel.app`
       to `urls` and check with RDAP again: neither is asked, and the Prod cell's tip says why,
-      before *Check prod* and after. Turn on *Ask RDAP when Maintenance checks* in Settings › On
-      its own and rescan: the domain is read with no click. On a project whose only domain is a
+      before *Check prod* and after. Turn on RDAP under *Public services every check may ask* in
+      Settings › Maintenance and rescan: the domain is read with no click. On a project whose only domain is a
       `.de`, the rescan leaves its Prod cell *not checked*, never *unavailable*. Set
       `[maintenance.thresholds] domain_warn_days = 3650`: the cell turns amber with a
       *domain 13mo*-style word, the line opens the Domains board, its *Fix* prefills a brief that

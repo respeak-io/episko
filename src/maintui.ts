@@ -48,7 +48,7 @@ export interface MaintHost {
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
   session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
-  openSettings?: (section: string, row?: string) => void; // Settings › Maintenance, at a token kind or a public source's switch
+  openSettings?: (section: string, row?: string) => void; // Settings › Maintenance, at a token kind or the public services' switches
   pickAccount?: (at: HTMLElement, root: string, then: () => void) => void; // the project's forge account picker; `then` after a pick
 }
 
@@ -432,7 +432,7 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (seen) { forgetClicked(seen.dataset.mtseen!, (seen.dataset.mtroot ?? "").split("\n").filter(Boolean)); return true; }
   // Asking a public source in every scan is Settings › Maintenance's switch; this only opens it there.
   const pref = t.closest<HTMLElement>("[data-mtpref]");
-  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("maint", `maintpub:${pref.dataset.mtpref}`); return true; }
+  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("maint", "maintpub"); return true; }
   // A token is pasted in Settings, never here: the door names the kind, and nothing it opens connects.
   const tok = t.closest<HTMLElement>("[data-mttoken]");
   if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("maint", k ? tokenRow(k.id) : undefined); return true; }

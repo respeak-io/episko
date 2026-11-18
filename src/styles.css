@@ -2327,6 +2327,10 @@ select.in-ctl { cursor: pointer; }
 .sndev-t { flex: 1; min-width: 0; }
 .sndev-l { font-size: 12px; font-weight: 650; }
 .sndev-s { font-size: 10.5px; color: var(--muted-2); line-height: 1.4; margin-top: 1px; max-width: 46ch; }
+/* Settings' named switches (Maintenance's public services) take the sound row's shape; `.off` is one that decides nothing now. */
+.set-sws { margin-top: 11px; }
+.set-sws .sndev-s { max-width: 64ch; }
+.set-swidle { font-style: italic; }
 .sndtone { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 7px; cursor: pointer;
   font: 600 10.5px var(--font-ui); color: var(--muted); background: var(--surface); border: 1px solid var(--hair-strong); }
 .sndtone:hover { color: var(--text); border-color: var(--accent-line); }
