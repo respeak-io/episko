@@ -133,7 +133,7 @@ export interface DashHost {
   proposeDeploy: (root: string) => void;
   proposeMaint: (root: string) => void; // a Coverage row's: the `[maintenance]` proposal
   openConfig: (root: string) => void;
-  openSettings: (section: string, row?: string) => void; // a Coverage row's token door, at Settings › Accounts
+  openSettings: (section: string, row?: string) => void; // Maintenance's doors to Settings › Maintenance
 }
 let host: DashHost = {
   launch: async () => null, requestLaunch: () => {}, openTerminal: () => {},

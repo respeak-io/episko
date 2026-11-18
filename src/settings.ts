@@ -79,9 +79,10 @@ import {
 import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from "./syncview";
 import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
-import { disclosure, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
-import { maintPrefs, setMaintPublic } from "./maintscan";
+import { disclosure, facetDef, SOURCES, tokenKinds, tokenRow, type TokenDef } from "./maintsources";
+import { deployHosts, maintPrefs, setMaintHost, setMaintOff, setMaintPublic } from "./maintscan";
 import { tokenSends } from "./maint";
+import { COST_WORD } from "./maintguide";
 import { CHANNEL, updateChannel } from "./channelhook";
 import type { Channel } from "./channel";
 
@@ -264,7 +265,7 @@ const MD_WIDTH_LABEL: Record<MdWidth, { label: string; glyph: string; sub: strin
   full: { label: "Full", glyph: "▬", sub: "As wide as the window" },
 };
 // Where this file's tables mean something other than ./svgicons' shared glyph map.
-const SET_IC: Record<string, IconName> = { "▤": "squareTerminal", "⧉": "appWindow", "◎": "circleUser" };
+const SET_IC: Record<string, IconName> = { "▤": "squareTerminal", "⧉": "appWindow", "◎": "circleUser", "🔧": "wrench" };
 const setIcon = (g?: string) => (!g ? "" : SET_IC[g] ? icon(SET_IC[g], "solo") : glyphIcon(g));
 const MD_SIZE_LABEL: Record<MdSize, string> = { s: "Small", m: "Medium", l: "Large" };
 const SORT_SHORT: Record<SortMode, string> = { manual: "Manual", active: "Active", attention: "Attention" };
@@ -539,20 +540,13 @@ const SET_TABS: SetTab[] = [
     ],
   },
   {
-    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends, and what Maintenance reads with",
+    id: "accounts", label: "Accounts", glyph: "◎", group: "work", sub: "Which subscription a session spends",
     controls: () => [
       { kind: "accounts", id: "claudeaccts", key: "cc-claude-accounts", label: "Claude accounts",
         hint: "Subscriptions a new Claude session can start on, in order. When the first is full, the next takes over.",
         more: "Each account is a long-lived token from claude setup-token, kept in this machine's keychain and handed to one session at a time, so nothing is logged in or out. A running session keeps its account; when one hits its limit, Episko offers to resume it on the next. The usage probe answers nothing for a token, so a model's own weekly window (Fable's) shows only for the account you're logged in to.",
         aliases: ["subscription", "login", "logout", "max", "pro", "token", "setup-token", "fallback", "limit", "quota", "oauth", "keychain", "second account"], since: "0.39.0",
         summary: () => acctSummary() },
-      // One per kind of service token the manifest names: its label, default host, page and scopes are data.
-      ...tokenKinds().map((t): SetControl => ({
-        kind: "maintTokens", token: t, id: tokenRow(t.id), label: `${t.label} tokens`,
-        hint: "Tokens Maintenance reads errors in production with, only on a click, kept in this machine's keychain.",
-        more: `A token needs the scopes ${t.scopes.join(", ")}. ${tokenSends(t.label)} A host the team's .episko/episko.toml names picks among the tokens saved here and never gets one that is not. Nothing shows a token again once it is saved, and it never syncs.`,
-        aliases: [t.label.toLowerCase(), "error tracker", "errors", "token", "auth token", "api token", "maintenance", "prod", "keychain"],
-        summary: () => tokSummary(t.id) })),
     ],
   },
   {
@@ -622,19 +616,6 @@ const SET_TABS: SetTab[] = [
         more: "The session's row, header and inspector say which folder it started in. Move session here restarts it in the new folder, so its conversation lives there too; that is never done for you. Off, the inspector asks each time.",
         aliases: ["drift", "worktree", "moved", "track", "show it here", "checkout", "branch"], since: "0.34.0",
         on: () => driftAuto, isDefault: () => driftAuto, reset: () => host.setDriftAuto(true) },
-      // One per public source, its disclosure as the hint: the switch says what it sends (docs/maintenance.md).
-      ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
-        kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
-        hint: disclosure(src) ?? "",
-        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same is sent then. This machine only: the switch never syncs, because it changes what leaves it.`,
-        aliases: ["maintenance", "security", "public", "privacy",
-          ...src.sees.includes("sec.runtime") ? ["runtime", "end of life", "eol"]
-            : src.sees.includes("deps.latest") ? ["outdated", "major", "behind", "latest", "dependencies", "registry", "upgrade"]
-            : src.sees.includes("prod.domain") ? ["domain", "registration", "expiry", "registrar", "renewal", "prod"]
-            : ["vulnerability", "advisory", "lockfile", "cve", "dependencies"]],
-        on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
-        reset: () => applySetting(`maintpub:${src.id}`, "0"),
-      })),
       // Set from the project's task panel; reviewed and revoked here.
       { kind: "multi", set: "unstop", key: "cc-task-onstop", label: "Run after a session stops",
         hint: "The projects that have a task set to run each time an agent finishes a turn — a test suite, a build. Set in a project's task panel; this is where you review and remove them.",
@@ -688,6 +669,53 @@ const SET_TABS: SetTab[] = [
           { value: "session", label: "Active session", glyph: "▤", sub: "The worktree you're looking at" },
           { value: "root", label: "Repo root", glyph: "⌂", sub: "Always the main checkout" },
         ] },
+    ],
+  },
+  {
+    // This machine's half of Maintenance: all of it local, since it changes what leaves the machine (docs/maintenance.md).
+    id: "maint", label: "Maintenance", glyph: "🔧", group: "work", sub: "What it may ask from here, and with what",
+    controls: () => [
+      { kind: "note", label: "This machine's half",
+        hint: "Nothing here syncs, since it decides what leaves this machine. What a project tracks and when something counts as drifting are the team's, in its .episko/episko.toml: [maintenance], which Project settings › Maintenance sets up, and [maintenance.thresholds]." },
+      { kind: "multi", set: "maintread", key: "cc-maint-prefs", label: "Sources to read",
+        hint: "Everything Maintenance can read. Switch one off and this machine never asks it, on a check or on a click.",
+        more: "A skipped source reads as skipped here on its cards and in Coverage, never as healthy, and the next check reads it again once it is back on. A project can switch a whole facet off for the team in its own file; this list is yours.",
+        aliases: ["skip", "skipped here", "source", "sources", "maintenance", "ci", "forge", "facet", "read"], since: "0.41.0",
+        summary: () => { const n = skippedSources().length; return n ? `${SOURCES.length - n} of ${SOURCES.length}` : `all ${SOURCES.length}`; },
+        lines: () => SOURCES.map((s) => ({ label: s.label, value: maintPrefs.off.includes(s.id) ? "skipped" : "read" })),
+        on: () => SOURCES.filter((s) => !maintPrefs.off.includes(s.id)).map((s) => s.id),
+        segs: () => SOURCES.map((s) => ({ value: s.id, label: s.label, sub: `${facetDef(s.facet).label} · ${COST_WORD[s.cost]}` })),
+        isDefault: () => !skippedSources().length, reset: () => setMaintOff([]) },
+      // One per public source, its disclosure as the hint: the switch says what it sends.
+      ...SOURCES.filter((src) => src.cost === "public").map((src): SetControl => ({
+        kind: "toggle", set: `maintpub:${src.id}`, key: "cc-maint-prefs", label: `Ask ${src.label} when Maintenance checks`,
+        hint: disclosure(src) ?? "",
+        more: `Off, ${src.label} is asked only when you click Check with ${src.label} on a project, and the same is sent then. This machine only: the switch never syncs, because it changes what leaves it.`,
+        aliases: ["maintenance", "security", "public", "privacy",
+          ...src.sees.includes("sec.runtime") ? ["runtime", "end of life", "eol"]
+            : src.sees.includes("deps.latest") ? ["outdated", "major", "behind", "latest", "dependencies", "registry", "upgrade"]
+            : src.sees.includes("prod.domain") ? ["domain", "registration", "expiry", "registrar", "renewal", "prod"]
+            : ["vulnerability", "advisory", "lockfile", "cve", "dependencies"]],
+        dim: () => maintPrefs.off.includes(src.id),
+        on: () => maintPrefs.public.includes(src.id), isDefault: () => !maintPrefs.public.includes(src.id),
+        reset: () => applySetting(`maintpub:${src.id}`, "0"),
+      })),
+      // A trust list like Trusted projects: allowing is a grant, so it has no reset.
+      { kind: "multi", set: "mainthost", key: "cc-maint-prefs", label: "Servers this machine may check",
+        hint: "The [deploy] hosts Check prod may reach from here, over your own ssh. Click one to allow it or take it back.",
+        more: "A project's host is committed, and a teammate's push must not choose where this machine connects, so none is allowed until you say so, here or with Allow on its card. Allowing connects nowhere: Check prod still asks, with one read-only script, and nothing is written under ~/.ssh.",
+        aliases: ["ssh", "host", "server", "deploy", "prod", "production", "allow", "disallow", "vps", "check prod"], since: "0.41.0",
+        summary: () => { const n = maintPrefs.hosts.length; return n ? `${n} allowed` : "none allowed"; },
+        lines: () => hostSegs().map((s) => ({ label: s.label, value: maintPrefs.hosts.includes(s.value) ? "allowed" : "not allowed" })),
+        on: () => maintPrefs.hosts, segs: hostSegs,
+        empty: "No project read here names a [deploy] host. A project's Runs on card sets one, and Allow there lets this machine check it." },
+      // One per kind of service token the manifest names: its label, default host, page and scopes are data.
+      ...tokenKinds().map((t): SetControl => ({
+        kind: "maintTokens", token: t, id: tokenRow(t.id), label: `${t.label} tokens`,
+        hint: "Tokens Maintenance reads errors in production with, only on a click, kept in this machine's keychain.",
+        more: `A token needs the scopes ${t.scopes.join(", ")}. ${tokenSends(t.label)} A host the team's .episko/episko.toml names picks among the tokens saved here and never gets one that is not. Nothing shows a token again once it is saved, and it never syncs.`,
+        aliases: [t.label.toLowerCase(), "error tracker", "errors", "token", "auth token", "api token", "maintenance", "prod", "keychain", "accounts"],
+        summary: () => tokSummary(t.id) })),
     ],
   },
   {
@@ -1839,6 +1867,16 @@ function tokSummary(kind: string): string {
   const hosts = (maintTokens ?? []).filter((x) => x.kind === kind).map((x) => x.host);
   return maintTokens === null ? "not listed yet" : hosts.length ? hosts.join(", ") : "none saved";
 }
+// Only ids the manifest still knows: a skipped source it dropped decides nothing.
+const skippedSources = () => SOURCES.filter((s) => maintPrefs.off.includes(s.id));
+// Every host a project read here names, and any allowed one none does now, so a grant can still be taken back.
+function hostSegs(): SetSeg[] {
+  const named = deployHosts();
+  return [...new Set([...named.keys(), ...maintPrefs.hosts])].sort().map((h) => {
+    const by = named.get(h) ?? [];
+    return { value: h, label: h, sub: by.length ? `Named by ${by.map(basename).join(", ")}` : "No project read here names it now" };
+  });
+}
 function applyTokSetting(verb: string) {
   const [v, kind = "", slot = ""] = verb.split("|");
   const def = tokenKinds().find((t) => t.id === kind);
@@ -1922,6 +1960,8 @@ function applySetting(set: string, val: string) {
   else if (set === "md:remote") host.setMdPrefs({ ...mdPrefs, remote: val === "1" });
   else if (set === "agenttools") host.setAgentTools(val === "1");
   else if (set.startsWith("maintpub:")) setMaintPublic(set.slice("maintpub:".length), val === "1");
+  else if (set === "maintread") setMaintOff(maintPrefs.off.includes(val) ? maintPrefs.off.filter((x) => x !== val) : [...maintPrefs.off, val]);
+  else if (set === "mainthost") setMaintHost(val, !maintPrefs.hosts.includes(val));
   else if (set === "fetch:on") host.setAutoFetchPrefs({ ...autoFetchPrefs, enabled: val === "1" });
   else if (set === "fetch:every") host.setAutoFetchPrefs({ ...autoFetchPrefs, everyMs: +val });
   else if (set === "perf:vitals") host.setVitalsPrefs({ ...vitalsPrefs, enabled: val === "1" });

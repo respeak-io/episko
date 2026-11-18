@@ -153,19 +153,23 @@ const sshHtml = (alias: string, root: string, cls = "mt-verb") => `<button class
 
 // ---------- the head ----------
 
+// Settings › Maintenance, last in both heads: what this machine may ask, and with what.
+const SETTINGS_BTN = `<button class="aslink" data-mtsettings="" aria-label="Maintenance settings"`
+  + ` data-tip="Maintenance settings: the sources this machine reads, the servers it may check and its tokens">${icon("settings", "solo")}</button>`;
+
 /** The fleet head's right-hand note: when this was last asked, and the one way to ask again. */
 export function maintWhenHtml(v: MaintView): string {
   if (v.scanning) {
     const what = v.scanOf && v.scanOf < v.cards.length ? plural(v.scanOf, "project") : "every project";
     return `<span class="fl-when mono">${v.cards.some((c) => c.stale) ? "refreshing" : "checking"} ${what}`
-      + `${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>`;
+      + `${v.progress ? ` · ${Math.round(v.progress.frac * 100)}%` : "…"}</span>${SETTINGS_BTN}`;
   }
   if (!v.checked) {
     return `<span class="fl-when mono">${v.kept ? `as of ${esc(relTime(v.kept))}` : "Not checked this session"}</span>
-      <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>`;
+      <button class="aslink" data-mtscan="check" data-tip="Read every project once. Nothing runs in them">Check</button>${SETTINGS_BTN}`;
   }
   return `<span class="fl-when mono">checked ${esc(relTime(v.checked))}</span>
-    <button class="aslink" data-mtscan="force" aria-label="Check again" data-tip="Check every project again, past every cache">${icon("rotateCw", "solo")}</button>${prodHtml(v.prod)}`;
+    <button class="aslink" data-mtscan="force" aria-label="Check again" data-tip="Check every project again, past every cache">${icon("rotateCw", "solo")}</button>${prodHtml(v.prod)}${SETTINGS_BTN}`;
 }
 
 const tile = (label: string, value: string, sub: string, cls = "") =>
@@ -269,10 +273,10 @@ function findingHtml(f: Finding, name?: string, go = false, tick?: "on" | "off")
     ${verbHtml(f)}</div>`;
 }
 
-// No command saves a token, so its door is Settings › Accounts, at the kind the manifest names.
+// No command saves a token, so its door is Settings › Maintenance, at the kind the manifest names.
 const tokenHtml = (source: string, door: TokenDoor) => {
   const t = findSource(source)?.token;
-  const tip = `Settings › Accounts: ${door === "add" ? "save" : "replace"} the ${t?.label ?? source} token, kept in this machine's keychain`;
+  const tip = `Settings › Maintenance: ${door === "add" ? "save" : "replace"} the ${t?.label ?? source} token, kept in this machine's keychain`;
   return t ? `<button class="aslink" data-mttoken="${escAttr(source)}" data-tip="${escAttr(tip)}">${door === "add" ? "Add token…" : "Replace token…"}</button>` : "";
 };
 // A forge switch is its settings page.
@@ -361,7 +365,7 @@ function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
   const detail = fix ? (cmd ? `<code class="mt-fix">${words(fix)}</code>` : esc(acct ? fix.replace(/\s+from the project menu$/i, "") : fix)) : esc(said);
   // Public reads may also ride every scan: that is a per-machine switch, so the door is Settings'.
   const always = pub && d ? ` <button class="aslink" data-mtpref="${escAttr(d.id)}"`
-    + ` data-tip="${escAttr(`Settings › On its own: ask ${d.label} in every check, from this machine only`)}">Ask in every check…</button>` : "";
+    + ` data-tip="${escAttr(`Settings › Maintenance: ask ${d.label} in every check, from this machine only`)}">Ask in every check…</button>` : "";
   // A public read across projects is one click; a tool stays one project at a time, from its chip.
   const left = g.roots.filter((r) => !g.ran?.[r]), done = g.roots.filter((r) => g.ran?.[r]);
   const all = pub && !one && left.length > 1 ? `<button class="mt-verb" data-mtrunall="${escAttr(d!.id)}"`
@@ -1292,5 +1296,5 @@ export function maintDashHtml(v: MaintDash): string {
     ? `<div class="mt-dgrid">${todoCard(v)}${runsCard(v)}${sourcesCard(v)}</div>`
     : tabHtml(v.tab, v.tab.sub);
   return `<div class="mt-dhead"><div class="mt-cells">${v.card.cells.map((c) => cellHtml(c, v.card, go(c))).join("")}</div>`
-    + `<div class="mt-dwhen">${when}</div></div>${v.progress ? progressHtml(v.progress, v.card.path) : ""}${err}${tabsHtml(v.tab)}${body}`;
+    + `<div class="mt-dwhen">${when}${SETTINGS_BTN}</div></div>${v.progress ? progressHtml(v.progress, v.card.path) : ""}${err}${tabsHtml(v.tab)}${body}`;
 }

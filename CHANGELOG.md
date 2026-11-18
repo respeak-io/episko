@@ -20,7 +20,12 @@ Markers: `+` new · `~` changed · `!` fixed
   agent that you send yourself.
 + Production is checked only when you click: the deploy addresses, a server over SSH once you allow
   it on this machine, when a domain's registration runs out, and new errors in Sentry with a token
-  saved in *Settings › Accounts*. *Fix* on a new error hands the agent its stack trace.
+  saved in *Settings › Maintenance*. *Fix* on a new error hands the agent its stack trace.
++ *Settings › Maintenance* holds what this machine may ask: the sources it reads (switch one off and
+  it is never asked from here), whether every check may ask a public service such as OSV.dev or
+  endoflife.date, the servers *Check prod* may reach over SSH, where an allowed one can be taken
+  back, and the error tracker's tokens. None of it syncs. The ⚙ in the Maintenance view's heading
+  opens it.
 + Tick lines on Maintenance cards and *Brief N agents* starts one agent per line, tiled, each on a
   fix branch of its own, or in the project folder for a line that changes nothing.
 + *Since last week* on the all-projects screen says what changed since the checks a week ago.

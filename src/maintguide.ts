@@ -90,7 +90,7 @@ const G: Record<GuideId, Guide> = {
     what: "Everything this tab could not read, so a quiet board is never mistaken for a clean one.",
     from: "What each source said when it was asked, or that it never was.",
     look: "Grouped by what closes each gap: a click, a login or token, a switch on the forge, a retry, or nothing here at all.",
-    act: "Each row carries its one action: Check or Run on a project, Copy a command, open a settings page or Settings › Accounts. Once a project is checked, its chip says what came back and opens the board that shows it; Clear takes the answers off the row." },
+    act: "Each row carries its one action: Check or Run on a project, Copy a command, open a settings page or Settings › Maintenance. Once a project is checked, its chip says what came back and opens the board that shows it; Clear takes the answers off the row." },
   also: { title: "Also on this tab", ic: "list",
     what: "Lines of this tab that no board above carries, such as a facet nobody has set up.",
     from: "The same checks as the boards.", act: "Each line has its own verb." },
@@ -143,7 +143,7 @@ export const chipClass = (c: ChipModel): string => `mt-badge show t-${c.tone}${c
 const shapesHtml = (ss: readonly [ChipModel, string][]) => `<div class="mg-shapes">${ss.map(([c, said]) =>
   `<span class="${chipClass(c)}" aria-hidden="true">${chipHtml(c)}</span><p>${esc(said)}</p>`).join("")}</div>`;
 
-const COST_WORD: Record<Cost, string> = {
+export const COST_WORD: Record<Cost, string> = {
   local: "Every check · this machine", forge: "Every check · the forge", public: "On a click · a public service",
   tool: "On a click · runs in the project", remote: "Check prod · your servers",
 };

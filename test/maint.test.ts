@@ -2648,7 +2648,7 @@ describe("errors in production", () => {
     expect(briefFor(f, p.inp, { project: "acme", verify: [], now: NOW })).toMatch(/^API-1 in acme's error tracker/);
   });
 
-  it("says no token, token refused and token scope in Rust's own words, each with Settings › Accounts as its door", () => {
+  it("says no token, token refused and token scope in Rust's own words, each with Settings › Maintenance as its door", () => {
     expect([whyWord(of("noTool"), "prod"), whyWord(of("noAccess", 0), "prod"), whyWord(of("noAccess", 1), "prod")]).toEqual(["no token", "token refused", "token scope"]);
     expect([tokenDoor(SE, of("noTool"), "prod"), tokenDoor(SE, of("noAccess", 0), "prod"), tokenDoor(SE, of("noAccess", 1), "prod")]).toEqual(["add", "replace", "replace"]);
     expect(tokenDoor(SE, { state: "error", reason: "rate limited by sentry.io" }, "prod"), "a rate limit is no token's").toBeNull();
