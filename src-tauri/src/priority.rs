@@ -194,7 +194,8 @@ mod tests {
         use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS};
         let p = PanePriority::new(true);
         let s = sleeper();
-        assert_eq!(class_of(s.0.id()), NORMAL_PRIORITY_CLASS, "a child starts at its parent's class");
+        // The runner's own class, not NORMAL: GitHub's Windows runner starts a step below normal.
+        assert_eq!(class_of(s.0.id()), class_of(std::process::id()), "a child starts at its parent's class");
         p.adopt(Some(s.0.id()));
         assert_eq!(class_of(s.0.id()), BELOW_NORMAL_PRIORITY_CLASS);
         p.set(false).unwrap();
@@ -205,12 +206,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_pane_adopted_while_off_keeps_normal() {
-        use windows_sys::Win32::System::Threading::NORMAL_PRIORITY_CLASS;
+    fn a_pane_adopted_while_off_keeps_its_class() {
         let p = PanePriority::new(false);
         let s = sleeper();
         p.adopt(Some(s.0.id()));
-        assert_eq!(class_of(s.0.id()), NORMAL_PRIORITY_CLASS);
+        assert_eq!(class_of(s.0.id()), class_of(std::process::id()));
     }
 
     #[cfg(target_os = "macos")]
