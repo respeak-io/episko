@@ -61,8 +61,9 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
   (docs/maintenance.md § Surfaces). A note says what is the team's instead (`[maintenance]`
   and its thresholds, per project); then *Sources to read*, a `multi` over every manifest
   source that is on by default (`cc-maint-prefs.off`); *Public services every check may ask*,
-  one row whose fold holds a switch per public source with its disclosure beside it, one
-  dimmed while that source is skipped (`switches`, below); *Servers this machine may check*, the `[deploy]` hosts a project in the cache
+  one row whose fold holds a switch per public source with its mark (`sourceLogo`, bundled,
+  never fetched) and its disclosure beside it, one dimmed while that source is skipped
+  (`switches`, below); *Servers this machine may check*, the `[deploy]` hosts a project in the cache
   names plus any already allowed, a trust list with no reset like *Trusted projects*; and one
   *<label> tokens* row per kind of service token the manifest names (`tokenKinds`, row id
   `tokenRow(kind)`, `tok-sentry`): each saved host with *Check* and *Forget*, and a form with

@@ -2331,6 +2331,8 @@ select.in-ctl { cursor: pointer; }
 .set-sws { margin-top: 11px; }
 .set-sws .sndev-s { max-width: 64ch; }
 .set-swidle { font-style: italic; }
+.set-swlogo { align-self: flex-start; margin-top: 1px; color: var(--muted); }
+.set-swlogo .ic { --ic: 15px; }
 .sndtone { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 7px; cursor: pointer;
   font: 600 10.5px var(--font-ui); color: var(--muted); background: var(--surface); border: 1px solid var(--hair-strong); }
 .sndtone:hover { color: var(--text); border-color: var(--accent-line); }
@@ -4781,6 +4783,7 @@ button.rv-chip { cursor: pointer; }
 .ic { --icz: var(--ic, max(13px, 1.2em)); width: var(--icz); height: var(--icz); flex: none; vertical-align: calc(.32em - var(--icz) / 2); margin-right: 0.4em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .ic.solo { margin-right: 0; }
 .ic.solid { fill: currentColor; }
+.ic.mark { fill: currentColor; stroke: none; } /* a bundled brand mark: filled shapes, never stroked (./maintlogos) */
 .ic.key { --ic: 11px; margin: 0; stroke-width: 2.4; }
 kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1px; vertical-align: middle; }
 .mn-mk .ic { --ic: 14px; margin: 0; color: var(--muted); }

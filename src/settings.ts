@@ -83,6 +83,7 @@ import { disclosure, facetDef, SOURCES, tokenKinds, tokenRow, type TokenDef } fr
 import { deployHosts, maintPrefs, setMaintHost, setMaintOff, setMaintPublic } from "./maintscan";
 import { tokenSends } from "./maint";
 import { COST_WORD } from "./maintguide";
+import { sourceLogo } from "./maintlogos";
 import { CHANNEL, updateChannel } from "./channelhook";
 import type { Channel } from "./channel";
 
@@ -253,7 +254,7 @@ type SetShape =
   | { kind: "switches"; set: string; items: () => SetSwitch[] }
   // A verb rather than a stored choice, on the same data-set/data-val join; `danger` is the confirm dialog's red.
   | { kind: "action"; set: string; btn: string; danger?: boolean; preview?: () => string };
-interface SetSwitch { value: string; label: string; sub: string; on: boolean; idle?: string } // `idle`: why it decides nothing now
+interface SetSwitch { value: string; label: string; sub: string; on: boolean; logo?: string; idle?: string } // `logo`: trusted markup; `idle`: why it decides nothing now
 type SetControl = SetMeta & SetShape;
 type SetGroupId = "look" | "work" | "app";
 // `when`: a section about an OS the app is not running on is worse than none; `os` tags its rows for `@mac`.
@@ -698,7 +699,7 @@ const SET_TABS: SetTab[] = [
           "domain", "registration", "expiry", "registrar", "renewal", "prod"],
         summary: () => { const n = askedPublic().length, all = publicSources().length; return !n ? "none" : n === all ? `all ${all}` : `${n} of ${all}`; },
         lines: () => publicSources().map((s) => ({ label: s.label, value: maintPrefs.public.includes(s.id) ? "every check" : "on a click" })),
-        items: () => publicSources().map((s) => ({ value: s.id, label: s.label, sub: disclosure(s) ?? "", on: maintPrefs.public.includes(s.id),
+        items: () => publicSources().map((s) => ({ value: s.id, label: s.label, sub: disclosure(s) ?? "", on: maintPrefs.public.includes(s.id), logo: sourceLogo(s.id),
           idle: maintPrefs.off.includes(s.id) ? "Switched off under Sources to read, so it is not asked at all." : undefined })),
         isDefault: () => !askedPublic().length, reset: () => askedPublic().forEach((s) => setMaintPublic(s.id, false)) },
       // A trust list like Trusted projects: allowing is a grant, so it has no reset.
@@ -1687,6 +1688,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
     case "switches":
       ctl = fold(c.summary?.() ?? "");
       panel = `<div class="sndlist set-sws">${c.items().map((it) => `<div class="sndev${it.idle ? " off" : ""}"><div class="sndev-h">`
+        + `${it.logo ? `<span class="sndev-g set-swlogo">${it.logo}</span>` : ""}`
         + `<div class="sndev-t"><div class="sndev-l">${highlight(it.label, words)}</div><div class="sndev-s">${esc(it.sub)}</div>`
         + `${it.idle ? `<div class="sndev-s set-swidle">${esc(it.idle)}</div>` : ""}</div>`
         + `${sw(it.on, `data-set="${c.set}" data-val="${escAttr(it.value)}" aria-label="${escAttr(it.label)}"`)}</div></div>`).join("")}</div>`;
