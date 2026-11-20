@@ -1,5 +1,5 @@
 // Settings › Accounts as markup: the setup-token accounts in priority order with their last
-// figures, the keychain items not yet listed, and the two ways to add one; then Maintenance's
+// figures, the keychain items not yet listed, and the two ways to add one; and Settings › Maintenance's
 // service tokens per kind. Data in, string out; ./settings owns the element, ./actions every verb
 // (docs/accounts.md).
 import { esc, escAttr } from "./format";
@@ -86,7 +86,7 @@ export function accountsPanelHtml(p: AcctPanel): string {
   </div>`;
 }
 
-/** Settings › Accounts' Maintenance tokens of one kind: each saved host with its last check, and the add form. */
+/** Settings › Maintenance's tokens of one kind: each saved host with its last check, and the add form. */
 export interface TokRow { host: string; check?: MaintTokenCheck }
 // `sends`: every click that sends a saved token (./maint tokenSends), the one sentence the Settings row says too.
 export interface TokPanel { def: TokenDef; rows: TokRow[]; listed: boolean; draft: { host: string; token: string }; now: number; sends: string }

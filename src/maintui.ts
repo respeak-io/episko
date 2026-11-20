@@ -48,7 +48,7 @@ export interface MaintHost {
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
   session?: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>; // one tiled agent per row, each prefilled and never sent; settles once the last has landed
-  openSettings?: (section: string, row?: string) => void; // a Coverage row's token door: Settings › Accounts at that kind
+  openSettings?: (section: string, row?: string) => void; // Settings › Maintenance, at a token kind or the public services' switches
   pickAccount?: (at: HTMLElement, root: string, then: () => void) => void; // the project's forge account picker; `then` after a pick
 }
 
@@ -340,15 +340,15 @@ function sweepAct(at: HTMLElement, host: MaintHost): void {
 let guideAt: string | null = null; // the card whose guide is open: its (i) clicked again closes it
 const offGuide = (e: Event) => { if (!$("mtGuide").contains(e.target as Node)) closeMaintGuide(); };
 export const maintGuideOpen = (): boolean => guideAt !== null;
-export function closeMaintGuide(): void {
-  if (guideAt === null) return;
+/** `only`: close it only while it explains that one, as the chip's popover does when it goes. */
+export function closeMaintGuide(only?: string): void {
+  if (guideAt === null || (only && guideAt !== only)) return;
   guideAt = null;
   $("mtGuide").classList.remove("show");
   document.removeEventListener("scroll", offGuide, true); // the card it explains has moved away
 }
-// Under the (i), right edges aligned, and above it where the window has no room below.
-function toggleGuide(at: HTMLElement): void {
-  const id = at.dataset.mthelp ?? "";
+// Under the (i), right edges aligned, and above it where the window has no room below. ./maintpop's chip too.
+export function toggleGuide(at: HTMLElement, id: string): void {
   if (guideAt === id || !isGuideId(id)) { closeMaintGuide(); return; }
   const pop = $("mtGuide");
   pop.innerHTML = guideHtml(id);
@@ -383,7 +383,7 @@ function pickProject(at: HTMLElement, sub: MaintSub, host: MaintHost): void {
 /** True when the click was Maintenance's. Nested controls are probed before the row holding them. */
 export function maintClick(t: HTMLElement, host: MaintHost, shift = false): boolean {
   const help = t.closest<HTMLElement>("[data-mthelp]");
-  if (help) { toggleGuide(help); return true; }
+  if (help) { toggleGuide(help, help.dataset.mthelp ?? ""); return true; }
   const tick = t.closest<HTMLElement>("[data-mttick]");
   if (tick) { tickLine(sessionKey({ root: tick.dataset.mtroot!, key: tick.dataset.mttick! }), host, shift); return true; }
   const none = t.closest<HTMLElement>("[data-mtpicknone]");
@@ -430,12 +430,14 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   if (brd) { const b = brd.dataset.mtboard as BoardId; if (BOARD_IDS.includes(b)) host.openTab(boardTab(b), brd.dataset.mtroot!, b); return true; }
   const seen = t.closest<HTMLElement>("[data-mtseen]");
   if (seen) { forgetClicked(seen.dataset.mtseen!, (seen.dataset.mtroot ?? "").split("\n").filter(Boolean)); return true; }
-  // Asking a public source in every scan is Settings › On its own's switch; this only opens it there.
+  // Asking a public source in every scan is Settings › Maintenance's switch; this only opens it there.
   const pref = t.closest<HTMLElement>("[data-mtpref]");
-  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("auto", `maintpub:${pref.dataset.mtpref}`); return true; }
+  if (pref) { if (findSource(pref.dataset.mtpref ?? "")?.cost === "public") host.openSettings?.("maint", "maintpub"); return true; }
   // A token is pasted in Settings, never here: the door names the kind, and nothing it opens connects.
   const tok = t.closest<HTMLElement>("[data-mttoken]");
-  if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("accounts", k ? tokenRow(k.id) : undefined); return true; }
+  if (tok) { const k = findSource(tok.dataset.mttoken ?? "")?.token; host.openSettings?.("maint", k ? tokenRow(k.id) : undefined); return true; }
+  const set = t.closest<HTMLElement>("[data-mtsettings]");
+  if (set) { host.openSettings?.("maint"); return true; }
   const url = t.closest<HTMLElement>("[data-mturl]");
   if (url) { void openUrl(url.dataset.mturl!).catch((e) => toast(`open failed: ${e}`)); return true; }
   // A fix is typed into a terminal and never sent; a pick of account re-reads the project it was for.

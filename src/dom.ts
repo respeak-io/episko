@@ -99,47 +99,103 @@ export function setHeadPath(abs: string) {
 // tip should sit still while you read it. ./usagedlg keeps its own cursor-following one, which
 // is a different job — it labels a point on a heatmap, not a control.
 const TIP_MS = 320;
+const WARM_MS = 500; // the next tip within this opens at once, as a toolbar's do
 let tipEl: HTMLElement | null = null;
-let tipTimer: ReturnType<typeof setTimeout> | null = null;
+let tipTimer: ReturnType<typeof setTimeout> | undefined;
+let tipFor: Element | null = null; // the control under the pointer, its tip shown or waiting
+let tipText = "";
+let warmUntil = 0;
+let px = 0, py = 0;
+let quietAt: [number, number] | null = null; // a click, key or wheel put it away: not back until the pointer moves on
 
-function hideTip() {
-  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
-  if (tipEl) tipEl.hidden = true;
+// The browser picks a `title` to draw after the mouse event that reached it is dispatched, so
+// lifting it into `data-tip` here, ancestors too, is in time: every title is this tip instead.
+function claimTitles(from: Element | null) {
+  for (let n = from?.closest("[title]") ?? null; n; n = n.parentElement?.closest("[title]") ?? null) {
+    const t = n.getAttribute("title")!;
+    n.removeAttribute("title");
+    n.setAttribute("data-tip", t);
+    // An icon's title was its only name; a screen reader keeps it.
+    if (t && !n.hasAttribute("aria-label") && !n.textContent?.trim()) n.setAttribute("aria-label", t.split("\n")[0]);
+  }
 }
 
-function showTip(host: HTMLElement) {
+const tipShown = () => !!tipEl && !tipEl.hidden;
+
+function hideTip(warm: boolean) {
+  clearTimeout(tipTimer);
+  tipTimer = undefined;
+  if (!tipShown()) return;
+  tipEl!.hidden = true;
+  if (warm) warmUntil = performance.now() + WARM_MS;
+}
+
+function placeTip() {
+  const b = tipFor!.getBoundingClientRect();
+  if (!b.width && !b.height) { hideTip(false); return; }
+  tipEl!.textContent = tipText;
+  tipEl!.hidden = false;
+  const t = tipEl!.getBoundingClientRect();
+  // Above by default, below when there is no room, clamped to the window. A row or a card is too
+  // tall to sit beside, so its tip goes by the pointer.
+  const tall = b.height > 48, top = tall ? py - 12 : b.top, bottom = tall ? py + 20 : b.bottom;
+  const mid = tall ? px : b.left + b.width / 2;
+  const y = top - t.height - 8 >= 4 ? top - t.height - 8 : Math.min(bottom + 8, innerHeight - t.height - 4);
+  tipEl!.style.top = `${Math.max(4, y)}px`;
+  tipEl!.style.left = `${Math.max(6, Math.min(innerWidth - t.width - 6, mid - t.width / 2))}px`;
+}
+
+function showTip() {
+  tipTimer = undefined;
+  if (!tipFor?.isConnected || !tipText) return;
   if (!tipEl) {
     tipEl = Object.assign(document.createElement("div"), { className: "tip", hidden: true });
+    tipEl.setAttribute("role", "tooltip");
     document.body.appendChild(tipEl);
   }
-  const text = host.dataset.tip ?? "";
-  if (!text) return;
-  tipEl.textContent = text;
-  tipEl.hidden = false;
-  const r = host.getBoundingClientRect();
-  const t = tipEl.getBoundingClientRect();
-  // Above by default, below when there is no room; clamped so a tip on a first-column button
-  // cannot run off the left edge.
-  const above = r.top - t.height - 8 >= 4;
-  tipEl.style.top = `${above ? r.top - t.height - 8 : r.bottom + 8}px`;
-  tipEl.style.left = `${Math.max(6, Math.min(window.innerWidth - t.width - 6, r.left + r.width / 2 - t.width / 2))}px`;
+  placeTip();
+}
+
+function trackTip(target: EventTarget | null) {
+  const el = target instanceof Element ? target : null;
+  claimTitles(el);
+  const host = el?.closest("[data-tip]") ?? null, text = host?.getAttribute("data-tip") ?? "";
+  if (host === tipFor && text === tipText) return;
+  const still = !!quietAt && Math.abs(px - quietAt[0]) + Math.abs(py - quietAt[1]) < 6;
+  if (!still) quietAt = null;
+  // The same control with new words, or its twin after a repaint: no blink and no second wait.
+  if (host && tipFor && (host === tipFor || text === tipText)) {
+    tipFor = host;
+    tipText = text;
+    if (tipShown()) { if (text) placeTip(); else hideTip(false); }
+    else if (text && !tipTimer && !still) tipTimer = setTimeout(showTip, TIP_MS);
+    return;
+  }
+  const warm = tipShown() || performance.now() < warmUntil;
+  tipFor = host;
+  tipText = text;
+  if (still || !host || !text) { hideTip(true); return; }
+  if (tipShown()) { placeTip(); return; } // straight from one tip to the next, with no fade between
+  clearTimeout(tipTimer);
+  if (warm) showTip(); else tipTimer = setTimeout(showTip, TIP_MS);
 }
 
 // Wired from main.ts, never at module scope: vitest runs in the node environment and any module
 // a test can reach must not touch `document` on import (CLAUDE.md's rule; dom.ts is reached by
 // nearly everything).
 export function wireTips() {
-  document.addEventListener("pointerover", (e) => {
-    const host = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]");
-    if (!host) return;
-    hideTip();
-    tipTimer = setTimeout(() => showTip(host), TIP_MS);
-  });
-  document.addEventListener("pointerout", (e) => {
-    if ((e.target as HTMLElement).closest("[data-tip]")) hideTip();
-  });
+  const at = (e: MouseEvent) => { px = e.clientX; py = e.clientY; };
+  document.addEventListener("mouseover", (e) => { at(e); trackTip(e.target); }, true);
+  // A repaint may set a title again under a pointer that is still: take it before the next move draws it.
+  document.addEventListener("mousemove", (e) => {
+    at(e);
+    if (e.target instanceof Element && e.target.closest("[title]")) trackTip(e.target);
+  }, true);
+  document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) { hideTip(false); tipFor = null; tipText = ""; } }, true);
   // Any of these moves the control out from under the tip, so it must not outlive them.
-  for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, hideTip, true);
+  const quiet = () => { hideTip(false); quietAt = [px, py]; };
+  for (const ev of ["pointerdown", "wheel", "keydown"]) document.addEventListener(ev, quiet, { capture: true, passive: true });
+  window.addEventListener("blur", () => hideTip(false));
 }
 
 const FOCUSABLE = "button, a[href], [tabindex]";
@@ -167,6 +223,23 @@ function lookedAt(el: HTMLElement, used: Element | null): { key: string; top: nu
   return p ? { key: placeKey(p), top: p.getBoundingClientRect().top } : null;
 }
 
+const MOVING = ".u-spin, .u-skel, .u-skelbar, .db-sk";
+/** `el.innerHTML = html` without restarting what moves in it: a scan's bar glides on from the width it had,
+ *  and a spinner or shimmer runs on the document's clock, so its replacement turns on from the same angle. */
+export function rewriteMoving(el: HTMLElement, html: string): void {
+  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
+  el.innerHTML = html;
+  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
+    const from = bars.get(barKey(b)), to = b.style.width;
+    if (!from || from === to) continue;
+    b.style.width = from;
+    void b.offsetWidth;
+    b.style.width = to;
+  }
+  // Only a running one: setting a paused one's start would play it, past fx-idle's pause.
+  for (const n of el.querySelectorAll(MOVING)) for (const a of n.getAnimations()) if (a.playState === "running") a.startTime = 0;
+}
+
 /** Write a Maintenance surface, whose `innerHTML` rebuilds every control and every scroller. The keyboard
  *  goes to the same control's successor, or, for a button that became *checking…*, to whatever stands where
  *  it stood (only if it got there by keyboard: a mouse has no use for a neighbour). A wide table keeps its place,
@@ -176,24 +249,15 @@ export function holdMaintPlace(el: HTMLElement, html: string, keep = true): void
   const key = on && mtKey(on), at = on ? [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].indexOf(on) : -1, typed = !!on?.matches(":focus-visible");
   const boardOf = (s: Element) => s.closest("[id^='mtb-']")?.id ?? "";
   const wide = [...el.querySelectorAll(".mt-scroll")].filter((s) => s.scrollLeft).map((s) => [boardOf(s), s.scrollLeft] as const);
-  const bars = new Map([...el.querySelectorAll<HTMLElement>(".mt-pbar > i")].map((b) => [barKey(b), b.style.width]));
   // The fleet's scroller is inside what is rewritten, so its offset goes back first and the place corrects it.
   const top = keep ? el.querySelector(".mt-body")?.scrollTop ?? 0 : 0;
   const was = keep ? lookedAt(el, a instanceof Element && el.contains(a) ? a : null) : null;
-  el.innerHTML = html;
+  rewriteMoving(el, html);
   const body = top ? el.querySelector(".mt-body") : null;
   if (body) body.scrollTop = top;
   const now = was && [...el.querySelectorAll(PLACES)].find((p) => placeKey(p) === was.key), s = now && scrollerOf(now);
   if (now && s) s.scrollTop += now.getBoundingClientRect().top - was.top;
   for (const [id, left] of wide) for (const s of el.querySelectorAll(".mt-scroll")) if (boardOf(s) === id) s.scrollLeft = left;
-  // A bar rebuilt by innerHTML would jump: start each where its predecessor stood, so the width glides.
-  for (const b of el.querySelectorAll<HTMLElement>(".mt-pbar > i")) {
-    const from = bars.get(barKey(b)), to = b.style.width;
-    if (!from || from === to) continue;
-    b.style.width = from;
-    void b.offsetWidth;
-    b.style.width = to;
-  }
   if (!on) return;
   const all = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
   const next = (key !== "[]" ? all.find((x) => mtKey(x) === key) : undefined) ?? (typed ? all[Math.min(at, all.length - 1)] : undefined);

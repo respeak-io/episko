@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkoutDir, driftRepair, driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
+import { checkoutDir, DRIFT_SETTLE_MS, driftMoved, driftRepair, driftTarget, driftUpdate, gitMutates } from "../src/gitwatch";
 import type { Drift } from "../src/types";
 
 describe("gitMutates", () => {
@@ -479,8 +479,32 @@ describe("driftRepair", () => {
     expect(driftRepair(cwd, false)).toBeNull();
     expect(driftRepair(null, true)).toBeNull();
   });
-  it("leaves a drift alone while subagents run, since their writes arrive under the parent", () => {
-    expect(driftRepair(write, true, true)).toBeNull();
-    expect(driftRepair(cwd, true, true)).toBeNull();
+  it("shows a fan-out's write drift once it has held, so one stray write moves nothing", () => {
+    const seen = driftMoved(null, 100, 1_000);
+    expect(driftRepair(write, true, seen, true, 1_000 + DRIFT_SETTLE_MS - 1)).toBeNull();
+    expect(driftRepair(write, true, seen, true, 1_000 + DRIFT_SETTLE_MS)).toBe("track");
+  });
+  it("never follows a cwd drift during a fan-out: it may be a subagent's own worktree", () => {
+    const seen = driftMoved(null, 100, 1_000);
+    expect(driftRepair(cwd, true, seen, true, 1_000_000)).toBeNull();
+    expect(driftRepair(cwd, true, seen, false, 1_000_000)).toBe("follow");
+  });
+  it("asks once a fan-out has moved the drift twice, even after the fan-out ends", () => {
+    // Two worktrees under one parent: tracking either would flip the pane at every write.
+    const first = driftMoved(null, 100, 1_000);
+    const second = driftMoved(first, 100, 2_000);
+    expect(second.mixed).toBe(true);
+    expect(driftRepair(write, true, second, true, 1_000_000)).toBeNull();
+    expect(driftRepair(write, true, second, false, 1_000_000)).toBeNull();
+    // The next move outside any fan-out is the parent's own, and repaired as ever.
+    expect(driftRepair(write, true, driftMoved(second, null, 3_000), false)).toBe("track");
+  });
+  it("starts every fan-out's count afresh", () => {
+    const before = driftMoved(null, 100, 1_000);
+    expect(driftMoved(before, 200, 2_000).mixed).toBe(false);
+    expect(driftMoved(before, null, 2_000).mixed).toBe(false);
+  });
+  it("holds a drift with no recorded move while a fan-out runs", () => {
+    expect(driftRepair(write, true, null, true)).toBeNull();
   });
 });

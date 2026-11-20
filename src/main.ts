@@ -7,9 +7,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
-import { hasSessionState, isAgent, isClaude, isExited, liveCount, statusKey, type AgentCli } from "./types";
+import { hasSessionState, isAgent, isClaude, isExited, liveFanout, statusKey, type AgentCli, type Sess } from "./types";
 import { applyAgentEventToFleet, type ProviderEvent } from "./agents";
 import { providerAdapter } from "./providers";
+import { setProtocolLogger } from "./providers/protocol";
 import { queuePermission } from "./permissions";
 import { $, chord, IS_MAC, IS_TAURI, IS_WIN, navHeld, setStageHome, setStageMoved, takeStage, toast, wireTips } from "./dom";
 import { wireMenu } from "./menu";
@@ -43,6 +44,7 @@ import {
   setFootSeg, setFx, applyFx, setWindowFocused, setSort, setSoundPrefs, setWtGroup,
   setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
+  setPaneLow, syncPanePriority,
   openDevtools, openTeamFile, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
   onLimitHit, syncShownAccount, launchTogether,
@@ -77,7 +79,7 @@ import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
 import { switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
-  closePeek, initFileDrop, initProjectDnD, initSidebarPeek, renderMini, renderSidebar,
+  closePeek, initFileDrop, initProjectDnD, initRailHold, initSidebarPeek, renderMini, renderSidebar,
   reorderGuardUntil, setReorderGuard, setSidebarRenderAll, setSidebarSetSort,
 } from "./sidebar";
 import { closeBranchPop } from "./bpop";
@@ -114,7 +116,9 @@ import { MAINT_SUBS, tabName, type MaintSub } from "./maintview";
 import { setMaintRender } from "./maintscan";
 import { closeMaintPop, maintPopOpen, renderMaintBadge, setMaintPopHost, wireMaintPop } from "./maintpop";
 import { closeMaintGuide, maintGuideOpen } from "./maintui";
-import { closePrReview, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview } from "./reviewui";
+import {
+  closePrReview, closeReviewRow, openPrLink, openPrReview, prReviewEscape, renderReviewHeader, setReviewHost, wireReview,
+} from "./reviewui";
 import {
   askTrust, closeInputPrompt, closeRunPicker, closeTaskManager, mgrEdit, openRunPicker,
   renderMgr, runDefaultTask, setMgrEdit, setTaskUiHost,
@@ -134,7 +138,7 @@ import {
   activeId, ALL_ENGINES, availEngines, dashMirror, dirtyStale, dormants, externals, extMirrorId,
   claudeAccts, copyChord, FAVORITES, fleetMirror, reviewMirror, keyPrefs, markWorkdirStale, mirror, pastMirrorId, sessions, setAvailAgents, setAvailEngines,
   setBgLogHealth, setDormants, setTelemetryUp, setTermEngine, setTermFontSize, sortMode, stageGroup, TERM_FONT_DEFAULT, termEngine, driftAuto,
-  vitalsPrefs, removingWt, type BgLogHealthEvent,
+  vitalsPrefs, removingWt, openReviews, type BgLogHealthEvent,
 } from "./state";
 import { driftRepair } from "./gitwatch";
 import { activeBind, comboMatches, comboText, digitOf, matchAction, type KeyAction } from "./keys";
@@ -206,9 +210,12 @@ setOnPrompt((s, p) => markPrompt(s, p.id));
 // changed its checkout, so it queues the working-set re-read and pokes the git views.
 setOnSessionTouched((s, tool, data) => {
   markWorkdirStale(s, tool); noteGitCommand(data?.tool_input?.command); noteDrift(s, tool, data);
-  const repair = driftRepair(s.drift, driftAuto, liveCount(s) > 0);
-  if (repair) void followSessionDrift(s.id, repair);
+  repairDrift(s);
 });
+function repairDrift(s: Sess) {
+  const repair = driftRepair(s.drift, driftAuto, s.driftSeen ?? null, !!liveFanout(s));
+  if (repair) void followSessionDrift(s.id, repair);
+}
 setTaskLauncher(launchTask);
 setTaskLogger(dlog);
 setTaskToast(toast);
@@ -267,6 +274,7 @@ setSettingsHost({
   startTour: startChapter,
   setFootSeg, setFx,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
+  setPaneLow,
   openDevtools, reloadUi, resetCompositor: () => { void resetCompositor(); },
   setUpdateChannel: switchChannel,
   vitalsDrift: currentDrift,
@@ -495,10 +503,12 @@ function here(): Loc | null {
   if (mirror.kind === "dash") return { ...mirror, at: dashPlace() };
   return { ...mirror };
 }
-// The sources ./grouping's allProjects lists a project from, so every header the sidebar draws is alive.
+// The sources ./grouping's allProjects lists a project from, plus the open reviews that keep one on
+// the rail, so every header the sidebar draws is alive.
 const knownRoot = (root: string) => FAVORITES.some((f) => f.path === root)
   || [...sessions.values()].some((s) => s.colorKey === root) || dormants.some((d) => d.colorKey === root)
-  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root);
+  || externals.some((e) => (e.repo_root || e.cwd) === root) || [...removingWt.values()].includes(root)
+  || openReviews.some((r) => r.root === root);
 function navAlive(l: Loc): boolean {
   switch (l.kind) {
     case "session": return l.group ? [...sessions.values()].some((s) => groupKey(s) === l.group) : sessions.has(l.id);
@@ -729,6 +739,7 @@ listen<{ kind: string; data: any }>("telemetry", (e) => {
   queueRosterSave();
   renderAll();
 });
+setProtocolLogger((msg) => dlog("warn", msg));
 // Integrated providers: one raw transport event through the adapter, then the shared model.
 listen<ProviderEvent>("agent-event", (e) => {
   const raw = e.payload;
@@ -797,8 +808,9 @@ document.addEventListener("click", (e) => {
   if (!t.closest("#costPop, #fCostSeg")) closeCostPop();
   if (!t.closest("#ioPop, #fIoSeg")) closeIoPop();
   if (!t.closest("#attnPop, #attnBadge")) closeAttnPop();
-  if (!t.closest("#svrPop, #svrBadge")) closeServersPop();
-  if (!t.closest("#mtPop, #mtBadge")) closeMaintPop();
+  // Answering a ✕'s confirm is not leaving: the open tree stays for the next kill.
+  if (!t.closest("#svrPop, #svrBadge, #cfmDlg, #cfmScrim")) closeServersPop();
+  if (!t.closest("#mtPop, #mtBadge, #mtGuide")) closeMaintPop(); // the chip's guide opens over it
   if (!t.closest("#mtGuide, [data-mthelp]")) closeMaintGuide();
   if (!t.closest("#shortPop, #fShortSeg")) closeShortPop();
   // Every anchor that opens this popover must be listed, or its own click closes it again.
@@ -807,7 +819,7 @@ document.addEventListener("click", (e) => {
   if (dot) { const owner = dot.closest<HTMLElement>("[data-key]"); if (owner?.dataset.key) { openColorPopover(owner.dataset.key, e.clientX, e.clientY + 6); return; } }
   // One selector decides what `el` is: an inner target beats its row only if its attribute
   // is listed here (data-forget inside data-past). test/dispatch.test.ts checks the join.
-  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-extlink],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
+  const el = t.closest<HTMLElement>("[data-perm],[data-driftfollow],[data-drifttrack],[data-driftback],[data-brswitch],[data-git],[data-diff],[data-close],[data-remove],[data-add],[data-jump],[data-resume],[data-forget],[data-ext],[data-past],[data-rgtoggle],[data-gtoggle],[data-closerun],[data-runagain],[data-rungroup],[data-revclose],[data-review],[data-sel],[data-wtadd],[data-launch],[data-dash],[data-fleet],[data-pal],[data-rail],[data-toast],[data-freveal],[data-fopen],[data-fgroup],[data-fmode],[data-tlrow],[data-callsel],[data-callcopy],[data-oljump],[data-olmore],[data-olgrp],[data-olopen],[data-extlink],[data-fgo],[data-handsend],[data-handout],[data-handrecall],[data-handin],[data-nav]");
   if (!el) return;
   if (el.dataset.perm) resolvePermission(el.dataset.permid || "", el.dataset.perm);
   else if (el.dataset.driftfollow) void followSessionDrift(el.dataset.driftfollow);
@@ -834,6 +846,9 @@ document.addEventListener("click", (e) => {
   else if (el.dataset.closerun) void closeRunGroup(el.dataset.closerun);
   else if (el.dataset.runagain) void rerunRunGroup(el.dataset.runagain);
   else if (el.dataset.rungroup) { openRunGroup(el.dataset.rungroup); closeAttnPop(); }
+  // The ✕ sits inside the review's row, so it must be tested before data-review.
+  else if (el.dataset.revclose) closeReviewRow(el.dataset.revroot || "", +el.dataset.revclose);
+  else if (el.dataset.review) openPrReview(el.dataset.proj || basename(el.dataset.revroot || ""), el.dataset.revroot || "", +el.dataset.review);
   // Two popovers emit data-sel rows; both close behind the stage change.
   else if (el.dataset.sel) { setActive(el.dataset.sel); closeAttnPop(); closeCostPop(); }
   else if (el.dataset.gtoggle) toggleProjGroup(el.dataset.gtoggle);
@@ -976,8 +991,9 @@ window.addEventListener("keydown", (e) => {
   // First: the reader opens over whichever dialog held the link (⌘P, the call sheet).
   if (e.key === "Escape" && mdReaderOpen()) { e.preventDefault(); closeMdReader(); }
   // A popover over the stage goes before the stage does: Esc on the fleet would otherwise leave it.
-  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
+  // The guide first, since the chip's opens over the chip's popover.
   else if (e.key === "Escape" && maintGuideOpen()) { e.preventDefault(); closeMaintGuide(); }
+  else if (e.key === "Escape" && maintPopOpen()) { e.preventDefault(); closeMaintPop(); }
   else if (e.key === "Escape" && histOpen()) { e.preventDefault(); closeHistory(); }
   else if (e.key === "Escape" && handoffOpen()) { e.preventDefault(); closeHandoff(); }
   else if (e.key === "Escape" && ctxMenuOpen()) { e.preventDefault(); closeColorPop(); closeCtxMenu(); }
@@ -1161,6 +1177,9 @@ setInterval(tickRevive, 10_000);
 const externalsIn = refreshExternals();
 setInterval(refreshExternals, 3000);
 
+// A fan-out's drift settles, and its fleet ends, with no hook to say so.
+setInterval(() => { for (const s of sessions.values()) if (s.drift && !isExited(s)) repairDrift(s); }, 5000);
+
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
 // After the roster: an outcome heard just before the last quit removes the row it settles.
@@ -1186,6 +1205,7 @@ void refreshGitViews(); // seed the roster so the first paint isn't a checkout s
 setSort(sortMode, false); // paint the sort button's glyph/title for the persisted mode
 initProjectDnD();
 initSidebarPeek();
+initRailHold();
 // The tour goes first: on a first run it takes the screen, and the release notes stay quiet.
 initChangelog(initTour());
 initCompositorReset();
@@ -1193,6 +1213,7 @@ initFileDrop();
 // caffeinate starts off: the last run's assertion died with its process, and cafArmed is
 // false at boot. initCaf covers a webview reload that left the backend still asserting.
 initCaf();
+syncPanePriority(); // before anything can launch: the backend boots lowered whatever was chosen
 renderAll();
 // Nothing restored takes the stage, so this is where the app lands: every project, not a
 // card saying no sessions are running. Last, because it is the fallback for all of the above.

@@ -14,7 +14,7 @@ import { basename, cleanTitle, esc, typable } from "./format";
 import { icon } from "./svgicons";
 import {
   canShelve, CLAUDE_CLI, hasAgentCapability, hasSessionState, isAgent, isExited,
-  isClaude, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
+  isClaude, liveFanout, phaseText, providerCapabilities, providerSessionKey, resumeAgent,
   statusKey, taskStateText, type AgentCli, type DiffStat, type GitActionResult,
   type InstallFile, type LiveSess, type Restorable, type Runnable, type Sess,
   type WtHead,
@@ -23,7 +23,7 @@ import { readList } from "./store";
 import { seedPrompts } from "./outline";
 import { readProviderAsked } from "./providers";
 import { setPhase } from "./phase";
-import { driftUpdate, gitMutates } from "./gitwatch";
+import { driftMoved, driftUpdate, gitMutates } from "./gitwatch";
 import { fetchDue, noteFetch } from "./autofetch";
 import {
   attachWebgl, claudeInput, claudeKeys, clipboardKeys, detachWebgl, fitSession, MONO,
@@ -46,7 +46,7 @@ import {
   accentFor, acctChecks, activeId, agentDef, agentToolsFor, agentDiscoveryReady, claudeAccts, autoFetchFor, availAgents, backendLive, collapsedRuns, dashMirror, reviewMirror, dirtyByFolder, dirtyStale, dormants, fleetMirror, foundTokens,
   fetchedByRepo,
   effectiveAgent, engineDef,
-  externals, extMirrorId, FAVORITES, ioAll, pastMirrorId, permissionModeFor,
+  externals, extMirrorId, FAVORITES, ioAll, openReviews, pastMirrorId, permissionModeFor,
   sessions, setActiveId, setBackendLive, setDormants, setStageGroup, stageGroup, termEngine,
   termFontSize, termScrollback, termSplit, titlePrefs, worktreesByRepo, wtSig,
 } from "./state";
@@ -810,18 +810,24 @@ async function refreshWorktrees(): Promise<boolean> {
   const live = new Set<string>();
   for (const s of sessions.values()) if (isAgent(s) && s.colorKey) live.add(s.colorKey);
   for (const e of externals) if (e.repo_root) live.add(e.repo_root);
-  // A favourite with nothing running needs a roster too, or the sidebar's peek rows
-  // (clusterByWorktree reads worktreesByRepo) become a feature of busy projects only.
+  // A favourite, a shelved-only project or an open review's project needs a roster too, or the peek
+  // rows, the shelved rows' ⑃ headers and a review's row (clusterByWorktree and the review's checkout
+  // read worktreesByRepo) are a feature of busy projects only.
+  const idle = new Set([
+    ...FAVORITES.map((f) => f.path),
+    ...dormants.map((d) => d.colorKey).filter(Boolean),
+    ...openReviews.map((r) => r.root),
+  ]);
   const sweep = Date.now() - idleWtSweptAt >= IDLE_WT_SWEEP_MS;
   const roots = new Set(live);
-  for (const f of FAVORITES) {
-    if (live.has(f.path)) continue;
+  for (const p of idle) {
+    if (live.has(p)) continue;
     // Never read yet: seed it now rather than up to a sweep later.
-    if (sweep || !worktreesByRepo.has(f.path)) roots.add(f.path);
+    if (sweep || !worktreesByRepo.has(p)) roots.add(p);
   }
   if (sweep) idleWtSweptAt = Date.now();
-  // Keep favourites' rosters too, or the tick that stops reading one would drop it.
-  const keep = new Set([...live, ...FAVORITES.map((f) => f.path)]);
+  // Keep idle rosters too, or the tick that stops reading one would drop it.
+  const keep = new Set([...live, ...idle]);
   for (const k of [...worktreesByRepo.keys()]) if (!keep.has(k)) worktreesByRepo.delete(k);
   let changed = false;
   await Promise.all([...roots].map(async (root) => {
@@ -880,7 +886,8 @@ export function noteDrift(s: Sess, tool: string, data: any) {
   // All three fields: the branch of a drifted-into checkout can be switched underneath us.
   if (next?.dir === s.drift?.dir && next?.via === s.drift?.via && next?.branch === s.drift?.branch) return;
   s.drift = next;
-  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via})` : `drift cleared ${s.id.slice(0, 8)}`);
+  s.driftSeen = driftMoved(s.driftSeen, liveFanout(s)?.since ?? null, Date.now());
+  dlog("info", next ? `drift ${s.id.slice(0, 8)} → ${next.branch} (via ${next.via}${s.driftSeen.mixed ? ", mixed" : ""})` : `drift cleared ${s.id.slice(0, 8)}`);
   renderAll();
 }
 

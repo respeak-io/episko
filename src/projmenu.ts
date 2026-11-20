@@ -980,7 +980,7 @@ $("ctxMenu").addEventListener("click", (e) => {
     case "copypath": copyPath(key); break;
     case "projset": host.openProjectSettings(key); break;
     case "addproj": host.addProjectPath(key); break;
-    case "removeproj": host.removeFavorite(key); toast(`Removed ${name}`); break;
+    case "removeproj": host.removeFavorite(key); break;
   }
 });
 // `data-wt` is matched first and on its own: a ⑃ cluster header sits inside a project

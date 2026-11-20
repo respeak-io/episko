@@ -78,6 +78,23 @@ export function setMaintHost(alias: string, on: boolean): void {
   paint();
 }
 
+/** Settings' skip list: a source in it is never asked from this machine, on a check or a click. */
+export function setMaintOff(ids: readonly string[]): void {
+  maintPrefs = { ...maintPrefs, off: [...new Set(ids)] };
+  localStorage.setItem("cc-maint-prefs", JSON.stringify(maintPrefs));
+  paint();
+}
+
+/** Each `[deploy] host` a project read here names, with the projects naming it. Storage only. */
+export function deployHosts(): Map<string, string[]> {
+  const by = new Map<string, string[]>();
+  for (const e of cache.values()) {
+    const h = e.det?.deploy?.host;
+    if (h) by.set(h, [...by.get(h) ?? [], e.root]);
+  }
+  return by;
+}
+
 // The last finished scan per root in words, for a root whose whole scan did not fit `cc-maint-scan`
 // and for Today. Local: another machine's checkout is not this one's; drawn muted and as of then.
 let snaps = clampSnaps(readObj<unknown>("cc-maint"));

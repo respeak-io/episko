@@ -202,7 +202,7 @@ function rowFacts(r: Row): { url: string; dead: boolean; outcome: string; tail?:
     return {
       url: "", dead: false, outcome: "",
       label: `<span class="sv-src sv-obs" title="Running under this pane now">${ic("list")}</span>${esc(nameList(branchLabels(paneShown(r.t))))}`,
-      x: `<span class="sv-stop sv-none"></span>`,
+      x: "",
       go: "Go to this pane",
       note: fmtMb(memOf(r.t.procs) / 1048576),
     };
@@ -321,7 +321,8 @@ function rowHtml(r: Row, open: boolean): string {
   // says where to look. Both are children of `.sv-row`, never of `.sv-head`: the head is
   // itself a <button>, and a button nested in a button is invalid markup.
   const p = r.kind === "bg" ? bgLogPath(r.b) : "";
-  const logs = p
+  // A tree row has a section of its own and never a log, so it draws no log columns at all.
+  const logs = tree ? "" : p
     ? `<button class="sv-path" data-svreveal="${escAttr(p)}" title="Reveal in ${FILE_MANAGER}">${ic("folderOpen")}</button>`
       + `<button class="sv-path" data-svcopy="${escAttr(p)}" title="Copy the log path">${ic("copy")}</button>`
     // Empty cells rather than missing ones: the row is a grid.
@@ -334,7 +335,7 @@ function rowHtml(r: Row, open: boolean): string {
     : url
       ? `<button class="sv-url" data-svopen="${escAttr(url)}" title="Open ${escAttr(url)}">${esc(url.replace(/^https?:\/\//, ""))}</button>`
       : `<span class="sv-url sv-pending">starting…</span>`;
-  return `<div class="sv-row${open ? " open" : ""}${dead ? " dead" : ""}">
+  return `<div class="sv-row${tree ? ` sv-${r.kind}` : ""}${open ? " open" : ""}${dead ? " dead" : ""}">
     <button class="sv-head" data-svtoggle="${escAttr(rowKey(r))}" title="${tree ? "Show its processes" : "Show the last lines of this output"}">
       <span class="sv-dot${dead ? " down" : url ? " up" : ""}"></span>
       <span class="sv-main">

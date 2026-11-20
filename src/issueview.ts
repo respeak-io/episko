@@ -57,7 +57,7 @@ function verbs(i: GhIssueRead, held: Holder | null): string {
 
 function comment(who: string, when: string, body: string, mark: string): string {
   // An empty body is said in our own voice, never rendered as if somebody typed it.
-  const md = body.trim() ? mdHtml(body) : `<p class="iss-none">No description.</p>`;
+  const md = body.trim() ? mdHtml(body, "data-dashurl") : `<p class="iss-none">No description.</p>`;
   return `<div class="iss-c${mark}"><div class="iss-ch"><span class="who">${esc(who || "someone")}</span>
       <span class="when">${esc(when)}</span></div>
     <div class="md">${md}</div></div>`;

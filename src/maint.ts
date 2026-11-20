@@ -773,7 +773,7 @@ export function traceAsk(f: Pick<Finding, "verb" | "source">): string {
   return d?.sees.includes("prod.error-trace")
     ? `Reads the latest event of the ${TRACE_PICKS} worst issues from ${d.label} first, sending it their ids and the token saved for its host. Nothing is kept` : "";
 }
-/** Every click that sends a saved token, as Settings › Accounts says it before one is saved: one sentence, so a door cannot be left out. */
+/** Every click that sends a saved token, as Settings › Maintenance says it before one is saved: one sentence, so a door cannot be left out. */
 export const tokenSends = (label: string): string =>
   "It is sent only over https, only to the host it was saved for or one of that service's own regions, and only on a click whose tip says so: "
   + `Check prod, or Run on the ${label} row of Coverage; Fix on an errors line, or Brief N agents with one ticked, each reading the latest event of the ${TRACE_PICKS} worst issues; `
@@ -1780,8 +1780,8 @@ export type CoverAction =
   | { kind: "fix"; fix: string }
   | { kind: "run"; source: string }
   | { kind: "allow"; host: string } // a [deploy] host this machine may not reach yet
-  | { kind: "token"; source: string; door: TokenDoor }; // Settings › Accounts, from the source's manifest row
-/** What Settings › Accounts does for a coverage: save a token where none is, or replace one refused or short of a scope. */
+  | { kind: "token"; source: string; door: TokenDoor }; // Settings › Maintenance, from the source's manifest row
+/** What Settings › Maintenance does for a coverage: save a token where none is, or replace one refused or short of a scope. */
 export type TokenDoor = "add" | "replace";
 /** The token door a source's coverage needs, or null: no command fixes it, and its manifest row names a token. */
 export function tokenDoor(id: string, c: Coverage, facet: Facet): TokenDoor | null {
@@ -2611,7 +2611,7 @@ export interface CoverRow {
   url: string | null; // the forge page that switches an `off` source on
   cfg: boolean; // a [maintenance] key would answer it: the setup doors
   host: { alias: string; allowed: boolean } | null; // the [deploy] host a source reads: its row's Allow or Disallow
-  token: TokenDoor | null; // Settings › Accounts answers it: a token to add, or one to replace
+  token: TokenDoor | null; // Settings › Maintenance answers it: a token to add, or one to replace
 }
 
 /** Coverage: every source and marker detected here and what became of it, in card order. */

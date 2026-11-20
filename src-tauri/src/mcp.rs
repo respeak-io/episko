@@ -26,7 +26,7 @@ database or container, so starting the dev task in your checkout is usually righ
 
 /// 128 bits from the OS, hex. A tool call can launch processes, so the endpoint is not open
 /// to whatever else on the machine (or a rebinding web page) can reach 127.0.0.1.
-fn token() -> Result<String, String> {
+pub(crate) fn token() -> Result<String, String> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b).map_err(|e| format!("mcp token: {e}"))?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())

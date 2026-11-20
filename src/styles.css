@@ -574,9 +574,10 @@ html.win .wctl { display: flex; }
 /* ---- drift card ---- */
 /* .attn's grammar in the working colour: nothing is wrong, but every figure below reads the launch folder */
 .drift { border-radius: var(--radius); padding: 11px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--st-working) 13%, transparent), color-mix(in srgb, var(--st-working) 5%, transparent)); border: 1px solid color-mix(in srgb, var(--st-working) 30%, transparent); }
-.drift-h { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12px; color: var(--st-working); }
-.drift-h .b { font-family: var(--font-mono); font-size: 11px; }
-.drift-g { font-size: 13px; line-height: 1; }
+.drift-h { display: flex; align-items: flex-start; gap: 7px; font-weight: 700; font-size: 12px; line-height: 1.35; color: var(--st-working); }
+.drift-t { min-width: 0; }
+.drift-h .b { font-family: var(--font-mono); font-size: 11px; overflow-wrap: anywhere; }
+.drift-g { font-size: 13px; line-height: 1; margin-top: 1px; }
 .drift-path { font: 10.5px var(--font-mono); color: var(--muted); word-break: break-all; }
 .drift-note { font-size: 11px; line-height: 1.45; color: var(--muted); }
 .drift-note .b { font-family: var(--font-mono); color: var(--muted); }
@@ -585,7 +586,7 @@ html.win .wctl { display: flex; }
 .drift.tracked { padding: 9px 11px; background: none; }
 .drift.tracked .drift-h { color: var(--text); }
 .sdrift.tracked { color: var(--muted); font-weight: 500; }
-.drift-btns button { flex: 1; height: 28px; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
+.drift-btns button { flex: 1 1 0; min-width: 0; min-height: 28px; padding: 4px 8px; line-height: 1.25; border-radius: 7px; cursor: pointer; font: 700 11px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid color-mix(in srgb, var(--st-working) 40%, var(--hair-strong)); }
 .drift-btns button:hover { background: color-mix(in srgb, var(--st-working) 14%, var(--surface)); border-color: var(--st-working); }
 
 /* The stage header's branch chip, when the two branches disagree. */
@@ -2101,9 +2102,12 @@ select.in-ctl { cursor: pointer; }
 .u-pjbar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--accent)); }
 .u-usd { font-weight: 700; }
 
-/* `pre-line` so a tip written with a newline in it keeps the break and still wraps. */
-.tip { white-space: pre-line; position: fixed; z-index: 60; pointer-events: none; max-width: 260px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
+/* `pre-line` so a tip written with a newline in it keeps the break and still wraps; a path has no
+   spaces to wrap at. Over every overlay a control with a tip can sit in; only ./confirm's is higher. */
+.tip { white-space: pre-line; overflow-wrap: break-word; position: fixed; z-index: 90; pointer-events: none; max-width: 320px; background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 6px 9px; font: 11px var(--font-ui); line-height: 1.45; color: var(--text); box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); }
 .tip[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) { .tip { animation: tip-in .12s ease-out; } }
+@keyframes tip-in { from { opacity: 0; transform: translateY(2px); } }
 .u-tip { position: fixed; z-index: 60; pointer-events: none; transform: translate(-50%, -100%); background: var(--panel); border: 1px solid var(--hair-strong); border-radius: 8px; padding: 7px 9px; font-size: 11px; line-height: 1.5; white-space: nowrap; box-shadow: 0 12px 30px -12px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; }
 
 /* loading state while the (off-thread) transcript token scan runs */
@@ -2324,6 +2328,12 @@ select.in-ctl { cursor: pointer; }
 .sndev-t { flex: 1; min-width: 0; }
 .sndev-l { font-size: 12px; font-weight: 650; }
 .sndev-s { font-size: 10.5px; color: var(--muted-2); line-height: 1.4; margin-top: 1px; max-width: 46ch; }
+/* Settings' named switches (Maintenance's public services) take the sound row's shape; `.off` is one that decides nothing now. */
+.set-sws { margin-top: 11px; }
+.set-sws .sndev-s { max-width: 64ch; }
+.set-swidle { font-style: italic; }
+.set-swlogo { width: 17px; align-self: flex-start; margin-top: 1px; color: var(--muted); }
+.sndev-g.set-swlogo .ic { --ic: 15px; }
 .sndtone { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 7px; cursor: pointer;
   font: 600 10.5px var(--font-ui); color: var(--muted); background: var(--surface); border: 1px solid var(--hair-strong); }
 .sndtone:hover { color: var(--text); border-color: var(--accent-line); }
@@ -2584,6 +2594,9 @@ select.in-ctl { cursor: pointer; }
 /* Its popover: the facets as two columns of cells, what to do, then every project in a line. */
 .mtpop { width: 392px; max-height: min(72vh, 620px); overflow-y: auto; padding: 8px; gap: 3px; }
 .mtpop .mb-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The (i) takes the auto margin, so it sits beside the quick open rather than splitting the space with it. */
+.mtpop .up-h .mt-help { width: 20px; height: 20px; --ic: 13px; margin: -3px 0 -3px auto; }
+.mtpop .up-h .mt-help + .pgo { margin-left: -4px; }
 .mtpop .mt-prog { margin: 2px 4px 5px; }
 .mtpop .mb-cells { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 6px; padding: 1px 0 3px; }
 .mtpop .mb-cell { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -2623,6 +2636,9 @@ select.in-ctl { cursor: pointer; }
 /* A grid so the buttons keep their columns however long the command is. Six columns (head /
    url / ⌂ / ⧉ / ◨ / ✕), and every row draws all six (see .sv-none) or the column drifts. */
 .svrpop .sv-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto auto; align-items: center; gap: 4px; padding: 2px; border-radius: 9px; }
+/* Tree rows sit in sections of their own, so they keep only their columns: no log, and a pane no ✕. */
+.svrpop .sv-row.sv-left { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+.svrpop .sv-row.sv-pane { grid-template-columns: minmax(0, 1fr) auto auto; }
 .svrpop .sv-row:hover { background: var(--surface); }
 .svrpop .sv-row.open { background: var(--surface); }
 .svrpop .sv-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
@@ -2640,8 +2656,9 @@ select.in-ctl { cursor: pointer; }
 /* ◎: nobody announced this one; the kernel says the socket is open under this pane */
 .svrpop .sv-obs { color: var(--muted-2); }
 .svrpop .sv-orphan { font-size: 10px; color: var(--st-error); opacity: .8; }
-/* a column kept empty rather than dropped, so ◨ stays in line the whole way down the list */
-.svrpop .sv-none { display: inline-block; }
+/* a column kept empty rather than dropped, so ◨ stays in line the whole way down the list;
+   inert, or it takes .sv-stop's red hover and reads as a ✕ that lost its icon */
+.svrpop .sv-none { display: inline-block; pointer-events: none; }
 .svrpop .sv-url { flex: none; max-width: 170px; padding: 4px 7px; border-radius: 7px; border: 1px solid var(--accent-line); background: var(--accent-wash); color: var(--accent-ink); font: 600 10px var(--font-mono); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svrpop .sv-url:hover { border-color: var(--accent-ink); }
 .svrpop .sv-pending { border-style: dashed; border-color: var(--hair-strong); background: transparent; color: var(--muted-2); cursor: default; }
@@ -2878,6 +2895,14 @@ select.in-ctl { cursor: pointer; }
 .srow.pastrow.handin.taken .sglyph, .srow.pastrow.handin.taken .past-tag { color: var(--muted-2); }
 .handin-strip { margin-bottom: 6px; }
 .handin-strip .phead { cursor: default; }
+
+/* An open pull request (./sidebarview's reviewRow): live, so not dimmed like a shelved row. */
+.srow.revrow .sglyph { color: var(--muted); }
+.srow.revrow.active .sglyph, .srow.revrow.active .past-tag { color: var(--accent-ink); }
+.srow.revrow.gone { opacity: .62; }
+.srow.revrow.gone:hover, .srow.revrow.gone.active { opacity: 1; }
+.srow.revrow:hover .past-tag { opacity: 0; }          /* the ✕ takes this slot on hover */
+.revnum { font: 600 10px var(--font-mono); color: var(--muted-2); margin-right: 5px; }
 
 /* ---------- the handoff sheet (./handoffui): on the shared #scrim, so below ./confirm's own ---------- */
 .cfm.hand { width: min(560px, 94vw); z-index: 44; }
@@ -3186,7 +3211,7 @@ select.in-ctl { cursor: pointer; }
 /* An earlier answer while its re-read is out: still legible, plainly not this moment's. */
 .mt-card.stale .mt-cells .mt-v, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
 /* A scan while it runs (./maintview progressHtml): its words, a share, and what holds a slot right now.
-   The width is set, never looped, and glides from where it stood (./dom holdMaintPlace). */
+   The width is set, never looped, and glides from where it stood (./dom rewriteMoving). */
 .mt-prog { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .mt-prog-h { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--muted); }
 .mt-prog-h .u-spin { flex: none; margin: 0; }
@@ -3411,6 +3436,8 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mtguide p { margin: 0; font-size: 11.5px; line-height: 1.55; color: var(--muted); }
 .mtguide .mg-src { display: flex; flex-direction: column; gap: 5px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; line-height: 1.4; color: var(--text); }
 .mtguide .mg-src .k { display: block; font-size: 10px; color: var(--muted-2); }
+.mtguide .mg-shapes { display: grid; grid-template-columns: max-content 1fr; gap: 10px 12px; align-items: start; }
+.mtguide .mg-shapes .mt-badge { justify-self: start; margin-top: -2px; cursor: default; pointer-events: none; }
 .mt-n { font: 11px var(--font-mono); color: var(--muted); }
 .mt-n.l-bad { color: var(--st-error); }
 .mt-n.l-warn { color: var(--st-working); }
@@ -3469,6 +3496,8 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mt-tbl td { padding: 6px; border-bottom: 1px solid var(--hair); white-space: nowrap; vertical-align: middle; }
 .mt-tbl tr:last-child td { border-bottom: 0; }
 .mt-tbl .r { text-align: right; }
+/* A figure column is as wide as its figures; a table's slack goes to its text columns. */
+.mt-tbl th.r { width: 1%; }
 .mt-tbl .a { width: 1%; text-align: right; }
 .mt-tbl td.mono { font: 11px var(--font-mono); color: var(--muted); }
 .mt-tbl td.u { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
@@ -4004,16 +4033,23 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .iss-none { color: var(--muted-2); font-style: italic; }
 .iss-more { display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--muted-2); }
 
-/* Markdown as ./issue renders it. Nothing else in this app draws somebody else's prose, so
-   this vocabulary is the reader's own and stays scoped to it. */
+/* Markdown as ./issue renders it: a thread's flavour, smaller than the file reader's `.mdr`.
+   Scoped to the two panes that draw one. */
 :is(.iss, .review-view) .md { font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 :is(.iss, .review-view) .md p { margin: 8px 0; }
 :is(.iss, .review-view) .md-h { margin: 12px 0 6px; font-size: 13px; font-weight: 700; color: var(--text); }
 :is(.iss, .review-view) .md-h.sm { font-size: 12px; }
 :is(.iss, .review-view) .md ul, :is(.iss, .review-view) .md ol { margin: 8px 0; padding-left: 20px; }
 :is(.iss, .review-view) .md li { margin: 3px 0; }
-:is(.iss, .review-view) .md li.in { margin-left: 18px; }
+:is(.iss, .review-view) .md :is(ul, ol) :is(ul, ol) { margin: 2px 0; }
+:is(.iss, .review-view) .md :is(li, blockquote) > p { margin: 4px 0; }
 :is(.iss, .review-view) .md-tk { color: var(--accent-ink); }
+:is(.iss, .review-view) .md table { margin: 9px 0; border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; font-size: 12px; line-height: 1.45; }
+:is(.iss, .review-view) .md :is(th, td) { padding: 4px 10px; border: 1px solid var(--hair); vertical-align: top; }
+:is(.iss, .review-view) .md th { background: var(--surface); font-weight: 650; color: var(--text); }
+:is(.iss, .review-view) .md details { margin: 8px 0; }
+:is(.iss, .review-view) .md summary { cursor: pointer; color: var(--text); }
+:is(.iss, .review-view) .md kbd { padding: 0 5px; border-radius: 4px; font: 10.5px var(--font-mono); background: var(--bg-2); border: 1px solid var(--hair-strong); border-bottom-width: 2px; }
 :is(.iss, .review-view) .md code { padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); color: var(--accent-ink); background: var(--bg-2); }
 :is(.iss, .review-view) .md pre { margin: 9px 0; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--hair); background: var(--bg-2); overflow-x: auto; }
 :is(.iss, .review-view) .md pre code { padding: 0; font-size: 10.5px; line-height: 1.5; color: var(--text); background: none; }
@@ -4245,6 +4281,11 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 /* nowrap: a chip dropping to a second line changes the row height and the table stops being one */
 .br .sub, .tg .sub { display: flex; align-items: center; gap: 5px; margin-top: 3px; flex-wrap: nowrap; overflow: hidden; min-width: 0; }
 .br .sub > *, .tg .sub > * { flex: none; }
+/* head → base: only the head may shrink, so the target and the labels after it stay readable */
+.br .sub > .refs { flex: 0 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 3px; font: 9px var(--font-mono); color: var(--muted-2); }
+.refs .hd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.refs .bs { flex: none; white-space: nowrap; color: var(--muted); }
+.refs .ic { --ic: 9px; flex: none; }
 .br .age { font: 9.5px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--muted-2); text-align: right; }
 .lbl { font: 8.5px var(--font-mono); padding: 0 5px; border-radius: 4px; line-height: 15px; white-space: nowrap; border: 1px solid color-mix(in srgb, var(--lc) 34%, transparent); color: var(--lc); background: color-mix(in srgb, var(--lc) 11%, transparent); }
 /* ONE action slot, one width: a button that sizes to its label moves every column after it */
@@ -4767,6 +4808,7 @@ button.rv-chip { cursor: pointer; }
 .ic { --icz: var(--ic, max(13px, 1.2em)); width: var(--icz); height: var(--icz); flex: none; vertical-align: calc(.32em - var(--icz) / 2); margin-right: 0.4em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .ic.solo { margin-right: 0; }
 .ic.solid { fill: currentColor; }
+.ic.mark { fill: currentColor; stroke: none; } /* a bundled brand mark: filled shapes, never stroked (./maintlogos) */
 .ic.key { --ic: 11px; margin: 0; stroke-width: 2.4; }
 kbd { display: inline-flex; align-items: center; justify-content: center; gap: 1px; vertical-align: middle; }
 .mn-mk .ic { --ic: 14px; margin: 0; color: var(--muted); }

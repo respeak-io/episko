@@ -7,7 +7,7 @@ import { readHandoffs, type HandoffRec } from "./handoff";
 import { clampAttnPrefs, type AttnPrefs } from "./attn";
 import { clampAutoFetchPrefs, type AutoFetchPrefs, type FetchState } from "./autofetch";
 import type { DiffMode } from "./diff";
-import type { RailLayout } from "./review";
+import { clampOpenReviews, type OpenReview, type RailLayout } from "./review";
 import { clampKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import { IS_MAC } from "./dom";
 import { clampPeekPrefs, type PeekPrefs } from "./peek";
@@ -39,11 +39,19 @@ export function saveProjOrder() { localStorage.setItem("cc-proj-order", JSON.str
 export let projGroups: GroupStore = clampGroups(safeParse(localStorage.getItem("cc-proj-groups")));
 export function setProjGroups(g: GroupStore) { projGroups = clampGroups(g); }
 export function saveProjGroups() { localStorage.setItem("cc-proj-groups", JSON.stringify(projGroups)); }
+// The pull requests open in the sidebar, in the order they were opened (./review's rules).
+export let openReviews: OpenReview[] = clampOpenReviews(safeParse(localStorage.getItem("cc-review-open")))
+  .map((r) => ({ ...r, root: nfcPath(r.root) }));
+export function setOpenReviews(l: OpenReview[]) { openReviews = l; }
+export function saveOpenReviews() { localStorage.setItem("cc-review-open", JSON.stringify(openReviews)); }
 export type SortMode = "manual" | "active" | "attention";
 export const SORT_MODES: SortMode[] = ["manual", "active", "attention"];
 export let sortMode: SortMode = (localStorage.getItem("cc-sort") as SortMode) || "manual";
 if (!SORT_MODES.includes(sortMode)) sortMode = "manual";
 export function setSortMode(m: SortMode) { sortMode = m; }
+// The rail's ranks while the pointer is on it (./grouping's `railRanks`, armed by ./sidebar); null otherwise.
+export let railHold: ReadonlyMap<string, number> | null = null;
+export function setRailHold(h: ReadonlyMap<string, number> | null) { railHold = h; }
 export const SORT_META: Record<SortMode, { glyph: string; label: string }> = {
   manual:    { glyph: "≡", label: "Manual order · drag to arrange" },
   active:    { glyph: "◷", label: "Latest activity first" },
@@ -297,6 +305,9 @@ export function setShelvedInTree(on: boolean) { shelvedInTree = on; }
 // ✕ on a live agent that is NOT mid-turn asks first (on) or closes at once; mid-turn always asks.
 export let closeAskIdle: boolean = localStorage.getItem("cc-close-ask") !== "0";
 export function setCloseAskIdle(on: boolean) { closeAskIdle = on; }
+// What a pane starts runs below the desktop (on) or at normal priority; the backend applies it.
+export let paneLow: boolean = localStorage.getItem("cc-pane-priority") !== "0";
+export function setPaneLow(on: boolean) { paneLow = on; }
 export let driftAuto: boolean = localStorage.getItem("cc-drift-auto") !== "0";
 export function setDriftAuto(on: boolean) { driftAuto = on; }
 // Ctrl+Shift+C copies the selection (on) or is left to the webview, whose inspector it opens.

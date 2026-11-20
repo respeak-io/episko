@@ -63,7 +63,7 @@ export interface FleetHost {
   session: (label: string, rows: SessionLaunch[], notes?: readonly string[]) => Promise<void>;
   // A shell with `cmd` typed in and never sent, as the dashboard's.
   terminal: (project: string, path: string, cmd: string) => void;
-  openSettings: (section: string, row?: string) => void; // Maintenance's token door, at Settings › Accounts
+  openSettings: (section: string, row?: string) => void; // Maintenance's doors to Settings › Maintenance
   pickAccount: (at: HTMLElement, root: string, then: () => void) => void; // a Coverage row's account picker
   openUsage: () => void;
   openHistory: () => void;

@@ -62,9 +62,9 @@ export interface SourceDef {
   sends: string | null; // what a public source sends; maint.rs refuses a public one without it
   settings: string | null; // the forge page that switches it on, `{path}` the repository's
   queue: boolean; // the dashboard's queue lists its issues and pull requests
-  token: TokenDef | null; // a credential Episko seals for it (Settings › Accounts)
+  token: TokenDef | null; // a credential Episko seals for it (Settings › Maintenance)
 }
-/** A service token as Settings › Accounts offers it, all data: `host` the default slot, `page` where one is
+/** A service token as Settings › Maintenance offers it, all data: `host` the default slot, `page` where one is
  *  made (`{host}` filled), `scopes` what a read needs. maint.rs refuses a row it could not use. */
 export interface TokenDef { id: string; label: string; host: string; page: string; scopes: string[] }
 export interface MarkerDef { facet: Facet; label: string; forge: string[]; detect: string[] }
@@ -128,7 +128,7 @@ export const disclosure = (s: SourceDef): string | null =>
   s.sends ? `${s.label} receives ${s.sends}. Nothing else leaves this machine.` : null;
 export const facetSources = (f: Facet): SourceDef[] => SOURCES.filter((s) => s.facet === f);
 
-/** Every token kind a source reads with, once each: Settings › Accounts draws a control per kind. */
+/** Every token kind a source reads with, once each: Settings › Maintenance draws a control per kind. */
 export const tokenKinds = (): TokenDef[] =>
   [...new Map(SOURCES.flatMap((s) => s.token ? [[s.token.id, s.token] as const] : [])).values()];
 /** That control's row id, which a Coverage row's token door opens Settings on. */

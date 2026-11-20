@@ -47,15 +47,28 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
   `empty` on the row saying where the list *is* filled. A dropdown that opens on one sentence
   reads as a control that does nothing — and both of these (stop rules, hand-trusted folders)
   are only ever filled elsewhere.
+- **A run of switches that answer one question is one row** (`switches`): a fold over the
+  named switches, each with the sentence that decides it, since five rows reading *Ask X when
+  Maintenance checks* were one question asked five times. Unlike a `multi`'s chips, each item
+  keeps its sentence on the page rather than in a tooltip: there it is a disclosure, what that
+  switch sends. A door that lands on such a row opens it, since its summary switches nothing.
 - `isDefault`/`reset` per control give the accent bar, ⟲ on hover and `@changed`. A control
   without `isDefault` is never marked; a list with no safe reset (trusted folders, stop rules)
   has none. `summary` is the fold button's text and the search's `value`.
-- **Accounts** is two kinds of credential, each a row that is its own panel and has no reset
-  (a credential is not a preference): *Claude accounts* (docs/accounts.md), then one
-  *<label> tokens* row per kind of service token Maintenance's manifest names (`tokenKinds`,
-  row id `tokenRow(kind)`, `tok-sentry`): each saved host with *Check* and *Forget*, and a
-  form with the host prefilled and a write-only token field that empties once saved. A
-  Coverage row's *Add token…* lands lit on that row through `openSettingsOn("accounts", …)`.
+- **Accounts** is *Claude accounts* (docs/accounts.md), a row that is its own panel and has
+  no reset: a credential is not a preference.
+- **Maintenance** is this machine's half of the Maintenance view, all of it local
+  (docs/maintenance.md § Surfaces). A note says what is the team's instead (`[maintenance]`
+  and its thresholds, per project); then *Sources to read*, a `multi` over every manifest
+  source that is on by default (`cc-maint-prefs.off`); *Public services every check may ask*,
+  one row whose fold holds a switch per public source with its mark (`sourceLogo`, bundled,
+  never fetched) and its disclosure beside it, one dimmed while that source is skipped
+  (`switches`, below); *Servers this machine may check*, the `[deploy]` hosts a project in the cache
+  names plus any already allowed, a trust list with no reset like *Trusted projects*; and one
+  *<label> tokens* row per kind of service token the manifest names (`tokenKinds`, row id
+  `tokenRow(kind)`, `tok-sentry`): each saved host with *Check* and *Forget*, and a form with
+  the host prefilled and a write-only token field that empties once saved. The board's ⚙,
+  a public Coverage row and *Add token…* land here through `openSettingsOn("maint", …)`.
   Opening Settings lists the saved tokens again, as it lists the Claude ones.
 - The rail ends with *Elsewhere*: Usage & spend and What's new keep their own windows
   (0.26.0). The doors call the openers through the host, and two pointer rows answer the

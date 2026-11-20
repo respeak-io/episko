@@ -2648,7 +2648,7 @@ describe("errors in production", () => {
     expect(briefFor(f, p.inp, { project: "acme", verify: [], now: NOW })).toMatch(/^API-1 in acme's error tracker/);
   });
 
-  it("says no token, token refused and token scope in Rust's own words, each with Settings › Accounts as its door", () => {
+  it("says no token, token refused and token scope in Rust's own words, each with Settings › Maintenance as its door", () => {
     expect([whyWord(of("noTool"), "prod"), whyWord(of("noAccess", 0), "prod"), whyWord(of("noAccess", 1), "prod")]).toEqual(["no token", "token refused", "token scope"]);
     expect([tokenDoor(SE, of("noTool"), "prod"), tokenDoor(SE, of("noAccess", 0), "prod"), tokenDoor(SE, of("noAccess", 1), "prod")]).toEqual(["add", "replace", "replace"]);
     expect(tokenDoor(SE, { state: "error", reason: "rate limited by sentry.io" }, "prod"), "a rate limit is no token's").toBeNull();
@@ -4432,7 +4432,9 @@ describe("nothing scans until a person asks", () => {
   });
 
   // The header chip paints on every renderAll pass and its popover opens on a glance: neither is an ask.
-  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress"], []);
+  // The chip's (i) only opens and closes ./maintui's guide.
+  const pop = callGraph("maintpop.ts", ["maintOf", "maintInput", "maintSnap", "maintGen", "fleetCheckedAt", "fleetProgress", "projectProgress",
+    "toggleGuide", "closeMaintGuide"], []);
   it("never reaches a scan from the header chip or from opening its popover, only from its Check", () => {
     for (const f of ["renderMaintBadge", "current", "paintPop", "openMaintPop", "closeMaintPop"]) {
       expect(pop.bodies.has(f), f).toBe(true);
