@@ -12,6 +12,8 @@ export interface GhThread {
   assignees: string[];
   labels: string[];
   branch: string | null;
+  base: string | null;
+  fork: string | null; // the head repo's owner when the PR comes from a fork
   author: string | null;
   draft: boolean;
   updated_at: string;

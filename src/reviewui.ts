@@ -14,18 +14,19 @@ import { icon, type IconName } from "./svgicons";
 import { fileHtml, railHeadHtml, railHtml, treeRailHtml, type LineHooks } from "./patchview";
 import {
   agentBrief, anchorKey, anchorOf, canComment, clampDrafts, clampViewed, commentableIn, commitsHeading, commitsSince, dirStates, draftBrief,
-  expandGap, filesUnder, gapAt, isLargeDiff, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD, place, prFromUrl, prKey,
-  rangeArgs, rangeLabel, reviewComments, setViewed, submitBlock, suggestion, threadBrief, threadPin, treeOrder, treeRows, withDraft,
+  expandGap, filesUnder, gapAt, isLargeDiff, isViewed, lastReviewed, liveSides, mergeBlock, mergeWarn, METHOD_WORD,
+  noteOpenReview, place, prFromUrl, prKey, rangeArgs, rangeLabel, reviewComments, setViewed, submitBlock, suggestion, threadBrief,
+  threadPin, treeOrder, treeRows, withDraft, withOpenReview, withoutOpenReview,
   type Anchor, type Commentable, type DraftComment, type DraftStore, type PrDiff, type PrReview, type PrThread,
-  type RailLayout, type Range, type ReviewEvent, type Side, type ViewedStore,
+  type RailLayout, type Range, type ReviewEvent, type ReviewFacts, type Side, type ViewedStore,
 } from "./review";
 import {
   addBtn, rangePos, checksHtml, composeHtml, conversationHtml, dirTick, draftHtml, elsewhereHtml, expandBtn, failHtml, fileBtnsHtml,
   railMark, railTick, reviewBarHtml, reviewHeadHtml, tailBtn, threadHtml, truncNoteHtml, type RvTab,
 } from "./reviewview";
 import {
-  accentFor, diffMode, FAVORITES, ghAccountFor, railLayout, reviewMirror, sessions, setActiveId, setDiffMode, setMirror,
-  setRailLayout, worktreesByRepo,
+  accentFor, diffMode, FAVORITES, ghAccountFor, openReviews, railLayout, reviewMirror, saveOpenReviews, sessions, setActiveId,
+  setDiffMode, setMirror, setOpenReviews, setRailLayout, worktreesByRepo,
 } from "./state";
 import { readObj } from "./store";
 import { freshReady } from "./panes";
@@ -80,6 +81,8 @@ let event: ReviewEvent = "COMMENT";
 let mergeMethod = "";
 let deleteBranch = false; // a shared write is armed by you, never by default: a PR's head may be `dev`
 let gen = 0;
+let held = ""; // the review this module's state belongs to: leaving the stage keeps it for the way back
+let heldTop = 0;
 let seeded = false; // the first diff folds what you have viewed; after that folds are yours, bar a large view's
 
 let drafts: DraftStore = clampDrafts(readObj("cc-review-drafts"));
@@ -95,25 +98,50 @@ const draftList = (): DraftComment[] => myDraft().comments;
 function saveDrafts(comments: DraftComment[], body = ($("rvSummary") as HTMLTextAreaElement).value) {
   drafts = withDraft(drafts, key(), { body, comments, at: Date.now() });
   localStorage.setItem("cc-review-drafts", JSON.stringify(drafts));
+  noteRow({ pending: comments.length });
+}
+
+// ---------- the sidebar row (./review's `cc-review-open`) ----------
+
+function setRows(next: typeof openReviews) {
+  if (next === openReviews) return;
+  setOpenReviews(next);
+  saveOpenReviews();
+  host.renderAll();
+}
+const noteRow = (facts: ReviewFacts) => {
+  const m = reviewMirror();
+  if (m) setRows(noteOpenReview(openReviews, m.root, m.number, facts));
+};
+
+/** The row's ✕: the review goes, and the stage with it when it is the one on it. */
+export function closeReviewRow(root: string, number: number): void {
+  const m = reviewMirror();
+  if (m?.root === root && m.number === number) { closePrReview(); return; }
+  setRows(withoutOpenReview(openReviews, root, number));
 }
 
 // ---------- open / close ----------
 
 export function openPrReview(project: string, path: string, number: number): void {
-  const same = reviewMirror()?.root === path && reviewMirror()?.number === number;
+  const want = `${path}#${number}`;
+  const same = held === want;
+  held = want;
   setMirror({ kind: "review", root: path, name: project, number });
   setActiveId(null);
   for (const x of sessions.values()) x.pane.classList.remove("active");
   takeStage("review");
   document.documentElement.style.setProperty("--accent", accentFor(path));
+  const body = $("rvBody");
   if (!same) {
     pr = null; failed = ""; full = []; shown = []; truncated = false; fullTruncated = false; large = false; commentable = new Map();
     dropped = 0; fullDropped = 0; viewAt = "";
     range = { kind: "all" }; ws = false; tab = "conversation"; compose = null; convText = "";
     replies.clear(); threadOpen.clear(); collapsed.clear(); railFolded.clear(); tailDone.clear();
     activeFile = -1; event = "COMMENT"; mergeMethod = ""; seeded = false;
-    $("rvBody").scrollTop = 0;
-  }
+    body.scrollTop = 0;
+  } else if (!body.scrollTop && heldTop) body.scrollTop = heldTop; // a hidden pane may have dropped it
+  setRows(withOpenReview(openReviews, path, project, number));
   host.renderAll();
   paintAll();
   void load(!same);
@@ -150,10 +178,12 @@ export async function openPrLink(url: string, near?: { project: string; root: st
   return false;
 }
 
+/** ✕ and Esc close the review, row and all; leaving by any other way keeps the row to come back by. */
 export function closePrReview(): void {
   const m = reviewMirror();
   if (!m) return;
   setMirror(null);
+  setRows(withoutOpenReview(openReviews, m.root, m.number));
   host.openDashboard(m.name, m.root);
 }
 
@@ -170,7 +200,7 @@ export function renderReviewHeader(): void {
   clearStageBadges();
   const xb = $("btnClose") as HTMLButtonElement;
   xb.hidden = false;
-  xb.title = "Back to the project (Esc)";
+  xb.title = "Close the review and go back to the project (Esc)";
   ($("btnShelve") as HTMLButtonElement).hidden = true;
   $("hProj").textContent = name();
   const hb = $("hBranch");
@@ -204,6 +234,9 @@ async function load(fresh: boolean): Promise<void> {
   failed = "";
   pr = got;
   ($("rvSummary") as HTMLTextAreaElement).value = myDraft().body;
+  noteRow({
+    title: got.title, head: got.head_ref, sameRepo: got.same_repo, state: got.state, draft: got.draft, pending: draftList().length,
+  });
   host.renderAll();
   if (!full.length || was !== pr.head_oid) {
     // A push moved the head: every view's numbers changed, so start again from GitHub's diff.
@@ -466,6 +499,7 @@ function paintFoot() {
 // ---------- the scroll spy, as the working-set viewer has it ----------
 let spyDue = false;
 function spy() {
+  if (reviewMirror()) heldTop = $("rvBody").scrollTop;
   if (spyDue) return;
   spyDue = true;
   requestAnimationFrame(() => {
@@ -664,6 +698,7 @@ async function submit() {
   if (url === null) return;
   drafts = withDraft(drafts, key(), null);
   localStorage.setItem("cc-review-drafts", JSON.stringify(drafts));
+  noteRow({ pending: 0 });
   ($("rvSummary") as HTMLTextAreaElement).value = "";
   event = "COMMENT";
   toast(`Review sent on #${n}`);

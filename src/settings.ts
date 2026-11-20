@@ -19,7 +19,7 @@ import {
   keyPrefs, missingAgents,
   mdPrefs, outlinePrefs, peekPrefs, permissionModeFor, revivePrefs, sessions, termScrollback, titlePrefs, vitalsPrefs,
   setTermFontSize, TERM_FONT_DEFAULT,
-  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, closeAskIdle, wtGroup, shelvedInTree,
+  SORT_META, SORT_MODES, sortMode, soundPrefs, termEngine, termFontSize, termSplit, driftAuto, prLinksInApp, copyChord, closeAskIdle, paneLow, wtGroup, shelvedInTree,
   type SortMode, type WtGroup,
   FAVORITES, projOrder, shareModeOf, agentByProject, projPrefs, agentTools,
   claudeAccts, acctChecks, foundTokens, maintTokens, maintTokenChecks,
@@ -99,6 +99,7 @@ export interface SettingsHost {
   setShelvedTree: (on: boolean) => void;
   setCopyChord: (on: boolean) => void;
   setCloseAskIdle: (on: boolean) => void;
+  setPaneLow: (on: boolean) => void;
   bumpFont: (d: number) => void;
   applyFontSize: () => void;
   // The setters below must be the app-level ones (./actions), which clamp, persist and
@@ -193,7 +194,7 @@ function permissionControl(): SetControl {
 
 let host: SettingsHost = {
   startTour: () => {},
-  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {}, setCloseAskIdle: () => {},
+  setSort: () => {}, setEngine: () => {}, setTermSplit: () => {}, setDriftAuto: () => {}, setPrLinks: () => {}, setShelvedTree: () => {}, setCopyChord: () => {}, setCloseAskIdle: () => {}, setPaneLow: () => {},
   bumpFont: () => {}, applyFontSize: () => {},
   setWtGroup: () => {}, setPermMode: () => {}, setDefaultAgent: () => {}, setPeekPrefs: () => {}, setSoundPrefs: () => {},
   setTitlePrefs: () => {},
@@ -536,6 +537,11 @@ const SET_TABS: SetTab[] = [
         dim: () => termEngine !== "embedded",
         on: () => agentTools, elsewhere: () => overriders(projPrefs, "tools"),
         isDefault: () => !agentTools, reset: () => host.setAgentTools(false) },
+      { kind: "toggle", set: "panelow", key: "cc-pane-priority", label: "Run sessions below your other apps",
+        hint: "What agents, tasks and shells start gives way to the apps you are using, so a fleet running its tests at once cannot freeze the machine.",
+        more: "They still get every core nothing else wants, so on an idle machine nothing runs slower; only while you work alongside them do builds and tests wait their turn. On Windows a change reaches sessions already running; on macOS it applies to the next one started, since only an administrator can raise a process back. A Docker container or a system service a command talks to keeps its own priority.",
+        aliases: ["cpu", "priority", "nice", "below normal", "slow", "freeze", "frozen", "unresponsive", "load", "100%", "background", "throttle", "limit", "tests"], since: "0.41.0",
+        on: () => paneLow, isDefault: () => paneLow, reset: () => host.setPaneLow(true) },
       { kind: "toggle", set: "closeask", key: "cc-close-ask", label: "Ask before closing a finished session",
         hint: "Closing an agent that has finished its turn asks first; off, it closes at once.",
         more: "A session that is still working always asks, whatever this says, since closing stops the turn it is in. Either way the conversation comes back from History. The question's own tick turns this off.",
@@ -684,7 +690,7 @@ const SET_TABS: SetTab[] = [
       { kind: "multi", set: "maintread", key: "cc-maint-prefs", label: "Sources to read",
         hint: "Everything Maintenance can read. Switch one off and this machine never asks it, on a check or on a click.",
         more: "A skipped source reads as skipped here on its cards and in Coverage, never as healthy, and the next check reads it again once it is back on. A project can switch a whole facet off for the team in its own file; this list is yours.",
-        aliases: ["skip", "skipped here", "source", "sources", "maintenance", "ci", "forge", "facet", "read"], since: "0.41.0",
+        aliases: ["skip", "skipped here", "source", "sources", "maintenance", "ci", "forge", "facet", "read"], since: "0.42.0",
         summary: () => { const n = skippedSources().length; return n ? `${SOURCES.length - n} of ${SOURCES.length}` : `all ${SOURCES.length}`; },
         lines: () => SOURCES.map((s) => ({ label: s.label, value: maintPrefs.off.includes(s.id) ? "skipped" : "read" })),
         on: () => SOURCES.filter((s) => !maintPrefs.off.includes(s.id)).map((s) => s.id),
@@ -706,7 +712,7 @@ const SET_TABS: SetTab[] = [
       { kind: "multi", set: "mainthost", key: "cc-maint-prefs", label: "Servers this machine may check",
         hint: "The [deploy] hosts Check prod may reach from here, over your own ssh. Click one to allow it or take it back.",
         more: "A project's host is committed, and a teammate's push must not choose where this machine connects, so none is allowed until you say so, here or with Allow on its card. Allowing connects nowhere: Check prod still asks, with one read-only script, and nothing is written under ~/.ssh.",
-        aliases: ["ssh", "host", "server", "deploy", "prod", "production", "allow", "disallow", "vps", "check prod"], since: "0.41.0",
+        aliases: ["ssh", "host", "server", "deploy", "prod", "production", "allow", "disallow", "vps", "check prod"], since: "0.42.0",
         summary: () => { const n = maintPrefs.hosts.length; return n ? `${n} allowed` : "none allowed"; },
         lines: () => hostSegs().map((s) => ({ label: s.label, value: maintPrefs.hosts.includes(s.value) ? "allowed" : "not allowed" })),
         on: () => maintPrefs.hosts, segs: hostSegs,
@@ -1943,6 +1949,7 @@ function applySetting(set: string, val: string) {
   else if (set === "shelvedtree") host.setShelvedTree(val === "1");
   else if (set === "copychord") host.setCopyChord(val === "1");
   else if (set === "closeask") host.setCloseAskIdle(val === "1");
+  else if (set === "panelow") host.setPaneLow(val === "1");
   else if (set === "sort") host.setSort(val as SortMode);
   else if (set === "channel") host.setUpdateChannel(val as Channel);
   else if (set.startsWith("permmode:")) host.setPermMode(set.slice("permmode:".length), val);

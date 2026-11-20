@@ -220,7 +220,7 @@ describe("the bots' pull requests", () => {
   it("finds Renovate's dashboard issue and nothing pretending to be it", () => {
     const t = (o: Partial<GhThread>): GhThread => ({
       number: 1, kind: "issue", title: "Dependency Dashboard", url: "u", assignees: [], labels: [],
-      branch: null, author: "renovate[bot]", draft: false, updated_at: "", ...o,
+      branch: null, base: null, fork: null, author: "renovate[bot]", draft: false, updated_at: "", ...o,
     });
     expect(renovateDashboard([t({})])?.number).toBe(1);
     expect(renovateDashboard([t({ author: "a-person" })])).toBeNull();

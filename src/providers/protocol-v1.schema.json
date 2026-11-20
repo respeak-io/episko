@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/respeak-io/episko/blob/dev/src/providers/protocol-v1.schema.json",
+  "title": "Episko agent protocol v1: one POST body",
+  "description": "What an agent extension sends to EPISKO_URL. docs/agent-protocol.md is the prose; this file is the contract both repositories test against.",
+  "type": "object",
+  "required": ["v", "events"],
+  "properties": {
+    "v": { "const": 1 },
+    "events": { "type": "array", "minItems": 1, "maxItems": 500, "items": { "$ref": "#/$defs/event" } }
+  },
+  "$defs": {
+    "text": { "type": "string", "maxLength": 32000 },
+    "short": { "type": "string", "maxLength": 200 },
+    "count": { "type": "number", "minimum": 0 },
+    "event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "enum": ["session", "prompt", "turn-start", "tool-start", "tool-end", "answer", "turn-end", "plan", "usage", "cost", "error"] } },
+      "oneOf": [
+        { "$ref": "#/$defs/session" }, { "$ref": "#/$defs/prompt" }, { "$ref": "#/$defs/turn-start" },
+        { "$ref": "#/$defs/tool-start" }, { "$ref": "#/$defs/tool-end" }, { "$ref": "#/$defs/answer" },
+        { "$ref": "#/$defs/turn-end" }, { "$ref": "#/$defs/plan" }, { "$ref": "#/$defs/usage" },
+        { "$ref": "#/$defs/cost" }, { "$ref": "#/$defs/error" }
+      ]
+    },
+    "session": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "session" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.:-]+$" },
+        "model": { "$ref": "#/$defs/short" },
+        "title": { "$ref": "#/$defs/short" }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": { "type": { "const": "prompt" }, "text": { "$ref": "#/$defs/text", "minLength": 1 } }
+    },
+    "turn-start": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "const": "turn-start" } }
+    },
+    "tool-start": {
+      "type": "object",
+      "required": ["type", "id", "name"],
+      "properties": {
+        "type": { "const": "tool-start" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "summary": { "type": "string", "maxLength": 300 },
+        "input": { "$ref": "#/$defs/text" },
+        "command": { "$ref": "#/$defs/text" }
+      }
+    },
+    "tool-end": {
+      "type": "object",
+      "required": ["type", "id", "name"],
+      "properties": {
+        "type": { "const": "tool-end" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "output": { "$ref": "#/$defs/text" },
+        "failed": { "type": "boolean" },
+        "command": { "$ref": "#/$defs/text" },
+        "files": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "required": ["path", "kind"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+              "kind": { "enum": ["read", "edited", "created"] }
+            }
+          }
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": { "type": { "const": "answer" }, "text": { "$ref": "#/$defs/text", "minLength": 1 } }
+    },
+    "turn-end": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "turn-end" },
+        "failed": { "type": "boolean" },
+        "error": { "type": "string", "maxLength": 2000 },
+        "durationMs": { "$ref": "#/$defs/count" }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "required": ["type", "items"],
+      "properties": {
+        "type": { "const": "plan" },
+        "items": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "required": ["text", "status"],
+            "properties": {
+              "text": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "status": { "enum": ["pending", "in_progress", "completed", "cancelled"] }
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "usage" },
+        "contextTokens": { "$ref": "#/$defs/count" },
+        "contextWindow": { "type": "number", "exclusiveMinimum": 0 },
+        "totals": {
+          "type": "object",
+          "properties": {
+            "input": { "$ref": "#/$defs/count" },
+            "output": { "$ref": "#/$defs/count" },
+            "cacheRead": { "$ref": "#/$defs/count" },
+            "cacheWrite": { "$ref": "#/$defs/count" },
+            "reasoning": { "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "required": ["type", "totalUsd"],
+      "properties": { "type": { "const": "cost" }, "totalUsd": { "$ref": "#/$defs/count" } }
+    },
+    "error": {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": { "type": { "const": "error" }, "message": { "type": "string", "minLength": 1, "maxLength": 2000 } }
+    }
+  }
+}

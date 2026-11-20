@@ -15,7 +15,7 @@ const OWN = [
   "cc-maint-chip", "cc-maint-prefs",
   "cc-perm-modes", "cc-perm-mode", "cc-trusted", "cc-autofetch", "cc-proj-prefs", "cc-agent-tools",
   "cc-task-prefs", "cc-task-onstop", "cc-task-runner", "cc-task-pins", "cc-task-hidden", "cc-revive", "cc-attn",
-  "cc-caffeinate", "cc-caf-timer", "cc-caf-await", "cc-memory-sync", "cc-vitals",
+  "cc-caffeinate", "cc-caf-timer", "cc-caf-await", "cc-memory-sync", "cc-vitals", "cc-pane-priority",
   // A preview's version is not stable's, so What's new keeps a separate tally for each.
   "cc-seen-versions", "cc-seen-version",
 ];
@@ -27,7 +27,7 @@ const SHARED = [
   "cc-favorites", "cc-proj-order", "cc-proj-groups", "cc-custom-icons", "cc-colors", "cc-agent-by-project",
   "cc-gh-account", "cc-episko-share", "cc-proj-ids", "cc-icons", "cc-icons-v",
   "cc-restore", "cc-handoff", "cc-notes", "cc-team-notes", "cc-claims", "cc-team-claims", "cc-review-drafts",
-  "cc-review-viewed", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-branch-lists", "cc-frecency", "cc-tour",
+  "cc-review-viewed", "cc-review-open", "cc-task-inputs", "cc-digest-ok", "cc-digest-no", "cc-dash-seen", "cc-branch-lists", "cc-frecency", "cc-tour",
   "cc-legacy-import-done", "cc-channel", "cc-maint", "cc-maint-scan", "cc-maint-week",
   // Shared, or a preview that went back to stable would leave stable asking for the preview again.
   "cc-update-channel",

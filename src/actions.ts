@@ -13,7 +13,7 @@ import { glyphIcon } from "./svgicons";
 import { probeIcon } from "./icons";
 import { applyScrollback, refit } from "./terminal";
 import { activeCwd, closeSession, launch, launchAccount, launchShell, prefillFresh, prefillShell, refreshGitViews, shelveSession, tickAutoFetch } from "./panes";
-import { closePeek, renderMini, renderSidebar } from "./sidebar";
+import { closePeek, rearmRailHold, releaseRailHold, renderMini, renderSidebar } from "./sidebar";
 import { refreshAccess, renderSettings, settingsOpen } from "./settings";
 import { discoverTasks, waitForExit } from "./tasks";
 import { checkProposal, proposalText, stackSummary, type StackCfg, type StackProposal } from "./stack";
@@ -46,6 +46,7 @@ import {
   setShelvedInTree as setShelvedInTreeState,
   setCopyChord as setCopyChordState,
   closeAskIdle, setCloseAskIdle as setCloseAskIdleState,
+  paneLow, setPaneLow as setPaneLowState,
   outlinePrefs, setOutlinePrefs as setOutlinePrefsState,
   mdPrefs, setMdPrefs as setMdPrefsState,
   termScrollback, setTermScrollback as setTermScrollbackState,
@@ -175,10 +176,20 @@ export function addProjectPath(picked: string) {
   probeIcon(dir); // scour the repo for a favicon/logo to use as the project glyph
   toast(`Added ${basename(dir)}`);
 }
+// The header's hover ✕ removes in one click, so the way back is on screen, at its old place.
 export function removeFavorite(path: string) {
+  const at = FAVORITES.findIndex((f) => f.path === path);
+  if (at < 0) return;
+  const fav = FAVORITES[at];
   setFavorites(FAVORITES.filter((f) => f.path !== path));
   saveFavorites();
   renderAll();
+  actToast(`Removed ${fav.name} from the sidebar`, [{ label: "Undo", run: () => {
+    if (FAVORITES.some((f) => f.path === path)) return;
+    setFavorites([...FAVORITES.slice(0, at), fav, ...FAVORITES.slice(at)]);
+    saveFavorites();
+    renderAll();
+  } }]);
 }
 // Shelve one session, asking first if it is mid-turn. The sign-off sheet calls
 // `shelveSession` directly, having already asked about the whole fleet.
@@ -342,6 +353,19 @@ export function setTermSplit(on: boolean) {
 }
 
 // Read at the next ✕; a session mid-turn asks whatever this says.
+// Windows moves the panes already running at once; macOS lowers only what starts next.
+export function setPaneLow(on: boolean) {
+  setPaneLowState(on);
+  localStorage.setItem("cc-pane-priority", on ? "1" : "0");
+  syncPanePriority();
+  renderSettings();
+}
+
+/** The backend boots lowered; boot and every change tell it what the setting says. */
+export function syncPanePriority() {
+  invoke("set_pane_priority", { low: paneLow }).catch((e) => dlog("warn", `pane priority: ${e}`));
+}
+
 export function setCloseAskIdle(on: boolean) {
   setCloseAskIdleState(on);
   localStorage.setItem("cc-close-ask", on ? "1" : "0");
@@ -646,6 +670,7 @@ export function setSort(m: SortMode, announce = true) {
   b.title = `Sort: ${SORT_META[m].label} · click to change`;
   b.classList.toggle("on", m !== "manual");
   if (announce) toast(SORT_META[m].label);
+  rearmRailHold(); // the button sits on the rail, so a held order would swallow the click
   renderSidebar(); renderMini();
 }
 export function cycleSort() { setSort(SORT_MODES[(SORT_MODES.indexOf(sortMode) + 1) % SORT_MODES.length]); }
@@ -673,6 +698,8 @@ export function setWindowFocused(v: boolean) {
   if (v === winFocused) return;
   setWinFocusedState(v);
   applyFx();
+  // A pointer parked on the rail while you work elsewhere must not freeze its order (or the tray's).
+  if (!v) releaseRailHold();
   // Coming back from System Settings is the one way the access probe goes stale.
   if (v && settingsOpen()) refreshAccess();
 }

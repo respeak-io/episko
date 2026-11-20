@@ -1006,11 +1006,16 @@ function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>):
     ? `<span class="clm${h.mine ? " mine" : ""}${h.stale ? " stale" : ""}">${icon("userRoundCheck")}${esc(h.mine ? "you" : h.who)}</span>` : "";
   const verb = h ? (h.mine ? `${icon("userRoundCheck")}Yours` : `${icon("playSolid")}Anyway`)
     : `${icon("playSolid")}${t.kind === "pr" ? "Agent" : "Start"}`;
+  // A fork's head is written owner:branch, as GitHub does: its `main` is not this repo's.
+  const head = t.branch ? `${t.fork ? `${t.fork}:` : ""}${t.branch}` : "";
+  const refs = t.kind === "pr" && head && t.base
+    ? `<span class="refs" title="${escAttr(`Merges ${head} into ${t.base}${t.fork ? `, from ${t.fork}'s fork` : ""}`)}">`
+      + `<span class="hd">${esc(head)}</span>${icon("arrowRight")}<span class="bs">${esc(t.base)}</span></span>` : "";
   return `<div class="br" data-dashissue="${t.number}" title="Read it here">
     <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
     <span class="num">${t.number}</span>
     <span class="mid"><span class="ti">${esc(t.title)}</span>
-      ${labels || claim ? `<span class="sub">${labels}${claim}</span>` : ""}</span>
+      ${refs || labels || claim ? `<span class="sub">${refs}${labels}${claim}</span>` : ""}</span>
     <span class="age">${esc(shortAge(t.updated_at))}</span>
     <span class="go-slot">${t.kind === "pr" ? `<button class="web" data-dashreview="${t.number}" title="Review its changes here">${icon("files", "solo")}</button>` : ""}<button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">${icon("externalLink", "solo")}</button><button
       class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>

@@ -277,6 +277,62 @@ export function submitBlock(d: ReviewDraft | undefined, ev: ReviewEvent, pr: PrR
 
 export const suggestion = (lines: string[]) => "```suggestion\n" + lines.join("\n") + "\n```";
 
+// ---------- the reviews open in the sidebar (`cc-review-open`) ----------
+// A row per review you opened, so a session and its PR are one click apart. What the row says is
+// noted as the page reads it; `head` is what files it under its branch's checkout (./grouping).
+
+export interface OpenReview {
+  root: string; name: string; number: number;
+  title: string; head: string; sameRepo: boolean; state: string; draft: boolean; pending: number;
+}
+export const OPEN_REVIEWS_MAX = 12;
+export type ReviewFacts = Partial<Pick<OpenReview, "title" | "head" | "sameRepo" | "state" | "draft" | "pending">>;
+
+const isRev = (r: OpenReview, root: string, n: number) => r.root === root && r.number === n;
+
+/** `cc-review-open`, narrowed: a row with no project or number is dropped, and so is a repeat. */
+export function clampOpenReviews(raw: unknown): OpenReview[] {
+  if (!Array.isArray(raw)) return [];
+  const out: OpenReview[] = [];
+  for (const v of raw) {
+    if (!v || typeof v !== "object") continue;
+    const r = v as Partial<OpenReview>;
+    const n = num(r.number);
+    if (!n || !str(r.root) || out.some((x) => isRev(x, str(r.root), n))) continue;
+    out.push({
+      root: str(r.root), name: str(r.name), number: n, title: str(r.title), head: str(r.head),
+      sameRepo: r.sameRepo !== false, state: str(r.state), draft: r.draft === true, pending: num(r.pending) ?? 0,
+    });
+  }
+  return out.slice(-OPEN_REVIEWS_MAX);
+}
+
+/** Opened: appended once and never moved, so a row does not jump on every visit. The oldest goes past the cap. */
+export function withOpenReview(list: OpenReview[], root: string, name: string, number: number): OpenReview[] {
+  if (list.some((r) => isRev(r, root, number))) return list;
+  const r: OpenReview = { root, name, number, title: "", head: "", sameRepo: true, state: "", draft: false, pending: 0 };
+  return [...list, r].slice(-OPEN_REVIEWS_MAX);
+}
+
+/** The same list when nothing changed, so a quiet reload writes nothing. */
+export function noteOpenReview(list: OpenReview[], root: string, number: number, facts: ReviewFacts): OpenReview[] {
+  const i = list.findIndex((r) => isRev(r, root, number));
+  if (i < 0) return list;
+  const next = { ...list[i], ...facts };
+  if ((Object.keys(facts) as (keyof ReviewFacts)[]).every((k) => list[i][k] === next[k])) return list;
+  return list.map((r, j) => (j === i ? next : r));
+}
+
+export const withoutOpenReview = (list: OpenReview[], root: string, number: number): OpenReview[] =>
+  list.filter((r) => !isRev(r, root, number));
+
+/** The row's tag: unsent comments first, since they are lost to nobody but you. */
+export function openReviewTag(r: OpenReview): string {
+  if (r.pending) return `${r.pending} pending`;
+  if (r.state === "MERGED" || r.state === "CLOSED") return r.state.toLowerCase();
+  return r.draft ? "draft" : "";
+}
+
 // ---------- viewed: a tick that undoes itself when the file changes again ----------
 
 export interface ViewedEntry { at: number; files: Record<string, string> }
