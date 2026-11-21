@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ Updating Episko no longer leaves your sessions on the shelf. The agent sessions that were running
+  come back by themselves after the restart, each with its conversation, and the one you were
+  looking at is on stage again. Sessions you had shelved stay shelved. A turn the update cut off
+  waits for you at the prompt rather than carrying on, and the update's confirmation says how many
+  that is. Terminals and tasks still close.
+
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
 machine. A pull request under review gets its own row in the sidebar, issues and pull requests read
