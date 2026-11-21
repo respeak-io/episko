@@ -694,7 +694,7 @@ const SET_TABS: SetTab[] = [
         summary: () => { const n = skippedSources().length; return n ? `${SOURCES.length - n} of ${SOURCES.length}` : `all ${SOURCES.length}`; },
         lines: () => SOURCES.map((s) => ({ label: s.label, value: maintPrefs.off.includes(s.id) ? "skipped" : "read" })),
         on: () => SOURCES.filter((s) => !maintPrefs.off.includes(s.id)).map((s) => s.id),
-        segs: () => SOURCES.map((s) => ({ value: s.id, label: s.label, sub: `${facetDef(s.facet).label} · ${COST_WORD[s.cost]}` })),
+        segs: () => SOURCES.map((s) => ({ value: s.id, label: s.label, sub: `${facetDef(s.facet).label} · ${COST_WORD[s.cost]}`, logo: sourceLogo(s.id) })),
         isDefault: () => !skippedSources().length, reset: () => setMaintOff([]) },
       // One row for every public source; each switch keeps its disclosure beside it, since it says what that switch sends.
       { kind: "switches", set: "maintpub", key: "cc-maint-prefs", label: "Public services every check may ask",
@@ -1688,7 +1688,7 @@ function renderSetControl(c: SetControl, hit: SearchHit | null, words: string[])
       ctl = fold(c.summary?.() ?? String(on.length));
       panel = `<div class="chips">${segs.map((s) =>
         `<button class="chip-opt ${on.includes(s.value) ? "on" : ""}" data-set="${c.set}" data-val="${escAttr(s.value)}" title="${escAttr(s.sub || s.label)}">`
-        + `${s.glyph ? `<span class="seg-glyph">${setIcon(s.glyph)}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
+        + `${s.logo ? `<span class="chip-logo">${s.logo}</span>` : s.glyph ? `<span class="seg-glyph">${setIcon(s.glyph)}</span>` : ""}${esc(s.label)}</button>`).join("")}</div>`;
       break;
     }
     case "switches":

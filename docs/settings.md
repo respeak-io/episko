@@ -60,9 +60,10 @@ own*), never for the feature that shipped it: the old rail read as a changelog.
 - **Maintenance** is this machine's half of the Maintenance view, all of it local
   (docs/maintenance.md § Surfaces). A note says what is the team's instead (`[maintenance]`
   and its thresholds, per project); then *Sources to read*, a `multi` over every manifest
-  source that is on by default (`cc-maint-prefs.off`); *Public services every check may ask*,
-  one row whose fold holds a switch per public source with its mark (`sourceLogo`, bundled,
-  never fetched) and its disclosure beside it, one dimmed while that source is skipped
+  source that is on by default (`cc-maint-prefs.off`), each chip with its source's icon
+  (`sourceLogo`: the mark of the service its label names, bundled and never fetched, else a
+  glyph for what a local read or a protocol reads); *Public services every check may ask*,
+  one row whose fold holds a switch per public source with the same icon and its disclosure beside it, one dimmed while that source is skipped
   (`switches`, below); *Servers this machine may check*, the `[deploy]` hosts a project in the cache
   names plus any already allowed, a trust list with no reset like *Trusted projects*; and one
   *<label> tokens* row per kind of service token the manifest names (`tokenKinds`, row id

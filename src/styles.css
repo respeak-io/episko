@@ -1586,6 +1586,9 @@ select.in-ctl { cursor: pointer; }
 .chip-opt { display: inline-flex; align-items: center; gap: 5px; font: 11px var(--font-ui); border: 1px solid var(--hair-strong); border-radius: 7px; padding: 4px 9px; color: var(--muted); background: var(--surface); cursor: pointer; }
 .chip-opt:hover { color: var(--text); border-color: var(--accent-line); }
 .chip-opt.on { background: var(--accent-wash); border-color: var(--accent-line); color: var(--accent-ink); font-weight: 600; }
+/* A chip's source icon (Settings › Maintenance's Sources to read): a mark or a Lucide glyph, in the chip's own colour. */
+.chip-logo { display: inline-flex; margin-left: -2px; }
+.chip-logo .ic { --ic: 12px; }
 .set-empty { font-size: 11px; color: var(--muted-2); font-style: italic; }
 /* Small option buttons, reused by the task panel's edit form. */
 .s-ctl { display: flex; gap: 3px; flex-wrap: wrap; }

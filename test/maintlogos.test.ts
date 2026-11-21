@@ -1,20 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { sourceLogo, sourceLogoIds } from "../src/maintlogos";
+import { sourceGlyphIds, sourceLogo, sourceMarkIds } from "../src/maintlogos";
 import { SOURCES } from "../src/maintsources";
 
-// The table is keyed by manifest source id, which nothing type-checks: a renamed id would draw a globe.
+// The tables are keyed by manifest source id, which nothing type-checks: a renamed id would draw nothing.
 describe("maintlogos", () => {
-  it("names only sources the manifest has, and only public ones", () => {
-    for (const id of sourceLogoIds()) expect(SOURCES.find((s) => s.id === id)?.cost, id).toBe("public");
+  it("gives every manifest source exactly one icon, and names no other id", () => {
+    const keys = [...sourceMarkIds(), ...sourceGlyphIds()].sort();
+    expect(keys).toEqual(SOURCES.map((s) => s.id).sort());
   });
   it("draws every mark in the text colour, with nothing that would draw or fetch on its own", () => {
-    for (const id of sourceLogoIds()) {
+    for (const id of sourceMarkIds()) {
       const svg = sourceLogo(id);
       expect(svg, id).toMatch(/^<svg class="ic solo mark" /);
       expect(svg, id).not.toMatch(/<title|<style|<script|<image|href=|#[0-9a-f]{3,6}\b/i);
     }
   });
-  it("falls back to a globe for a public source with no mark", () => {
-    expect(sourceLogo("rdap-domain")).toContain('class="ic solo"');
+  it("draws a source that names no service as what it reads, and an unknown id as nothing", () => {
+    expect(sourceLogo("rdap-domain")).toMatch(/^<svg class="ic solo" /);
+    expect(sourceLogo("no-such-source")).toBe("");
   });
 });
