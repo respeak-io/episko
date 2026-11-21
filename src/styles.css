@@ -393,7 +393,7 @@ html.win .wctl { display: flex; }
 .rgroup.split > .srow { border-radius: 8px 8px 0 0; }
 .rgroup.split .rgsteps { border-top: 1px solid var(--hair); margin-left: 0; padding-left: 20px; border-left: 0; }
 .rgsteps .srow { padding: 2px 6px; grid-template-columns: 12px minmax(0,1fr) auto; }
-.rgsteps .srow.o3 { grid-template-columns: 12px minmax(0,1fr) auto auto; }
+.rgsteps .srow.o3 { grid-template-columns: 12px minmax(0,1fr) fit-content(40%) auto; }
 .rgsteps .sbranch { font-size: 11px; color: var(--muted); }
 .rgsteps .srow.active .sbranch { color: var(--accent-ink); font-weight: 600; }
 .rgsteps .sglyph { font-size: 9.5px; --ic: 10px; }
@@ -440,7 +440,8 @@ html.win .wctl { display: flex; }
 /* toplevel mode: the branch suffix on a per-worktree group header */
 .pwt { margin-left: 5px; color: var(--muted-2); font-weight: 550; }
 /* chip mode: a colour-coded ⑃ that expands to the branch name on row hover */
-.srow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
+/* tags capped: an `auto` column is sized before the 1fr title, so a long drift branch left it a sliver */
+.srow.o3 { grid-template-columns: 14px minmax(0,1fr) fit-content(40%) auto; }
 .srow.extrow.o3e { grid-template-columns: 14px minmax(0,1fr) auto auto auto; }
 /* Scoped to the rail: the stage-header `.chip` below is a second rule at equal specificity,
    and unscoped this one lost to it — taking the `--wtc` tint sidebarview.ts sets with it. */
@@ -448,7 +449,7 @@ html.win .wctl { display: flex; }
 /* Both row tags (drift marker, worktree chip) share one grid cell — see sessionRow. */
 .stags { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
 /* the agent is writing in a different checkout than it was launched in; quiet, since nothing is wrong */
-.sdrift { flex: none; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-working); opacity: .85; }
+.sdrift { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 9.5px var(--font-mono); color: var(--st-working); opacity: .85; }
 .srow.drifted .sbranch { color: color-mix(in srgb, var(--st-working) 55%, var(--muted)); }
 .rail .chip .fork { flex: none; display: flex; --ic: 10px; }
 /* Reset the dashboard's .lbl pill: its padding and border outlast max-width: 0 and widen the closed chip. */
@@ -2813,7 +2814,7 @@ select.in-ctl { cursor: pointer; }
 /* ---------- dormant (restorable) sessions ---------- */
 /* a session from a previous run, dimmed with the ended glyph so "was running" never reads as "is running" */
 .srow.pastrow { grid-template-columns: 14px 1fr auto; opacity: .62; }
-.srow.pastrow.o3 { grid-template-columns: 14px minmax(0,1fr) auto auto; }
+.srow.pastrow.o3 { grid-template-columns: 14px minmax(0,1fr) fit-content(40%) auto; }
 .srow.pastrow:hover, .srow.pastrow.active { opacity: 1; }
 .srow.pastrow .sbranch { font-style: italic; }
 .past-tag { font: 600 8.5px var(--font-mono); letter-spacing: .04em; color: var(--muted-2); white-space: nowrap; }
