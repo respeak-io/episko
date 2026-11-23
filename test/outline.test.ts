@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  blockLabel, cleanPrompt, clampOutlinePrefs, clearsOutline, compactSummary, huntFromTop, isEnvelope, lineHasPrompt, normLine,
-  noteAnswer, notePrompt, OUTLINE_DEFAULTS, outlineItems, parseRelay, promptFlat, promptKeys, promptLabel, promptParts, PROMPT_CAP,
-  screenShift, seedPrompts,
+  blockLabel, cleanPrompt, clampOutlinePrefs, clearsOutline, compactSummary, hitPattern, hitSnippet, huntFromTop, isEnvelope,
+  lineHasPrompt, normLine, noteAnswer, notePrompt, OUTLINE_DEFAULTS, outlineItems, parseRelay, promptFlat, promptHits, promptKeys,
+  promptLabel, promptParts, PROMPT_CAP, screenShift, searchTerms, seedPrompts,
 } from "../src/outline";
 import type { Prompt } from "../src/types";
 
@@ -453,5 +453,54 @@ describe("a tagged block inside a question is drawn as a block", () => {
     expect(promptLabel('<pasted_content id="1">\nx\n</pasted_content>')).toBe("[Pasted content · 1 line]");
     expect(promptFlat("plain")).toBe("plain");
     expect(blockLabel("system-reminder")).toBe("System reminder");
+  });
+});
+
+describe("searching the Questions sheet", () => {
+  const q = (text: string, answer?: string, extra: Partial<Prompt> = {}): Prompt => ({ id: "q", text, at: NOW, ...(answer && { answer }), ...extra });
+
+  it("reads the box as lowercased terms, a quoted run held together", () => {
+    expect(searchTerms("  Compose  FILE ")).toEqual(["compose", "file"]);
+    expect(searchTerms('"compose   file" env')).toEqual(["compose file", "env"]);
+    expect(searchTerms('"still typing')).toEqual(["still typing"]);
+    expect(searchTerms('"" a a')).toEqual(["a"]);
+    expect(searchTerms("`configure.sh`")).toEqual(["configure.sh"]); // as it renders
+  });
+  it("needs every term, in the question, its answer or who relayed it", () => {
+    const p = q("Warum ist die Zeile da?", "Die Zeile kommt aus **Schritt 2**: `configure.sh`.");
+    expect(promptHits(p, [])).toBe(true);
+    expect(promptHits(p, searchTerms("ZEILE Configure.sh"))).toBe(true);
+    expect(promptHits(p, searchTerms("zeile update.sh"))).toBe(false);
+    expect(promptHits(p, searchTerms('"aus schritt 2"'))).toBe(true); // the ** does not split the phrase
+    expect(promptHits(q("x", undefined, { relay: { kind: "agent", from: "a1", name: "Reviewer", report: true } }), ["reviewer"])).toBe(true);
+  });
+  it("lets a phrase span a line break", () => {
+    expect(promptHits(q("compose\nfile"), searchTerms('"compose file"'))).toBe(true);
+    expect("compose\n  file".match(hitPattern(['compose file'])!)?.[0]).toBe("compose\n  file");
+  });
+  it("marks a phrase before the word inside it, and takes regex characters literally", () => {
+    expect("a compose file".match(hitPattern(["compose", "compose file"])!)).toEqual(["compose file"]);
+    expect("(x.y)+".match(hitPattern(["(x.y)+"])!)).toEqual(["(x.y)+"]);
+    expect("xay".match(hitPattern(["x.y"])!)).toBeNull();
+    expect(hitPattern([])).toBeNull();
+  });
+  it("gives no snippet when the row's own label already shows every hit", () => {
+    expect(hitSnippet(q("Kannst du die Box hochziehen?", "Ja, die Box läuft."), ["box"])).toBeNull();
+  });
+  it("cuts the answer around a hit its label lacks, starting on a word", () => {
+    const ans = "Erst kopiert install.sh die Dateien, dann startet es configure.sh und am Ende update.sh mit den Images.";
+    const s = hitSnippet(q("Warum diese Zeile?", ans), ["zeile", "update.sh"]);
+    expect(s?.where).toBe("answer");
+    expect(s?.text.startsWith("…")).toBe(true);
+    expect(s?.text).toContain("update.sh");
+    expect(s?.text.slice(1).startsWith(" ")).toBe(false);
+  });
+  it("finds a hit past the label's first line in the question itself, and calls a compaction's a summary", () => {
+    expect(hitSnippet(q("first line\nand the docker bit later"), ["docker"])).toEqual({ where: "question", text: "first line and the docker bit later" });
+    expect(hitSnippet(q("Summary of the work on the cosign check", undefined, { compact: true }), ["cosign"])?.where).toBe("summary");
+  });
+  it("leaves a paste's frame out of the snippet", () => {
+    const p = q('see:\n<pasted_content id="a1">\nPulling zot-registry ... 34%\n</pasted_content id="a1">');
+    expect(hitSnippet(p, ["zot"])?.text).toBe("see: Pulling zot-registry ... 34%");
   });
 });

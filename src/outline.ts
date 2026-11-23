@@ -333,3 +333,61 @@ export function huntFromTop(list: readonly Prompt[], p: Prompt, now: number, res
   if (!p.at || !start?.at) return list.indexOf(p) < list.length / 2; // no clock to measure with
   return p.at - start.at < now - p.at;
 }
+
+// ---------- searching the Questions sheet ----------
+// Matched against the raw text, read the way it renders: a backtick or a `**` would otherwise
+// split a phrase the reader sees whole. Every term must hit; where is the snippet's business.
+
+const plain = (s: string): string =>
+  s.replace(/^#{1,6}[ \t]+/gm, "").replace(/[`*]+/g, "").replace(/\s+/g, " ").trim();
+
+/** The box, as terms: lowercased words, with a "quoted run" held together as one. */
+export function searchTerms(raw: string): string[] {
+  const out: string[] = [];
+  for (const m of raw.toLowerCase().matchAll(/"([^"]*)"?|(\S+)/g)) {
+    const t = plain(m[1] ?? m[2] ?? "");
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+const haystack = (p: Prompt): string => plain(`${p.relay?.name ?? ""}\n${p.text}\n${p.answer ?? ""}`).toLowerCase();
+
+export const promptHits = (p: Prompt, terms: readonly string[]): boolean => {
+  if (!terms.length) return true;
+  const h = haystack(p);
+  return terms.every((t) => h.includes(t));
+};
+
+/** Every term at once, longest first so a phrase wins over a word inside it; a space spans any whitespace. */
+export function hitPattern(terms: readonly string[]): RegExp | null {
+  if (!terms.length) return null;
+  const alt = [...terms].sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+"));
+  return new RegExp(alt.join("|"), "gi");
+}
+
+export interface HitSnippet { where: "question" | "answer" | "summary"; text: string }
+const SNIP_BEFORE = 24;
+const SNIP_AFTER = 90; // the rail clips it anyway; this is enough to read past the hit
+
+/** Why a row matched when its one-line label does not show it: the stretch around that term. */
+export function hitSnippet(p: Prompt, terms: readonly string[]): HitSnippet | null {
+  const label = p.compact ? "" : plain(promptLabel(p.text)).toLowerCase(); // a compaction's row says only that
+  const t = terms.find((x) => !label.includes(x));
+  if (!t) return null;
+  const re = hitPattern([t])!;
+  const where = p.compact ? "summary" : "question";
+  for (const [w, src] of [[where, p.text], ["answer", p.answer ?? ""]] as const) {
+    const s = plain(src.split("\n").filter((l) => !openTag(l) && !CLOSE_TAG.test(l)).join("\n")); // a paste's frame is not prose
+    re.lastIndex = 0;
+    const m = re.exec(s);
+    if (!m) continue;
+    let from = Math.max(0, m.index - SNIP_BEFORE);
+    if (from > 0) from = s.indexOf(" ", from) + 1 || from; // start on a word
+    if (from > m.index) from = m.index;
+    const to = Math.min(s.length, m.index + m[0].length + SNIP_AFTER);
+    return { where: w, text: `${from > 0 ? "…" : ""}${s.slice(from, to)}${to < s.length ? "…" : ""}` };
+  }
+  return null;
+}
