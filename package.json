@@ -19,8 +19,8 @@
     "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
-    "@lobehub/icons-static-svg": "1.102.0",
-    "@tauri-apps/api": "^2.12.4",
+    "@lobehub/icons-static-svg": "1.104.0",
+    "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-opener": "^2.7.3",
@@ -29,10 +29,10 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "marked": "^18.2.0"
+    "marked": "^18.2.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.4",
+    "@tauri-apps/cli": "^2.12.6",
     "@types/node": "^26.6.6",
     "@vitest/coverage-v8": "^4.1.12",
     "typescript": "~5.9.3",
