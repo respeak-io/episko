@@ -4,7 +4,7 @@
 
 import { esc, escAttr } from "./format";
 import { joinPath, renderMarkdown } from "./markdown";
-import { outlineItems, promptLabel } from "./outline";
+import { hitPattern, hitSnippet, outlineItems, promptLabel } from "./outline";
 import { promptHtml, relayIcon } from "./inspectorview";
 import { icon } from "./svgicons";
 import type { Prompt } from "./types";
@@ -25,15 +25,39 @@ export function qSubText(entries: readonly QEntry[]): string {
   return asks.length ? `${asks.length} asked · ${answered} answered` : "";
 }
 
-export function qIndexHtml(entries: readonly QEntry[], sel: string | null): string {
-  return entries.map(({ p, n }) => p.compact
-    ? `<button class="q-row cmp${p.id === sel ? " on" : ""}" type="button" data-qsel="${escAttr(p.id)}" title="Claude summarised the conversation up to here">`
-      + `<span class="q-rn">${icon("chevronsDownUp")}</span><span class="q-rt">Context compacted</span><span class="q-rc"></span></button>`
-    : `<button class="q-row${p.relay ? " relay" : ""}${p.id === sel ? " on" : ""}" type="button" data-qsel="${escAttr(p.id)}" title="${escAttr(promptLabel(p.text))}">`
-    + `<span class="q-rn">${n || relayIcon(p.relay?.kind ?? "")}</span>`
-    + `<span class="q-rt">${esc(promptLabel(p.text))}</span>`
-    + `<span class="q-rc">${p.answer ? "" : "·"}</span></button>`).join("");
+/** Plain text with every hit marked; escaped piece by piece, so a mark never splits an entity. */
+export function markText(text: string, re: RegExp | null): string {
+  if (!re) return esc(text);
+  let out = "", at = 0;
+  for (const m of text.matchAll(re)) {
+    if (!m[0]) continue;
+    out += esc(text.slice(at, m.index)) + `<mark class="q-hit">${esc(m[0])}</mark>`;
+    at = m.index + m[0].length;
+  }
+  return out + esc(text.slice(at));
 }
+
+const WHERE = { question: "", answer: "answer · ", summary: "summary · " };
+
+/** `terms`: a search is on, so each row marks its hits and says where the rest of them are. */
+export function qIndexHtml(entries: readonly QEntry[], sel: string | null, terms: readonly string[] = []): string {
+  const re = hitPattern(terms);
+  return entries.map(({ p, n }) => {
+    const snip = re ? hitSnippet(p, terms) : null;
+    const sub = snip ? `<span class="q-rs">${WHERE[snip.where]}${markText(snip.text, re)}</span>` : "";
+    return p.compact
+      ? `<button class="q-row cmp${p.id === sel ? " on" : ""}" type="button" data-qsel="${escAttr(p.id)}" title="Claude summarised the conversation up to here">`
+        + `<span class="q-rn">${icon("chevronsDownUp")}</span><span class="q-rt">Context compacted</span><span class="q-rc"></span>${sub}</button>`
+      : `<button class="q-row${p.relay ? " relay" : ""}${p.id === sel ? " on" : ""}" type="button" data-qsel="${escAttr(p.id)}" title="${escAttr(promptLabel(p.text))}">`
+      + `<span class="q-rn">${n || relayIcon(p.relay?.kind ?? "")}</span>`
+      + `<span class="q-rt">${markText(promptLabel(p.text), re)}</span>`
+      + `<span class="q-rc">${p.answer ? "" : "·"}</span>${sub}</button>`;
+  }).join("");
+}
+
+/** The line under the search box. */
+export const qSearchText = (shown: number): string =>
+  shown ? `${shown} match${shown === 1 ? "" : "es"} · ↵ next` : "Nothing here matches";
 
 // Why there is no answer, in the one case that is not a gap: the turn is still running.
 function noAnswer(running: boolean, last: boolean): string {
@@ -64,8 +88,11 @@ function compactHtml(p: Prompt, md: QMd, back: string): string {
   return `<section class="q-ent cmp" data-qent="${escAttr(p.id)}">${head}${sum}${ans}</section>`;
 }
 
-/** `live`: a pane holds the conversation, so a question can be found in it and the restored mark means something. */
-export function qThreadHtml(entries: readonly QEntry[], md: QMd, at: { running: boolean; live: boolean }): string {
+/**
+ * `live`: a pane holds the conversation, so a question can be found in it and the restored mark means something.
+ * `last`: the conversation's newest entry, which a filtered list may not end on.
+ */
+export function qThreadHtml(entries: readonly QEntry[], md: QMd, at: { running: boolean; live: boolean; last?: string }): string {
   if (!entries.length) return `<div class="call-empty">Nothing asked yet.</div>`;
   return entries.map(({ p, n }, i) => {
     const back = at.live && p.restored ? `<span class="q-b" title="From before this pane was resumed">${icon("history", "solo")}</span>` : "";
@@ -74,7 +101,8 @@ export function qThreadHtml(entries: readonly QEntry[], md: QMd, at: { running: 
     const who = r ? `<span class="q-who">${relayIcon(r.kind)} ${esc(r.name)} · ${r.report ? "report" : "message"}</span>` : `<span class="q-n">#${n}</span>`;
     const find = at.live ? `<button class="q-act" type="button" data-qjump="${escAttr(p.id)}" title="Close this and find the question in the terminal">Find in terminal</button>` : "";
     const head = `<div class="q-h">${who}<span class="q-t">${back}${clock(p.at)}</span>${find}${copyBtn(p, "the question and its answer")}</div>`;
-    const ans = p.answer ? `<div class="q-ans mdr">${md(p.id, p.answer)}</div>` : noAnswer(at.running, i === entries.length - 1);
+    const last = at.last !== undefined ? p.id === at.last : i === entries.length - 1;
+    const ans = p.answer ? `<div class="q-ans mdr">${md(p.id, p.answer)}</div>` : noAnswer(at.running, last);
     return `<section class="q-ent${r ? " relay" : ""}" data-qent="${escAttr(p.id)}">${head}<div class="q-ask">${promptHtml(p.text, p.id)}</div>${ans}</section>`;
   }).join("");
 }

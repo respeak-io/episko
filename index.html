@@ -425,11 +425,19 @@
     <div class="calldlg qdlg" id="qDlg" role="dialog" aria-modal="true" aria-label="Your questions">
       <div class="diff-head">
         <div class="diff-title-wrap"><b id="qTitle"></b><span class="diff-sub" id="qSub"></span></div>
-        <button class="call-copy" type="button" data-qcopyall="1" title="Copy every question and answer as markdown">Copy all</button>
+        <button class="call-copy" id="qCopyAll" type="button" data-qcopyall="1" title="Copy every question and answer as markdown">Copy all</button>
         <button class="diff-x" id="qClose" title="Close (Esc)"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="call-body">
-        <div class="call-list" id="qIndex"></div>
+        <div class="q-side">
+          <div class="set-search q-search" id="qSearch">
+            <span class="set-sic" aria-hidden="true"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg></span>
+            <input id="qQ" type="search" placeholder="Search questions and answers" autocomplete="off" spellcheck="false" aria-label="Search questions and answers" title="↵ / ↓ next · ⇧↵ / ↑ previous · &quot;quotes&quot; keep words together">
+            <button class="set-sclr" id="qQClear" type="button" aria-label="Clear the search"><svg class="ic solo" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+          </div>
+          <div class="q-sstat" id="qSStat"></div>
+          <div class="call-list" id="qIndex"></div>
+        </div>
         <div class="q-thread" id="qThread"></div>
       </div>
     </div>
