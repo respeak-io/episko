@@ -1113,7 +1113,16 @@ html.win .wctl { display: flex; }
 .qdlg .diff-head .call-copy { margin-left: auto; margin-right: 8px; }
 .ol-open { margin-left: auto; align-self: center; width: 20px; height: 18px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--muted-2); cursor: pointer; font-size: 11px; line-height: 1; }
 .ol-open:hover, .ol-open:focus-visible { color: var(--text); border-color: var(--hair-strong); background: var(--surface-2); }
-.q-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 8px; gap: 8px; align-items: center; width: 100%; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; font: inherit; }
+.q-side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--hair); }
+.q-side .call-list { flex: 1 1 auto; min-height: 0; border-right: 0; }
+.q-search { margin: 9px 9px 0; }
+.q-sstat { padding: 6px 14px 0; font: 10.5px var(--font-mono); color: var(--muted-2); }
+.q-sstat:empty { display: none; }
+/* a hit in the index is a <mark>; in the thread it is a CSS highlight, so the guarded DOM stays as written */
+.q-hit { background: color-mix(in srgb, var(--accent) 32%, transparent); color: inherit; border-radius: 2px; }
+::highlight(q-hit) { background-color: color-mix(in srgb, var(--accent) 38%, transparent); }
+.q-rs { grid-column: 2 / 4; font-size: 11px; color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 8px; gap: 2px 8px; align-items: center; width: 100%; text-align: left; padding: 6px 9px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; font: inherit; }
 .q-row:hover { background: var(--lift); }
 .q-row.on { background: var(--accent-wash); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .q-rn { font: 10px var(--font-mono); color: var(--muted-2); text-align: right; font-variant-numeric: tabular-nums; }

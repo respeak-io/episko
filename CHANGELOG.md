@@ -13,6 +13,12 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ The Questions sheet has a search box. Typing narrows the list and the thread to the questions
+  whose text or answer mentions every word, marks each hit, and opens a pasted block or summary
+  that holds one. A row whose title does not show the word gets a line from the answer that
+  does. ↵ steps through the matches, Esc clears the search, ⌘F (Ctrl+F) gets back to it, and
+  *Copy matches* copies just what is listed.
+
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
 machine. A pull request under review gets its own row in the sidebar, issues and pull requests read
