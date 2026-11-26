@@ -44,7 +44,7 @@ export interface QueueInput {
 
 // The `rank` ladder, 0 first: a critical or high advisory · a claim of yours in flight · a
 // bot PR ready to merge · any other open PR · your note · an open issue · a triage
-// suggestion · something out of date · a medium or low advisory.
+// suggestion, then a draft PR (asking nobody yet) · something out of date · a medium or low advisory.
 
 // A row with no readable timestamp sorts last within its rank, never first: a row falsely
 // from today is the one you would act on first (./ghwork says the same about buckets).
@@ -73,10 +73,10 @@ function workItem(t: GhThread, held: Holder | null, why: string | undefined, now
   return {
     key: `work:${t.number}`,
     kind: "work",
-    rank: held?.mine && !held.stale ? 1 : t.kind === "pr" ? 3 : 5,
+    rank: held?.mine && !held.stale ? 1 : t.kind === "pr" ? (t.draft ? 6 : 3) : 5,
     moved: at(t.updated_at),
     title: t.title,
-    sub: [agedAt(t.updated_at, now), why ?? "", heldText(held)].filter(Boolean).join(" · "),
+    sub: [t.draft ? "draft" : "", agedAt(t.updated_at, now), why ?? "", heldText(held)].filter(Boolean).join(" · "),
     thread: t,
     held,
     triage: why,

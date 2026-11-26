@@ -90,6 +90,26 @@ describe("rankQueue — the ladder", () => {
     expect(row.sub).toBe("dependabot · 1 check failing");
   });
 
+  it("sinks a draft pull request below every issue, behind the triage suggestions", () => {
+    const items = rankQueue(input({
+      threads: [th({ number: 20, kind: "pr", draft: true }), th({ number: 21, kind: "pr" }), th({ number: 22 })],
+      stale: [{ t: th({ number: 23 }), why: "quiet 30 days" }],
+      out: [out()],
+    }));
+    expect(items.map((i) => i.key)).toEqual(["work:21", "work:22", "work:23", "work:20", "deps:out:vitest"]);
+    expect(items.find((i) => i.key === "work:20")?.rank).toBe(6);
+  });
+
+  it("keeps a draft of yours in flight at the top, like any claim of yours", () => {
+    const items = rankQueue(input({ threads: [th({ kind: "pr", draft: true })], holder: () => held() }));
+    expect(items[0].rank).toBe(1);
+  });
+
+  it("says a draft pull request is one, first on its line", () => {
+    expect(rankQueue(input({ threads: [th({ kind: "pr", draft: true })] }))[0].sub).toBe("draft · opened today · nobody on it");
+    expect(rankQueue(input({ threads: [th({ kind: "pr" })] }))[0].sub).toBe("opened today · nobody on it");
+  });
+
   it("calls only critical and high urgent; the rest wait below everything else", () => {
     const rank = (severity: string) => rankQueue(input({ adv: [adv({ severity })] }))[0].rank;
     expect(rank("critical")).toBe(0);

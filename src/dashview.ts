@@ -462,7 +462,7 @@ function qWorkRow(i: QueueItem, reading: number | null): string {
       + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">${icon("x", "solo")}</button>`
     : "";
   return qrow(`q-work${h ? " claimed" : ""}${t.number === reading ? " reading" : ""}`, ` data-dashissue="${t.number}"`,
-    `<span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>`, i,
+    `<span class="k ${KIND(t)}${DRAFT(t)}">${KIND(t)} ${t.number}</span>`, i,
     qacts(`${triage}${review}${web}`) + go, `${t.title} — read it here`);
 }
 
@@ -931,6 +931,8 @@ export function notesOverlay(
 // Issues and pull requests in one list; a kind chip separates them more cheaply than a heading.
 
 const KIND = (t: GhThread) => (t.kind === "pr" ? "pr" : "iss");
+// GitHub's own mark for a draft is a dashed outline; the chip wears it wherever a PR is listed.
+export const DRAFT = (t: GhThread): string => (t.kind === "pr" && t.draft ? " draft" : "");
 
 export function shortAge(iso: string): string {
   const t = Date.parse(iso);
@@ -998,11 +1000,12 @@ function workBigRow(t: GhThread, h: Holder | null, picked: ReadonlySet<string>):
   const refs = t.kind === "pr" && head && t.base
     ? `<span class="refs" title="${escAttr(`Merges ${head} into ${t.base}${t.fork ? `, from ${t.fork}'s fork` : ""}`)}">`
       + `<span class="hd">${esc(head)}</span>${icon("arrowRight")}<span class="bs">${esc(t.base)}</span></span>` : "";
+  const draft = DRAFT(t) ? `<span class="dft" title="A draft: not asking for review yet">draft</span>` : "";
   return `<div class="br" data-dashissue="${t.number}" title="Read it here">
-    <span class="k ${KIND(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
+    <span class="k ${KIND(t)}${DRAFT(t)}">${t.kind === "pr" ? "pr" : "issue"}</span>
     <span class="num">${t.number}</span>
     <span class="mid"><span class="ti">${esc(t.title)}</span>
-      ${refs || labels || claim ? `<span class="sub">${refs}${labels}${claim}</span>` : ""}</span>
+      ${draft || refs || labels || claim ? `<span class="sub">${draft}${refs}${labels}${claim}</span>` : ""}</span>
     <span class="age">${esc(shortAge(t.updated_at))}</span>
     <span class="go-slot">${t.kind === "pr" ? `<button class="web" data-dashreview="${t.number}" title="Review its changes here">${icon("files", "solo")}</button>` : ""}<button class="web" data-dashurl="${escAttr(t.url)}" title="Open it on GitHub">${icon("externalLink", "solo")}</button><button
       class="go${h ? " busy" : ""}" data-dashwork="${t.number}">${verb}</button></span>
