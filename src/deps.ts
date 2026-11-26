@@ -23,10 +23,12 @@ export interface DepAlert {
   cvss: number; // 0 where GitHub has no score; never rank on this alone
   epss: number; // 0..1, the chance of exploitation in the wild
   range: string; // the vulnerable version range, as written
+  ranges: string[]; // every range the advisory names for this package, `range` among them
   patched: string | null; // first patched version; null means there is no fix yet
   url: string;
   createdAt: string;
   updatedAt: string;
+  installed: string[] | null; // what `manifest` (a lockfile) holds now; null: it cannot say
 }
 
 /// One pull request a dependency bot opened. `checks` is the rollup reduced in Rust:
@@ -225,6 +227,25 @@ export function satisfies(version: string, range: string, eco = "npm"): boolean 
   return anyOr;
 }
 
+// ---------- an alert its lockfile already answers ----------
+
+/**
+ * Whether a lockfile read now proves an alert stale: no copy sits in any range the advisory
+ * names, and a package gone from it counts. GitHub closes an alert only when it rescans, which
+ * with the dependency graph off is never. Unread, or a range `satisfies` cannot read: not cleared.
+ */
+export function lockCleared(installed: readonly string[] | null | undefined, ranges: readonly string[] | undefined, eco: string): boolean {
+  if (!Array.isArray(installed) || !Array.isArray(ranges) || !ranges.length) return false;
+  return installed.every((v) => ranges.every((r) => satisfies(v, r, eco) === false));
+}
+
+export const alertCleared = (a: DepAlert): boolean => lockCleared(a.installed, a.ranges, a.ecosystem);
+
+/** What the lockfile holds, as one line a person or an agent reads: `pnpm-lock.yaml: vite 6.4.6`. */
+export function lockedText(manifest: string, pkg: string, installed: readonly string[]): string {
+  return `${manifest}: ${installed.length ? `${pkg} ${installed.join(", ")}` : `no ${pkg}`}`;
+}
+
 // ---------- the compatibility verdict ----------
 
 // What an upgrade would actually cost, decided from three facts we can see: what the
@@ -292,6 +313,7 @@ export interface Advisory {
   alerts: DepAlert[];
   worst: Fix; // the costliest fix among its packages: what the work will actually take
   runtime: boolean; // anything outside dev/build, which is what ships
+  cleared: boolean; // every package's lockfile is already out of range (`alertCleared`)
 }
 
 // The costliest verdict wins the group: a lockfile bump beside a major upgrade is a major
@@ -329,6 +351,7 @@ export function groupAdvisories(alerts: DepAlert[], manifests: DepManifest[]): A
       alerts: [...rows].sort((x, y) => x.pkg.localeCompare(y.pkg)),
       worst,
       runtime: rows.some((r) => r.scope !== "development"),
+      cleared: rows.every(alertCleared),
     });
   }
   return out.sort(cmpAdvisory);
@@ -486,7 +509,8 @@ function advisoryLines(a: Advisory, m: DepManifest[]): string[] {
     const d = declaredIn(m, x.pkg);
     const where = d ? `declared "${d.range}" in ${d.path}` : `not declared directly (${x.manifest})`;
     const fix = x.patched ? `first patched ${x.patched}` : "no patched version published";
-    return bullet(`${x.pkg} — ${x.relationship || "?"}, ${x.scope || "?"}; vulnerable ${x.range}; ${fix}; ${where}`);
+    const held = x.installed ? `; ${lockedText(x.manifest, x.pkg, x.installed)}` : "";
+    return bullet(`${x.pkg} — ${x.relationship || "?"}, ${x.scope || "?"}; vulnerable ${x.range}; ${fix}; ${where}${held}`);
   });
   return [head, a.summary, ...rows, bullet(`verdict: ${FIX_TEXT[a.worst]}`), a.url, ""];
 }

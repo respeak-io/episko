@@ -12,6 +12,10 @@ somebody read.
 Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
+! A Dependabot alert whose fix is already in the project's lockfile no longer reads as open work.
+  GitHub closes an alert only when it scans the lockfile again, and never while the repository's
+  dependency graph is off; the Dependencies overlay and the Maintenance board now check the
+  lockfile themselves, set such an alert aside, and say which version is already installed.
 + A *Maintenance* view beside *Activity* on the all-projects screen, and *Today | Maintenance* tabs
   on a project's dashboard, show what is rotting while nobody looks: CI and flaky jobs, security
   advisories, dependencies and packages behind their newest major, releases and deployments, git,

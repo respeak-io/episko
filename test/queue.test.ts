@@ -18,13 +18,13 @@ const held = (o: Partial<Holder> = {}): Holder => ({ who: "you", mine: true, sta
 const alert = (o: Partial<DepAlert> = {}): DepAlert => ({
   number: 1, state: "open", pkg: "vitest", ecosystem: "npm", manifest: "pnpm-lock.yaml",
   scope: "runtime", relationship: "direct", severity: "high", ghsa: "GHSA-a", cve: null,
-  summary: "s", cvss: 7.1, epss: 0.01, range: "< 4.1.11", patched: "4.1.11",
-  url: "u", createdAt: ago(3), updatedAt: ago(3), ...o,
+  summary: "s", cvss: 7.1, epss: 0.01, range: "< 4.1.11", ranges: ["< 4.1.11"], patched: "4.1.11",
+  url: "u", createdAt: ago(3), updatedAt: ago(3), installed: null, ...o,
 });
 
 const adv = (o: Partial<Advisory> = {}): Advisory => ({
   ghsa: "GHSA-a", cve: null, severity: "high", summary: "s", url: "u", epss: 0.01,
-  alerts: [alert()], worst: "lockfile", runtime: true, ...o,
+  alerts: [alert()], worst: "lockfile", runtime: true, cleared: false, ...o,
 });
 
 const pr = (o: Partial<DepPr> = {}): DepPr => ({

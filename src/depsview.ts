@@ -7,7 +7,7 @@ import { glyphIcon, icon } from "./svgicons";
 import { shortAge, overlayHtml, pickButtons, pickHead } from "./dashview";
 import type { PickKind, PickState } from "./pick";
 import {
-  checkState, FIX_TEXT, declaredIn, prBlockers, prFor,
+  checkState, FIX_TEXT, declaredIn, lockedText, prBlockers, prFor,
   type Advisory, type DepManifest, type DepPr, type DepTally, type DepTool, type OutRow,
 } from "./deps";
 import type { GhThread } from "./ghwork";
@@ -43,6 +43,7 @@ export type DepTab = "vulns" | "prs" | "stale";
 export interface DepsView {
   tab: DepTab;
   adv: Advisory[];
+  cleared: Advisory[]; // still open on GitHub, already out of range in the lockfile
   prs: DepPr[];
   out: OutRow[];
   manifests: DepManifest[];
@@ -84,19 +85,30 @@ function actionBar(count: number, kind: PickKind, verb: string): string {
     <button class="act primary" data-dashdeprun="${escAttr(verb)}"${count ? "" : " disabled"}>${icon("playSolid")}Start an agent${count > 1 ? ` on ${count}` : ""}</button></div>`;
 }
 
+function clearedNote(list: Advisory[]): string {
+  if (!list.length) return "";
+  const held = [...new Set(list.flatMap((a) => a.alerts.map((x) => lockedText(x.manifest, x.pkg, x.installed ?? []))))];
+  const shown = held.slice(0, 4).join(" · ") + (held.length > 4 ? " …" : "");
+  const n = list.length === 1 ? "1 advisory GitHub still lists is" : `${list.length} advisories GitHub still lists are`;
+  return `<div class="dep-note"><b>${n} already out of range here</b>: ${esc(shown)}. GitHub closes one only when it
+    scans the default branch again — on merge, or never while the repository's dependency graph is off.</div>`;
+}
+
 function vulnsTab(v: DepsView): string {
   if (v.loading) return `<div class="ac-empty"><span class="u-spin"></span> Reading GitHub…</div>`;
+  const note = clearedNote(v.cleared);
   // "nothing is open" and "nothing could be read" are different facts, and only one of
   // them is good news; the reason row above has already said which this is.
   if (!v.adv.length) {
-    return `<div class="ac-empty">${v.reason
+    return note + `<div class="ac-empty">${v.reason
       ? "No advisory to show."
+      : note ? "Nothing left to patch."
       : "No open Dependabot advisory. That is the whole answer, not a missing read."}</div>`;
   }
   const head = `<div class="lst-hd dep-hd">${pickHead("advisories", v.headState)}<span>Advisory</span><span>Packages</span>
     <span class="r">Fix</span><span class="r">Age</span><span class="r">Open</span></div>`;
   const rows = v.adv.map((a) => advBigRow(a, v)).join("");
-  return `<div class="bk">${head}${rows}</div>` + actionBar(v.picked.size, "advisories", "vulns");
+  return note + `<div class="bk">${head}${rows}</div>` + actionBar(v.picked.size, "advisories", "vulns");
 }
 
 function advBigRow(a: Advisory, v: DepsView): string {

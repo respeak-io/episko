@@ -320,7 +320,7 @@ fn kind_of(file: &str) -> Option<(&'static str, bool)> {
 }
 
 /// npm names are exact; crates.io and PyPI fold case and treat `-` and `_` alike.
-fn same_name(eco: &str, a: &str, b: &str) -> bool {
+pub(crate) fn same_name(eco: &str, a: &str, b: &str) -> bool {
     let fold = |s: &str| s.to_ascii_lowercase().replace('_', "-");
     if eco == "npm" { a == b } else { fold(a) == fold(b) }
 }

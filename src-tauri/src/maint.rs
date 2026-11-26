@@ -145,6 +145,10 @@ pub(crate) struct Advisory {
     pub(crate) location: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) tool: String,
+    /// A reporter that names ranges rather than what is installed (Dependabot): its ranges for `pkg`
+    /// and what the lockfile it named holds, so `maint.ts` can tell an alert GitHub never rescanned.
+    pub(crate) ranges: Vec<String>,
+    pub(crate) installed: Option<Vec<String>>,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq)]
@@ -2911,7 +2915,7 @@ off = [\"prod\"]
             id: "GHSA-xxxx-yyyy-zzzz".into(), aliases: vec!["CVE-2026-0001".into()], kind: AdvisoryKind::Dependency,
             pkg: Some("lodash".into()), ecosystem: Some("npm".into()), version: Some("4.17.20".into()),
             severity: Severity::High, raw_severity: "HIGH".into(), summary: "Prototype pollution".into(),
-            fixed: Some("4.17.21".into()), location: Some("package-lock.json".into()), url: None, tool: "osv".into(),
+            fixed: Some("4.17.21".into()), location: Some("package-lock.json".into()), url: None, tool: "osv".into(), ranges: vec![], installed: None,
         };
         let update_pr = UpdatePr {
             number: 42, title: "Update serde".into(), url: "https://github.com/acme/app/pull/42".into(),

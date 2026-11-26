@@ -846,9 +846,12 @@ export function dashKey(e: KeyboardEvent): boolean {
 
 // One derivation for the card and the overlay: grouping and the verdict are the same work,
 // and two call sites computing it separately is how two surfaces start disagreeing.
-function depsNow(): { adv: Advisory[]; prs: DepPr[]; out: OutRow[] } {
+// An advisory its lockfiles already clear is no work, so it leaves the queue and the tally.
+function depsNow(): { adv: Advisory[]; cleared: Advisory[]; prs: DepPr[]; out: OutRow[] } {
+  const all = groupAdvisories(depReport?.alerts ?? [], depManifests);
   return {
-    adv: groupAdvisories(depReport?.alerts ?? [], depManifests),
+    adv: all.filter((a) => !a.cleared),
+    cleared: all.filter((a) => a.cleared),
     prs: depReport?.prs ?? [],
     out: outRows(depRun, depManifests),
   };
@@ -1057,7 +1060,7 @@ export function renderDash(): void {
   }
   else if (openView === "deps") {
     paintOverlay(openView, depsOverlay({
-      tab: depTab, adv: dn.adv, prs: dn.prs, out: dn.out,
+      tab: depTab, adv: dn.adv, cleared: dn.cleared, prs: dn.prs, out: dn.out,
       manifests: depManifests, tools: depTools, tally: dtally,
       picked: depSel.picked, outPicked: depOutSel.picked,
       headState: pickState(pickCtx("advisories"), depSel.picked),
