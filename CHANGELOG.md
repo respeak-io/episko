@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ A draft pull request says so. In *What's next*, *Open work* and the reader's list its chip has
+  GitHub's dashed outline and its line starts with *draft*. The thread reader marks it *draft*
+  where it used to say *open*. *What's next* lists drafts below the open issues, since nobody is
+  asked to review one yet; a draft you are working on yourself stays at the top.
+
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
 machine. A pull request under review gets its own row in the sidebar, issues and pull requests read

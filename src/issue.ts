@@ -30,6 +30,7 @@ export interface GhIssueRead {
   head_ref: string | null; // a pull request's branches; null on an issue
   base_ref: string | null;
   same_repo: boolean;      // false: the head lives in a fork
+  draft: boolean;          // always false for an issue
 }
 
 const at = (iso: string): number => {
@@ -55,9 +56,12 @@ export function ago(iso: string, now: number): string {
   return `${mo} month${mo === 1 ? "" : "s"} ago`;
 }
 
-/// One word for where the thread stands. A merged PR is not a closed one, and the tone the
-/// panel wears reads off this rather than off `state` raw.
-export const stateWord = (i: GhIssueRead): string => (i.state || "open").toLowerCase();
+/// One word for where the thread stands. A merged PR is not a closed one, an open draft is not
+/// asking for review, and the tone the panel wears reads off this rather than off `state` raw.
+export function stateWord(i: GhIssueRead): string {
+  const w = (i.state || "open").toLowerCase();
+  return w === "open" && i.draft ? "draft" : w;
+}
 
 /// The line under the title: where it stands, who opened it and when, who holds it, and how
 /// much has been said since — the facts the queue row had no width for.

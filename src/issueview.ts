@@ -2,7 +2,7 @@
 // Data in, string out, like every other *view module — ./issue owns the rules, ./dashboard owns
 // the fetch and the events. See docs/dashboard.md.
 
-import { overlayHtml } from "./dashview";
+import { DRAFT, overlayHtml } from "./dashview";
 import { esc, escAttr, nameHue } from "./format";
 import { icon, keyCap } from "./svgicons";
 import type { GhThread, Holder } from "./ghwork";
@@ -71,13 +71,14 @@ const KIND = (t: GhThread): string => (t.kind === "pr" ? "pr" : "iss");
 function railRow(r: RailRow, at: number): string {
   const { t, held } = r;
   const claim = held ? `<span class="clm${held.mine ? " mine" : ""}${held.stale ? " stale" : ""}">${icon("userRoundCheck")}${esc(held.mine ? "you" : held.who)}</span>` : "";
-  const sub = r.why ? `<span class="w">${esc(r.why)}</span>` : "";
+  const why = [DRAFT(t) ? "draft" : "", r.why ?? ""].filter(Boolean).join(" · ");
+  const sub = why ? `<span class="w">${esc(why)}</span>` : "";
   const acts = r.triage
     ? `<span class="rr-b"><button class="tb yes" data-dashclose="${t.number}" data-tip="Close it on GitHub, with a comment">${icon("check", "solo")}</button>`
       + `<button class="tb no" data-dashkeep="${t.number}" data-tip="Keep it, so nobody on the team is asked again">${icon("x", "solo")}</button></span>`
     : "";
   return `<div class="rr${t.number === at ? " on" : ""}" data-dashissue="${t.number}">
-    <span class="k ${KIND(t)}">${KIND(t)} ${t.number}</span>${acts}
+    <span class="k ${KIND(t)}${DRAFT(t)}">${KIND(t)} ${t.number}</span>${acts}
     <span class="ti">${esc(t.title)}</span>
     ${claim || sub ? `<span class="rr-s">${claim}${sub}</span>` : ""}</div>`;
 }

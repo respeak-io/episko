@@ -9,7 +9,7 @@ const iss = (o: Partial<GhIssueRead> = {}): GhIssueRead => ({
   available: true, reason: null, number: 37, kind: "issue", title: "a thing",
   url: "https://github.com/o/r/issues/37", state: "OPEN", author: "tim",
   created_at: back(3 * 86_400_000), updated_at: back(3600_000), labels: [], assignees: [],
-  body: "", comments: [], head_ref: null, base_ref: null, same_repo: true, ...o,
+  body: "", comments: [], head_ref: null, base_ref: null, same_repo: true, draft: false, ...o,
 });
 
 describe("ago", () => {
@@ -47,6 +47,8 @@ describe("threadLine", () => {
   it("tells a merged pull request from a closed one", () => {
     expect(stateWord(iss({ state: "MERGED" }))).toBe("merged");
     expect(stateWord(iss({ state: "" }))).toBe("open");
+    expect(stateWord(iss({ state: "OPEN", draft: true }))).toBe("draft");
+    expect(stateWord(iss({ state: "MERGED", draft: true }))).toBe("merged");
   });
 });
 

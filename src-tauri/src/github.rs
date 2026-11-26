@@ -843,6 +843,7 @@ pub(crate) struct GhIssueRead {
     pub head_ref: Option<String>,
     pub base_ref: Option<String>,
     pub same_repo: bool,
+    pub draft: bool, // always false for an issue
 }
 
 impl GhIssueRead {
@@ -867,6 +868,7 @@ impl GhIssueRead {
             head_ref: None,
             base_ref: None,
             same_repo: true,
+            draft: false,
         }
     }
 }
@@ -936,6 +938,7 @@ pub(crate) fn parse_issue_read(json: &str, number: i64, kind: &str) -> Option<Gh
         head_ref: nonempty("headRefName"),
         base_ref: nonempty("baseRefName"),
         same_repo: !o.get("isCrossRepository").and_then(serde_json::Value::as_bool).unwrap_or(false),
+        draft: o.get("isDraft").and_then(serde_json::Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -966,7 +969,7 @@ pub(crate) async fn gh_issue(
         let sub = if kind == "pr" { "pr" } else { "issue" };
         let n = number.to_string();
         let common = "number,title,url,state,body,author,assignees,labels,comments,createdAt,updatedAt";
-        let fields = if sub == "pr" { format!("{common},headRefName,baseRefName,isCrossRepository") } else { common.to_string() };
+        let fields = if sub == "pr" { format!("{common},headRefName,baseRefName,isCrossRepository,isDraft") } else { common.to_string() };
         let out = gh(&root, acct, &[sub, "view", &n, "--json", &fields]);
         let result = match out {
             Err(e) => GhIssueRead::unavailable(number, &kind, classify(&e, who_for(acct).as_deref())),
@@ -1267,6 +1270,9 @@ mod tests {
         assert_eq!(i.head_ref.as_deref(), Some("feat/a11y"));
         assert_eq!(i.base_ref.as_deref(), Some("dev"));
         assert!(!i.same_repo);
+        assert!(!i.draft);
+        let d = parse_issue_read(r#"{"number":9,"isDraft":true}"#, 9, "pr").unwrap();
+        assert!(d.draft);
     }
 
     #[test]
