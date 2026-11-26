@@ -11,12 +11,12 @@ import { statusKey } from "./types";
 import { attnFlash, attnFlashDeadline } from "./attn";
 import { iconFor, projGlyph } from "./icons";
 import { icon } from "./svgicons";
-import { dashHeads, groupedProjects, groupReviews, groupSummary, projectList, railRanks, type ProjGroup } from "./grouping";
+import { dashHeads, groupedProjects, groupReviews, groupSummary, projectList, railRanks, type ProjGroup, type SidebarSlot } from "./grouping";
 import {
   PEEK_IDLE, peekEnter, peekLeave, peekLeaveAll, peekNextDeadline, peekTick,
   type PeekState,
 } from "./peek";
-import { groupOf, setCollapsed, type GroupDef } from "./projgroups";
+import { expandTo, groupOf, groupToken, MAX_DEPTH } from "./projgroups";
 import { dormantRows, foldEmpty, foldHead, groupBody, LIT_COLOR, peekBody } from "./sidebarview";
 import { incomingByProject, rowText, type HandoffRec } from "./handoff";
 import { incomingRowHtml, incomingStripHtml } from "./handoffview";
@@ -63,8 +63,7 @@ export function renderSidebar() {
   // ./grouping's rule: one repo can be several rows that all open the same dashboard.
   const dash = dashHeads(list, dashMirror()?.root ?? null);
   const loose = incoming.get(null) ?? [];
-  const html = incomingStripHtml(incomingRows(loose), loose.length) + groupedProjects(list).map((slot) =>
-    slot.kind === "project" ? projectHtml(slot.project, dash) : foldHtml(slot.group, slot.projects, dash)).join("");
+  const html = incomingStripHtml(incomingRows(loose), loose.length) + groupedProjects(list).map((slot) => slotHtml(slot, dash)).join("");
   if (html !== lastHtml) {
     lastHtml = html;
     $("projects").innerHTML = html;
@@ -76,11 +75,12 @@ export function renderSidebar() {
 
 // Members render even when collapsed: the height animation needs content to animate to.
 // The collapsed flag is in the markup (one repaint per click), unlike hover.
-function foldHtml(g: GroupDef, projects: ProjGroup[], dash: Set<string>): string {
-  // Not `projects.map(projectHtml)`: map's index argument would be taken for `dash`.
-  const body = projects.length ? projects.map((p) => projectHtml(p, dash)).join("") : foldEmpty();
+function slotHtml(slot: SidebarSlot, dash: Set<string>): string {
+  if (slot.kind === "project") return projectHtml(slot.project, dash);
+  const g = slot.group;
+  const body = slot.slots.length ? slot.slots.map((s) => slotHtml(s, dash)).join("") : foldEmpty();
   return `<div class="pfold${g.collapsed ? " collapsed" : ""}" data-fold="${esc(g.id)}">`
-    + foldHead(g, groupSummary(projects), projects.length)
+    + foldHead(g, groupSummary(slot.projects), slot.projects.length)
     + `<div class="pfbody"><div class="pfbody-in">${body}</div></div></div>`;
 }
 
@@ -117,12 +117,12 @@ function projectHtml(p: ProjGroup, dash: Set<string>): string {
   return `<div class="pgroup" data-path="${esc(p.path)}">${head}${rows ? `<div class="psessions">${rows}</div>` : ""}${peekBody(p, revs)}</div>`;
 }
 
-// Expand the group a project is filed in: ⌘1–9, `nextAfterClose` and the tray can land on
+// Expand the group a project is filed in, and every group above it: ⌘1–9, `nextAfterClose` and the tray can land on
 // a session inside a folded group. Persists here because ./panes cannot import ./actions.
 export function revealProjGroup(path: string) {
   const gid = groupOf(projGroups, path);
   if (!gid) return;
-  const next = setCollapsed(projGroups, gid, false);
+  const next = expandTo(projGroups, gid);
   if (next === projGroups) return; // already open — no write, no repaint
   setProjGroups(next);
   saveProjGroups();
@@ -258,25 +258,66 @@ export function closePeek() {
   peekHover = null;
   peekAdvance(PEEK_IDLE);
 }
-// Group reordering on pointer events: `dragDropEnabled:true` (for initFileDrop) blocks
+// Reordering and filing on pointer events: `dragDropEnabled:true` (for initFileDrop) blocks
 // HTML5 drag/drop. Delegated on #projects; a drag starts past DRAG_SLOP so a click still
-// selects. The marker goes into the drop target's parent (a `.pgroup` may sit in a
-// `.pfold`), and membership is read back off the DOM with the order, so they cannot disagree.
+// selects. Nodes move in the DOM and order, membership and nesting are all read back off it
+// in one pass, so they cannot disagree (docs/worktrees.md).
 export function initProjectDnD() {
   const container = $("projects");
+  const scroller = container.closest<HTMLElement>(".rail-scroll") ?? container;
   const DRAG_SLOP = 5; // px before a press becomes a drag rather than a click
+  const EDGE = 0.3;    // of a group header: its top and (folded) bottom drop beside it, not into it
+  const OPEN_AFTER_MS = 650; // resting on a folded group unfolds it, so a drop can reach inside
   const marker = document.createElement("div");
   marker.className = "dropmark";
-  let dragEl: HTMLElement | null = null;      // the group actually being dragged
-  let candidate: HTMLElement | null = null;   // pressed group, promoted to dragEl past the slop
-  let startX = 0, startY = 0;
+  let dragEl: HTMLElement | null = null;      // the project or group actually being dragged
+  let candidate: HTMLElement | null = null;   // pressed row, promoted to dragEl past the slop
+  let dragHeight = 0;                         // levels of groups the dragged node brings with it
+  let startX = 0, startY = 0, pointerId = -1;
+  let into: HTMLElement | null = null;        // the group a drop would file into, lit on its header
+  let openFor: HTMLElement | null = null, openTimer = 0;
+  const opened = new Set<HTMLElement>();      // unfolded by this drag; only the one dropped into stays open
 
-  // A collapsed fold has no visible body to drop into, so its header lights up instead.
-  const clearFoldTarget = () => container.querySelector(".pfold.droptarget")?.classList.remove("droptarget");
+  // Groups from `el` up to the container, `el` included: 0 at the top level.
+  const depth = (el: Element | null) => { let n = 0; for (let f = el?.closest(".pfold"); f && container.contains(f); f = f.parentElement?.closest(".pfold")) n++; return n; };
+  const fits = (fold: Element | null) => depth(fold) + dragHeight <= MAX_DEPTH;
+  const setInto = (f: HTMLElement | null) => {
+    if (into === f) return;
+    into?.classList.remove("droptarget");
+    into = f;
+    f?.classList.add("droptarget");
+  };
+  const armOpen = (f: HTMLElement | null) => {
+    if (openFor === f) return;
+    clearTimeout(openTimer);
+    openFor = f;
+    if (f?.classList.contains("collapsed")) openTimer = window.setTimeout(() => { f.classList.remove("collapsed"); opened.add(f); }, OPEN_AFTER_MS);
+  };
+  const beside = (el: HTMLElement, after: boolean) => {
+    setInto(null);
+    armOpen(null);
+    el.parentElement?.insertBefore(marker, after ? el.nextSibling : el);
+  };
+  const intoFold = (f: HTMLElement, atStart: boolean) => {
+    const body = f.querySelector<HTMLElement>(":scope > .pfbody > .pfbody-in");
+    if (!body) return;
+    body.insertBefore(marker, atStart ? body.firstChild : null);
+    setInto(f);
+    armOpen(f);
+  };
+  // Above or below everything: the top level's ends, which no row's half can reach once a group is first or last.
+  const atEnd = (top: boolean) => {
+    setInto(null);
+    armOpen(null);
+    const first = container.querySelector<HTMLElement>(":scope > .pgroup, :scope > .pfold");
+    if (top && first) container.insertBefore(marker, first); else container.appendChild(marker);
+  };
 
   const cleanup = () => {
     marker.remove();
-    clearFoldTarget();
+    setInto(null);
+    armOpen(null);
+    opened.clear();
     container.classList.remove("reordering");
     dragEl?.classList.remove("dragging");
     dragEl = candidate = null;
@@ -289,11 +330,11 @@ export function initProjectDnD() {
     const t = e.target as HTMLElement;
     // Leave the interactive bits to their own clicks.
     if (t.closest(".padd, .wtadd, .plaunch, .premove, .pdot, .pdirty")) return;
-    // A fold header drags the whole group; anything else drags its project (`closest` picks the nearer).
+    // A group header drags the whole group; anything else drags its project (`closest` picks the nearer).
     const g = t.closest<HTMLElement>(".pgroup, .pfold");
     if (!g) return;
     candidate = g;
-    startX = e.clientX; startY = e.clientY;
+    startX = e.clientX; startY = e.clientY; pointerId = e.pointerId;
   });
 
   container.addEventListener("pointermove", (e) => {
@@ -301,6 +342,10 @@ export function initProjectDnD() {
     if (!dragEl) {
       if (Math.hypot(e.clientX - startX, e.clientY - startY) < DRAG_SLOP) return;
       dragEl = candidate;
+      const base = depth(dragEl);
+      dragHeight = dragEl.classList.contains("pfold")
+        ? 1 + Math.max(0, ...[...dragEl.querySelectorAll(".pfold")].map((f) => depth(f) - base))
+        : 0;
       draggingProjects = true;
       container.classList.add("reordering");
       dragEl.classList.add("dragging");
@@ -308,54 +353,92 @@ export function initProjectDnD() {
     }
     e.preventDefault();
     const over = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-    let grp = over?.closest<HTMLElement>(".pgroup, .pfold") ?? null;
-    const draggingFold = dragEl.classList.contains("pfold");
-    // Groups don't nest: a dragged fold aims at the fold under the pointer, never a project in it.
-    if (grp && draggingFold) grp = grp.closest<HTMLElement>(".pfold") ?? grp;
-    if (!grp || grp === dragEl || dragEl.contains(grp)) return; // a fold over its own members
-    clearFoldTarget();
-    // Resolving to a fold means its header or an empty body: dropping a project there files
-    // it, and is the only way into a group with nothing in it yet.
-    if (!draggingFold && grp.classList.contains("pfold")) {
-      const body = grp.querySelector<HTMLElement>(".pfbody-in");
-      if (body) { body.appendChild(marker); if (grp.classList.contains("collapsed")) grp.classList.add("droptarget"); return; }
+    if (!over || !scroller.contains(over)) return; // off the rail: keep the last answer
+    const target = over.closest<HTMLElement>(".pgroup, .pfold");
+    if (!target || !container.contains(target)) {
+      const r = container.getBoundingClientRect();
+      if (e.clientY < r.top + 4) atEnd(true);
+      else if (over === container || e.clientY > (container.lastElementChild?.getBoundingClientRect().bottom ?? r.top)) atEnd(false);
+      return;
     }
-    const r = grp.getBoundingClientRect();
-    const after = e.clientY > r.top + r.height / 2;
-    grp.parentElement?.insertBefore(marker, after ? grp.nextSibling : grp);
+    if (target === dragEl || dragEl.contains(target)) return; // over itself
+    const parent = target.parentElement?.closest(".pfold") ?? null;
+    const head = target.classList.contains("pfold") ? over.closest<HTMLElement>(".pfhead") : null;
+    if (head && head.parentElement === target) {
+      const r = head.getBoundingClientRect();
+      const rel = (e.clientY - r.top) / r.height;
+      const folded = target.classList.contains("collapsed");
+      if (rel < EDGE && fits(parent)) beside(target, false);
+      else if (rel > 1 - EDGE && folded && fits(parent)) beside(target, true);
+      else if (fits(target)) intoFold(target, true);
+      else if (fits(parent)) beside(target, rel > 0.5);
+      return;
+    }
+    if (target.classList.contains("pfold")) { if (fits(target)) intoFold(target, false); return; } // its empty body
+    if (!fits(parent)) return;
+    const r = target.getBoundingClientRect();
+    beside(target, e.clientY > r.top + r.height / 2);
   });
 
   const finish = (e: PointerEvent) => {
     try { container.releasePointerCapture(e.pointerId); } catch { /* */ }
     if (!dragEl) { candidate = null; return; } // never crossed the slop: it was a click
-    if (marker.parentNode) marker.parentNode.insertBefore(dragEl, marker);
+    const el = dragEl;
+    if (marker.parentNode) marker.parentNode.insertBefore(el, marker);
+    // Into a group still folded: the row vanished, so say where it went.
+    const hidden = into?.classList.contains("collapsed") ? into.querySelector(":scope > .pfhead .pfname")?.textContent : null;
+    const keepOpen = [...opened].filter((f) => f.contains(el)).map((f) => f.dataset.fold ?? "");
     cleanup();
-    saveSidebarArrangement(container);
+    saveSidebarArrangement(container, keepOpen);
     rearmRailHold();
     if (sortMode !== "manual") setSort("manual", false); // a sorted mode would override the drag at once
     // A pointerup may synthesise a click; a timestamp guard self-heals if none fires.
     reorderGuardUntil = performance.now() + 250;
     renderAll();
+    if (hidden) toast(`Moved into ${hidden}`);
   };
   container.addEventListener("pointerup", finish);
-  container.addEventListener("pointercancel", (e) => { try { container.releasePointerCapture(e.pointerId); } catch { /* */ } cleanup(); });
+  container.addEventListener("pointercancel", (e) => { try { container.releasePointerCapture(e.pointerId); } catch { /* */ } cleanup(); renderAll(); });
+  // Esc abandons the drag: nothing has moved yet but the marker, and the repaint refolds what it opened.
+  document.addEventListener("keydown", (e) => {
+    if (!dragEl || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    try { container.releasePointerCapture(pointerId); } catch { /* */ }
+    cleanup();
+    reorderGuardUntil = performance.now() + 250;
+    renderAll();
+  }, true);
 }
 
-// Order and membership are read back from the DOM in one pass, so they cannot drift.
+// Order, membership and nesting are read back from the DOM in one pass, so they cannot drift.
 // Projects not on screen (toplevel mode renders a repo as its worktrees) keep their filing.
-function saveSidebarArrangement(container: HTMLElement) {
+function saveSidebarArrangement(container: HTMLElement, keepOpen: string[]) {
   const order: string[] = [];
   const of = { ...projGroups.of };
-  for (const el of container.querySelectorAll<HTMLElement>(".pgroup")) {
+  const parentOf = new Map<string, string | null>();
+  // Document order puts a group's token before its members, which is where the rail draws it.
+  for (const el of container.querySelectorAll<HTMLElement>(".pgroup, .pfold")) {
+    const fold = el.classList.contains("pfold") ? el.dataset.fold : undefined;
+    if (fold) {
+      order.push(groupToken(fold));
+      parentOf.set(fold, el.parentElement?.closest<HTMLElement>(".pfold")?.dataset.fold ?? null);
+      continue;
+    }
     const path = el.dataset.path;
     if (!path) continue;
     order.push(path);
     const gid = el.closest<HTMLElement>(".pfold")?.dataset.fold;
     if (gid) of[path] = gid; else delete of[path];
   }
+  const groups = projGroups.groups.map((g) => ({
+    ...g,
+    parent: parentOf.has(g.id) ? parentOf.get(g.id)! : g.parent,
+    collapsed: keepOpen.includes(g.id) ? false : g.collapsed,
+  }));
   setProjOrder(order);
   saveProjOrder();
-  setProjGroups({ groups: projGroups.groups, of });
+  setProjGroups({ groups, of });
   saveProjGroups();
 }
 

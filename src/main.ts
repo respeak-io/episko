@@ -24,7 +24,7 @@ import {
 } from "./footer";
 import { closePalette, openPalette, setPaletteHost } from "./palui";
 import {
-  closeColorPop, closeCtxMenu, ctxMenuOpen, openAgentPicker, openColorPopover, openGhPicker, setProjMenuHost,
+  closeColorPop, closeCtxMenu, ctxMenuOpen, openAgentPicker, openColorPopover, openGhPicker, openNewGroup, setProjMenuHost,
 } from "./projmenu";
 import { jumpToPrompt, renderInspector, setCtxMode, tickDwell, toggleFileGroup, toggleOutlineAll, toggleOutlineGroup, wireOutlineHover } from "./inspector";
 import {
@@ -748,7 +748,7 @@ document.addEventListener("click", (e) => {
   const t = e.target as HTMLElement;
   if (t.closest("#tourCard")) return; // the tour card is not an outside-click for the closers below
   if (!t.closest("#colorPop, #ctxMenu, .pdot, .rm-dot")) closeColorPop();
-  if (!t.closest("#ctxMenu, #colorPop")) closeCtxMenu();
+  if (!t.closest("#ctxMenu, #colorPop, #railNewGroup")) closeCtxMenu();
   if (!t.closest("#enginePop, #fEngineSeg")) closeEnginePop();
   if (!t.closest("#cafPop, #caf")) closeCafPop();
   if (!t.closest("#soPop, #signoffBtn")) closeSignoffPop();
@@ -868,6 +868,10 @@ document.addEventListener("visibilitychange", () => {
 });
 $("railCollapse").addEventListener("click", toggleRail);
 $("railSort").addEventListener("click", cycleSort);
+$("railNewGroup").addEventListener("click", (e) => {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  openNewGroup(r.left, r.bottom + 6);
+});
 $("inspBtn").addEventListener("click", toggleInsp);
 
 // "+ Session": launch into the project on stage (a dashboard counts), else the palette.

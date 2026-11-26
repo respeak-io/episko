@@ -80,6 +80,7 @@ import { syncPanelHtml, syncSummary, type ProjectSyncRow, type SyncDraft } from 
 import { overriders } from "./projprefs";
 import { deviceName, devicesByUser, parseHeaders } from "./sync";
 import { CHANNEL, updateChannel } from "./channelhook";
+import { isGroupToken } from "./projgroups";
 import type { Channel } from "./channel";
 
 // What this dialog changes but does not own; main.ts fills it at startup, no-ops until then.
@@ -1776,7 +1777,7 @@ function applyAcctSetting(verb: string) {
 }
 
 function syncProjects(): ProjectSyncRow[] {
-  const keys = [...new Set([...projOrder, ...FAVORITES.map((f) => f.path)])].filter(Boolean);
+  const keys = [...new Set([...projOrder.filter((e) => !isGroupToken(e)), ...FAVORITES.map((f) => f.path)])].filter(Boolean);
   return keys.map((key) => ({ key, name: basename(key), mode: shareModeOf(key) }));
 }
 

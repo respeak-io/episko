@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
-  assignGroup, clampGroups, cleanGroupName, collapseAll, createGroup, deleteGroup,
-  groupById, groupOf, groupPaths, nextGroupId, NO_GROUPS, renameGroup, setCollapsed,
-  type GroupStore,
+  assignGroup, canMoveGroup, canNestUnder, clampGroups, cleanGroupName, collapseAll, createGroup, deleteGroup,
+  expandTo, groupById, groupDepth, groupLabel, groupOf, groupPaths, groupPathsDeep, groupTree, MAX_DEPTH, moveGroup,
+  nextGroupId, NO_GROUPS, renameGroup, setCollapsed, type GroupDef, type GroupStore,
 } from "../src/projgroups";
 
 // A store as the app would hold one. Written out rather than built with the mutators,
 // so a bug in one of them can't make its own fixture agree with it.
 const store = (o: Partial<GroupStore> = {}): GroupStore => ({ groups: [], of: {}, ...o });
-const work = { id: "g1", name: "Work", collapsed: false };
-const side = { id: "g2", name: "Side", collapsed: true };
+const work = { id: "g1", name: "Work", collapsed: false, parent: null };
+const side = { id: "g2", name: "Side", collapsed: true, parent: null };
 const names = (st: GroupStore) => st.groups.map((g) => g.name);
 
 describe("cleanGroupName — what a heading is allowed to be", () => {
@@ -46,12 +46,12 @@ describe("clampGroups — what comes back out of localStorage", () => {
     expect(st.of).toEqual({ "/w/a": "g1" });
   });
   it("drops a duplicate id rather than letting two groups answer to one key", () => {
-    const st = clampGroups({ groups: [work, { id: "g1", name: "Other", collapsed: false }] });
+    const st = clampGroups({ groups: [work, { id: "g1", name: "Other", collapsed: false, parent: null }] });
     expect(names(st)).toEqual(["Work"]);
   });
   it("drops an id-less group and names an unnamed one", () => {
     const st = clampGroups({ groups: [{ name: "x" }, { id: "g9" }] });
-    expect(st.groups).toEqual([{ id: "g9", name: "Group", collapsed: false }]);
+    expect(st.groups).toEqual([{ id: "g9", name: "Group", collapsed: false, parent: null }]);
   });
   it("treats a missing collapsed flag as open", () => {
     expect(clampGroups({ groups: [{ id: "g1", name: "W" }] }).groups[0].collapsed).toBe(false);
@@ -70,7 +70,7 @@ describe("nextGroupId — deterministic, so nothing here needs a clock", () => {
 describe("createGroup — a group is born with something in it", () => {
   it("files the paths it was given under the new id", () => {
     const st = createGroup(NO_GROUPS, "Work", ["/w/a", "/w/b"]);
-    expect(st.groups).toEqual([{ id: "g1", name: "Work", collapsed: false }]);
+    expect(st.groups).toEqual([{ id: "g1", name: "Work", collapsed: false, parent: null }]);
     expect(st.of).toEqual({ "/w/a": "g1", "/w/b": "g1" });
   });
   it("moves a project that already had a group — one project, one group", () => {
@@ -106,7 +106,7 @@ describe("renameGroup", () => {
   const st = store({ groups: [work, side] });
   it("renames without touching the id the memberships point at", () => {
     const next = renameGroup(store({ groups: [work], of: { "/w/a": "g1" } }), "g1", " Day  job ");
-    expect(next.groups[0]).toEqual({ id: "g1", name: "Day job", collapsed: false });
+    expect(next.groups[0]).toEqual({ id: "g1", name: "Day job", collapsed: false, parent: null });
     expect(next.of).toEqual({ "/w/a": "g1" });
   });
   it("refuses an empty name — a nameless heading is unreachable", () => {
@@ -164,7 +164,85 @@ describe("the readers", () => {
 
 describe("clampGroups spells a member's path the way ./state stores it", () => {
   it("precomposes a decomposed umlaut, so the group keeps the project it was made for", () => {
-    const st = clampGroups({ groups: [{ id: "g1", name: "G", collapsed: false }], of: { "/w/Fo\u0308": "g1" } });
+    const st = clampGroups({ groups: [{ id: "g1", name: "G", collapsed: false, parent: null }], of: { "/w/Fo\u0308": "g1" } });
     expect(st.of).toEqual({ "/w/F\u00f6": "g1" });
+  });
+});
+
+describe("nesting — a group inside a group", () => {
+  const g = (id: string, parent: string | null, collapsed = false): GroupDef => ({ id, name: id.toUpperCase(), collapsed, parent });
+  // a ⊃ b ⊃ c, and d beside a at the top level.
+  const tree = () => store({ groups: [g("a", null), g("b", "a"), g("c", "b"), g("d", null)], of: { "/w/1": "a", "/w/2": "c", "/w/3": "d" } });
+
+  it("clampGroups keeps a parent that exists and cuts one that does not", () => {
+    const st = clampGroups({ groups: [g("a", null), g("b", "a"), g("x", "ghost")] });
+    expect(st.groups.map((x) => x.parent)).toEqual([null, "a", null]);
+  });
+  it("clampGroups breaks a cycle rather than hanging the walk that draws it", () => {
+    // A hand-edited or half-synced store; the first group found closing the loop is cut loose.
+    const st = clampGroups({ groups: [g("a", "b"), g("b", "a"), g("s", "s")] });
+    expect(st.groups.map((x) => x.parent)).toEqual([null, "a", null]);
+  });
+  it("clampGroups cuts a chain deeper than the rail can indent", () => {
+    const deep = Array.from({ length: MAX_DEPTH + 1 }, (_, i) => g(`l${i}`, i ? `l${i - 1}` : null));
+    const st = clampGroups({ groups: deep });
+    expect(st.groups.every((x) => groupDepth(st, x.id) <= MAX_DEPTH)).toBe(true);
+    expect(st.groups[MAX_DEPTH].parent).toBeNull();
+  });
+  it("reads a store written before nesting as all top level", () => {
+    expect(clampGroups({ groups: [{ id: "g1", name: "W", collapsed: false }] }).groups[0].parent).toBeNull();
+  });
+
+  it("createGroup nests under a parent, and refuses past the depth limit", () => {
+    const st = createGroup(tree(), "New", [], "c");
+    expect(st.groups.at(-1)).toMatchObject({ name: "New", parent: "c" });
+    const full = createGroup(st, "Deeper", [], st.groups.at(-1)!.id);
+    expect(full).toBe(st);
+    expect(canNestUnder(st, st.groups.at(-1)!.id)).toBe(false);
+    const t = tree();
+    expect(createGroup(t, "x", [], "ghost")).toBe(t);
+  });
+
+  it("moveGroup carries a group with everything under it", () => {
+    const st = moveGroup(tree(), "b", "d");
+    expect(groupById(st, "b")!.parent).toBe("d");
+    expect(groupLabel(st.groups, "c")).toBe("D › B › C");
+  });
+  it("moveGroup refuses to put a group inside itself or its own descendants", () => {
+    const st = tree();
+    expect(canMoveGroup(st, "a", "c")).toBe(false);
+    expect(canMoveGroup(st, "a", "a")).toBe(false);
+    expect(moveGroup(st, "a", "c")).toBe(st);
+  });
+  it("moveGroup refuses a move that would nest the subtree too deep", () => {
+    // a ⊃ b ⊃ c fits under d (four levels); with e under c it would need five.
+    const st = createGroup(tree(), "E", [], "c");
+    expect(canMoveGroup(st, "a", "d")).toBe(false);
+    expect(canMoveGroup(tree(), "a", "d")).toBe(true);
+  });
+  it("moveGroup to the top level, and a no-op for where it already is", () => {
+    const st = tree();
+    expect(groupById(moveGroup(st, "c", null), "c")!.parent).toBeNull();
+    expect(moveGroup(st, "c", "b")).toBe(st);
+  });
+
+  it("deleteGroup moves what it held up one level, not to the top", () => {
+    const st = deleteGroup(store({ groups: [g("a", null), g("b", "a"), g("c", "b")], of: { "/w/1": "b", "/w/2": "c" } }), "b");
+    expect(groupById(st, "c")!.parent).toBe("a");
+    expect(st.of).toEqual({ "/w/1": "a", "/w/2": "c" });
+  });
+
+  it("expandTo opens the group and every one above it, and nothing beside", () => {
+    const st = store({ groups: [g("a", null, true), g("b", "a", true), g("c", "b", true), g("d", null, true)] });
+    expect(expandTo(st, "c").groups.map((x) => x.collapsed)).toEqual([false, false, false, true]);
+    const open = expandTo(st, "c");
+    expect(expandTo(open, "c")).toBe(open);
+  });
+
+  it("groupTree lists depth first, and groupPathsDeep counts what sits below", () => {
+    const st = tree();
+    expect(groupTree(st).map((x) => `${x.group.id}${x.depth}`)).toEqual(["a0", "b1", "c2", "d0"]);
+    expect(groupPathsDeep(st, "a").sort()).toEqual(["/w/1", "/w/2"]);
+    expect(groupPathsDeep(st, "c")).toEqual(["/w/2"]);
   });
 });

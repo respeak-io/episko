@@ -22,6 +22,7 @@ import { customIcons } from "./icons";
 import { basename } from "./format";
 import { sends } from "./channelhook";
 import { LEASE_MS, leaseDue, leaseKey, leaseLive, narrowLease, type Lease } from "./claim";
+import { isGroupToken } from "./projgroups";
 import { capableDevices, narrowCaps, type HandoffCaps, type HandoffEv } from "./handoff";
 import {
   acceptMem, conflictName, diffLocal, holdMem, memChunks, mergeMemWire, narrowScan, parseMemKey, pickDir, readMemBook, type Held, type MemBook,
@@ -550,7 +551,7 @@ function rosterNow(): Roster {
 function rosterPaths(): string[] {
   const r = rosterNow();
   return [...new Set([
-    ...r.favorites.map((f) => f.path), ...r.order, ...Object.keys(r.groups.of),
+    ...r.favorites.map((f) => f.path), ...r.order.filter((e) => !isGroupToken(e)), ...Object.keys(r.groups.of),
     ...Object.keys(r.colors), ...Object.keys(r.icons), ...Object.keys(r.agent), ...Object.keys(r.gh), ...Object.keys(r.share),
   ])];
 }

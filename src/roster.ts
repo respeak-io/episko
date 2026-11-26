@@ -1,7 +1,7 @@
 // The roster on the wire (docs/sync.md): the seven path-keyed stores, spoken in project ids so
 // they mean the same thing on every machine. Pure over an explicit roster and two lookups; the
 // app keeps carrying paths, and nothing in the render layer knows ids exist.
-import { clampGroups, type GroupStore } from "./projgroups";
+import { clampGroups, isGroupToken, type GroupStore } from "./projgroups";
 
 export interface Roster {
   favorites: { name: string; path: string }[];
@@ -32,13 +32,14 @@ export function rosterWire(r: Roster, idOf: IdOf): Wire {
     }
   }
   const order: string[] = [];
-  for (const p of r.order) { const id = idOf(p); if (id && !order.includes(id)) order.push(id); }
+  // A group token is already the same on every machine: group ids travel in `groups` as they are.
+  for (const p of r.order) { const id = isGroupToken(p) ? p : idOf(p); if (id && !order.includes(id)) order.push(id); }
   if (order.length) w.order = order;
   if (r.groups.groups.length) {
     const of: Record<string, string> = {};
     for (const [path, gid] of Object.entries(r.groups.of)) { const id = idOf(path); if (id) of[id] = gid; }
     // `collapsed` is how this screen looks, not a fact about the projects: it stays here.
-    w.groups = { groups: r.groups.groups.map((g) => ({ id: g.id, name: g.name })), of };
+    w.groups = { groups: r.groups.groups.map((g) => (g.parent ? { id: g.id, name: g.name, parent: g.parent } : { id: g.id, name: g.name })), of };
   }
   return w;
 }
@@ -50,7 +51,8 @@ export const idOfKey = (k: string): string | undefined => { const i = k.indexOf(
  * carried through untouched, so no machine ever sends the absence of what it cannot see. The
  * order keeps every unknown id in its slot and re-sorts only the ids this machine can place.
  */
-export function mergeWire(prev: Wire, mine: Wire, known: (id: string) => boolean): Wire {
+export function mergeWire(prev: Wire, mine: Wire, knownId: (id: string) => boolean): Wire {
+  const known = (id: string) => isGroupToken(id) || knownId(id);
   const out: Wire = { ...mine };
   for (const [k, v] of Object.entries(prev)) {
     const id = idOfKey(k);
@@ -91,10 +93,13 @@ export function applyWire(r: Roster, key: string, value: unknown, pathOf: PathOf
     if (!Array.isArray(value)) return false;
     const rank = new Map<string, number>();
     value.forEach((id, i) => { if (typeof id === "string" && !rank.has(id)) rank.set(id, i); });
-    const at = (p: string) => { const id = idOf(p); return id !== undefined && rank.has(id) ? rank.get(id)! : Infinity; };
+    const at = (p: string) => { const id = isGroupToken(p) ? p : idOf(p); return id !== undefined && rank.has(id) ? rank.get(id)! : Infinity; };
+    // A group placed on another machine is placed here too; a path has to exist here first.
+    const arrived = [...rank.keys()].filter((id) => isGroupToken(id) && !r.order.includes(id));
+    const was = [...r.order, ...arrived];
     // Stable: a project the other machine has never seen keeps its place among the unranked.
-    const next = r.order.map((p, i) => ({ p, i, k: at(p) })).sort((a, b) => a.k - b.k || a.i - b.i).map((x) => x.p);
-    const moved = next.some((p, i) => p !== r.order[i]);
+    const next = was.map((p, i) => ({ p, i, k: at(p) })).sort((a, b) => a.k - b.k || a.i - b.i).map((x) => x.p);
+    const moved = next.length !== r.order.length || next.some((p, i) => p !== r.order[i]);
     r.order = next;
     return moved;
   }

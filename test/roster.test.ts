@@ -13,7 +13,7 @@ describe("rosterWire", () => {
     const r: Roster = {
       favorites: [{ name: "app", path: "/a/app" }, { name: "scratch", path: "/tmp/x" }],
       order: ["/a/site", "/tmp/x", "/a/app"],
-      groups: { groups: [{ id: "g1", name: "Work", collapsed: true }], of: { "/a/app": "g1", "/tmp/x": "g1" } },
+      groups: { groups: [{ id: "g1", name: "Work", collapsed: true, parent: null }], of: { "/a/app": "g1", "/tmp/x": "g1" } },
       colors: { "/a/app": "#f00" }, icons: {}, agent: { "/a/site": "codex" }, gh: {}, share: { "/a/app": "server" },
     };
     expect(rosterWire(r, idOf)).toEqual({
@@ -24,6 +24,19 @@ describe("rosterWire", () => {
       order: ["git:2", "git:1"],
       groups: { groups: [{ id: "g1", name: "Work" }], of: { "git:1": "g1" } },
     });
+  });
+  it("carries a group's parent, and only when it has one", () => {
+    const r: Roster = { ...empty(), groups: { groups: [
+      { id: "g1", name: "Work", collapsed: false, parent: null }, { id: "g2", name: "Client", collapsed: true, parent: "g1" },
+    ], of: { "/a/app": "g2" } } };
+    expect(rosterWire(r, idOf).groups).toEqual({ groups: [{ id: "g1", name: "Work" }, { id: "g2", name: "Client", parent: "g1" }], of: { "git:1": "g2" } });
+    const back = empty();
+    applyWire(back, "groups", rosterWire(r, idOf).groups, pathOfB, idOf);
+    expect(back.groups.groups.map((g) => g.parent)).toEqual([null, "g1"]);
+  });
+  it("carries a group's place in the order as it is: its id means the same on every machine", () => {
+    const r = { ...empty(), order: ["group:g1", "/a/app", "/tmp/x", "group:g2", "/a/site"] };
+    expect(rosterWire(r, idOf).order).toEqual(["group:g1", "git:1", "group:g2", "git:2"]);
   });
   it("names a project once however many checkouts of it this machine has", () => {
     const r = { ...empty(), colors: { "/a/app": "#f00", "/a/app-wt": "#0f0" } };
@@ -66,10 +79,10 @@ describe("applyWire", () => {
     expect(applyWire(r, "order", "nonsense", pathOfB, idOf)).toBe(false);
   });
   it("takes the groups but keeps this screen's collapsed state and id-less members", () => {
-    const r: Roster = { ...empty(), groups: { groups: [{ id: "g1", name: "Old", collapsed: true }], of: { "/b/local": "g1", "/b/app": "g1" } } };
+    const r: Roster = { ...empty(), groups: { groups: [{ id: "g1", name: "Old", collapsed: true, parent: null }], of: { "/b/local": "g1", "/b/app": "g1" } } };
     applyWire(r, "groups", { groups: [{ id: "g1", name: "Work" }, { id: "g2", name: "Side" }], of: { "git:1": "g2", "git:2": "g1" } }, pathOfB, idOf);
     expect(r.groups).toEqual({
-      groups: [{ id: "g1", name: "Work", collapsed: true }, { id: "g2", name: "Side", collapsed: false }],
+      groups: [{ id: "g1", name: "Work", collapsed: true, parent: null }, { id: "g2", name: "Side", collapsed: false, parent: null }],
       of: { "/b/local": "g1", "/b/app": "g2", "/b/site": "g1" },
     });
   });
@@ -112,5 +125,18 @@ describe("the roster's reach", () => {
     const src = readFileSync(new URL("../src/roster.ts", import.meta.url), "utf8");
     expect([...src.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1])).toEqual(["./projgroups"]);
     expect(src).not.toMatch(/\blocalStorage\s*[.[]|\bfetch\s*\(|\binvoke\s*\(/);
+  });
+});
+
+describe("group places in the order", () => {
+  it("applyWire places a group here too, even one this machine's order never had", () => {
+    const r: Roster = { ...empty(), order: ["/b/site", "/b/app", "group:g1"] };
+    expect(applyWire(r, "order", ["group:g2", "git:1", "group:g1", "git:2"], pathOfB, idOf)).toBe(true);
+    expect(r.order).toEqual(["group:g2", "/b/app", "group:g1", "/b/site"]);
+  });
+  it("mergeWire keeps a group token in its slot and drops one this machine removed", () => {
+    const known = (id: string) => id === "git:1" || id === "git:2";
+    const merged = mergeWire({ order: ["group:g1", "git:1", "group:g9", "git:2"] }, { order: ["group:g1", "git:2", "git:1"] }, known);
+    expect(merged.order).toEqual(["group:g1", "git:2", "git:1"]);
   });
 });
