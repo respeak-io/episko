@@ -810,8 +810,8 @@ describe("the rail holds still under the pointer", () => {
 
 describe("groupedProjects — the user's named groups folded over that list", () => {
   // A slot flattened for assertions: a project by its path, a group as "Name[member, member]".
-  const shape = (l: SidebarSlot[]) =>
-    l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${s.projects.map((p) => p.path).join(", ")}]`));
+  const shape = (l: SidebarSlot[]): string[] =>
+    l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${shape(s.slots).join(", ")}]`));
   const threeFavs = () => setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]);
 
   it("passes everything through untouched when there are no groups", () => {
@@ -821,7 +821,7 @@ describe("groupedProjects — the user's named groups folded over that list", ()
 
   it("collects a group's members and leaves the rest at the top level", () => {
     threeFavs();
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: { "/w/a": "g1", "/w/c": "g1" } });
     expect(shape(groupedProjects())).toEqual(["Work[/w/a, /w/c]", "/w/b"]);
   });
 
@@ -829,7 +829,7 @@ describe("groupedProjects — the user's named groups folded over that list", ()
     // The position is derived from the first member, which is why there is no group order to persist.
     threeFavs();
     setProjOrder(["/w/b", "/w/c", "/w/a"]);
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: { "/w/a": "g1", "/w/c": "g1" } });
     expect(shape(groupedProjects())).toEqual(["/w/b", "Work[/w/c, /w/a]"]);
   });
 
@@ -839,21 +839,21 @@ describe("groupedProjects — the user's named groups folded over that list", ()
       sess({ id: "quiet", project: "b", colorKey: "/w/b", phase: "idle" }),
       sess({ id: "blocked", project: "a", colorKey: "/w/a", attention: "Bash" }),
     );
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: { "/w/a": "g1" } });
     expect(shape(groupedProjects())).toEqual(["Work[/w/a]", "/w/b"]);
   });
 
   it("keeps an emptied group, at the end — it has no member to be ranked by", () => {
     // Dropping it would read as a deleted heading, and it is the only drop target that could refill it.
     threeFavs();
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: {} });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: {} });
     expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
   });
 
   it("ignores a membership pointing at a group that is gone", () => {
     // clampGroups repairs this on load; the render side must still not lose a project to it.
     threeFavs();
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/a": "ghost" } });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: { "/w/a": "ghost" } });
     expect(shape(groupedProjects())).toEqual(["/w/a", "/w/b", "/w/c", "Work[]"]);
   });
 
@@ -862,8 +862,77 @@ describe("groupedProjects — the user's named groups folded over that list", ()
     // must answer with the repo or a grouped one scatters the moment a second worktree opens.
     setWtGroup("toplevel");
     open(sess({ id: "a", workdir: "/w/epi", branch: "main" }), sess({ id: "b", workdir: "/w/wt", branch: "feature" }));
-    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false }], of: { "/w/epi": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }], of: { "/w/epi": "g1" } });
     expect(shape(groupedProjects())).toEqual(["Work[/w/epi, /w/wt]"]);
+  });
+
+  it("draws a group inside its parent, placed by its own first member", () => {
+    threeFavs();
+    setProjOrder(["/w/b", "/w/c", "/w/a"]);
+    setProjGroups({
+      groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }, { id: "g2", name: "Client", collapsed: false, parent: "g1" }],
+      of: { "/w/c": "g2", "/w/a": "g1" },
+    });
+    expect(shape(groupedProjects())).toEqual(["/w/b", "Work[Client[/w/c], /w/a]"]);
+  });
+  it("lists a group's projects in the order drawn, subgroups included, for the summary and ⌘1–9", () => {
+    threeFavs();
+    setProjGroups({
+      groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }, { id: "g2", name: "Client", collapsed: false, parent: "g1" }],
+      of: { "/w/a": "g2", "/w/b": "g1", "/w/c": "g2" },
+    });
+    const [slot] = groupedProjects();
+    expect(slot.kind === "group" && slot.projects.map((p) => p.path)).toEqual(["/w/a", "/w/c", "/w/b"]);
+  });
+  it("keeps an empty subgroup, last inside its parent, and opens an empty parent for it", () => {
+    threeFavs();
+    setProjGroups({
+      groups: [{ id: "g1", name: "Work", collapsed: false, parent: null }, { id: "g2", name: "Sub", collapsed: false, parent: "g1" },
+        { id: "g3", name: "Bare", collapsed: false, parent: null }, { id: "g4", name: "Inner", collapsed: false, parent: "g3" }],
+      of: { "/w/a": "g1" },
+    });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a, Sub[]]", "/w/b", "/w/c", "Bare[Inner[]]"]);
+  });
+});
+
+describe("groupedProjects — a group placed by hand", () => {
+  const shape = (l: SidebarSlot[]): string[] =>
+    l.map((s) => (s.kind === "project" ? s.project.path : `${s.group.name}[${shape(s.slots).join(", ")}]`));
+  const work = { id: "g1", name: "Work", collapsed: false, parent: null };
+  beforeEach(() => setFavorites([{ name: "a", path: "/w/a" }, { name: "b", path: "/w/b" }, { name: "c", path: "/w/c" }]));
+
+  it("puts a group at its own place in the manual order, above a project ranked before its members", () => {
+    setProjOrder(["group:g1", "/w/a", "/w/b", "/w/c"]);
+    setProjGroups({ groups: [work], of: { "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/c]", "/w/a", "/w/b"]);
+  });
+  it("keeps an EMPTY group where it was dropped, instead of at the end", () => {
+    setProjOrder(["/w/a", "group:g1", "/w/b", "/w/c"]);
+    setProjGroups({ groups: [work], of: {} });
+    expect(shape(groupedProjects())).toEqual(["/w/a", "Work[]", "/w/b", "/w/c"]);
+  });
+  it("orders a subgroup among its parent's own members", () => {
+    setProjOrder(["group:g1", "/w/a", "group:g2", "/w/b", "/w/c"]);
+    setProjGroups({ groups: [work, { id: "g2", name: "Sub", collapsed: false, parent: "g1" }], of: { "/w/a": "g1", "/w/b": "g2", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["Work[/w/a, Sub[/w/b], /w/c]"]);
+    // ⌘1–9 and the summary walk the drawn order.
+    const [slot] = groupedProjects();
+    expect(slot.kind === "group" && slot.projects.map((p) => p.path)).toEqual(["/w/a", "/w/b", "/w/c"]);
+  });
+  it("lets an unplaced group fall back to its first member, so an older store reads the same", () => {
+    setProjOrder(["/w/b", "group:gone", "/w/c", "/w/a"]);
+    setProjGroups({ groups: [work], of: { "/w/a": "g1", "/w/c": "g1" } });
+    expect(shape(groupedProjects())).toEqual(["/w/b", "Work[/w/c, /w/a]"]);
+  });
+  it("ignores the hand placement in the attention sort, where a group rises with a member that needs you", () => {
+    setSortMode("attention");
+    setProjOrder(["/w/b", "group:g1"]);
+    open(
+      sess({ id: "quiet", project: "b", colorKey: "/w/b", phase: "idle" }),
+      sess({ id: "blocked", project: "a", colorKey: "/w/a", attention: "Bash" }),
+    );
+    setProjGroups({ groups: [work], of: { "/w/a": "g1" } });
+    expect(shape(groupedProjects())[0]).toBe("Work[/w/a]");
   });
 });
 
@@ -957,12 +1026,12 @@ describe("orderedSessions — the sidebar read as one flat list", () => {
       sess({ id: "c", project: "c", colorKey: "/w/c" }),
     );
     expect(ids(orderedSessions())).toEqual(["a", "b", "c"]);
-    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: false }], of: { "/w/a": "g1", "/w/c": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: false, parent: null }], of: { "/w/a": "g1", "/w/c": "g1" } });
     expect(ids(orderedSessions())).toEqual(["a", "c", "b"]);
   });
   it("keeps a collapsed group's sessions reachable — they are still running", () => {
     open(sess({ id: "a", project: "a", colorKey: "/w/a" }), sess({ id: "b", project: "b", colorKey: "/w/b" }));
-    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: true }], of: { "/w/a": "g1" } });
+    setProjGroups({ groups: [{ id: "g1", name: "W", collapsed: true, parent: null }], of: { "/w/a": "g1" } });
     expect(ids(orderedSessions())).toEqual(["a", "b"]);
   });
 });

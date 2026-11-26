@@ -25,7 +25,7 @@ import {
   markWorkdirStale, worktreesByRepo,
   setAutoFetchPrefs as setAutoFetchPrefsState,
   peekPrefs, permissionModes,
-  projGroups,
+  projGroups, projOrder, saveProjOrder, setProjOrder,
   saveFavorites, saveProjGroups, sessions, termEngine,
   setAttnPrefs as setAttnPrefsState,
   setFavorites, setFootPrefs, setKeyPrefs as setKeyPrefsState,
@@ -66,7 +66,7 @@ import { withFetch, withPerm, withTools } from "./projprefs";
 import type { OutlinePrefs } from "./outline";
 import {
   assignGroup, cleanGroupName, collapseAll, createGroup, deleteGroup, groupById,
-  renameGroup, setCollapsed, type GroupStore,
+  renameGroup, setCollapsed, moveGroup, canMoveGroup, groupLabel, groupToken, type GroupStore,
 } from "./projgroups";
 import { isDefaultKeyPrefs, serializeKeyPrefs, type KeyPrefs } from "./keys";
 import type { AttnPrefs } from "./attn";
@@ -471,13 +471,23 @@ function commitProjGroups(next: GroupStore) {
 export function setProjectGroup(path: string, gid: string | null) {
   const to = gid ? groupById(projGroups, gid) : null;
   commitProjGroups(assignGroup(projGroups, path, gid));
-  toast(to ? `Moved to ${to.name}` : "Removed from group");
+  toast(to ? `Moved to ${groupLabel(projGroups.groups, to.id)}` : "Removed from group");
 }
-export function newProjectGroup(name: string, path: string) {
+/** A new group, holding `path` if one is given, under `parent` or at the top level. */
+export function newProjectGroup(name: string, path: string | null, parent: string | null = null) {
   const clean = cleanGroupName(name);
   if (!clean) { toast("Give the group a name first"); return; }
-  commitProjGroups(createGroup(projGroups, clean, [path]));
-  toast(`Grouped under ${clean}`);
+  const next = createGroup(projGroups, clean, path ? [path] : [], parent);
+  if (next === projGroups) { toast("No room for another group there"); return; }
+  commitProjGroups(next);
+  toast(path ? `Grouped under ${clean}` : `Made ${groupLabel(next.groups, next.groups[next.groups.length - 1].id)}. Drag projects onto it`);
+}
+export function moveProjectGroup(gid: string, parent: string | null) {
+  if (!canMoveGroup(projGroups, gid, parent)) { toast("That would nest it too deep"); return; }
+  const next = moveGroup(projGroups, gid, parent);
+  commitProjGroups(next);
+  const g = groupById(next, gid);
+  if (g && next !== projGroups) toast(parent ? `Moved into ${groupLabel(next.groups, parent)}` : `${g.name} is at the top level`);
 }
 export function renameProjectGroup(gid: string, name: string) {
   const clean = cleanGroupName(name);
@@ -487,8 +497,11 @@ export function renameProjectGroup(gid: string, name: string) {
 export function deleteProjectGroup(gid: string) {
   const g = groupById(projGroups, gid);
   if (!g) return;
+  const up = g.parent ? groupById(projGroups, g.parent)?.name : null;
+  // Its place in the manual order goes with it; a stale token would only be skipped, but never cleared.
+  if (projOrder.includes(groupToken(gid))) { setProjOrder(projOrder.filter((e) => e !== groupToken(gid))); saveProjOrder(); }
   commitProjGroups(deleteGroup(projGroups, gid));
-  toast(`Ungrouped ${g.name}. The projects stay`);
+  toast(`Ungrouped ${g.name}. What it held moved ${up ? `up into ${up}` : "to the top level"}`);
 }
 export function toggleProjGroup(gid: string) {
   const g = groupById(projGroups, gid);

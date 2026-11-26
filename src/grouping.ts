@@ -8,7 +8,7 @@ import {
   type ExtSession, type LiveSess, type Phase, type Restorable, type Sess, type WtHead,
 } from "./types";
 import { attnCleared, attnOrder } from "./attn";
-import { groupOf, type GroupDef } from "./projgroups";
+import { groupOf, groupToken, type GroupDef } from "./projgroups";
 import {
   accentFor, activeId, attnPrefs, backendLive, dormants, externals, FAVORITES, folderDirty, handoffs,
   openReviews, projGroups, projOrder, railHold, removingWt, sessions, sortMode, wtGroup, worktreesByRepo,
@@ -274,32 +274,68 @@ export function dashHeads(list: ProjGroup[], root: string | null): Set<string> {
 // ---------- the user's named groups, folded into that list ----------
 // ./projgroups owns the store and its rules; this is the one place that turns it into rows.
 
+// `projects` is every project anywhere under the group, in display order (the summary and
+// ⌘1–9 read it); `slots` is what is drawn directly inside it.
 export type SidebarSlot =
   | { kind: "project"; project: ProjGroup }
-  | { kind: "group"; group: GroupDef; projects: ProjGroup[] };
+  | { kind: "group"; group: GroupDef; slots: SidebarSlot[]; projects: ProjGroup[] };
+type GroupSlot = Extract<SidebarSlot, { kind: "group" }>;
 
 // `repoRoot` fallback: the user filed the repo, so every checkout of it answers with its group.
 function foldIdOf(p: ProjGroup): string | null {
   return groupOf(projGroups, p.path) ?? (p.repoRoot ? groupOf(projGroups, p.repoRoot) : null);
 }
 
-// A group sits where its first member does under the active sort; no group order is persisted.
-// An empty group stays, after everything else: it is the drop target that refills it.
+// A group sits where its first member (at any depth) does under the active sort; no group order
+// is persisted. An empty group stays, after its siblings: it is the drop target that refills it.
 export function groupedProjects(list: ProjGroup[] = projectList()): SidebarSlot[] {
   const store = projGroups;
   if (!store.groups.length) return list.map((project) => ({ kind: "project" as const, project }));
-  const slots: SidebarSlot[] = [];
-  const open = new Map<string, ProjGroup[]>();
+  const top: SidebarSlot[] = [];
+  const open = new Map<string, GroupSlot>();
+  // Opens the group and, first, every group above it, so a parent lands before its child.
+  const ensure = (g: GroupDef): GroupSlot => {
+    const have = open.get(g.id);
+    if (have) return have;
+    const parent = g.parent ? store.groups.find((x) => x.id === g.parent) : undefined;
+    const into = parent ? ensure(parent).slots : top;
+    const slot: GroupSlot = { kind: "group", group: g, slots: [], projects: [] };
+    open.set(g.id, slot);
+    into.push(slot);
+    return slot;
+  };
   for (const project of list) {
     const gid = foldIdOf(project);
     const group = gid ? store.groups.find((g) => g.id === gid) : undefined;
-    if (!group) { slots.push({ kind: "project", project }); continue; }
-    let projects = open.get(group.id);
-    if (!projects) { projects = []; open.set(group.id, projects); slots.push({ kind: "group", group, projects }); }
-    projects.push(project);
+    (group ? ensure(group).slots : top).push({ kind: "project", project });
   }
-  for (const group of store.groups) if (!open.has(group.id)) slots.push({ kind: "group", group, projects: [] });
-  return slots;
+  for (const group of store.groups) ensure(group);
+  const fill = (slot: GroupSlot): ProjGroup[] =>
+    (slot.projects = slot.slots.flatMap((s) => (s.kind === "project" ? [s.project] : fill(s))));
+  for (const s of top) if (s.kind === "group") fill(s);
+  if (sortMode === "manual") placeByHand(top);
+  return top;
+}
+
+// Manual sort only: a group dragged into place (its token in `projOrder`) stays there. The
+// other sorts keep it floating with its members, so a group whose project needs you rises.
+function placeByHand(slots: SidebarSlot[]) {
+  const at = new Map<string, number>();
+  projOrder.forEach((e, i) => { if (!at.has(e)) at.set(e, i); });
+  const NONE = Number.MAX_SAFE_INTEGER;
+  const rankOf = (p: ProjGroup) => at.get(p.path) ?? NONE;
+  // Unplaced, a group still sits where its first member does, so a store from before reads the same.
+  const rank = (s: SidebarSlot): number => s.kind === "project" ? rankOf(s.project)
+    : at.get(groupToken(s.group.id)) ?? s.projects.reduce((m, p) => Math.min(m, rankOf(p)), NONE);
+  const sortIn = (list: SidebarSlot[]) => {
+    const keyed = list.map((s, i) => ({ s, i, k: rank(s) }));
+    keyed.sort((a, b) => a.k - b.k || a.i - b.i);
+    keyed.forEach(({ s }, i) => { list[i] = s; if (s.kind === "group") sortIn(s.slots); });
+  };
+  sortIn(slots);
+  const refill = (slot: GroupSlot): ProjGroup[] =>
+    (slot.projects = slot.slots.flatMap((s) => (s.kind === "project" ? [s.project] : refill(s))));
+  for (const s of slots) if (s.kind === "group") refill(s);
 }
 
 // `dirty`/`urgent` are for the collapsed state: folding a group must not hide that something waits.

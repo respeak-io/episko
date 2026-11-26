@@ -2,7 +2,7 @@
 // owns the markup. See docs/dashboard.md and test/fleet.test.ts.
 
 import type { ProjGroup } from "./grouping";
-import { groupOf, type GroupDef, type GroupStore } from "./projgroups";
+import { groupLabel, groupOf, type GroupDef, type GroupStore } from "./projgroups";
 import { histProject, type HistEntry } from "./history";
 import type { TrailCommit } from "./trail";
 import type { DiffStat, Sess, WtHead } from "./types";
@@ -107,7 +107,7 @@ export function fleetSections(cards: FleetCard[], groups: GroupDef[]): FleetSect
     const g = c.group ? groups.find((x) => x.id === c.group) : undefined;
     const id = g?.id ?? "";
     let sec = open.get(id);
-    if (!sec) { sec = { name: g?.name ?? TOP_LEVEL, cards: [] }; open.set(id, sec); out.push(sec); }
+    if (!sec) { sec = { name: g ? groupLabel(groups, g.id) : TOP_LEVEL, cards: [] }; open.set(id, sec); out.push(sec); }
     sec.cards.push(c);
   }
   return out;

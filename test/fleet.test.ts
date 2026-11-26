@@ -198,7 +198,7 @@ describe("fleetSorted", () => {
 });
 
 describe("fleetSections — the sidebar's own groups, over the cards", () => {
-  const gdef = (id: string, name: string): GroupDef => ({ id, name, collapsed: false });
+  const gdef = (id: string, name: string): GroupDef => ({ id, name, collapsed: false, parent: null });
   const store = (of: Record<string, string>, ...groups: GroupDef[]): GroupStore => ({ groups, of });
   const names = (l: { name: string }[]) => l.map((s) => s.name);
 
@@ -256,6 +256,10 @@ describe("fleetSections — the sidebar's own groups, over the cards", () => {
     const secs = fleetSections(cards, [gdef("g1", "Work")]);
     expect(secs.flatMap((x) => paths(x.cards)).sort()).toEqual(["/w/a", "/w/b", "/w/c"]);
     expect(names(secs)).toEqual(["Work", TOP_LEVEL]);
+  });
+  it("names a nested group by its whole trail, since a section is not drawn inside its parent", () => {
+    const secs = fleetSections([card({ group: "g2" })], [gdef("g1", "Work"), { ...gdef("g2", "Client"), parent: "g1" }]);
+    expect(names(secs)).toEqual(["Work › Client"]);
   });
   it("answers nothing for an empty fleet rather than one empty run", () => {
     expect(fleetSections([], [gdef("g1", "Work")])).toEqual([]);

@@ -13,6 +13,17 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
++ Project groups nest. A group can sit inside another, up to four levels deep: drag one group
+  onto another's header, or use *New group inside…* and *Move group to…* in a group's right-click
+  menu. The folder button at the top of the rail makes an empty group to drag projects onto.
+  Deleting a group moves what it held up one level, and a group the rail had folded opens when
+  you rest a dragged row on it for a moment.
++ In the manual sort a group stays where you drag it, even an empty one, instead of following
+  its first project. The activity and attention sorts still move a group with its projects, so
+  one whose project needs you still rises.
+! A project can be dragged above the first group in the sidebar, or below the last. The top and
+  bottom edges of a group's header now drop beside it rather than into it, and Esc cancels a drag.
+
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
 machine. A pull request under review gets its own row in the sidebar, issues and pull requests read

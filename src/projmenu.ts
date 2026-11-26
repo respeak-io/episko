@@ -16,9 +16,11 @@ import { clearIcon, customIcons, emojiFor, iconFor, pickCustomIcon, resetCustomI
 import { openSessionBranchPop, openWt, removeWorktreeAt } from "./worktree";
 import {
   collapseAllProjGroups, copyPath, deleteProjectGroup, followSessionDrift, newProjectGroup,
-  openTerminalIn, renameProjectGroup, setProjectGroup, shelveSessionAsked, toggleProjGroup,
+  moveProjectGroup, openTerminalIn, renameProjectGroup, setProjectGroup, shelveSessionAsked, toggleProjGroup,
 } from "./actions";
-import { groupById, groupOf, groupPaths } from "./projgroups";
+import {
+  canMoveGroup, canNestUnder, groupById, groupLabel, groupOf, groupPathsDeep, groupTree, MAX_DEPTH,
+} from "./projgroups";
 import { dormantBusy } from "./grouping";
 import { runnableIn, pinnedIds, togglePin } from "./tasks";
 import { rerunTask, revealSource } from "./taskrun";
@@ -266,7 +268,7 @@ function projSetSub(key: string): string {
 
 export function openCtxMenu(key: string, x: number, y: number) {
   closeColorPop();
-  wtTarget = gTarget = pickPath = brTarget = sessTarget = null; // one #ctxMenu, one target
+  wtTarget = gTarget = pickPath = brTarget = sessTarget = naming = null; // one #ctxMenu, one target
   ctxKey = key;
   menuX = x; menuY = y;
   const grouped = groupById(projGroups, groupOf(projGroups, key) ?? "");
@@ -296,7 +298,7 @@ export function openCtxMenu(key: string, x: number, y: number) {
     { act: "copypath", ic: "⧉", label: "Copy path" },
     null,
     grouped
-      ? { act: "movegroup", icn: "layoutList", label: `Group · ${grouped.name}`, sub: "move to another, or take it out", chev: true }
+      ? { act: "movegroup", icn: "layoutList", label: `Group · ${groupLabel(projGroups.groups, grouped.id)}`, sub: "move to another, or take it out", chev: true }
       : { act: "movegroup", icn: "layoutList", label: "Add to group…", sub: "collect projects under one collapsible heading", chev: true },
     { act: "appearance", ic: "◐", label: "Appearance", sub: "color, logo", chev: true },
     null,
@@ -326,7 +328,7 @@ export function openCtxMenu(key: string, x: number, y: number) {
     if (sub) sub.textContent = `branch off ${h.branch}`;
   }).catch(() => {});
 }
-export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = brTarget = sessTarget = null; }
+export function closeCtxMenu() { $("ctxMenu").classList.remove("show", "agent-all"); ctxKey = wtTarget = gTarget = pickPath = brTarget = sessTarget = naming = null; }
 export const ctxMenuOpen = () => $("ctxMenu").classList.contains("show");
 
 // ---------- worktree cluster context menu ----------
@@ -569,7 +571,7 @@ function openSessionMenu(kind: SessTarget["kind"], id: string, row: HTMLElement,
   const e = kind === "ext" ? externals.find((r) => r.session_id === id) : null;
   if (!s && !d && !e) return;
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = brTarget = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = brTarget = naming = null; // one #ctxMenu, one target
   sessTarget = { kind, id, row };
   const working = !!e && extWorking(e);
   const g = s ? rowGlyph(s)
@@ -674,7 +676,7 @@ function switchRowFor(t: BranchTarget): CtxRow {
 
 export function openBranchMenu(t: BranchTarget, x: number, y: number, run: (act: string) => void) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = pickPath = sessTarget = null; // one #ctxMenu, one target
+  ctxKey = wtTarget = gTarget = pickPath = sessTarget = naming = null; // one #ctxMenu, one target
   brTarget = t;
   brRun = run;
   const rows: (CtxRow | null)[] = [
@@ -827,25 +829,32 @@ export function openAgentPicker(at: HTMLElement | DOMRect, key: string) {
 // colour panel): one short string, and a modal would be heavier than what it creates.
 let pickPath: string | null = null;   // the project being filed
 let gTarget: string | null = null;    // the group whose menu is open
+// What Enter in the name field means once no project is being filed.
+let naming: { kind: "rename"; gid: string } | { kind: "new"; parent: string | null } | null = null;
 
-const groupCount = (gid: string) => groupPaths(projGroups, gid).length;
+const groupCount = (gid: string) => groupPathsDeep(projGroups, gid).length;
+const projectsSub = (n: number) => `${n} project${n === 1 ? "" : "s"}`;
 const nameField = (placeholder: string, value = "") =>
   `<div class="mp-new"><input class="mp-in" type="text" spellcheck="false" autocomplete="off" maxlength="40"`
   + ` placeholder="${esc(placeholder)}" value="${esc(value)}" /></div>`;
 const focusField = () => setTimeout(() => $("ctxMenu").querySelector<HTMLInputElement>(".mp-in")?.focus(), 30);
+// Indented by depth, so a picker reads as the tree the rail draws.
+const treeRow = (act: string, g: { id: string; name: string }, depth: number, mark = ""): CtxRow => ({
+  act, ic: mark, label: g.name, sub: projectsSub(groupCount(g.id)), cls: depth ? `mp-d${Math.min(depth, MAX_DEPTH - 1)}` : "",
+});
+const groupHead = (title: string, sub: string) =>
+  `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
+  + `<span class="mp-hmain"><span class="mp-hname">${esc(title)}</span><span class="mp-hpath">${esc(sub)}</span></span></div>`;
 
 function openGroupPicker(key: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = gTarget = sessTarget = null;
+  ctxKey = wtTarget = gTarget = sessTarget = naming = null;
   pickPath = key;
   const cur = groupOf(projGroups, key);
   const rows: (CtxRow | null)[] = [
     { act: "gback", icn: "arrowLeft", label: "Back", sub: projName(key) },
     null,
-    ...projGroups.groups.map((g) => ({
-      act: `gpick:${g.id}`, ic: g.id === cur ? "✓" : "", label: g.name,
-      sub: `${groupCount(g.id)} project${groupCount(g.id) === 1 ? "" : "s"}`,
-    })),
+    ...groupTree(projGroups).map(({ group, depth }) => treeRow(`gpick:${group.id}`, group, depth, group.id === cur ? "✓" : "")),
     cur ? { act: "gclear", ic: "⊘", label: "Remove from group", sub: "back to the top level" } : null,
   ];
   const menu = $("ctxMenu");
@@ -860,48 +869,77 @@ function openGroupPicker(key: string, x: number, y: number) {
 
 function openGroupMenu(gid: string, x: number, y: number) {
   closeColorPop();
-  ctxKey = wtTarget = pickPath = sessTarget = null;
+  ctxKey = wtTarget = pickPath = sessTarget = naming = null;
   gTarget = gid;
   menuX = x; menuY = y;
   const g = groupById(projGroups, gid);
   if (!g) return;
   const n = groupCount(gid);
   const many = projGroups.groups.length > 1;
+  const up = g.parent ? groupById(projGroups, g.parent) : null;
+  // Anywhere to go: the top level from inside one, or another group that can take it.
+  const movable = !!up || projGroups.groups.some((x) => x.id !== gid && canMoveGroup(projGroups, gid, x.id));
   const rows: (CtxRow | null)[] = [
     g.collapsed
-      ? { act: "gopen", ic: "▾", label: "Expand group", sub: `show its ${n} project${n === 1 ? "" : "s"}` }
-      : { act: "gopen", ic: "▸", label: "Collapse group", sub: n ? `fold ${n} project${n === 1 ? "" : "s"} away` : "it is empty" },
+      ? { act: "gopen", ic: "▾", label: "Expand group", sub: `show its ${projectsSub(n)}` }
+      : { act: "gopen", ic: "▸", label: "Collapse group", sub: n ? `fold ${projectsSub(n)} away` : "it is empty" },
     { act: "grename", ic: "✎", label: "Rename group…" },
+    canNestUnder(projGroups, gid) ? { act: "gnew", icn: "folderPlus", label: "New group inside…", sub: `nested under ${g.name}` } : null,
+    movable ? { act: "gmoveto", icn: "folderInput", label: "Move group to…", sub: up ? `now in ${groupLabel(projGroups.groups, up.id)}` : "now at the top level", chev: true } : null,
     // Only worth offering with more than one group; otherwise it repeats the row above.
     ...(many ? [null, { act: "gcollapseall", ic: "⇱", label: "Collapse all groups" }, { act: "gexpandall", ic: "⇲", label: "Expand all groups" }] as (CtxRow | null)[] : []),
     null,
-    // Destroys only the heading, and the sub must say so.
-    { act: "gdelete", ic: "✕", label: "Delete group", sub: "the projects stay, at the top level", cls: "mp-danger" },
+    // Destroys only the heading, and the sub must say where its contents go.
+    { act: "gdelete", ic: "✕", label: "Delete group", sub: up ? `what it holds moves up into ${up.name}` : "the projects stay, at the top level", cls: "mp-danger" },
   ];
   const menu = $("ctxMenu");
   menu.classList.remove("agent-all");
-  menu.innerHTML =
-    `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
-    + `<span class="mp-hmain"><span class="mp-hname">${esc(g.name)}</span>`
-    + `<span class="mp-hpath">${n} project${n === 1 ? "" : "s"}</span></span></div>`
-    + ctxRowsHtml(rows);
+  menu.innerHTML = groupHead(g.name, up ? `in ${groupLabel(projGroups.groups, up.id)} · ${projectsSub(n)}` : projectsSub(n)) + ctxRowsHtml(rows);
   placePop(menu, x, y);
 }
 
-function openRenameGroup(gid: string) {
+function openGroupMove(gid: string) {
   const g = groupById(projGroups, gid);
   if (!g) return;
   gTarget = gid;
+  const rows: (CtxRow | null)[] = [
+    { act: "gmback", icn: "arrowLeft", label: "Back", sub: g.name },
+    null,
+    g.parent ? { act: "gmove:", ic: "⊘", label: "Top level", sub: "out of every group" } : null,
+    ...groupTree(projGroups)
+      .filter(({ group }) => group.id === g.parent || canMoveGroup(projGroups, gid, group.id))
+      .map(({ group, depth }) => {
+        const row = treeRow(`gmove:${group.id}`, group, depth, group.id === g.parent ? "✓" : "");
+        return group.id === g.parent ? { ...row, cls: `${row.cls} dis` } : row;
+      }),
+  ];
   const menu = $("ctxMenu");
   menu.classList.remove("agent-all");
-  menu.innerHTML =
-    `<div class="mp-head"><span class="mp-hsw mp-hfold"></span>`
-    + `<span class="mp-hmain"><span class="mp-hname">Rename</span><span class="mp-hpath">${esc(g.name)}</span></span></div>`
-    + nameField("Group name", g.name);
+  menu.innerHTML = groupHead("Move to", g.name) + ctxRowsHtml(rows);
   placePop(menu, menuX, menuY);
-  focusField();
-  setTimeout(() => menu.querySelector<HTMLInputElement>(".mp-in")?.select(), 40);
 }
+
+// The name field alone: a new group (under `parent`, or the top level) or a rename.
+function openNameGroup(mode: NonNullable<typeof naming>, x = menuX, y = menuY) {
+  closeColorPop();
+  ctxKey = wtTarget = pickPath = sessTarget = null;
+  gTarget = mode.kind === "rename" ? mode.gid : mode.parent;
+  naming = mode;
+  menuX = x; menuY = y;
+  const g = mode.kind === "rename" ? groupById(projGroups, mode.gid) : null;
+  if (mode.kind === "rename" && !g) return;
+  const under = mode.kind === "new" && mode.parent ? groupLabel(projGroups.groups, mode.parent) : null;
+  const menu = $("ctxMenu");
+  menu.classList.remove("agent-all");
+  menu.innerHTML = g
+    ? groupHead("Rename", g.name) + nameField("Group name", g.name)
+    : groupHead("New group", under ? `inside ${under}` : "at the top level") + nameField("Group name");
+  placePop(menu, x, y);
+  focusField();
+  if (g) setTimeout(() => menu.querySelector<HTMLInputElement>(".mp-in")?.select(), 40);
+}
+/** The rail header's button: an empty group at the top level, to drag projects onto. */
+export function openNewGroup(x: number, y: number) { openNameGroup({ kind: "new", parent: null }, x, y); }
 
 // One listener for all the drill-downs, each guarded on its own target.
 $("ctxMenu").addEventListener("click", (e) => {
@@ -916,14 +954,18 @@ $("ctxMenu").addEventListener("click", (e) => {
     else if (act.startsWith("gpick:")) setProjectGroup(path, act.slice(6));
     return;
   }
-  if (!gTarget) return;
+  if (!gTarget || naming) return;
   const gid = gTarget;
-  if (act === "grename") { keepMenuOpen(e); openRenameGroup(gid); return; }
+  if (act === "grename") { keepMenuOpen(e); openNameGroup({ kind: "rename", gid }); return; }
+  if (act === "gnew") { keepMenuOpen(e); openNameGroup({ kind: "new", parent: gid }); return; }
+  if (act === "gmoveto") { keepMenuOpen(e); openGroupMove(gid); return; }
+  if (act === "gmback") { keepMenuOpen(e); openGroupMenu(gid, menuX, menuY); return; }
   closeCtxMenu();
   if (act === "gopen") toggleProjGroup(gid);
   else if (act === "gcollapseall") collapseAllProjGroups(true);
   else if (act === "gexpandall") collapseAllProjGroups(false);
   else if (act === "gdelete") deleteProjectGroup(gid);
+  else if (act.startsWith("gmove:")) moveProjectGroup(gid, act.slice(6) || null);
 });
 // The name field carries no `data-ctx`, so the click listeners above ignore it while typing.
 $("ctxMenu").addEventListener("keydown", (e: KeyboardEvent) => {
@@ -933,10 +975,11 @@ $("ctxMenu").addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.key !== "Enter") return;
   e.preventDefault();
   const value = (t as HTMLInputElement).value;
-  const path = pickPath, gid = gTarget;
+  const path = pickPath, mode = naming;
   closeCtxMenu();
   if (path) newProjectGroup(value, path);
-  else if (gid) renameProjectGroup(gid, value);
+  else if (mode?.kind === "rename") renameProjectGroup(mode.gid, value);
+  else if (mode?.kind === "new") newProjectGroup(value, null, mode.parent);
 });
 
 // Appearance opens rather than commits: the panel hangs off the menu's edge. Re-entrant,
