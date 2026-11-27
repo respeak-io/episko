@@ -769,6 +769,8 @@ cannot pin a release and "always in the newest one" is the equivalent.
 - [ ] **The updater actually updates.** Install the *previous* version, launch it, and
       take the update. This is the one step that cannot be checked before tagging, and
       the one whose failure is silently permanent for everyone already installed.
+      Take it with two agent sessions open and one shelved: after the restart the two
+      come back by themselves (toast *Resumed 2 sessions…*) and the shelved one stays a row.
 - [ ] The downloaded installers open: on macOS with no quarantine warning, on Windows
       directly or, if SmartScreen warns, through **More info → Run anyway**.
 - [ ] **episko.dev shows the new version.** `site.yml` deploys it, chained off

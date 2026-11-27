@@ -75,7 +75,7 @@ import {
   resumeDormant, setMirrorLaunch, setMirrorRenderAll, setMirrorSetActive,
 } from "./mirror";
 import { mcpExit, mcpOutput, onMcpCall } from "./mcp";
-import { switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
+import { resumeAfterUpdate, switchChannel } from "./update"; // also owns its footer chip, listeners and launch check
 import { probeIcon, setIconRepaint } from "./icons";
 import {
   closePeek, initFileDrop, initProjectDnD, initRailHold, initSidebarPeek, renderMini, renderSidebar,
@@ -1123,8 +1123,9 @@ setInterval(() => { for (const s of sessions.values()) if (s.drift && !isExited(
 
 // Re-adopt any pane a reload orphaned (the backend still holds its PTY), and only then
 // reconcile the roster: an adopted id must not also come back as a dormant row (#47).
-// After the roster: an outcome heard just before the last quit removes the row it settles.
-void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()));
+// After the roster: an outcome heard just before the last quit removes the row it settles,
+// and an update's restart resumes the rows that were running when it was installed.
+void agentDiscovery.then(() => adoptOrphans()).finally(() => void loadDormants().then(() => settleDue()).then(() => resumeAfterUpdate()));
 // A quit with live, quiet sessions would otherwise write no roster.
 window.addEventListener("beforeunload", flushRoster);
 

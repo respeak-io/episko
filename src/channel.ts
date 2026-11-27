@@ -30,6 +30,8 @@ const SHARED = [
   "cc-legacy-import-done", "cc-channel",
   // Shared, or a preview that went back to stable would leave stable asking for the preview again.
   "cc-update-channel",
+  // Written by the build that installs, read by the one it installed.
+  "cc-update-resume",
   "cc-usage-peers", "cc-detail-peers", "cc-sync-stamps", "cc-sync-dirty", "cc-sync-sent", "cc-sync-limits",
   "cc-sync-seed", "cc-sync-roster", "cc-sync-devices", "cc-sync-pending", "cc-sync-exclude", "cc-sync-memory",
 ];

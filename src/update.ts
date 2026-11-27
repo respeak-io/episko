@@ -1,5 +1,6 @@
 // App self-update and the footer's version label. Installing RESTARTS the app and kills every
-// live PTY, so nothing here is automatic: the install waits on a confirmation that counts them.
+// live PTY, so the install waits on a confirmation that counts them; the agent sessions among
+// them are resumed by the boot after it (./carryover).
 
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -9,14 +10,21 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { $, toast } from "./dom";
 import { ask } from "./confirm";
 import { dlog, setAppVersion } from "./debug";
-import { sessions } from "./state";
+import { activeId, dormants, sessions, termEngine } from "./state";
 import { esc } from "./format";
 import { icon } from "./svgicons";
+import { canShelve, isExited, midWork, type Sess } from "./types";
+import { CARRY_GAP_MS, CARRY_KEY, carryDue, carryMark, carryText } from "./carryover";
+import { dormantBusy } from "./grouping";
+import { flushRoster } from "./mirror";
+import { launch } from "./panes";
+import { flushIo, flushUsageDetail } from "./usage";
 import { adopt, differing, drop, isPreviewVersion, updateVerb, type Channel } from "./channel";
 import { CHANNEL, baseStore, markChannel, setUpdateChannel, updateChannel } from "./channelhook";
 
+let appVersion = "";
 getVersion().then((v) => {
-  setAppVersion(v); $("fVer").textContent = "v" + v;
+  appVersion = v; setAppVersion(v); $("fVer").textContent = "v" + v;
   if (markChannel(v)) void offerSettings();
 }).catch(() => {});
 
@@ -88,13 +96,16 @@ async function checkForUpdates(manual: boolean) {
   }
 }
 
+// A pane the restart can bring back. Not an external one: its agent outlives the restart anyway.
+const carried = (s: Sess) => canShelve(s) && !isExited(s);
+
 async function runUpdate() {
   if (!pendingUpdate || updateBusy) return;
   const v = pendingUpdate.version;
-  const live = [...sessions.values()].filter((s) => !s.external).length;
-  const warn = live
-    ? `Episko will download v${v}, close ${live} running session${live === 1 ? "" : "s"}, and restart.`
-    : `Episko will download v${v} and restart.`;
+  const live = [...sessions.values()].filter((s) => !s.external && !isExited(s));
+  const back = live.filter(carried);
+  const carry = carryText(back.length, back.filter((s) => midWork(s)).length, live.length - back.length);
+  const warn = `Episko will download v${v} and restart.${carry ? `\n\n${carry}` : ""}`;
   const entering = CHANNEL === "stable" && isPreviewVersion(v), leaving = CHANNEL === "preview" && !isPreviewVersion(v);
   const why = entering ? "\n\nA preview is a build of work not released yet. Settings you change in it stay with the preview, and Settings › Updates takes you back."
     : leaving ? "\n\nSettings you changed in the preview stay with it. After the restart, Episko asks whether to bring along any that differ." : "";
@@ -108,15 +119,46 @@ async function runUpdate() {
   updateBusy = true;
   try {
     toast(`Downloading v${pendingUpdate.version}…`);
-    await pendingUpdate.downloadAndInstall((ev) => {
-      if (ev.event === "Finished") toast("Installing update…");
-    });
+    await pendingUpdate.download();
+    toast("Installing update…");
+    // Last moment the webview runs: on Windows `install` exits the app itself, before any unload.
+    leaveMark();
+    await pendingUpdate.install();
     await relaunch();
   } catch (e) {
     updateBusy = false;
+    localStorage.removeItem(CARRY_KEY);
     dlog("error", `update install failed: ${String(e)}`);
     toast("Update failed. See debug console");
   }
+}
+
+function leaveMark() {
+  flushIo(); flushUsageDetail(); flushRoster();
+  const panes = [...sessions.values()].map((s) => ({ id: s.id, resumable: carried(s) }));
+  const mark = carryMark(panes, activeId, appVersion, Date.now());
+  if (mark) localStorage.setItem(CARRY_KEY, JSON.stringify(mark));
+  else localStorage.removeItem(CARRY_KEY);
+}
+
+/** The boot after an update: resume what was running, once the roster is read (main.ts). */
+export async function resumeAfterUpdate() {
+  const raw = localStorage.getItem(CARRY_KEY);
+  if (raw === null) return;
+  localStorage.removeItem(CARRY_KEY); // spent before anything launches, so a crash cannot loop it
+  const ids = carryDue(raw, await getVersion().catch(() => ""), Date.now());
+  if (!ids.length) return;
+  // An external engine would open a terminal window per session; those rows wait for a click.
+  if (termEngine !== "embedded") { dlog("info", `update: ${ids.length} session(s) left on the shelf (engine ${termEngine})`); return; }
+  let n = 0;
+  for (const id of ids) {
+    const d = dormants.find((x) => x.id === id);
+    if (!d || dormantBusy(d)) continue;
+    if (n) await new Promise((r) => setTimeout(r, CARRY_GAP_MS));
+    if (await launch(d.project, d.workdir, { colorKey: d.colorKey, worktree: d.worktree, branch: d.branch, resume: d.resumeId, resumeProvider: d.provider || "claude" })) n++;
+  }
+  dlog("info", `update: resumed ${n} of ${ids.length} session(s) that were running`);
+  if (n) toast(`Resumed ${n} session${n === 1 ? "" : "s"} that ${n === 1 ? "was" : "were"} running before the update`);
 }
 
 $("fUpdate").addEventListener("click", runUpdate);
