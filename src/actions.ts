@@ -59,8 +59,10 @@ import {
   projPrefs, setProjPrefs, permissionModeFor,
   claudeAccts, setClaudeAccts, acctChecks, foundTokens, setFoundTokens,
   maintTokens, setMaintTokens, maintTokenChecks, type MaintToken,
+  proposals,
   type SortMode, type WtGroup,
 } from "./state";
+import { addStep, startProposing, stepOf, type ProposeKind } from "./proposing";
 import { addAcct, hitUntil, quotaHit, tokenFromLines, validLabel, type ClaudeAcct } from "./accounts";
 import { acctReading, applyAccountReadings, limitHits, loginAcct, rlAccts, saveAccts, showAccount, TOKEN_ID, tokenAccount } from "./rl";
 import { footPrefsJson, toggleFootSeg, type FootSeg } from "./footprefs";
@@ -851,32 +853,62 @@ export function applyHandoffCaps() {
 
 // ---------- the dev stack proposal ----------
 
-const proposing = new Set<string>();
+// One headless read per project, on screen while it runs (./proposing): the card or row that
+// started it draws its steps and a Stop. Cleared before the review dialog, which is no longer a read.
+async function watchProposal<T>(root: string, kind: ProposeKind, said: string, read: () => Promise<T>): Promise<T | null> {
+  if (proposals.has(root)) { toast("Already reading this project"); return null; }
+  proposals.set(root, startProposing(kind, Date.now()));
+  renderAll();
+  toast(said);
+  try {
+    return await read();
+  } finally {
+    proposals.delete(root);
+    renderAll();
+  }
+}
+
+/** deploy.rs's `propose-step`: one tool call of a read somebody is watching. */
+export function onProposeStep(ev: { dir: string; tool: string; input: unknown }) {
+  const p = proposals.get(ev.dir), st = p && stepOf(ev.tool, ev.input, ev.dir);
+  if (!p || !st) return;
+  proposals.set(ev.dir, addStep(p, st));
+  renderAll();
+}
+
+export function stopProposal(root: string) {
+  void invoke<boolean>("stop_propose", { dir: root }).catch(() => false);
+}
+
+// deploy.rs's STOPPED: the person ended the read, so there is nothing to report but that.
+const proposeFailed = (what: string, e: unknown) => toast(String(e) === "stopped" ? "Stopped. Nothing was written" : `No ${what} proposal: ${e}`);
 
 // Headless and read-only, like the day summary: `propose_stack` runs `claude -p` in the project
 // with nothing but Read/Glob/Grep. Nothing is written until the dialog's Apply (docs/stack.md).
 export async function proposeStack(root: string): Promise<void> {
-  if (proposing.has(root)) { toast("Already reading this project"); return; }
-  proposing.add(root);
-  toast("Claude is reading the project to describe its tasks. This can take a minute or two");
   try {
-    const [cfg, before, found] = await Promise.all([
-      invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg),
-      invoke<Record<string, RunInfo>>("run_infos", { dir: root }).catch(() => ({}) as Record<string, RunInfo>),
-      discoverTasks(root, root, true),
-    ]);
-    const real = found.filter((r) => !r.blocked);
-    const tasks = real.map((r) => ({ id: r.id, cmd: taskCmd(r), background: r.background }));
-    const p = await invoke<StackProposal>("propose_stack", { dir: root, prompt: describePrompt(cfg, tasks) });
+    const got = await watchProposal(root, "stack", "Claude is reading the project to describe its tasks. This can take a minute or two", async () => {
+      const [cfg, before, found] = await Promise.all([
+        invoke<StackCfg>("stack_config", { dir: root }).catch(() => ({}) as StackCfg),
+        invoke<Record<string, RunInfo>>("run_infos", { dir: root }).catch(() => ({}) as Record<string, RunInfo>),
+        discoverTasks(root, root, true),
+      ]);
+      const real = found.filter((r) => !r.blocked);
+      const tasks = real.map((r) => ({ id: r.id, cmd: taskCmd(r), background: r.background }));
+      const p = await invoke<StackProposal>("propose_stack", { dir: root, prompt: describePrompt(cfg, tasks) });
+      return { before, real, tasks, p };
+    });
+    if (!got) return;
+    const { before, real, tasks, p } = got;
     const checked = checkProposal(p, tasks);
     const run = checkRun(p.run ?? {}, real);
     checked.dropped.push(...run.dropped);
     if (!stackSummary(checked.stack) && !p.tasks.length && !Object.keys(run.run).length) {
-      await ask(proposalText(p, checked), { title: "Nothing to describe", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      await ask(proposalText(p, checked), { title: "Nothing to describe", kind: "info", wide: true, okLabel: "OK", cancelLabel: "Close" });
       return;
     }
     const text = [runSummaryText(run.run, before), proposalText(p, checked)].filter(Boolean).join("\n\n");
-    const ok = await ask(text, { title: `Tasks and dev stack of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" });
+    const ok = await ask(text, { title: `Tasks and dev stack of ${basename(root)}`, kind: "info", wide: true, okLabel: "Apply", cancelLabel: "Discard" });
     if (!ok) return;
     // Tasks first: `down` may name one of them, and a table pointing at nothing is worse than none.
     for (const t of p.tasks) {
@@ -886,9 +918,7 @@ export async function proposeStack(root: string): Promise<void> {
     const n = Object.keys(run.run).length;
     toast(`Described ${n} task${n === 1 ? "" : "s"}${p.tasks.length ? ` and added ${p.tasks.length}` : ""}. Commit .episko/ to share it`);
   } catch (e) {
-    toast(`No dev stack proposal: ${e}`);
-  } finally {
-    proposing.delete(root);
+    proposeFailed("dev stack", e);
   }
 }
 
@@ -1115,56 +1145,54 @@ async function writeTable(root: string, table: string, write: (create: boolean) 
 // The stack describer's agent with a narrower question, read-only and headless; nothing is
 // written until Apply, and nothing connects anywhere until a click (docs/maintenance.md).
 export async function proposeDeploy(root: string): Promise<void> {
-  if (proposing.has(root)) { toast("Already reading this project"); return; }
-  proposing.add(root);
-  toast("Claude is reading the project to find where it runs. This can take a minute or two");
   try {
-    const current = await invoke<unknown>("deploy_config", { dir: root }).then(narrowDeploy, () => null);
-    const p = await invoke<DeployProposal>("propose_deploy", { dir: root, prompt: deployPrompt(current) });
+    const got = await watchProposal(root, "deploy", "Claude is reading the project to find where it runs. This can take a minute or two", async () => {
+      const current = await invoke<unknown>("deploy_config", { dir: root }).then(narrowDeploy, () => null);
+      return { current, p: await invoke<DeployProposal>("propose_deploy", { dir: root, prompt: deployPrompt(current) }) };
+    });
+    if (!got) return;
+    const { current, p } = got;
     const checked = checkDeploy(p);
     const text = deployText(p, checked, current);
     if (isEmptyDeploy(checked.deploy)) {
-      await ask(text, { title: "Nowhere to point at", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      await ask(text, { title: "Nowhere to point at", kind: "info", wide: true, okLabel: "OK", cancelLabel: "Close" });
       return;
     }
-    if (!await ask(text, { title: `Where ${basename(root)} runs`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    if (!await ask(text, { title: `Where ${basename(root)} runs`, kind: "info", wide: true, okLabel: "Apply", cancelLabel: "Discard" })) return;
     const deploy = checked.deploy;
     if (!await writeTable(root, "deploy", (create) => invoke("write_deploy", { dir: root, deploy, create }))) return;
     toast("[deploy] written. Commit .episko/ to share it");
     // Only a project Maintenance already read: the write dropped the detection and the old probe.
     if (maintOf(root)) void scanProject(root, false);
   } catch (e) {
-    toast(`No deploy proposal: ${e}`);
-  } finally {
-    proposing.delete(root);
+    proposeFailed("deploy", e);
   }
 }
 
 // The same reader asked about `[maintenance]`'s keys, told what Maintenance could not settle on its
 // own; only those keys are written, and only after Apply (docs/maintenance.md).
 export async function proposeMaint(root: string): Promise<void> {
-  if (proposing.has(root)) { toast("Already reading this project"); return; }
-  proposing.add(root);
-  toast("Claude is reading the project's branches, releases and scanners. This can take a minute or two");
   try {
-    const current = await invoke<unknown>("maint_setup", { dir: root }).then(narrowMaintCfg, () => null);
-    const inp = maintInput(root);
-    const asks = inp ? coverRows(inp).filter((r) => r.cfg).map((r) => `${r.label}: ${r.text}`) : [];
-    const p = await invoke<MaintCfgProposal>("propose_maint", { dir: root, prompt: maintPrompt(current, asks) });
+    const got = await watchProposal(root, "maint", "Claude is reading the project's branches, releases and scanners. This can take a minute or two", async () => {
+      const current = await invoke<unknown>("maint_setup", { dir: root }).then(narrowMaintCfg, () => null);
+      const inp = maintInput(root);
+      const asks = inp ? coverRows(inp).filter((r) => r.cfg).map((r) => `${r.label}: ${r.text}`) : [];
+      return { current, p: await invoke<MaintCfgProposal>("propose_maint", { dir: root, prompt: maintPrompt(current, asks) }) };
+    });
+    if (!got) return;
+    const { current, p } = got;
     const checked = checkMaintCfg(p);
     const text = maintCfgText(p, checked, current);
     const maintenance = checked.maintenance;
     if (isEmptyMaintCfg(maintenance) && !maintCfgLosses(current, maintenance).length) {
-      await ask(text, { title: "Nothing to set", kind: "info", okLabel: "OK", cancelLabel: "Close" });
+      await ask(text, { title: "Nothing to set", kind: "info", wide: true, okLabel: "OK", cancelLabel: "Close" });
       return;
     }
-    if (!await ask(text, { title: `Maintenance settings of ${basename(root)}`, kind: "info", okLabel: "Apply", cancelLabel: "Discard" })) return;
+    if (!await ask(text, { title: `Maintenance settings of ${basename(root)}`, kind: "info", wide: true, okLabel: "Apply", cancelLabel: "Discard" })) return;
     if (!await writeTable(root, "maintenance", (create) => invoke("write_maint", { dir: root, maintenance, create }))) return;
     toast("[maintenance] written. Commit .episko/ to share it");
     if (maintOf(root)) void scanProject(root, false);
   } catch (e) {
-    toast(`No maintenance proposal: ${e}`);
-  } finally {
-    proposing.delete(root);
+    proposeFailed("maintenance", e);
   }
 }

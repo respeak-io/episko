@@ -476,7 +476,7 @@ pub(crate) async fn sweep_match(roots: Vec<String>, packages: Vec<SweepAsk>) -> 
 /// `deploy::propose_toml`'s agent in one project: Read, Glob and Grep, nothing else.
 #[tauri::command]
 pub(crate) async fn sweep_check(dir: String, prompt: String) -> Result<SweepCheck, String> {
-    tauri::async_runtime::spawn_blocking(move || parse_check(&crate::deploy::propose_toml(&dir, &prompt)?))
+    tauri::async_runtime::spawn_blocking(move || parse_check(&crate::deploy::propose_toml(&dir, &prompt, None)?))
         .await
         .map_err(|e| e.to_string())?
 }

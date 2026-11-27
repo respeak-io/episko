@@ -207,8 +207,10 @@ fn parse_proposal(out: &str) -> Result<StackProposal, String> {
 
 /// The headless read-only describer (`deploy::propose_toml`), asked about tasks and the stack.
 #[tauri::command]
-pub(crate) async fn propose_stack(dir: String, prompt: String) -> Result<StackProposal, String> {
-    tauri::async_runtime::spawn_blocking(move || parse_proposal(&crate::deploy::propose_toml(&dir, &prompt)?))
+pub(crate) async fn propose_stack(app: tauri::AppHandle, dir: String, prompt: String) -> Result<StackProposal, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        parse_proposal(&crate::deploy::propose_toml(&dir, &prompt, Some(&crate::deploy::step_to(&app, &dir)))?)
+    })
         .await
         .map_err(|e| e.to_string())?
 }

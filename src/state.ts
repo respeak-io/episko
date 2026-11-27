@@ -24,6 +24,7 @@ import { parseFootPrefs, type FootPrefs } from "./footprefs";
 import type { GhAccount } from "./ghwork";
 import { parseMotionPrefs, type MotionPrefs } from "./motion";
 import { clampAccts, type ClaudeAcct } from "./accounts";
+import type { Proposing } from "./proposing";
 
 export interface Favorite { name: string; path: string }
 const DEFAULT_FAVORITES: Favorite[] = [];
@@ -195,6 +196,9 @@ export const collapsedRuns = new Set<string>(); // not persisted: run ids are pe
 // the end of the removal is what clears an entry. ./grouping keeps the row and its project
 // alive while one is here, because a removal closes the sessions the rail is drawn from.
 export const removingWt = new Map<string, string>();
+// The headless proposals out right now, project root → what they have looked at (./proposing).
+// Not persisted: the read dies with the app.
+export const proposals = new Map<string, Proposing>();
 export let externals: ExtSession[] = [];
 export function setExternals(l: ExtSession[]) { externals = l; }
 export let dormants: Restorable[] = [];

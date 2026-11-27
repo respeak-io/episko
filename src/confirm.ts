@@ -11,6 +11,7 @@ export interface AskOpts {
   okLabel?: string;
   cancelLabel?: string;
   optOut?: string; // a "don't ask again" tick under the message; read it through `askOpt`
+  wide?: boolean; // a review of several values with their reasons, not a question
 }
 export interface Answer { ok: boolean; optOut: boolean }
 
@@ -53,7 +54,7 @@ function paint(message: string, opts: AskOpts, resolve: (a: Answer) => void) {
   ($("cfmOptBox") as HTMLInputElement).checked = false;
 
   const dlg = $("cfmDlg");
-  dlg.className = `cfm k-${kind}`;
+  dlg.className = `cfm k-${kind}${opts.wide ? " wide" : ""}`;
   $("cfmYes").className = kind === "info" ? "cfm-btn go" : "cfm-btn danger";
   dlg.classList.add("show");
   $("cfmScrim").classList.add("show");

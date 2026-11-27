@@ -180,6 +180,13 @@ describe("dialogBody — a confirmation's prose → the in-app dialog's markup",
     // "Held by:" is not a list item, so the paragraph is prose, not a <ul>.
     expect(dialogBody("Held by:\n• code (12)")).toBe("<p>Held by:<br>• code (12)</p>");
   });
+  it("hangs an indented line under the bullet above it as that bullet's note", () => {
+    // A proposal's reason: the dialog used to fall back to one <br>'d paragraph with literal dashes.
+    expect(dialogBody("- host: `prod-1`\n  deploy.sh line 3\n- app: `https://a`")).toBe(
+      '<ul><li>host: <code>prod-1</code><span class="cfm-note">deploy.sh line 3</span></li><li>app: <code>https://a</code></li></ul>');
+    // An indented first line is no bullet's note, so the paragraph stays prose.
+    expect(dialogBody("  just text\n- a")).toBe("<p>just text<br>- a</p>");
+  });
   it("renders backticked text as code", () => {
     expect(dialogBody("Episko will run `just --dump` inside it.")).toBe(
       "<p>Episko will run <code>just --dump</code> inside it.</p>");

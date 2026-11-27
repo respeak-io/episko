@@ -5,8 +5,9 @@ import { $, dropScrim, IS_MAC } from "./dom";
 import { basename, tilde } from "./format";
 import {
   accentFor, agentByProject, agentTools, allAgents, autoFetchPrefs, defaultAgentDef, effectiveAgent, ghAccountFor,
-  ghLogins, keyPrefs, permissionModeFor, projPrefs, shareModeOf, type ShareMode,
+  ghLogins, keyPrefs, permissionModeFor, projPrefs, proposals, shareModeOf, type ShareMode,
 } from "./state";
+import { liveHtml, type ProposeKind } from "./proposing";
 import { AUTOFETCH_EVERY } from "./autofetch";
 import { providerAdapter, providerPermissionMode } from "./providers";
 import { ghWho } from "./ghwork";
@@ -33,12 +34,13 @@ export interface ProjSetHost {
   openTeamFile: (key: string) => void; // `[deploy]`'s and `[maintenance]`'s: the repo root's file
   setupDeploy: (key: string) => Promise<void>; // settles once the proposal was applied or set aside
   setupMaint: (key: string) => Promise<void>; // the same, for `[maintenance]`'s keys
+  stopPropose: (key: string) => void; // any of the three while it reads
   trust: (key: string) => void;
 }
 let host: ProjSetHost = {
   setAgent: () => {}, setPerm: () => {}, setFetch: () => {}, setTools: () => {}, setGh: () => {}, setShare: () => {},
   moveLog: () => Promise.resolve(), hasDigest: () => Promise.resolve(false), refreshGh: () => Promise.resolve(),
-  setupStack: () => {}, openStackFile: () => {}, openTeamFile: () => {}, setupDeploy: () => Promise.resolve(), setupMaint: () => Promise.resolve(), trust: () => {},
+  setupStack: () => {}, openStackFile: () => {}, openTeamFile: () => {}, setupDeploy: () => Promise.resolve(), setupMaint: () => Promise.resolve(), stopPropose: () => {}, trust: () => {},
 };
 export function setProjSetHost(h: ProjSetHost) { host = h; }
 
@@ -201,41 +203,47 @@ function shareRow(k: string): PsRow {
 }
 
 // Committed, so the team's; the agent proposes and the human commits (docs/stack.md).
-function stackRow(): PsRow {
+// While a read is out, its row's button is the read: what it has looked at, and a Stop.
+const reading = (k: string, kind: ProposeKind): string => {
+  const p = proposals.get(k);
+  return p?.kind === kind ? liveHtml(p, `data-ps="proposestop"`, true) : "";
+};
+
+function stackRow(k: string): PsRow {
   const cur = stackSummary(stackCfg);
   return {
     id: "stack", label: "Dev stack", hint: "How this project's dev environment starts and stops, so Episko can show it as one stack. [stack] in .episko/episko.toml.",
     cur: cur || undefined,
     note: cur ? undefined : "Not set: Episko infers the stack from what runs (panes, ports and the repo's Compose containers).",
     ctl: (cur ? btnCtl("stackfile", "Open file", "Open .episko/episko.toml") : "")
-      + btnCtl("stacksetup", cur ? "Re-check tasks…" : "Describe tasks…",
-        "Claude reads the justfile, tasks.json, scripts and compose files in the background, read-only, and describes every task plus the dev stack, for you to apply or discard."),
+      + (reading(k, "stack") || btnCtl("stacksetup", cur ? "Re-check tasks…" : "Describe tasks…",
+        "Claude reads the justfile, tasks.json, scripts and compose files in the background, read-only, and describes every task plus the dev stack, for you to apply or discard.")),
   };
 }
 
 // Committed like [stack]: an agent proposes, a person applies, and nothing connects until a click.
-function deployRow(): PsRow {
+function deployRow(k: string): PsRow {
   const cur = deploySummary(deployCfg);
   return {
     id: "deploy", label: "Where it runs", hint: "The host, services and addresses Maintenance checks when you ask. [deploy] in .episko/episko.toml.",
     cur: cur || undefined,
     note: cur ? undefined : "Not set: Maintenance has no production to check, and the Runs on card stays empty.",
     ctl: (cur ? btnCtl("deployfile", "Open file", "Open .episko/episko.toml") : "")
-      + btnCtl("deploysetup", cur ? "Re-check…" : "Propose…",
-        "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard."),
+      + (reading(k, "deploy") || btnCtl("deploysetup", cur ? "Re-check…" : "Propose…",
+        "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard.")),
   };
 }
 
 // The keys Maintenance cannot always tell on its own; the rest of [maintenance] is edited in the file.
-function maintRow(): PsRow {
+function maintRow(k: string): PsRow {
   const cur = maintCfgSummary(maintCfg);
   return {
     id: "maint", label: "Maintenance", hint: "The trunk, release tags, SARIF reports and self-hosted update bots Maintenance reads. [maintenance] in .episko/episko.toml.",
     cur: cur || undefined,
     note: cur ? undefined : "Not set: Maintenance measures against the remote's default branch and counts every tag.",
     ctl: (cur ? btnCtl("maintfile", "Open file", "Open .episko/episko.toml") : "")
-      + btnCtl("maintsetup", cur ? "Re-check…" : "Propose…",
-        "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard."),
+      + (reading(k, "maint") || btnCtl("maintsetup", cur ? "Re-check…" : "Propose…",
+        "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard.")),
   };
 }
 
@@ -260,7 +268,7 @@ export function renderProjSettings() {
   const html = projSettingsHtml({
     name: basename(k), path: tilde(k), accent: accentFor(k),
     mine: mineRows(k),
-    team: [shareRow(k), stackRow(), deployRow(), maintRow()],
+    team: [shareRow(k), stackRow(k), deployRow(k), maintRow(k)],
     teamNote: "Branch locks, claims, health thresholds, the dev stack, where it runs and what Maintenance reads are committed in .episko/episko.toml and edited where they act.",
   });
   if (html === last) return;
@@ -281,6 +289,7 @@ function act(verb: string, val: string) {
   else if (verb === "unstop") clearStopRule(k);
   else if (verb === "share") host.setShare(k, val as ShareMode);
   else if (verb === "stacksetup") { host.setupStack(k); return; }
+  else if (verb === "proposestop") { host.stopPropose(k); return; }
   else if (verb === "stackfile") { host.openStackFile(k); return; }
   else if (verb === "deployfile" || verb === "maintfile") { host.openTeamFile(k); return; }
   else if (verb === "deploysetup") { void host.setupDeploy(k).then(() => loadDeploy(k)); return; }

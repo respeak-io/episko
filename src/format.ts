@@ -18,15 +18,19 @@ export const tilde = (p: string) =>
 // paragraph, a run of bullet-led lines is a list, backticks are code. Escaped first.
 export function dialogBody(text: string): string {
   const code = (s: string) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
-  const BULLET = /^[ \t]*[•\-*][ \t]+/;
+  const BULLET = /^[ \t]*[•\-*][ \t]+/, NOTE = /^[ \t]+\S/;
   return text
     .split(/\r?\n[ \t]*\r?\n/)
     .map((para) => {
       const lines = para.split(/\r?\n/).filter((l) => l.trim());
       if (!lines.length) return "";
-      // A list only when EVERY line is a bullet; a lead-in ("Held by:") stays a paragraph.
-      if (lines.every((l) => BULLET.test(l))) {
-        return `<ul>${lines.map((l) => `<li>${code(l.replace(BULLET, ""))}</li>`).join("")}</ul>`;
+      // A list only when every line is a bullet or an indented note under one; a lead-in ("Held by:")
+      // stays a paragraph. A note is the bullet's own small print: why, or where it came from.
+      if (BULLET.test(lines[0]) && lines.every((l) => BULLET.test(l) || NOTE.test(l))) {
+        const items: string[][] = [];
+        for (const l of lines) if (BULLET.test(l)) items.push([l.replace(BULLET, "")]); else items[items.length - 1].push(l.trim());
+        return `<ul>${items.map(([head, ...notes]) =>
+          `<li>${code(head)}${notes.map((n) => `<span class="cfm-note">${code(n)}</span>`).join("")}</li>`).join("")}</ul>`;
       }
       return `<p>${lines.map((l) => code(l.trim())).join("<br>")}</p>`;
     })

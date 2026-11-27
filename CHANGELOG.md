@@ -73,7 +73,13 @@ Markers: `+` new · `~` changed · `!` fixed
 ~ Every tooltip in the app is drawn in Episko's own style, next to the control it explains, instead
   of the system's plain box. Moving along a row of buttons shows the next one at once, and a click
   puts it away until you move on.
+~ While an agent reads a project to propose settings (*Propose with an agent*, *Re-check…*,
+  *Describe tasks…*), the button that started it shows what it is doing: the files it has read and
+  the searches it has run, with a *Stop* that ends the read and writes nothing.
 ! The usage heatmap and bar chart show one tooltip again, not two.
+! A proposal's review dialog lists each value on a line of its own with its reason in small print
+  underneath, in a wider dialog. A reason under a list of addresses used to collapse the whole list
+  into one paragraph of literal dashes.
 
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the

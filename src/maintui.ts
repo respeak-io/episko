@@ -42,8 +42,8 @@ export interface MaintHost {
   render: () => void;
   openView?: (view: "deps" | "branches") => void; // a dashboard card's ⤢; the fleet draws none
   openAcross?: (sub: MaintSub) => void; // a dashboard card's way to the fleet's tab
-  deploy?: (root: string, what: "propose" | "file") => void; // the Runs on card's two doors
-  setup?: (root: string, what: "propose" | "file") => void; // a Coverage row a [maintenance] key answers
+  deploy?: (root: string, what: "propose" | "file" | "stop") => void; // the Runs on card's two doors
+  setup?: (root: string, what: "propose" | "file" | "stop") => void; // a Coverage row a [maintenance] key answers
   openCover?: (facet: Facet) => void; // the dashboard's: the facet's tab at its Coverage, which says why
   roots: () => string[]; // the projects this pane shows: what the fleet head's Check prod asks
   lines?: () => { order: string[]; pickable: ReadonlySet<string> }; // the tickable lines on screen; only the fleet draws ticks
@@ -98,6 +98,9 @@ const lineOf = (root: string, key: string, inp: MaintInput) =>
 
 // Facts first: a finding whose facts have since changed is gone, and says so rather than guessing.
 // `only`: an advisory row's own verb, which briefs that advisory alone (its id and aliases).
+// A Runs on or Coverage door: the proposal, the file, or the Stop that stands in while it reads.
+const doorOf = (v: string | undefined): "propose" | "file" | "stop" => v === "file" || v === "stop" ? v : "propose";
+
 async function runVerb(root: string, key: string, host: MaintHost, only?: string[]): Promise<void> {
   const inp = maintInput(root);
   const f = inp && lineOf(root, key, inp);
@@ -420,9 +423,9 @@ export function maintClick(t: HTMLElement, host: MaintHost, shift = false): bool
   const across = t.closest<HTMLElement>("[data-mtacross]");
   if (across) { host.openAcross?.(subOf(across.dataset.mtacross)); return true; }
   const dep = t.closest<HTMLElement>("[data-mtdeploy]");
-  if (dep) { host.deploy?.(dep.dataset.mtroot!, dep.dataset.mtdeploy === "file" ? "file" : "propose"); return true; }
+  if (dep) { host.deploy?.(dep.dataset.mtroot!, doorOf(dep.dataset.mtdeploy)); return true; }
   const cfg = t.closest<HTMLElement>("[data-mtcfg]");
-  if (cfg) { host.setup?.(cfg.dataset.mtroot!, cfg.dataset.mtcfg === "file" ? "file" : "propose"); return true; }
+  if (cfg) { host.setup?.(cfg.dataset.mtroot!, doorOf(cfg.dataset.mtcfg)); return true; }
   const all = t.closest<HTMLElement>("[data-mtrunall]");
   if (all) { void runAll(all.dataset.mtrunall ?? "", host); return true; }
   // A click's answer on Coverage: its chip opens the board that shows it, and Clear takes the answers off the row.

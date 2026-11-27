@@ -197,7 +197,7 @@ describe("the [stack] table", () => {
     expect(bad.stack.down).toBeUndefined();
     expect(bad.dropped).toEqual(['down = "episko:stop-containers" names no task in this project']);
     const text = proposalText(p, checkProposal(p, tasks));
-    expect(text).toContain('- `up = "vscode:dev-frontend-backend"`: the default build task');
+    expect(text).toContain("- up: `vscode:dev-frontend-backend`\n  the default build task");
     expect(text).toContain("- Stop containers: `docker compose stop`");
     expect(proposalText({ stack: {}, tasks: [], why: [] }, { stack: {}, dropped: [] })).toMatch(/found nothing/);
   });

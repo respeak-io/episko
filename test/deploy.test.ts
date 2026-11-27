@@ -123,7 +123,7 @@ describe("the question and the review", () => {
   it("shows each kept value with its reason and lists what it left out", () => {
     const p = prop({ host: "prod-1", urls: { app: "https://app.example.com" }, sentry: "nope" }, ["host: deploy.sh line 3 runs ssh prod-1"]);
     const text = deployText(p, checkDeploy(p), { ...NONE, host: "old" });
-    expect(text).toContain('- `host = "prod-1"`: deploy.sh line 3 runs ssh prod-1');
+    expect(text).toContain("- host: `prod-1`\n  deploy.sh line 3 runs ssh prod-1");
     expect(text).toContain("- app: `https://app.example.com`");
     expect(text).toContain('Left out:\n\n- sentry = "nope" is not org/project');
     expect(text).toContain('Changes what it says now:\n\n- `host = "old"` becomes `"prod-1"`');
@@ -199,8 +199,8 @@ describe("the [maintenance] keys", () => {
   it("shows each kept value with its reason, what it changes and what it left out", () => {
     const p = mprop({ trunk: "main", tagPattern: "v[0-9]*", sarif: ["out/a.sarif"] }, ["off"], ["trunk: CONTRIBUTING.md says PRs target main"]);
     const text = maintCfgText(p, checkMaintCfg(p), cur);
-    expect(text).toContain('- `trunk = "main"`: CONTRIBUTING.md says PRs target main');
-    expect(text).toContain('- `sarif = ["out/a.sarif"]`');
+    expect(text).toContain("- trunk: `main`\n  CONTRIBUTING.md says PRs target main");
+    expect(text).toContain("- sarif: `out/a.sarif`");
     expect(text).toContain('Changes what it says now:\n\n- `trunk = "dev"` becomes `"main"`\n- `tag_pattern = "v*"` is removed');
     expect(text).toContain("- bot `acme-renovate` is removed");
     expect(text).toContain('Left out:\n\n- tag_pattern = "v[0-9]*" is not a tag glob: * is its only wildcard\n- off is not a key an agent may set');

@@ -292,21 +292,100 @@ pub(crate) fn http_probe(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
 
 const PROPOSE_SECS: u64 = 300;
 
+/// What `propose_toml` reports and how it can be stopped, for a click somebody is watching; the
+/// sweep's checks pass none. A step is a tool call as the agent asked for it, read by ./proposing.
+pub(crate) type Watch<'a> = Option<&'a (dyn Fn(&str, &serde_json::Value) + Sync)>;
+
+/// The reads a person is watching, dir → pid, so `stop_propose` can end one. One per project:
+/// the frontend refuses a second while one is out.
+fn watched() -> &'static std::sync::Mutex<std::collections::HashMap<String, u32>> {
+    static W: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> = std::sync::OnceLock::new();
+    W.get_or_init(Default::default)
+}
+
+/// `propose_toml`'s answer to a read `stop_propose` ended; actions.ts matches it.
+pub(crate) const STOPPED: &str = "stopped";
+
 /// Ask a headless Claude to read the project, the way the day summary asks for a sentence: `-p`,
 /// no PTY, no session. `--restricted` plus `--tools Read,Glob,Grep` means it can look and nothing
 /// else: no shell, no edits, no web, no MCP, none of the user's settings (docs/stack.md).
-pub(crate) fn propose_toml(dir: &str, prompt: &str) -> Result<String, String> {
+pub(crate) fn propose_toml(dir: &str, prompt: &str, watch: Watch) -> Result<String, String> {
+    use std::io::{BufRead, Read as _};
+    use std::process::Stdio;
     let mut cmd = sys_command(resolve_claude());
     cmd.env("PATH", augmented_path()).current_dir(dir).args([
         "-p", prompt, "--model", "sonnet", "--restricted", "--tools", "Read,Glob,Grep",
-        "--strict-mcp-config", "--no-session-persistence",
+        "--strict-mcp-config", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
     ]);
-    let o = crate::deps::run_capped(cmd, PROPOSE_SECS)
-        .map_err(|e| if e.starts_with("no answer") { format!("no proposal after {PROPOSE_SECS}s") } else { format!("could not start claude: {e}") })?;
-    if !o.status.success() {
-        return Err(format!("claude exited {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim()));
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        .map_err(|e| format!("could not start claude: {e}"))?;
+    let pid = child.id();
+    if watch.is_some() {
+        watched().lock().unwrap().insert(dir.to_string(), pid);
     }
-    Ok(String::from_utf8_lossy(&o.stdout).to_string())
+    let (out, mut err) = (child.stdout.take().ok_or("no stdout")?, child.stderr.take().ok_or("no stderr")?);
+    let errs = std::thread::spawn(move || { let mut s = String::new(); let _ = err.read_to_string(&mut s); s });
+    // A reader thread, so the deadline holds while a line is still being waited for.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() { return; }
+        }
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(PROPOSE_SECS);
+    let (mut answer, mut late) = (None, false);
+    loop {
+        match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(line) => match said(&line) {
+                Said::Steps(steps) => if let Some(w) = watch { steps.iter().for_each(|(t, i)| w(t, i)); },
+                Said::Done(r) => answer = Some(r),
+                Said::Other => {}
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => { crate::deps::kill_hard(pid); late = true; break; }
+        }
+    }
+    // Gone from the map means `stop_propose` took it, which is not a failure to report.
+    let stopped = watch.is_some() && watched().lock().unwrap().remove(dir).is_none();
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if stopped { return Err(STOPPED.into()); }
+    if late { return Err(format!("no proposal after {PROPOSE_SECS}s")); }
+    answer.unwrap_or_else(|| Err(format!("claude exited {status}: {}", errs.join().unwrap_or_default().trim())))
+}
+
+/// Each step as a `propose-step` event, tagged with the project it reads.
+pub(crate) fn step_to<'a>(app: &'a tauri::AppHandle, dir: &'a str) -> impl Fn(&str, &serde_json::Value) + Sync + 'a {
+    use tauri::Emitter;
+    move |tool, input| { let _ = app.emit("propose-step", serde_json::json!({ "dir": dir, "tool": tool, "input": input })); }
+}
+
+/// End the read a person started in `dir`; `false` when none is out.
+#[tauri::command(async)]
+pub(crate) fn stop_propose(dir: String) -> bool {
+    let pid = watched().lock().unwrap().remove(&dir);
+    if let Some(pid) = pid { crate::deps::kill_hard(pid); }
+    pid.is_some()
+}
+
+/// One `stream-json` line: the tool calls it makes, the run's answer, or neither.
+#[derive(Debug, PartialEq)]
+enum Said { Steps(Vec<(String, serde_json::Value)>), Done(Result<String, String>), Other }
+
+fn said(line: &str) -> Said {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return Said::Other };
+    match v["type"].as_str() {
+        Some("assistant") => Said::Steps(v["message"]["content"].as_array().into_iter().flatten()
+            .filter(|c| c["type"] == "tool_use")
+            .filter_map(|c| Some((c["name"].as_str()?.to_string(), c["input"].clone())))
+            .collect()),
+        Some("result") => {
+            let text = v["result"].as_str().unwrap_or_default().to_string();
+            Said::Done(if v["is_error"] == true || v["subtype"] != "success" {
+                Err(format!("the agent stopped: {}", if text.is_empty() { v["subtype"].as_str().unwrap_or("no answer") } else { &text }))
+            } else { Ok(text) })
+        }
+        _ => Said::Other,
+    }
 }
 
 /// The answer's fenced `toml` block, and the `- ` lines after a `WHY` line; anything around them
@@ -337,8 +416,8 @@ fn parse_deploy_proposal(out: &str) -> Result<DeployProposal, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn propose_deploy(dir: String, prompt: String) -> Result<DeployProposal, String> {
-    tauri::async_runtime::spawn_blocking(move || parse_deploy_proposal(&propose_toml(&dir, &prompt)?))
+pub(crate) async fn propose_deploy(app: tauri::AppHandle, dir: String, prompt: String) -> Result<DeployProposal, String> {
+    tauri::async_runtime::spawn_blocking(move || parse_deploy_proposal(&propose_toml(&dir, &prompt, Some(&step_to(&app, &dir)))?))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -488,6 +567,50 @@ mod tests {
 
     fn s(p: &Path) -> String {
         p.to_string_lossy().to_string()
+    }
+
+    /// `stream-json` is the CLI's format, not ours: a real read must still report its steps and answer.
+    #[test]
+    #[ignore = "runs the real claude CLI and spends tokens"]
+    fn claude_cli_streams_a_proposal_with_its_steps() {
+        let dir = scratch_dir();
+        std::fs::write(dir.join("deploy.sh"), "ssh prod-1 'docker compose up -d'\n").unwrap();
+        let steps = std::sync::Mutex::new(vec![]);
+        let step = |t: &str, _: &serde_json::Value| steps.lock().unwrap().push(t.to_string());
+        let prompt = "Read deploy.sh, then answer with one fenced ```toml block holding a [deploy] table whose host is the ssh host it names, and nothing else.";
+        let out = propose_toml(&s(&dir), prompt, Some(&step)).unwrap();
+        assert!(steps.lock().unwrap().iter().any(|t| t == "Read"), "{:?}", steps.lock().unwrap());
+        assert_eq!(parse_deploy_proposal(&out).unwrap().deploy.host.as_deref(), Some("prod-1"));
+    }
+
+    #[test]
+    #[ignore = "runs the real claude CLI"]
+    fn stop_propose_ends_a_live_read_as_stopped() {
+        let dir = s(&scratch_dir());
+        let d2 = dir.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            stop_propose(d2)
+        });
+        let r = propose_toml(&dir, "Read every file here, one at a time, then write a long essay about them.", Some(&|_, _| {}));
+        assert!(stopper.join().unwrap(), "nothing was out to stop");
+        assert_eq!(r, Err(STOPPED.to_string()));
+        assert!(!stop_propose(dir), "the read is still registered");
+    }
+
+    #[test]
+    fn a_stream_line_is_a_step_an_answer_or_nothing() {
+        let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/p/justfile"}},{"type":"tool_use","name":"Grep","input":{"pattern":"ssh"}}]}}"#;
+        let Said::Steps(steps) = said(call) else { panic!("not steps") };
+        assert_eq!(steps.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["Read", "Grep"]);
+        assert_eq!(steps[0].1["file_path"], "/p/justfile");
+        // Prose the agent writes is not a step, and the init banner is nothing.
+        assert_eq!(said(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#), Said::Steps(vec![]));
+        assert_eq!(said(r#"{"type":"system","subtype":"init"}"#), Said::Other);
+        assert_eq!(said("not json"), Said::Other);
+        assert_eq!(said(r#"{"type":"result","subtype":"success","is_error":false,"result":"```toml\n```"}"#), Said::Done(Ok("```toml\n```".into())));
+        let Said::Done(Err(e)) = said(r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#) else { panic!("not a failure") };
+        assert!(e.contains("error_max_turns"), "{e}");
     }
 
     #[test]

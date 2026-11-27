@@ -313,12 +313,14 @@ const why = (p: StackProposal, key: string) => p.why.find((w) => w.toLowerCase()
 export function proposalText(p: StackProposal, checked: { stack: StackCfg; dropped: string[] }): string {
   const lines: string[] = [];
   const s = checked.stack;
+  // A reason is ./format dialogBody's note: an indented line under its bullet, drawn small.
+  const note = (k: string) => why(p, k) ? `\n  ${why(p, k)}` : "";
   for (const k of ["up", "down"] as const) {
-    if (s[k]) lines.push(`- \`${k} = "${s[k]}"\`${why(p, k) ? `: ${why(p, k)}` : ""}`);
+    if (s[k]) lines.push(`- ${k}: \`${s[k]}\`${note(k)}`);
   }
-  for (const [n, u] of Object.entries(s.pages ?? {})) lines.push(`- page ${n}: \`${u}\``);
-  if (Object.keys(s.pages ?? {}).length && why(p, "pages")) lines.push(`  ${why(p, "pages")}`);
-  if (s.compose?.length) lines.push(`- \`compose = [${s.compose.map((c) => `"${c}"`).join(", ")}]\`${why(p, "compose") ? `: ${why(p, "compose")}` : ""}`);
+  const pages = Object.entries(s.pages ?? {}).map(([n, u]) => `- page ${n}: \`${u}\``);
+  lines.push(...pages.map((r, i) => i === pages.length - 1 ? r + note("pages") : r));
+  if (s.compose?.length) lines.push(`- compose: ${s.compose.map((c) => `\`${c}\``).join(" ")}${note("compose")}`);
   const out = [lines.length ? `For \`.episko/episko.toml\`:\n\n${lines.join("\n")}` : "Claude found nothing it could support for `[stack]`."];
   if (p.tasks.length) {
     out.push(`New in \`.episko/tasks.toml\`:\n\n${p.tasks.map((t) => `- ${t.label}: \`${t.run}\``).join("\n")}${why(p, "task") ? `\n\n${why(p, "task")}` : ""}`);

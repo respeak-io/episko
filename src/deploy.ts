@@ -136,19 +136,21 @@ export function deployPrompt(current: DeployCfg | null): string {
 }
 
 const why = (p: { why: string[] }, key: string) => p.why.find((w) => w.toLowerCase().startsWith(key + ":"))?.slice(key.length + 1).trim();
-const said = (p: DeployProposal, key: string) => why(p, key) ? `: ${why(p, key)}` : "";
+// A value's reason as ./format dialogBody's note: an indented line under its bullet, drawn small.
+const note = (p: { why: string[] }, key: string) => why(p, key) ? `\n  ${why(p, key)}` : "";
+const chips = (v: readonly string[]) => v.map((x) => `\`${x}\``).join(" ");
 
 /** The review dialog's text, in ./format's `dialogBody` dialect: blank lines, bullets, backticks. */
 export function deployText(p: DeployProposal, checked: { deploy: DeployCfg; dropped: string[] }, current: DeployCfg | null): string {
   const d = checked.deploy, lines: string[] = [];
-  if (d.host) lines.push(`- \`host = "${d.host}"\`${said(p, "host")}`);
-  if (d.compose.length) lines.push(`- \`compose = [${d.compose.map((c) => `"${c}"`).join(", ")}]\`${said(p, "compose")}`);
-  for (const [n, u] of Object.entries(d.urls)) lines.push(`- ${n}: \`${u}\``);
-  if (Object.keys(d.urls).length && why(p, "urls")) lines.push(`  ${why(p, "urls")}`);
-  if (d.sentry) lines.push(`- \`sentry = "${d.sentry}"\`${said(p, "sentry")}`);
-  if (d.versionUrl) lines.push(`- \`version_url = "${d.versionUrl}"\`${said(p, "version_url")}`);
-  for (const [k, g] of Object.entries(d.envs)) lines.push(`- env ${k}: tagged \`${g}\``);
-  if (Object.keys(d.envs).length && why(p, "envs")) lines.push(`  ${why(p, "envs")}`);
+  // One reason covers a whole table (`urls`, `envs`), so it sits under that table's last row.
+  const last = (rows: string[], key: string) => rows.map((r, i) => i === rows.length - 1 ? r + note(p, key) : r);
+  if (d.host) lines.push(`- host: \`${d.host}\`${note(p, "host")}`);
+  if (d.compose.length) lines.push(`- compose: ${chips(d.compose)}${note(p, "compose")}`);
+  lines.push(...last(Object.entries(d.urls).map(([n, u]) => `- ${n}: \`${u}\``), "urls"));
+  if (d.sentry) lines.push(`- sentry: \`${d.sentry}\`${note(p, "sentry")}`);
+  if (d.versionUrl) lines.push(`- version_url: \`${d.versionUrl}\`${note(p, "version_url")}`);
+  lines.push(...last(Object.entries(d.envs).map(([k, g]) => `- env ${k}: tagged \`${g}\``), "envs"));
   const out = [lines.length ? `For \`[deploy]\` in \`.episko/episko.toml\`:\n\n${lines.join("\n")}` : "Claude found nothing it could support for `[deploy]`."];
   const lost = lines.length ? deployLosses(current, d) : [];
   if (lost.length) out.push(`Changes what it says now:\n\n${lost.map((x) => `- ${x}`).join("\n")}`);
@@ -253,12 +255,10 @@ export function maintPrompt(current: MaintCfg | null, asks: readonly string[] = 
 /** The review dialog's text, in ./format's `dialogBody` dialect, naming every current value it changes. */
 export function maintCfgText(p: MaintCfgProposal, checked: { maintenance: MaintCfg; dropped: string[] }, current: MaintCfg | null): string {
   const c = checked.maintenance, lines: string[] = [];
-  const arr = (v: string[]) => v.map((x) => `"${x}"`).join(", ");
-  const said = (k: string) => why(p, k) ? `: ${why(p, k)}` : "";
-  if (c.trunk) lines.push(`- \`trunk = "${c.trunk}"\`${said("trunk")}`);
-  if (c.tagPattern) lines.push(`- \`tag_pattern = "${c.tagPattern}"\`${said("tag_pattern")}`);
-  if (c.sarif.length) lines.push(`- \`sarif = [${arr(c.sarif)}]\`${said("sarif")}`);
-  if (c.bots.length) lines.push(`- \`bots = [${arr(c.bots)}]\`${said("bots")}`);
+  if (c.trunk) lines.push(`- trunk: \`${c.trunk}\`${note(p, "trunk")}`);
+  if (c.tagPattern) lines.push(`- tag_pattern: \`${c.tagPattern}\`${note(p, "tag_pattern")}`);
+  if (c.sarif.length) lines.push(`- sarif: ${chips(c.sarif)}${note(p, "sarif")}`);
+  if (c.bots.length) lines.push(`- bots: ${chips(c.bots)}${note(p, "bots")}`);
   const lost = maintCfgLosses(current, c);
   const out = [lines.length ? `For \`[maintenance]\` in \`.episko/episko.toml\`:\n\n${lines.join("\n")}`
     : `Claude found nothing it could support for \`[maintenance]\`${lost.length ? ", so Apply clears what it says now" : ""}.`];

@@ -16,6 +16,7 @@ import { BRANCH_FILTERS } from "./branches";
 import { disclosure, FACETS, facetDef, findSource, type Facet, type MaintCap } from "./maintsources";
 import { trackerProject, type DeployCfg } from "./deploy";
 import { icon, type IconName } from "./svgicons";
+import { liveHtml, type Proposing } from "./proposing";
 import { guideIcon, type GuideId } from "./maintguide";
 
 export const MAINT_CHIPS = ["all", "needs", "drifting", "quiet"] as const;
@@ -70,6 +71,7 @@ export interface MaintDashExtra {
   outdated: string | null; // ./maint outdatedText: drawn beside the ⤢ that runs it
   deps: boolean; // the dependency read has something to say, so Security carries the overlay's ⤢
   fixes: Record<string, string>; // an advisory id's fix verdict, upper-case keys
+  proposing: Proposing | null; // the headless read out for this project, if one is
 }
 export interface MaintView extends MaintTabView {
   hosts: MaintHostRow[]; // hostRows' order: the Overview's compact rows; Servers draws the Hosts board
@@ -328,7 +330,8 @@ function coverChips(v: MaintTabView, g: CoverGroup): string {
 }
 
 // What a [maintenance] key would answer: an agent proposes it, or a person edits the file.
-const setupHtml = (root: string) => [["propose", "Propose with an agent",
+const setupHtml = (root: string, p: Proposing | null | undefined) => p?.kind === "maint"
+  ? liveHtml(p, `data-mtcfg="stop" data-mtroot="${escAttr(root)}"`, true) : [["propose", "Propose with an agent",
   "Claude reads the repository in the background, read-only, and proposes [maintenance]'s trunk, tag pattern, SARIF paths and bots for you to apply or discard"],
 ["file", "Open file", "Open .episko/episko.toml"]].map(([what, label, tip]) =>
   `<button class="aslink" data-mtcfg="${what}" data-mtroot="${escAttr(root)}" data-tip="${escAttr(tip)}">${esc(label)}</button>`).join(" · ");
@@ -379,7 +382,7 @@ function coverRowHtml(v: MaintTabView, g: CoverGroup, one: boolean): string {
     + (a?.kind === "allow" ? allowHtml(a.host) : "")
     + (a?.kind === "token" ? tokenHtml(a.source, a.door) : "")
     + (mine ? resChip(v, g.roots[0], mine, true) : one && offer ? verbHtml(offer) : all) + clear
-    + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0]) : "");
+    + (setup ? verbHtml(setup) : "") + (one && v.dash && g.cfg ? setupHtml(g.roots[0], v.dash.proposing) : "");
   const tip = g.detail && g.detail !== said ? ` data-tip="${escAttr(g.detail)}"` : "";
   // A place the repaint holds still (./dom holdMaintPlace), keyed by tab since a row's key could recur on another.
   return `<div class="mt-cv${one ? " one" : ""}${g.quiet ? " quiet" : ""}" data-place="${escAttr(`cv:${v.sub}:${g.key}`)}"><span class="fk">${esc(facetDef(g.facet).label)}</span>`
@@ -1199,7 +1202,11 @@ function runsCard(v: MaintDash): string {
   const door = (what: "propose" | "file", label: string, tip: string, cls = "aslink") =>
     `<button class="${cls}" data-mtdeploy="${what}" data-mtroot="${escAttr(v.card.path)}" data-tip="${escAttr(tip)}">${cls === "aslink" ? "" : icon("sparkle")}${esc(label)}</button>`;
   const PROPOSE = "Claude reads the deploy scripts, compose files and CI in the background, read-only, and proposes [deploy] for you to apply or discard";
-  const empty = (said: string) => `<p class="fl-none mt-dnone">${esc(said)}</p><div class="mt-dacts">${door("propose", "Propose with an agent", PROPOSE, "mt-verb")}</div>`;
+  // While it reads, the door is the read: what it has looked at, and its Stop.
+  const p = v.tab.dash?.proposing?.kind === "deploy" ? v.tab.dash.proposing : null;
+  const live = p ? liveHtml(p, `data-mtdeploy="stop" data-mtroot="${escAttr(v.card.path)}"`) : "";
+  const empty = (said: string) => `<p class="fl-none mt-dnone">${esc(said)}</p>`
+    + (live || `<div class="mt-dacts">${door("propose", "Propose with an agent", PROPOSE, "mt-verb")}</div>`);
   // A failed detection is not a loading one: say so, and keep the door the card exists for.
   if (!v.detected) {
     return dcard("runs", "Runs on", "", extra, v.card.err && !v.card.reading
@@ -1227,11 +1234,11 @@ function runsCard(v: MaintDash): string {
   const prod = v.tab.prod;
   const last = Math.max(v.probes?.at ?? 0, v.host?.allowed ? v.host.at ?? 0 : 0, v.errors?.at ?? 0);
   const checked = !prod.projects ? "" : prod.checking ? "" : last ? ` · checked ${relTime(last * 1000)}` : " · never checked";
-  const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), door("propose", "Re-check…", PROPOSE)].filter(Boolean).join(" · ");
+  const doors = [prodHtml(prod, v.card.path), door("file", "Open file", "Open .episko/episko.toml"), live ? "" : door("propose", "Re-check…", PROPOSE)].filter(Boolean).join(" · ");
   // What was answered colours the head, as a board's rows do; an address nobody asked colours nothing.
   const ls = [...v.probes?.rows.flatMap((r) => [r.level, r.certLevel]) ?? [], v.host?.state?.level, ...v.domains.map((r) => r.level), v.errors?.level];
   return dcard("runs", "Runs on", "from [deploy]", extra,
-    `<div class="mt-drows">${rows}</div><p class="mt-dfoot">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>`, ls);
+    `<div class="mt-drows">${rows}</div><p class="mt-dfoot">Nothing connects to these addresses until you ask${esc(checked)}. ${doors}</p>${live}`, ls);
 }
 
 // The tracker's project and what it last said, at the cell's level; Check prod asks it, Coverage says why not.

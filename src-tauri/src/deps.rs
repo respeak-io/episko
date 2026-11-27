@@ -789,13 +789,18 @@ pub(crate) fn run_capped(mut cmd: std::process::Command, secs: u64) -> Result<st
     match rx.recv_timeout(Duration::from_secs(secs)) {
         Ok(r) => r.map_err(|e| e.to_string()),
         Err(_) => {
-            #[cfg(not(windows))]
-            let _ = sys_command("kill").arg("-9").arg(pid.to_string()).status();
-            #[cfg(windows)]
-            let _ = sys_command("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).status();
+            kill_hard(pid);
             Err(format!("no answer after {secs}s — the registry may be unreachable"))
         }
     }
+}
+
+/// A child that overran its time or was stopped; Windows takes its tree with it.
+pub(crate) fn kill_hard(pid: u32) {
+    #[cfg(not(windows))]
+    let _ = sys_command("kill").arg("-9").arg(pid.to_string()).status();
+    #[cfg(windows)]
+    let _ = sys_command("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).status();
 }
 
 /// Run one package manager and read its answer. Explicit only: this resolves against a

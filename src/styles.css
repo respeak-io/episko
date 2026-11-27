@@ -2412,7 +2412,7 @@ select.in-ctl { cursor: pointer; }
 
 .cfm-head { display: flex; align-items: center; gap: 9px; }
 /* the sync review: a list of settings, so wider than a question */
-.cfm.srv { width: min(560px, 94vw); }
+.cfm.srv, .cfm.wide { width: min(560px, 94vw); }
 .srv-body { display: flex; flex-direction: column; gap: 6px; }
 .srv-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; border-radius: 8px; background: var(--surface); border: 1px solid var(--hair); }
 .srv-item.off { opacity: .55; }
@@ -2441,6 +2441,11 @@ select.in-ctl { cursor: pointer; }
 .cfm-body li::before { content: "•"; position: absolute; left: 2px; color: var(--muted-2); }
 .cfm-body code { font: 10.5px var(--font-mono); color: var(--text); background: var(--surface-2); border-radius: 4px; padding: 1px 4px; }
 .cfm-body b { color: var(--text); font-weight: 650; }
+/* A bullet's small print (./format dialogBody): the reason under a proposed value. */
+.cfm-body ul:has(.cfm-note) { gap: 9px; }
+.cfm-body .cfm-note { display: block; margin-top: 2px; font-size: 10.5px; line-height: 1.5; color: var(--muted-2); }
+.cfm-body .cfm-note code { font-size: 10px; color: var(--muted); background: transparent; padding: 0; }
+.cfm-body li code { overflow-wrap: anywhere; }
 
 .cfm-opt { display: flex; align-items: center; gap: 7px; margin-top: 12px; font: 11px var(--font-ui); color: var(--muted); cursor: pointer; user-select: none; }
 .cfm-opt[hidden] { display: none; }
@@ -3234,6 +3239,22 @@ select.in-ctl { cursor: pointer; }
 .mt-cell.busy .fk { color: var(--accent-ink); }
 .mt-cell .fk .u-spin { width: 8px; height: 8px; border-width: 1.2px; margin: 0 4px 0 0; vertical-align: -1px; }
 .mt-dhead + .mt-prog { margin: -2px 2px 2px; }
+/* A headless proposal while it reads (./proposing): where its button was, the steps it took and a Stop. */
+.pp { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 6%, transparent); border: 1px solid var(--accent-line); }
+.pp-h { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; color: var(--muted); }
+.pp-h .u-spin { flex: none; margin: 0; }
+.pp-h .t { flex: none; font-weight: 600; color: var(--text); white-space: nowrap; }
+.pp-h .now { flex: 1; min-width: 0; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-h .gap { flex: 1; }
+.pp-h .pc { flex: none; font-size: 10.5px; color: var(--muted-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pp-h .pp-stop { flex: none; font-size: 11px; }
+.pp-trail { list-style: none; margin: 0; padding: 0 0 0 19px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pp-trail li { font-size: 10.5px; line-height: 1.45; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-trail li.cur { color: var(--muted); }
+.pp.compact { flex-direction: row; padding: 4px 9px; min-height: 30px; max-width: 420px; }
+.pp.compact .pp-h { flex: 1; }
+.mt-dc > .pp { margin: 8px 4px 2px; }
+.mt-cv .pp.compact { justify-self: end; }
 .sb-held { font-style: italic; }
 .mt-card.quiet .fc-av { width: 18px; height: 18px; font-size: 9.5px; }
 .mt-id { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 10px; align-items: center; min-width: 0; cursor: pointer; }

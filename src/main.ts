@@ -45,7 +45,7 @@ import {
   setCmpBase, shelveSessionAsked, closeSessionAsked, tickRevive,
   setVitalsPrefs, setOutlinePrefs, setMdPrefs, setScrollback, setTermSplit, setDriftAuto, setPrLinks, setShelvedTree, setCopyChord, setCloseAskIdle,
   setPaneLow, syncPanePriority,
-  openDevtools, openTeamFile, proposeDeploy, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
+  openDevtools, onProposeStep, openTeamFile, proposeDeploy, stopProposal, proposeMaint, proposeStack, reloadUi, applyHandoffEv, applyHandoffCaps, saveHandoffs, stopForTranscript,
   toggleInsp, toggleProjGroup, toggleRail,
   onLimitHit, syncShownAccount, launchTogether,
   saveClaudeAccts, listClaudeTokens, checkClaudeAcct, addClaudeToken, setupClaudeToken, removeClaudeAcct,
@@ -253,7 +253,7 @@ setProjSetHost({
   setShare: setProjectShareMode, moveLog: moveWorkLogToServer, refreshGh: refreshGhAccounts,
   hasDigest: (root) => invoke<boolean>("has_digest", { root }).catch(() => false),
   setupStack: (root) => void proposeStack(root), openStackFile: (root) => void openFileOrRead(`${root}/.episko/episko.toml`),
-  openTeamFile: (root) => void openTeamFile(root), setupDeploy: proposeDeploy, setupMaint: proposeMaint,
+  openTeamFile: (root) => void openTeamFile(root), setupDeploy: proposeDeploy, setupMaint: proposeMaint, stopPropose: stopProposal,
   trust: (root) => void askTrust(root, basename(root), "just", renderProjSettings),
 });
 // ./signoff must not import ./panes: that would close a cycle through ./footer.
@@ -335,6 +335,7 @@ setDashHost({
   openFleetMaint: (sub, root) => { showFleetMaint(sub, root); openFleet(); },
   proposeDeploy: (root) => { void proposeDeploy(root); },
   proposeMaint: (root) => { void proposeMaint(root); },
+  stopPropose: (root) => { stopProposal(root); },
   openConfig: (root) => { void openTeamFile(root); },
   openSettings: openSettingsOn,
   openHistory: () => { void openHistory(true); },
@@ -483,6 +484,7 @@ function renderAllNow() {
   }
   renderCallSheet(); // no-op when closed; guarded inside against reassigning a selection
   renderQuestions(); // likewise
+  renderProjSettings(); // likewise: its rows carry a proposal while one is out
   updateTray();
   reconcileCaf(); // agent-aware mode follows the fleet's phases; no-op otherwise
   tourTick(); // last: it re-measures the anchor the renderers above just replaced
@@ -778,6 +780,7 @@ listen<ProviderEvent>("agent-event", (e) => {
   renderAll();
 });
 listen<Parameters<typeof onMcpCall>[0]>("mcp-call", (e) => void onMcpCall(e.payload));
+listen<Parameters<typeof onProposeStep>[0]>("propose-step", (e) => onProposeStep(e.payload));
 listen<string>("tray-select", (e) => { const id = e.payload; if (sessions.has(id)) setActive(id); });
 // Blocking permission request: Claude waits until resolve_permission answers.
 listen<{ id: string; data: any }>("permission", (e) => {

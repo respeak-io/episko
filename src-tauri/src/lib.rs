@@ -569,6 +569,7 @@ pub fn run() {
             deploy::deploy_config,
             deploy::episko_toml_path,
             deploy::propose_deploy,
+            deploy::stop_propose,
             deploy::write_deploy,
             github::gh_threads,
             github::gh_issue,

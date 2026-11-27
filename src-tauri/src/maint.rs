@@ -931,8 +931,10 @@ fn parse_maint_proposal(out: &str) -> Result<MaintProposal, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn propose_maint(dir: String, prompt: String) -> Result<MaintProposal, String> {
-    tauri::async_runtime::spawn_blocking(move || parse_maint_proposal(&crate::deploy::propose_toml(&dir, &prompt)?))
+pub(crate) async fn propose_maint(app: tauri::AppHandle, dir: String, prompt: String) -> Result<MaintProposal, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        parse_maint_proposal(&crate::deploy::propose_toml(&dir, &prompt, Some(&crate::deploy::step_to(&app, &dir)))?)
+    })
         .await
         .map_err(|e| e.to_string())?
 }

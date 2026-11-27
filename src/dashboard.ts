@@ -83,7 +83,7 @@ import {
 } from "./synclink";
 import {
   accentFor, cmpBase, dashMirror, dirtyByFolder, effectiveAgent, externals, ghAccountFor, ghLogins, ghOutdated,
-  permissionModeFor, removingWt, sessions, setActiveId, setMirror, shareModeOf,
+  permissionModeFor, proposals, removingWt, sessions, setActiveId, setMirror, shareModeOf,
 } from "./state";
 import { providerPermissionMode } from "./providers";
 import { copyText, refreshGhAccounts } from "./actions";
@@ -132,6 +132,7 @@ export interface DashHost {
   // The Runs on card's doors: the `[deploy]` proposal (actions.ts) and the committed file itself.
   proposeDeploy: (root: string) => void;
   proposeMaint: (root: string) => void; // a Coverage row's: the `[maintenance]` proposal
+  stopPropose: (root: string) => void; // either one's Stop while it reads
   openConfig: (root: string) => void;
   openSettings: (section: string, row?: string) => void; // Maintenance's doors to Settings › Maintenance
 }
@@ -142,7 +143,7 @@ let host: DashHost = {
   copyPath: () => {}, copyText: () => {},
   openAgentPicker: () => {}, openGhPicker: () => {}, openProjectSettings: () => {}, setActive: () => {}, renderAll: () => {},
   refreshGit: async () => {}, openReview: () => {}, handToTerminal: () => {}, saveTrunk: () => {},
-  setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, proposeMaint: () => {}, openConfig: () => {},
+  setGhAccount: () => {}, openFleetMaint: () => {}, proposeDeploy: () => {}, proposeMaint: () => {}, stopPropose: () => {}, openConfig: () => {},
   openSettings: () => {},
 };
 export function setDashHost(h: DashHost) { host = h; }
@@ -1343,6 +1344,7 @@ function maintNow(now: number): MaintDash {
       dash: {
         outdated: quiet ? null : outdatedText(depScanned !== "", tally.outdated, depTools.find((x) => !x.blocked)?.label ?? null),
         deps: !quiet,
+        proposing: proposals.get(r) ?? null,
         fixes: Object.fromEntries(dn.adv.flatMap((a) => [a.ghsa, a.cve ?? ""].filter(Boolean).map((k) => [k.toUpperCase(), FIX_TEXT[a.worst]]))),
       },
     },
@@ -1392,8 +1394,8 @@ const maintHost: MaintHost = {
   render: () => renderDash(),
   openView: (v) => openDashView(v),
   openAcross: (sub) => host.openFleetMaint(sub, root()),
-  deploy: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeDeploy(r); },
-  setup: (r, what) => { if (what === "file") host.openConfig(r); else host.proposeMaint(r); },
+  deploy: (r, what) => { if (what === "file") host.openConfig(r); else if (what === "stop") host.stopPropose(r); else host.proposeDeploy(r); },
+  setup: (r, what) => { if (what === "file") host.openConfig(r); else if (what === "stop") host.stopPropose(r); else host.proposeMaint(r); },
   roots: () => [root()],
   openSettings: (section, row) => host.openSettings(section, row),
 };
