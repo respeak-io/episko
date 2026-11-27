@@ -3208,9 +3208,14 @@ select.in-ctl { cursor: pointer; }
 .mt-chip { display: inline-flex; align-items: center; gap: 6px; }
 .mt-cards { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .mt-card { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: 4px 16px; align-items: center; padding: 10px 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--hair); }
-.mt-card.b-needs { border-color: color-mix(in srgb, var(--st-error) 30%, transparent); box-shadow: inset 3px 0 0 var(--st-error); }
-.mt-card.b-drifting { box-shadow: inset 3px 0 0 var(--st-working); }
 .mt-card.quiet { padding: 5px 12px; background: transparent; }
+/* A band is a wash from the top (.fl-card's lift, tinted) and a dot on the icon, which stays in view on a long card. */
+.mt-card.b-needs { --band: var(--st-error); background: linear-gradient(180deg, color-mix(in srgb, var(--band) 8%, transparent), transparent 45%), var(--panel); }
+.mt-card.b-drifting { --band: var(--st-working); background: linear-gradient(180deg, color-mix(in srgb, var(--band) 7%, transparent), transparent 45%), var(--panel); }
+.mt-card.b-needs .mt-id .fc-av, .mt-card.b-drifting .mt-id .fc-av { position: relative; }
+.mt-card.b-needs .mt-id .fc-av::after, .mt-card.b-drifting .mt-id .fc-av::after {
+  content: ""; position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--band); border: 2px solid var(--panel); }
 /* An earlier answer while its re-read is out: still legible, plainly not this moment's. */
 .mt-card.stale .mt-cells .mt-v, .mt-card.stale .mt-finds, .mt-body.stale > :not(.mt-tabs) { opacity: .5; transition: opacity .3s; }
 /* A scan while it runs (./maintview progressHtml): its words, a share, and what holds a slot right now.
@@ -3416,8 +3421,6 @@ span.mt-chip.res:hover { color: var(--muted); border-color: var(--hair-strong); 
 .mt-flag.l-warn { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 .mt-ok { --ic: 12px; display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .mt-ok .ic { color: var(--st-done); }
-.mt-sec.l-bad { box-shadow: inset 3px 0 0 var(--st-error); }
-.mt-sec.l-warn { box-shadow: inset 3px 0 0 var(--st-working); }
 .mt-sec.l-bad .mt-hi { color: var(--st-error); background: color-mix(in srgb, var(--st-error) 14%, transparent); }
 .mt-sec.l-warn .mt-hi { color: var(--st-working); background: color-mix(in srgb, var(--st-working) 14%, transparent); }
 .mt-board.clear { padding-bottom: 10px; }
