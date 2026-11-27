@@ -104,7 +104,8 @@ fn advisory_of(a: &DepAlert) -> Advisory {
         kind: AdvisoryKind::Dependency,
         pkg: some(&a.pkg),
         ecosystem: some(&a.ecosystem),
-        version: None, // the alert names the vulnerable range, never what is installed
+        // The alert names a range; what is installed is the lockfile's word, read by `stamp_installed`.
+        version: a.installed.as_ref().filter(|v| !v.is_empty()).map(|v| v.join(", ")),
         severity: norm_severity(&a.severity),
         raw_severity: a.severity.clone(),
         summary: a.summary.clone(),
@@ -112,12 +113,15 @@ fn advisory_of(a: &DepAlert) -> Advisory {
         location: some(&a.manifest),
         url: some(&a.url),
         tool: "dependabot".into(),
+        ranges: a.ranges.clone(),
+        installed: a.installed.clone(),
     }
 }
 
 pub(crate) fn dependabot_alerts(ctx: &Ctx, ex: &dyn Exec) -> Result<Read, Coverage> {
     let repo = github_repo(ctx)?;
-    let (alerts, full) = alerts_read(ex, ctx.root, Some(repo), ctx.account, ctx.force).map_err(|e| coverage_of(&e, ctx.account))?;
+    let (mut alerts, full) = alerts_read(ex, ctx.root, Some(repo), ctx.account, ctx.force).map_err(|e| coverage_of(&e, ctx.account))?;
+    crate::deps::stamp_installed(ctx.root, &mut alerts);
     let items = alerts.iter().map(advisory_of).collect();
     Ok(Read { truncated: full, ..Read::of(Facts::Advisories { items }) })
 }
@@ -199,6 +203,8 @@ fn code_alert(a: &Value) -> Option<Advisory> {
         location: located(text(a, "/most_recent_instance/location/path"), line),
         url: some(text(a, "/html_url")),
         tool,
+        ranges: vec![],
+        installed: None,
     })
 }
 
@@ -227,6 +233,8 @@ fn secret_alert(repo: &str, a: &Value) -> Option<Advisory> {
         location: located(text(a, "/first_location_detected/path"), line),
         url: some(text(a, "/html_url")),
         tool: "secret scanning".into(),
+        ranges: vec![],
+        installed: None,
     })
 }
 
@@ -389,6 +397,8 @@ pub(crate) fn parse_sarif(json: &str, file: &str, root: &str) -> Result<Vec<Advi
                 location: located(&sarif_path(uri, &bases), line),
                 url: rule.and_then(|x| some(text(x, "/helpUri"))),
                 tool: tool.clone(),
+                ranges: vec![],
+                installed: None,
             });
         }
     }
@@ -593,6 +603,8 @@ fn osv_advisory(p: &Pkg, at: &str, id: &str, rec: Option<&Value>) -> Advisory {
         location: Some(at.to_string()),
         url: Some(format!("https://osv.dev/vulnerability/{id}")),
         tool: "OSV.dev".into(),
+        ranges: vec![],
+        installed: None,
     }
 }
 
@@ -711,7 +723,7 @@ pub(crate) fn parse_npm_audit(json: &str, lock: &str, tool: &str) -> Result<Vec<
     let row = |id: String, aliases, pkg: &str, version: Option<String>, sev: &str, title: &str, fixed, url: &str| Advisory {
         id, aliases, kind: AdvisoryKind::Dependency, pkg: some(pkg), ecosystem: Some("npm".into()), version,
         severity: norm_severity(sev), raw_severity: sev.to_string(), summary: summary_of(title), fixed,
-        location: Some(lock.to_string()), url: some(url), tool: tool.to_string(),
+        location: Some(lock.to_string()), url: some(url), tool: tool.to_string(), ranges: vec![], installed: None,
     };
     let mut out: Vec<Advisory> = vec![];
     if let Some(vulns) = v.get("vulnerabilities").and_then(Value::as_object) {
@@ -773,6 +785,8 @@ pub(crate) fn parse_cargo_audit(json: &str, lock: &str, tool: &str) -> Result<Ve
             location: Some(lock.to_string()),
             url: Some(format!("https://rustsec.org/advisories/{id}.html")),
             tool: tool.to_string(),
+            ranges: vec![],
+            installed: None,
             id,
         })
     }).collect())

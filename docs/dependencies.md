@@ -117,6 +117,27 @@ Four rules hold it up:
   behind a word that names no verb. It wins a group only when nothing in that group is
   declared at all. Found by rendering the old Dependencies card against this repo's own alerts.
 
+## An alert the lockfile already answers
+
+**GitHub closes an alert only when it rescans the default branch's lockfile**, and with the
+repository's dependency graph off it never does: this repo carried five alerts for weeks after
+its lockfile had moved past every one, and an agent was dispatched to patch nothing. So the
+alert read is joined, every time it is shown, with **the lockfile the alert itself names**
+(`stamp_installed` in `deps.rs`, after the cache, since the cache is only as new as GitHub):
+`installed` is every registry copy of the package there, `[]` when it is gone, and `null` when
+that cannot be told — not a lockfile `lockfile.rs` reads, outside the project, a format version
+it does not know, or a copy from git, a tarball or a path, whose version proves nothing.
+
+`ranges` is **every** range the advisory names for the package, not just the one GitHub
+matched: vitest's advisory has a 4.x span and a 5.0 beta span, and a copy that left the first
+can sit in the second. `lockCleared` (./deps) clears only when every copy is outside every
+range and `satisfies` could read them all; anything it cannot read stays open. A cleared
+advisory leaves the overlay's list, the queue and the tally, and the tab names what is locked
+instead. The Maintenance board applies the same rule to each alert in `narrowMaint`
+(`settleAdvisories`), and the Security cell's tip says what it set aside. The lockfile is this
+checkout's, so a fix on an unmerged branch reads as cleared here while GitHub is still right
+about the default branch; the note says GitHub closes it on merge.
+
 ## One advisory is one row
 
 GitHub files an alert **per package**, so this repo's `GHSA-82fw-gwwq-j7x9` arrives twice:

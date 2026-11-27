@@ -80,6 +80,30 @@ const reg = (items: PkgLatest[], current = 0, o: Partial<SourceReport> = {}): So
   ({ ...ok("npm-registry", { kind: "packages", items, current }, o), cost: "public" });
 const cell = (f: Facet, inp: MaintInput) => facetCell(f, inp, MAINT_DEFAULTS, NOW);
 
+describe("an alert GitHub never rescanned", () => {
+  const db = (o: Partial<Advisory>) => adv({ tool: "dependabot", location: "pnpm-lock.yaml", version: null, ranges: ["< 4.17.21"], ...o });
+  const read = (...items: Advisory[]) => narrowMaint(ok("dependabot-alerts", { kind: "advisories", items }), "dependabot-alerts");
+  const stale = db({ id: "GHSA-old", installed: ["4.17.21"] });
+  const live = db({ id: "GHSA-new", installed: ["4.17.20"] });
+
+  it("is set aside by its own lockfile, and only by it", () => {
+    const f = read(stale, live, db({ id: "GHSA-unread", installed: null }), adv({ id: "OSV-1" })).facts as Extract<Facts, { kind: "advisories" }>;
+    expect(f.items.map((a) => a.id)).toEqual(["GHSA-new", "GHSA-unread", "OSV-1"]);
+    expect(f.cleared?.map((a) => a.id)).toEqual(["GHSA-old"]);
+    const again = narrowMaint(ok("dependabot-alerts", f), "dependabot-alerts").facts;
+    expect(again, "a kept scan read back is the same answer").toEqual(f);
+    const junk = narrowMaint(ok("dependabot-alerts", { ...f, cleared: [null, { id: 1 }] as unknown as Advisory[] }), "dependabot-alerts");
+    expect((junk.facts as typeof f).cleared, "a hand-edited kept list is narrowed").toBeUndefined();
+  });
+
+  it("leaves the security cell, which still says why in its tip", () => {
+    const only = cell("security", input(read(stale)));
+    expect(only).toMatchObject({ level: "ok", text: "" });
+    expect(only.tip.join("\n")).toMatch(/1 alert from dependabot still open but out of range here \(pnpm-lock.yaml: lodash 4.17.21\)/);
+    expect(cell("security", input(read(stale, live)))).toMatchObject({ level: "bad", text: "1 high" });
+  });
+});
+
 describe("the wire", () => {
   it("narrowMaint accepts every report the backend writes, unchanged", () => {
     for (const r of wire.reports) expect(narrowMaint(r, r.source as string)).toEqual(r);

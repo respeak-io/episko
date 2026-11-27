@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  advisoryBrief, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depReason, depSilent, depTally,
-  fixKind, groupAdvisories, outdatedBrief, outRows, parseVer, prBlockers, prBrief, prFor,
+  advisoryBrief, alertCleared, bumpKind, cardAdvisories, checkState, cmpVer, declaredIn, depReason, depSilent, depTally,
+  fixKind, groupAdvisories, lockCleared, lockedText, outdatedBrief, outRows, parseVer, prBlockers, prBrief, prFor,
   prPackages, prReady, renovateDashboard, satisfies, sevRank, verifyCommands,
   type DepAlert, type DepManifest, type DepPr, type OutdatedRun,
 } from "../src/deps";
@@ -10,8 +10,8 @@ import type { GhThread } from "../src/ghwork";
 const alert = (o: Partial<DepAlert> = {}): DepAlert => ({
   number: 1, state: "open", pkg: "vitest", ecosystem: "npm", manifest: "pnpm-lock.yaml",
   scope: "development", relationship: "direct", severity: "medium", ghsa: "GHSA-a", cve: null,
-  summary: "s", cvss: 5.9, epss: 0.00375, range: ">= 2.1.0, < 4.1.11", patched: "4.1.11",
-  url: "u", createdAt: "2026-09-11T01:39:28Z", updatedAt: "2026-09-11T01:39:28Z", ...o,
+  summary: "s", cvss: 5.9, epss: 0.00375, range: ">= 2.1.0, < 4.1.11", ranges: [">= 2.1.0, < 4.1.11"], patched: "4.1.11",
+  url: "u", createdAt: "2026-09-11T01:39:28Z", updatedAt: "2026-09-11T01:39:28Z", installed: null, ...o,
 });
 
 const pr = (o: Partial<DepPr> = {}): DepPr => ({
@@ -91,6 +91,40 @@ describe("ranges", () => {
     expect(satisfies("1.0.0", "github:me/thing")).toBeNull();
     expect(satisfies("1.0.0", "workspace:^")).toBeNull();
     expect(satisfies("nonsense", "^1.0.0")).toBeNull();
+  });
+});
+
+describe("an alert its lockfile already answers", () => {
+  // vitest's real advisory names two spans; a copy that left one may sit in the other.
+  const spans = [">= 2.1.0, < 4.1.11", ">= 5.0.0-beta.1, < 5.0.0-rc.2"];
+
+  it("clears only when every copy is outside every range the advisory names", () => {
+    expect(lockCleared(["4.1.12"], spans, "npm")).toBe(true);
+    expect(lockCleared(["4.1.10"], spans, "npm")).toBe(false);
+    expect(lockCleared(["5.0.0-beta.3"], spans, "npm"), "past the matched range, inside the other").toBe(false);
+    expect(lockCleared(["4.1.12", "4.1.10"], spans, "npm"), "one old copy keeps it open").toBe(false);
+    expect(lockCleared(["1.2.2"], ["< 1.2.2"], "rust")).toBe(true);
+  });
+
+  it("counts a package gone from the lockfile as cleared, and an unread one as nothing", () => {
+    expect(lockCleared([], spans, "npm")).toBe(true);
+    expect(lockCleared(null, spans, "npm")).toBe(false);
+    expect(lockCleared(undefined, spans, "npm"), "a scan kept from before the field").toBe(false);
+    expect(lockCleared(["4.1.12"], [], "npm"), "no range is no proof").toBe(false);
+    expect(lockCleared(["4.1.12"], ["~> 4.1"], "npm"), "a range shape satisfies cannot read").toBe(false);
+    expect(lockCleared(["main"], spans, "npm"), "a version that does not parse").toBe(false);
+  });
+
+  it("an advisory is cleared only when all of its packages are, and the brief says what is locked", () => {
+    const mocker = alert({ pkg: "@vitest/mocker", relationship: "transitive" });
+    const fixed = { installed: ["4.1.12"] };
+    expect(groupAdvisories([alert(fixed), alert({ ...mocker, ...fixed })], [])[0].cleared).toBe(true);
+    expect(groupAdvisories([alert(fixed), mocker], [])[0].cleared).toBe(false);
+    expect(alertCleared(alert())).toBe(false);
+    expect(lockedText("pnpm-lock.yaml", "vite", ["6.4.6"])).toBe("pnpm-lock.yaml: vite 6.4.6");
+    expect(lockedText("pnpm-lock.yaml", "nanoid", [])).toBe("pnpm-lock.yaml: no nanoid");
+    const b = advisoryBrief(groupAdvisories([alert({ installed: ["4.1.9"] })], []), { project: "p", slug: "o/p", manifests: [], verify: [] });
+    expect(b).toContain("; pnpm-lock.yaml: vitest 4.1.9");
   });
 });
 

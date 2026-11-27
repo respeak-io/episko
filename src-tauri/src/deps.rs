@@ -36,10 +36,13 @@ pub(crate) struct DepAlert {
     pub cvss: f64,
     pub epss: f64,
     pub range: String,
+    pub ranges: Vec<String>, // every range the advisory names for this package; `range` is the one GitHub matched
     pub patched: Option<String>,
     pub url: String,
     pub created_at: String,
     pub updated_at: String,
+    /// What the alert's own lockfile holds of the package, read when asked (`stamp_installed`).
+    pub installed: Option<Vec<String>>,
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -259,6 +262,7 @@ pub(crate) fn parse_alerts(json: &str) -> Vec<DepAlert> {
                     .and_then(serde_json::Value::as_f64)
                     .unwrap_or(0.0),
                 range: s(vuln, "vulnerable_version_range"),
+                ranges: ranges_of(adv, &s(pkg, "name"), &s(vuln, "vulnerable_version_range")),
                 patched: vuln
                     .and_then(|x| x.get("first_patched_version"))
                     .and_then(|f| f.get("identifier"))
@@ -268,9 +272,60 @@ pub(crate) fn parse_alerts(json: &str) -> Vec<DepAlert> {
                 url: s(Some(o), "html_url"),
                 created_at: s(Some(o), "created_at"),
                 updated_at: s(Some(o), "updated_at"),
+                installed: None,
             })
         })
         .collect()
+}
+
+/// One package often has several vulnerable spans (`< 4.1.11` and a 5.0 beta), and a copy that left
+/// the matched one may sit in another, so the stale-alert verdict needs them all.
+fn ranges_of(adv: Option<&serde_json::Value>, name: &str, matched: &str) -> Vec<String> {
+    let all = adv.and_then(|a| a.get("vulnerabilities")).and_then(|v| v.as_array());
+    let mut out: Vec<String> = all.into_iter().flatten()
+        .filter(|v| v.pointer("/package/name").and_then(|n| n.as_str()) == Some(name))
+        .filter_map(|v| v.get("vulnerable_version_range").and_then(|r| r.as_str()).map(String::from))
+        .collect();
+    if !matched.is_empty() && !out.iter().any(|r| r == matched) {
+        out.push(matched.to_string());
+    }
+    out
+}
+
+/// Stamps each alert with its own lockfile's copies of the package, read now: the alert list is
+/// cached and only as new as GitHub's last scan, which with the dependency graph off is never.
+pub(crate) fn stamp_installed(root: &str, alerts: &mut [DepAlert]) {
+    let mut held: HashMap<String, Option<crate::lockfile::Parsed>> = HashMap::new();
+    for a in alerts.iter_mut() {
+        let lock = held.entry(a.manifest.clone()).or_insert_with(|| read_lock(root, &a.manifest));
+        a.installed = lock.as_ref().and_then(|p| copies_of(p, &a.pkg));
+    }
+}
+
+/// Only a lockfile inside the project that parsed into something: an unknown format read nothing.
+fn read_lock(root: &str, file: &str) -> Option<crate::lockfile::Parsed> {
+    let rel = Path::new(file);
+    let inside = rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let base = file.rsplit('/').next().unwrap_or(file);
+    if !inside || !crate::lockfile::LOCKFILES.contains(&base) {
+        return None;
+    }
+    let text = crate::maint::read_capped(&Path::new(root).join(rel), crate::maint_sec::LOCK_BYTES).ok()?;
+    let p = crate::lockfile::parse(file, &text).ok()?;
+    (!p.pkgs.is_empty() || p.gaps.is_empty()).then_some(p)
+}
+
+/// The registry copies' versions; none at all is `Some([])`, the package gone. `None` when a copy
+/// came from git, a tarball or a path, since its version proves nothing.
+fn copies_of(p: &crate::lockfile::Parsed, name: &str) -> Option<Vec<String>> {
+    let same = |q: &crate::lockfile::Pkg| crate::maint_sweep::same_name(q.ecosystem, &q.name, name);
+    if p.unpinned.iter().chain(&p.local).any(same) {
+        return None;
+    }
+    let mut v: Vec<String> = p.pkgs.iter().filter(|q| same(q)).map(|q| q.version.clone()).collect();
+    v.sort();
+    v.dedup();
+    Some(v)
 }
 
 // ---------- the bots' pull requests ----------
@@ -380,7 +435,10 @@ pub(crate) async fn dep_report(root: String, force: bool, account: Option<String
                 prs: bot_prs,
                 enabled: false,
             },
-            Ok((alerts, _)) => DepReport { available: true, reason: None, alerts, prs: bot_prs, enabled: true },
+            Ok((mut alerts, _)) => {
+                stamp_installed(&root, &mut alerts);
+                DepReport { available: true, reason: None, alerts, prs: bot_prs, enabled: true }
+            }
         }
     })
     .await
@@ -994,6 +1052,49 @@ mod tests {
         // The per-package severity wins over the advisory's repo-wide one.
         assert_eq!(a.severity, "medium");
         assert_eq!(a.relationship, "direct");
+    }
+
+    #[test]
+    fn an_alert_carries_every_range_its_advisory_names_for_its_package() {
+        let json = r#"[{"number":5,"dependency":{"package":{"ecosystem":"npm","name":"vitest"}},
+          "security_advisory":{"vulnerabilities":[
+            {"package":{"name":"@vitest/mocker"},"vulnerable_version_range":">= 2.1.0, < 4.1.11"},
+            {"package":{"name":"vitest"},"vulnerable_version_range":">= 2.1.0, < 4.1.11"},
+            {"package":{"name":"vitest"},"vulnerable_version_range":">= 5.0.0-beta.1, < 5.0.0-rc.2"}]},
+          "security_vulnerability":{"vulnerable_version_range":">= 2.1.0, < 4.1.11"}}]"#;
+        assert_eq!(parse_alerts(json)[0].ranges, [">= 2.1.0, < 4.1.11", ">= 5.0.0-beta.1, < 5.0.0-rc.2"]);
+        // A payload with no list still has the range GitHub matched.
+        let bare = r#"[{"number":1,"security_vulnerability":{"vulnerable_version_range":"< 2"}}]"#;
+        assert_eq!(parse_alerts(bare)[0].ranges, ["< 2"]);
+    }
+
+    fn alert_in(manifest: &str, pkg: &str) -> DepAlert {
+        DepAlert { manifest: manifest.into(), pkg: pkg.into(), ..DepAlert::default() }
+    }
+
+    #[test]
+    fn an_alert_is_stamped_with_what_its_own_lockfile_holds_now() {
+        let root = crate::testutil::scratch_dir();
+        let pnpm = crate::maint::exec::FakeExec::testdata("lock-pnpm-v9.yaml");
+        std::fs::write(root.join("pnpm-lock.yaml"), &pnpm).unwrap();
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("web/pnpm-lock.yaml"), pnpm.replace("lodash@4.17.20:", "lodash@https://example.com/lodash.tgz:")).unwrap();
+        let mut alerts = [
+            alert_in("pnpm-lock.yaml", "lodash"),
+            alert_in("pnpm-lock.yaml", "left-pad"),
+            alert_in("web/pnpm-lock.yaml", "lodash"),
+            alert_in("package.json", "lodash"),
+            alert_in("../pnpm-lock.yaml", "lodash"),
+            alert_in("gone/pnpm-lock.yaml", "lodash"),
+        ];
+        stamp_installed(&root.to_string_lossy(), &mut alerts);
+        let got: Vec<_> = alerts.iter().map(|a| a.installed.clone()).collect();
+        assert_eq!(got[0], Some(vec!["4.17.20".to_string()]));
+        assert_eq!(got[1], Some(vec![]), "read, and the package is not in it: gone, which is an answer");
+        assert_eq!(got[2], None, "a tarball copy's version proves nothing");
+        assert_eq!(got[3], None, "a manifest is no lockfile");
+        assert_eq!(got[4], None, "nothing outside the project is read");
+        assert_eq!(got[5], None, "a lockfile that is not there says nothing");
     }
 
     #[test]

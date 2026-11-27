@@ -5,7 +5,7 @@
 import { FACETS, COSTS, facetDef, facetSources, findSource, permitted, type Cost, type Facet, type MaintCap, type SourceDef } from "./maintsources";
 import { narrowDeploy, trackerEnv, trackerProject, type DeployCfg } from "./deploy";
 import type { BranchFilter } from "./branches";
-import { cmpVer, parseVer, satisfies, verCmpStr } from "./deps";
+import { cmpVer, lockCleared, lockedText, parseVer, satisfies, verCmpStr } from "./deps";
 import { fmtDay, nfcKeys } from "./format";
 import { whereProblem, type DispatchWhere } from "./claim";
 import { SLUG_MAX, worktreeDirLen } from "./handoff";
@@ -36,6 +36,7 @@ export interface Advisory {
   id: string; aliases: string[]; kind: AdvisoryKind; pkg: string | null; ecosystem: string | null;
   version: string | null; severity: Severity; rawSeverity: string; summary: string;
   fixed: string | null; location: string | null; url: string | null; tool: string;
+  ranges?: string[]; installed?: string[] | null; // a range-only reporter's: see `settleAdvisories`
 }
 export interface UpdatePr { number: number; title: string; url: string; branch: string; draft: boolean; at: number | null; checks: CiStatus }
 /** A direct dependency and its registry's newest release; one at its newest is only counted (`current`). */
@@ -106,7 +107,7 @@ export interface Deployed {
 export type Facts =
   | { kind: "ciRuns"; branch: string; runs: CiRun[] }
   | { kind: "ciReruns"; days: number; since: number | null; runs: number; reran: number; jobs: RerunJob[] } // every branch; since: a cut window
-  | { kind: "advisories"; items: Advisory[] }
+  | { kind: "advisories"; items: Advisory[]; cleared?: Advisory[] } // cleared: set aside by `settleAdvisories`, never on the wire
   | { kind: "updatePrs"; bot: string; configured: boolean; prs: UpdatePr[]; dashboard: number | null }
   | { kind: "packages"; items: PkgLatest[]; current: number }
   | { kind: "release"; trunk: string | null; tag: string | null; tagAt: number | null; since: number;
@@ -180,6 +181,8 @@ const isCiRun = shape({ workflow: str, status: oneOf(CI_STATUSES), raw: str, sha
 const isAdvisory = shape({
   id: str, aliases: list(str), kind: oneOf(ADVISORY_KINDS), pkg: opt(str), ecosystem: opt(str), version: opt(str),
   severity: oneOf(SEVERITIES), rawSeverity: str, summary: str, fixed: opt(str), location: opt(str), url: opt(str), tool: str,
+  // Absent from a scan kept before they existed.
+  ranges: (v) => v === undefined || list(str)(v), installed: (v) => v === undefined || opt(list(str))(v),
 });
 const isPr = shape({ number: num, title: str, url: str, branch: str, draft: bool, at: opt(num), checks: oneOf(CI_STATUSES) });
 const isProbe = shape({ name: str, url: str, code: opt(num), ms: opt(num), certNotAfter: opt(num), err: opt(str) });
@@ -268,8 +271,29 @@ export function narrowMaint(raw: unknown, source: string): SourceReport {
     source, facet, cost: oneOf(COSTS)(raw.cost) ? raw.cost as Cost : null, coverage: raw.coverage,
     at: num(raw.at) ? raw.at as number : null, truncated: raw.truncated === true,
     gaps: Array.isArray(raw.gaps) ? raw.gaps.filter((g): g is string => typeof g === "string") : [],
-    facts: ok ? raw.facts as Facts : null,
+    facts: ok ? settleAdvisories(raw.facts as Facts) : null,
   };
+}
+
+/** An alert its own lockfile, read now, already puts out of range (`lockCleared`) is set aside, not
+ *  counted: its reporter closes it only on a rescan, which may never come. */
+export function settleAdvisories(f: Facts): Facts {
+  if (f.kind !== "advisories") return f;
+  const stale = (a: Advisory) => lockCleared(a.installed, a.ranges, a.ecosystem ?? "");
+  const kept = Array.isArray(f.cleared) ? f.cleared.filter(isAdvisory) : []; // a kept scan's, hand-editable
+  const out = f.items.filter(stale);
+  if (!out.length && !kept.length && f.cleared === undefined) return f;
+  const { cleared: _, ...rest } = f;
+  return { ...rest, items: out.length ? f.items.filter((a) => !stale(a)) : f.items, ...(kept.length + out.length ? { cleared: [...kept, ...out] } : {}) };
+}
+
+/** The tip line for what `settleAdvisories` set aside, or none. */
+export function clearedTip(lists: readonly Facts[]): string[] {
+  const held = [...new Set(lists.flatMap((f) => f.kind === "advisories" ? f.cleared ?? [] : [])
+    .map((a) => lockedText(a.location ?? "lockfile", a.pkg ?? "?", a.installed ?? [])))];
+  if (!held.length) return [];
+  const by = [...new Set(lists.flatMap((f) => f.kind === "advisories" ? (f.cleared ?? []).map((a) => a.tool) : []))].join(", ");
+  return [`${plural(held.length, "alert")} from ${by} still open but out of range here (${held.slice(0, 3).join(" · ")}${held.length > 3 ? " …" : ""}): it closes them only when it scans the default branch again`];
 }
 
 const isTrace = shape({
@@ -566,7 +590,7 @@ const securityRule: Rule = (facts, c) => {
   const merged = mergeAdvisories(kinds(facts, "advisories").map((f) => f.items));
   const rts = judgeRuntimes(kinds(facts, "runtimes").flatMap((f) => f.items), c.th, c.now);
   const tip = [...merged.map((a) => [a.severity, a.id, a.pkgs.join(", ") || a.items[0]?.location].filter(Boolean).join(" · ")),
-    ...rts.map((r) => `${rtName(r)}: ${r.text} · ${r.decls.map((d) => d.file).join(", ")}`)];
+    ...rts.map((r) => `${rtName(r)}: ${r.text} · ${r.decls.map((d) => d.file).join(", ")}`), ...clearedTip(kinds(facts, "advisories"))];
   const secrets = merged.filter((a) => a.kind === "secret").length;
   const rest = merged.filter((a) => a.kind !== "secret");
   const said = (level: Level, many: string, one: (r: RuntimeState) => string): Seg[] => {
