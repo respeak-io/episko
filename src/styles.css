@@ -2803,6 +2803,13 @@ select.in-ctl { cursor: pointer; }
 .ext-meta .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; display: inline-block; vertical-align: bottom; }
 .ext-meta .ext-link { padding: 0; border: 0; background: none; color: var(--accent-ink); font-size: 11px; cursor: pointer; text-align: right; }
 .ext-meta .ext-link:hover { text-decoration: underline; }
+/* a task's stack (inspectorview's taskStackHtml): one row per other member, container, address */
+.tsk-stack { gap: 6px; margin-top: 12px; }
+.tsk-stack .tsk-n { display: inline-flex; align-items: center; gap: 6px; color: var(--text); max-width: 140px; --ic: 11px; }
+.tsk-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); }
+.tsk-dot.up { background: var(--st-done); }
+.tsk-dot.down { background: var(--st-error); }
+.tsk-dot.done { background: transparent; border: 1px solid var(--muted-2); }
 .ext-jump-btn { margin-top: 4px; height: 32px; border-radius: 8px; cursor: pointer; font: 700 12px var(--font-ui); color: #16121f; border: 0; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white 12%), var(--accent)); box-shadow: 0 5px 14px -8px var(--accent-glow); }
 .ext-jump-btn:hover { filter: brightness(1.06); }
 .ext-note { font-size: 10.5px; line-height: 1.6; color: var(--muted-2); }

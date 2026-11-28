@@ -15,8 +15,9 @@ import { reviveStatus } from "./revive";
 import { rerunTask, revealSource, sendOutputToSession } from "./taskrun";
 import {
   contextHtml, type CtxMode, driftHtml, trackedHtml, dwellText, fanoutHtml, outlineHtml,
-  planHtml, RISK_LABEL, vitalHtml, wsetHtml, wsetSkeleton,
+  planHtml, RISK_LABEL, taskStackHtml, vitalHtml, wsetHtml, wsetSkeleton,
 } from "./inspectorview";
+import { currentStacks, portsOf } from "./serversui";
 import { anchoredPrompts, scrollToPrompt } from "./terminal";
 
 // ---- the Context card's view state ----
@@ -201,16 +202,20 @@ function renderTaskInspector(s: Sess) {
   // Not through paintInspector: this card binds per-element listeners, so a skipped repaint
   // would bind them twice. Clear the cache so the next agent repaint can't match stale markup.
   lastInspHtml = null;
+  // A server that printed no banner (uvicorn under its own logging) is still on the kernel's list.
+  const pages = !running ? [] : r.pages?.length ? r.pages : portsOf(s.id).map((p) => ({ label: "", url: `http://localhost:${p}` }));
+  const stack = running ? currentStacks().find((st) => st.members.some((m) => m.sid === s.id)) : undefined;
   $("inspector").innerHTML = `
     <div class="ext-card">
       <div class="ext-hl">${icon("playSolid")}${esc(r.label)}</div>
       <div class="ext-meta"><span class="label">Command</span><span class="mono ell" title="${esc(r.cmd)}">${esc(r.cmd)}</span></div>
       <div class="ext-meta"><span class="label">Source</span><span>${esc(r.source)} · ${esc(r.sourceFile)}</span></div>
       <div class="ext-meta"><span class="label">Path</span><span class="ell" title="${esc(tilde(s.workdir))}">${esc(tilde(s.workdir))}</span></div>
-      ${running ? (r.pages ?? []).map((p, i) => `<div class="ext-meta"><span class="label">${i ? esc(pageName(p)) : "Address"}</span><button class="ext-link mono ell" data-taskurl="${escAttr(p.url)}" title="Open ${esc(p.url)}${i ? "" : ` (${esc(pageName(p))})`}">${esc(p.url.replace(/^https?:\/\//, ""))}</button></div>`).join("") : ""}
+      ${pages.map((p, i) => `<div class="ext-meta"><span class="label">${i ? esc(pageName(p)) : "Address"}</span><button class="ext-link mono ell" data-taskurl="${escAttr(p.url)}" title="Open ${esc(p.url)}${i ? "" : ` (${esc(pageName(p))})`}">${esc(p.url.replace(/^https?:\/\//, ""))}</button></div>`).join("")}
       <div class="ext-meta"><span class="label">${running ? "Running" : "Took"}</span><span class="mono">${esc(runElapsed(r))}</span></div>
       ${r.exitCode != null ? `<div class="ext-meta"><span class="label">Exit</span><span class="mono ${failed ? "bad" : "ok"}">${r.exitCode}</span></div>` : ""}
     </div>
+    ${stack ? taskStackHtml(stack, s.id, pages.map((p) => p.url)) : ""}
     <div class="tacts">
       ${handoff}
       <button class="tact" data-rerun="1">${icon("rotateCw")}Re-run</button>

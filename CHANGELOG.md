@@ -13,6 +13,11 @@ Markers: `+` new · `~` changed · `!` fixed
 
 ## Unreleased
 
+~ A running task's card names everything its dev stack brought up: the other panes with their
+  addresses, the Compose containers with their health and ports, and any page the stack declares.
+  A server that never prints its address, such as uvicorn under its own logging, now shows the port
+  it listens on.
+
 ## 0.41.0 — 2026-11-18
 Sessions now run below your other apps, so a fleet running its tests at once no longer freezes the
 machine. A pull request under review gets its own row in the sidebar, issues and pull requests read
