@@ -16,6 +16,7 @@ import {
   type OutlineItem, type OutlinePrefs, type PromptBlock,
 } from "./outline";
 import type { ConversationFacts, ProviderMessage } from "./providers";
+import type { Box, Member, Stack } from "./stack";
 import { fetchedByRepo, sessions } from "./state";
 import { modelName } from "./usage";
 
@@ -406,6 +407,37 @@ export function pastPrsHtml(prs: ConversationFacts["prs"], states: ReadonlyMap<s
       + (state ? `<span class="ext-pr-s ${escAttr(state)}">${esc(state)}</span>` : "") + `</div>`;
   }).join("");
   return `<div class="ext-sec"><div class="fx-head"><span class="label">Pull requests</span><span class="fx-sub">${prs.length}</span></div>${rows}</div>`;
+}
+
+// A task pane's stack, seen from one member: the others, their containers, and any address not
+// already on a row. The rules and states are ./stack's; this only lays them out for the rail.
+const portUrl = (p: number) => `http://localhost:${p}`;
+const bareUrl = (u: string) => u.replace(/^https?:\/\//, "");
+const linkHtml = (u: string) => `<button class="ext-link mono ell" data-taskurl="${escAttr(u)}" title="Open ${escAttr(u)}">${esc(bareUrl(u))}</button>`;
+const M_TONE: Record<Member["state"], string> = { running: "", serving: " up", done: " done", failed: " down" };
+const B_TONE: Record<Box["state"], string> = { up: " up", starting: "", failing: " down", done: " done", stopped: " done" };
+
+export function taskStackHtml(st: Stack, self: string, shown: readonly string[]): string {
+  const others = st.members.filter((m) => m.sid !== self);
+  const seen = new Set(shown.map((u) => u.replace(/\/$/, "")));
+  const member = others.map((m) => {
+    const url = m.url || (m.ports.length ? portUrl(m.ports[0]) : "");
+    if (url) seen.add(url.replace(/\/$/, ""));
+    const val = m.state === "failed" ? `<span class="mono bad">${m.exit != null && m.exit !== 0 ? `exited ${m.exit}` : "stopped"}</span>`
+      : m.state === "done" ? `<span class="mono">done</span>`
+      : url ? linkHtml(url) : `<span class="mono">${m.background ? "not listening yet" : "running"}</span>`;
+    return `<div class="ext-meta"><span class="tsk-n ell" title="${escAttr(m.label)}"><span class="tsk-dot${M_TONE[m.state]}"></span>${esc(m.label)}</span>${val}</div>`;
+  }).join("");
+  const boxes = st.boxes.map((b) => {
+    const bits = [b.c.state === "running" ? (b.health === "none" ? "up" : b.health) : b.c.status.replace(/\s+ago$/, " ago"), ...b.hostPorts.map((p) => `:${p}`)];
+    return `<div class="ext-meta"><span class="tsk-n ell" title="${escAttr(`${b.c.name} · ${b.c.project}`)}"><span class="tsk-dot${B_TONE[b.state]}"></span>${icon("container", "solo")}${esc(b.c.service)}</span>`
+      + `<span class="mono${b.state === "failing" ? " bad" : ""}">${esc(bits.join(" · "))}</span></div>`;
+  }).join("");
+  const pages = st.pages.filter((p) => !seen.has(p.url.replace(/\/$/, "")))
+    .map((p) => `<div class="ext-meta"><span class="tsk-n ell" title="${escAttr(p.name)}">${esc(p.name)}</span>${linkHtml(p.url)}</div>`).join("");
+  if (!member && !boxes && !pages) return "";
+  const sub = [st.state === "leftover" ? "" : st.state, st.why].filter(Boolean).join(" · ");
+  return `<div class="ext-sec tsk-stack"><div class="fx-head"><span class="label">Stack</span><span class="fx-sub">${esc(sub)}</span></div>${member}${boxes}${pages}</div>`;
 }
 
 // The Context card's rows over what the transcript says was written; reads are not recorded here.
